@@ -1,0 +1,35 @@
+---
+name: Nginx Proxy Manager
+desc: 可视化反向代理 / SSL 证书 · 给内网服务套域名
+category: network
+tags: [proxy, ssl, npm]
+featured: true
+ports: ["81", "8080", "4443"]
+url_template: "http://{{HOST_IP}}:{{ADMIN_PORT}}"
+notes: |
+  默认管理员 admin@example.com / changeme（首次登录强制改密）。
+  宿主端口默认 8080(HTTP) / 4443(HTTPS) / 81(管理)，容器内仍是 80/443/81。
+  若要直接用 80/443 对外，请确认本机 nginx 已停且以特权端口运行。
+vars:
+  - name: ADMIN_PORT
+    label: 管理端口
+    default: "81"
+  - name: HTTP_PORT
+    label: HTTP 端口
+    default: "8080"
+  - name: HTTPS_PORT
+    label: HTTPS 端口
+    default: "4443"
+---
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx-proxy-manager
+    restart: unless-stopped
+    ports:
+      - "{{HTTP_PORT}}:80"
+      - "{{HTTPS_PORT}}:443"
+      - "{{ADMIN_PORT}}:81"
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt

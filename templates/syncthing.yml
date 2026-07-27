@@ -1,0 +1,33 @@
+---
+name: Syncthing
+desc: P2P 文件同步 · 多设备文件夹同步
+category: files
+tags: [sync, backup]
+featured: true
+ports: ["8384", "22000", "21027"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "8384"
+  - name: SYNC_PATH
+    label: 默认同步目录
+    default: "{{SERVICES}}/syncthing/data"
+---
+services:
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: syncthing
+    hostname: serverhub-syncthing
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - ./config:/var/syncthing/config
+      - "{{SYNC_PATH}}:/var/syncthing/Sync"
+    ports:
+      - "{{HOST_PORT}}:8384"
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      - "21027:21027/udp"
+    restart: unless-stopped

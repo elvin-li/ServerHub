@@ -1,0 +1,39 @@
+---
+name: Mosquitto MQTT
+desc: MQTT Broker · Home Assistant / IoT 设备消息总线
+category: iot
+tags: [mqtt, iot, ha]
+featured: true
+ports: ["1883", "9883"]
+url_template: ""
+notes: 默认匿名可连（家用内网）。生产请改 config 加用户认证。
+vars:
+  - name: MQTT_PORT
+    label: MQTT 端口
+    default: "1883"
+  - name: WS_PORT
+    label: WebSocket 端口
+    default: "9883"
+bootstrap_files:
+  - path: config/mosquitto.conf
+    content: |
+      listener 1883
+      allow_anonymous true
+      listener 9001
+      protocol websockets
+      allow_anonymous true
+      persistence true
+      persistence_location /mosquitto/data/
+---
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "{{MQTT_PORT}}:1883"
+      - "{{WS_PORT}}:9001"
+    volumes:
+      - ./config:/mosquitto/config
+      - ./data:/mosquitto/data
+      - ./log:/mosquitto/log

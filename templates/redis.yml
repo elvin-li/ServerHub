@@ -1,0 +1,27 @@
+---
+name: Redis
+desc: 内存数据库 / 缓存
+category: data
+tags: [cache, db]
+ports: ["6379"]
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "6379"
+  - name: PASSWORD
+    label: 密码（可空）
+    default: ""
+    required: false
+    secret: true
+---
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: >
+      sh -c 'if [ -n "{{PASSWORD}}" ]; then redis-server --requirepass "{{PASSWORD}}"; else redis-server; fi'
+    ports:
+      - "{{HOST_PORT}}:6379"
+    volumes:
+      - ./data:/data

@@ -1,0 +1,107 @@
+# ServerHub configuration — starting point for a new install.
+#
+# On first run, hub/config.py copies this file to services.yaml (mode 0600) if
+# services.yaml does not exist.  Edit services.yaml, not this file: the panel
+# rewrites services.yaml when you change settings in the UI.
+#
+# Everything here is optional except `settings`.  ServerHub auto-discovers
+# Docker/OrbStack containers, launchd services, Homebrew services and UTM VMs,
+# so most installs need no manual entries at all.
+#
+# `{host}` in any URL is replaced with the server's LAN address at render time.
+
+settings:
+  # Leave blank to auto-detect the primary LAN address.
+  host_ip: ''
+
+  # Background samplers, in seconds.  Larger values mean less SSD churn.
+  metrics_interval: 90
+  alert_interval: 90
+
+  # Adaptive discovery: surface services found on the host that are not
+  # listed below.
+  adaptive: true
+
+  auth:
+    # Mandatory after first-run setup. ServerHub can execute host/container
+    # commands, so public or LAN access is never anonymous.
+    enabled: true
+    # Deprecated compatibility field. Loopback clients now require a separate
+    # random bearer token stored in data/.local-client-token (mode 0600).
+    allow_localhost: false
+
+  ui:
+    theme: auto        # auto | light | dark
+
+  # Resource alerts.  cooldown_sec throttles repeat notifications.
+  thresholds:
+    enabled: true
+    cpu_pct: 90
+    mem_pct: 90
+    disk_pct: 90
+    cooldown_sec: 1800
+
+# Order of the group headings on the Services page.  Unlisted groups are
+# appended alphabetically.  e.g. ['Apps', 'Gateway', 'Containers']
+groups_order: []
+
+# Per-service display overrides, keyed by service id:
+#   overrides:
+#     plex:
+#       name: Media Server
+#       group: Apps
+#       hidden: false
+overrides: {}
+
+# Native macOS applications to monitor by process name.
+#   apps:
+#     - id: plex
+#       name: Plex Media Server
+#       process: Plex Media Server
+#       port: 32400
+#       url: http://{host}:32400/web
+#       group: Apps
+apps: []
+
+# Docker Compose stacks. Discovered automatically under ~/Services; list them
+# here only to pin a name or a path outside that root.
+#   stacks:
+#     - id: myapp
+#       name: My App
+#       path: ~/Services/myapp
+#       compose_file: docker-compose.yml
+stacks: []
+
+# Dashboard bookmark tiles, health-probed on the Bookmarks page.
+#   quick_links:
+#     - name: Router
+#       url: http://192.168.1.1
+quick_links: []
+
+# Log files exposed on the Logs page.
+#   log_sources:
+#     - id: serverhub
+#       name: ServerHub
+#       path: ~/Library/Logs/serverhub.err.log
+log_sources: []
+
+# Maintenance tasks shown on the Maintenance page. `command` runs via /bin/sh.
+#   maintenance:
+#     - id: check-updates
+#       name: Check for updates
+#       desc: List available Homebrew updates without installing them
+#       timeout: 300
+#       command: brew update >/dev/null 2>&1; brew outdated || echo "up to date"
+maintenance: []
+
+# Multi-port projects that are not containers, grouped as one card.
+#   scripts:
+#     - id: myproject
+#       name: My Project
+#       group: Projects
+#       ports: [8000, 3000]
+#       url: http://{host}:3000/
+#       links:
+#         - name: API docs
+#           url: http://{host}:8000/docs
+scripts: []

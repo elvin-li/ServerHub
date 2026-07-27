@@ -1,0 +1,34 @@
+---
+name: Jellyfin
+desc: 免费开源媒体服务器（Plex 平替）
+category: media
+tags: [media, video]
+featured: true
+ports: ["8096"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: 把 MEDIA_PATH 指到你的影视目录。可后续改 compose 加硬解。
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "8096"
+  - name: MEDIA_PATH
+    label: 媒体目录（主机）
+    default: "{{SERVICES}}/media"
+    help: 映射进容器的影片目录
+  - name: TZ
+    label: 时区
+    default: "Asia/Shanghai"
+---
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:8096"
+    volumes:
+      - ./config:/config
+      - ./cache:/cache
+      - "{{MEDIA_PATH}}:/media"

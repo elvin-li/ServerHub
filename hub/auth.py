@@ -1,0 +1,283 @@
+"""Form login, password hashing and signed session cookies."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import os
+import secrets
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+from fastapi import Depends, Request
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+
+from hub.config import cfg, save_full
+from hub.errors import api_error
+from hub.paths import BASE
+
+security = HTTPBasic(auto_error=False)
+
+COOKIE_NAME = "serverhub_session"
+MIN_PASSWORD_LENGTH = 10
+SESSION_TTL = 7 * 24 * 3600
+SECRET_FILE = BASE / "data" / ".session-secret"
+SETUP_TOKEN_FILE = BASE / "data" / ".setup-token"
+LOCAL_TOKEN_FILE = BASE / "data" / ".local-client-token"
+LOCAL_TOKEN_HEADER = "x-serverhub-local-token"
+_login_lock = threading.Lock()
+_setup_lock = threading.Lock()
+_login_attempts: dict[str, list[float]] = {}
+
+
+def _auth_cfg() -> dict:
+    return (cfg().get("settings") or {}).get("auth") or {}
+
+
+def setup_required() -> bool:
+    a = _auth_cfg()
+    legacy = str(a.get("password") or "")
+    return not a.get("password_hash") and legacy in ("", "change-me")
+
+
+def auth_enabled() -> bool:
+    """Authentication is mandatory after setup.
+
+    ServerHub exposes host/container administration and may be routed through a
+    public tunnel.  Treating a config toggle as anonymous trust turns one
+    settings change into remote code execution, so established installations
+    can no longer disable authentication.
+    """
+    return not setup_required()
+
+
+def _persistent_token(path: Path) -> str:
+    """Read or atomically create a mode-0600 random bearer token."""
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            path.chmod(0o600)
+            return value
+    except FileNotFoundError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = secrets.token_urlsafe(32)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(value + "\n")
+        return value
+    except FileExistsError:
+        return path.read_text(encoding="utf-8").strip()
+
+
+def setup_token() -> str:
+    """One-time token required to claim a fresh installation."""
+    return _persistent_token(SETUP_TOKEN_FILE)
+
+
+def verify_setup_token(value: str | None) -> bool:
+    if not setup_required() or not value:
+        return False
+    with _setup_lock:
+        expected = setup_token()
+        return secrets.compare_digest(str(value), expected)
+
+
+def consume_setup_token() -> None:
+    """Remove the bootstrap secret after credentials are established."""
+    try:
+        SETUP_TOKEN_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def complete_setup(value: str | None, password: str, username: str) -> bool:
+    """Atomically claim a fresh installation with its one-time token.
+
+    Token verification, password persistence, and token consumption share one
+    lock so two simultaneous setup requests cannot both become administrators.
+    """
+    if not value:
+        return False
+    with _setup_lock:
+        if not setup_required():
+            return False
+        expected = setup_token()
+        if not secrets.compare_digest(str(value), expected):
+            return False
+        set_password(password, username, enable=True)
+        consume_setup_token()
+        return True
+
+
+def local_client_token() -> str:
+    """Bearer token used only by the loopback menu-bar client."""
+    return _persistent_token(LOCAL_TOKEN_FILE)
+
+
+def local_client_authenticated(request: Request) -> bool:
+    client = request.client.host if request.client else ""
+    supplied = request.headers.get(LOCAL_TOKEN_HEADER, "")
+    return (
+        client in ("127.0.0.1", "::1")
+        and bool(supplied)
+        and secrets.compare_digest(supplied, local_client_token())
+    )
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    n, r, p = 2**14, 8, 1
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32)
+    return "scrypt${}${}${}${}${}".format(
+        n, r, p,
+        base64.urlsafe_b64encode(salt).decode().rstrip("="),
+        base64.urlsafe_b64encode(derived).decode().rstrip("="),
+    )
+
+
+def _b64decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def verify_password(password: str) -> bool:
+    a = _auth_cfg()
+    encoded = str(a.get("password_hash") or "")
+    if encoded.startswith("scrypt$"):
+        try:
+            _, ns, rs, ps, salt_s, expected_s = encoded.split("$", 5)
+            actual = hashlib.scrypt(
+                password.encode("utf-8"), salt=_b64decode(salt_s),
+                n=int(ns), r=int(rs), p=int(ps), dklen=32,
+            )
+            return hmac.compare_digest(actual, _b64decode(expected_s))
+        except (ValueError, TypeError):
+            return False
+    legacy = str(a.get("password") or "")
+    return bool(legacy and legacy != "change-me" and secrets.compare_digest(password, legacy))
+
+
+def set_password(password: str, username: str = "admin", *, enable: bool = True) -> None:
+    if len(password) < MIN_PASSWORD_LENGTH:
+        # Stays a ValueError so non-HTTP callers (menu bar, CLI setup) keep
+        # working; the API layer catches it and re-raises auth.password_too_short.
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    import copy
+
+    data = copy.deepcopy(cfg())
+    settings = data.setdefault("settings", {})
+    auth = dict(settings.get("auth") or {})
+    auth.update({
+        "enabled": bool(enable),
+        "username": (username or "admin").strip() or "admin",
+        "password_hash": hash_password(password),
+    })
+    auth.pop("password", None)
+    settings["auth"] = auth
+    save_full(data)
+
+
+def _secret() -> bytes:
+    try:
+        return SECRET_FILE.read_bytes()
+    except FileNotFoundError:
+        SECRET_FILE.parent.mkdir(exist_ok=True)
+        value = secrets.token_bytes(32)
+        try:
+            fd = os.open(SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(value)
+            return value
+        except FileExistsError:
+            return SECRET_FILE.read_bytes()
+
+
+def create_session(username: str) -> str:
+    exp = int(time.time()) + SESSION_TTL
+    version = hashlib.sha256(str(_auth_cfg().get("password_hash") or "legacy").encode()).hexdigest()[:16]
+    payload = f"{username}|{exp}|{version}".encode()
+    sig = hmac.new(_secret(), payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(payload + b"." + sig).decode().rstrip("=")
+
+
+def verify_session(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        raw = _b64decode(token)
+        payload, sig = raw.rsplit(b".", 1)
+        if not hmac.compare_digest(sig, hmac.new(_secret(), payload, hashlib.sha256).digest()):
+            return False
+        username, exp_s, version = payload.decode().split("|", 2)
+        current = hashlib.sha256(str(_auth_cfg().get("password_hash") or "legacy").encode()).hexdigest()[:16]
+        return username == str(_auth_cfg().get("username") or "admin") and int(exp_s) > time.time() and version == current
+    except (ValueError, UnicodeDecodeError):
+        return False
+
+
+def browser_authenticated(request: Request) -> bool:
+    return verify_session(request.cookies.get(COOKIE_NAME))
+
+
+def session_username(token: str | None) -> str:
+    """Username carried by *token*, or "" when it is not a valid session.
+
+    Verifies first: an unauthenticated caller must never be able to put an
+    arbitrary name into an audit record just by crafting a cookie.
+    """
+    if not verify_session(token):
+        return ""
+    try:
+        payload, _ = _b64decode(token).rsplit(b".", 1)
+        return payload.decode().split("|", 1)[0]
+    except (ValueError, UnicodeDecodeError):
+        return ""
+
+
+def request_username(request: Request) -> str:
+    """Best-effort identity of the caller, for audit logs."""
+    return session_username(request.cookies.get(COOKIE_NAME))
+
+
+def login_allowed(client: str) -> tuple[bool, int]:
+    now = time.time()
+    with _login_lock:
+        attempts = [t for t in _login_attempts.get(client, []) if now - t < 300]
+        _login_attempts[client] = attempts
+        if len(attempts) >= 5:
+            return False, max(1, int(300 - (now - attempts[0])))
+        return True, 0
+
+
+def record_login_failure(client: str) -> None:
+    with _login_lock:
+        _login_attempts.setdefault(client, []).append(time.time())
+
+
+def clear_login_failures(client: str) -> None:
+    with _login_lock:
+        _login_attempts.pop(client, None)
+
+
+def require_auth(
+    request: Request,
+    credentials: Optional[HTTPBasicCredentials] = Depends(security),
+):
+    # Until setup completes, every privileged API stays closed.
+    if setup_required():
+        raise api_error("auth.setup_required")
+    if browser_authenticated(request):
+        return True
+    # Loopback is transport, not identity. The native menu-bar client must prove
+    # possession of a separate mode-0600 bearer token, so a reverse proxy cannot
+    # inherit administrative access merely by connecting from localhost.
+    if local_client_authenticated(request):
+        return True
+    if isinstance(credentials, HTTPBasicCredentials):
+        user = str(_auth_cfg().get("username") or "admin")
+        if secrets.compare_digest(credentials.username, user) and verify_password(credentials.password):
+            return True
+    raise api_error("auth.login_required")

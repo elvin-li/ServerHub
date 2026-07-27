@@ -1,0 +1,30 @@
+---
+name: Navidrome
+desc: 轻量音乐服务器（Subsonic 兼容）
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "4533"
+  - name: MUSIC_PATH
+    label: 音乐库路径
+    default: {{HOME}}/Music
+    help: 宿主机音乐目录绝对路径
+category: media
+tags: [music]
+ports: ["4533"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+---
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    ports:
+      - "{{HOST_PORT}}:4533"
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+      ND_SESSIONTIMEOUT: 24h
+    volumes:
+      - ./data:/data
+      - "{{MUSIC_PATH}}:/music:ro"

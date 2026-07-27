@@ -1,0 +1,24 @@
+---
+name: Portainer CE
+desc: 可选的 Docker GUI（ServerHub 已覆盖核心能力）
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "9002"
+category: ops
+tags: [docker]
+ports: ["9002"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+---
+services:
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+    ports:
+      - "{{HOST_PORT}}:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+volumes:
+  portainer_data:

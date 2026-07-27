@@ -1,0 +1,98 @@
+# ServerHub — passwordless sudo, narrowed to the exact commands the panel runs.
+#
+# Install with:
+#     sudo install -m 0440 -o root -g wheel \
+#         ~/Services/serverhub/deploy/sudoers.d/serverhub /etc/sudoers.d/serverhub
+#
+# Verify with:
+#     sudo -n -l | grep NOPASSWD
+#
+# Remove with:
+#     sudo rm /etc/sudoers.d/serverhub
+#
+# ---------------------------------------------------------------------------
+# WHY EVERY RULE IS PARAMETERISED
+# ---------------------------------------------------------------------------
+# A bare `NOPASSWD: /bin/launchctl` would be equivalent to handing out root:
+# `launchctl bootstrap system <plist>` loads an arbitrary plist as root, so
+# anyone who can reach the panel could run any program as root.  The same holds
+# for `killall` (it can signal any process, including security daemons) and for
+# `pmset` to a lesser degree.  So each rule below pins the *arguments*, not just
+# the executable.  sudo matches the full argument vector, and a trailing "" in a
+# rule means "no further arguments are permitted".
+#
+# Wildcards are used only where the panel legitimately varies one field, and
+# each one is chosen so it cannot expand into a different operation:
+#   * disk device nodes  (/dev/disk0, /dev/disk4s2, ...)
+#   * network interface names (en0, en7, ...)
+#   * IPv4 literals for interface aliases
+# `*` in sudoers does not match across whitespace, so a wildcard cannot be used
+# to smuggle an extra argument.
+#
+# Replace a0000 with the account that runs ServerHub if it differs.
+# ---------------------------------------------------------------------------
+
+# --- SMART health / disk power (read-only reporting + spin up/down) ---------
+# smartctl only reads controller data or toggles the ATA standby timer; it
+# cannot write to the filesystem.
+Cmnd_Alias SERVERHUB_SMART = \
+    /opt/homebrew/bin/smartctl -a /dev/*, \
+    /opt/homebrew/bin/smartctl -H /dev/*, \
+    /opt/homebrew/bin/smartctl -n standby /dev/*, \
+    /opt/homebrew/bin/smartctl -s standby\,now /dev/*, \
+    /opt/homebrew/bin/smartctl -s standby\,off /dev/*
+
+# --- Power preferences ------------------------------------------------------
+# One rule per key the panel is allowed to set (hub/power_svc.set_power_pref
+# enforces the same allowlist server-side).  Enumerated rather than wildcarded
+# on the key so that, e.g., `pmset -a destroyfvkeyonstandby` is not reachable.
+Cmnd_Alias SERVERHUB_PMSET = \
+    /usr/bin/pmset -a disksleep *, \
+    /usr/bin/pmset -a displaysleep *, \
+    /usr/bin/pmset -a sleep *, \
+    /usr/bin/pmset -a womp *, \
+    /usr/bin/pmset -a powernap *, \
+    /usr/bin/pmset -a networkoversleep *, \
+    /usr/bin/pmset -a ttyskeepawake *, \
+    /usr/bin/pmset -a lowpowermode *
+
+# --- Screen Sharing daemon only ---------------------------------------------
+# NOT a blanket launchctl grant: the plist path and service label are pinned to
+# Apple's Screen Sharing daemon, so no other service can be loaded or stopped.
+Cmnd_Alias SERVERHUB_SCREENSHARING = \
+    /bin/launchctl enable system/com.apple.screensharing "", \
+    /bin/launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist "", \
+    /bin/launchctl bootout system/com.apple.screensharing "", \
+    /bin/launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist "", \
+    /bin/launchctl unload -w /System/Library/LaunchDaemons/com.apple.screensharing.plist "", \
+    /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all "", \
+    /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -deactivate -stop ""
+
+# --- Network interfaces -----------------------------------------------------
+# Managed IP aliases and Wi-Fi power.  `alias`/`-alias` only; the panel cannot
+# reconfigure an interface's primary address, MTU, or bring a link down.
+Cmnd_Alias SERVERHUB_NETWORK = \
+    /sbin/ifconfig * alias * netmask *, \
+    /sbin/ifconfig * -alias *, \
+    /usr/sbin/networksetup -getairportpower *, \
+    /usr/sbin/networksetup -setairportpower * on, \
+    /usr/sbin/networksetup -setairportpower * off
+
+# --- DNS cache flush --------------------------------------------------------
+# Pinned to mDNSResponder with -HUP.  A bare killall grant would allow signalling
+# (and killing) any root process on the machine.
+Cmnd_Alias SERVERHUB_DNS = \
+    /usr/bin/killall -HUP mDNSResponder ""
+
+# --- Shutdown / restart -----------------------------------------------------
+# Only the immediate forms the Power page issues.
+Cmnd_Alias SERVERHUB_POWER = \
+    /sbin/shutdown -h now "", \
+    /sbin/shutdown -r now ""
+
+a0000 ALL=(root) NOPASSWD: SERVERHUB_SMART, \
+                           SERVERHUB_PMSET, \
+                           SERVERHUB_SCREENSHARING, \
+                           SERVERHUB_NETWORK, \
+                           SERVERHUB_DNS, \
+                           SERVERHUB_POWER

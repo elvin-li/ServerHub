@@ -1,0 +1,26 @@
+# ServerHub runtime dependencies.
+#
+# Versions are pinned with `~=` (compatible-release): patch updates are allowed
+# so security fixes land, minor/major bumps are not, so a customer install can
+# never pick up a breaking release months from now.  These are the versions the
+# test suite is verified against.
+#
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# Requires Python 3.12 or newer.
+
+# ── Web panel (hub/, app.py) ──────────────────────────────────────────────────
+fastapi~=0.139.2
+uvicorn~=0.51.0
+pydantic~=2.13.4
+pyyaml~=6.0.3
+python-multipart~=0.0.32
+# Interactive terminal transport. Exact pin keeps WebSocket protocol behavior stable.
+websockets==15.0.1
+
+# ── Menu-bar app (menubar.py) ────────────────────────────────────────────────
+# macOS only.  Previously missing entirely, so a fresh venv could not start the
+# menu bar: `import rumps` raised ModuleNotFoundError.
+rumps~=0.4.0
+pyobjc-core~=12.2.1
+pyobjc-framework-Cocoa~=12.2.1

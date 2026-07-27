@@ -1,0 +1,44 @@
+---
+name: Webtop 远程桌面
+desc: 浏览器里的完整 Linux 桌面（VNC/noVNC）· 远程办公应急
+category: remote
+tags: [vnc, desktop, remote]
+featured: true
+ports: ["3020"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: |
+  基于 linuxserver/webtop，浏览器直接访问，无需单独 VNC 客户端。
+  首次启动较慢（拉镜像）。建议设置密码。不适合 7×24 高负载游戏。
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "3020"
+  - name: PASSWORD
+    label: 登录密码
+    default: "__RANDOM__"
+    secret: true
+    help: 浏览器打开后的访问密码
+  - name: TZ
+    label: 时区
+    default: "Asia/Shanghai"
+---
+services:
+  webtop:
+    image: lscr.io/linuxserver/webtop:ubuntu-xfce
+    container_name: webtop
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ={{TZ}}
+      - SUBFOLDER=/
+      - TITLE=ServerHub Webtop
+      - PASSWORD={{PASSWORD}}
+    volumes:
+      - ./config:/config
+      - ./data:/config/Desktop/data
+    ports:
+      - "{{HOST_PORT}}:3000"
+    shm_size: "1gb"
+    restart: unless-stopped

@@ -1,0 +1,734 @@
+"""Cloudflare Tunnel (cloudflared) management for ServerHub web panel.
+
+Allows login / create / start / stop / logs without Remote Desktop.
+Uses a dedicated LaunchAgent (local.cloudflared-tunnel) with token file so the
+broken bare `brew services cloudflared` (no args / no config) is avoided.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+from fastapi import HTTPException
+
+from hub.paths import AGENTS_DIR
+from hub import secure_io
+from hub.util import sh
+
+CF_BIN = "/opt/homebrew/bin/cloudflared"
+if not Path(CF_BIN).is_file():
+    CF_BIN = "/usr/local/bin/cloudflared"
+
+CF_HOME = Path.home() / ".cloudflared"
+CERT = CF_HOME / "cert.pem"
+STATE_DIR = Path.home() / "Services" / "cloudflared"
+STATE_FILE = STATE_DIR / "serverhub-state.json"
+TOKEN_FILE = STATE_DIR / "tunnel.token"
+LOG_FILE = STATE_DIR / "tunnel.log"
+CONFIG_YML = CF_HOME / "config.yml"
+LABEL = "local.cloudflared-tunnel"
+PLIST = Path(AGENTS_DIR) / f"{LABEL}.plist"
+LOGIN_PID = STATE_DIR / "login.pid"
+LOGIN_LOG = STATE_DIR / "login.log"
+LOGIN_URL_FILE = STATE_DIR / "login.url"
+
+
+#: Cloudflare's documented tunnel edge range (198.41.192.0/20).  A subset is
+#: pinned when DNS is untrustworthy — see _edge_workaround_args().
+EDGE_NETWORK = "198.41.192.0/20"
+FALLBACK_EDGE_IPS = (
+    "198.41.192.7",
+    "198.41.192.27",
+    "198.41.200.13",
+    "198.41.200.43",
+)
+EDGE_PORT = 7844
+
+
+def _ip_in_edge_range(ip: str) -> bool:
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(EDGE_NETWORK)
+    except ValueError:
+        return False
+
+
+def resolve_edge_ips() -> list[str]:
+    """IPs the system resolver returns for the tunnel edge hostnames."""
+    import socket
+
+    out: list[str] = []
+    for host in ("region1.v2.argotunnel.com", "region2.v2.argotunnel.com"):
+        try:
+            for info in socket.getaddrinfo(host, EDGE_PORT, socket.AF_INET,
+                                           socket.SOCK_STREAM):
+                addr = info[4][0]
+                if addr not in out:
+                    out.append(addr)
+        except OSError:
+            continue
+    return out
+
+
+def dns_diagnosis() -> dict:
+    """Detect the DNS-hijack failure mode behind 'TLS handshake with edge: EOF'.
+
+    A transparent proxy / fake-ip resolver (Clash, mihomo, some routers) answers
+    ``*.argotunnel.com`` with an address outside Cloudflare's range.  TCP to that
+    address connects — the proxy accepts it — but the proxy will not carry
+    cloudflared's non-HTTP protocol, so the TLS handshake dies with EOF and the
+    tunnel retries forever.  The symptom looks like a cloudflared bug; it is not.
+    """
+    resolved = resolve_edge_ips()
+    bogus = [ip for ip in resolved if not _ip_in_edge_range(ip)]
+    return {
+        "resolved": resolved,
+        "bogus": bogus,
+        "hijacked": bool(resolved) and not any(_ip_in_edge_range(i) for i in resolved),
+        "edge_network": EDGE_NETWORK,
+    }
+
+
+def _edge_workaround_args() -> list[str]:
+    """Extra `tunnel run` args needed when DNS for the edge is hijacked.
+
+    Two flags, both required, verified against a hijacked network:
+      * ``--edge`` pins real edge addresses, bypassing the poisoned lookup.
+        Without it cloudflared dials the fake IP and gets a TLS EOF.
+      * ``--protocol http2`` moves off QUIC.  The same proxy also drops
+        UDP/7844, so with ``--edge`` alone the handshake succeeds but every
+        connection times out with "no recent network activity".
+    On a healthy network this returns nothing, so normal installs keep
+    Cloudflare's own edge selection and QUIC.
+    """
+    diag = dns_diagnosis()
+    if not diag["hijacked"]:
+        return []
+    args: list[str] = []
+    for ip in FALLBACK_EDGE_IPS:
+        args += ["--edge", f"{ip}:{EDGE_PORT}"]
+    args += ["--protocol", "http2"]
+    return args
+
+
+def _ensure_dirs() -> None:
+    CF_HOME.mkdir(parents=True, exist_ok=True)
+    try:
+        CF_HOME.chmod(0o700)
+    except OSError:
+        pass
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        STATE_DIR.chmod(0o700)
+    except OSError:
+        pass
+
+
+def _bin() -> str:
+    if Path(CF_BIN).is_file():
+        return CF_BIN
+    w = sh(["/usr/bin/which", "cloudflared"], timeout=5)[1].strip()
+    if w and Path(w).is_file():
+        return w
+    raise HTTPException(503, "未找到 cloudflared（请先在应用商店安装「Cloudflared（原生）」）")
+
+
+def _load_state() -> dict:
+    _ensure_dirs()
+    if STATE_FILE.is_file():
+        try:
+            return json.loads(STATE_FILE.read_text() or "{}")
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_state(data: dict) -> None:
+    _ensure_dirs()
+    # Created 0600 through the open() mode: write-then-chmod left the state
+    # readable by every local user for the duration of the write.
+    secure_io.write_secret_text(
+        STATE_FILE, json.dumps(data, ensure_ascii=False, indent=2)
+    )
+
+
+def _logged_in() -> bool:
+    return CERT.is_file() and CERT.stat().st_size > 20
+
+
+def _read_login_pid() -> int | None:
+    """Return the recorded login PID, discarding malformed/stale metadata."""
+    if not LOGIN_PID.is_file():
+        return None
+    try:
+        pid = int(LOGIN_PID.read_text().strip())
+        if pid <= 1:
+            raise ValueError("unsafe pid")
+        return pid
+    except (OSError, ValueError):
+        LOGIN_PID.unlink(missing_ok=True)
+        return None
+
+
+def _wait_login_pid(pid: int, timeout: float) -> bool:
+    """Wait up to *timeout* for a login process and reap it when it is ours.
+
+    A PID file can survive a panel restart.  In that case the process is no
+    longer our child and ``waitpid`` raises ``ChildProcessError``; poll it with
+    signal 0 instead.  Direct children are always reaped here, which is the
+    distinction between a stopped process and a zombie.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            waited, _ = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                return True
+        except ChildProcessError:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                return False
+
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _login_process_pending() -> bool:
+    """Whether the recorded login waiter is alive, reaping it if it exited."""
+    pid = _read_login_pid()
+    if pid is None:
+        return False
+    try:
+        waited, _ = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            LOGIN_PID.unlink(missing_ok=True)
+            return False
+    except ChildProcessError:
+        pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        LOGIN_PID.unlink(missing_ok=True)
+        return False
+
+
+def _terminate_login_process(*, term_timeout: float = 2.0,
+                             kill_timeout: float = 1.0) -> bool:
+    """Stop and reap the login waiter recorded in ``LOGIN_PID``.
+
+    ``cloudflared tunnel login`` is spawned directly by this panel, so sending
+    a signal without ``waitpid`` leaves a zombie until ServerHub exits.  Give it
+    a short graceful window, escalate to SIGKILL, and remove the PID file only
+    after the process is confirmed gone.  No disk, tunnel, or certificate data
+    is modified.
+    """
+    pid = _read_login_pid()
+    if pid is None:
+        return True
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # It may already be an exited, waitable child.
+        pass
+    except (PermissionError, OSError):
+        return False
+
+    stopped = _wait_login_pid(pid, term_timeout)
+    if not stopped:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except (PermissionError, OSError):
+            return False
+        stopped = _wait_login_pid(pid, kill_timeout)
+
+    if stopped:
+        LOGIN_PID.unlink(missing_ok=True)
+    return stopped
+
+
+def _process_running() -> bool:
+    rc, out, _ = sh(["/bin/ps", "aux"], timeout=5)
+    if rc != 0 or not out:
+        return False
+    for line in out.splitlines():
+        low = line.lower()
+        if "cloudflared" not in low:
+            continue
+        if "tunnel run" in low or "tunnel --config" in low:
+            return True
+        # token-mode service often shows just cloudflared with token-file
+        if "cloudflared" in low and ("token" in low or "config" in low) and "grep" not in low:
+            return True
+    return False
+
+
+def _launchd_running() -> bool:
+    uid = os.getuid()
+    rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{uid}/{LABEL}"], timeout=5)
+    if rc == 0 and "state = running" in (out or ""):
+        return True
+    # brew agent (usually useless without config)
+    rc2, out2, _ = sh(
+        ["/bin/launchctl", "print", f"gui/{uid}/homebrew.mxcl.cloudflared"],
+        timeout=5,
+    )
+    if rc2 == 0 and "state = running" in (out2 or ""):
+        return True
+    return False
+
+
+def _is_running() -> bool:
+    return _process_running() or _launchd_running()
+
+
+def list_tunnels() -> list[dict]:
+    """Return tunnels from account (requires cert.pem)."""
+    if not _logged_in():
+        return []
+    rc, out, err = sh([_bin(), "tunnel", "list"], timeout=30)
+    text = (out or "") + "\n" + (err or "")
+    tunnels: list[dict] = []
+    # ID NAME CREATED CONNECTIONS
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("You can") or line.startswith("ID "):
+            continue
+        # uuid name date... connections
+        m = re.match(
+            r"^([0-9a-f-]{36})\s+(\S+)\s+(\S+)\s*(.*)$",
+            line,
+            re.I,
+        )
+        if not m:
+            continue
+        rest = (m.group(4) or "").strip()
+        tunnels.append({
+            "id": m.group(1),
+            "name": m.group(2),
+            "created": m.group(3),
+            "connections": rest,
+            "active": bool(rest and rest not in ("", "-")),
+        })
+    return tunnels
+
+
+def fetch_token(tunnel: str) -> str:
+    """Fetch run token for named tunnel (requires cert.pem)."""
+    tunnel = (tunnel or "").strip()
+    if not tunnel:
+        raise HTTPException(400, "请指定隧道名称或 UUID")
+    if not _logged_in():
+        raise HTTPException(400, "尚未登录 Cloudflare（缺少 cert.pem），请先完成登录")
+    rc, out, err = sh([_bin(), "tunnel", "token", tunnel], timeout=45)
+    token = (out or "").strip().splitlines()
+    token = (token[-1] if token else "").strip()
+    if rc != 0 or not token or len(token) < 40:
+        raise HTTPException(
+            400,
+            f"无法获取隧道 token：{(err or out or 'unknown')[-500:]}",
+        )
+    return token
+
+
+def _write_token(token: str) -> Path:
+    _ensure_dirs()
+    token = (token or "").strip()
+    if len(token) < 40:
+        raise HTTPException(400, "Token 无效（过短）")
+    # The tunnel token grants ingress to this LAN, so it must never exist with
+    # default permissions, not even for the moment before a chmod.
+    secure_io.write_secret_text(TOKEN_FILE, token + "\n")
+    return TOKEN_FILE
+
+
+def _write_launchagent_token() -> Path:
+    """LaunchAgent: cloudflared tunnel run --token-file ..."""
+    _ensure_dirs()
+    if not TOKEN_FILE.is_file():
+        raise HTTPException(400, "尚未保存 tunnel token")
+    bin_path = _bin()
+    # Rendered one <string> per argv element, so the workaround flags land as
+    # real separate arguments (launchd does no word splitting).
+    #
+    # Position matters: --edge / --protocol belong to the `tunnel` command, so
+    # they must appear BEFORE the `run` subcommand.  Placed after it, cloudflared
+    # exits immediately with "flag provided but not defined: -edge" and dumps its
+    # help text into the log, which under KeepAlive becomes a silent respawn loop.
+    extra = _edge_workaround_args()
+    extra_xml = "".join(f"\n    <string>{a}</string>" for a in extra)
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{bin_path}</string>
+    <string>tunnel</string>
+    <string>--no-autoupdate</string>{extra_xml}
+    <string>run</string>
+    <string>--token-file</string>
+    <string>{TOKEN_FILE}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{LOG_FILE}</string>
+  <key>StandardErrorPath</key>
+  <string>{LOG_FILE}</string>
+  <key>WorkingDirectory</key>
+  <string>{STATE_DIR}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>{Path.home()}</string>
+  </dict>
+</dict>
+</plist>
+"""
+    PLIST.write_text(body)
+    return PLIST
+
+
+def _launchctl_bootout() -> None:
+    uid = os.getuid()
+    sh(["/bin/launchctl", "bootout", f"gui/{uid}/{LABEL}"], timeout=15)
+    # also stop bare brew agent so it doesn't fight us
+    sh(["/bin/launchctl", "bootout", f"gui/{uid}/homebrew.mxcl.cloudflared"], timeout=10)
+    sh(["/opt/homebrew/bin/brew", "services", "stop", "cloudflared"], timeout=30)
+
+
+def _launchctl_bootstrap() -> dict:
+    uid = os.getuid()
+    _launchctl_bootout()
+    time.sleep(0.4)
+    if not PLIST.is_file():
+        return {"ok": False, "message": f"缺少 {PLIST}"}
+    rc, out, err = sh(
+        ["/bin/launchctl", "bootstrap", f"gui/{uid}", str(PLIST)],
+        timeout=20,
+    )
+    # enable for future logins
+    sh(["/bin/launchctl", "enable", f"gui/{uid}/{LABEL}"], timeout=10)
+    sh(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"], timeout=15)
+    ok = rc == 0 or _is_running()
+    msg = (out or "") + (err or "")
+    if ok:
+        # wait briefly for process
+        for _ in range(8):
+            if _is_running():
+                break
+            time.sleep(0.4)
+    return {
+        "ok": ok or _is_running(),
+        "message": msg.strip() or ("已启动" if _is_running() else "启动命令已执行，请查看日志"),
+    }
+
+
+def status() -> dict:
+    """Panel snapshot for Cloudflared."""
+    _ensure_dirs()
+    st = _load_state()
+    running = _is_running()
+    tunnels = []
+    tunnels_err = None
+    if _logged_in():
+        try:
+            tunnels = list_tunnels()
+        except Exception as e:
+            tunnels_err = str(e)
+    login_url = None
+    if LOGIN_URL_FILE.is_file():
+        try:
+            login_url = LOGIN_URL_FILE.read_text().strip() or None
+        except Exception:
+            login_url = None
+    # Reap a login child that exited between polls instead of retaining a zombie.
+    login_pending = _login_process_pending()
+
+    bin_path = None
+    try:
+        bin_path = _bin()
+    except Exception:
+        bin_path = None
+    return {
+        "ok": True,
+        "installed": bool(bin_path and Path(bin_path).is_file()),
+        "bin": bin_path,
+        "logged_in": _logged_in(),
+        "cert_path": str(CERT) if CERT.is_file() else None,
+        "running": running,
+        "state": "ok" if running else "down",
+        "status_text": "运行中" if running else "已停止",
+        "active_tunnel": st.get("tunnel_name") or st.get("tunnel_id"),
+        "mode": st.get("mode") or ("token" if TOKEN_FILE.is_file() else None),
+        "has_token": TOKEN_FILE.is_file(),
+        "tunnels": tunnels,
+        "tunnels_error": tunnels_err,
+        "login_url": login_url if login_pending or not _logged_in() else None,
+        "login_pending": login_pending,
+        "plist": str(PLIST) if PLIST.is_file() else None,
+        "log_path": str(LOG_FILE),
+        "config_path": str(CONFIG_YML) if CONFIG_YML.is_file() else None,
+        "notes": (
+            "用面板选择已有隧道或粘贴 Zero Trust Token 即可启停。"
+            "路由/子域名请在 Cloudflare Zero Trust 控制台配置（推荐），"
+            "无需打开远程桌面。"
+        ),
+    }
+
+
+def login_start() -> dict:
+    """Start `cloudflared tunnel login` and return the browser URL for the user."""
+    if _logged_in():
+        return {
+            "ok": True,
+            "already": True,
+            "message": f"已登录（{CERT}）",
+            "logged_in": True,
+        }
+    _ensure_dirs()
+    # Stop and reap the previous direct child before replacing its PID file.
+    if not _terminate_login_process():
+        return {
+            "ok": False,
+            "message": "无法停止上一登录进程，请稍后重试",
+            "logged_in": False,
+            "login_pending": True,
+        }
+    LOGIN_URL_FILE.unlink(missing_ok=True)
+    LOGIN_LOG.write_text("")
+    # Run login; cloudflared prints a URL then waits for callback
+    proc = subprocess.Popen(
+        [_bin(), "tunnel", "login"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=str(CF_HOME),
+        env={**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": str(Path.home())},
+    )
+    LOGIN_PID.write_text(str(proc.pid))
+    url = None
+    # read up to ~8s for URL line
+    deadline = time.time() + 12
+    buf = ""
+    assert proc.stdout is not None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        line = proc.stdout.readline()
+        if not line:
+            time.sleep(0.15)
+            continue
+        buf += line
+        LOGIN_LOG.write_text(buf[-8000:])
+        m = re.search(r"https://[^\s]+", line)
+        if m:
+            url = m.group(0).rstrip(").,]")
+            LOGIN_URL_FILE.write_text(url)
+            break
+    if not url and buf:
+        m2 = re.search(r"https://[^\s]+", buf)
+        if m2:
+            url = m2.group(0).rstrip(").,]")
+            LOGIN_URL_FILE.write_text(url)
+    if not url:
+        # still running? keep process
+        if proc.poll() is None:
+            return {
+                "ok": False,
+                "message": "已启动登录进程，但未解析到 URL，请查看登录日志或在本机浏览器执行 cloudflared tunnel login",
+                "login_pending": True,
+                "log": buf[-1500:],
+            }
+        return {"ok": False, "message": "登录失败\n" + buf[-1500:]}
+    return {
+        "ok": True,
+        "message": "请在浏览器打开下方链接，用 Cloudflare 账号授权（可在手机/其它电脑打开）",
+        "login_url": url,
+        "login_pending": True,
+        "logged_in": False,
+    }
+
+
+def login_poll() -> dict:
+    """Check if cert.pem appeared after login_start."""
+    if _logged_in():
+        # A successful callback leaves the directly-spawned login waiter alive;
+        # stop and reap it rather than only sending a signal and leaking a zombie.
+        stopped = _terminate_login_process()
+        LOGIN_URL_FILE.unlink(missing_ok=True)
+        return {
+            "ok": stopped,
+            "logged_in": True,
+            "message": "登录成功" if stopped else "登录成功，但登录进程清理失败，请稍后重试",
+        }
+    url = LOGIN_URL_FILE.read_text().strip() if LOGIN_URL_FILE.is_file() else None
+    return {
+        "ok": True,
+        "logged_in": False,
+        "login_pending": _login_process_pending(),
+        "login_url": url,
+        "message": "等待浏览器完成授权…",
+    }
+
+
+def create_tunnel(name: str) -> dict:
+    name = re.sub(r"[^a-zA-Z0-9._-]", "", (name or "").strip())
+    if not name:
+        raise HTTPException(400, "隧道名无效（仅字母数字 ._-）")
+    if not _logged_in():
+        raise HTTPException(400, "请先登录 Cloudflare")
+    rc, out, err = sh([_bin(), "tunnel", "create", name], timeout=60)
+    ok = rc == 0
+    msg = ((out or "") + "\n" + (err or "")).strip()
+    tunnels = list_tunnels() if ok or _logged_in() else []
+    return {"ok": ok, "message": msg[-2000:], "tunnels": tunnels}
+
+
+def start_with_tunnel(tunnel: str) -> dict:
+    """Fetch token for tunnel name/uuid and start LaunchAgent."""
+    tunnel = (tunnel or "").strip()
+    token = fetch_token(tunnel)
+    _write_token(token)
+    _write_launchagent_token()
+    r = _launchctl_bootstrap()
+    st = _load_state()
+    st.update({"mode": "token", "tunnel_name": tunnel, "updated": time.time()})
+    _save_state(st)
+    return {
+        "ok": r.get("ok") or _is_running(),
+        "message": f"隧道「{tunnel}」已配置并启动\n" + (r.get("message") or ""),
+        "running": _is_running(),
+        "active_tunnel": tunnel,
+    }
+
+
+def start_with_token(token: str, label: str | None = None) -> dict:
+    """Start using a pasted Zero Trust token."""
+    _write_token(token)
+    _write_launchagent_token()
+    r = _launchctl_bootstrap()
+    st = _load_state()
+    st.update({
+        "mode": "token",
+        "tunnel_name": (label or "").strip() or "token",
+        "updated": time.time(),
+    })
+    _save_state(st)
+    return {
+        "ok": r.get("ok") or _is_running(),
+        "message": "已用 Token 启动隧道\n" + (r.get("message") or ""),
+        "running": _is_running(),
+    }
+
+
+def stop() -> dict:
+    _launchctl_bootout()
+    # kill leftover tunnel processes (not ddns scripts)
+    rc, out, _ = sh(["/bin/ps", "axo", "pid=,command="], timeout=5)
+    if rc == 0 and out:
+        for line in out.splitlines():
+            low = line.lower()
+            if "cloudflared" in low and ("tunnel" in low or "token" in low):
+                try:
+                    pid = int(line.strip().split(None, 1)[0])
+                    os.kill(pid, signal.SIGTERM)
+                except Exception:
+                    pass
+    time.sleep(0.5)
+    return {
+        "ok": not _is_running(),
+        "message": "已停止" if not _is_running() else "已发送停止，进程可能仍在退出",
+        "running": _is_running(),
+    }
+
+
+def restart() -> dict:
+    st = _load_state()
+    name = st.get("tunnel_name")
+    if TOKEN_FILE.is_file():
+        _write_launchagent_token()
+        r = _launchctl_bootstrap()
+        return {
+            "ok": r.get("ok") or _is_running(),
+            "message": "已重启\n" + (r.get("message") or ""),
+            "running": _is_running(),
+            "active_tunnel": name,
+        }
+    if name and _logged_in():
+        return start_with_tunnel(name)
+    return {"ok": False, "message": "没有可重启的配置：请先选择隧道或粘贴 Token 并启动"}
+
+
+def route_dns(tunnel: str, hostname: str) -> dict:
+    """cloudflared tunnel route dns <tunnel> <hostname>"""
+    tunnel = (tunnel or "").strip()
+    hostname = (hostname or "").strip().lower()
+    if not tunnel or not hostname:
+        raise HTTPException(400, "需要 tunnel 与 hostname")
+    if not _logged_in():
+        raise HTTPException(400, "请先登录")
+    rc, out, err = sh(
+        [_bin(), "tunnel", "route", "dns", tunnel, hostname],
+        timeout=60,
+    )
+    msg = ((out or "") + "\n" + (err or "")).strip()
+    return {"ok": rc == 0, "message": msg[-2000:]}
+
+
+def logs(lines: int = 120) -> dict:
+    lines = max(20, min(int(lines or 120), 500))
+    chunks: list[str] = []
+    for p in (LOG_FILE, Path("/opt/homebrew/var/log/cloudflared.log"), LOGIN_LOG):
+        if p.is_file():
+            try:
+                text = p.read_text(errors="replace")
+                tail = "\n".join(text.splitlines()[-lines:])
+                chunks.append(f"===== {p} =====\n{tail}")
+            except Exception as e:
+                chunks.append(f"===== {p} =====\n(read error: {e})")
+    if not chunks:
+        return {"ok": True, "log": "暂无日志（启动隧道后会写入 ~/Services/cloudflared/tunnel.log）"}
+    return {"ok": True, "log": "\n\n".join(chunks), "source": "cloudflared"}
+
+
+def uninstall_service() -> dict:
+    """Stop agent and remove ServerHub-managed plist/token (keep cert & brew)."""
+    stop()
+    login_stopped = _terminate_login_process()
+    removed = []
+    for p in (PLIST, TOKEN_FILE, LOGIN_URL_FILE):
+        try:
+            if p.is_file():
+                p.unlink()
+                removed.append(str(p))
+        except Exception:
+            pass
+    st = _load_state()
+    st.pop("tunnel_name", None)
+    st.pop("mode", None)
+    _save_state(st)
+    message = "已停止并移除面板托管的隧道服务\n" + "\n".join(removed)
+    if not login_stopped:
+        message += "\n登录进程清理失败，已保留 PID 记录供稍后重试"
+    return {"ok": login_stopped, "message": message}
