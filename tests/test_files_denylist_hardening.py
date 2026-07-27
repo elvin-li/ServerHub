@@ -24,10 +24,10 @@ covered by the existing suite, so the whole thing was green while these worked.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -236,12 +236,31 @@ class TestDenylistShape(unittest.TestCase):
         self.source = (BASE / "hub" / "files_svc.py").read_text(encoding="utf-8")
 
     def test_normcase_is_not_relied_on_for_folding(self):
-        """os.path.normcase is a no-op on macOS — it only folds case on Windows."""
-        self.assertNotIn(
-            "os.path.normcase",
-            self.source,
+        """os.path.normcase is a no-op on macOS — it only folds case on Windows.
+
+        Checked over the AST rather than the raw text: the docstring of _fold()
+        deliberately *names* normcase to explain why it must not be used, and a
+        substring search cannot tell that warning apart from a real call.  A
+        prose mention is the fix documenting itself; a call is the bug.
+        """
+        called = []
+        for node in ast.walk(ast.parse(self.source)):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if isinstance(fn, ast.Attribute) and fn.attr == "normcase":
+                called.append(ast.unparse(fn))
+            elif isinstance(fn, ast.Name) and fn.id == "normcase":
+                called.append(fn.id)
+        self.assertEqual(
+            called,
+            [],
             "normcase does not fold case on macOS, so the bypass would be back",
         )
+
+    def test_folding_actually_lowercases(self):
+        """The guard above only forbids the wrong primitive; this pins the right one."""
+        self.assertEqual(files_svc._fold("/A/BcD.YAML"), "/a/bcd.yaml")
 
     def test_sgcc_prefix_is_deny_listed(self):
         self.assertIn(".sgcc", files_svc.PROTECTED_PREFIXES)
