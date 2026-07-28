@@ -26,7 +26,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from hub import containers_svc, tools_svc  # noqa: E402
+from hub import containers_svc, network_svc, tools_svc  # noqa: E402
 
 
 class TestJobHistoryIsBounded(unittest.TestCase):
@@ -209,6 +209,109 @@ class TestToolsCacheSingleFlight(unittest.TestCase):
             tools_svc.sh = real_sh
             tools_svc._hw_cache.update(t=0.0, v=None)
         self.assertEqual(calls, [], "a warm cache still shelled out")
+
+
+class TestNetworkCacheSingleFlight(unittest.TestCase):
+    def setUp(self):
+        self._overview_cache = dict(network_svc._cache)
+        self._services_cache = dict(network_svc._services_cache)
+        network_svc._bust()
+
+    def tearDown(self):
+        with network_svc._cache_lock:
+            network_svc._cache.update(self._overview_cache)
+        with network_svc._services_cache_lock:
+            network_svc._services_cache.update(self._services_cache)
+
+    def _run_together(self, fn, count=8):
+        barrier = threading.Barrier(count)
+        results = []
+        errors = []
+
+        def call():
+            try:
+                barrier.wait()
+                results.append(fn())
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=call) for _ in range(count)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), count)
+        return results
+
+    def test_services_collapses_concurrent_cold_calls(self):
+        calls = []
+        real_build = network_svc._build_network_services
+
+        def fake_build():
+            calls.append(time.monotonic())
+            time.sleep(0.15)
+            return [{"name": "Wi-Fi"}]
+
+        network_svc._build_network_services = fake_build
+        try:
+            results = self._run_together(network_svc.network_services)
+        finally:
+            network_svc._build_network_services = real_build
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(result == [{"name": "Wi-Fi"}] for result in results))
+
+    def test_services_coalesces_concurrent_forced_calls(self):
+        calls = []
+        real_build = network_svc._build_network_services
+
+        def fake_build():
+            calls.append(time.monotonic())
+            time.sleep(0.15)
+            return [{"name": "Ethernet"}]
+
+        network_svc._build_network_services = fake_build
+        try:
+            results = self._run_together(lambda: network_svc.network_services(force=True))
+        finally:
+            network_svc._build_network_services = real_build
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(result == [{"name": "Ethernet"}] for result in results))
+
+    def test_overview_collapses_cold_and_forced_calls(self):
+        calls = []
+        real_build = network_svc._build_overview
+
+        def fake_build(force_services=False):
+            calls.append(force_services)
+            time.sleep(0.15)
+            return {"generation": len(calls)}
+
+        network_svc._build_overview = fake_build
+        try:
+            cold = self._run_together(network_svc.overview)
+            with network_svc._cache_lock:
+                network_svc._cache["t"] = 0.0
+            forced = self._run_together(lambda: network_svc.overview(force=True))
+        finally:
+            network_svc._build_overview = real_build
+
+        self.assertEqual(calls, [False, True])
+        self.assertTrue(all(result == {"generation": 1} for result in cold))
+        self.assertTrue(all(result == {"generation": 2} for result in forced))
+
+    def test_bust_invalidates_overview_and_services(self):
+        with network_svc._cache_lock:
+            network_svc._cache.update(t=time.time(), v={"cached": True})
+        with network_svc._services_cache_lock:
+            network_svc._services_cache.update(t=time.time(), v=[{"cached": True}])
+
+        network_svc._bust()
+
+        self.assertEqual(network_svc._cache, {"t": 0.0, "v": None})
+        self.assertEqual(network_svc._services_cache, {"t": 0.0, "v": None})
 
 
 if __name__ == "__main__":

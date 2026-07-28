@@ -120,6 +120,7 @@ import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
   Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Settings,
+  ScrollText,
 } from '@lucide/vue'
 import { startVisibleInterval } from './lib/poll'
 import { useRoute, useRouter } from 'vue-router'
@@ -222,7 +223,7 @@ const nav = [
     labelKey: 'nav.tools',
     match: [
       '/tools', '/terminal', '/health', '/scheduler', '/logs',
-      '/alerts', '/backups', '/maintenance', '/modules',
+      '/alerts', '/audit', '/backups', '/maintenance', '/modules',
     ],
     icon: Wrench,
     children: [
@@ -232,6 +233,7 @@ const nav = [
       { to: '/scheduler', labelKey: 'nav.scheduler', icon: Clock },
       { to: '/logs', labelKey: 'nav.logs', icon: FileText },
       { to: '/alerts', labelKey: 'nav.alerts', icon: Bell },
+      { to: '/audit', labelKey: 'nav.audit', icon: ScrollText },
       { to: '/backups', labelKey: 'nav.backups', icon: Archive },
       { to: '/maintenance', labelKey: 'nav.maintenance', icon: Hammer },
       { to: '/modules', labelKey: 'nav.modules', icon: Blocks },

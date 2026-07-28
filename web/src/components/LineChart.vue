@@ -83,6 +83,12 @@
 
 <script setup>
 import { computed } from 'vue'
+import { injectI18n } from '../i18n'
+
+// refLabel formats the reference line, which is a localized string.  Without
+// this the component threw a ReferenceError the moment any caller passed a
+// `reference` prop -- latent only because no current caller does.
+const { t } = injectI18n()
 
 const props = defineProps({
   series: { type: Array, default: () => [] },

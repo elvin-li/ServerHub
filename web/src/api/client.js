@@ -328,6 +328,9 @@ export const putSettings = (body) =>
   })
 export const getMetrics = (minutes = 60) => json(`/api/metrics?minutes=${minutes}`)
 export const getAlerts = (limit = 50) => json(`/api/alerts?limit=${limit}`)
+// Read-only: there is deliberately no writer or clear endpoint for the audit
+// trail, so this module exposes only the reader.
+export const getAuthAudit = (limit = 100) => json(`/api/audit/auth?limit=${limit}`)
 export const testNotify = () => json('/api/alerts/test', { method: 'POST' })
 export const forceAlertCheck = () => json('/api/alerts/check', { method: 'POST' })
 export const getBackups = () => json('/api/backups')
@@ -389,7 +392,12 @@ export const getHost = () => json('/api/system/host')
 // view as if it were live data, and the session-lost event never fired.
 export const getSensors = (force = false) =>
   json(`/api/system/sensors?force=${force ? 'true' : 'false'}`)
-export const getSystemNetwork = () => json('/api/system/network')
+// Cheap listening-port summary (one lsof call).  This is deliberately the only
+// network helper here: the full /api/system/network overview fans out
+// networksetup per service, netstat and a docker network inspect per network,
+// which is far too much work for a tile that renders a dozen rows.  Network.vue
+// calls that endpoint directly.
+export const getListeningPorts = (limit = 40) => json(`/api/tools/ports?limit=${limit}`)
 export const getBookmarks = () => json('/api/bookmarks')
 
 export const getTerminal = () => json('/api/terminal')

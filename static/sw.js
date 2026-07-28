@@ -1,6 +1,6 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-const CACHE_NAME = 'serverhub-58660baaa078e2c6'
+const CACHE_NAME = 'serverhub-7e6ea9a2472d407f'
 const SHELL_ASSETS = [
   '/',
   '/index.html',

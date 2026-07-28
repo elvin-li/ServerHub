@@ -15,6 +15,14 @@ from hub.util import sh
 
 _cache = {"t": 0.0, "v": None}
 _CACHE_TTL = 6.0
+_cache_lock = threading.Lock()
+_refresh_lock = threading.Lock()
+
+_services_cache = {"t": 0.0, "v": None}
+_SERVICES_CACHE_TTL = 6.0
+_services_cache_lock = threading.Lock()
+_services_refresh_lock = threading.Lock()
+_FORCE_COALESCE_SECONDS = 1.0
 
 NS = "/usr/sbin/networksetup"
 
@@ -164,8 +172,8 @@ def _network_service_order_entries() -> list[dict]:
     return entries
 
 
-def network_services() -> list:
-    """networksetup services with config (DHCP/manual/IP/DNS)."""
+def _build_network_services() -> list:
+    """Read all networksetup services and their IP/DNS configuration."""
     services = []
     parsed = _network_service_order_entries()
 
@@ -186,6 +194,30 @@ def network_services() -> list:
             "actions": _service_actions(p["name"], info, p["disabled"]),
         })
     return services
+
+
+def network_services(force: bool = False) -> list:
+    """Cached service details with one in-flight networksetup refresh."""
+    if not force:
+        with _services_cache_lock:
+            hit = _services_cache["v"]
+            if hit is not None and time.time() - _services_cache["t"] < _SERVICES_CACHE_TTL:
+                return list(hit)
+
+    with _services_refresh_lock:
+        with _services_cache_lock:
+            hit = _services_cache["v"]
+            age = time.time() - _services_cache["t"] if hit is not None else float("inf")
+            if hit is not None and (
+                (not force and age < _SERVICES_CACHE_TTL)
+                or age < _FORCE_COALESCE_SECONDS
+            ):
+                return list(hit)
+
+        services = _build_network_services()
+        with _services_cache_lock:
+            _services_cache.update(t=time.time(), v=services)
+        return list(services)
 
 
 def service_info(service: str) -> dict:
@@ -1469,14 +1501,14 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
 
 
 def _bust():
-    _cache["t"] = 0
-    _cache["v"] = None
+    """Invalidate network caches without exposing partially-updated state."""
+    with _cache_lock:
+        _cache.update(t=0.0, v=None)
+    with _services_cache_lock:
+        _services_cache.update(t=0.0, v=None)
 
 
-def overview(force: bool = False) -> dict:
-    if not force and _cache["v"] and time.time() - _cache["t"] < _CACHE_TTL:
-        return _cache["v"]
-
+def _build_overview(force_services: bool = False) -> dict:
     # Every collector below is an independent subprocess-bound call; run them
     # concurrently so page latency ≈ the single slowest call, not their sum.
     from concurrent.futures import ThreadPoolExecutor
@@ -1489,7 +1521,7 @@ def overview(force: bool = False) -> dict:
 
     with ThreadPoolExecutor(max_workers=11) as ex:
         f_ifaces = ex.submit(interfaces)
-        f_services = ex.submit(network_services)
+        f_services = ex.submit(network_services, force_services)
         f_hwports = ex.submit(hardware_ports)
         f_addrs = ex.submit(_safe, interface_addresses, [])
         f_listen = ex.submit(_safe, listening_ports, [])
@@ -1538,5 +1570,28 @@ def overview(force: bool = False) -> dict:
             {"id": "ethernet_only", "label": "仅有线"},
         ],
     }
-    _cache.update(t=time.time(), v=v)
     return v
+
+
+def overview(force: bool = False) -> dict:
+    """Cached network overview with one in-flight subprocess refresh."""
+    if not force:
+        with _cache_lock:
+            hit = _cache["v"]
+            if hit is not None and time.time() - _cache["t"] < _CACHE_TTL:
+                return dict(hit)
+
+    with _refresh_lock:
+        with _cache_lock:
+            hit = _cache["v"]
+            age = time.time() - _cache["t"] if hit is not None else float("inf")
+            if hit is not None and (
+                (not force and age < _CACHE_TTL)
+                or age < _FORCE_COALESCE_SECONDS
+            ):
+                return dict(hit)
+
+        data = _build_overview(force_services=force)
+        with _cache_lock:
+            _cache.update(t=time.time(), v=data)
+        return dict(data)

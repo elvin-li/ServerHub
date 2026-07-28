@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from hub.routers import (
     api,
+    audit_api,
     catalog,
     cloudflared_api,
     containers,
@@ -34,5 +35,6 @@ router.include_router(files_api.router)
 router.include_router(power.router)
 router.include_router(cloudflared_api.router)
 router.include_router(terminal_api.router)
+router.include_router(audit_api.router)
 
 __all__ = ["router"]

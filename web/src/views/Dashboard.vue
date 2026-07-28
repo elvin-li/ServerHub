@@ -286,6 +286,9 @@
         <h3>
           Docker
           <span class="badge">{{ containers.length }}</span>
+          <span v-if="cstatsStale" class="badge warn" :title="t('dashboard.stats_stale_hint')">
+            {{ t('dashboard.stats_stale') }}
+          </span>
           <router-link class="btn tiny" to="/containers">{{ t('common.manage') }}</router-link>
         </h3>
         <table class="dense">
@@ -435,7 +438,7 @@ import StackBar from '../components/StackBar.vue'
 import {
   doAction, disableScreenSharing, enableScreenSharing, getAlerts, getBookmarks,
   getContainers, getHealthChecks, getHost, getMetrics, getPower, getStatus,
-  getStorage, getSystemNetwork, getSensors, powerAction,
+  getStorage, getListeningPorts, getSensors, powerAction,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 
@@ -449,6 +452,19 @@ const metrics = ref([])
 const alerts = ref([])
 const containers = ref([])
 const cstats = ref({})
+// When the CPU/MEM figures in cstats were last actually collected.  The 90s
+// heavy tick deliberately skips `docker stats` (it costs ~2s), so those columns
+// would otherwise freeze at whatever the first paint captured with no hint to
+// the operator that they are no longer live.
+const cstatsAt = ref(0)
+//: True once the displayed CPU/MEM figures are older than two heavy ticks.
+// Ticked by the 12s light interval.  Date.now() on its own is not a reactive
+// dependency, so without this ref the staleness badge would be computed once
+// and then never re-evaluated.
+const clock = ref(Date.now())
+const cstatsStale = computed(
+  () => cstatsAt.value > 0 && clock.value - cstatsAt.value > 180000
+)
 const ports = ref([])
 const sensors = ref(null)
 const bookmarks = ref([])
@@ -533,24 +549,6 @@ const cpuStack = computed(() => [
   { label: 'sys', value: cpu.value.sys || 0, color: 'var(--warn)' },
   { label: 'idle', value: cpu.value.idle || 0, color: 'var(--bar-track)' },
 ])
-const loadRows = computed(() => {
-  const n = ncpu.value || 1
-  const mk = (label, value, color) => {
-    const v = value ?? 0
-    return {
-      label,
-      value: fmtN(v),
-      pct: Math.min(100, (v / n) * 100),
-      color,
-    }
-  }
-  return [
-    mk('1m', load1.value, 'var(--accent)'),
-    mk('5m', load5.value, 'var(--warn)'),
-    mk('15m', load15.value, '#8b8b8b'),
-  ]
-})
-
 const memTotal = computed(() => mem.value.total_gb ?? '—')
 // pressure-based (macOS); NOT PhysMem cache-inflated used%
 const memUsedPct = computed(() => {
@@ -639,10 +637,6 @@ function bmLabel(b) {
   return t('dashboard.bm_down')
 }
 
-function metricSeries(key) {
-  return (metrics.value || []).map(p => p[key]).filter(v => v != null)
-}
-
 const cpuChartSeries = computed(() => [
   {
     name: t('dashboard.chart_cpu'),
@@ -679,12 +673,6 @@ const diskChartSeries = computed(() => [
     values: (metrics.value || []).map(p => p.disk_pct ?? null),
     color: 'var(--warn)',
   },
-])
-
-const loadChartSeries = computed(() => [
-  { name: t('dashboard.chart_load1'), values: (metrics.value || []).map(p => p.load1 ?? null), color: 'var(--accent)', width: 2.2 },
-  { name: t('dashboard.chart_load5'), values: (metrics.value || []).map(p => p.load5 ?? null), color: 'var(--warn)', width: 1.6 },
-  { name: t('dashboard.chart_load15'), values: (metrics.value || []).map(p => p.load15 ?? null), color: '#888', width: 1.2 },
 ])
 
 function setMetricMins(m) {
@@ -811,9 +799,19 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     getAlerts(12).then(a => { alerts.value = a.alerts || [] }).catch(() => {}),
     getContainers(withDockerStats).then(c => {
       containers.value = c.containers || []
-      if (c.stats && Object.keys(c.stats).length) cstats.value = c.stats
+      // The 90s tick asks for stats=false (docker stats costs ~2s), so the
+      // response carries an empty map and the previous numbers are kept.
+      // Record when they were actually measured: otherwise the CPU/MEM columns
+      // silently show minutes-old values with nothing marking them stale.
+      if (c.stats && Object.keys(c.stats).length) {
+        cstats.value = c.stats
+        cstatsAt.value = Date.now()
+      }
     }).catch(() => {}),
-    getSystemNetwork().then(n => { ports.value = n.listening || [] }).catch(() => {}),
+    // Cheap lsof-only endpoint: the full /api/system/network overview fans out
+    // networksetup per service plus docker network inspect per network, which
+    // is far too much work for one tile that renders 12 rows.
+    getListeningPorts(40).then(p => { ports.value = p.ports || [] }).catch(() => {}),
     getBookmarks().then(b => { bookmarks.value = b.bookmarks || [] }).catch(() => {}),
     getHealthChecks().then(h => { health.value = h }).catch(() => {}),
     loadPower(),
@@ -839,6 +837,7 @@ onMounted(() => {
   timer = startVisibleInterval(() => {
     refresh()
     loadSensors(false)
+    clock.value = Date.now()
   }, 12000)
   // heavy: no docker stats; manual refresh still pulls stats
   heavyTimer = startVisibleInterval(() => refreshHeavy(false, false), 90000)

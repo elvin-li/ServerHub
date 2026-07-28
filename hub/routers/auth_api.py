@@ -4,10 +4,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
-from hub import auth
+from hub import audit, auth
 from hub.errors import api_error
 
 router = APIRouter(tags=["auth"])
+
+
+def _client(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 class LoginBody(BaseModel):
@@ -63,8 +67,25 @@ def auth_setup(body: SetupBody, request: Request, response: Response):
         # Re-check after the atomic claim: a competing valid request may have won.
         if not auth.setup_required():
             raise api_error("auth.already_setup")
+        # A bad setup token is an attempt to claim an unclaimed install -- the
+        # single most sensitive moment in the lifecycle.  The token itself is
+        # never passed to record(); redaction would drop it anyway.
+        audit.record(
+            audit.SETUP_REJECTED,
+            username=body.username.strip() or "admin",
+            client=_client(request),
+            reason="bad_setup_token",
+            outcome="failure",
+        )
         raise api_error("auth.bad_setup_token")
-    _set_session(response, request, body.username.strip() or "admin")
+    claimed = body.username.strip() or "admin"
+    _set_session(response, request, claimed)
+    audit.record(
+        audit.SETUP_CLAIMED,
+        username=claimed,
+        client=_client(request),
+        outcome="success",
+    )
     # No ``message``: the SPA owns the success wording so it stays localized.
     return {"ok": True}
 
@@ -73,16 +94,36 @@ def auth_setup(body: SetupBody, request: Request, response: Response):
 def auth_login(body: LoginBody, request: Request, response: Response):
     if auth.setup_required():
         raise api_error("auth.setup_required")
-    client = request.client.host if request.client else "unknown"
+    client = _client(request)
     allowed, retry = auth.login_allowed(client)
     if not allowed:
+        # Recorded before raising: a burst of these is what a brute-force
+        # attempt looks like from the outside.
+        audit.record(
+            audit.LOGIN_RATE_LIMITED,
+            username=body.username,
+            client=client,
+            outcome="failure",
+            retry_after=retry,
+        )
         raise api_error("auth.rate_limited", retry=retry)
     username = str(auth._auth_cfg().get("username") or "admin")
     if not secrets_compare(body.username, username) or not auth.verify_password(body.password):
         auth.record_login_failure(client)
+        # The attempted name is kept (it is not a secret and is the only clue
+        # to *which* account is under attack); audit.record drops the password.
+        audit.record(
+            audit.LOGIN_FAILED,
+            username=body.username,
+            client=client,
+            outcome="failure",
+        )
         raise api_error("auth.bad_credentials")
     auth.clear_login_failures(client)
     _set_session(response, request, username)
+    audit.record(
+        audit.LOGIN_OK, username=username, client=client, outcome="success"
+    )
     return {"ok": True, "username": username}
 
 
@@ -105,8 +146,22 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
         raise api_error("auth.rate_limited", retry=retry)
     if not auth.verify_password(body.current_password):
         auth.record_login_failure(client)
+        audit.record(
+            audit.PASSWORD_CHANGE_DENIED,
+            username=auth.request_username(request) or body.username.strip(),
+            client=client,
+            reason="bad_current_password",
+            outcome="failure",
+        )
         raise api_error("auth.bad_credentials")
     if auth.verify_password(body.new_password):
+        audit.record(
+            audit.PASSWORD_CHANGE_DENIED,
+            username=auth.request_username(request) or body.username.strip(),
+            client=client,
+            reason="password_reused",
+            outcome="failure",
+        )
         raise api_error("auth.password_reused")
 
     username = body.username.strip()
@@ -118,6 +173,14 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
     auth.clear_login_failures(client)
     _set_session(response, request, username)
+    # Records the rotation, not either password: both field names contain
+    # "password" and are dropped by redaction before anything reaches disk.
+    audit.record(
+        audit.PASSWORD_CHANGED,
+        username=username,
+        client=client,
+        outcome="success",
+    )
     # No ``message``: Settings.vue falls back to its own localized string.
     return {"ok": True, "username": username}
 
@@ -128,6 +191,15 @@ def secrets_compare(a: str, b: str) -> bool:
 
 
 @router.post("/api/auth/logout")
-def auth_logout(response: Response):
+def auth_logout(request: Request, response: Response):
+    # Name the session being ended, when there is a valid one.  request_username
+    # verifies the cookie first, so an unauthenticated caller cannot write an
+    # arbitrary name into the trail.
+    audit.record(
+        audit.LOGOUT,
+        username=auth.request_username(request) or None,
+        client=_client(request),
+        outcome="success",
+    )
     response.delete_cookie(auth.COOKIE_NAME, path="/", samesite="strict")
     return {"ok": True}

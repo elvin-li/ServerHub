@@ -54,7 +54,7 @@ def _check(id_: str, name: str, level: str, ok: bool, detail: str, fix: str = ""
     return {
         "id": id_,
         "name": name,
-        "level": level if ok else level,
+        "level": "ok" if ok else level,
         "ok": ok,
         "detail": detail,
         "fix": "" if ok else fix,

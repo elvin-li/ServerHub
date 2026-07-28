@@ -22,6 +22,7 @@ const Tools = () => import('./views/Tools.vue')
 const Terminal = () => import('./views/Terminal.vue')
 const Logs = () => import('./views/Logs.vue')
 const Alerts = () => import('./views/Alerts.vue')
+const Audit = () => import('./views/Audit.vue')
 const Backups = () => import('./views/Backups.vue')
 const Bookmarks = () => import('./views/Bookmarks.vue')
 const Modules = () => import('./views/Modules.vue')
@@ -53,6 +54,7 @@ const routes = [
   { path: '/terminal', name: 'terminal', component: Terminal },
   { path: '/logs', name: 'logs', component: Logs },
   { path: '/alerts', name: 'alerts', component: Alerts },
+  { path: '/audit', name: 'audit', component: Audit },
   { path: '/backups', name: 'backups', component: Backups },
   { path: '/bookmarks', name: 'bookmarks', component: Bookmarks },
   { path: '/modules', name: 'modules', component: Modules },

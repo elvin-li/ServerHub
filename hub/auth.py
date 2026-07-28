@@ -36,6 +36,106 @@ def _auth_cfg() -> dict:
     return (cfg().get("settings") or {}).get("auth") or {}
 
 
+#: Role names.  ``admin`` is unrestricted; ``member`` is the family role, which
+#: only reaches the resources listed on its account.
+ROLE_ADMIN = "admin"
+ROLE_MEMBER = "member"
+ROLES = (ROLE_ADMIN, ROLE_MEMBER)
+
+
+def accounts() -> dict[str, dict]:
+    """Every configured account, keyed by username.
+
+    The legacy shape stored one ``username``/``password_hash`` pair directly on
+    ``settings.auth``.  That pair is still read here and presented as the admin
+    account, so an installation that has never seen a second account keeps
+    working untouched -- and existing session cookies keep verifying, because the
+    admin's per-account version is computed from the same hash as before.
+    """
+    a = _auth_cfg()
+    out: dict[str, dict] = {}
+
+    legacy_name = str(a.get("username") or "admin").strip() or "admin"
+    legacy_hash = str(a.get("password_hash") or a.get("password") or "")
+    if legacy_hash:
+        out[legacy_name] = {
+            "username": legacy_name,
+            "password_hash": legacy_hash,
+            "role": ROLE_ADMIN,
+            "resources": [],
+        }
+
+    for raw in a.get("accounts") or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("username") or "").strip()
+        if not name:
+            continue
+        role = str(raw.get("role") or ROLE_MEMBER)
+        if role not in ROLES:
+            role = ROLE_MEMBER
+        resources = [str(r) for r in (raw.get("resources") or []) if str(r).strip()]
+        # An explicit entry wins over the legacy pair for the same name, so
+        # promoting the admin into the accounts list is a safe migration.
+        out[name] = {
+            "username": name,
+            "password_hash": str(raw.get("password_hash") or ""),
+            "role": role,
+            "resources": resources,
+        }
+
+    return out
+
+
+def account(username: str | None) -> dict | None:
+    """The account record for *username*, or None when no such account exists."""
+    if not username:
+        return None
+    return accounts().get(str(username))
+
+
+def role_of(username: str | None) -> str:
+    """Role for *username*; ``member`` for anything unrecognised.
+
+    Defaulting to the least-privileged role means a lookup miss cannot hand out
+    administrative access.
+    """
+    acct = account(username)
+    if not acct:
+        return ROLE_MEMBER
+    return str(acct.get("role") or ROLE_MEMBER)
+
+
+def is_admin(username: str | None) -> bool:
+    return role_of(username) == ROLE_ADMIN
+
+
+def allowed_resources(username: str | None) -> list[str]:
+    """Resource ids a member account may act on (empty for none).
+
+    Admins are unrestricted, so callers should check :func:`is_admin` first
+    rather than reading this as an allowlist for them.
+    """
+    acct = account(username)
+    if not acct:
+        return []
+    return list(acct.get("resources") or [])
+
+
+def may_use_resource(username: str | None, resource: str | None) -> bool:
+    """True when *username* may act on *resource*.
+
+    Admins reach everything.  A member reaches only the ids on their account,
+    and an empty list means no resources at all -- never "all", so a
+    half-configured account fails closed.
+    """
+    if is_admin(username):
+        return True
+    if not resource:
+        return False
+    return str(resource) in set(allowed_resources(username))
+
+
 def setup_required() -> bool:
     a = _auth_cfg()
     legacy = str(a.get("password") or "")
@@ -195,10 +295,54 @@ def _secret() -> bytes:
             return SECRET_FILE.read_bytes()
 
 
+def account_session_version(username: str) -> str:
+    """Version stamp tying a session to one account's current credential.
+
+    Per account, not global: with a single shared stamp, rotating the admin
+    password would sign every family member out, and a member's own rotation
+    could not invalidate their sessions.  For the admin this is still derived
+    from ``password_hash``, so cookies issued before multi-account support keep
+    verifying and nobody is logged out by the upgrade.
+    """
+    acct = accounts().get(username) or {}
+    basis = str(acct.get("password_hash") or "legacy")
+    return hashlib.sha256(basis.encode()).hexdigest()[:16]
+
+
+def _session_payload(username: str, exp: int, version: str) -> bytes:
+    return f"{username}|{exp}|{version}".encode()
+
+
+def _parse_session_payload(payload: str) -> tuple[str, str, str]:
+    """Split ``username|exp|version`` from the right.
+
+    ``split("|", 2)`` read the fields left-to-right, so a username containing
+    "|" shifted the boundaries and the parsed expiry came from attacker-chosen
+    text -- an expired token could present itself as valid for a decade.  exp and
+    version never contain "|", so taking the last two fields is unambiguous no
+    matter what the username holds.
+    """
+    username, exp_s, version = payload.rsplit("|", 2)
+    return username, exp_s, version
+
+
+#: A sha256 HMAC is always 32 bytes.  Splitting the token on its "." separator
+#: is unsound because the signature is raw bytes: about 12% of digests contain
+#: 0x2e ('.'), and ``rsplit(b".", 1)`` then cuts *inside* the signature, so the
+#: session fails to verify at random.  The length is fixed, so slice by it.
+_SIG_LEN = hashlib.sha256().digest_size
+
+
+def _split_signed(raw: bytes) -> tuple[bytes, bytes] | None:
+    """Separate payload from its trailing ``. + signature`` by fixed length."""
+    if len(raw) < _SIG_LEN + 1 or raw[-(_SIG_LEN + 1)] != 0x2E:
+        return None
+    return raw[: -(_SIG_LEN + 1)], raw[-_SIG_LEN:]
+
+
 def create_session(username: str) -> str:
     exp = int(time.time()) + SESSION_TTL
-    version = hashlib.sha256(str(_auth_cfg().get("password_hash") or "legacy").encode()).hexdigest()[:16]
-    payload = f"{username}|{exp}|{version}".encode()
+    payload = _session_payload(username, exp, account_session_version(username))
     sig = hmac.new(_secret(), payload, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(payload + b"." + sig).decode().rstrip("=")
 
@@ -207,13 +351,21 @@ def verify_session(token: str | None) -> bool:
     if not token:
         return False
     try:
-        raw = _b64decode(token)
-        payload, sig = raw.rsplit(b".", 1)
+        split = _split_signed(_b64decode(token))
+        if split is None:
+            return False
+        payload, sig = split
         if not hmac.compare_digest(sig, hmac.new(_secret(), payload, hashlib.sha256).digest()):
             return False
-        username, exp_s, version = payload.decode().split("|", 2)
-        current = hashlib.sha256(str(_auth_cfg().get("password_hash") or "legacy").encode()).hexdigest()[:16]
-        return username == str(_auth_cfg().get("username") or "admin") and int(exp_s) > time.time() and version == current
+        username, exp_s, version = _parse_session_payload(payload.decode())
+        # Membership in the account registry, not equality with one name: that
+        # comparison is what made a second account impossible.  An unknown name
+        # still has no account and so still has no version to match.
+        if username not in accounts():
+            return False
+        return int(exp_s) > time.time() and hmac.compare_digest(
+            version, account_session_version(username)
+        )
     except (ValueError, UnicodeDecodeError):
         return False
 
@@ -231,8 +383,13 @@ def session_username(token: str | None) -> str:
     if not verify_session(token):
         return ""
     try:
-        payload, _ = _b64decode(token).rsplit(b".", 1)
-        return payload.decode().split("|", 1)[0]
+        split = _split_signed(_b64decode(token))
+        if split is None:
+            return ""
+        # Right-split, matching verify_session: an earlier ``split("|", 1)[0]``
+        # reported only the text before the first separator, so an account whose
+        # name contained "|" was named incorrectly in audit records.
+        return _parse_session_payload(split[0].decode())[0]
     except (ValueError, UnicodeDecodeError):
         return ""
 

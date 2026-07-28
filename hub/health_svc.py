@@ -98,6 +98,12 @@ def run_checks(force: bool = False) -> dict:
                     continue
                 st = (s.get("status") or "").lower()
                 ok = st in ("started", "running")
+                if not ok and st in ("none", ""):
+                    # 未经 brew services 纳管但由 LaunchAgent 直接加载时 brew 显示 none，
+                    # 需回查 launchctl 实际运行状态，避免误报
+                    rc_l, out_l, _ = sh(["launchctl", "list", f"homebrew.mxcl.{n}"], timeout=3)
+                    if rc_l == 0 and '"PID"' in out_l:
+                        ok, st = True, "running (launchd)"
                 checks.append(_check(
                     f"brew_{n}", f"Homebrew {n}",
                     "error" if n.startswith("postgres") else "warn",
