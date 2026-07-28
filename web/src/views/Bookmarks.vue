@@ -46,6 +46,7 @@
 
 <script setup>
 import { inject, onMounted, ref } from 'vue'
+import { getBookmarks } from '../api/client'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -92,8 +93,9 @@ function backendHint(b) {
 async function refresh(force = false) {
   loading.value = true
   try {
-    const r = await fetch('/api/bookmarks?force=' + (force ? 'true' : 'false'))
-    data.value = await r.json()
+    // Shared client, not a raw fetch: it checks r.ok, so an expired session
+    // fires AUTH_LOST_EVENT instead of writing the 401 body into `data`.
+    data.value = await getBookmarks(force)
   } catch (e) {
     toast('❌ ' + e.message)
   }

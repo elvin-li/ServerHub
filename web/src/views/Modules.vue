@@ -29,6 +29,7 @@
 
 <script setup>
 import { inject, onMounted, ref } from 'vue'
+import { getModules } from '../api/client'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -44,8 +45,9 @@ function catLabel(cat) {
 
 async function load() {
   try {
-    const r = await fetch('/api/modules')
-    const j = await r.json()
+    // Shared client, not a raw fetch: it checks r.ok, so an expired session
+    // fires AUTH_LOST_EVENT instead of writing the 401 body into `byCat`.
+    const j = await getModules()
     byCat.value = j.by_category || {}
   } catch (e) {
     toast('❌ ' + e.message)

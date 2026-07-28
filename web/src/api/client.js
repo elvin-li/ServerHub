@@ -398,7 +398,10 @@ export const getSensors = (force = false) =>
 // which is far too much work for a tile that renders a dozen rows.  Network.vue
 // calls that endpoint directly.
 export const getListeningPorts = (limit = 40) => json(`/api/tools/ports?limit=${limit}`)
-export const getBookmarks = () => json('/api/bookmarks')
+// `force` re-probes every link instead of serving the 45s server-side cache.
+export const getBookmarks = (force = false) =>
+  json(`/api/bookmarks?force=${force ? 'true' : 'false'}`)
+export const getModules = () => json('/api/modules')
 
 export const getTerminal = () => json('/api/terminal')
 
