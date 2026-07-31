@@ -45,6 +45,20 @@ class MacOSBuildRollbackTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_bundle_versions_match_product_version(self):
+        source = BUILD_SCRIPT.read_text(encoding="utf-8")
+        product_version = (ROOT / "hub" / "__init__.py").read_text(encoding="utf-8")
+        version = product_version.split('__version__ = "', 1)[1].split('"', 1)[0]
+
+        self.assertIn(
+            f"<key>CFBundleShortVersionString</key><string>{version}</string>",
+            source,
+        )
+        self.assertIn(
+            f"<key>CFBundleVersion</key><string>{version}</string>",
+            source,
+        )
+
     def _tool(self, name: str, source: str) -> Path:
         path = self.tools / name
         path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
