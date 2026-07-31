@@ -46,6 +46,19 @@ macOS 家庭服务器管理面板 — 对标 **Unraid** 信息架构，并吸收
 - 容器引擎：**OrbStack**
 - 菜单栏：原生 `macos/ServerHubLauncher.swift`；`menubar.py` 为旧版实现
 
+## 快速开始
+
+需要 macOS 13+、Python 3.10+；若需从源码重建前端，还需 Node.js/npm。
+
+```bash
+git clone https://github.com/elvin-li/ServerHub.git
+cd ServerHub
+./install.sh
+open http://localhost:8086
+```
+
+安装脚本会创建本地虚拟环境、保留已有 `services.yaml`，并生成仅存于本机且已被 Git 忽略的认证令牌。首次打开时请使用 `data/.setup-token` 完成管理员设置。卸载时运行 `./uninstall.sh`；使用 `--purge` 会额外删除本地配置和运行数据。
+
 ## 原生 macOS 菜单栏
 
 原生菜单栏 App 可安装到系统或当前用户的 Applications 目录。用户目录安装不需要覆盖 `/Applications`：
