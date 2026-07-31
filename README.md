@@ -1,4 +1,4 @@
-# ServerHub v3.4
+# ServerHub v3.9.0
 
 macOS 家庭服务器管理面板 — 对标 **Unraid** 信息架构，并吸收 **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew** 等开源优秀能力。
 
