@@ -1,0 +1,23 @@
+---
+name: Uptime Kuma
+desc: 漂亮的自托管监控面板
+vars:
+  - name: HOST_PORT
+    label: 主机端口
+    default: "3001"
+    help: 浏览器访问端口
+category: monitor
+featured: true
+tags: [monitor]
+ports: ["3001"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+---
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "{{HOST_PORT}}:3001"
+    volumes:
+      - ./data:/app/data

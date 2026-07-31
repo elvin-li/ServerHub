@@ -1,0 +1,30 @@
+---
+name: Vaultwarden
+desc: Bitwarden 兼容密码库（轻量）
+category: security
+tags: [password, vault]
+featured: true
+ports: ["8222"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: 建议仅内网或经反向代理 + HTTPS 暴露。ADMIN_TOKEN 用于管理页。
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "8222"
+  - name: ADMIN_TOKEN
+    label: 管理 Token
+    default: "__RANDOM__"
+    secret: true
+---
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      - ADMIN_TOKEN={{ADMIN_TOKEN}}
+      - SIGNUPS_ALLOWED=true
+    volumes:
+      - ./data:/data
+    ports:
+      - "{{HOST_PORT}}:80"

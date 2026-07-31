@@ -1,0 +1,25 @@
+---
+name: Stirling PDF
+desc: 浏览器 PDF 工具箱（合并/拆分/OCR/转换）
+category: productivity
+tags: [pdf, tools]
+featured: true
+ports: ["8082"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "8082"
+---
+services:
+  stirling-pdf:
+    image: frooodle/s-pdf:latest
+    container_name: stirling-pdf
+    environment:
+      - DOCKER_ENABLE_SECURITY=false
+      - LANGS=en_GB,zh_CN
+    ports:
+      - "{{HOST_PORT}}:8080"
+    volumes:
+      - ./data:/usr/share/tessdata
+    restart: unless-stopped

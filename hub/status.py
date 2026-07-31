@@ -1,0 +1,180 @@
+"""Aggregate service status with short TTL cache + adaptive discovery."""
+from __future__ import annotations
+
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+from hub import __version__
+from hub.adaptive import discover_orphan_listeners, nginx_sites, scan_new_compose_projects
+from hub.config import cfg
+from hub.host_address import resolve_value
+from hub.discovery import (
+    collect_apps,
+    collect_scripts,
+    discover_containers,
+    discover_launchd,
+    discover_vms,
+)
+from hub.system import collect_system
+
+# Hot path: 10s TTL + single-flight keeps UI snappy under multi-tab polling.
+_STATUS_TTL = 10.0
+_status_cache = {"t": 0.0, "v": None}
+_lock = threading.Lock()
+# Single-flight: only one full refresh at a time; waiters reuse the result.
+_refresh_lock = threading.Lock()
+# Adaptive filesystem scans change rarely — cache longer.
+_adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
+_ADAPTIVE_TTL = 60.0
+
+
+def invalidate_status():
+    """Bust status cache (and short-lived discovery caches)."""
+    with _lock:
+        _status_cache["t"] = 0
+    # Related discovery caches so next full_status sees fresh data
+    try:
+        from hub.discovery.containers import invalidate_containers
+
+        invalidate_containers()
+    except Exception:
+        pass
+    try:
+        from hub.containers_svc import invalidate_container_lists
+
+        invalidate_container_lists()
+    except Exception:
+        pass
+    try:
+        from hub import vms_svc
+
+        vms_svc.invalidate_vm_lists()
+    except Exception:
+        pass
+    with _lock:
+        _adaptive_cache["t"] = 0
+
+
+def _adaptive_info() -> dict:
+    now = time.time()
+    with _lock:
+        if (
+            _adaptive_cache["compose"] is not None
+            and now - _adaptive_cache["t"] < _ADAPTIVE_TTL
+        ):
+            return {
+                "compose_projects": _adaptive_cache["compose"],
+                "nginx_sites": _adaptive_cache["nginx"],
+            }
+    compose = scan_new_compose_projects()
+    nginx = nginx_sites()
+    with _lock:
+        _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
+    return {"compose_projects": compose, "nginx_sites": nginx}
+
+
+def _build_status() -> dict:
+    adaptive_on = (cfg().get("settings") or {}).get("adaptive", True)
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        f_l = ex.submit(discover_launchd)
+        f_d = ex.submit(discover_containers)
+        f_v = ex.submit(discover_vms)
+        f_s = ex.submit(collect_system)
+        f_sc = ex.submit(collect_scripts)
+        launchd = f_l.result()
+        containers, engine_up = f_d.result()
+        vms = f_v.result()
+        system = f_s.result()
+        scripts = f_sc.result()
+    services = collect_apps(engine_up) + scripts + launchd + containers + vms
+
+    # Adaptive: orphan listeners not covered by known services
+    if adaptive_on:
+        known_ports = set()
+        known_names = set()
+        for s in services:
+            known_names.add(s.get("id") or "")
+            known_names.add(s.get("name") or "")
+            if s.get("port"):
+                try:
+                    known_ports.add(int(s["port"]))
+                except (TypeError, ValueError):
+                    pass
+            for p in (s.get("meta") or {}).get("detected_ports") or []:
+                try:
+                    known_ports.add(int(p))
+                except (TypeError, ValueError):
+                    pass
+            for m in re.finditer(r":(\d{2,5})\b", s.get("detail") or ""):
+                known_ports.add(int(m.group(1)))
+        orphans = discover_orphan_listeners(known_ports, known_names)
+        services.extend(orphans)
+
+    # Defensive counts: always include core keys; unknown states get their own bucket.
+    groups, counts = {}, {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
+    for s in services:
+        groups.setdefault(s.get("group") or "其他", []).append(s)
+        st = s.get("state") or "unknown"
+        if st not in counts:
+            counts[st] = 0
+        counts[st] += 1
+    order = list(cfg().get("groups_order") or [])
+    # ensure adaptive groups appear near end unless ordered
+    for extra in ("网关", "自动发现", "Homebrew 服务"):
+        if extra not in order:
+            order.append(extra)
+    ordered = [{"group": g, "services": groups.pop(g)} for g in order if g in groups]
+    ordered += [{"group": g, "services": v} for g, v in groups.items()]
+    # 主动停止(stopped)不进告警列表；warn/down 才算需要关注
+    problems = [s for s in services if s.get("state") not in ("ok", "stopped")]
+
+    adaptive_info = {}
+    if adaptive_on:
+        extra = _adaptive_info()
+        adaptive_info = {
+            "orphan_count": sum(1 for s in services if s.get("kind") == "auto"),
+            "auto_labeled": sum(1 for s in services if s.get("auto")),
+            "compose_projects": extra["compose_projects"],
+            "nginx_sites": extra["nginx_sites"],
+        }
+
+    return {
+        "version": __version__,
+        "ts": time.strftime("%H:%M:%S"),
+        "groups": ordered,
+        "system": system,
+        "counts": counts,
+        "links": resolve_value(cfg().get("quick_links") or []),
+        "engine_up": engine_up,
+        "problems": problems[:30],
+        "service_total": len(services),
+        "adaptive": adaptive_info,
+    }
+
+
+def full_status(force=False):
+    """Return aggregated status. Cached for _STATUS_TTL; single-flight refresh."""
+    now = time.time()
+    with _lock:
+        if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _STATUS_TTL:
+            return _status_cache["v"]
+
+    with _refresh_lock:
+        # Double-check after acquiring single-flight lock
+        now = time.time()
+        with _lock:
+            if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _STATUS_TTL:
+                return _status_cache["v"]
+        try:
+            v = _build_status()
+        except Exception:
+            # On failure, serve last good snapshot if available
+            with _lock:
+                if _status_cache["v"] is not None:
+                    return _status_cache["v"]
+            raise
+        with _lock:
+            _status_cache.update(t=time.time(), v=v)
+        return v

@@ -1,0 +1,34 @@
+---
+name: PostgreSQL
+desc: 关系型数据库
+category: data
+tags: [db, sql]
+ports: ["5432"]
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "5432"
+  - name: POSTGRES_USER
+    label: 用户
+    default: "app"
+  - name: POSTGRES_PASSWORD
+    label: 密码
+    default: "__RANDOM__"
+    secret: true
+  - name: POSTGRES_DB
+    label: 数据库名
+    default: "app"
+---
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER={{POSTGRES_USER}}
+      - POSTGRES_PASSWORD={{POSTGRES_PASSWORD}}
+      - POSTGRES_DB={{POSTGRES_DB}}
+    ports:
+      - "{{HOST_PORT}}:5432"
+    volumes:
+      - ./data:/var/lib/postgresql/data

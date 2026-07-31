@@ -1,0 +1,31 @@
+---
+name: Duplicati
+desc: 加密备份到云盘/S3/本地
+category: backup
+tags: [backup]
+ports: ["8201"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: 端口默认 8201（容器内仍是 8200），若与其他服务冲突请改 HOST_PORT。
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "8201"
+  - name: BACKUP_SOURCE
+    label: 要备份的主机目录
+    default: "{{SERVICES}}"
+---
+services:
+  duplicati:
+    image: lscr.io/linuxserver/duplicati:latest
+    container_name: duplicati
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./config:/config
+      - ./backups:/backups
+      - "{{BACKUP_SOURCE}}:/source:ro"
+    ports:
+      - "{{HOST_PORT}}:8200"
+    restart: unless-stopped

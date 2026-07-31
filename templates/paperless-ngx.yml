@@ -1,0 +1,46 @@
+---
+name: Paperless-ngx
+desc: 文档扫描归档 OCR · 电子票据管理
+category: productivity
+tags: [docs, ocr]
+ports: ["8010"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: 首次启动较慢。默认用户在日志中生成或通过环境变量设置。
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "8010"
+  - name: PAPERLESS_ADMIN_USER
+    label: 管理员用户
+    default: "admin"
+  - name: PAPERLESS_ADMIN_PASSWORD
+    label: 管理员密码
+    default: "__RANDOM__"
+    secret: true
+---
+services:
+  broker:
+    image: redis:7
+    container_name: paperless-redis
+    restart: unless-stopped
+    volumes:
+      - ./redis:/data
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    container_name: paperless-ngx
+    restart: unless-stopped
+    depends_on:
+      - broker
+    ports:
+      - "{{HOST_PORT}}:8000"
+    volumes:
+      - ./data:/usr/src/paperless/data
+      - ./media:/usr/src/paperless/media
+      - ./export:/usr/src/paperless/export
+      - ./consume:/usr/src/paperless/consume
+    environment:
+      - PAPERLESS_REDIS=redis://broker:6379
+      - PAPERLESS_ADMIN_USER={{PAPERLESS_ADMIN_USER}}
+      - PAPERLESS_ADMIN_PASSWORD={{PAPERLESS_ADMIN_PASSWORD}}
+      - PAPERLESS_OCR_LANGUAGE=chi_sim+eng
+      - PAPERLESS_TIME_ZONE=Asia/Shanghai

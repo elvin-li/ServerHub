@@ -1,0 +1,36 @@
+---
+name: code-server
+desc: 浏览器里的 VS Code · 远程开发
+category: dev
+tags: [ide, vscode]
+featured: true
+ports: ["8443"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "8443"
+  - name: PASSWORD
+    label: 密码
+    default: "__RANDOM__"
+    secret: true
+  - name: WORKSPACE
+    label: 工作区目录
+    default: "{{SERVICES}}"
+---
+services:
+  code-server:
+    image: lscr.io/linuxserver/code-server:latest
+    container_name: code-server
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      - PASSWORD={{PASSWORD}}
+      - DEFAULT_WORKSPACE=/workspace
+    volumes:
+      - ./config:/config
+      - "{{WORKSPACE}}:/workspace"
+    ports:
+      - "{{HOST_PORT}}:8443"
+    restart: unless-stopped

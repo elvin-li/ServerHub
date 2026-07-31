@@ -1,0 +1,37 @@
+---
+name: RustDesk 中继服务器
+desc: 自建远程桌面中继（替代 TeamViewer）· 客户端填 ID 服务器即可
+category: remote
+tags: [remote, rustdesk, rdp]
+featured: true
+ports: ["21115-21119", "21116/udp"]
+url_template: ""
+notes: |
+  部署后在 RustDesk 客户端「网络」中设置 ID 服务器为本机 IP。
+  需要开放 21115-21119/tcp 与 21116/udp。密钥在 ./data 目录。
+vars:
+  - name: RELAY_HOST
+    label: 中继主机 IP/域名
+    default: ""
+    required: false
+    help: 可选；留空则客户端手动填写本机局域网/公网 IP
+---
+services:
+  hbbs:
+    container_name: rustdesk-hbbs
+    image: rustdesk/rustdesk-server:latest
+    command: hbbs
+    volumes:
+      - ./data:/root
+    network_mode: host
+    depends_on:
+      - hbbr
+    restart: unless-stopped
+  hbbr:
+    container_name: rustdesk-hbbr
+    image: rustdesk/rustdesk-server:latest
+    command: hbbr
+    volumes:
+      - ./data:/root
+    network_mode: host
+    restart: unless-stopped

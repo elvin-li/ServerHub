@@ -1,0 +1,27 @@
+---
+name: ntfy
+desc: 自托管推送通知 · ServerHub / 脚本告警可对接
+category: notify
+tags: [notify, push]
+featured: true
+ports: ["2586"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "2586"
+---
+services:
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    container_name: ntfy
+    command:
+      - serve
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/var/cache/ntfy
+      - ./config:/etc/ntfy
+    ports:
+      - "{{HOST_PORT}}:80"
+    restart: unless-stopped

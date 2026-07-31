@@ -1,0 +1,28 @@
+---
+name: Dockge
+desc: Compose 栈管理 UI（与 ServerHub 互补，可对照学习）
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "5001"
+  - name: STACKS_DIR
+    label: Stacks 目录
+    default: {{SERVICES}}
+category: ops
+tags: [compose]
+ports: ["5001"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+---
+services:
+  dockge:
+    image: louislam/dockge:1
+    container_name: dockge
+    restart: unless-stopped
+    ports:
+      - "{{HOST_PORT}}:5001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/app/data
+      - "{{STACKS_DIR}}:/opt/stacks"
+    environment:
+      - DOCKGE_STACKS_DIR=/opt/stacks

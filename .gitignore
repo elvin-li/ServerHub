@@ -1,0 +1,44 @@
+# ---- Python / Node build artifacts ----
+.venv/
+__pycache__/
+*.pyc
+web/node_modules/
+web/dist/
+.build/
+
+# ---- Secrets: session signing key, local client token, per-service
+#      credentials. Never commit. ----
+data/.session-secret
+data/.local-client-token
+data/.setup-token
+data/service-credentials.json
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ---- Live service inventory: holds host addresses and per-service secrets.
+#      services.yaml.example is the committed template. ----
+services.yaml
+services.yaml.bak.*
+
+# ---- Runtime data / telemetry ----
+data/metrics.jsonl
+data/alerts.jsonl
+data/alert_state.json
+data/audit_3h.jsonl
+data/audit_monitor.out
+data/terminal-audit.jsonl
+data/auth-audit.jsonl
+data/diagnostics-latest.json
+data/services.yaml.bak.*
+*.yaml.tmp
+*.log
+
+# ---- Stale editor/tool shadows ----
+*.orig
+
+# ---- OS / editor ----
+.DS_Store
+.claude/settings.local.json
