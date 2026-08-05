@@ -1,13 +1,14 @@
 """REST API — menubar-compatible + panel."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from hub import actions, jobs
+from hub import actions, auth, jobs
 from hub.config import cfg
-from hub.status import full_status, invalidate_status
+from hub.errors import api_error
+from hub.status import filter_status_for_resources, full_status, invalidate_status
 
 router = APIRouter()
 
@@ -17,11 +18,19 @@ class Action(BaseModel):
     action: str
 
 
+def _visible_status(request: Request, *, force: bool = False) -> dict:
+    status = full_status(force=force)
+    username = auth.request_username(request)
+    if username and not auth.is_admin(username):
+        return filter_status_for_resources(status, auth.allowed_resources(username))
+    return status
+
+
 @router.get("/api/health")
-def api_health():
+def api_health(request: Request):
     """Lightweight health for menubar / monitoring."""
     try:
-        st = full_status()
+        st = _visible_status(request)
         return {
             "ok": True,
             "counts": st.get("counts"),
@@ -33,12 +42,31 @@ def api_health():
 
 
 @router.get("/api/status")
-def api_status(force: bool = False):
-    return full_status(force=force)
+def api_status(request: Request, force: bool = False):
+    return _visible_status(request, force=force)
+
+
+_LOCAL_CLIENT_ACTIONS = {
+    "start", "stop", "restart", "run", "pause", "unpause", "resume", "suspend",
+}
+
+
+def _local_client_action_allowed(target: str, action: str) -> bool:
+    """Only execute actions the native menu received for this service."""
+    if action not in _LOCAL_CLIENT_ACTIONS:
+        return False
+    for group in full_status().get("groups") or []:
+        for service in group.get("services") or []:
+            if service.get("id") == target:
+                return action in set(service.get("actions") or [])
+    return False
 
 
 @router.post("/api/action")
-def api_action(a: Action):
+def api_action(a: Action, request: Request):
+    if getattr(request.state, "serverhub_auth_kind", "") == "local-client":
+        if not _local_client_action_allowed(a.target, a.action):
+            raise api_error("auth.admin_required")
     rc, out, err = actions.run_action(a.target, a.action)
     invalidate_status()
     ok = rc == 0

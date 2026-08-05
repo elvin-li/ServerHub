@@ -65,12 +65,13 @@ async function doPg() {
     const r = await backupPostgres()
     msg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '') + (r.path ? `\n${r.path} (${r.size_mb} MB)` : '')
     toast(r.ok ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
-    refresh()
+    if (r.ok) await refresh()
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = String(e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doCfg() {
@@ -80,11 +81,13 @@ async function doCfg() {
     const r = await backupConfigs()
     msg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '') + (r.path ? `\n${r.path}` : '')
     toast(r.ok ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
-    refresh()
+    if (r.ok) await refresh()
   } catch (e) {
     toast('❌ ' + e.message)
+    msg.value = String(e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 onMounted(refresh)

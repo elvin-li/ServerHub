@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from hub.brew_cache import brew_services_list
+from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.host_address import host_ip
 from hub.util import sh
 
@@ -923,9 +923,13 @@ def install_native(app_id: str, variables: dict | None = None) -> dict:
     if not Path(BREW).is_file() and app.get("method", "").startswith("brew"):
         raise HTTPException(503, "未找到 Homebrew（/opt/homebrew/bin/brew）")
 
-    # bust list cache after install attempts
+    # bust list cache after install attempts.  The shared brew snapshot has to
+    # go too: installs run `brew services start`, and list_native_apps() reads
+    # service state through brew_cache, so leaving that snapshot in place shows
+    # the just-started service as stopped for up to its TTL.
     _list_cache["t"] = 0
     _list_cache["v"] = None
+    invalidate_brew_services()
     try:
         from hub import apps_manage_svc
         apps_manage_svc._inv_cache["t"] = 0
@@ -1247,6 +1251,9 @@ def uninstall_native(app_id: str, *, remove_data: bool = False) -> dict:
 
     _list_cache["t"] = 0
     _list_cache["v"] = None
+    # Uninstall runs `brew services stop`; drop the shared snapshot so the next
+    # read does not report the stopped service as still running.
+    invalidate_brew_services()
 
     method = app.get("method")
     logs: list[str] = []

@@ -9,6 +9,7 @@ import mimetypes
 import os
 import shutil
 import stat
+import subprocess
 import time
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse
 from hub.config import cfg
 from hub.errors import api_error
 from hub.host_address import host_ip
-from hub.paths import AGENTS_DIR, BASE, UID
+from hub.paths import AGENTS_DIR, BASE, STATE_ROOT, UID
 from hub.util import sh
 
 HOME = Path.home()
@@ -33,18 +34,17 @@ SERVICES_ROOT = HOME / "Services"
 
 #: Directory subtrees that are never browsable, downloadable or writable.
 PROTECTED_DIRS: tuple[Path, ...] = (
-    BASE,                       # the ServerHub install itself
+    BASE,                       # immutable ServerHub runtime
+    STATE_ROOT,                 # mutable config, tokens, audits, and metrics
     HOME / ".ssh",
     HOME / ".aws",
     HOME / ".gnupg",
     HOME / ".kube",
     HOME / "Library" / "Keychains",
-    # The SGCC scraper's directory: .sgcc_cred holds the grid account password,
-    # a long-lived Home Assistant token and an LLM key, .sgcc_session holds a
-    # live login cookie jar, and .sgcc_browser_profile/ is a full Chromium
-    # profile with its own cookie database.  File modes are 0600, but that is
-    # no defence here: the panel runs as the owner of those files.
-    SERVICES_ROOT / "sgcc_native",
+    # A local private-integration directory may contain account credentials,
+    # long-lived API tokens, session cookies, and browser profiles. File modes
+    # are no defence here because the panel runs as the file owner.
+    SERVICES_ROOT / "private_integration",
 )
 
 #: Basenames that are never exposed, wherever they appear.
@@ -55,8 +55,8 @@ PROTECTED_NAMES: frozenset[str] = frozenset({
 })
 
 #: Filename prefixes that are never exposed (covers services.yaml.bak.<ts>
-#: and every .sgcc_* credential/session artefact wherever it is copied to).
-PROTECTED_PREFIXES: tuple[str, ...] = ("services.yaml", ".env", ".sgcc")
+#: and private-integration credential/session artefacts copied elsewhere).
+PROTECTED_PREFIXES: tuple[str, ...] = ("services.yaml", ".env", ".private_")
 
 
 def _fold(value: str) -> str:
@@ -457,14 +457,25 @@ def ensure_filebrowser() -> dict:
         sh(["/bin/launchctl", "bootstrap", dom, str(FB_PLIST)], timeout=10)
         sh(["/bin/launchctl", "kickstart", "-k", f"{dom}/{FB_LABEL}"], timeout=10)
     elif FB_BIN.exists():
-        # direct start without KeepAlive
+        # Direct start without KeepAlive. Pass an argv vector so spaces or shell
+        # metacharacters in the user's home path can never change the command.
         FB_ROOT_DEFAULT.mkdir(parents=True, exist_ok=True)
         SERVICES_ROOT.joinpath("filebrowser").mkdir(parents=True, exist_ok=True)
-        cmd = (
-            f"nohup {FB_BIN} -d {FB_DB} -r {FB_ROOT_DEFAULT} -a 0.0.0.0 -p {FB_PORT} "
-            f">/tmp/filebrowser-hub.log 2>&1 &"
-        )
-        sh(cmd, timeout=10, shell=True)
+        try:
+            with open("/tmp/filebrowser-hub.log", "ab") as log:
+                subprocess.Popen(
+                    [
+                        str(FB_BIN), "-d", str(FB_DB), "-r", str(FB_ROOT_DEFAULT),
+                        "-a", "0.0.0.0", "-p", str(FB_PORT),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except OSError:
+            raise api_error("files.fb_start_failed")
     else:
         raise api_error("files.fb_start_failed")
 

@@ -22,10 +22,25 @@ import en from '../i18n/en.js'
 import { setLocale } from '../i18n/index.js'
 import {
   AUTH_LOST_EVENT,
+  connectContainerNetwork,
+  controlPanelService,
+  createShare,
   doAction,
+  getLauncherStatus,
+  getManagedAppDetail,
+  getShares,
   getStatus,
   loginAuth,
+  manageApp,
+  openLauncherApp,
+  openSharingSettings,
+  removeShare,
   resetAuthLost,
+  setContainerPorts,
+  setLauncherLogin,
+  setSystemSharing,
+  uploadFile,
+  updateShare,
 } from './client.js'
 
 /** Build a fetch response double. `body` is whatever r.json() should yield. */
@@ -336,6 +351,148 @@ describe('api client', () => {
         },
       })
       await expect(getStatus()).resolves.toEqual({})
+    })
+  })
+
+  describe('page-domain requests', () => {
+    it('encodes managed app ids and sends structured actions', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await getManagedAppDetail('docker:family/../media')
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        '/api/apps/managed/detail?id=docker%3Afamily%2F..%2Fmedia',
+      )
+
+      await manageApp('docker:media', 'uninstall', true)
+      const [url, options] = fetchMock.mock.calls[1]
+      expect(url).toBe('/api/apps/managed/action')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        id: 'docker:media', action: 'uninstall', remove_data: true,
+      })
+    })
+
+    it('encodes container names when recreating published ports', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await setContainerPorts('web/../db', ['8080:80'])
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toBe('/api/system/network/docker/ports/web%2F..%2Fdb')
+      expect(JSON.parse(options.body)).toEqual({ ports: ['8080:80'] })
+    })
+
+    it('lets the browser set a multipart boundary for uploads', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+      const form = new FormData()
+      form.append('path', '/Users/example')
+
+      await uploadFile(form)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toBe('/api/files/upload')
+      expect(options.method).toBe('POST')
+      expect(options.body).toBe(form)
+      expect(options.headers).toBeUndefined()
+    })
+  })
+
+  describe('macOS sharing requests', () => {
+    it('loads the grouped sharing overview', async () => {
+      fetchMock.mockResolvedValue(res(200, { system_services: [], smb: [] }))
+
+      await expect(getShares()).resolves.toEqual({ system_services: [], smb: [] })
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/shares')
+      expect(fetchMock.mock.calls[0][1].method).toBeUndefined()
+    })
+
+    it('creates a share with an exact JSON body', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+      const body = {
+        path: '/Users/example/Media', name: 'Media', smb_name: 'Media',
+        guest: false, readonly: true, encrypted: true,
+      }
+
+      await createShare(body)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toBe('/api/shares/smb')
+      expect(options.method).toBe('POST')
+      expect(options.headers).toEqual({ 'Content-Type': 'application/json' })
+      expect(JSON.parse(options.body)).toEqual(body)
+    })
+
+    it('encodes share records and service ids as one path segment', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await updateShare('Family/../Secret', {
+        smb_name: 'Family', guest: false, readonly: false, encrypted: true,
+      })
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/shares/smb/Family%2F..%2FSecret')
+      expect(fetchMock.mock.calls[0][1].method).toBe('PUT')
+
+      await setSystemSharing('remote/login', true)
+      expect(fetchMock.mock.calls[1][0]).toBe('/api/shares/system/remote%2Flogin')
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ enabled: true })
+    })
+
+    it('requires explicit confirmation when removing a share definition', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await removeShare('Media & TV')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toBe('/api/shares/smb/Media%20%26%20TV?confirm=true')
+      expect(options.method).toBe('DELETE')
+      expect(options.body).toBeUndefined()
+    })
+
+    it('opens System Settings with a bodyless POST', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await openSharingSettings()
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/shares/open-system-settings')
+      expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+      expect(fetchMock.mock.calls[0][1].body).toBeUndefined()
+    })
+  })
+
+  describe('native launcher requests', () => {
+    it('loads launcher status with a GET request', async () => {
+      fetchMock.mockResolvedValue(res(200, { panel_running: true }))
+
+      await expect(getLauncherStatus()).resolves.toEqual({ panel_running: true })
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/launcher',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      )
+      expect(fetchMock.mock.calls[0][1].method).toBeUndefined()
+    })
+
+    it('opens the native app with POST and no request body', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await openLauncherApp()
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toBe('/api/launcher/open')
+      expect(options.method).toBe('POST')
+      expect(options.body).toBeUndefined()
+    })
+
+    it('updates login startup with a JSON PUT request', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await setLauncherLogin(false)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toBe('/api/launcher/login')
+      expect(options.method).toBe('PUT')
+      expect(options.headers).toEqual({ 'Content-Type': 'application/json' })
+      expect(JSON.parse(options.body)).toEqual({ enabled: false })
+    })
+
+    it('encodes the panel action as one URL path segment', async () => {
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await controlPanelService('restart/../../stop')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toBe('/api/launcher/panel/restart%2F..%2F..%2Fstop')
+      expect(options.method).toBe('POST')
     })
   })
 

@@ -84,9 +84,13 @@ const loading = ref(false)
 
 async function load() {
   loading.value = true
-  try { data.value = await getUsers() }
-  catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  try {
+    data.value = await getUsers()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    loading.value = false
+  }
 }
 
 onMounted(load)

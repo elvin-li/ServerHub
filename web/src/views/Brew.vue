@@ -51,7 +51,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { brewAction, getBrewServices } from '../api/client'
 import { injectI18n } from '../i18n'
 
@@ -60,6 +60,16 @@ const { t } = injectI18n()
 const services = ref([])
 const busy = ref(false)
 const q = ref('')
+let refreshTimer = null
+
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    void refresh()
+  }, 800)
+}
+
 const labels = computed(() => ({
   start: t('services.act_start'),
   stop: t('services.act_stop'),
@@ -87,12 +97,17 @@ async function act(s, action) {
   try {
     const j = await brewAction(s.id, action)
     toast(j.ok ? `✅ ${s.name}` : `❌ ${j.message}`)
-    setTimeout(refresh, 800)
+    if (j.ok) scheduleRefresh()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 onMounted(refresh)
+onUnmounted(() => {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = null
+})
 </script>

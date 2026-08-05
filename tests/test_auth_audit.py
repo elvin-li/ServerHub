@@ -32,9 +32,9 @@ from fastapi import HTTPException, Request, Response
 from hub import audit
 
 
-PASSWORD = "correct-horse-battery"
-NEW_PASSWORD = "staple-donkey-lantern"
-SETUP_TOKEN = "t" * 40
+PASSWORD = "test-password"
+NEW_PASSWORD = "new-test-password"
+SETUP_TOKEN = "setup-token-placeholder-0000000000"
 
 
 def request(client: str = "192.0.2.10") -> Request:
@@ -250,6 +250,8 @@ class AuthEventCoverageTests(unittest.TestCase):
             with (
                 patch("hub.auth.setup_required", return_value=False),
                 patch("hub.auth.browser_authenticated", return_value=True),
+                patch("hub.auth.request_username", return_value="admin"),
+                patch("hub.auth.is_admin", return_value=True),
                 patch("hub.auth.login_allowed", return_value=(True, 0)),
                 patch(
                     "hub.auth.verify_password",

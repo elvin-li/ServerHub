@@ -2,21 +2,20 @@
 from __future__ import annotations
 
 import copy
-import shutil
 import threading
 import time
 from typing import Any
 
 import yaml
 
-from hub.paths import BASE
+from hub import secure_io
+from hub.paths import BASE, CONFIG_FILE, DATA_DIR, ensure_state_dirs
 
 _cfg = {"mtime": 0.0, "data": {}}
 _write_lock = threading.Lock()
 _cfg_lock = threading.RLock()
-YAML_PATH = BASE / "services.yaml"
-DATA_DIR = BASE / "data"
-DATA_DIR.mkdir(exist_ok=True)
+YAML_PATH = CONFIG_FILE
+ensure_state_dirs()
 
 
 #: Minimal config written on first run.  Without this a fresh install raises
@@ -62,12 +61,19 @@ def _bootstrap() -> None:
         return
     example = BASE / "services.yaml.example"
     try:
-        if example.exists():
-            shutil.copy2(example, YAML_PATH)
-        else:
-            YAML_PATH.write_text(_dump(copy.deepcopy(DEFAULT_CONFIG)))
-        # Holds the admin password hash once setup runs — keep it owner-only.
-        YAML_PATH.chmod(0o600)
+        # This file holds the admin password hash the moment setup runs, plus
+        # service credentials and tunnel tokens thereafter.  Neither branch may
+        # create it and tighten it afterwards: shutil.copy2 *copies the example's
+        # mode*, which is world-readable in the repo, and write_text() lands at
+        # the umask default.  Both left a window where any local user could read
+        # the config, so both now go through the helper that creates the file
+        # 0600 from its first byte.
+        body = (
+            example.read_text(encoding="utf-8")
+            if example.exists()
+            else _dump(copy.deepcopy(DEFAULT_CONFIG))
+        )
+        secure_io.write_secret_text(YAML_PATH, body)
     except OSError:
         # Read-only install dir: fall through and let cfg() surface the error.
         pass
@@ -129,7 +135,12 @@ def save_full(data: dict) -> None:
     with _write_lock:
         if YAML_PATH.exists():
             bak = DATA_DIR / f"services.yaml.bak.{int(time.time())}"
-            shutil.copy2(YAML_PATH, bak)
+            # Not shutil.copy2: it creates the destination at the umask and
+            # copies the mode afterwards, so a verbatim copy of the admin
+            # password hash and every service credential sits at 0644 for the
+            # length of the copy.  The backup is exactly as sensitive as the
+            # original, so it is 0600 from its first byte.
+            secure_io.copy_secret_file(YAML_PATH, bak)
             # Keep fewer YAML backups to cut SSD churn on settings saves
             baks = sorted(DATA_DIR.glob("services.yaml.bak.*"), reverse=True)
             for old in baks[5:]:
@@ -137,10 +148,13 @@ def save_full(data: dict) -> None:
                     old.unlink()
                 except OSError:
                     pass
-        tmp = YAML_PATH.with_suffix(".yaml.tmp")
-        tmp.write_text(_dump(data))
-        tmp.chmod(0o600)
-        tmp.replace(YAML_PATH)
+        # services.yaml carries service credentials, tunnel tokens and admin
+        # passwords.  The previous write_text()+chmod() left the staging file
+        # world-readable at the default umask for the whole duration of the
+        # write, which is exactly the window hub.secure_io exists to close: the
+        # file is now 0600 from the moment it first exists.  The replace stays
+        # atomic, so a reader never observes a half-written config.
+        secure_io.replace_secret_text(YAML_PATH, _dump(data))
         reload_cfg()
 
 

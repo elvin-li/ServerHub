@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from hub import containers_svc as svc
+from hub.errors import api_error
 from hub.paths import DOCKER
 
 router = APIRouter(tags=["containers"])
@@ -97,7 +98,12 @@ def containers_batch(body: BatchBody):
 
 
 @router.post("/api/containers/all")
-def containers_all(body: AllBody):
+def containers_all(body: AllBody, request: Request):
+    if (
+        getattr(request.state, "serverhub_auth_kind", "") == "local-client"
+        and body.action not in {"start", "stop", "restart"}
+    ):
+        raise api_error("auth.admin_required")
     return svc.action_all(body.action)
 
 

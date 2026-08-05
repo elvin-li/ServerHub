@@ -8,11 +8,11 @@ import urllib.error
 import urllib.request
 
 from hub.config import cfg
-from hub.paths import BASE
+from hub.paths import DATA_DIR
 from hub.status import full_status
 
-ALERTS_FILE = BASE / "data" / "alerts.jsonl"
-STATE_FILE = BASE / "data" / "alert_state.json"
+ALERTS_FILE = DATA_DIR / "alerts.jsonl"
+STATE_FILE = DATA_DIR / "alert_state.json"
 MAX_ALERTS = 500
 _lock = threading.Lock()
 _thread: threading.Thread | None = None

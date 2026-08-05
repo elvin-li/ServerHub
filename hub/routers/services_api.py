@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from hub import actions, auth, services_manage_svc, services_uninstall_svc
 from hub.errors import api_error
-from hub.status import invalidate_status
+from hub.status import invalidate_status, member_service_summary
 
 router = APIRouter(tags=["services"])
 
@@ -30,15 +30,41 @@ class BulkActionBody(BaseModel):
     action: str
 
 
+def _member_username(request: Request) -> str:
+    username = auth.request_username(request)
+    return "" if auth.is_admin(username) else username
+
+
+def _require_resource(request: Request, sid: str) -> None:
+    username = _member_username(request)
+    if username and not auth.may_use_resource(username, sid):
+        raise api_error("auth.admin_required")
+
+
 @router.get("/api/services")
-def services_list(force: bool = False):
-    """Status with enriched management actions."""
-    return services_manage_svc.list_manageable(force=force)
+def services_list(request: Request, force: bool = False):
+    """Status with enriched management actions, filtered for member accounts."""
+    result = services_manage_svc.list_manageable(force=force)
+    username = _member_username(request)
+    if username:
+        from hub.status import filter_status_for_resources
+
+        result = filter_status_for_resources(result, auth.allowed_resources(username))
+    return result
 
 
 @router.get("/api/services/{sid}/detail")
-def services_detail(sid: str):
-    return services_manage_svc.service_detail(sid)
+def services_detail(sid: str, request: Request):
+    _require_resource(request, sid)
+    result = services_manage_svc.service_detail(sid)
+    if _member_username(request):
+        result = {
+            **member_service_summary(result),
+            "can_logs": False,
+            "can_hide": False,
+            "can_edit": False,
+        }
+    return result
 
 
 @router.get("/api/services/{sid}/logs")

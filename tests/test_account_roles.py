@@ -10,11 +10,15 @@ writes services.yaml, and no live account is touched.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import unittest
 from unittest.mock import patch
 
-from hub import auth
+from fastapi import HTTPException, Request
+
+from hub import auth, status
+from hub.routers import services_api
 
 LEGACY_ONLY = {
     "enabled": True,
@@ -214,6 +218,122 @@ class ResourcePermissionTests(unittest.TestCase):
         with with_cfg(WITH_FAMILY):
             self.assertFalse(auth.may_use_resource("mom", None))
             self.assertFalse(auth.may_use_resource("mom", ""))
+
+
+class MemberStatusFilteringTests(unittest.TestCase):
+    def test_filter_keeps_only_assigned_safe_fields_without_mutating_cache(self):
+        snapshot = {
+            "version": "3.9.0",
+            "ts": "12:00:00",
+            "system": {"hostname": "private-host"},
+            "links": [{"name": "admin-only"}],
+            "engine_up": True,
+            "adaptive": {"nginx_sites": ["private"]},
+            "groups": [
+                {
+                    "group": "Media",
+                    "services": [
+                        {
+                            "id": "jellyfin",
+                            "name": "Jellyfin",
+                            "state": "ok",
+                            "url": "http://host:8096",
+                            "actions": ["open", "detail", "logs", "stop"],
+                            "meta": {"mount": "/private/media"},
+                        },
+                        {
+                            "id": "postgres",
+                            "name": "Database",
+                            "state": "down",
+                            "detail": "private database",
+                        },
+                    ],
+                }
+            ],
+        }
+        original = copy.deepcopy(snapshot)
+
+        filtered = status.filter_status_for_resources(snapshot, ["jellyfin"])
+
+        self.assertEqual(snapshot, original, "filtering must not mutate the admin cache")
+        self.assertEqual(filtered["service_total"], 1)
+        self.assertEqual(filtered["counts"]["ok"], 1)
+        self.assertEqual(filtered["system"], {})
+        self.assertEqual(filtered["links"], [])
+        self.assertEqual(filtered["adaptive"], {})
+        service = filtered["groups"][0]["services"][0]
+        self.assertEqual(service["id"], "jellyfin")
+        self.assertEqual(service["actions"], ["open", "detail"])
+        self.assertNotIn("meta", service)
+        self.assertNotIn("postgres", repr(filtered))
+
+    def test_empty_resource_list_exposes_no_services(self):
+        filtered = status.filter_status_for_resources(
+            {"groups": [{"group": "All", "services": [{"id": "secret", "state": "ok"}]}]},
+            [],
+        )
+        self.assertEqual(filtered["groups"], [])
+        self.assertEqual(filtered["service_total"], 0)
+
+
+class MemberServiceRouteTests(unittest.TestCase):
+    @staticmethod
+    def _request() -> Request:
+        return Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/services/jellyfin/detail",
+            "headers": [],
+            "scheme": "http",
+            "server": ("localhost", 8086),
+            "client": ("127.0.0.1", 12345),
+        })
+
+    def test_member_detail_is_allowlisted_and_field_limited(self):
+        detail = {
+            "id": "jellyfin",
+            "name": "Jellyfin",
+            "kind": "container",
+            "state": "ok",
+            "detail": "running",
+            "url": "http://host:8096",
+            "group": "Media",
+            "port": 8096,
+            "ports": ["8096:8096"],
+            "actions": ["open", "detail", "logs", "stop"],
+            "meta": {"secret": "value"},
+            "mounts": [{"source": "/private/media"}],
+            "program": "/private/bin/start",
+        }
+        with (
+            patch.object(auth, "request_username", return_value="mom"),
+            patch.object(auth, "is_admin", return_value=False),
+            patch.object(auth, "may_use_resource", return_value=True),
+            patch.object(services_api.services_manage_svc, "service_detail", return_value=detail),
+        ):
+            result = services_api.services_detail("jellyfin", self._request())
+
+        self.assertEqual(result["id"], "jellyfin")
+        self.assertEqual(result["actions"], ["open", "detail"])
+        self.assertFalse(result["can_logs"])
+        self.assertFalse(result["can_hide"])
+        self.assertFalse(result["can_edit"])
+        self.assertNotIn("meta", result)
+        self.assertNotIn("mounts", result)
+        self.assertNotIn("program", result)
+
+    def test_member_cannot_read_unassigned_detail(self):
+        with (
+            patch.object(auth, "request_username", return_value="mom"),
+            patch.object(auth, "is_admin", return_value=False),
+            patch.object(auth, "may_use_resource", return_value=False),
+            patch.object(services_api.services_manage_svc, "service_detail") as detail,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                services_api.services_detail("postgres", self._request())
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(raised.exception.detail["code"], "auth.admin_required")
+        detail.assert_not_called()
 
 
 class AccountSessionVersionTests(unittest.TestCase):

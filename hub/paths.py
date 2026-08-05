@@ -5,7 +5,43 @@ import os
 import shutil
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent.parent
+from hub import secure_io
+
+RUNTIME_ROOT = Path(
+    os.environ.get("SERVERHUB_RUNTIME_DIR") or Path(__file__).resolve().parent.parent
+).expanduser().resolve()
+# BASE remains the compatibility name for the immutable application/runtime
+# tree. Packaged builds keep mutable state outside the signed app bundle.
+BASE = RUNTIME_ROOT
+_STATE_OVERRIDE = os.environ.get("SERVERHUB_STATE_DIR", "").strip()
+STATE_ROOT = (
+    Path(_STATE_OVERRIDE).expanduser().resolve()
+    if _STATE_OVERRIDE
+    else RUNTIME_ROOT
+)
+DATA_DIR = STATE_ROOT / "data"
+CONFIG_FILE = STATE_ROOT / "services.yaml"
+
+
+def ensure_state_dirs() -> None:
+    """Create private writable state directories for packaged installations."""
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    # DATA_DIR holds the session secret, the setup token, the local client
+    # token, the service-credential index and the timestamped services.yaml
+    # backups -- secrets on every install, not just packaged ones.  Tightening
+    # it only when SERVERHUB_STATE_DIR was set left source installs at the
+    # umask default (0755), so every local user could list those filenames and
+    # watch tokens appear.  The files themselves are 0600, so this closes a
+    # metadata leak rather than a content leak, but the directory has no reason
+    # to be traversable by anyone else.
+    secure_io.make_secret_dir(DATA_DIR)
+    if _STATE_OVERRIDE:
+        # Only tighten the root when it is a dedicated state directory.  On a
+        # source install STATE_ROOT *is* the checkout, and clamping the whole
+        # project tree to 0700 is not this function's call to make.
+        STATE_ROOT.chmod(0o700)
+
+
 DOCKER = shutil.which("docker") or "/usr/local/bin/docker"
 _orb_candidates = [
     shutil.which("orb") or "",

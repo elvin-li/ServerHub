@@ -38,6 +38,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getLogSources, getLogTail } from '../api/client'
 import { injectI18n } from '../i18n'
+import { startVisibleInterval } from '../lib/poll'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -50,6 +51,7 @@ const loading = ref(false)
 const auto = ref(true)
 const filter = ref('')
 let timer = null
+let loadGeneration = 0
 
 const displayLines = computed(() => {
   const f = filter.value.trim().toLowerCase()
@@ -68,14 +70,23 @@ async function loadSources() {
 }
 
 async function load() {
-  if (!sourceId.value) return
+  if (!sourceId.value) return true
+  const generation = ++loadGeneration
+  const requestedSource = sourceId.value
+  const requestedLines = lines.value
   loading.value = true
   try {
-    const d = await getLogTail(sourceId.value, lines.value)
+    const d = await getLogTail(requestedSource, requestedLines)
+    if (generation !== loadGeneration || requestedSource !== sourceId.value || requestedLines !== lines.value) return true
     meta.value = d
     text.value = d.log || ''
-  } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+    return true
+  } catch (e) {
+    if (generation === loadGeneration) toast('❌ ' + e.message)
+    return false
+  } finally {
+    if (generation === loadGeneration) loading.value = false
+  }
 }
 
 function copyLog() {
@@ -91,25 +102,27 @@ function downloadLog() {
   URL.revokeObjectURL(a.href)
 }
 
-watch(auto, (v) => {
-  clearInterval(timer)
-  if (v) {
-    timer = setInterval(() => {
-      if (typeof document !== 'undefined' && document.hidden) return
-      load()
-    }, 6000)
-  }
-})
+function stopAutoRefresh() {
+  if (typeof timer === 'function') timer()
+  timer = null
+}
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (auto.value) timer = startVisibleInterval(load, 6000)
+}
+
+watch(auto, startAutoRefresh)
 
 onMounted(async () => {
   await loadSources()
   await load()
-  timer = setInterval(() => {
-    if (typeof document !== 'undefined' && document.hidden) return
-    if (auto.value) load()
-  }, 6000)
+  startAutoRefresh()
 })
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => {
+  loadGeneration += 1
+  if (typeof timer === 'function') timer()
+  timer = null
+})
 </script>
 
 <style scoped>

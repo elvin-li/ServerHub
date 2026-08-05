@@ -1,8 +1,20 @@
-# ServerHub v3.4
+# ServerHub v3.9.1
 
 macOS 家庭服务器管理面板 — 对标 **Unraid** 信息架构，并吸收 **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew** 等开源优秀能力。
 
 **面板：** 默认仅本机 `http://localhost:8086`；远程访问请通过启用 TLS 与身份策略的 Cloudflare Tunnel/反向代理，勿直接暴露 8086。
+
+## 界面展示
+
+> 以下图片使用完全虚构的演示数据，不包含真实账号、用户名、IP 地址、主机名、令牌或服务配置。
+
+### 系统概览
+
+![ServerHub 系统概览（虚构演示数据）](docs/screenshots/dashboard-demo.png)
+
+### 应用进程
+
+![ServerHub 应用进程（虚构演示数据）](docs/screenshots/apps-demo.png)
 
 ## 模块地图（`/modules`）
 
@@ -44,7 +56,34 @@ macOS 家庭服务器管理面板 — 对标 **Unraid** 信息架构，并吸收
 
 - FastAPI 包 `hub/` + Vue 3 (`web/` → `static/`)
 - 容器引擎：**OrbStack**
-- 菜单栏：`menubar.py`
+- 菜单栏：原生 `macos/ServerHubLauncher.swift`；`menubar.py` 为旧版实现
+
+## 快速开始
+
+需要 macOS 13+、Python 3.10+；若需从源码重建前端，还需 Node.js 18、20 或 22+ 与 npm。
+
+```bash
+git clone https://github.com/elvin-li/ServerHub.git
+cd ServerHub
+./install.sh
+open http://localhost:8086
+```
+
+安装脚本会创建本地虚拟环境、保留已有 `services.yaml`，并生成仅存于本机且已被 Git 忽略的认证令牌。首次打开时请使用 `data/.setup-token` 完成管理员设置。卸载时运行 `./uninstall.sh`；使用 `--purge` 会额外删除本地配置和运行数据。
+
+## 原生 macOS 菜单栏
+
+原生菜单栏 App 可安装到系统或当前用户的 Applications 目录。用户目录安装不需要覆盖 `/Applications`：
+
+```bash
+mkdir -p "$HOME/Applications"
+./macos/build_app.sh "$HOME/Applications/ServerHub.app"
+open "$HOME/Applications/ServerHub.app"
+```
+
+App 跟随 macOS 首选语言：中文语言环境显示简体中文菜单，其他语言环境显示英文。开发和快照测试可通过 `SERVERHUB_LANGUAGE=zh-Hans` 或 `SERVERHUB_LANGUAGE=en` 显式覆盖；空值会回退到系统语言。
+
+面板的“设置 → 面板”页可查看 App、菜单栏进程、后台面板与登录自启状态，并可打开 App、切换登录自启、重启或停止面板。停止面板后，重新打开 `ServerHub.app` 即可恢复；状态读取失败时可使用卡片中的刷新按钮重试。
 
 ## 开发
 
@@ -66,10 +105,17 @@ npm --prefix web run build
 
 生产构建输出到 `static/`。Vite 构建会校验首屏入口 JavaScript 不超过 150 KiB；英语词典作为同步回退，中、日文词典按当前语言异步加载。修改词典时须保持三种语言的键和占位符一致，`npm --prefix web test` 会验证该契约。
 
-构建确认无误后，如需重启本机 LaunchAgent：
+构建确认无误后，如需重启本机 LaunchAgent，可自动匹配当前实际安装的标签。面板任务历史上使用过三种命名：`install.sh` 写入 `local.serverhub.panel`，原生 ServerHub.app 写入 `local.serverhub`，早期发行安装为 `com.elvin.serverhub`。下面的片段依次探测，命中即重启：
 
 ```bash
-launchctl kickstart -k "gui/$(id -u)/com.elvin.serverhub"
+DOMAIN="gui/$(id -u)"
+for label in local.serverhub.panel local.serverhub com.elvin.serverhub; do
+  if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
+    launchctl kickstart -k "$DOMAIN/$label"
+    echo "restarted $label"
+    break
+  fi
+done
 ```
 
 ## 模板目录 `templates/`

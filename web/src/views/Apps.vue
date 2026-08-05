@@ -335,7 +335,7 @@
             <label>{{ t('settings.confirm_password') }}</label>
             <input v-model="credentialForm.confirm" :type="showCredentialPassword ? 'text' : 'password'" autocomplete="new-password" minlength="8" :aria-label="t('settings.confirm_password')" />
             <label>URL</label>
-            <input v-model.trim="credentialForm.url" type="text" autocomplete="url" :aria-label="t('settings.confirm_password')" />
+            <input v-model.trim="credentialForm.url" type="text" autocomplete="url" aria-label="URL" />
             <label>{{ t('apps.credential_notes') }}</label>
             <textarea v-model="credentialForm.notes" rows="2" maxlength="1000" :aria-label="t('apps.credential_notes')"></textarea>
           </div>
@@ -416,7 +416,7 @@
             </div>
             <label class="form-label">{{ t('apps.cf_paste_token') }}</label>
             <div class="form-field">
-              <input v-model.trim="cfToken" type="password" placeholder="Zero Trust → Tunnels → Install token"  aria-label="Zero Trust → Tunnels → Install token"/>
+              <input v-model.trim="cfToken" type="password" placeholder="Zero Trust → Tunnels → Install token" :aria-label="t('apps.cf_paste_token')" />
               <div class="field-help">{{ t('apps.cf_token_help') }}</div>
             </div>
           </div>
@@ -427,7 +427,7 @@
           <div class="form-grid">
             <label class="form-label">{{ t('apps.cf_dns_route') }}</label>
             <div class="form-field" style="display:flex;gap:8px;flex-wrap:wrap">
-              <input v-model.trim="cfDnsHost" type="text" placeholder="ha.example.com" style="flex:1;min-width:160px"  aria-label="ha.example.com"/>
+              <input v-model.trim="cfDnsHost" type="text" placeholder="ha.example.com" style="flex:1;min-width:160px" :aria-label="t('apps.cf_dns_route')" />
               <button type="button" :disabled="cfBusy || !cfSelectedTunnel || !cfDnsHost" @click="cfRouteDns">{{ t('apps.cf_bind_dns') }}</button>
             </div>
             <div class="field-help">{{ t('apps.cf_dns_help') }}</div>
@@ -612,9 +612,37 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { getCatalog, getStackJob, getStacks, installCatalog, uninstallCatalog, runStack } from '../api/client'
+import {
+  createCloudflareTunnel,
+  deleteAppCredential,
+  getAppCredential,
+  getAutostartApps,
+  getCatalog,
+  getCloudflareStatus,
+  getManagedAppDetail,
+  getManagedAppLogs,
+  getManagedApps,
+  getStackJob,
+  getStacks,
+  installCatalog,
+  manageApp,
+  pollCloudflareLogin,
+  restartCloudflare,
+  routeCloudflareDns,
+  runAppAutostartNow,
+  runStack,
+  saveAppCredential,
+  setAppAutostart,
+  setDockerAutostartPolicy,
+  startCloudflareLogin,
+  startCloudflareToken,
+  startCloudflareTunnel,
+  stopCloudflare,
+  uninstallCatalog,
+} from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import { startVisibleInterval } from '../lib/poll'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -662,6 +690,7 @@ const cfBusy = ref(false)
 let timer = null
 let logTimer = null
 let cfPollTimer = null
+let cfPollGeneration = 0
 
 const CAT_I18N = {
   all: 'apps.cat_all',
@@ -864,14 +893,9 @@ async function launchOpen(it) {
         const id = (it.id && String(it.id).includes(':'))
           ? it.id
           : `native:${it.source_id || it.id || 'native-screen-sharing'}`
-        const r = await fetch('/api/apps/managed/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, action: 'open' }),
-        })
-        const j = await r.json().catch(() => ({}))
-        if (j.ok) {
-          toast(`✅ ${t('apps.open_url')} · ${j.url || u}`)
+        const result = await manageApp(id, 'open')
+        if (result.ok) {
+          toast(`✅ ${t('apps.open_url')} · ${result.url || u}`)
           return
         }
       } catch {}
@@ -897,75 +921,65 @@ function goManage(tpl) {
 async function loadManaged(force = false) {
   loading.value = true
   try {
-    const r = await fetch('/api/apps/managed' + (force ? '?force=true' : ''))
-    managed.value = await r.json()
+    managed.value = await getManagedApps(force)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loading.value = false
   }
-  loading.value = false
 }
 
 async function loadAutostart(force = false) {
   loading.value = true
   try {
-    const r = await fetch('/api/apps/autostart' + (force ? '?force=true' : ''))
-    autostart.value = await r.json()
+    autostart.value = await getAutostartApps(force)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loading.value = false
   }
-  loading.value = false
 }
 
 async function setAutostartItem(it, enabled) {
   busy.value = true
   try {
-    const r = await fetch('/api/apps/autostart', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: it.id, enabled: !!enabled }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || 'fail'))
-    toast(j.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${it.name}` : '❌ ' + (j.message || ''))
+    const result = await setAppAutostart(it.id, enabled)
+    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${it.name}` : '❌ ' + (result.message || ''))
     await loadAutostart(true)
     await loadManaged(true)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function setDockerPolicy(it, policy) {
   const name = (it.id || '').replace(/^docker-ctr:/, '').replace(/^docker:/, '')
   busy.value = true
   try {
-    const r = await fetch('/api/apps/autostart/docker-policy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, policy }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || 'fail'))
-    toast(j.ok ? `✅ restart=${policy}` : '❌ ' + (j.message || ''))
+    const result = await setDockerAutostartPolicy(name, policy)
+    toast(result.ok ? `✅ restart=${policy}` : '❌ ' + (result.message || ''))
     await loadAutostart(true)
     await loadManaged(true)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function runAutostartNow() {
   if (!confirm(t('apps.confirm_run_autostart'))) return
   busy.value = true
   try {
-    const r = await fetch('/api/apps/autostart/run-now', { method: 'POST' })
-    const j = await r.json().catch(() => ({}))
-    toast(j.ok ? '✅ ' + (j.message || 'ok') : '❌ ' + (j.message || 'fail'))
+    const result = await runAppAutostartNow()
+    toast(result.ok ? '✅ ' + (result.message || 'ok') : '❌ ' + (result.message || 'fail'))
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function toggleManagedAutostart(it, enabled) {
@@ -976,33 +990,23 @@ async function toggleManagedAutostart(it, enabled) {
       await setAutostartItem({ id: it.autostart_id, name: it.name }, enabled)
       return
     }
-    const r = await fetch('/api/apps/managed/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: it.id,
-        action: enabled ? 'autostart_on' : 'autostart_off',
-      }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || 'fail'))
-    toast(j.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')}` : '❌ ' + (j.message || ''))
+    const result = await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off')
+    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')}` : '❌ ' + (result.message || ''))
     await loadManaged(true)
     if (detail.value?.id === it.id) {
       detail.value = { ...detail.value, autostart: enabled }
     }
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function openDetail(it) {
   busy.value = true
   try {
-    const r = await fetch('/api/apps/managed/detail?id=' + encodeURIComponent(it.id))
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText)
-    const d = await r.json()
+    const d = await getManagedAppDetail(it.id)
     // merge list-level autostart flags
     d.autostart = it.autostart
     d.autostart_id = it.autostart_id
@@ -1013,8 +1017,17 @@ async function openDetail(it) {
     }
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
+}
+
+function stopCfLoginPolling() {
+  // Invalidating the generation also neutralizes a request that is already in
+  // flight: its late response cannot update a closed drawer or schedule again.
+  cfPollGeneration += 1
+  if (cfPollTimer) clearTimeout(cfPollTimer)
+  cfPollTimer = null
 }
 
 function closeDetail() {
@@ -1023,76 +1036,77 @@ function closeDetail() {
   credentialForm.value = { username: '', password: '', confirm: '', url: '', notes: '' }
   showCredentialPassword.value = false
   cfMsg.value = ''
-  if (cfPollTimer) {
-    clearInterval(cfPollTimer)
-    cfPollTimer = null
-  }
-}
-
-async function cfApi(path, opts = {}) {
-  const r = await fetch(path, {
-    method: opts.method || 'GET',
-    headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  })
-  const j = await r.json().catch(() => ({}))
-  if (!r.ok) {
-    const msg = typeof j.detail === 'string' ? j.detail : (j.message || r.statusText)
-    throw new Error(msg || 'request failed')
-  }
-  return j
+  stopCfLoginPolling()
 }
 
 async function cfRefresh() {
   cfBusy.value = true
   try {
-    const s = await cfApi('/api/cloudflared/status')
-    cfStatus.value = s
-    if (s.active_tunnel && !cfSelectedTunnel.value) {
-      cfSelectedTunnel.value = s.active_tunnel
+    const status = await getCloudflareStatus()
+    cfStatus.value = status
+    if (status.active_tunnel && !cfSelectedTunnel.value) {
+      cfSelectedTunnel.value = status.active_tunnel
     }
     if (detail.value?.source_id === 'native-cloudflared') {
       detail.value = {
         ...detail.value,
-        state: s.running ? 'ok' : 'down',
-        cloudflared: s,
-        autostart: !!s.plist,
+        state: status.running ? 'ok' : 'down',
+        cloudflared: status,
+        autostart: !!status.plist,
       }
     }
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
+}
+
+function startCfLoginPolling() {
+  stopCfLoginPolling()
+  const generation = cfPollGeneration
+
+  const poll = async () => {
+    cfPollTimer = null
+    try {
+      const pollResult = await pollCloudflareLogin()
+      if (generation !== cfPollGeneration) return
+      if (pollResult.logged_in) {
+        stopCfLoginPolling()
+        toast('✅ ' + t('apps.cf_logged_in'))
+        await cfRefresh()
+        return
+      }
+    } catch (_) { /* Poll errors are intentionally nonfatal. */ }
+
+    // setTimeout after await keeps at most one request in flight.
+    if (generation === cfPollGeneration) {
+      cfPollTimer = setTimeout(poll, 2500)
+    }
+  }
+
+  cfPollTimer = setTimeout(poll, 2500)
 }
 
 async function cfLogin() {
   cfBusy.value = true
   cfMsg.value = ''
   try {
-    const r = await cfApi('/api/cloudflared/login', { method: 'POST' })
-    cfMsg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '')
-    if (r.login_url) {
-      cfStatus.value = { ...cfStatus.value, login_url: r.login_url, login_pending: true }
-      if (cfPollTimer) clearInterval(cfPollTimer)
-      cfPollTimer = setInterval(async () => {
-        try {
-          const p = await cfApi('/api/cloudflared/login/poll')
-          if (p.logged_in) {
-            clearInterval(cfPollTimer)
-            cfPollTimer = null
-            toast('✅ ' + t('apps.cf_logged_in'))
-            await cfRefresh()
-          }
-        } catch (_) { /* ignore */ }
-      }, 2500)
-    } else if (r.logged_in || r.already) {
+    const result = await startCloudflareLogin()
+    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    if (result.login_url) {
+      cfStatus.value = { ...cfStatus.value, login_url: result.login_url, login_pending: true }
+      startCfLoginPolling()
+    } else if (result.logged_in || result.already) {
+      stopCfLoginPolling()
       await cfRefresh()
     }
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
 }
 
 async function cfStartSelected() {
@@ -1100,19 +1114,17 @@ async function cfStartSelected() {
   cfBusy.value = true
   cfMsg.value = ''
   try {
-    const r = await cfApi('/api/cloudflared/start', {
-      method: 'POST',
-      body: { tunnel: cfSelectedTunnel.value },
-    })
-    cfMsg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '')
-    toast(r.ok ? '✅ ' + t('apps.tunnel_started', { name: cfSelectedTunnel.value }) : '❌ ' + (r.message || ''))
+    const result = await startCloudflareTunnel(cfSelectedTunnel.value)
+    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    toast(result.ok ? '✅ ' + t('apps.tunnel_started', { name: cfSelectedTunnel.value }) : '❌ ' + (result.message || ''))
     await cfRefresh()
     await loadManaged(true)
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
 }
 
 async function cfStartToken() {
@@ -1120,60 +1132,57 @@ async function cfStartToken() {
   cfBusy.value = true
   cfMsg.value = ''
   try {
-    const r = await cfApi('/api/cloudflared/start-token', {
-      method: 'POST',
-      body: { token: cfToken.value, label: cfSelectedTunnel.value || 'token' },
-    })
-    cfMsg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '')
-    toast(r.ok ? '✅ ' + t('apps.token_tunnel_started') : '❌ ' + (r.message || ''))
+    const result = await startCloudflareToken(cfToken.value, cfSelectedTunnel.value || 'token')
+    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    toast(result.ok ? '✅ ' + t('apps.token_tunnel_started') : '❌ ' + (result.message || ''))
     cfToken.value = ''
     await cfRefresh()
     await loadManaged(true)
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
 }
 
 async function cfStop() {
   cfBusy.value = true
   try {
-    const r = await cfApi('/api/cloudflared/stop', { method: 'POST' })
-    cfMsg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '')
-    toast(r.ok ? '✅ ' + t('apps.stopped') : '❌ ' + (r.message || ''))
+    const result = await stopCloudflare()
+    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    toast(result.ok ? '✅ ' + t('apps.stopped') : '❌ ' + (result.message || ''))
     await cfRefresh()
     await loadManaged(true)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
 }
 
 async function cfRestart() {
   cfBusy.value = true
   try {
-    const r = await cfApi('/api/cloudflared/restart', { method: 'POST' })
-    cfMsg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '')
-    toast(r.ok ? '✅ ' + t('apps.restarted') : '❌ ' + (r.message || ''))
+    const result = await restartCloudflare()
+    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    toast(result.ok ? '✅ ' + t('apps.restarted') : '❌ ' + (result.message || ''))
     await cfRefresh()
     await loadManaged(true)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
 }
 
 async function cfCreate() {
   if (!cfNewName.value) return
   cfBusy.value = true
   try {
-    const r = await cfApi('/api/cloudflared/create', {
-      method: 'POST',
-      body: { name: cfNewName.value },
-    })
-    cfMsg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '')
-    if (r.ok) {
+    const result = await createCloudflareTunnel(cfNewName.value)
+    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    if (result.ok) {
       cfSelectedTunnel.value = cfNewName.value
       cfNewName.value = ''
     }
@@ -1181,25 +1190,24 @@ async function cfCreate() {
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
 }
 
 async function cfRouteDns() {
   if (!cfSelectedTunnel.value || !cfDnsHost.value) return
   cfBusy.value = true
   try {
-    const r = await cfApi('/api/cloudflared/route-dns', {
-      method: 'POST',
-      body: { tunnel: cfSelectedTunnel.value, hostname: cfDnsHost.value },
-    })
-    cfMsg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '')
-    toast(r.ok ? '✅ ' + t('apps.dns_bound') : '❌ ' + (r.message || ''))
+    const result = await routeCloudflareDns(cfSelectedTunnel.value, cfDnsHost.value)
+    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    toast(result.ok ? '✅ ' + t('apps.dns_bound') : '❌ ' + (result.message || ''))
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
+  } finally {
+    cfBusy.value = false
   }
-  cfBusy.value = false
 }
 
 function generateCredentialPassword() {
@@ -1229,16 +1237,14 @@ async function loadCredential(app) {
     notes: '',
   }
   try {
-    const r = await fetch('/api/apps/credentials?id=' + encodeURIComponent(app.id))
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || r.statusText)
-    credential.value = j
+    const result = await getAppCredential(app.id)
+    credential.value = result
     credentialForm.value = {
-      username: j.username || credentialDefaultUsername(app),
+      username: result.username || credentialDefaultUsername(app),
       password: '',
       confirm: '',
-      url: j.url || openUrl(app) || '',
-      notes: j.notes || '',
+      url: result.url || openUrl(app) || '',
+      notes: result.notes || '',
     }
   } catch (e) {
     toast('❌ ' + e.message)
@@ -1261,45 +1267,39 @@ async function saveCredential(applyToService) {
   }
   credentialBusy.value = true
   try {
-    const r = await fetch('/api/apps/credentials', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        service_id: detail.value.id,
-        display_name: detail.value.name || detail.value.id,
-        username: f.username,
-        password: f.password,
-        url: f.url,
-        notes: f.notes,
-        apply_to_service: !!applyToService,
-      }),
+    const result = await saveAppCredential({
+      service_id: detail.value.id,
+      display_name: detail.value.name || detail.value.id,
+      username: f.username,
+      password: f.password,
+      url: f.url,
+      notes: f.notes,
+      apply_to_service: !!applyToService,
     })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || r.statusText)
-    credential.value = j.credential
+    credential.value = result.credential
     credentialForm.value.password = ''
     credentialForm.value.confirm = ''
     showCredentialPassword.value = false
-    toast('✅ ' + (j.message || t('apps.credential_saved')))
+    toast('✅ ' + (result.message || t('apps.credential_saved')))
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    credentialBusy.value = false
   }
-  credentialBusy.value = false
 }
 
 async function deleteCredential() {
   if (!confirm(t('apps.credential_delete_confirm'))) return
   credentialBusy.value = true
   try {
-    const r = await fetch('/api/apps/credentials?id=' + encodeURIComponent(detail.value.id), { method: 'DELETE' })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || r.statusText)
+    await deleteAppCredential(detail.value.id)
     await loadCredential(detail.value)
     toast('✅ ' + t('apps.credential_deleted'))
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    credentialBusy.value = false
   }
-  credentialBusy.value = false
 }
 
 async function openManagedLogs(it) {
@@ -1307,9 +1307,8 @@ async function openManagedLogs(it) {
   logTitle.value = (it.name || it.id) + ' · logs'
   logText.value = t('common.loading')
   try {
-    const r = await fetch('/api/apps/managed/logs?id=' + encodeURIComponent(it.id) + '&lines=150')
-    const j = await r.json()
-    logText.value = j.log || j.message || '—'
+    const result = await getManagedAppLogs(it.id, 150)
+    logText.value = result.log || result.message || '—'
   } catch (e) {
     logText.value = e.message
   }
@@ -1319,20 +1318,15 @@ async function doManagedAction(it, action) {
   if (!it?.id) return
   busy.value = true
   try {
-    const r = await fetch('/api/apps/managed/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: it.id, action }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || 'fail'))
-    toast(j.ok !== false ? `✅ ${action}` : '❌ ' + (j.message || ''))
+    const result = await manageApp(it.id, action)
+    toast(result.ok !== false ? `✅ ${action}` : '❌ ' + (result.message || ''))
     await loadManaged(true)
     if (detail.value?.id === it.id) await openDetail(it)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doManagedUninstall(it) {
@@ -1341,21 +1335,16 @@ async function doManagedUninstall(it) {
   const removeData = it.kind === 'docker' ? confirm(t('apps.confirm_remove_data')) : false
   busy.value = true
   try {
-    const r = await fetch('/api/apps/managed/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: it.id, action: 'uninstall', remove_data: removeData }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || 'fail'))
-    toast(j.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + (j.message || ''))
+    const result = await manageApp(it.id, 'uninstall', removeData)
+    toast(result.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + (result.message || ''))
     detail.value = null
     await loadManaged(true)
     await loadCatalog()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 const quickCats = computed(() => {
@@ -1557,9 +1546,9 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) timer()
   if (logTimer) clearInterval(logTimer)
-  // The Cloudflare login poll survives closing the drawer, so leaving the page
-  // without closing it would otherwise keep hitting /login/poll every 2.5s.
-  if (cfPollTimer) clearInterval(cfPollTimer)
+  // Stop the scheduled poll and invalidate any request already in flight so a
+  // late response cannot update this unmounted page or schedule another poll.
+  stopCfLoginPolling()
 })
 
 

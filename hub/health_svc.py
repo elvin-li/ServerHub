@@ -73,7 +73,7 @@ def run_checks(force: bool = False) -> dict:
 
     # key ports
     for port, name, fix in (
-        (8086, "ServerHub 面板 :8086", "launchctl kickstart com.elvin.serverhub"),
+        (8086, "ServerHub 面板 :8086", "launchctl kickstart local.serverhub.panel"),
         (8123, "Home Assistant :8123", "检查 com.homeassistant.core"),
         (8281, "Nginx HTTPS :8281", "检查系统 Nginx / 证书"),
     ):

@@ -17,12 +17,27 @@ _cache = {"t": 0.0, "v": None}
 _CACHE_TTL = 6.0
 _cache_lock = threading.Lock()
 _refresh_lock = threading.Lock()
+_cache_generation = 0
+_cache_refresh_serial = 0
 
 _services_cache = {"t": 0.0, "v": None}
 _SERVICES_CACHE_TTL = 6.0
 _services_cache_lock = threading.Lock()
 _services_refresh_lock = threading.Lock()
-_FORCE_COALESCE_SECONDS = 1.0
+_services_cache_generation = 0
+_services_refresh_serial = 0
+
+#: Memo for `networksetup -listnetworkserviceorder`.
+#:
+#: Four call sites read the service order, and because two of them sit inside
+#: per-interface loops a single /api/network request ran the command six times --
+#: six ~60ms subprocesses returning byte-identical output.  The read is a pure
+#: dump of system network configuration, so one call per request window is
+#: enough.  TTL matches the surrounding caches and _bust() clears it with them,
+#: so an interface change is not masked for longer than the page already allows.
+_order_cache: dict = {"t": 0.0, "v": None}
+_ORDER_CACHE_TTL = 6.0
+_order_cache_lock = threading.Lock()
 
 NS = "/usr/sbin/networksetup"
 
@@ -146,7 +161,23 @@ def hardware_ports() -> list:
 
 
 def _network_service_order_entries() -> list[dict]:
-    """Read service order without the expensive per-service detail calls."""
+    """Read service order without the expensive per-service detail calls.
+
+    Memoised: see :data:`_order_cache`.  Callers treat this as cheap and some of
+    them loop, so the cost has to live here rather than in each call site.
+    """
+    with _order_cache_lock:
+        hit = _order_cache["v"]
+        if hit is not None and time.time() - _order_cache["t"] < _ORDER_CACHE_TTL:
+            return hit
+
+    entries = _network_service_order_uncached()
+    with _order_cache_lock:
+        _order_cache.update(t=time.time(), v=entries)
+    return entries
+
+
+def _network_service_order_uncached() -> list[dict]:
     rc, out, _ = sh([NS, "-listnetworkserviceorder"], timeout=10)
     if rc != 0:
         return []
@@ -198,8 +229,11 @@ def _build_network_services() -> list:
 
 def network_services(force: bool = False) -> list:
     """Cached service details with one in-flight networksetup refresh."""
-    if not force:
-        with _services_cache_lock:
+    global _services_refresh_serial
+
+    with _services_cache_lock:
+        observed_refresh = _services_refresh_serial
+        if not force:
             hit = _services_cache["v"]
             if hit is not None and time.time() - _services_cache["t"] < _SERVICES_CACHE_TTL:
                 return list(hit)
@@ -207,16 +241,20 @@ def network_services(force: bool = False) -> list:
     with _services_refresh_lock:
         with _services_cache_lock:
             hit = _services_cache["v"]
-            age = time.time() - _services_cache["t"] if hit is not None else float("inf")
-            if hit is not None and (
-                (not force and age < _SERVICES_CACHE_TTL)
-                or age < _FORCE_COALESCE_SECONDS
-            ):
+            if not force:
+                if hit is not None and time.time() - _services_cache["t"] < _SERVICES_CACHE_TTL:
+                    return list(hit)
+            elif hit is not None and _services_refresh_serial != observed_refresh:
+                # A caller that held the refresh lock published while this forced
+                # caller waited. Reuse exactly that refresh, not an older warm hit.
                 return list(hit)
+            build_generation = _services_cache_generation
 
         services = _build_network_services()
         with _services_cache_lock:
-            _services_cache.update(t=time.time(), v=services)
+            if _services_cache_generation == build_generation:
+                _services_cache.update(t=time.time(), v=services)
+                _services_refresh_serial += 1
         return list(services)
 
 
@@ -454,60 +492,80 @@ def switch_profile(profile: str) -> dict:
     other = [s for s in svcs if s not in wifi and s not in eth]
 
     logs = []
+    steps: list[dict] = []
     order_names: list[str] = []
 
+    def record(label: str, result: dict, *, critical: bool = True) -> None:
+        step = {"step": label, "critical": critical, **result}
+        steps.append(step)
+        logs.append(f"{label}: {result.get('message') or ''}".rstrip())
+
+    missing_kind = None
+    if profile in ("ethernet", "wired", "lan", "ethernet_only", "wired_only") and not eth:
+        missing_kind = chr(0x6709) + chr(0x7EBF)
+    elif profile in ("wifi", "wireless", "wifi_only") and not wifi:
+        missing_kind = "Wi-Fi"
+    if missing_kind:
+        return {
+            "ok": False,
+            "profile": profile,
+            "order": [],
+            "ethernet_services": [s["name"] for s in eth],
+            "wifi_services": [s["name"] for s in wifi],
+            "steps": [],
+            "alias_rebind": None,
+            "message": f"未发现可用的{missing_kind}网络服务，未更改网络配置",
+        }
+
     if profile in ("ethernet", "wired", "lan"):
-        # Prefer wired, keep Wi-Fi as fallback
+        # Prefer wired, keep Wi-Fi as fallback.
         order_names = [s["name"] for s in eth] + [s["name"] for s in wifi] + [s["name"] for s in other]
         for s in eth:
-            r = set_service_enabled(s["name"], True)
-            logs.append(f"enable {s['name']}: {r.get('message')}")
-        # ensure Wi-Fi stays on as backup unless user asked only
+            record(f"enable {s['name']}", set_service_enabled(s["name"], True))
     elif profile in ("ethernet_only", "wired_only"):
         order_names = [s["name"] for s in eth] + [s["name"] for s in other] + [s["name"] for s in wifi]
         for s in eth:
-            r = set_service_enabled(s["name"], True)
-            logs.append(f"enable {s['name']}: {r.get('message')}")
+            record(f"enable {s['name']}", set_service_enabled(s["name"], True))
         for s in wifi:
-            r = set_service_enabled(s["name"], False)
-            logs.append(f"disable {s['name']}: {r.get('message')}")
+            record(f"disable {s['name']}", set_service_enabled(s["name"], False))
     elif profile in ("wifi", "wireless"):
         order_names = [s["name"] for s in wifi] + [s["name"] for s in eth] + [s["name"] for s in other]
         for s in wifi:
-            r = set_service_enabled(s["name"], True)
-            logs.append(f"enable {s['name']}: {r.get('message')}")
-        set_wifi_power(True)
-    elif profile in ("wifi_only",):
+            record(f"enable {s['name']}", set_service_enabled(s["name"], True))
+        record("enable Wi-Fi radio", set_wifi_power(True), critical=False)
+    elif profile == "wifi_only":
         order_names = [s["name"] for s in wifi] + [s["name"] for s in other] + [s["name"] for s in eth]
         for s in wifi:
-            r = set_service_enabled(s["name"], True)
-            logs.append(f"enable {s['name']}: {r.get('message')}")
+            record(f"enable {s['name']}", set_service_enabled(s["name"], True))
         for s in eth:
-            r = set_service_enabled(s["name"], False)
-            logs.append(f"disable {s['name']}: {r.get('message')}")
-        set_wifi_power(True)
+            record(f"disable {s['name']}", set_service_enabled(s["name"], False))
+        record("enable Wi-Fi radio", set_wifi_power(True), critical=False)
     else:
         raise HTTPException(400, "profile 可选: wifi | ethernet | wifi_only | ethernet_only")
 
-    if not order_names:
-        order_names = [s["name"] for s in svcs]
     ord_r = set_service_order(order_names)
-    logs.append(ord_r.get("message") or "")
+    record("set service order", ord_r)
     _bust()
-    # After path change, rebind managed IP aliases onto new preferred NIC
-    alias_r = None
+
+    # After path change, rebind managed IP aliases onto the new preferred NIC.
     try:
         time.sleep(1.5)  # allow link/DHCP to settle slightly
         alias_r = ensure_aliases_on_preferred(force=True)
-        logs.append(alias_r.get("message") or "")
     except Exception as e:
-        logs.append(f"alias rebind: {e}")
+        alias_r = {"ok": False, "message": str(e)}
+    record("rebind aliases", alias_r, critical=False)
+
     return {
-        "ok": ord_r.get("ok", False),
+        "ok": all(
+            step.get("ok") is not False
+            for step in steps
+            if step.get("critical", True)
+        ),
         "profile": profile,
         "order": order_names,
         "ethernet_services": [s["name"] for s in eth],
         "wifi_services": [s["name"] for s in wifi],
+        "steps": steps,
         "alias_rebind": alias_r,
         "message": "; ".join(x for x in logs if x),
         "hint": "有线优先时请插入网线；若网卡未识别可先 networksetup -detectnewhardware",
@@ -1501,11 +1559,17 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
 
 
 def _bust():
-    """Invalidate network caches without exposing partially-updated state."""
+    """Invalidate caches and prevent older in-flight builds from publishing."""
+    global _cache_generation, _services_cache_generation
+
     with _cache_lock:
+        _cache_generation += 1
         _cache.update(t=0.0, v=None)
     with _services_cache_lock:
+        _services_cache_generation += 1
         _services_cache.update(t=0.0, v=None)
+    with _order_cache_lock:
+        _order_cache.update(t=0.0, v=None)
 
 
 def _build_overview(force_services: bool = False) -> dict:
@@ -1575,8 +1639,11 @@ def _build_overview(force_services: bool = False) -> dict:
 
 def overview(force: bool = False) -> dict:
     """Cached network overview with one in-flight subprocess refresh."""
-    if not force:
-        with _cache_lock:
+    global _cache_refresh_serial
+
+    with _cache_lock:
+        observed_refresh = _cache_refresh_serial
+        if not force:
             hit = _cache["v"]
             if hit is not None and time.time() - _cache["t"] < _CACHE_TTL:
                 return dict(hit)
@@ -1584,14 +1651,18 @@ def overview(force: bool = False) -> dict:
     with _refresh_lock:
         with _cache_lock:
             hit = _cache["v"]
-            age = time.time() - _cache["t"] if hit is not None else float("inf")
-            if hit is not None and (
-                (not force and age < _CACHE_TTL)
-                or age < _FORCE_COALESCE_SECONDS
-            ):
+            if not force:
+                if hit is not None and time.time() - _cache["t"] < _CACHE_TTL:
+                    return dict(hit)
+            elif hit is not None and _cache_refresh_serial != observed_refresh:
+                # A caller that held the refresh lock published while this forced
+                # caller waited. Reuse exactly that refresh, not an older warm hit.
                 return dict(hit)
+            build_generation = _cache_generation
 
         data = _build_overview(force_services=force)
         with _cache_lock:
-            _cache.update(t=time.time(), v=data)
+            if _cache_generation == build_generation:
+                _cache.update(t=time.time(), v=data)
+                _cache_refresh_serial += 1
         return dict(data)

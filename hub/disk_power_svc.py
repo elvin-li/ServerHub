@@ -18,6 +18,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from hub.disk_manage_svc import invalidate_disk_info
 from hub.paths import SMARTCTL
 from hub.util import sh
 
@@ -288,6 +289,13 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     # 1) Always unmount first (safe, keeps device node for wake)
     rc, out, err = sh(["/usr/sbin/diskutil", "unmountDisk", "force", node], timeout=60)
     log.append(f"unmountDisk: rc={rc} {(out or err)[:200]}")
+    # This module mutates the very mount state disk_manage_svc caches, so its
+    # short-TTL `diskutil info` entries are stale the moment the command runs.
+    # Drop them here too: the storage page renders both modules side by side, and
+    # without this a disk parked from the power panel still shows as mounted in
+    # the managed-volumes list for up to the cache TTL.  Invalidate even on
+    # failure -- a partial unmount still moved state.
+    invalidate_disk_info()
     if rc != 0:
         return {
             "ok": False,
@@ -302,6 +310,9 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     if mode == "eject":
         rc2, out2, err2 = sh(["/usr/sbin/diskutil", "eject", node], timeout=60)
         log.append(f"eject: rc={rc2} {(out2 or err2)[:200]}")
+        # Eject removes the device node entirely, which is a second state change
+        # after the unmount above -- the earlier invalidation predates it.
+        invalidate_disk_info()
         ok = rc2 == 0
         return {
             "ok": ok,
@@ -380,6 +391,9 @@ def wake_disk(disk_id: str) -> dict:
     time.sleep(0.5)
     rc2, out2, err2 = sh(["/usr/sbin/diskutil", "mountDisk", node], timeout=90)
     log.append(f"mountDisk: rc={rc2} {(out2 or err2)[:200]}")
+    # Waking remounts the volumes, so every cached `diskutil info` entry for this
+    # disk and its children now reports the wrong mount point.
+    invalidate_disk_info()
     ok = rc2 == 0
     return {
         "ok": ok,

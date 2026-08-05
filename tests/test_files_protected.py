@@ -4,8 +4,10 @@ These cover the security blocker where ~/Services and ~ were browsable roots,
 so the panel would serve its own session-signing key, credential store and
 admin password hash — and accept delete/rename on them.
 """
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import mock_open, patch
 
 from fastapi import HTTPException
 
@@ -72,6 +74,41 @@ class TestHomeNotADefaultRoot(unittest.TestCase):
     def test_home_absent_from_default_roots(self):
         ids = {r["id"] for r in files_svc.default_roots()}
         self.assertNotIn("home", ids)
+
+
+class TestFileBrowserStartup(unittest.TestCase):
+    def test_direct_start_uses_argv_without_a_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "filebrowser;not-a-command"
+            binary.touch()
+            database = root / "filebrowser.db"
+            media = root / "media with spaces"
+            service_root = root / "services"
+            statuses = [
+                {"running": False},
+                {"running": True, "port": files_svc.FB_PORT},
+            ]
+            with (
+                patch.object(files_svc, "FB_BIN", binary),
+                patch.object(files_svc, "FB_DB", database),
+                patch.object(files_svc, "FB_ROOT_DEFAULT", media),
+                patch.object(files_svc, "SERVICES_ROOT", service_root),
+                patch.object(files_svc, "FB_PLIST", root / "missing.plist"),
+                patch.object(files_svc, "filebrowser_status", side_effect=statuses),
+                patch.object(files_svc.time, "sleep"),
+                patch.object(files_svc.subprocess, "Popen") as popen,
+                patch("builtins.open", mock_open()),
+            ):
+                result = files_svc.ensure_filebrowser()
+
+        self.assertTrue(result["running"])
+        argv = popen.call_args.args[0]
+        self.assertIsInstance(argv, list)
+        self.assertEqual(argv[0], str(binary))
+        self.assertIn(str(media), argv)
+        self.assertNotIn("shell", popen.call_args.kwargs)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
 
 if __name__ == "__main__":

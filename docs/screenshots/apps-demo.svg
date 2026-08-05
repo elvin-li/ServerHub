@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">ServerHub application process overview with fictional demo data</title>
+  <desc id="desc">A sanitized ServerHub applications mockup with fictional process names, statuses, processor usage, and memory usage.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f7f7f5"/><stop offset="1" stop-color="#efeee9"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="18" flood-color="#392817" flood-opacity=".10"/></filter>
+  </defs>
+  <rect width="1440" height="900" fill="url(#bg)"/>
+  <rect width="236" height="900" fill="#20211f"/>
+  <circle cx="42" cy="48" r="18" fill="#ff8c2f"/><path d="M34 48h16M42 40v16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <text x="70" y="56" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="25" font-weight="700">ServerHub</text>
+  <g fill="#b8b9b4" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16">
+    <text x="48" y="128">Overview</text><text x="48" y="237">Services</text><text x="48" y="289">Storage</text><text x="48" y="341">Network</text><text x="48" y="393">Logs</text><text x="48" y="445">Settings</text>
+  </g>
+  <rect x="20" y="154" width="196" height="46" rx="10" fill="#343531"/><rect x="20" y="154" width="4" height="46" rx="2" fill="#ff8c2f"/>
+  <text x="48" y="184" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" font-weight="600">Applications</text>
+  <rect x="20" y="808" width="196" height="58" rx="12" fill="#2b2c29"/><circle cx="47" cy="837" r="7" fill="#55c47a"/>
+  <text x="65" y="833" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="13" font-weight="600">Demo workspace</text>
+  <text x="65" y="851" fill="#a9aaa5" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="11">Fictional sample data</text>
+
+  <text x="280" y="70" fill="#242522" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="31" font-weight="750">Application processes</text>
+  <text x="280" y="99" fill="#777872" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15">Monitor process health and resource consumption</text>
+  <rect x="1190" y="42" width="202" height="42" rx="21" fill="#fff1e6" stroke="#ff8c2f" stroke-width="1.5"/><circle cx="1217" cy="63" r="6" fill="#ff8c2f"/>
+  <text x="1233" y="68" fill="#a94f0c" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="13" font-weight="700">DEMO DATA · FICTIONAL</text>
+
+  <g filter="url(#shadow)"><rect x="280" y="132" width="1112" height="112" rx="18" fill="#fff"/></g>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+    <text x="310" y="168" fill="#686963" font-size="13" font-weight="650">PROCESS SUMMARY</text>
+    <text x="310" y="211" fill="#242522" font-size="31" font-weight="760">4 healthy</text>
+    <line x1="520" y1="159" x2="520" y2="218" stroke="#ecebe7"/>
+    <text x="557" y="168" fill="#686963" font-size="13" font-weight="650">COMBINED CPU</text><text x="557" y="211" fill="#242522" font-size="31" font-weight="760">18.7%</text>
+    <line x1="790" y1="159" x2="790" y2="218" stroke="#ecebe7"/>
+    <text x="827" y="168" fill="#686963" font-size="13" font-weight="650">COMBINED MEMORY</text><text x="827" y="211" fill="#242522" font-size="31" font-weight="760">3.4 GB</text>
+    <line x1="1090" y1="159" x2="1090" y2="218" stroke="#ecebe7"/>
+    <text x="1127" y="168" fill="#686963" font-size="13" font-weight="650">UPTIME</text><text x="1127" y="211" fill="#242522" font-size="31" font-weight="760">6d 14h</text>
+  </g>
+
+  <g filter="url(#shadow)"><rect x="280" y="272" width="1112" height="568" rx="18" fill="#fff"/></g>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+    <text x="312" y="316" fill="#242522" font-size="20" font-weight="720">Managed applications</text>
+    <rect x="1136" y="292" width="224" height="42" rx="10" fill="#f5f3ef" stroke="#e5e2dc"/><text x="1160" y="319" fill="#777872" font-size="14">Filter applications…</text>
+    <rect x="312" y="352" width="1048" height="44" rx="9" fill="#f7f6f3"/>
+    <g fill="#777872" font-size="12" font-weight="700"><text x="342" y="379">APPLICATION</text><text x="720" y="379">STATUS</text><text x="878" y="379">CPU</text><text x="1010" y="379">MEMORY</text><text x="1190" y="379">ACTIVITY</text></g>
+
+    <rect x="312" y="414" width="1048" height="88" rx="12" fill="#fffaf6" stroke="#f2e4d7"/>
+    <rect x="312" y="414" width="4" height="88" rx="2" fill="#ff8c2f"/>
+    <rect x="338" y="433" width="50" height="50" rx="13" fill="#fff0e3"/><path d="M352 467h22v-19h-22zM356 444h14" fill="none" stroke="#ff8c2f" stroke-width="3" stroke-linejoin="round"/>
+    <text x="408" y="452" fill="#242522" font-size="16" font-weight="700">Media Indexer</text><text x="408" y="476" fill="#777872" font-size="13">Catalog worker · sample process</text>
+    <circle cx="728" cy="457" r="6" fill="#55c47a"/><text x="744" y="462" fill="#3c3d39" font-size="14" font-weight="600">Running</text>
+    <text x="878" y="462" fill="#3c3d39" font-size="15" font-weight="650">7.2%</text><text x="1010" y="462" fill="#3c3d39" font-size="15" font-weight="650">1.2 GB</text>
+    <rect x="1190" y="449" width="134" height="8" rx="4" fill="#eeeae5"/><rect x="1190" y="449" width="92" height="8" rx="4" fill="#ff8c2f"/>
+
+    <rect x="312" y="518" width="1048" height="88" rx="12" fill="#fff" stroke="#ecebe7"/>
+    <rect x="338" y="537" width="50" height="50" rx="13" fill="#eaf3ff"/><path d="M350 570l8-12 7 7 9-14" fill="none" stroke="#58a6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="408" y="556" fill="#242522" font-size="16" font-weight="700">Build Worker</text><text x="408" y="580" fill="#777872" font-size="13">Automation queue · sample process</text>
+    <circle cx="728" cy="561" r="6" fill="#55c47a"/><text x="744" y="566" fill="#3c3d39" font-size="14" font-weight="600">Running</text>
+    <text x="878" y="566" fill="#3c3d39" font-size="15" font-weight="650">5.4%</text><text x="1010" y="566" fill="#3c3d39" font-size="15" font-weight="650">896 MB</text>
+    <rect x="1190" y="553" width="134" height="8" rx="4" fill="#eeeae5"/><rect x="1190" y="553" width="69" height="8" rx="4" fill="#58a6ff"/>
+
+    <rect x="312" y="622" width="1048" height="88" rx="12" fill="#fff" stroke="#ecebe7"/>
+    <rect x="338" y="641" width="50" height="50" rx="13" fill="#eaf8ef"/><path d="M351 655h24v22h-24zM357 650h12" fill="none" stroke="#55c47a" stroke-width="3" stroke-linejoin="round"/>
+    <text x="408" y="660" fill="#242522" font-size="16" font-weight="700">Backup Agent</text><text x="408" y="684" fill="#777872" font-size="13">Snapshot scheduler · sample process</text>
+    <circle cx="728" cy="665" r="6" fill="#55c47a"/><text x="744" y="670" fill="#3c3d39" font-size="14" font-weight="600">Running</text>
+    <text x="878" y="670" fill="#3c3d39" font-size="15" font-weight="650">3.1%</text><text x="1010" y="670" fill="#3c3d39" font-size="15" font-weight="650">742 MB</text>
+    <rect x="1190" y="657" width="134" height="8" rx="4" fill="#eeeae5"/><rect x="1190" y="657" width="43" height="8" rx="4" fill="#55c47a"/>
+
+    <rect x="312" y="726" width="1048" height="88" rx="12" fill="#fff" stroke="#ecebe7"/>
+    <rect x="338" y="745" width="50" height="50" rx="13" fill="#f1ecff"/><circle cx="363" cy="770" r="13" fill="none" stroke="#8b6ed8" stroke-width="3"/><path d="M357 770h12M363 764v12" stroke="#8b6ed8" stroke-width="2.5" stroke-linecap="round"/>
+    <text x="408" y="764" fill="#242522" font-size="16" font-weight="700">Web Console</text><text x="408" y="788" fill="#777872" font-size="13">Management interface · sample process</text>
+    <circle cx="728" cy="769" r="6" fill="#55c47a"/><text x="744" y="774" fill="#3c3d39" font-size="14" font-weight="600">Running</text>
+    <text x="878" y="774" fill="#3c3d39" font-size="15" font-weight="650">3.0%</text><text x="1010" y="774" fill="#3c3d39" font-size="15" font-weight="650">612 MB</text>
+    <rect x="1190" y="761" width="134" height="8" rx="4" fill="#eeeae5"/><rect x="1190" y="761" width="36" height="8" rx="4" fill="#8b6ed8"/>
+  </g>
+</svg>

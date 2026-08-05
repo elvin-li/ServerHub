@@ -53,6 +53,16 @@ def invalidate_status():
         vms_svc.invalidate_vm_lists()
     except Exception:
         pass
+    try:
+        from hub.adaptive import invalidate_lsof_snapshot
+
+        # Port detection and the orphan-listener scan both read one cached
+        # `lsof` snapshot.  A start/stop changes exactly what that snapshot
+        # reports, so it has to go with the rest of them or the next refresh
+        # reports ports from before the action.
+        invalidate_lsof_snapshot()
+    except Exception:
+        pass
     with _lock:
         _adaptive_cache["t"] = 0
 
@@ -151,6 +161,67 @@ def _build_status() -> dict:
         "problems": problems[:30],
         "service_total": len(services),
         "adaptive": adaptive_info,
+    }
+
+
+_MEMBER_SERVICE_FIELDS = {
+    "id", "name", "kind", "state", "detail", "url", "group", "port", "ports",
+}
+
+
+def member_service_summary(service: dict) -> dict:
+    """Copy only fields a family member needs to identify and open a service."""
+    summary = {
+        key: value
+        for key, value in service.items()
+        if key in _MEMBER_SERVICE_FIELDS
+    }
+    actions = set(service.get("actions") or [])
+    summary["actions"] = [action for action in ("open", "detail") if action in actions]
+    return summary
+
+
+def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
+    """Return a member-safe status snapshot containing only assigned services.
+
+    The full status object is cached and shared with administrators, so this
+    function always builds new group/service lists instead of mutating it.
+    Host metrics, global quick links, and adaptive discovery metadata are
+    administrator data and are deliberately omitted from member responses.
+    """
+    allowed = {str(resource) for resource in resources if str(resource).strip()}
+    groups: list[dict] = []
+    services: list[dict] = []
+    for group in status.get("groups") or []:
+        visible = [
+            member_service_summary(service)
+            for service in (group.get("services") or [])
+            if str(service.get("id") or "") in allowed
+        ]
+        if visible:
+            groups.append({"group": group.get("group"), "services": visible})
+            services.extend(visible)
+
+    counts = {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
+    for service in services:
+        state = str(service.get("state") or "unknown")
+        counts[state] = counts.get(state, 0) + 1
+
+    return {
+        "version": status.get("version"),
+        "ts": status.get("ts"),
+        "groups": groups,
+        "system": {},
+        "counts": counts,
+        "links": [],
+        "engine_up": status.get("engine_up"),
+        "problems": [
+            service
+            for service in services
+            if service.get("state") not in ("ok", "stopped")
+        ][:30],
+        "service_total": len(services),
+        "adaptive": {},
     }
 
 

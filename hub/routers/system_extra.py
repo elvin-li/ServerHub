@@ -330,8 +330,11 @@ def tools_syslog(
     minutes: int = Query(60, ge=5, le=1440),
     limit: int = Query(80, ge=10, le=300),
     level: str = Query("error"),
+    force: bool = False,
 ):
-    return tools_svc.syslog_tail(minutes=minutes, limit=limit, level=level)
+    return tools_svc.syslog_tail(
+        minutes=minutes, limit=limit, level=level, force=force
+    )
 
 
 @router.get("/api/tools/hardware")

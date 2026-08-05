@@ -16,7 +16,11 @@ from hub.util import port_open, sh
 
 
 # Short TTL shared by status feed, bookmarks, and /api/vms (dedupe utmctl/orbctl).
-_LIST_TTL = 5.0
+# Must stay LONGER than hub.status._STATUS_TTL (10s): the status feed is polled
+# on that cadence, so a 5s TTL here guaranteed a miss on every refresh and paid
+# ~390ms for utmctl+orbctl every single time.  Correctness after a VM
+# start/stop comes from invalidate_vm_lists(), not from the TTL lapsing.
+_LIST_TTL = 15.0
 _utm_cache: dict[str, Any] = {"t": 0.0, "v": None}
 _orb_cache: dict[str, Any] = {"t": 0.0, "v": None}
 _list_lock = threading.Lock()

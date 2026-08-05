@@ -105,47 +105,6 @@ def screensharing_status() -> dict:
     }
 
 
-def enable_screensharing() -> dict:
-    """Best-effort enable of the built-in Screen Sharing daemon (needs sudo).
-
-    Modern macOS may block this without Full Disk Access / a TCC prompt — on
-    failure we surface a clear manual path instead of erroring hard.
-    """
-    if _screensharing_running():
-        return {"ok": True, "running": True, "message": "屏幕共享已在运行", **screensharing_status()}
-    # launchctl enable + bootstrap (system domain)
-    sh(["sudo", "-n", "/bin/launchctl", "enable", f"system/{SS_LABEL}"], timeout=8)
-    rc, out, err = sh(
-        ["sudo", "-n", "/bin/launchctl", "bootstrap", "system", SS_PLIST], timeout=10
-    )
-    # give the listener a moment
-    for _ in range(10):
-        time.sleep(0.3)
-        if _screensharing_running():
-            return {"ok": True, "running": True, "message": "已启用屏幕共享", **screensharing_status()}
-    return {
-        "ok": False,
-        "running": False,
-        "message": (
-            "无法自动启用（可能需要管理员权限或系统隐私授权）。"
-            "请到 系统设置 › 通用 › 共享 › 打开「屏幕共享」。"
-            + (f" [{(err or out).strip()[:120]}]" if (err or out).strip() else "")
-        ),
-        **screensharing_status(),
-    }
-
-
-def disable_screensharing() -> dict:
-    if not _screensharing_running():
-        return {"ok": True, "running": False, "message": "屏幕共享未运行", **screensharing_status()}
-    sh(["sudo", "-n", "/bin/launchctl", "bootout", f"system/{SS_LABEL}"], timeout=10)
-    for _ in range(8):
-        time.sleep(0.3)
-        if not _screensharing_running():
-            return {"ok": True, "running": False, "message": "已关闭屏幕共享", **screensharing_status()}
-    return {"ok": False, "message": "关闭失败（可能需要管理员权限）", **screensharing_status()}
-
-
 # ─── Power actions ───────────────────────────────────────────────────────────
 
 _ACTIONS = ("shutdown", "restart", "sleep")

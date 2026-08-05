@@ -98,6 +98,12 @@ let socket = null
 let resizeObserver = null
 let previousBodyOverflow = ''
 let intentionalClose = false
+let connectTimer = null
+
+function clearConnectTimer() {
+  if (connectTimer) clearTimeout(connectTimer)
+  connectTimer = null
+}
 
 const canOpen = computed(() => {
   if (target.value === 'host') return !!status.value?.host_enabled
@@ -200,8 +206,17 @@ async function openTerminal() {
   socket.addEventListener('message', onSocketMessage)
   socket.addEventListener('close', onSocketClose)
   socket.addEventListener('error', () => {
+    clearConnectTimer()
+    opening.value = false
     term?.writeln('\r\n\x1b[31mWebSocket connection failed.\x1b[0m')
   })
+  clearConnectTimer()
+  connectTimer = setTimeout(() => {
+    if (!opening.value) return
+    opening.value = false
+    term?.writeln('\r\n\x1b[31mWebSocket connection timed out.\x1b[0m')
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(4000, 'terminal handshake timeout')
+  }, 10000)
 
   resizeObserver = new ResizeObserver(() => fitTerminal())
   resizeObserver.observe(terminalEl.value)
@@ -215,6 +230,7 @@ function onSocketMessage(event) {
   try {
     const message = JSON.parse(event.data)
     if (message.type === 'ready') {
+      clearConnectTimer()
       connected.value = true
       opening.value = false
       sessionId.value = message.session || ''
@@ -222,6 +238,7 @@ function onSocketMessage(event) {
       fitTerminal()
       term?.focus()
     } else if (message.type === 'error') {
+      clearConnectTimer()
       opening.value = false
       const code = message.code || 'terminal error'
       const key = `err.${code}`
@@ -234,6 +251,7 @@ function onSocketMessage(event) {
 }
 
 function onSocketClose() {
+  clearConnectTimer()
   connected.value = false
   opening.value = false
   sessionId.value = ''
@@ -259,6 +277,7 @@ function clearTerminal() {
 
 function closeTerminal() {
   intentionalClose = true
+  clearConnectTimer()
   resizeObserver?.disconnect()
   resizeObserver = null
   if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'operator closed terminal')

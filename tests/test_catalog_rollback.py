@@ -194,18 +194,25 @@ class PortConflictTest(unittest.TestCase):
             self.addCleanup(p.stop)
         self.addCleanup(self._tmp.cleanup)
 
-    def test_port_bound_on_host_refuses_install(self):
+    # A conflict on a template's *suggested* port is now resolved by moving the
+    # app to a free one rather than refusing: every host port in the shipped
+    # templates is variable-driven, and refusing left a third of the catalogue
+    # uninstallable on a busy host with no route forward from the UI.  The refusal
+    # is kept for the two cases where relocating would be wrong -- see
+    # test_catalog_port_assignment.py for the operator-chose-this-port boundary.
+
+    def test_no_free_port_anywhere_still_refuses_install(self):
+        """With every port busy there is nothing to relocate to."""
         with mock.patch.object(catalog, "_port_is_bound", lambda port: True), \
              mock.patch.object(catalog.subprocess, "run") as run:
             with self.assertRaises(HTTPException) as ctx:
                 catalog.install_template(self.tid, {})
         self.assertEqual(ctx.exception.status_code, 409)
-        self.assertEqual(ctx.exception.detail["code"], "catalog.port_in_use")
-        self.assertEqual(ctx.exception.detail["params"]["port"], 59731)
+        self.assertEqual(ctx.exception.detail["code"], "catalog.no_free_port")
         run.assert_not_called()
         self.assertFalse((self.services / self.tid).exists())
 
-    def test_port_claimed_by_other_stack_refuses_install(self):
+    def test_port_claimed_by_other_stack_is_relocated_not_refused(self):
         other = self.services / "someone-else"
         other.mkdir()
         (other / "docker-compose.yml").write_text(
@@ -213,13 +220,17 @@ class PortConflictTest(unittest.TestCase):
         )
         with mock.patch.object(catalog, "_port_is_bound", lambda port: False), \
              mock.patch.object(catalog.subprocess, "run") as run:
-            with self.assertRaises(HTTPException) as ctx:
-                catalog.install_template(self.tid, {})
-        self.assertEqual(ctx.exception.status_code, 409)
-        self.assertEqual(ctx.exception.detail["code"], "catalog.port_claimed")
-        self.assertEqual(ctx.exception.detail["params"]["stack"], "someone-else")
-        run.assert_not_called()
-        self.assertFalse((self.services / self.tid).exists())
+            run.return_value = mock.Mock(returncode=0, stdout="started", stderr="")
+            result = catalog.install_template(self.tid, {})
+
+        self.assertTrue(result["ok"], result.get("message"))
+        moved = result.get("remapped_ports") or []
+        self.assertTrue(moved, "the conflicting port was not reported as moved")
+        self.assertIn("59731", moved[0])
+        compose = (self.services / self.tid / "docker-compose.yml").read_text()
+        self.assertNotIn('"59731:', compose, "still bound to the claimed port")
+        # The other stack keeps its port.
+        self.assertIn('"59731:80"', (other / "docker-compose.yml").read_text())
 
     def test_own_stack_does_not_count_as_claiming_its_port(self):
         """Reinstalling after rollback must not see itself as the conflict."""

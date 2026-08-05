@@ -322,9 +322,9 @@
         </div>
         <div class="run-form">
           <label>{{ t('docker.image') }} *</label>
-          <input v-model="runForm.image" type="text" placeholder="nginx:alpine"  aria-label="nginx:alpine"/>
+          <input v-model="runForm.image" type="text" placeholder="nginx:alpine" :aria-label="t('docker.image')" />
           <label>{{ t('common.name') }}</label>
-          <input v-model="runForm.name" type="text" placeholder="my-nginx"  aria-label="my-nginx"/>
+          <input v-model="runForm.name" type="text" placeholder="my-nginx" :aria-label="t('common.name')" />
           <label>{{ t('docker.restart_policy') }}</label>
           <select v-model="runForm.restart" :aria-label="t('docker.restart_policy')">
             <option value="no">no</option>
@@ -333,11 +333,11 @@
             <option value="on-failure">on-failure</option>
           </select>
           <label>{{ t('docker.ports') }}</label>
-          <input v-model="runForm.ports" type="text" placeholder="8080:80, 443:443"  aria-label="8080:80, 443:443"/>
+          <input v-model="runForm.ports" type="text" placeholder="8080:80, 443:443" :aria-label="t('docker.ports')" />
           <label>{{ t('docker.volumes') }}</label>
-          <input v-model="runForm.volumes" type="text" placeholder="/host/path:/container"  aria-label="/host/path:/container"/>
+          <input v-model="runForm.volumes" type="text" placeholder="/host/path:/container" :aria-label="t('docker.volumes')" />
           <label>{{ t('docker.env') }}</label>
-          <input v-model="runForm.env" type="text" placeholder="KEY=val, FOO=bar"  aria-label="KEY=val, FOO=bar"/>
+          <input v-model="runForm.env" type="text" placeholder="KEY=val, FOO=bar" :aria-label="t('docker.env')" />
           <label>{{ t('docker.network') }}</label>
           <input v-model="runForm.network" type="text" :placeholder="t('docker.network_ph')"  :aria-label="t('docker.network_ph')"/>
           <label>{{ t('docker.command') }}</label>
@@ -428,6 +428,22 @@ const jobId = ref(null)
 let es = null
 let timer = null
 let jobTimer = null
+let jobPollGeneration = 0
+const refreshTimers = new Set()
+
+function stopJobPolling() {
+  jobPollGeneration += 1
+  if (jobTimer) clearTimeout(jobTimer)
+  jobTimer = null
+}
+
+function scheduleRefresh(delay) {
+  const id = setTimeout(() => {
+    refreshTimers.delete(id)
+    void refresh()
+  }, delay)
+  refreshTimers.add(id)
+}
 
 const containers = computed(() => data.value?.containers || [])
 const stats = computed(() => data.value?.stats || {})
@@ -506,6 +522,11 @@ async function refresh() {
   catch (e) { toast('❌ ' + e.message) }
 }
 
+function batchToast(j) {
+  const text = t('docker.done_count', { done: j.done || 0, total: j.total || 0 })
+  toast(j.ok === false ? `⚠ ${text}` : `✅ ${text}`)
+}
+
 async function act(c, action) {
   if (action === 'stop' && !confirm(t('docker.confirm_stop', { name: c.name }))) return
   if (action === 'remove' && !confirm(t('docker.confirm_remove', { name: c.name }))) return
@@ -517,10 +538,13 @@ async function act(c, action) {
       watchJob(r.job_id)
     } else {
       toast(r.ok ? `✅ ${c.name}` : `❌ ${r.message}`)
+      if (r.ok) scheduleRefresh(800)
     }
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
-  setTimeout(refresh, 800)
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
 }
 
 async function doUpdate(c) {
@@ -530,8 +554,11 @@ async function doUpdate(c) {
     const j = await updateContainer(c.id)
     toast('🚀 ' + (j.message || t('docker.updating')))
     if (j.job_id) watchJob(j.job_id)
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
 }
 
 async function doAll(action) {
@@ -545,12 +572,13 @@ async function doAll(action) {
   busy.value = true
   try {
     const j = await containersAll(action)
-    toast(j.ok !== false
-      ? `✅ ${t('docker.done_count', { done: j.done, total: j.total })}`
-      : `❌ ${j.message || ''}`)
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
-  setTimeout(refresh, 1000)
+    batchToast(j)
+    scheduleRefresh(1000)
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
 }
 
 async function batchSel(action) {
@@ -559,10 +587,13 @@ async function batchSel(action) {
   busy.value = true
   try {
     const j = await batchContainers(action, selected.value)
-    toast(t('docker.done_count', { done: j.done, total: j.total }))
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
-  setTimeout(refresh, 1000)
+    batchToast(j)
+    scheduleRefresh(1000)
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
 }
 
 async function checkUpdates() {
@@ -572,27 +603,37 @@ async function checkUpdates() {
     const j = await checkContainerUpdates()
     toast('🚀 ' + j.message)
     if (j.job_id) watchJob(j.job_id)
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
 }
 
 function watchJob(id) {
+  stopJobPolling()
   jobId.value = id
   jobLog.value = t('common.loading')
-  if (jobTimer) clearInterval(jobTimer)
+  const generation = jobPollGeneration
+
   const poll = async () => {
+    jobTimer = null
     try {
       const j = await getStackJob(id)
+      if (generation !== jobPollGeneration) return
       jobLog.value = j.log || ''
       if (!j.running) {
-        clearInterval(jobTimer)
-        jobTimer = null
-        refresh()
+        stopJobPolling()
+        void refresh()
+        return
       }
-    } catch {}
+    } catch {
+      if (generation !== jobPollGeneration) return
+    }
+    if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }
-  poll()
-  jobTimer = setInterval(poll, 1500)
+
+  void poll()
 }
 
 //: A chatty container emits faster than anyone can read.  Without a ceiling the
@@ -711,8 +752,10 @@ async function doRun() {
     }
     const j = await runContainer(body)
     toast(j.ok ? '✅ ' + t('docker.container_created') : `❌ ${j.message}`)
-    showRun.value = false
-    setTimeout(refresh, 800)
+    if (j.ok) {
+      showRun.value = false
+      scheduleRefresh(800)
+    }
   } catch (e) { toast('❌ ' + e.message) }
   busy.value = false
 }
@@ -802,7 +845,9 @@ onMounted(() => { refresh(); timer = startVisibleInterval(refresh, 15000) })
 onUnmounted(() => {
   if (typeof timer === 'function') timer()
   timer = null
-  if (jobTimer) clearInterval(jobTimer)
+  stopJobPolling()
+  for (const id of refreshTimers) clearTimeout(id)
+  refreshTimers.clear()
   closeLogs()
 })
 

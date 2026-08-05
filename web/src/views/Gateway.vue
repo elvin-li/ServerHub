@@ -84,22 +84,23 @@ async function test() {
     toast(j.ok ? '✅ ' + t('gateway.conf_valid') : '❌ ' + t('gateway.conf_invalid'))
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function reload() {
   busy.value = true
   try {
-    const r = await fetch('/api/nginx/reload', { method: 'POST' })
-    const j = await r.json()
+    const j = await reloadNginx()
     msg.value = j.message || ''
     toast(j.ok ? '✅ ' + t('common.reloaded') : '❌ ' + t('common.reload_failed'))
     load()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 onMounted(load)

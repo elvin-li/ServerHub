@@ -316,6 +316,7 @@ function syncFromView(data) {
   preview.value = null
   selected.value = (data.members || []).map((m) => m.mount)
   poolName.value = data.name || 'pool'
+  minFreeGb.value = Number(data.min_free_gb) || 0
   if (data.policy) policy.value = data.policy
 }
 
@@ -325,8 +326,9 @@ async function refresh() {
     syncFromView(await getStoragePool(true))
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loading.value = false
   }
-  loading.value = false
 }
 
 function addMember(mount) {
@@ -349,8 +351,9 @@ async function doPreview() {
   } catch (e) {
     toast('❌ ' + e.message)
     lastMsg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doSave() {
@@ -367,8 +370,9 @@ async function doSave() {
   } catch (e) {
     toast('❌ ' + e.message)
     lastMsg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doClear() {
@@ -381,8 +385,9 @@ async function doClear() {
   } catch (e) {
     toast('❌ ' + e.message)
     lastMsg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 // Action-driven page: no polling, so there is no interval to leak on unmount.

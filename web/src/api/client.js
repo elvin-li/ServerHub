@@ -1,4 +1,12 @@
 import { t } from '../i18n/index.js'
+import {
+  adminPasswordHeaders,
+  clearAdminPassword,
+  encodeAdminPassword,
+  getAdminPassword,
+  promptAdminPassword,
+  setAdminPassword,
+} from '../lib/adminPassword.js'
 
 const DEFAULT_TIMEOUT = 30000 // 30s — generous for docker ops on LAN
 const MAX_RETRIES = 2 // retry failed GET requests up to 2 times
@@ -32,9 +40,13 @@ function errorText(payload, statusText) {
   if (d && typeof d === 'object' && !Array.isArray(d) && d.code) {
     const key = `err.${d.code}`
     const translated = t(key, d.params || {})
+    // Privileged-operation failures carry the tool's own stderr tail in
+    // params.detail; appending it keeps the generic "operation failed" text
+    // from hiding the actual cause (e.g. wg-quick's error line).
+    const detail = typeof d.params?.detail === 'string' ? d.params.detail.trim() : ''
     // t() returns the key itself when it is missing — prefer the server text.
-    if (translated !== key) return translated
-    return d.message || d.code
+    if (translated !== key) return detail ? `${translated}\n${detail}` : translated
+    return detail ? `${d.message || d.code}\n${detail}` : d.message || d.code
   }
   if (typeof d === 'string' && d) return d
   // FastAPI request-validation errors: detail is a list of
@@ -54,7 +66,7 @@ function errorText(payload, statusText) {
   return statusText || t('err.request_failed')
 }
 
-async function json(url, opts, timeout = DEFAULT_TIMEOUT) {
+async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
   const isGet = !opts?.method || opts.method === 'GET'
   const attempts = isGet ? MAX_RETRIES + 1 : 1
 
@@ -69,6 +81,27 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT) {
         err.status = r.status
         err.body = j
         err.code = (j?.detail && typeof j.detail === 'object' && j.detail.code) || null
+        // Privileged macOS operations need the operator's administrator
+        // password. The server says so with these two codes; ask for it in an
+        // in-browser dialog and retry once with it attached. A wrong password
+        // clears the cache so the dialog reappears for a second attempt.
+        if (
+          (err.code === 'admin.password_required' || err.code === 'admin.password_incorrect') &&
+          adminRetry < 3
+        ) {
+          const incorrect = err.code === 'admin.password_incorrect'
+          if (incorrect) clearAdminPassword()
+          let password = incorrect ? '' : getAdminPassword()
+          if (!password) password = await promptAdminPassword(incorrect)
+          if (password) {
+            setAdminPassword(password)
+            const headers = {
+              ...(opts?.headers || {}),
+              'X-Admin-Password': encodeAdminPassword(password),
+            }
+            return json(url, { ...opts, headers }, timeout, adminRetry + 1)
+          }
+        }
         // A dead session must not look like empty data on every page.  Auth
         // endpoints are exempt: a failed login is a form error, not a lost
         // session, and must not bounce the user off the login page.
@@ -126,15 +159,196 @@ export const changeAuthPassword = (username, currentPassword, newPassword) =>
   })
 
 export const getStatus = () => json('/api/status')
-export const doAction = (target, action) =>
-  fetch('/api/action', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target, action }),
-  }).then(async r => {
-    const j = await r.json().catch(() => ({}))
-    return { ok: r.ok && j.ok !== false, ...j, status: r.status }
+export const doAction = async (target, action) => {
+  try {
+    const result = await json('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, action }),
+    })
+    return { ...result, ok: result.ok !== false, status: 200 }
+  } catch (error) {
+    // Service actions historically return a result object instead of throwing on
+    // an HTTP refusal. Keep that component contract while still routing the
+    // request through json(), which handles auth loss, timeout and localization.
+    if (error.status) {
+      return {
+        ...(error.body || {}),
+        ok: false,
+        message: error.message,
+        status: error.status,
+      }
+    }
+    throw error
+  }
+}
+
+// Page-domain APIs. Views deliberately contain no raw fetch() calls: every JSON
+// request must pass through json() so a 401 expires the SPA session consistently
+// and HTTP failures never get written into page state as if they were data.
+const jsonBody = (method, body) => ({
+  method,
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+// Managed applications / autostart / credentials
+export const getManagedApps = (force = false) =>
+  json(`/api/apps/managed${force ? '?force=true' : ''}`)
+export const getManagedAppDetail = (id) =>
+  json(`/api/apps/managed/detail?id=${encodeURIComponent(id)}`)
+export const manageApp = (id, action, removeData = false) =>
+  json('/api/apps/managed/action', jsonBody('POST', { id, action, remove_data: removeData }))
+export const getManagedAppLogs = (id, lines = 150) =>
+  json(`/api/apps/managed/logs?id=${encodeURIComponent(id)}&lines=${lines}`)
+export const getAutostartApps = (force = false) =>
+  json(`/api/apps/autostart${force ? '?force=true' : ''}`)
+export const setAppAutostart = (id, enabled, policy = undefined) =>
+  json('/api/apps/autostart', jsonBody('POST', {
+    id,
+    enabled: Boolean(enabled),
+    ...(policy == null ? {} : { policy }),
+  }))
+export const setDockerAutostartPolicy = (name, policy) =>
+  json('/api/apps/autostart/docker-policy', jsonBody('POST', { name, policy }))
+export const runAppAutostartNow = () =>
+  json('/api/apps/autostart/run-now', { method: 'POST' })
+export const getAppCredential = (id) =>
+  json(`/api/apps/credentials?id=${encodeURIComponent(id)}`)
+export const saveAppCredential = (body) =>
+  json('/api/apps/credentials', jsonBody('POST', body))
+export const deleteAppCredential = (id) =>
+  json(`/api/apps/credentials?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+// Cloudflare Tunnel operations
+export const getCloudflareStatus = () => json('/api/cloudflared/status')
+export const startCloudflareLogin = () => json('/api/cloudflared/login', { method: 'POST' })
+export const pollCloudflareLogin = () => json('/api/cloudflared/login/poll')
+export const createCloudflareTunnel = (name) =>
+  json('/api/cloudflared/create', jsonBody('POST', { name }))
+export const startCloudflareTunnel = (tunnel) =>
+  json('/api/cloudflared/start', jsonBody('POST', { tunnel }))
+export const startCloudflareToken = (token, label) =>
+  json('/api/cloudflared/start-token', jsonBody('POST', { token, label }))
+export const stopCloudflare = () => json('/api/cloudflared/stop', { method: 'POST' })
+export const restartCloudflare = () => json('/api/cloudflared/restart', { method: 'POST' })
+export const routeCloudflareDns = (tunnel, hostname) =>
+  json('/api/cloudflared/route-dns', jsonBody('POST', { tunnel, hostname }))
+
+// Built-in file manager. Downloads remain navigation URLs; uploads still use the
+// same shared response/error path but intentionally omit Content-Type so the
+// browser can add the multipart boundary.
+export const getFilesOverview = () => json('/api/files')
+export const listFiles = (path = '', rootId = '') => {
+  const query = new URLSearchParams()
+  if (path) query.set('path', path)
+  if (rootId) query.set('root_id', rootId)
+  return json(`/api/files/list?${query}`)
+}
+export const makeDirectory = (path, name, rootId = '') =>
+  json('/api/files/mkdir', jsonBody('POST', { path, name, root_id: rootId || null }))
+export const renameFile = (path, newName, rootId = '') =>
+  json('/api/files/rename', jsonBody('POST', { path, new_name: newName, root_id: rootId || null }))
+export const deleteFile = (path, rootId = '') =>
+  json('/api/files/delete', jsonBody('POST', { path, root_id: rootId || null }))
+export const uploadFile = (formData) =>
+  json('/api/files/upload', { method: 'POST', body: formData })
+export const ensureFileBrowser = () =>
+  json('/api/files/filebrowser/ensure', { method: 'POST' })
+export const stopFileBrowser = () =>
+  json('/api/files/filebrowser/stop', { method: 'POST' })
+
+// Storage management
+export const setDiskPower = (diskId, action) =>
+  json(`/api/storage/disks/${encodeURIComponent(diskId)}/power`, jsonBody('POST', { action }))
+export const manageStorageDevice = (deviceId, body) =>
+  json(`/api/storage/manage/${encodeURIComponent(deviceId)}`, jsonBody('POST', body))
+
+// Enriched service management
+export const getServices = (force = false) =>
+  json(`/api/services${force ? '?force=true' : ''}`)
+export const getServiceDetail = (id) =>
+  json(`/api/services/${encodeURIComponent(id)}/detail`)
+export const getServiceLogs = (id, lines = 200) =>
+  json(`/api/services/${encodeURIComponent(id)}/logs?lines=${lines}`)
+export const bulkServiceAction = (ids, action) =>
+  json('/api/services/bulk-action', jsonBody('POST', { ids, action }))
+export const updateServiceOverride = (id, body) =>
+  json(`/api/services/${encodeURIComponent(id)}/override`, jsonBody('PUT', body))
+export const setServiceHidden = (id, hide = true) =>
+  json(`/api/services/${encodeURIComponent(id)}/hide`, jsonBody('POST', { hide }))
+
+// Network configuration and diagnostics
+export const getSystemNetwork = (force = false) =>
+  json(`/api/system/network?force=${force ? 'true' : 'false'}`)
+export const runAliasAutoBind = () =>
+  json('/api/system/network/alias/auto/run', { method: 'POST' })
+export const runNetworkFailover = () =>
+  json('/api/system/network/failover/run', { method: 'POST' })
+export const updateAliasAuto = (body) =>
+  json('/api/system/network/alias/auto', jsonBody('PUT', body))
+export const switchNetworkProfile = (profile) =>
+  json('/api/system/network/profile', jsonBody('POST', { profile }))
+export const setNetworkServiceOrder = (services) =>
+  json('/api/system/network/order', jsonBody('POST', { services }))
+export const setNetworkServiceEnabled = (name, enabled) =>
+  json(`/api/system/network/services/${encodeURIComponent(name)}/enabled`, jsonBody('POST', { enabled }))
+export const addNetworkAlias = (body) =>
+  json('/api/system/network/alias/add', jsonBody('POST', body))
+export const removeNetworkAlias = (body) =>
+  json('/api/system/network/alias/remove', jsonBody('POST', body))
+export const setNetworkDhcp = (name) =>
+  json(`/api/system/network/services/${encodeURIComponent(name)}/dhcp`, { method: 'POST' })
+export const setNetworkManual = (name, body) =>
+  json(`/api/system/network/services/${encodeURIComponent(name)}/manual`, jsonBody('POST', body))
+export const setNetworkDns = (name, servers) =>
+  json(`/api/system/network/services/${encodeURIComponent(name)}/dns`, jsonBody('POST', { servers }))
+export const setWifiPower = (state) =>
+  json(`/api/system/network/wifi/${encodeURIComponent(state)}`, { method: 'POST' })
+export const lookupNetworkDns = (host) =>
+  json(`/api/system/network/dns-lookup?host=${encodeURIComponent(host)}`)
+export const setContainerPorts = (container, ports) =>
+  json(`/api/system/network/docker/ports/${encodeURIComponent(container)}`, jsonBody('POST', { ports }))
+export const connectContainerNetwork = (mode, network, container, force = false) =>
+  json(`/api/system/network/docker/${mode === 'disconnect' ? 'disconnect' : 'connect'}`, jsonBody('POST', {
+    network,
+    container,
+    force: mode === 'disconnect' && force,
+  }))
+
+// Settings / diagnostics
+export const getSystemSettings = () => json('/api/settings/system')
+export const setPowerSetting = (key, value) =>
+  json('/api/settings/power', jsonBody('POST', { key, value: Number(value) }))
+export const generateDiagnostics = () => json('/api/diagnostics')
+
+// Tools domain
+export const getToolsCatalog = () => json('/api/tools/catalog')
+export const getSystemDiagnostics = () => json('/api/system/diagnostics')
+export const getToolsSyslog = (minutes, level, limit = 100) => {
+  const query = new URLSearchParams({
+    minutes: String(minutes),
+    level,
+    limit: String(limit),
   })
+  return json(`/api/tools/syslog?${query}`)
+}
+export const getSystemProcesses = (limit = 40) =>
+  json(`/api/system/processes?limit=${limit}`)
+export const getDockerDiskUsage = () => json('/api/docker/df')
+export const getDockerContainerSizes = () => json('/api/docker/sizes')
+export const pruneDocker = (what) =>
+  json('/api/tools/docker/prune', jsonBody('POST', { what, confirm: true }))
+export const getSystemScheduler = () => json('/api/system/scheduler')
+export const getToolsAgents = () => json('/api/tools/agents')
+export const getToolsHardware = () => json('/api/tools/hardware')
+export const getToolsUpdates = () => json('/api/tools/updates')
+export const getToolsAbout = () => json('/api/tools/about')
+export const pingHost = (host, count = 3) =>
+  json('/api/tools/net/ping', jsonBody('POST', { host, count }))
+export const lookupDns = (name) =>
+  json('/api/tools/net/dns', jsonBody('POST', { name }))
+export const flushDns = () => json('/api/tools/net/flush-dns', { method: 'POST' })
 
 export const getMaintenance = () => json('/api/maintenance')
 export const runMaintenance = (id) =>
@@ -315,11 +529,45 @@ export const saveStoragePool = (body) =>
   })
 export const clearStoragePool = () => json('/api/storage/pool/clear', { method: 'POST' })
 
+const SHARING_ADMIN_TIMEOUT = 180000
+
 export const getShares = () => json('/api/shares')
+export const createShare = (body) => json('/api/shares/smb', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+}, SHARING_ADMIN_TIMEOUT)
+export const updateShare = (recordName, body) =>
+  json(`/api/shares/smb/${encodeURIComponent(recordName)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, SHARING_ADMIN_TIMEOUT)
+export const removeShare = (recordName) =>
+  json(`/api/shares/smb/${encodeURIComponent(recordName)}?confirm=true`, {
+    method: 'DELETE',
+  }, SHARING_ADMIN_TIMEOUT)
+export const setSystemSharing = (serviceId, enabled) =>
+  json(`/api/shares/system/${encodeURIComponent(serviceId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  }, SHARING_ADMIN_TIMEOUT)
+export const openSharingSettings = () =>
+  json('/api/shares/open-system-settings', { method: 'POST' })
 export const getLogSources = () => json('/api/logs')
 export const getLogTail = (id, lines = 200) =>
   json(`/api/logs/${encodeURIComponent(id)}?lines=${lines}`)
 export const getSettings = () => json('/api/settings')
+export const getLauncherStatus = () => json('/api/launcher')
+export const openLauncherApp = () => json('/api/launcher/open', { method: 'POST' })
+export const setLauncherLogin = (enabled) => json('/api/launcher/login', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ enabled }),
+})
+export const controlPanelService = (action) =>
+  json(`/api/launcher/panel/${encodeURIComponent(action)}`, { method: 'POST' })
 export const putSettings = (body) =>
   json('/api/settings', {
     method: 'PUT',
@@ -418,6 +666,51 @@ export const putIdentity = (body) =>
 export const getDockerInfo = () => json('/api/docker/info')
 export const getScheduler = () => json('/api/scheduler')
 
+// WireGuard. Peer creation runs `wg` plus a config rewrite and an interface
+// sync, and `wg-quick up/down` can wait on a macOS authorization sheet, so these
+// get more headroom than the default timeout.
+const WG_ACTION_TIMEOUT = 190000
+const WG_CONTROL_TIMEOUT = 200000
+
+export const getWireguard = (force = false) =>
+  // Reads still need root for `wg show`; attach the cached administrator
+  // password when one exists so remote management sees live tunnel state.
+  json(`/api/wireguard?force=${force ? 'true' : 'false'}`, { headers: adminPasswordHeaders() })
+export const getWireguardReadiness = () =>
+  json('/api/wireguard/readiness', { headers: adminPasswordHeaders() })
+export const getWireguardSettings = () => json('/api/wireguard/settings')
+export const putWireguardSettings = (body) =>
+  json('/api/wireguard/settings', jsonBody('PUT', body))
+export const getWireguardNextIp = () => json('/api/wireguard/next-ip')
+export const getWireguardConf = (reveal = false) =>
+  json(`/api/wireguard/conf?reveal=${reveal ? 'true' : 'false'}`)
+export const addWireguardPeer = (body) =>
+  json('/api/wireguard/peers', jsonBody('POST', body), WG_ACTION_TIMEOUT)
+export const batchAddWireguardPeers = (body) =>
+  json('/api/wireguard/peers/batch', jsonBody('POST', body), WG_CONTROL_TIMEOUT)
+export const deleteWireguardPeer = (pubkey) =>
+  json('/api/wireguard/peers/delete', jsonBody('POST', { pubkey, confirm: true }), WG_ACTION_TIMEOUT)
+export const importWireguardPeer = (body) =>
+  json('/api/wireguard/peers/import', jsonBody('POST', body), WG_ACTION_TIMEOUT)
+export const setWireguardPsk = (pubkey, op) =>
+  json('/api/wireguard/peers/psk', jsonBody('POST', { pubkey, op }), WG_ACTION_TIMEOUT)
+export const getWireguardPeerConfig = (pubkey, format = 'wg') =>
+  json(`/api/wireguard/peers/${encodeURIComponent(pubkey)}/config?format=${encodeURIComponent(format)}`)
+export const controlWireguardInterface = (action) =>
+  json('/api/wireguard/interface', jsonBody('POST', { action }), WG_CONTROL_TIMEOUT)
+export const syncWireguard = () =>
+  json('/api/wireguard/sync', { method: 'POST' }, WG_ACTION_TIMEOUT)
+export const pingWireguardPeers = () =>
+  json('/api/wireguard/ping', { method: 'POST' }, WG_CONTROL_TIMEOUT)
+export const setWireguardForwarding = (enabled) =>
+  json('/api/wireguard/forwarding', jsonBody('POST', { enabled }), WG_CONTROL_TIMEOUT)
+export const remediateWireguard = (target, enabled = true) =>
+  json('/api/wireguard/remediate', jsonBody('POST', { target, enabled }), WG_CONTROL_TIMEOUT)
+/** Download URL for a peer config. A navigation, not a fetch, so the browser
+ *  handles the attachment; the session cookie authorizes it. */
+export const wireguardPeerDownloadUrl = (pubkey, format = 'wg') =>
+  `/api/wireguard/peers/${encodeURIComponent(pubkey)}/download?format=${encodeURIComponent(format)}`
+
 // Power & remote desktop
 export const getPower = () => json('/api/system/power')
 export const powerAction = (action, confirm = true) =>
@@ -426,11 +719,6 @@ export const powerAction = (action, confirm = true) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, confirm }),
   })
-export const enableScreenSharing = () =>
-  json('/api/system/screensharing/enable', { method: 'POST' })
-export const disableScreenSharing = () =>
-  json('/api/system/screensharing/disable', { method: 'POST' })
-
 export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
   const q = new URLSearchParams({
     tail: String(tail),

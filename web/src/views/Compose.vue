@@ -51,7 +51,7 @@
           <textarea
             v-model="editor"
             spellcheck="false"
-            class="compose-editor" :aria-label="t('compose.pick_stack')"></textarea>
+            class="compose-editor" :aria-label="t('compose.yaml_editor')"></textarea>
           <div class="btns" style="margin-top:8px">
             <button class="primary" :disabled="busy" @click="save">{{ t('common.save') }}</button>
             <button :disabled="busy" @click="validate">{{ t('compose.validate') }}</button>
@@ -77,14 +77,14 @@
         </div>
         <div class="kv" style="margin-bottom:10px">
           <div class="k">ID</div>
-          <input v-model="newId" type="text" placeholder="my-app"  aria-label="my-app"/>
+          <input v-model="newId" type="text" placeholder="my-app" :aria-label="t('compose.stack_id')"/>
           <div class="k">{{ t('common.name') }}</div>
-          <input v-model="newName" type="text" placeholder="My App"  aria-label="My App"/>
+          <input v-model="newName" type="text" placeholder="My App" :aria-label="t('common.name')"/>
         </div>
         <textarea
           v-model="newContent"
           spellcheck="false"
-          style="width:100%;min-height:220px;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--txt)" :aria-label="t('common.name')"></textarea>
+          style="width:100%;min-height:220px;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--txt)" :aria-label="t('compose.stack_content')"></textarea>
         <div class="btns" style="margin-top:10px">
           <button class="primary" :disabled="busy" @click="create">{{ t('compose.create_save') }}</button>
         </div>
@@ -129,6 +129,13 @@ const newContent = ref(`services:
       - "8088:80"
 `)
 let jobTimer = null
+let jobPollGeneration = 0
+
+function stopJobPolling() {
+  jobPollGeneration += 1
+  if (jobTimer) clearTimeout(jobTimer)
+  jobTimer = null
+}
 
 async function loadStacks() {
   try {
@@ -217,25 +224,32 @@ async function run(s, action) {
 }
 
 function watchJob(id) {
-  if (jobTimer) clearInterval(jobTimer)
+  stopJobPolling()
   jobLog.value = '…'
+  const generation = jobPollGeneration
+
   const poll = async () => {
+    jobTimer = null
     try {
       const j = await getStackJob(id)
+      if (generation !== jobPollGeneration) return
       jobLog.value = j.log || ''
       if (!j.running) {
-        clearInterval(jobTimer)
-        jobTimer = null
-        loadStacks()
+        stopJobPolling()
+        void loadStacks()
+        return
       }
-    } catch {}
+    } catch {
+      if (generation !== jobPollGeneration) return
+    }
+    if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }
-  poll()
-  jobTimer = setInterval(poll, 1500)
+
+  void poll()
 }
 
 onMounted(loadStacks)
-onUnmounted(() => { if (jobTimer) clearInterval(jobTimer) })
+onUnmounted(stopJobPolling)
 
 
 // Escape dismisses each dialog, focus returns to whatever opened it, and Tab

@@ -35,6 +35,10 @@ function fingerprintServiceWorker() {
       const serviceWorkerPath = resolve(outDir, 'sw.js')
       const serviceWorker = readFileSync(serviceWorkerPath, 'utf8')
       if (!serviceWorker.includes(CACHE_FINGERPRINT_PLACEHOLDER)) {
+        // Vite may call closeBundle more than once for one build. The first pass
+        // has already replaced the placeholder, so accept only our exact final
+        // cache-name shape; anything else is still a broken public asset.
+        if (/const CACHE_NAME = 'serverhub-[a-f0-9]{16}'/.test(serviceWorker)) return
         throw new Error('Service worker cache fingerprint placeholder is missing')
       }
 

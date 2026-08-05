@@ -215,13 +215,21 @@ class TestNetworkCacheSingleFlight(unittest.TestCase):
     def setUp(self):
         self._overview_cache = dict(network_svc._cache)
         self._services_cache = dict(network_svc._services_cache)
+        self._cache_generation = network_svc._cache_generation
+        self._cache_refresh_serial = network_svc._cache_refresh_serial
+        self._services_cache_generation = network_svc._services_cache_generation
+        self._services_refresh_serial = network_svc._services_refresh_serial
         network_svc._bust()
 
     def tearDown(self):
         with network_svc._cache_lock:
             network_svc._cache.update(self._overview_cache)
+            network_svc._cache_generation = self._cache_generation
+            network_svc._cache_refresh_serial = self._cache_refresh_serial
         with network_svc._services_cache_lock:
             network_svc._services_cache.update(self._services_cache)
+            network_svc._services_cache_generation = self._services_cache_generation
+            network_svc._services_refresh_serial = self._services_refresh_serial
 
     def _run_together(self, fn, count=8):
         barrier = threading.Barrier(count)
@@ -302,16 +310,151 @@ class TestNetworkCacheSingleFlight(unittest.TestCase):
         self.assertTrue(all(result == {"generation": 1} for result in cold))
         self.assertTrue(all(result == {"generation": 2} for result in forced))
 
+    def test_forced_refresh_bypasses_warm_caches(self):
+        with network_svc._services_cache_lock:
+            network_svc._services_cache.update(t=time.time(), v=[{"name": "old"}])
+        with network_svc._cache_lock:
+            network_svc._cache.update(t=time.time(), v={"generation": "old"})
+
+        service_calls = []
+        overview_calls = []
+        real_service_build = network_svc._build_network_services
+        real_overview_build = network_svc._build_overview
+
+        def fake_service_build():
+            service_calls.append(True)
+            return [{"name": "new"}]
+
+        def fake_overview_build(force_services=False):
+            overview_calls.append(force_services)
+            return {"generation": "new"}
+
+        network_svc._build_network_services = fake_service_build
+        network_svc._build_overview = fake_overview_build
+        try:
+            services = network_svc.network_services(force=True)
+            overview = network_svc.overview(force=True)
+        finally:
+            network_svc._build_network_services = real_service_build
+            network_svc._build_overview = real_overview_build
+
+        self.assertEqual(service_calls, [True])
+        self.assertEqual(overview_calls, [True])
+        self.assertEqual(services, [{"name": "new"}])
+        self.assertEqual(overview, {"generation": "new"})
+
+    def test_bust_during_build_prevents_stale_cache_publish(self):
+        def exercise(build_name, call, cache, lock, built_value):
+            started = threading.Event()
+            release = threading.Event()
+            errors = []
+            results = []
+            real_build = getattr(network_svc, build_name)
+
+            def fake_build(*args, **kwargs):
+                started.set()
+                if not release.wait(2):
+                    raise TimeoutError("test did not release builder")
+                return built_value
+
+            def invoke():
+                try:
+                    results.append(call())
+                except BaseException as exc:
+                    errors.append(exc)
+
+            setattr(network_svc, build_name, fake_build)
+            thread = threading.Thread(target=invoke)
+            try:
+                thread.start()
+                self.assertTrue(started.wait(2), "builder did not start")
+                network_svc._bust()
+                release.set()
+                thread.join(2)
+            finally:
+                release.set()
+                thread.join(2)
+                setattr(network_svc, build_name, real_build)
+
+            self.assertFalse(thread.is_alive(), "builder thread did not finish")
+            self.assertEqual(errors, [])
+            self.assertEqual(results, [built_value])
+            with lock:
+                self.assertIsNone(cache["v"], "invalidated build repopulated cache")
+                self.assertEqual(cache["t"], 0.0)
+
+        exercise(
+            "_build_network_services",
+            network_svc.network_services,
+            network_svc._services_cache,
+            network_svc._services_cache_lock,
+            [{"name": "stale"}],
+        )
+        exercise(
+            "_build_overview",
+            network_svc.overview,
+            network_svc._cache,
+            network_svc._cache_lock,
+            {"generation": "stale"},
+        )
+
+    def test_builder_exception_does_not_poison_refresh_lock(self):
+        service_calls = []
+        overview_calls = []
+        real_service_build = network_svc._build_network_services
+        real_overview_build = network_svc._build_overview
+
+        def flaky_service_build():
+            service_calls.append(True)
+            if len(service_calls) == 1:
+                raise RuntimeError("service build failed")
+            return [{"name": "recovered"}]
+
+        def flaky_overview_build(force_services=False):
+            overview_calls.append(force_services)
+            if len(overview_calls) == 1:
+                raise RuntimeError("overview build failed")
+            return {"generation": "recovered"}
+
+        network_svc._build_network_services = flaky_service_build
+        network_svc._build_overview = flaky_overview_build
+        try:
+            with self.assertRaisesRegex(RuntimeError, "service build failed"):
+                network_svc.network_services(force=True)
+            self.assertEqual(
+                network_svc.network_services(force=True),
+                [{"name": "recovered"}],
+            )
+            with self.assertRaisesRegex(RuntimeError, "overview build failed"):
+                network_svc.overview(force=True)
+            self.assertEqual(
+                network_svc.overview(force=True),
+                {"generation": "recovered"},
+            )
+        finally:
+            network_svc._build_network_services = real_service_build
+            network_svc._build_overview = real_overview_build
+
+        self.assertEqual(len(service_calls), 2)
+        self.assertEqual(len(overview_calls), 2)
+
     def test_bust_invalidates_overview_and_services(self):
         with network_svc._cache_lock:
             network_svc._cache.update(t=time.time(), v={"cached": True})
+            old_overview_generation = network_svc._cache_generation
         with network_svc._services_cache_lock:
             network_svc._services_cache.update(t=time.time(), v=[{"cached": True}])
+            old_services_generation = network_svc._services_cache_generation
 
         network_svc._bust()
 
         self.assertEqual(network_svc._cache, {"t": 0.0, "v": None})
         self.assertEqual(network_svc._services_cache, {"t": 0.0, "v": None})
+        self.assertEqual(network_svc._cache_generation, old_overview_generation + 1)
+        self.assertEqual(
+            network_svc._services_cache_generation,
+            old_services_generation + 1,
+        )
 
 
 if __name__ == "__main__":

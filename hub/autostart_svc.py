@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from hub import cli_args
 from hub.docker_cli import engine_up
 from hub.util import sh
-from hub.brew_cache import brew_services_list
+from hub.brew_cache import brew_services_list, invalidate_brew_services
 
 AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 BREW = "/opt/homebrew/bin/brew"
@@ -166,6 +166,9 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
             capture_output=True, text=True, timeout=120, env=_brew_env(),
         )
         msg = ((p.stdout or "") + (p.stderr or "")).strip()
+        # `brew services start/stop` is exactly what the shared snapshot
+        # reports on, so the cached copy is stale the moment this returns.
+        invalidate_brew_services()
         # stop unloads agent → no login start; start loads with RunAtLoad
         return {
             "ok": p.returncode == 0,
@@ -261,26 +264,26 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
 # ─── Global login autostart script ───────────────────────────────────────────
 
 def _script_status() -> dict:
-    plist = AGENTS_DIR / "com.elvin.server-autostart.plist"
+    plist = AGENTS_DIR / "local.serverhub.autostart.plist"
     script = Path.home() / "Services" / "autostart.sh"
     pl = _read_plist(plist) if plist.exists() else {}
     return {
-        "id": "script:com.elvin.server-autostart",
+        "id": "script:local.serverhub.autostart",
         "kind": "script",
         "name": "登录自启脚本 (autostart.sh)",
-        "label": "com.elvin.server-autostart",
+        "label": "local.serverhub.autostart",
         "autostart": bool(pl.get("RunAtLoad")) and plist.exists(),
-        "running": _launchctl_loaded("com.elvin.server-autostart") if plist.exists() else False,
+        "running": _launchctl_loaded("local.serverhub.autostart") if plist.exists() else False,
         "plist": str(plist) if plist.exists() else None,
         "script": str(script) if script.exists() else None,
-        "detail": "登录后启动 brew / OrbStack / 容器 / Gravity 等",
+        "detail": "登录后启动已配置的本地服务",
         "actions": ["enable", "disable", "run_now"] if plist.exists() else [],
         "group": "登录脚本",
     }
 
 
 def set_script_autostart(enabled: bool) -> dict:
-    return set_launchd_autostart("com.elvin.server-autostart", enabled)
+    return set_launchd_autostart("local.serverhub.autostart", enabled)
 
 
 def run_autostart_now() -> dict:

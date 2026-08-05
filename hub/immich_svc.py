@@ -36,7 +36,7 @@ from hub.util import port_open, sh
 _cache: dict = {"t": 0.0, "v": None}
 _TTL = 30.0
 
-BASE = Path("/Users/a0000/Services/immich")
+BASE = Path.home() / "Services" / "immich"
 ACCEL = Path.home() / ".immich-accelerator"
 WORKER_PID = ACCEL / "pids" / "worker.pid"
 WORKER_LOG = ACCEL / "logs" / "worker.log"

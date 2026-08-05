@@ -120,6 +120,16 @@
  * Full FileBrowser process is started only on explicit request, and can be stopped to free RAM.
  */
 import { computed, inject, onUnmounted, ref } from 'vue'
+import {
+  deleteFile,
+  ensureFileBrowser,
+  getFilesOverview,
+  listFiles,
+  makeDirectory,
+  renameFile,
+  stopFileBrowser,
+  uploadFile,
+} from '../api/client'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -135,6 +145,7 @@ const listing = ref(null)
 const selected = ref([])
 const fb = ref({ running: false, url: '', installed: false })
 const currentPath = ref('')
+let listRequest = 0
 
 const allSelected = computed(() => {
   const items = listing.value?.items || []
@@ -177,7 +188,9 @@ async function activate() {
 }
 
 function deactivate() {
+  listRequest += 1
   activated.value = false
+  loading.value = false
   listing.value = null
   selected.value = []
   error.value = ''
@@ -186,8 +199,7 @@ function deactivate() {
 
 async function loadOverview() {
   try {
-    const r = await fetch('/api/files')
-    const j = await r.json()
+    const j = await getFilesOverview()
     roots.value = j.roots || []
     fb.value = j.filebrowser || {}
     if (!rootId.value && roots.value.length) {
@@ -201,23 +213,24 @@ async function loadOverview() {
 
 async function loadList() {
   if (!activated.value) return
+  const request = ++listRequest
+  const path = currentPath.value
+  const root = rootId.value
   loading.value = true
   error.value = ''
   selected.value = []
   try {
-    const q = new URLSearchParams()
-    if (currentPath.value) q.set('path', currentPath.value)
-    if (rootId.value) q.set('root_id', rootId.value)
-    const r = await fetch(`/api/files/list?${q}`)
-    const j = await r.json()
-    if (!r.ok) throw new Error(j.detail || j.message || r.statusText)
+    const j = await listFiles(path, root)
+    if (request !== listRequest || !activated.value) return
     listing.value = j
     currentPath.value = j.path
   } catch (e) {
+    if (request !== listRequest || !activated.value) return
     error.value = typeof e.message === 'string' ? e.message : String(e)
     listing.value = null
+  } finally {
+    if (request === listRequest) loading.value = false
   }
-  loading.value = false
 }
 
 function onRootChange() {
@@ -261,19 +274,14 @@ async function doMkdir() {
   if (!name) return
   busy.value = true
   try {
-    const r = await fetch('/api/files/mkdir', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: currentPath.value, name, root_id: rootId.value }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || 'fail')
+    await makeDirectory(currentPath.value, name, rootId.value)
     toast(`✅ ${t('files.mkdir')}`)
     await loadList()
   } catch (e) {
     toast(`❌ ${e.message}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doRename(it) {
@@ -281,58 +289,52 @@ async function doRename(it) {
   if (!name || name === it.name) return
   busy.value = true
   try {
-    const r = await fetch('/api/files/rename', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: it.path, new_name: name, root_id: rootId.value }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || 'fail')
+    await renameFile(it.path, name, rootId.value)
     toast('✅')
     await loadList()
   } catch (e) {
     toast(`❌ ${e.message}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doDeleteOne(it) {
   if (!confirm(t('files.confirm_delete', { name: it.name }))) return
   busy.value = true
   try {
-    const r = await fetch('/api/files/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: it.path, root_id: rootId.value }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || 'fail')
+    await deleteFile(it.path, rootId.value)
     toast('✅')
     await loadList()
   } catch (e) {
     toast(`❌ ${e.message}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doDeleteSelected() {
   if (!selected.value.length) return
   if (!confirm(t('files.confirm_delete_n', { n: selected.value.length }))) return
+  const paths = [...selected.value]
   busy.value = true
   let ok = 0
-  for (const path of selected.value) {
-    try {
-      const r = await fetch('/api/files/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, root_id: rootId.value }),
-      })
-      if (r.ok) ok++
-    } catch {}
+  let failed = 0
+  try {
+    for (const path of paths) {
+      try {
+        await deleteFile(path, rootId.value)
+        ok++
+      } catch (e) {
+        failed++
+        toast(`❌ ${path}: ${e.message}`)
+      }
+    }
+    toast(`${failed ? '❌' : '✅'} ${ok}/${paths.length}`)
+    await loadList()
+  } finally {
+    busy.value = false
   }
-  toast(`✅ ${ok}/${selected.value.length}`)
-  busy.value = false
-  await loadList()
 }
 
 function download(it) {
@@ -343,27 +345,29 @@ function download(it) {
 
 async function uploadFiles(fileList) {
   if (!fileList?.length) return
+  const files = Array.from(fileList)
   busy.value = true
   let ok = 0
-  for (const file of fileList) {
-    try {
-      const fd = new FormData()
-      fd.append('path', currentPath.value)
-      if (rootId.value) fd.append('root_id', rootId.value)
-      fd.append('file', file)
-      const r = await fetch('/api/files/upload', { method: 'POST', body: fd })
-      if (r.ok) ok++
-      else {
-        const j = await r.json().catch(() => ({}))
-        toast(`❌ ${file.name}: ${j.detail || r.statusText}`)
+  let failed = 0
+  try {
+    for (const file of files) {
+      try {
+        const fd = new FormData()
+        fd.append('path', currentPath.value)
+        if (rootId.value) fd.append('root_id', rootId.value)
+        fd.append('file', file)
+        await uploadFile(fd)
+        ok++
+      } catch (e) {
+        failed++
+        toast(`❌ ${file.name}: ${e.message}`)
       }
-    } catch (e) {
-      toast(`❌ ${file.name}: ${e.message}`)
     }
+    toast(`${failed ? '❌' : '✅'} ${ok}/${files.length}`)
+    await loadList()
+  } finally {
+    busy.value = false
   }
-  if (ok) toast(`✅ ${t('files.uploaded_n', { n: ok })}`)
-  busy.value = false
-  await loadList()
 }
 
 function onUpload(e) {
@@ -384,9 +388,8 @@ async function openFullFB() {
     if (!activated.value) {
       // still only start FB — don't force builtin list
     }
-    const r = await fetch('/api/files/filebrowser/ensure', { method: 'POST' })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || 'fail')
+    const j = await ensureFileBrowser()
+    if (!j?.ok) throw new Error(j?.message || t('common.failed'))
     fb.value = j
     const url = j.url || 'http://localhost:8125'
     window.open(url, '_blank', 'noopener')
@@ -394,27 +397,31 @@ async function openFullFB() {
     // optional: enable on-demand mode so it won't auto-start at boot next time
   } catch (e) {
     toast(`❌ ${e.message}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function stopFB() {
   if (!confirm(t('files.confirm_stop_fb'))) return
   busy.value = true
   try {
-    const r = await fetch('/api/files/filebrowser/stop', { method: 'POST' })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || 'fail')
+    const j = await stopFileBrowser()
+    if (!j?.ok) throw new Error(j?.message || t('common.failed'))
     fb.value = j
     toast(j.message || '✅')
   } catch (e) {
     toast(`❌ ${e.message}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 // Nothing on mount — true zero cost until user clicks
 onUnmounted(() => {
+  listRequest += 1
+  activated.value = false
+  loading.value = false
   // free UI state only; backend process not touched
   listing.value = null
 })

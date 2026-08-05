@@ -232,7 +232,7 @@ class ServerHubBar(rumps.App):
                     rumps.MenuItem("⚠️ 面板后端 (8086) 无响应"),
                     rumps.MenuItem("▶️ 启动面板服务", callback=lambda _: subprocess.run(
                         ["launchctl", "kickstart", "-k",
-                         f"gui/{os.getuid()}/com.elvin.serverhub"])),
+                         f"gui/{os.getuid()}/local.serverhub.panel"])),
                     None,
                     rumps.MenuItem("❌ 退出图标", callback=lambda _: rumps.quit_application()),
                 ], "offline")

@@ -6,7 +6,7 @@ import os
 from fastapi import HTTPException
 
 from hub import cli_args
-from hub.brew_cache import brew_services_list
+from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.status import invalidate_status
 from hub.util import sh
 
@@ -102,6 +102,12 @@ def service_action(name: str, action: str) -> dict:
             capture_output=True, text=True, timeout=120,
             env=_brew_env(),
         )
+        # The shared `brew services list --json` snapshot has a 6s TTL, so
+        # without this the UI re-reads the pre-action state right after a
+        # start/stop and shows the service back in its old state until the TTL
+        # lapses.  Drop it here, next to invalidate_status(), so the refresh
+        # that follows the action is truthful.
+        invalidate_brew_services()
         invalidate_status()
         return {
             "ok": p.returncode == 0,

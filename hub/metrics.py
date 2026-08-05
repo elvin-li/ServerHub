@@ -7,10 +7,10 @@ import shutil
 import threading
 import time
 
-from hub.paths import BASE
+from hub.paths import DATA_DIR
 from hub.util import sh
 
-METRICS_FILE = BASE / "data" / "metrics.jsonl"
+METRICS_FILE = DATA_DIR / "metrics.jsonl"
 # ~48h at 90s interval ≈ 1920 points; keep headroom
 MAX_POINTS = 2880
 _lock = threading.Lock()

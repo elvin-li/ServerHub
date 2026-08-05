@@ -16,6 +16,7 @@ const Services = () => import('./views/Services.vue')
 const Brew = () => import('./views/Brew.vue')
 const Network = () => import('./views/Network.vue')
 const Gateway = () => import('./views/Gateway.vue')
+const WireGuard = () => import('./views/WireGuard.vue')
 const Health = () => import('./views/Health.vue')
 const Scheduler = () => import('./views/Scheduler.vue')
 const Tools = () => import('./views/Tools.vue')
@@ -48,6 +49,7 @@ const routes = [
   { path: '/brew', name: 'brew', component: Brew },
   { path: '/network', name: 'network', component: Network },
   { path: '/gateway', name: 'gateway', component: Gateway },
+  { path: '/wireguard', name: 'wireguard', component: WireGuard },
   { path: '/health', name: 'health', component: Health },
   { path: '/scheduler', name: 'scheduler', component: Scheduler },
   { path: '/tools', name: 'tools', component: Tools },

@@ -42,6 +42,15 @@ def discover_launchd():
         except Exception:
             pl = {}
         interval = bool(pl.get("StartInterval") or pl.get("StartCalendarInterval"))
+        arguments = pl.get("ProgramArguments") or []
+        # Login helpers that delegate to LaunchServices are intentionally
+        # one-shot: /usr/bin/open exits after handing the bundle to macOS. A
+        # loaded job with exit code 0 is healthy even though it has no PID.
+        launchservices_open = bool(
+            pl.get("RunAtLoad")
+            and arguments
+            and arguments[0] == "/usr/bin/open"
+        )
         pid, last = table.get(label, (None, None))
         loaded, running = pid is not None, pid not in (None, "-")
 
@@ -68,6 +77,14 @@ def discover_launchd():
                 if loaded else "未加载"
             )
             actions = ["run", "logs"] + (["stop"] if loaded else ["start"])
+        elif launchservices_open and loaded:
+            if last in ("0", None):
+                state = "ok"
+                detail = "loaded · opens app at login"
+            else:
+                state = "warn"
+                detail = f"loaded · app open failed · exit {last}"
+            actions = ["run", "logs", "stop"]
         elif running and (p is None or p):
             state = "ok"
             detail = f"运行中 · pid {pid}" + (f" · :{port}" if port else "")

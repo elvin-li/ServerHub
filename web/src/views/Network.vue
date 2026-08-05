@@ -224,7 +224,7 @@
           <label>IP</label>
           <input v-model="aliasForm.ip" type="text" :placeholder="t('network.alias_ip_ph')"  :aria-label="t('network.alias_ip_ph')"/>
           <label>{{ t('network.mask') }}</label>
-          <input v-model="aliasForm.netmask" type="text" placeholder="255.255.255.255"  aria-label="255.255.255.255"/>
+          <input v-model="aliasForm.netmask" type="text" placeholder="255.255.255.255" :aria-label="t('network.mask')" />
         </div>
         <p style="font-size:11px;color:var(--sub);margin:8px 0">
           {{ t('network.alias_mask_hint') }}
@@ -453,7 +453,7 @@
           <label>{{ t('network.ip_addr') }}</label>
           <input v-model="manualForm.ip" type="text" :placeholder="t('network.static_ip_ph')"  :aria-label="t('network.static_ip_ph')"/>
           <label>{{ t('network.subnet_mask') }}</label>
-          <input v-model="manualForm.subnet" type="text" placeholder="255.255.255.0"  aria-label="255.255.255.0"/>
+          <input v-model="manualForm.subnet" type="text" placeholder="255.255.255.0" :aria-label="t('network.subnet_mask')" />
           <label>{{ t('network.gateway') }}</label>
           <input v-model="manualForm.router" type="text" :placeholder="t('network.gateway_ph')"  :aria-label="t('network.gateway_ph')"/>
         </div>
@@ -492,7 +492,7 @@
           {{ t('network.recreate_hint') }}
         </p>
         <label style="font-size:12px;color:var(--sub)">{{ t('network.map_list') }}</label>
-        <textarea v-model="portEditText" rows="5" style="width:100%;margin:8px 0 12px;font-family:ui-monospace,Menlo,monospace;font-size:12px" placeholder="4000:4000&#10;8080:80" aria-label="4000:4000&#10;8080:80"></textarea>
+        <textarea v-model="portEditText" rows="5" style="width:100%;margin:8px 0 12px;font-family:ui-monospace,Menlo,monospace;font-size:12px" placeholder="4000:4000&#10;8080:80" :aria-label="t('network.map_list')"></textarea>
         <div class="btns">
           <button class="primary" :disabled="busy" @click="applyPorts">{{ t('network.recreate_apply') }}</button>
           <button @click="portEdit=null">{{ t('common.cancel') }}</button>
@@ -522,7 +522,25 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import {
+  addNetworkAlias,
+  connectContainerNetwork,
+  getSystemNetwork,
+  lookupNetworkDns,
+  removeNetworkAlias,
+  runAliasAutoBind,
+  runNetworkFailover,
+  setContainerPorts,
+  setNetworkDhcp,
+  setNetworkDns,
+  setNetworkManual,
+  setNetworkServiceEnabled,
+  setNetworkServiceOrder,
+  setWifiPower,
+  switchNetworkProfile,
+  updateAliasAuto,
+} from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 
@@ -556,6 +574,15 @@ const aliasForm = ref({ device: '', ip: '', netmask: '255.255.255.255' })
 const autoBindOn = ref(true)
 const autoIpsText = ref('')
 const autoBindLog = ref('')
+const refreshTimers = new Set()
+
+function scheduleRefresh(delay) {
+  const id = setTimeout(() => {
+    refreshTimers.delete(id)
+    void refresh(true)
+  }, delay)
+  refreshTimers.add(id)
+}
 
 const filteredListen = computed(() => {
   const q = portQ.value.trim().toLowerCase()
@@ -637,8 +664,7 @@ function moveService(idx, dir) {
 async function refresh(force = false) {
   loading.value = true
   try {
-    const r = await fetch('/api/system/network?force=' + (force ? 'true' : 'false'))
-    data.value = await r.json()
+    data.value = await getSystemNetwork(force)
     syncOrderFromData()
     if (deviceOptions.value.length && !deviceOptions.value.includes(aliasForm.value.device)) {
       aliasForm.value.device = deviceOptions.value[0]
@@ -650,74 +676,66 @@ async function refresh(force = false) {
     }
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loading.value = false
   }
-  loading.value = false
 }
 
 async function runAutoBind() {
   busy.value = true
   autoBindLog.value = t('network.running')
   try {
-    const r = await fetch('/api/system/network/alias/auto/run', { method: 'POST' })
-    const j = await r.json()
+    const j = await runAliasAutoBind()
     autoBindLog.value = JSON.stringify(j.actions || j, null, 2)
     toast(j.ok ? `✅ ${j.message || t('network.aligned')}` : `❌ ${j.message || t('network.failed')}`)
     await refresh(true)
   } catch (e) {
     toast('❌ ' + e.message)
     autoBindLog.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function runFailover() {
   busy.value = true
   try {
-    const r = await fetch('/api/system/network/failover/run', { method: 'POST' })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.check_failed')))
+    const j = await runNetworkFailover()
     toast(j.ok ? `✅ ${j.mode === 'wired' ? t('network.wired_ok') : t('network.wifi_engaged')}` : `❌ ${t('network.switch_failed')}`)
     await refresh(true)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function saveAutoBind() {
   busy.value = true
   try {
-    const r = await fetch('/api/system/network/alias/auto', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auto_bind: autoBindOn.value }),
-    })
-    const j = await r.json()
+    const j = await updateAliasAuto({ auto_bind: autoBindOn.value })
     toast(`✅ ${autoBindOn.value ? t('network.autobind_enabled') : t('network.autobind_disabled')}`)
     data.value = { ...data.value, alias_auto: j }
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function saveAutoIps() {
   busy.value = true
   try {
     const ips = autoIpsText.value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
-    const r = await fetch('/api/system/network/alias/auto', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ips }),
-    })
-    const j = await r.json()
+    const j = await updateAliasAuto({ ips })
     toast(`✅ ${t('network.alias_list_saved')}`)
     data.value = { ...data.value, alias_auto: j }
     await runAutoBind()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function applyProfile(profile) {
@@ -725,40 +743,30 @@ async function applyProfile(profile) {
   busy.value = true
   msg.value = t('network.switching')
   try {
-    const r = await fetch('/api/system/network/profile', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await switchNetworkProfile(profile)
     toast(j.ok ? `✅ ${t('network.switched')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    setTimeout(() => refresh(true), 2000)
+    if (j.ok) scheduleRefresh(2000)
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function saveOrder() {
   busy.value = true
   try {
-    const r = await fetch('/api/system/network/order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ services: orderList.value.map(s => s.name) }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await setNetworkServiceOrder(orderList.value.map(s => s.name))
     toast(j.ok ? `✅ ${t('network.order_saved')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    setTimeout(() => refresh(true), 1500)
+    if (j.ok) scheduleRefresh(1500)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function toggleService(s) {
@@ -766,60 +774,45 @@ async function toggleService(s) {
   if (!confirm(t('network.confirm_toggle', { action: en ? t('network.act_enable') : t('network.act_disable'), name: s.name }))) return
   busy.value = true
   try {
-    const r = await fetch(`/api/system/network/services/${encodeURIComponent(s.name)}/enabled`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: en }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await setNetworkServiceEnabled(s.name, en)
     toast(j.ok ? '✅' : `❌ ${j.message}`)
-    setTimeout(() => refresh(true), 1200)
+    if (j.ok) scheduleRefresh(1200)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function addAlias() {
   busy.value = true
   try {
-    const r = await fetch('/api/system/network/alias/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(aliasForm.value),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await addNetworkAlias(aliasForm.value)
     toast(j.ok ? `✅ ${t('network.ip_added')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    setTimeout(() => refresh(true), 800)
+    if (j.ok) scheduleRefresh(800)
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function removeAlias(device, ip) {
   if (!confirm(t('network.confirm_del_alias', { device, ip }))) return
   busy.value = true
   try {
-    const r = await fetch('/api/system/network/alias/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device, ip, netmask: '255.255.255.255' }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await removeNetworkAlias({ device, ip, netmask: '255.255.255.255' })
     toast(j.ok ? `✅ ${t('network.alias_deleted')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    setTimeout(() => refresh(true), 800)
+    if (j.ok) scheduleRefresh(800)
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 function openPrimaryEdit(device, addr) {
@@ -842,17 +835,16 @@ async function setDhcp(s) {
   if (!confirm(t('network.confirm_dhcp', { name: s.name }))) return
   busy.value = true
   try {
-    const r = await fetch(`/api/system/network/services/${encodeURIComponent(s.name)}/dhcp`, { method: 'POST' })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await setNetworkDhcp(s.name)
     toast(j.ok ? '✅ DHCP' : `❌ ${j.message}`)
     msg.value = j.message || ''
-    setTimeout(() => refresh(true), 1500)
+    if (j.ok) scheduleRefresh(1500)
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 function openManual(s) {
@@ -866,24 +858,22 @@ function openManual(s) {
 
 async function applyManual() {
   if (!manualSvc.value) return
+  if (!confirm(t('network.confirm_manual', { name: manualSvc.value.name }))) return
   busy.value = true
   try {
-    const r = await fetch(`/api/system/network/services/${encodeURIComponent(manualSvc.value.name)}/manual`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(manualForm.value),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await setNetworkManual(manualSvc.value.name, manualForm.value)
     toast(j.ok ? `✅ ${t('network.static_applied')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    manualSvc.value = null
-    setTimeout(() => refresh(true), 2000)
+    if (j.ok) {
+      manualSvc.value = null
+      scheduleRefresh(2000)
+    }
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 function openDns(s) {
@@ -896,47 +886,45 @@ async function applyDns() {
   const servers = dnsServers.value.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean)
   busy.value = true
   try {
-    const r = await fetch(`/api/system/network/services/${encodeURIComponent(dnsSvc.value.name)}/dns`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ servers }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await setNetworkDns(dnsSvc.value.name, servers)
     toast(j.ok ? `✅ ${t('network.dns_updated')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    dnsSvc.value = null
-    setTimeout(() => refresh(true), 1000)
+    if (j.ok) {
+      dnsSvc.value = null
+      scheduleRefresh(1000)
+    }
   } catch (e) {
     toast('❌ ' + e.message)
+    msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function wifi(state) {
-  if (!confirm(`Wi‑Fi ${state}？`)) return
+  const label = state === 'on' ? t('network.on') : t('network.off')
+  if (!confirm(t('network.confirm_wifi', { state: label }))) return
   busy.value = true
   try {
-    const r = await fetch(`/api/system/network/wifi/${state}`, { method: 'POST' })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
-    toast(j.ok ? `✅ Wi‑Fi ${state}` : `❌ ${j.message}`)
-    setTimeout(() => refresh(true), 1500)
+    const j = await setWifiPower(state)
+    toast(j.ok ? `✅ Wi‑Fi ${label}` : `❌ ${j.message}`)
+    if (j.ok) scheduleRefresh(1500)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function doLookup() {
   busy.value = true
   try {
-    const r = await fetch('/api/system/network/dns-lookup?host=' + encodeURIComponent(lookupHost.value.trim()))
-    lookupResult.value = await r.json()
+    lookupResult.value = await lookupNetworkDns(lookupHost.value.trim())
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 function openPortEdit(container) {
@@ -959,27 +947,24 @@ async function applyPorts() {
     toast('❌ ' + t('network.ctr_name'))
     return
   }
-  if (!confirm(portEdit.value + ' recreate ports?')) return
+  if (!confirm(t('network.confirm_recreate_ports', { name: portEdit.value }))) return
   const ports = portEditText.value.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean)
   busy.value = true
   msg.value = '…'
   try {
-    const r = await fetch(`/api/system/network/docker/ports/${encodeURIComponent(portEdit.value)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ports }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await setContainerPorts(portEdit.value, ports)
     toast(j.ok ? `✅ ${t('network.port_updated')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    portEdit.value = null
-    setTimeout(() => refresh(true), 1200)
+    if (j.ok) {
+      portEdit.value = null
+      scheduleRefresh(1200)
+    }
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 function openConnect(n) {
@@ -995,31 +980,33 @@ function openDisconnect(n) {
 
 async function applyConnect() {
   if (!connectNet.value || !connectContainer.value.trim()) return
+  const container = connectContainer.value.trim()
+  if (connectMode.value === 'disconnect' && !confirm(t('network.confirm_disconnect', {
+    container,
+    network: connectNet.value.name,
+  }))) return
   busy.value = true
   try {
-    const path = connectMode.value === 'connect' ? 'connect' : 'disconnect'
-    const r = await fetch(`/api/system/network/docker/${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        network: connectNet.value.name,
-        container: connectContainer.value.trim(),
-        force: true,
-      }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('network.failed')))
+    const j = await connectContainerNetwork(connectMode.value, connectNet.value.name, container)
     toast(j.ok ? `✅ ${t('network.done')}` : `❌ ${j.message}`)
     msg.value = j.message || ''
-    connectNet.value = null
-    setTimeout(() => refresh(true), 800)
+    if (j.ok) {
+      connectNet.value = null
+      scheduleRefresh(800)
+    }
   } catch (e) {
     toast('❌ ' + e.message)
+    msg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 onMounted(() => refresh(false))
+onUnmounted(() => {
+  for (const id of refreshTimers) clearTimeout(id)
+  refreshTimers.clear()
+})
 
 
 // Escape dismisses each dialog, focus returns to whatever opened it, and Tab

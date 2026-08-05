@@ -173,6 +173,15 @@ const clonePanel = ref(null)
 const renamePanel = ref(null)
 const distros = ['ubuntu', 'debian', 'fedora', 'arch', 'alpine', 'rocky']
 let timer = null
+const refreshTimers = new Set()
+
+function scheduleRefresh(delay) {
+  const id = setTimeout(() => {
+    refreshTimers.delete(id)
+    void refresh()
+  }, delay)
+  refreshTimers.add(id)
+}
 
 const labels = computed(() => ({
   start: t('vms.start'), stop: t('vms.stop'), restart: t('vms.restart'), suspend: t('vms.suspend'),
@@ -251,6 +260,8 @@ async function act(v, action) {
   }
   if (action === 'delete' && !confirm(t('vms.confirm_delete', { name: v.name }))) return
   if (action === 'stop' && !confirm(t('vms.confirm_stop', { name: v.name }))) return
+  if (action === 'kill' && !confirm(t('vms.confirm_kill', { name: v.name }))) return
+  if (action === 'restart' && v.backend === 'utm' && !confirm(t('vms.confirm_restart_force', { name: v.name }))) return
   if (action === 'shell') {
     try {
       const j = requireOk(await vmAction(v.id, { action: 'shell' }))
@@ -264,11 +275,11 @@ async function act(v, action) {
   busy.value = true
   msg.value = t('vms.working')
   try {
-    const j = requireOk(await vmAction(v.id, { action, force: true }))
+    const j = requireOk(await vmAction(v.id, { action, force: action !== 'stop' }))
     msg.value = j.message || ''
     if (j.ips) msg.value = t('vms.ip_result', { ips: j.ips.join(', ') })
     toast(`✅ ${labels.value[action] || action}`)
-    setTimeout(refresh, action === 'restart' ? 3000 : 1000)
+    scheduleRefresh(action === 'restart' ? 3000 : 1000)
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
@@ -288,7 +299,7 @@ async function doClone() {
     toast('✅ ' + t('vms.cloned'))
     msg.value = j.message || ''
     cloneTarget.value = null
-    setTimeout(refresh, 1500)
+    scheduleRefresh(1500)
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {
@@ -329,7 +340,7 @@ async function doCreate() {
     toast('✅ ' + t('vms.created'))
     msg.value = j.message || ''
     showCreate.value = false
-    setTimeout(refresh, 2000)
+    scheduleRefresh(2000)
   } catch (e) {
     toast('❌ ' + e.message)
     msg.value = e.message
@@ -345,6 +356,9 @@ onMounted(() => {
 onUnmounted(() => {
   consoleTarget.value = null
   if (typeof timer === 'function') timer()
+  timer = null
+  for (const id of refreshTimers) clearTimeout(id)
+  refreshTimers.clear()
 })
 
 // Each dialog owes the same keyboard contract: Escape dismisses it, focus moves

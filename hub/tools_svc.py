@@ -247,10 +247,25 @@ def _fmt_uptime(sec: int | None) -> str:
 
 # ─── Syslog (Unraid Syslog) ──────────────────────────────────────────────────
 
+#: `log show` scans the unified log archive and measured 10-13s on this host --
+#: on *every* request, warm or cold, because this was the one heavy reader in this
+#: module without a cache (hardware_profile and updates below both have one).
+#: Revisiting the Logs page or leaving it polling therefore paid the full scan
+#: each time.  Keyed by the query, since a different window or level is a
+#: different scan.  The TTL is short enough that the page still reads as live and
+#: long enough that flipping between levels and back is instant.
+_syslog_cache: dict[tuple[int, int, str], tuple[float, dict]] = {}
+_SYSLOG_TTL = 45.0
+#: One lock, deliberately: a second viewer arriving mid-scan waits and then finds
+#: the fresh result rather than starting a second 10s scan of its own.
+_syslog_refresh_lock = threading.Lock()
+
+
 def syslog_tail(
     minutes: int = 60,
     limit: int = 80,
     level: str = "error",
+    force: bool = False,
 ) -> dict:
     """Recent unified log entries (macOS log show).
 
@@ -259,6 +274,31 @@ def syslog_tail(
     minutes = max(5, min(int(minutes or 60), 24 * 60))
     limit = max(10, min(int(limit or 80), 300))
     level = (level or "error").lower()
+
+    key = (minutes, limit, level)
+    if not force:
+        hit = _syslog_cache.get(key)
+        if hit and time.time() - hit[0] < _SYSLOG_TTL:
+            return {**hit[1], "cached": True}
+
+    with _syslog_refresh_lock:
+        # Re-check: another request may have completed the same scan while this
+        # one waited, which is what turns the lock into a single-flight.
+        hit = _syslog_cache.get(key)
+        if not force and hit and time.time() - hit[0] < _SYSLOG_TTL:
+            return {**hit[1], "cached": True}
+        result = _syslog_tail_uncached(minutes, limit, level)
+        if result.get("ok"):
+            _syslog_cache[key] = (time.time(), result)
+            # Bounded: minutes x limit x level is a small space, but a caller
+            # sweeping it would otherwise grow this without limit.
+            if len(_syslog_cache) > 24:
+                oldest = min(_syslog_cache, key=lambda k: _syslog_cache[k][0])
+                _syslog_cache.pop(oldest, None)
+        return {**result, "cached": False}
+
+
+def _syslog_tail_uncached(minutes: int, limit: int, level: str) -> dict:
     # Prefer lightweight predicates
     if level == "error":
         predicate = 'eventType == "logEvent" AND messageType == "error"'

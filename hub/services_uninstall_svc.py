@@ -22,19 +22,35 @@ from pathlib import Path
 from typing import Any
 
 from hub.errors import api_error
-from hub.paths import AGENTS_DIR, BASE, UID
+from hub.paths import AGENTS_DIR, DATA_DIR, UID
 from hub.util import sh
 
-#: Backups live beside the install, mode 0700, so a removed plist is recoverable.
-BACKUP_DIR = BASE / "data" / "uninstalled-agents"
+#: Backups live in private mutable state so a removed plist is recoverable.
+BACKUP_DIR = DATA_DIR / "uninstalled-agents"
 
 #: Labels the panel must never bootout.  Removing the panel or menu bar kills the
 #: request in flight and leaves no supervised process to restore it; removing the
 #: tunnel silently cuts the remote access path an operator may be using *right
 #: now* to click the button, with no way back in.  Restoring any of these means
 #: local shell access, so they are refused here rather than merely confirmed.
+#: Several spellings reach this guard because the panel agent has been installed
+#: under different labels over time: ``install.sh`` writes the dotted names, the
+#: native ServerHub.app writes the hyphenated ones, and distribution builds use a
+#: ``com.elvin`` prefix.  All of them point at the very same supervised job, so
+#: every spelling must be refused -- protecting only one would let the others
+#: through and unload the panel serving the request.
 PROTECTED_LABELS = frozenset({
+    # install.sh / source installs
+    "local.serverhub.panel",
+    "local.serverhub.menubar",
+    "local.serverhub.launcher",
+    # ServerHubLauncher.swift / native app installs
+    "local.serverhub",
+    "local.serverhub-launcher",
+    "local.serverhub-menubar",
+    # distribution installs
     "com.elvin.serverhub",
+    "com.elvin.serverhub-launcher",
     "com.elvin.serverhub-menubar",
     "local.cloudflared-tunnel",
 })
@@ -62,7 +78,12 @@ def preview(label: str) -> dict[str, Any]:
     label = (label or "").strip()
     if not _LABEL_RE.match(label):
         raise api_error("services.uninstall_not_supported", id=label or "?")
-    if label in PROTECTED_LABELS:
+    # Compared case-insensitively: launchd labels are case-sensitive, but the
+    # LaunchAgents directory lives on a case-insensitive volume by default, so
+    # "Local.Serverhub.Panel" resolves to the real panel plist. Matching exactly
+    # would let a differently-cased spelling slip past this guard and archive a
+    # protected agent's plist.
+    if label.lower() in PROTECTED_LABELS:
         raise api_error("services.uninstall_protected", id=label)
 
     path = _plist_path(label)

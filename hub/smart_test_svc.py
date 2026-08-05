@@ -1,0 +1,558 @@
+"""SMART self-tests, schedules and history — Unraid's disk health tab, on macOS.
+
+``hub/storage_svc.py`` already reads SMART *attributes*.  What both Unraid and OMV
+add on top, and what actually catches a dying disk before it takes data with it,
+is the *self-test*: the drive's own internal scan, run on a schedule, with its
+result log kept over time.
+
+Three practical macOS constraints shape this module:
+
+* ``smartctl -t`` writes to the device, so it needs root.  Attribute reads usually
+  do not.  Each call therefore tries unprivileged first, then passwordless
+  ``sudo -n``, and only falls back to the interactive authorization sheet for
+  operator-initiated runs.  A scheduled run has no operator to click the sheet, so
+  it requires the passwordless rule from ``deploy/sudoers.d/serverhub`` and reports
+  clearly when that rule is missing instead of failing silently.
+* Apple NVMe controllers expose no ATA self-test.  Capability is probed per device
+  and the UI is told which tests a given disk actually supports.
+* Results outlive the process, so history is journalled to ``data/`` rather than
+  held in memory.
+"""
+from __future__ import annotations
+
+import json
+import re
+import threading
+import time
+from pathlib import Path
+
+from hub.config import cfg, update_settings
+from hub.macos_admin import run_admin
+from hub.paths import DATA_DIR, SMARTCTL
+from hub.util import sh
+
+HISTORY_PATH = DATA_DIR / "smart-tests.json"
+
+#: ``/dev/disk4`` — the only device shape accepted into any argv here.
+_DEV_RE = re.compile(r"^/dev/disk\d{1,3}$")
+
+TEST_KINDS = ("short", "long", "conveyance", "offline")
+
+#: Rough ceilings so the UI can say "come back later" instead of polling forever.
+_KIND_HINT_MINUTES = {"short": 2, "conveyance": 5, "long": 120, "offline": 30}
+
+SCHEDULE_INTERVALS = {
+    "off": 0,
+    "daily": 86400,
+    "weekly": 7 * 86400,
+    "biweekly": 14 * 86400,
+    "monthly": 30 * 86400,
+}
+
+_history_lock = threading.Lock()
+_scheduler_stop: threading.Event | None = None
+_scheduler_thread: threading.Thread | None = None
+
+_cache: dict = {"t": 0.0, "v": None}
+_CACHE_TTL = 30.0
+
+
+# ── smartctl plumbing ────────────────────────────────────────────────────────
+
+#: Device-type flags smartctl needs per transport, tried in order.
+#:
+#: This list is short on purpose.  macOS does not give userspace a SCSI/ATA
+#: passthrough for USB and Thunderbolt bridges the way Linux does: every
+#: ``-d sat``, ``-d scsi`` and ``-d usb*`` variant answers "Not a device of type
+#: 'scsi'" for an external enclosure, so probing them only burns a process spawn
+#: per disk per boot.  In practice ``smartctl --scan`` finds exactly one thing on
+#: an Apple-silicon Mac: the internal NVMe controller.  External-disk health is
+#: therefore reported as unavailable-by-transport rather than as a drive fault.
+_DEVICE_TYPE_CANDIDATES: tuple[tuple[str, ...], ...] = ((), ("-d", "nvme"))
+
+#: device node → the flag tuple that worked, so the probe runs once per process.
+_device_type_cache: dict[str, tuple[str, ...]] = {}
+
+
+def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
+    """Run smartctl unprivileged, retrying under ``sudo -n`` on a denial.
+
+    smartctl uses the exit status as a bitfield: bit 0 (value 1) means the command
+    line itself was wrong, and bit 2 (value 4) means a SMART command failed while
+    the returned data is still usable.  Only a permission complaint justifies the
+    privileged retry.
+    """
+    rc, out, err = sh([SMARTCTL, *argv], timeout=timeout)
+    blob = f"{out}\n{err}".lower()
+    if rc not in (0, 4) and any(
+        token in blob for token in ("permission", "operation not permitted", "access denied")
+    ):
+        rc, out, err = sh(["sudo", "-n", SMARTCTL, *argv], timeout=timeout)
+    return rc, out, err
+
+
+def _unsupported(out: str, err: str) -> bool:
+    return "not supported by device" in f"{out}\n{err}".lower()
+
+
+def device_type(device: str) -> tuple[str, ...]:
+    """The smartctl ``-d`` flags this device answers to (possibly none)."""
+    cached = _device_type_cache.get(device)
+    if cached is not None:
+        return cached
+    for flags in _DEVICE_TYPE_CANDIDATES:
+        rc, out, err = _raw_smartctl([*flags, "-i", device], timeout=12)
+        if rc in (0, 4) and not _unsupported(out, err):
+            _device_type_cache[device] = flags
+            return flags
+    _device_type_cache[device] = ()
+    return ()
+
+
+def _smartctl(args: list[str], *, timeout: int = 20) -> tuple[int, str, str]:
+    """Run smartctl for a device, injecting the transport flags it needs.
+
+    The device node is the last element of *args*, matching smartctl's own usage.
+    """
+    if args and str(args[-1]).startswith("/dev/"):
+        flags = device_type(args[-1])
+        argv = [*args[:-1], *flags, args[-1]]
+    else:
+        argv = list(args)
+    return _raw_smartctl(argv, timeout=timeout)
+
+
+def passwordless_available() -> bool:
+    """Whether ``sudo -n smartctl`` works, i.e. scheduled tests can run headless."""
+    rc, _, _ = sh(["sudo", "-n", SMARTCTL, "-V"], timeout=6)
+    return rc == 0
+
+
+def _device_nodes() -> list[str]:
+    """Physical whole disks, as ``/dev/diskN``."""
+    rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=10)
+    nodes: list[str] = []
+    if rc == 0:
+        for match in re.finditer(r"/dev/(disk\d+)\s", out):
+            node = f"/dev/{match.group(1)}"
+            if node not in nodes:
+                nodes.append(node)
+    return nodes or ["/dev/disk0"]
+
+
+def _selftest_raw(device: str) -> tuple[int, str, str]:
+    """Raw ``smartctl -l selftest`` output for *device*.
+
+    Split out because two callers need it -- :func:`_capabilities` reads its
+    wording to tell "no self-test support" apart from "no controller access", and
+    :func:`_selftest_log` parses its rows.  They used to each run the command, so
+    building the page cost two identical ~45ms subprocesses per disk.
+    """
+    return _smartctl(["-l", "selftest", device], timeout=15)
+
+
+def _capabilities(device: str, selftest: tuple[int, str, str] | None = None) -> dict:
+    """Which self-tests *this* device offers, plus its estimated durations.
+
+    An empty ``supported`` list is a real and common answer, not a parse failure:
+    Apple's internal NVMe controllers implement SMART attributes but no self-test
+    at all.  ``reason`` carries the drive's own wording so the page can explain
+    why there is no button rather than showing an inert one.
+
+    *selftest* lets a caller that already ran :func:`_selftest_raw` pass it in.
+    """
+    rc, out, err = _smartctl(["-c", device], timeout=15)
+    text = out or ""
+    lowered = text.lower()
+    log_rc, log_out, log_err = selftest if selftest is not None else _selftest_raw(device)
+    log_blob = f"{log_out}\n{log_err}".lower()
+
+    # Two different failures used to collapse into one message.  "The controller
+    # will not talk to us at all" (every external enclosure on macOS) is not the
+    # same as "the drive answered and says it has no self-test" (Apple NVMe), and
+    # only the second one means the disk is fine but untestable.
+    no_access = _unsupported(out, err) or (rc not in (0, 4) and not text)
+    selftest_unsupported = (
+        "self-tests not supported" in log_blob or "self-test not supported" in lowered
+    )
+
+    supported: list[str] = []
+    if not no_access and not selftest_unsupported:
+        for kind in ("short", "long", "conveyance", "offline"):
+            token = "offline data collection" if kind == "offline" else f"{kind} self-test"
+            if token in lowered:
+                supported.append(kind)
+
+    minutes: dict[str, int] = {}
+    for kind, pattern in (
+        ("short", r"Short self-test routine.*?\n.*?(\d+)\s*minutes"),
+        ("long", r"Extended self-test routine.*?\n.*?(\d+)\s*minutes"),
+        ("conveyance", r"Conveyance self-test routine.*?\n.*?(\d+)\s*minutes"),
+    ):
+        m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if m:
+            minutes[kind] = int(m.group(1))
+
+    if no_access:
+        reason = "no_smart_passthrough"
+    elif selftest_unsupported:
+        reason = "self_tests_unsupported"
+    else:
+        reason = ""
+
+    del log_rc  # the log is read for its wording, not its exit status
+    return {
+        "readable": not no_access and rc in (0, 4) and bool(text),
+        "available": bool(supported),
+        "supported": supported,
+        "reason": reason,
+        "device_type": " ".join(device_type(device)) or "auto",
+        "estimated_minutes": minutes or {k: v for k, v in _KIND_HINT_MINUTES.items() if k in supported},
+        "detail": (err or log_err or "").strip()[:200],
+    }
+
+
+_SELFTEST_ROW = re.compile(
+    r"^#\s*(\d+)\s+(.+?)\s{2,}(.+?)\s{2,}(\d+%)\s+(\d+)\s*(.*)$"
+)
+
+
+def _selftest_log(device: str, selftest: tuple[int, str, str] | None = None) -> list[dict]:
+    """Parse ``smartctl -l selftest`` into rows, newest first.
+
+    Two output shapes exist: the ATA table (``# 1  Short offline  Completed …``)
+    and the NVMe self-test log.  Both are handled; unknown shapes yield nothing
+    rather than guessed values.
+    """
+    rc, out, _ = selftest if selftest is not None else _selftest_raw(device)
+    if rc not in (0, 4) or not out:
+        return []
+    rows: list[dict] = []
+    for line in out.splitlines():
+        stripped = line.rstrip()
+        m = _SELFTEST_ROW.match(stripped.strip())
+        if m:
+            num, kind, status, remaining, hours, lba = m.groups()
+            rows.append({
+                "index": int(num),
+                "kind": kind.strip(),
+                "status": status.strip(),
+                "passed": "without error" in status.lower() or "completed" == status.strip().lower(),
+                "remaining": remaining,
+                "power_on_hours": int(hours),
+                "failing_lba": lba.strip() or "",
+            })
+            continue
+        # NVMe: "Self-test status: No self-test in progress" / result table rows
+        if stripped.lower().startswith("self-test status"):
+            rows.append({
+                "index": 0,
+                "kind": "nvme",
+                "status": stripped.split(":", 1)[1].strip(),
+                "passed": "no self-test" in stripped.lower() or "success" in stripped.lower(),
+                "remaining": "",
+                "power_on_hours": 0,
+                "failing_lba": "",
+            })
+    rows.sort(key=lambda r: r["index"])
+    return rows
+
+
+def _in_progress(device: str) -> dict:
+    """Whether a self-test is currently running on *device*, and how far along."""
+    rc, out, _ = _smartctl(["-c", device], timeout=15)
+    if rc not in (0, 4) or not out:
+        return {"running": False, "percent_remaining": None}
+    m = re.search(r"Self-test routine in progress.*?(\d+)%\s*of test remaining", out, re.DOTALL | re.IGNORECASE)
+    if not m:
+        m2 = re.search(r"of test remaining[.:\s]*(\d+)%", out, re.IGNORECASE)
+        if not m2:
+            return {"running": False, "percent_remaining": None}
+        m = m2
+    remaining = int(m.group(1))
+    return {"running": True, "percent_remaining": remaining, "percent_done": 100 - remaining}
+
+
+# ── history journal ──────────────────────────────────────────────────────────
+
+def _load_history() -> list[dict]:
+    try:
+        data = json.loads(HISTORY_PATH.read_text())
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _append_history(record: dict) -> None:
+    with _history_lock:
+        history = _load_history()
+        history.append(record)
+        # Bounded so a daily schedule cannot grow the file without limit.
+        del history[:-500]
+        try:
+            HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            HISTORY_PATH.write_text(json.dumps(history, indent=2, ensure_ascii=False))
+        except OSError:
+            pass
+
+
+def history(limit: int = 100) -> list[dict]:
+    records = _load_history()
+    return list(reversed(records[-max(1, min(limit, 500)):]))
+
+
+# ── schedule ─────────────────────────────────────────────────────────────────
+
+def get_schedule() -> dict:
+    stored = ((cfg().get("settings") or {}).get("smart_schedule") or {})
+    interval = str(stored.get("interval") or "off").lower()
+    if interval not in SCHEDULE_INTERVALS:
+        interval = "off"
+    kind = str(stored.get("kind") or "short").lower()
+    if kind not in TEST_KINDS:
+        kind = "short"
+    return {
+        "interval": interval,
+        "kind": kind,
+        "last_run": stored.get("last_run") or 0,
+        "devices": [d for d in (stored.get("devices") or []) if _DEV_RE.match(str(d))],
+        "intervals": list(SCHEDULE_INTERVALS),
+        "kinds": list(TEST_KINDS),
+    }
+
+
+def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
+    interval = (interval or "off").strip().lower()
+    if interval not in SCHEDULE_INTERVALS:
+        return {"ok": False, "error": "bad_interval"}
+    kind = (kind or "short").strip().lower()
+    if kind not in TEST_KINDS:
+        return {"ok": False, "error": "bad_kind"}
+    known = set(_device_nodes())
+    cleaned = [str(d) for d in (devices or []) if _DEV_RE.match(str(d)) and str(d) in known]
+    current = ((cfg().get("settings") or {}).get("smart_schedule") or {})
+    update_settings({
+        "smart_schedule": {
+            "interval": interval,
+            "kind": kind,
+            "devices": cleaned,
+            "last_run": current.get("last_run") or 0,
+        }
+    })
+    invalidate()
+    return {"ok": True, "schedule": get_schedule()}
+
+
+def _mark_ran() -> None:
+    stored = dict((cfg().get("settings") or {}).get("smart_schedule") or {})
+    stored["last_run"] = int(time.time())
+    update_settings({"smart_schedule": stored})
+
+
+def schedule_due() -> bool:
+    schedule = get_schedule()
+    period = SCHEDULE_INTERVALS.get(schedule["interval"], 0)
+    if not period or not schedule["devices"]:
+        return False
+    return time.time() - float(schedule["last_run"] or 0) >= period
+
+
+def run_due_tests() -> dict:
+    """Start scheduled self-tests when the interval has elapsed.
+
+    Uses ``sudo -n`` only.  A scheduled run cannot answer an authorization sheet,
+    so without the passwordless rule this records a skipped run rather than
+    blocking a background thread on a dialog nobody will see.
+    """
+    if not schedule_due():
+        return {"ok": True, "ran": 0, "reason": "not_due"}
+    schedule = get_schedule()
+    if not passwordless_available():
+        _append_history({
+            "ts": int(time.time()),
+            "device": "",
+            "kind": schedule["kind"],
+            "origin": "schedule",
+            "ok": False,
+            "error": "sudo_required",
+        })
+        _mark_ran()
+        return {"ok": False, "ran": 0, "error": "sudo_required"}
+
+    started = 0
+    for device in schedule["devices"]:
+        caps = _capabilities(device)
+        if schedule["kind"] not in caps["supported"]:
+            _append_history({
+                "ts": int(time.time()),
+                "device": device,
+                "kind": schedule["kind"],
+                "origin": "schedule",
+                "ok": False,
+                "error": "unsupported",
+                "message": caps["reason"],
+            })
+            continue
+        flags = list(device_type(device))
+        rc, out, err = sh(
+            ["sudo", "-n", SMARTCTL, "-t", schedule["kind"], *flags, device], timeout=60
+        )
+        ok = rc in (0, 4)
+        started += 1 if ok else 0
+        _append_history({
+            "ts": int(time.time()),
+            "device": device,
+            "kind": schedule["kind"],
+            "origin": "schedule",
+            "ok": ok,
+            "message": (out or err or "").strip()[-300:],
+        })
+    _mark_ran()
+    invalidate()
+    return {"ok": True, "ran": started}
+
+
+def start_scheduler(check_interval: int = 900) -> None:
+    """Poll for a due schedule in the background.
+
+    Deliberately a coarse poll rather than a timer aimed at a wall-clock instant:
+    a laptop-class Mac sleeps, and a missed absolute deadline would silently skip
+    a month of tests.  Checking every 15 minutes catches up after any wake.
+    """
+    global _scheduler_stop, _scheduler_thread
+    if _scheduler_thread and _scheduler_thread.is_alive():
+        return
+    stop = threading.Event()
+
+    def loop():
+        while not stop.wait(check_interval):
+            try:
+                run_due_tests()
+            except Exception:
+                # A background health task must never take the panel down.
+                pass
+
+    _scheduler_stop = stop
+    _scheduler_thread = threading.Thread(target=loop, daemon=True, name="smart-schedule")
+    _scheduler_thread.start()
+
+
+def stop_scheduler() -> None:
+    global _scheduler_stop, _scheduler_thread
+    if _scheduler_stop is not None:
+        _scheduler_stop.set()
+    _scheduler_stop = None
+    _scheduler_thread = None
+
+
+# ── operator-initiated runs ──────────────────────────────────────────────────
+
+def start_test(device: str, kind: str) -> dict:
+    """Begin a self-test on *device* now."""
+    node = str(device or "").strip()
+    if not _DEV_RE.match(node) or node not in set(_device_nodes()):
+        return {"ok": False, "error": "bad_device"}
+    test = (kind or "").strip().lower()
+    if test not in TEST_KINDS:
+        return {"ok": False, "error": "bad_kind"}
+
+    caps = _capabilities(node)
+    if not caps["available"]:
+        # Refusing here beats issuing a command the controller will reject, and
+        # lets the UI say which drives can actually be tested.
+        return {"ok": False, "error": "unsupported", "reason": caps["reason"], "device": node}
+    if test not in caps["supported"]:
+        return {"ok": False, "error": "kind_unsupported", "supported": caps["supported"], "device": node}
+
+    flags = list(device_type(node))
+    rc, out, err = sh(["sudo", "-n", SMARTCTL, "-t", test, *flags, node], timeout=60)
+    if rc not in (0, 4):
+        # No passwordless rule: ask macOS for one-shot authorization instead.
+        admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
+        ok = bool(admin.get("ok"))
+        message = str(admin.get("message") or "")
+    else:
+        ok = True
+        message = (out or err or "").strip()
+
+    _append_history({
+        "ts": int(time.time()),
+        "device": node,
+        "kind": test,
+        "origin": "manual",
+        "ok": ok,
+        "message": message[-300:],
+    })
+    invalidate()
+    return {
+        "ok": ok,
+        "device": node,
+        "kind": test,
+        "estimated_minutes": _KIND_HINT_MINUTES.get(test),
+        "message": message[-300:],
+    }
+
+
+def abort_test(device: str) -> dict:
+    """Cancel a running self-test on *device*."""
+    node = str(device or "").strip()
+    if not _DEV_RE.match(node) or node not in set(_device_nodes()):
+        return {"ok": False, "error": "bad_device"}
+    flags = list(device_type(node))
+    rc, out, err = sh(["sudo", "-n", SMARTCTL, "-X", *flags, node], timeout=30)
+    if rc not in (0, 4):
+        result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
+        invalidate()
+        return result
+    invalidate()
+    return {"ok": True, "message": (out or err or "").strip()[-300:]}
+
+
+# ── page payload ─────────────────────────────────────────────────────────────
+
+def overview(force: bool = False) -> dict:
+    now = time.time()
+    if not force and _cache["v"] is not None and now - _cache["t"] < _CACHE_TTL:
+        return _cache["v"]
+
+    devices = []
+    for node in _device_nodes():
+        # One selftest read shared by the capability probe and the log parser.
+        selftest = _selftest_raw(node)
+        caps = _capabilities(node, selftest=selftest)
+        log = _selftest_log(node, selftest=selftest)
+        progress = _in_progress(node)
+        failures = [r for r in log if r["index"] and not r["passed"]]
+        devices.append({
+            "device": node,
+            "id": node.rsplit("/", 1)[-1],
+            "capabilities": caps,
+            "log": log[:20],
+            "log_count": len(log),
+            "last_result": log[0]["status"] if log else "",
+            "failures": len(failures),
+            "progress": progress,
+        })
+
+    schedule = get_schedule()
+    period = SCHEDULE_INTERVALS.get(schedule["interval"], 0)
+    next_due = (
+        int(float(schedule["last_run"] or 0) + period) if period else 0
+    )
+    data = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "devices": devices,
+        "schedule": schedule,
+        "next_due": next_due,
+        "overdue": bool(period) and schedule_due(),
+        "passwordless_sudo": passwordless_available(),
+        "smartctl": SMARTCTL,
+        "smartctl_installed": Path(SMARTCTL).exists(),
+        "history": history(30),
+    }
+    _cache.update(t=now, v=data)
+    return data
+
+
+def invalidate() -> None:
+    _cache.update(t=0.0, v=None)

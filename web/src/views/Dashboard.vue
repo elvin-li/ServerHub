@@ -436,9 +436,9 @@ import { startVisibleInterval } from '../lib/poll'
 import LineChart from '../components/LineChart.vue'
 import StackBar from '../components/StackBar.vue'
 import {
-  doAction, disableScreenSharing, enableScreenSharing, getAlerts, getBookmarks,
-  getContainers, getHealthChecks, getHost, getMetrics, getPower, getStatus,
-  getStorage, getListeningPorts, getSensors, powerAction,
+  doAction, getAlerts, getBookmarks, getContainers, getHealthChecks, getHost,
+  getListeningPorts, getMetrics, getPower, getSensors, getStatus, getStorage,
+  powerAction, setSystemSharing,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 
@@ -477,6 +477,16 @@ const powerData = ref({})
 const metricMins = ref(60)
 let timer = null
 let heavyTimer = null
+let actionRefreshTimer = null
+
+function scheduleActionRefresh() {
+  if (actionRefreshTimer) clearTimeout(actionRefreshTimer)
+  actionRefreshTimer = setTimeout(() => {
+    actionRefreshTimer = null
+    void refresh()
+  }, 1000)
+}
+
 const labels = computed(() => ({
   restart: t('dashboard.act_restart'),
   stop: t('dashboard.act_stop'),
@@ -700,7 +710,7 @@ async function doPower(action) {
 async function enableSS() {
   ssBusy.value = true
   try {
-    const r = await enableScreenSharing()
+    const r = await setSystemSharing('screen_sharing', true)
     toast(r.ok ? `✅ ${r.message}` : `⚠️ ${r.message}`)
     await loadPower()
   } catch (e) {
@@ -712,7 +722,7 @@ async function disableSS() {
   if (!confirm(t('power.confirm_disable_ss'))) return
   ssBusy.value = true
   try {
-    const r = await disableScreenSharing()
+    const r = await setSystemSharing('screen_sharing', false)
     toast(r.ok ? `✅ ${r.message}` : `⚠️ ${r.message}`)
     await loadPower()
   } catch (e) {
@@ -822,21 +832,26 @@ async function refreshAll() {
   await Promise.all([refresh(), refreshHeavy(true, true)])
 }
 async function act(svc, action) {
+  if (busy.value) return
   busy.value = true
-  const r = await doAction(svc.id, action)
-  toast(r.ok ? `✅ ${svc.name}` : `❌ ${(r.message || '').slice(0, 80)}`)
-  busy.value = false
-  setTimeout(refresh, 1000)
+  try {
+    const r = await doAction(svc.id, action)
+    toast(r.ok ? `✅ ${svc.name}` : `❌ ${(r.message || '').slice(0, 80)}`)
+    if (r.ok) scheduleActionRefresh()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
 }
 
 onMounted(() => {
-  refresh()
+  void refresh()
   // first paint: include docker stats once
-  refreshHeavy(true, true)
+  void refreshHeavy(true, true)
   // light: status + sensors from cache; pause when tab hidden
-  timer = startVisibleInterval(() => {
-    refresh()
-    loadSensors(false)
+  timer = startVisibleInterval(async () => {
+    await Promise.all([refresh(), loadSensors(false)])
     clock.value = Date.now()
   }, 12000)
   // heavy: no docker stats; manual refresh still pulls stats
@@ -845,6 +860,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (typeof timer === 'function') timer()
   if (typeof heavyTimer === 'function') heavyTimer()
+  if (actionRefreshTimer) clearTimeout(actionRefreshTimer)
+  actionRefreshTimer = null
 })
 </script>
 

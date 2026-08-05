@@ -65,11 +65,16 @@ def _client_imports() -> list[tuple[Path, str]]:
     return out
 
 
-def _locale_keys(name: str) -> set[str]:
-    """Flatten `key: 'value'` nesting in a locale module into dotted paths."""
+def _locale_key_paths(name: str) -> list[str]:
+    """Flatten `key: 'value'` nesting in a locale module into dotted paths.
+
+    Returns a *list*, not a set: duplicate key paths must stay visible so the
+    no-duplicates ratchet below can see them (in JS the last duplicate silently
+    wins, which once hid ``err.admin.password_required`` behind an older block).
+    """
     text = (I18N / f"{name}.js").read_text(errors="replace")
     body = text[text.index("{"):]
-    keys: set[str] = set()
+    keys: list[str] = []
     stack: list[str] = []
     # Good enough for these dictionaries: they are plain nested object literals.
     for raw in body.splitlines():
@@ -82,12 +87,17 @@ def _locale_keys(name: str) -> set[str]:
             continue
         m = re.match(r"^([A-Za-z_$][\w$-]*|'[^']+'|\"[^\"]+\")\s*:\s*(.+)$", line)
         if m:
-            keys.add(".".join(stack + [m.group(1).strip("'\"")]))
+            keys.append(".".join(stack + [m.group(1).strip("'\"")]))
             continue
         if line.startswith("}"):
             if stack:
                 stack.pop()
     return keys
+
+
+def _locale_keys(name: str) -> set[str]:
+    """Flatten `key: 'value'` nesting in a locale module into dotted paths."""
+    return set(_locale_key_paths(name))
 
 
 class TestClientImportContract(unittest.TestCase):
@@ -204,6 +214,22 @@ class TestI18nKeysResolve(unittest.TestCase):
             )
             self.assertEqual(
                 sorted(keys - en)[:15], [], f"keys in {other}.js missing from en.js"
+            )
+
+    def test_locale_files_have_no_duplicate_key_paths(self):
+        # Duplicated keys are legal JS, and `t()`-key tests keep passing because
+        # the key still exists somewhere — but at runtime the *last* duplicate
+        # silently wins.  That once replaced err.admin (with its password_* keys
+        # that drive the in-browser admin password dialog) with an older copy
+        # that lacked them, so privileged actions failed without ever prompting.
+        for locale in ("en", "zh-CN", "ja"):
+            paths = _locale_key_paths(locale)
+            dupes = sorted({path for path in paths if paths.count(path) > 1})
+            self.assertEqual(
+                dupes[:15],
+                [],
+                f"duplicate key paths in {locale}.js — the last one silently "
+                "overwrites the earlier:\n  " + "\n  ".join(dupes[:15]),
             )
 
 

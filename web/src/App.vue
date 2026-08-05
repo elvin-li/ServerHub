@@ -111,6 +111,8 @@
         </ul>
       </div>
     </div>
+    <!-- Global macOS administrator password dialog for privileged operations -->
+    <AdminPasswordDialog />
   </div>
 </template>
 
@@ -120,9 +122,11 @@ import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
   Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Settings,
-  ScrollText,
+  ScrollText, ShieldCheck,
 } from '@lucide/vue'
 import { startVisibleInterval } from './lib/poll'
+import { clearAdminPassword } from './lib/adminPassword'
+import AdminPasswordDialog from './components/AdminPasswordDialog.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AUTH_LOST_EVENT, getStatus, logoutAuth, putSettings } from './api/client'
 import { injectI18n } from './i18n'
@@ -157,7 +161,10 @@ let ptrActive = false
 function showToast(msg) {
   toast.value = msg
   clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.value = '' }, 2800)
+  // Long error messages (translated text + the tool's stderr tail) need longer
+  // to read than a one-word confirmation.
+  const dwell = Math.min(2800 + String(msg).length * 35, 9000)
+  toastTimer = setTimeout(() => { toast.value = '' }, dwell)
 }
 
 //: Callers mark failures with a leading ❌ / ⚠.  A failure has to interrupt the
@@ -210,11 +217,12 @@ const nav = [
   {
     to: '/network',
     labelKey: 'nav.network',
-    match: ['/network', '/gateway', '/bookmarks'],
+    match: ['/network', '/gateway', '/wireguard', '/bookmarks'],
     icon: Network,
     children: [
       { to: '/network', labelKey: 'nav.sub_interfaces', exact: true, icon: Network },
       { to: '/gateway', labelKey: 'nav.gateway', icon: Router },
+      { to: '/wireguard', labelKey: 'nav.wireguard', icon: ShieldCheck },
       { to: '/bookmarks', labelKey: 'nav.bookmarks', icon: Bookmark },
     ],
   },
@@ -285,6 +293,8 @@ function onTheme(ev) {
 
 async function logout() {
   try { await logoutAuth() } catch {}
+  // A cached macOS administrator password belongs to the signed-in session.
+  clearAdminPassword()
   status.value = null
   router.replace('/login')
 }

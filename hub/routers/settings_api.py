@@ -245,10 +245,9 @@ def force_check():
 def export_services_yaml():
     """Download current services.yaml for backup/edit."""
     from fastapi.responses import PlainTextResponse
-    from hub.paths import BASE
-    p = BASE / "services.yaml"
+    from hub.paths import CONFIG_FILE
     return PlainTextResponse(
-        p.read_text(encoding="utf-8"),
+        CONFIG_FILE.read_text(encoding="utf-8"),
         media_type="text/yaml; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=services.yaml"},
     )

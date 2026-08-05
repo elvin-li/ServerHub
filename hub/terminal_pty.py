@@ -28,8 +28,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from hub.paths import DOCKER
 from hub import terminal_svc
-from hub.auth import COOKIE_NAME, session_username, setup_required, verify_session
-from hub.websocket_security import origin_allowed
+from hub.websocket_security import authenticate_websocket
 
 MAX_SESSIONS = 4
 MAX_SESSIONS_PER_USER = 2
@@ -124,15 +123,11 @@ async def _reject(websocket: WebSocket, code: int, error: str) -> None:
 
 
 async def terminal_websocket(websocket: WebSocket) -> None:
-    token = websocket.cookies.get(COOKIE_NAME)
-    if setup_required() or not verify_session(token):
-        await _reject(websocket, 4401, "auth.login_required")
+    authenticated = await authenticate_websocket(websocket)
+    if authenticated is None:
         return
-    if not origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
-        await _reject(websocket, 4403, "auth.cross_site_denied")
-        return
+    _, user = authenticated
 
-    user = session_username(token)
     target = _safe_arg(websocket.query_params.get("target"), max_len=16) or "host"
     container = _safe_container(websocket.query_params.get("container"))
     shell = _safe_arg(websocket.query_params.get("shell"))

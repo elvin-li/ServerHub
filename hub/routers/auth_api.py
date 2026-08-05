@@ -45,11 +45,20 @@ def _set_session(response: Response, request: Request, username: str) -> None:
 
 @router.get("/api/auth/status")
 def auth_status(request: Request):
+    authenticated = auth.browser_authenticated(request)
+    username = auth.request_username(request) if authenticated else ""
+    # Keep the legacy administrator name as a login-form convenience only. Once a
+    # session exists, every identity/capability field is derived from that signed
+    # session instead of from the global administrator config.
+    suggested_username = str(auth._auth_cfg().get("username") or "admin")
     return {
         "setup_required": auth.setup_required(),
         "auth_required": auth.auth_enabled() or auth.setup_required(),
-        "authenticated": auth.browser_authenticated(request),
-        "username": (auth._auth_cfg().get("username") or "admin"),
+        "authenticated": authenticated,
+        "username": username or suggested_username,
+        "role": auth.role_of(username) if authenticated else None,
+        "resources": auth.allowed_resources(username) if authenticated else [],
+        "can_manage": bool(authenticated and auth.is_admin(username)),
     }
 
 
@@ -114,7 +123,7 @@ def auth_login(body: LoginBody, request: Request, response: Response):
         # to *which* account is under attack); audit.record drops the password.
         audit.record(
             audit.LOGIN_FAILED,
-            username=body.username,
+            username=username,
             client=client,
             outcome="failure",
         )
@@ -124,7 +133,13 @@ def auth_login(body: LoginBody, request: Request, response: Response):
     audit.record(
         audit.LOGIN_OK, username=username, client=client, outcome="success"
     )
-    return {"ok": True, "username": username}
+    return {
+        "ok": True,
+        "username": username,
+        "role": auth.role_of(username),
+        "resources": auth.allowed_resources(username),
+        "can_manage": auth.is_admin(username),
+    }
 
 
 @router.post("/api/auth/change-password")
@@ -139,6 +154,12 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
         raise api_error("auth.setup_required")
     if not auth.browser_authenticated(request):
         raise api_error("auth.login_required")
+    current_username = auth.request_username(request)
+    if not auth.is_admin(current_username):
+        # Member password rotation needs a dedicated per-account writer. The
+        # legacy setter below rewrites the primary administrator credential, so
+        # allowing a member through here would be a privilege escalation.
+        raise api_error("auth.admin_required")
 
     client = request.client.host if request.client else "unknown"
     allowed, retry = auth.login_allowed(client)

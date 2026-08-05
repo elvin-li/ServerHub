@@ -31,9 +31,9 @@ from pathlib import Path
 from typing import Any
 
 from hub import secure_io
-from hub.paths import BASE
+from hub.paths import DATA_DIR
 
-AUDIT_PATH = BASE / "data" / "auth-audit.jsonl"
+AUDIT_PATH = DATA_DIR / "auth-audit.jsonl"
 
 #: Keep the trail bounded so it cannot fill the disk unattended.  Old lines are
 #: dropped from the front, because the newest events are the ones being
@@ -50,6 +50,21 @@ SETUP_CLAIMED = "auth.setup.claimed"
 SETUP_REJECTED = "auth.setup.rejected"
 PASSWORD_CHANGED = "auth.password.changed"
 PASSWORD_CHANGE_DENIED = "auth.password.change_denied"
+SHARE_CHANGED = "shares.changed"
+SYSTEM_SHARING_CHANGED = "shares.system.changed"
+#: Storage and data-protection operations.  Every one of these either exposes
+#: data to the network or destroys it, so each leaves a trail naming the operator.
+NFS_CHANGED = "nfs.changed"
+RAID_CHANGED = "raid.changed"
+SNAPSHOT_CHANGED = "snapshots.changed"
+SMART_TEST_STARTED = "smart.test.started"
+SPOTLIGHT_CHANGED = "spotlight.changed"
+#: A WireGuard peer is a credential granting network access, so issuing and
+#: revoking one is recorded with the operator who did it.
+WIREGUARD_PEER_ADDED = "wireguard.peer.added"
+WIREGUARD_PEER_REMOVED = "wireguard.peer.removed"
+WIREGUARD_PEER_CHANGED = "wireguard.peer.changed"
+WIREGUARD_INTERFACE = "wireguard.interface"
 
 #: Any field whose name contains one of these is replaced wholesale.  Substring
 #: matching rather than exact names, so ``current_password``, ``new_password``

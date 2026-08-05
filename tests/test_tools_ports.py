@@ -13,17 +13,17 @@ HEADER = (
 
 SAMPLE = [
     # IPv4 wildcard
-    "rapportd    381 a0000   13u  IPv4 0x6506e3e09df2f774      0t0  TCP *:49152 (LISTEN)",
+    "rapportd    381 exampleuser   13u  IPv4 0x6506e3e09df2f774      0t0  TCP *:49152 (LISTEN)",
     # IPv6 wildcard
-    "rapportd    381 a0000   14u  IPv6 0x2bbd7b74598a4e40      0t0  TCP *:49152 (LISTEN)",
+    "rapportd    381 exampleuser   14u  IPv6 0x2bbd7b74598a4e40      0t0  TCP *:49152 (LISTEN)",
     # IPv4 loopback, bracketless
-    "Python    36756 a0000    6u  IPv4 0x1c0a3e2f9b8d1a55      0t0  TCP 127.0.0.1:8086 (LISTEN)",
+    "Python    36756 exampleuser    6u  IPv4 0x1c0a3e2f9b8d1a55      0t0  TCP 127.0.0.1:8086 (LISTEN)",
     # IPv6 literal — address itself contains colons
-    "Python    36756 a0000    7u  IPv6 0x9f11cc02de44ab31      0t0  TCP [::1]:8086 (LISTEN)",
+    "Python    36756 exampleuser    7u  IPv6 0x9f11cc02de44ab31      0t0  TCP [::1]:8086 (LISTEN)",
     # full IPv6 literal
     "nginx      1234 root    20u  IPv6 0x5e0778eb2fb07067      0t0  TCP [fe80::1c2d:3e4f]:443 (LISTEN)",
     # bound to a LAN address
-    "docker     2222 a0000   30u  IPv4 0x4d95b576810a1f56      0t0  TCP 192.168.1.20:5432 (LISTEN)",
+    "docker     2222 exampleuser   30u  IPv4 0x4d95b576810a1f56      0t0  TCP 192.0.2.20:5432 (LISTEN)",
 ]
 
 
@@ -35,7 +35,7 @@ class TestParseLsofListenLine(unittest.TestCase):
         self.assertEqual(row["command"], "rapportd")
         self.assertEqual(row["process"], "rapportd")
         self.assertEqual(row["pid"], "381")
-        self.assertEqual(row["user"], "a0000")
+        self.assertEqual(row["user"], "exampleuser")
         self.assertEqual(row["name"], "*:49152")
 
     def test_ipv6_wildcard(self):
@@ -60,7 +60,7 @@ class TestParseLsofListenLine(unittest.TestCase):
 
     def test_lan_address(self):
         row = parse_lsof_listen_line(SAMPLE[5])
-        self.assertEqual(row["address"], "192.168.1.20")
+        self.assertEqual(row["address"], "192.0.2.20")
         self.assertEqual(row["port"], 5432)
 
     def test_port_is_int_for_every_sample_row(self):
@@ -76,7 +76,7 @@ class TestParseLsofListenLine(unittest.TestCase):
     def test_no_state_column(self):
         """lsof may omit the trailing (LISTEN) token; NAME is then last."""
         row = parse_lsof_listen_line(
-            "Python    36756 a0000    6u  IPv4 0x1c0a3e2f9b8d1a55      0t0  TCP 0.0.0.0:9000"
+            "Python    36756 exampleuser    6u  IPv4 0x1c0a3e2f9b8d1a55      0t0  TCP 0.0.0.0:9000"
         )
         self.assertEqual(row["address"], "0.0.0.0")
         self.assertEqual(row["port"], 9000)

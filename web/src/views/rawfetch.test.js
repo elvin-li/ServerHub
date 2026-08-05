@@ -8,11 +8,8 @@
  * that bounces an expired session to /login never fires, so the operator sits on
  * a silently frozen page.
  *
- * Nine views still do this (79 call sites when this ratchet was added, 77 after
- * Bookmarks and Modules were migrated). Converting them all at once is a large
- * blast radius across pages that need a live API to exercise, so this locks in
- * today's count instead: the number may fall, never rise. Lower BUDGET whenever
- * you migrate a view.
+ * All views now use the shared client. Keep the budget at zero: any new raw
+ * fetch would reintroduce silent HTTP failures and bypass session-loss handling.
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -20,8 +17,8 @@ import { resolve } from 'node:path'
 
 const VIEWS = resolve(__dirname)
 
-/** Measured count at the time of writing. Lower this, never raise it. */
-const BUDGET = 77
+/** Raw JSON requests in views are forbidden. */
+const BUDGET = 0
 
 function viewSources() {
   return readdirSync(VIEWS)
@@ -49,9 +46,12 @@ describe('raw fetch ratchet', () => {
     ).toBeLessThanOrEqual(BUDGET)
   })
 
-  it('the two migrated views stay on the shared client', () => {
+  it('migrated views stay on the shared client', () => {
     // These were fixed deliberately; a regression here is a real bug, not drift.
-    for (const name of ['Bookmarks.vue', 'Modules.vue']) {
+    for (const name of [
+      'Apps.vue', 'Bookmarks.vue', 'Files.vue', 'Gateway.vue', 'MainArray.vue',
+      'Modules.vue', 'Network.vue', 'Services.vue', 'Settings.vue', 'Tools.vue',
+    ]) {
       const src = readFileSync(resolve(VIEWS, name), 'utf8')
       expect(rawFetchSites(src), `${name} must not reintroduce raw fetch()`).toBe(0)
       expect(src, `${name} must import the shared client`).toMatch(

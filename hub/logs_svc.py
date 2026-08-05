@@ -18,8 +18,6 @@ def log_sources() -> list:
             {"id": "autostart", "name": "开机自启", "path": str(home / "Library/Logs/server-autostart.log")},
             {"id": "serverhub", "name": "ServerHub", "path": str(home / "Library/Logs/serverhub.err.log")},
             {"id": "ha", "name": "Home Assistant", "path": str(home / "Services/homeassistant/config/home-assistant.log")},
-            {"id": "kidsmusic", "name": "Kids Music", "path": str(home / "Library/Logs/kidsmusic.err.log")},
-            {"id": "gravity", "name": "Gravity API", "path": str(home / "Services/gravity/logs/api.log")},
         ]
     out = []
     for s in sources:

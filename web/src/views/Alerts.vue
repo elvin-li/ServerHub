@@ -5,9 +5,9 @@
       <span class="meta">{{ t('alerts.meta') }}</span>
     </div>
     <div class="toolbar">
-      <button class="primary" @click="refresh">{{ t('common.refresh') }}</button>
-      <button @click="check">{{ t('alerts.check_now') }}</button>
-      <button @click="test">{{ t('alerts.test_notify') }}</button>
+      <button class="primary" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
+      <button :disabled="busy" @click="check">{{ t('alerts.check_now') }}</button>
+      <button :disabled="busy" @click="test">{{ t('alerts.test_notify') }}</button>
       <router-link class="btn" to="/settings">{{ t('alerts.notify_settings') }}</router-link>
     </div>
     <div v-if="!alerts.length" class="placeholder">{{ t('alerts.empty') }}</div>
@@ -38,36 +38,50 @@ import { injectI18n } from '../i18n'
 const toast = inject('toast')
 const { t } = injectI18n()
 const alerts = ref([])
+const busy = ref(false)
 
 function fmt(t) {
   return t ? new Date(t * 1000).toLocaleString() : ''
 }
 
 async function refresh() {
+  if (busy.value) return
+  busy.value = true
   try {
     const d = await getAlerts(100)
     alerts.value = d.alerts || []
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
 }
 
 async function check() {
+  if (busy.value) return
+  busy.value = true
   try {
     const r = await forceAlertCheck()
     toast(t('alerts.inspect_done', { n: r.emitted?.length || 0 }))
-    refresh()
+    const d = await getAlerts(100)
+    alerts.value = d.alerts || []
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
 }
 
 async function test() {
+  if (busy.value) return
+  busy.value = true
   try {
     const r = await testNotify()
     toast(r.ok ? '✅ ' + t('common.sent') : '❌ ' + (r.message || ''))
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
 }
 

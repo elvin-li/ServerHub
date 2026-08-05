@@ -25,7 +25,7 @@ VOLS = [
      "total_gb": 926.4, "used_gb": 11.7, "avail_gb": 735.1, "pct": 2, "disk_id": "disk3"},
     {"device": "/dev/disk3s5", "mount": "/System/Volumes/Data", "kind": "system",
      "total_gb": 926.4, "used_gb": 169.7, "avail_gb": 735.1, "pct": 19, "disk_id": "disk3"},
-    {"device": "OrbStack:/OrbStack", "mount": "/Users/a0000/OrbStack", "kind": "orbstack",
+    {"device": "OrbStack:/OrbStack", "mount": "/Users/exampleuser/OrbStack", "kind": "orbstack",
      "total_gb": 704.2, "used_gb": 6.0, "avail_gb": 698.2, "pct": 1, "disk_id": None},
     {"device": "/dev/disk6s1", "mount": "/Volumes/PhotoVault", "kind": "external",
      "total_gb": 1788.3, "used_gb": 100.0, "avail_gb": 1688.3, "pct": 6, "disk_id": "disk6"},
@@ -85,7 +85,7 @@ class TestSystemVolumesAreNeverEligible(PoolTestBase):
 
     def test_virtual_filesystems_are_not_candidates(self):
         mounts = {c["mount"] for c in storage_pool_svc.pool_overview(force=True)["unassigned"]}
-        self.assertNotIn("/Users/a0000/OrbStack", mounts)
+        self.assertNotIn("/Users/exampleuser/OrbStack", mounts)
 
     def test_external_volumes_are_candidates(self):
         mounts = {c["mount"] for c in storage_pool_svc.pool_overview(force=True)["unassigned"]}

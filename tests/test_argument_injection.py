@@ -152,7 +152,7 @@ class NetworkValidatorTests(unittest.TestCase):
     def test_valid_ip_still_accepts_real_addresses(self):
         from hub import network_svc
 
-        for value in ["192.168.1.1", "0.0.0.0", "255.255.255.255", "10.0.0.7"]:
+        for value in ["192.0.2.1", "0.0.0.0", "255.255.255.255", "198.51.100.7"]:
             with self.subTest(value=value):
                 self.assertTrue(network_svc._valid_ip(value))
 

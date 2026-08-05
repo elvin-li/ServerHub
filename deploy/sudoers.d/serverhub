@@ -29,7 +29,7 @@
 # `*` in sudoers does not match across whitespace, so a wildcard cannot be used
 # to smuggle an extra argument.
 #
-# Replace a0000 with the account that runs ServerHub if it differs.
+# Replace serverhub with the account that runs ServerHub if it differs.
 # ---------------------------------------------------------------------------
 
 # --- SMART health / disk power (read-only reporting + spin up/down) ---------
@@ -83,6 +83,33 @@ Cmnd_Alias SERVERHUB_NETWORK = \
 # (and killing) any root process on the machine.
 Cmnd_Alias SERVERHUB_DNS = \
     /usr/bin/killall -HUP mDNSResponder ""
+# --- WireGuard ---------------------------------------------------------------
+# `wg show ... dump` is read-only and is what the panel polls for peer state; it
+# needs root because the UAPI socket is root-owned, and without this rule the
+# WireGuard page can only ever show "not running".
+#
+# `wg syncconf` and `wg-quick` are pinned to the exact interface and config path
+# the panel manages.  This matters: a bare `wg syncconf *` grant would let any
+# file on disk be loaded as an interface config, and a bare `wg-quick *` grant is
+# worse still, because wg-quick executes PostUp/PostDown lines from its config
+# file as root — i.e. arbitrary code execution.  Pinning the path means only the
+# panel-owned config, whose contents the panel generates, can be applied.
+#
+# wg-quick is invoked through Homebrew bash by absolute path: its own shebang is
+# `#!/usr/bin/env bash`, and under sudo the scrubbed PATH resolves `env bash` to
+# Apple's bash 3.2, which wg-quick rejects ("Version mismatch: bash 3 detected").
+Cmnd_Alias SERVERHUB_WIREGUARD = \
+    /opt/homebrew/bin/wg show wg0 dump "", \
+    /opt/homebrew/bin/wg show interfaces "", \
+    /opt/homebrew/bin/wg syncconf wg0 /Users/serverhub/Services/serverhub/data/wg0.sync.conf "", \
+    /opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick up /opt/homebrew/etc/wireguard/wg0.conf "", \
+    /opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick down /opt/homebrew/etc/wireguard/wg0.conf ""
+# --- IP forwarding (WireGuard routing) --------------------------------------
+# Enumerated to the single key WireGuard needs.  A wildcard on sysctl -w would
+# expose every kernel tunable on the machine.
+Cmnd_Alias SERVERHUB_FORWARDING = \
+    /usr/sbin/sysctl -w net.inet.ip.forwarding=1, \
+    /usr/sbin/sysctl -w net.inet.ip.forwarding=0
 
 # --- Shutdown / restart -----------------------------------------------------
 # Only the immediate forms the Power page issues.
@@ -90,9 +117,11 @@ Cmnd_Alias SERVERHUB_POWER = \
     /sbin/shutdown -h now "", \
     /sbin/shutdown -r now ""
 
-a0000 ALL=(root) NOPASSWD: SERVERHUB_SMART, \
+serverhub ALL=(root) NOPASSWD: SERVERHUB_SMART, \
                            SERVERHUB_PMSET, \
                            SERVERHUB_SCREENSHARING, \
                            SERVERHUB_NETWORK, \
                            SERVERHUB_DNS, \
-                           SERVERHUB_POWER
+                           SERVERHUB_POWER, \
+                           SERVERHUB_WIREGUARD, \
+                           SERVERHUB_FORWARDING

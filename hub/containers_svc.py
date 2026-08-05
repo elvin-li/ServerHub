@@ -16,7 +16,7 @@ from hub import cli_args
 from hub.config import cfg, override
 from hub.errors import api_error
 from hub.docker_cli import docker, docker_json, engine_up, redact_env
-from hub.paths import BASE, DOCKER
+from hub.paths import DATA_DIR, DOCKER
 from hub.status import invalidate_status
 
 # long-running compose / pull jobs (reuse pattern of maintenance)
@@ -122,7 +122,7 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
                     except subprocess.TimeoutExpired:
                         continue
     return 124 if timed_out else (p.returncode if p.returncode is not None else -1)
-UPDATE_STATUS_PATH = BASE / "data" / "docker-update-status.json"
+UPDATE_STATUS_PATH = DATA_DIR / "docker-update-status.json"
 
 # docker stats --no-stream is ~2s; cache aggressively for snappy UI
 _list_cache = {"t": 0.0, "items": None, "engine_up": True}

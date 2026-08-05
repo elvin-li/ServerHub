@@ -7,7 +7,7 @@
 #
 #   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 #
-# Requires Python 3.12 or newer.
+# Requires Python 3.10 or newer.
 
 # ── Web panel (hub/, app.py) ──────────────────────────────────────────────────
 fastapi~=0.139.2

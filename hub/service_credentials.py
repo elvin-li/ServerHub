@@ -18,11 +18,11 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from hub.paths import BASE
+from hub.paths import DATA_DIR
 from hub.host_address import normalize_local_url
 from hub import secure_io
 
-INDEX_FILE = BASE / "data" / "service-credentials.json"
+INDEX_FILE = DATA_DIR / "service-credentials.json"
 SECURITY = "/usr/bin/security"
 HTPASSWD = "/usr/sbin/htpasswd"
 TESLAMATE_ROOT = Path.home() / "Services" / "teslamate"

@@ -84,6 +84,31 @@ def replace_secret_text(
     return p
 
 
+def copy_secret_file(src: Path | str, dst: Path | str) -> Path:
+    """Copy ``src`` to ``dst`` without ever publishing the copy.
+
+    ``shutil.copy2`` is wrong for secrets in two distinct ways.  It creates the
+    destination at the umask and only *then* copies the source's mode, so the
+    bytes are world-readable for the duration of the copy; and when the source
+    itself is world-readable (a repo-shipped ``.example``) it faithfully
+    reproduces that mode.  Reading the source and re-writing it through
+    ``write_secret_text`` gets both right: the destination is 0600 from its
+    first byte regardless of what the source was.
+
+    Bytes rather than text so this stays usable for non-UTF-8 payloads.
+    """
+    s, d = Path(src), Path(dst)
+    data = s.read_bytes()
+    _ensure_private_parents(d)
+    if d.exists():
+        os.chmod(d, SECRET_MODE)
+    fd = os.open(d, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_MODE)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.chmod(d, SECRET_MODE)
+    return d
+
+
 def make_secret_dir(path: Path | str) -> Path:
     """Create ``path`` (and parents) owner-only."""
     p = Path(path)

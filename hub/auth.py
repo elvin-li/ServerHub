@@ -16,16 +16,16 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from hub.config import cfg, save_full
 from hub.errors import api_error
-from hub.paths import BASE
+from hub.paths import DATA_DIR
 
 security = HTTPBasic(auto_error=False)
 
 COOKIE_NAME = "serverhub_session"
 MIN_PASSWORD_LENGTH = 10
 SESSION_TTL = 7 * 24 * 3600
-SECRET_FILE = BASE / "data" / ".session-secret"
-SETUP_TOKEN_FILE = BASE / "data" / ".setup-token"
-LOCAL_TOKEN_FILE = BASE / "data" / ".local-client-token"
+SECRET_FILE = DATA_DIR / ".session-secret"
+SETUP_TOKEN_FILE = DATA_DIR / ".setup-token"
+LOCAL_TOKEN_FILE = DATA_DIR / ".local-client-token"
 LOCAL_TOKEN_HEADER = "x-serverhub-local-token"
 _login_lock = threading.Lock()
 _setup_lock = threading.Lock()
@@ -178,14 +178,6 @@ def setup_token() -> str:
     return _persistent_token(SETUP_TOKEN_FILE)
 
 
-def verify_setup_token(value: str | None) -> bool:
-    if not setup_required() or not value:
-        return False
-    with _setup_lock:
-        expected = setup_token()
-        return secrets.compare_digest(str(value), expected)
-
-
 def consume_setup_token() -> None:
     """Remove the bootstrap secret after credentials are established."""
     try:
@@ -225,6 +217,53 @@ def local_client_authenticated(request: Request) -> bool:
         client in ("127.0.0.1", "::1")
         and bool(supplied)
         and secrets.compare_digest(supplied, local_client_token())
+    )
+
+
+def local_client_authorized(request: Request) -> bool:
+    """Whether the native menu-bar token may call this exact endpoint.
+
+    The token is deliberately narrower than an administrator session. It only
+    covers the status and action calls made by the native and legacy menu-bar
+    clients; possession must never unlock files, settings, credentials, shells,
+    or arbitrary container APIs.
+    """
+    method = request.method.upper()
+    path = request.url.path.rstrip("/") or "/"
+    if (method, path) in {
+        ("GET", "/api/health"),
+        ("GET", "/api/status"),
+        ("GET", "/api/maintenance"),
+        ("GET", "/api/launcher"),
+        ("POST", "/api/action"),
+        ("POST", "/api/containers/all"),
+    }:
+        return True
+    parts = path.strip("/").split("/")
+    return (
+        len(parts) == 4
+        and parts[:2] == ["api", "maintenance"]
+        and bool(parts[2])
+        and (
+            (method == "POST" and parts[3] == "run")
+            or (method == "GET" and parts[3] == "log")
+        )
+    )
+
+
+def member_request_authorized(request: Request, username: str) -> bool:
+    """Allow a family member to read only their explicitly assigned services."""
+    if request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+        return False
+    path = request.url.path.rstrip("/") or "/"
+    if path in {"/api/health", "/api/status", "/api/services", "/api/launcher"}:
+        return True
+    parts = path.strip("/").split("/")
+    return (
+        len(parts) == 4
+        and parts[:2] == ["api", "services"]
+        and parts[3] == "detail"
+        and may_use_resource(username, parts[2])
     )
 
 
@@ -419,6 +458,14 @@ def clear_login_failures(client: str) -> None:
         _login_attempts.pop(client, None)
 
 
+def _route_has_own_admin_guard(request: Request) -> bool:
+    """Let routes with a stricter browser-only guard keep stable API errors."""
+    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return False
+    path = request.url.path.rstrip("/") or "/"
+    return path.startswith("/api/shares/") or path.startswith("/api/launcher/")
+
+
 def require_auth(
     request: Request,
     credentials: Optional[HTTPBasicCredentials] = Depends(security),
@@ -427,14 +474,37 @@ def require_auth(
     if setup_required():
         raise api_error("auth.setup_required")
     if browser_authenticated(request):
-        return True
+        username = request_username(request)
+        if is_admin(username):
+            request.state.serverhub_auth_kind = "browser-admin"
+            return True
+        # Shares and launcher mutations perform a stricter browser-admin check in
+        # the route itself. Let that check return its established namespaced code.
+        if _route_has_own_admin_guard(request):
+            return True
+        # Members fail closed: only a small read-only surface is reachable, and
+        # service-bearing responses filter again by the account resource list.
+        if member_request_authorized(request, username):
+            return True
+        raise api_error("auth.admin_required")
     # Loopback is transport, not identity. The native menu-bar client must prove
-    # possession of a separate mode-0600 bearer token, so a reverse proxy cannot
-    # inherit administrative access merely by connecting from localhost.
-    if local_client_authenticated(request):
+    # possession of a separate mode-0600 bearer token, and that token is scoped to
+    # the handful of fixed endpoints those clients actually use.
+    local_client = local_client_authenticated(request)
+    if local_client and local_client_authorized(request):
+        request.state.serverhub_auth_kind = "local-client"
+        return True
+    # A valid local token may reach browser-only mutation routes solely so their
+    # own guard can reject it with the stable route-specific error. No operation
+    # runs before that guard.
+    if local_client and _route_has_own_admin_guard(request):
+        request.state.serverhub_auth_kind = "local-client"
         return True
     if isinstance(credentials, HTTPBasicCredentials):
         user = str(_auth_cfg().get("username") or "admin")
         if secrets.compare_digest(credentials.username, user) and verify_password(credentials.password):
+            request.state.serverhub_auth_kind = "basic-admin"
             return True
+    if local_client:
+        raise api_error("auth.admin_required")
     raise api_error("auth.login_required")

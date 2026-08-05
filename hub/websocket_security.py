@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from fastapi import WebSocket
 
-from hub.auth import COOKIE_NAME, session_username, setup_required, verify_session
+from hub.auth import COOKIE_NAME, is_admin, session_username, setup_required, verify_session
 
 
 def origin_allowed(origin: str | None, host: str | None) -> bool:
@@ -59,5 +59,8 @@ async def authenticate_websocket(websocket: WebSocket) -> tuple[str, str] | None
     user = session_username(token)
     if not user:
         await reject_websocket(websocket, 4401, "auth.login_required")
+        return None
+    if not is_admin(user):
+        await reject_websocket(websocket, 4403, "auth.admin_required")
         return None
     return str(token), user

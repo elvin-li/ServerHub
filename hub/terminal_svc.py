@@ -26,9 +26,9 @@ from typing import Any
 
 from hub.config import cfg
 from hub.errors import CODES, api_error
-from hub.paths import BASE, DOCKER
+from hub.paths import DATA_DIR, DOCKER
 
-AUDIT_PATH = BASE / "data" / "terminal-audit.jsonl"
+AUDIT_PATH = DATA_DIR / "terminal-audit.jsonl"
 
 #: Hard ceiling on a single command.  Long jobs belong in Maintenance tasks.
 DEFAULT_TIMEOUT = 30

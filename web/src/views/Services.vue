@@ -326,7 +326,18 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { startVisibleInterval } from '../lib/poll'
-import { doAction, getServiceUninstallPreview, uninstallService } from '../api/client'
+import {
+  bulkServiceAction,
+  doAction,
+  getServiceDetail,
+  getServiceLogs,
+  getServices,
+  getServiceUninstallPreview,
+  getStatus,
+  setServiceHidden,
+  uninstallService,
+  updateServiceOverride,
+} from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 
@@ -517,20 +528,19 @@ function toggleSelectAll(e) {
 async function refresh(force = false) {
   loading.value = true
   try {
-    const url = force ? '/api/services?force=true' : '/api/services'
-    const r = await fetch(url)
-    if (!r.ok) {
-      // fallback to classic status
-      const r2 = await fetch(force ? '/api/status?force=true' : '/api/status')
-      status.value = await r2.json()
-    } else {
-      status.value = await r.json()
+    status.value = await getServices(force)
+  } catch (e) {
+    if (e.status !== 404) {
+      toast(`❌ ${e.message || e}`)
+      return
     }
-  } catch {
     try {
-      const r2 = await fetch('/api/status')
-      status.value = await r2.json()
-    } catch {}
+      // Older servers expose only the classic status endpoint. The client does
+      // not currently accept a force flag here, so use its supported signature.
+      status.value = await getStatus()
+    } catch (fallbackError) {
+      toast(`❌ ${fallbackError.message || fallbackError}`)
+    }
   } finally {
     loading.value = false
   }
@@ -540,11 +550,16 @@ async function onAction(svc, action) {
   if (['stop', 'remove', 'kill'].includes(action) && !confirm(t('services.confirm_action', { name: svc.name, action: actLabel(action) }))) return
   busy.value = true
   toast(t('services.running_action', { name: svc.name, action: actLabel(action) }))
-  const r = await doAction(svc.id, action)
-  toast(r.ok ? `✅ ${svc.name}` : `❌ ${(r.message || '').slice(0, 90)}`)
-  busy.value = false
-  setTimeout(() => refresh(true), 1000)
-  if (detail.value?.id === svc.id) setTimeout(() => openDetail(svc, true), 1200)
+  try {
+    const r = await doAction(svc.id, action)
+    toast(r.ok ? `✅ ${svc.name}` : `❌ ${(r.message || '').slice(0, 90)}`)
+  } catch (e) {
+    toast(`❌ ${e.message || e}`)
+  } finally {
+    busy.value = false
+    setTimeout(() => refresh(true), 1000)
+    if (detail.value?.id === svc.id) setTimeout(() => openDetail(svc, true), 1200)
+  }
 }
 
 async function bulkAction(ids, action) {
@@ -553,17 +568,13 @@ async function bulkAction(ids, action) {
   busy.value = true
   toast(t('services.bulk_running', { n: ids.length, action: actLabel(action) }))
   try {
-    const r = await fetch('/api/services/bulk-action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids, action }),
-    })
-    const j = await r.json().catch(() => ({}))
-    toast(j.ok ? `✅ ${j.ok_count}` : `⚠ ok ${j.ok_count || 0} / fail ${j.fail_count || 0}`)
+    const result = await bulkServiceAction(ids, action)
+    toast(result.ok ? `✅ ${result.ok_count}` : `⚠ ok ${result.ok_count || 0} / fail ${result.fail_count || 0}`)
   } catch (e) {
     toast(`❌ ${e.message || e}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
   selected.value = new Set()
   setTimeout(() => refresh(true), 1200)
 }
@@ -571,16 +582,15 @@ async function bulkAction(ids, action) {
 async function openDetail(svc, silent = false) {
   if (!silent) detailLog.value = null
   try {
-    const r = await fetch(`/api/services/${encodeURIComponent(svc.id)}/detail`)
-    if (!r.ok) {
+    detail.value = await getServiceDetail(svc.id)
+    resetEditForm()
+  } catch (e) {
+    if (e.status === 404) {
       detail.value = { ...svc, can_logs: canLogs(svc), can_edit: true }
+      resetEditForm()
     } else {
-      detail.value = await r.json()
+      toast(`❌ ${e.message || e}`)
     }
-    resetEditForm()
-  } catch {
-    detail.value = { ...svc }
-    resetEditForm()
   }
 }
 
@@ -645,20 +655,15 @@ async function saveOverride() {
       url: editForm.url || null,
       port: editForm.port || null,
     }
-    const r = await fetch(`/api/services/${encodeURIComponent(detail.value.id)}/override`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || r.statusText)
+    await updateServiceOverride(detail.value.id, body)
     toast(`✅ ${t('common.save')}`)
     await refresh(true)
     await openDetail(detail.value, true)
   } catch (e) {
     toast(`❌ ${e.message || e}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function hideService() {
@@ -666,30 +671,21 @@ async function hideService() {
   if (!confirm(t('services.confirm_hide', { name: detail.value.name }))) return
   busy.value = true
   try {
-    const r = await fetch(`/api/services/${encodeURIComponent(detail.value.id)}/hide`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hide: true }),
-    })
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}))
-      throw new Error(j.detail || r.statusText)
-    }
+    await setServiceHidden(detail.value.id, true)
     toast(`✅ ${t('services.hidden')}`)
     closeDrawer()
     await refresh(true)
   } catch (e) {
     toast(`❌ ${e.message || e}`)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function openLogs(svc) {
   try {
-    const r = await fetch(`/api/services/${encodeURIComponent(svc.id)}/logs?lines=200`)
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || r.statusText)
-    logModal.value = { id: svc.id, name: svc.name, source: j.source, log: j.log }
+    const result = await getServiceLogs(svc.id, 200)
+    logModal.value = { id: svc.id, name: svc.name, source: result.source, log: result.log }
   } catch (e) {
     toast(`❌ ${e.message || e}`)
   }
@@ -703,11 +699,9 @@ async function reloadLogModal() {
 async function loadDetailLogs() {
   if (!detail.value) return
   try {
-    const r = await fetch(`/api/services/${encodeURIComponent(detail.value.id)}/logs?lines=200`)
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || r.statusText)
-    detailLog.value = j.log || ''
-    detailLogSource.value = j.source || ''
+    const result = await getServiceLogs(detail.value.id, 200)
+    detailLog.value = result.log || ''
+    detailLogSource.value = result.source || ''
   } catch (e) {
     detailLog.value = String(e.message || e)
     detailLogSource.value = 'error'

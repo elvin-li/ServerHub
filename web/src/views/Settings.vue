@@ -69,7 +69,7 @@
         <p class="hint" style="margin-top:0">{{ t('settings.identity_hint') }}</p>
         <div class="form-grid">
           <label>{{ t('settings.computer_name') }}</label>
-          <input v-model="identityForm.computer_name" type="text" placeholder="ComputerName"  aria-label="ComputerName"/>
+          <input v-model="identityForm.computer_name" type="text" placeholder="ComputerName" :aria-label="t('settings.computer_name')" />
           <label>{{ t('settings.hostname') }}</label>
           <div class="mono">{{ identity?.hostname || '—' }}</div>
           <label>LocalHostName</label>
@@ -81,7 +81,7 @@
           <label>{{ t('settings.platform') }}</label>
           <div class="mono" style="font-size:11px">{{ identity?.platform || '—' }}</div>
           <label>{{ t('settings.host_ip') }}</label>
-          <input v-model="identityForm.host_ip" type="text" placeholder="auto"  aria-label="auto"/>
+          <input v-model="identityForm.host_ip" type="text" placeholder="auto" :aria-label="t('settings.host_ip')" />
           <label>{{ t('settings.probe_current') }}</label>
           <div class="mono">{{ identity?.host_ip || '—' }}</div>
           <label>{{ t('settings.comment') }}</label>
@@ -105,11 +105,72 @@
     </div>
 
     <div v-else-if="tab==='panel' && form" class="two-col">
+      <div
+        class="card launcher-card"
+        role="region"
+        aria-labelledby="launcher-title"
+        :aria-busy="launcherBusy || launcherLoading"
+      >
+        <div class="launcher-header">
+          <div>
+            <h2 id="launcher-title" class="section-title launcher-title">{{ t('settings.launcher_title') }}</h2>
+            <p class="hint launcher-hint">{{ t('settings.launcher_hint') }}</p>
+          </div>
+          <span v-if="launcher" class="launcher-overall" :class="launcher.app_running && launcher.panel_running ? 'is-ready' : 'is-idle'" aria-hidden="true">
+            <span class="launcher-overall-dot"></span>
+            {{ launcher.app_running && launcher.panel_running ? t('common.running') : t('common.off') }}
+          </span>
+        </div>
+        <p v-if="launcher" class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {{ t('settings.launcher_app') }}: {{ launcher.app_installed ? t('settings.launcher_installed') : t('settings.launcher_not_installed') }};
+          {{ t('settings.launcher_menu_bar') }}: {{ launcher.app_running ? t('common.running') : t('common.off') }};
+          {{ t('settings.launcher_panel_service') }}: {{ launcher.panel_running ? t('common.running') : t('common.stopped') }};
+          {{ t('settings.launcher_login') }}: {{ launcher.login_enabled ? t('common.on') : t('common.off') }}
+        </p>
+        <div v-if="launcher" class="launcher-content">
+          <dl class="launcher-status-grid">
+            <div class="launcher-status-item">
+              <dt>{{ t('settings.launcher_app') }}</dt>
+              <dd><span class="badge" :class="launcher.app_installed ? 'ok' : 'down'">{{ launcher.app_installed ? t('settings.launcher_installed') : t('settings.launcher_not_installed') }}</span></dd>
+            </div>
+            <div class="launcher-status-item">
+              <dt>{{ t('settings.launcher_menu_bar') }}</dt>
+              <dd><span class="badge" :class="launcher.app_running ? 'ok' : 'warn'">{{ launcher.app_running ? t('common.running') : t('common.off') }}</span></dd>
+            </div>
+            <div class="launcher-status-item">
+              <dt>{{ t('settings.launcher_panel_service') }}</dt>
+              <dd><span class="badge" :class="launcher.panel_running ? 'ok' : 'down'">{{ launcher.panel_running ? t('common.running') : t('common.stopped') }}</span></dd>
+            </div>
+            <div class="launcher-status-item">
+              <dt>{{ t('settings.launcher_login') }}</dt>
+              <dd><span class="badge" :class="launcher.login_enabled ? 'ok' : 'warn'">{{ launcher.login_enabled ? t('common.on') : t('common.off') }}</span></dd>
+            </div>
+          </dl>
+          <div class="launcher-path">
+            <span class="launcher-path-label">{{ t('settings.launcher_path') }}</span>
+            <code class="launcher-path-value">{{ launcher.app_path || '—' }}</code>
+          </div>
+        </div>
+        <div v-else-if="launcherLoading" class="placeholder launcher-placeholder" role="status" aria-live="polite">{{ t('common.loading') }}</div>
+        <div v-else class="placeholder launcher-placeholder launcher-unavailable" role="status" aria-live="polite">
+          {{ t('settings.launcher_unavailable') }}
+        </div>
+        <div class="launcher-actions" role="group" :aria-label="t('settings.launcher_actions')">
+          <button class="primary" :disabled="launcherBusy || launcherLoading || !launcher?.app_installed" @click="runLauncher('open')">{{ t('settings.launcher_open') }}</button>
+          <button :disabled="launcherBusy || launcherLoading || !launcher?.app_installed" @click="runLauncher('login')">
+            {{ launcher?.login_enabled ? t('settings.launcher_disable_login') : t('settings.launcher_enable_login') }}
+          </button>
+          <button :disabled="launcherBusy || launcherLoading || !launcher?.panel_registered" @click="runLauncher('restart')">{{ t('settings.launcher_restart') }}</button>
+          <button :disabled="launcherBusy || launcherLoading || !launcher?.panel_running" @click="runLauncher('stop')">{{ t('settings.launcher_stop') }}</button>
+          <button :disabled="launcherBusy || launcherLoading" @click="loadLauncher">{{ t('common.refresh') }}</button>
+        </div>
+      </div>
+
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.host_paths') }}</h2>
         <div class="form-grid">
           <label>{{ t('settings.host_ip') }}</label>
-          <input v-model="form.host_ip" type="text" placeholder="auto"  aria-label="auto"/>
+          <input v-model="form.host_ip" type="text" placeholder="auto" :aria-label="t('settings.host_ip')" />
           <label>{{ t('settings.probe_current') }}</label>
           <div class="mono">{{ host?.lan_ip || host?.host_ip || '—' }}</div>
           <label>{{ t('settings.hostname') }}</label>
@@ -178,9 +239,9 @@
           <label>{{ t('settings.notify_resolve') }}</label>
           <input type="checkbox" v-model="form.notify.notify_resolve" />
           <label>HA URL</label>
-          <input v-model="form.notify.ha_url" type="text" :aria-label="t('settings.notify_resolve')" />
+          <input v-model="form.notify.ha_url" type="text" aria-label="HA URL" />
           <label>HA Service</label>
-          <input v-model="form.notify.ha_service" type="text" placeholder="notify.notify"  aria-label="notify.notify"/>
+          <input v-model="form.notify.ha_service" type="text" placeholder="notify.notify" aria-label="HA Service" />
           <label>HA Token</label>
           <input v-model="form.notify.ha_token" type="password" />
           <label>Webhook URL</label>
@@ -634,8 +695,10 @@
 <script setup>
 import { inject, onMounted, ref } from 'vue'
 import {
-  changeAuthPassword, forceAlertCheck, getDockerInfo, getHost, getIdentity, getSettings,
-  putIdentity, putSettings, testNotify as apiTest,
+  changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
+  getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, openLauncherApp,
+  putIdentity, putSettings, runAliasAutoBind, setLauncherLogin, setPowerSetting,
+  testNotify as apiTest,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
@@ -651,6 +714,10 @@ const identity = ref(null)
 const identityForm = ref({ computer_name: '', comment: '', host_ip: '' })
 const dockerInfo = ref(null)
 const sysBundle = ref(null)
+const launcher = ref(null)
+const launcherBusy = ref(false)
+const launcherLoading = ref(false)
+let launcherLoadRequest = 0
 const powerForm = ref({ sleep: 0, displaysleep: 10, disksleep: 0, womp: 1 })
 const saving = ref(false)
 const diagMsg = ref('')
@@ -682,8 +749,10 @@ function memGb(bytes) {
 }
 
 function switchTab(id) {
+  if (id === tab.value) return
   tab.value = id
   if (id === 'docker') loadDockerInfo()
+  if (id === 'panel') loadLauncher()
   if (['datetime', 'power', 'disk', 'network', 'shares', 'access', 'vms', 'scheduler', 'advanced', 'diagnostics'].includes(id)) {
     loadSysBundle()
   }
@@ -691,8 +760,7 @@ function switchTab(id) {
 
 async function loadSysBundle() {
   try {
-    const r = await fetch('/api/settings/system')
-    sysBundle.value = await r.json()
+    sysBundle.value = await getSystemSettings()
     const p = sysBundle.value?.power?.settings || {}
     powerForm.value = {
       sleep: p.sleep ?? sysBundle.value?.power?.sleep ?? 0,
@@ -709,61 +777,57 @@ async function applyPower(key) {
   saving.value = true
   try {
     const value = powerForm.value[key]
-    const r = await fetch('/api/settings/power', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, value: Number(value) }),
-    })
-    const j = await r.json()
-    if (!r.ok) throw new Error(j.detail || j.message || 'fail')
-    toast(j.ok ? `✅ ${key}=${value}` : `❌ ${j.message}`)
+    const result = await setPowerSetting(key, value)
+    toast(result.ok ? `✅ ${key}=${value}` : `❌ ${result.message}`)
     await loadSysBundle()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    saving.value = false
   }
-  saving.value = false
 }
 
 async function runAliasAlign() {
   saving.value = true
   try {
-    const r = await fetch('/api/system/network/alias/auto/run', { method: 'POST' })
-    const j = await r.json()
-    toast(j.ok ? `✅ ${j.message || 'ok'}` : `❌ ${j.message || 'fail'}`)
+    const result = await runAliasAutoBind()
+    toast(result.ok ? `✅ ${result.message || 'ok'}` : `❌ ${result.message || 'fail'}`)
     await loadSysBundle()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    saving.value = false
   }
-  saving.value = false
 }
 
 async function runDiagnostics() {
   saving.value = true
   diagMsg.value = ''
   try {
-    const r = await fetch('/api/diagnostics')
-    const j = await r.json()
-    diagMsg.value = j.saved_path
-      ? `${t('settings.diag_saved')}: ${j.saved_path}`
-      : t('settings.diag_done')
+    const result = await generateDiagnostics()
+    const saved = Boolean(result.saved_path)
+    diagMsg.value = saved
+      ? `${t('settings.diag_saved')}: ${result.saved_path}`
+      : t('settings.diag_save_failed', { error: result.save_error || t('common.failed') })
     diagPreview.value = JSON.stringify({
-      generated_at: j.generated_at,
-      hostname: j.hostname,
-      platform: j.platform,
-      docker: j.docker,
-      management: j.management,
-      other: j.other,
-      vms: j.vms,
-      metrics_latest: j.metrics_latest,
-      health_summary: Array.isArray(j.health?.checks)
-        ? j.health.checks.slice(0, 8)
-        : j.health,
+      generated_at: result.generated_at,
+      hostname: result.hostname,
+      platform: result.platform,
+      docker: result.docker,
+      management: result.management,
+      other: result.other,
+      vms: result.vms,
+      metrics_latest: result.metrics_latest,
+      health_summary: Array.isArray(result.health?.checks)
+        ? result.health.checks.slice(0, 8)
+        : result.health,
     }, null, 2)
-    toast('✅ ' + t('settings.diag_done'))
+    toast(saved ? '✅ ' + t('settings.diag_done') : '❌ ' + diagMsg.value)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    saving.value = false
   }
-  saving.value = false
 }
 
 async function pickLocale(id) {
@@ -831,6 +895,47 @@ async function saveIdentity() {
 async function loadDockerInfo() {
   try { dockerInfo.value = await getDockerInfo() }
   catch (e) { toast('❌ ' + e.message) }
+}
+
+async function loadLauncher() {
+  const request = ++launcherLoadRequest
+  launcherLoading.value = true
+  try {
+    const status = await getLauncherStatus()
+    if (request === launcherLoadRequest) launcher.value = status
+  } catch (e) {
+    if (request === launcherLoadRequest) toast('❌ ' + e.message)
+  } finally {
+    if (request === launcherLoadRequest) launcherLoading.value = false
+  }
+}
+
+async function runLauncher(action) {
+  if (['restart', 'stop'].includes(action) && !confirm(t(`settings.launcher_${action}_confirm`))) return
+  launcherBusy.value = true
+  try {
+    let result
+    if (action === 'open') result = await openLauncherApp()
+    else if (action === 'login') result = await setLauncherLogin(!launcher.value?.login_enabled)
+    else result = await controlPanelService(action)
+    if (!result?.ok) throw new Error(result?.message || t('common.fail'))
+    toast('✅ ' + (result.message || t('common.ok')))
+    if (action === 'stop') {
+      // The API intentionally disappears after accepting this command, so do
+      // not leave the last green status visible or try to poll a stopped panel.
+      launcher.value = {
+        ...launcher.value,
+        panel_running: false,
+        panel_job_state: 'stopping',
+      }
+    } else {
+      await new Promise(resolve => setTimeout(resolve, action === 'restart' ? 1400 : 300))
+      await loadLauncher()
+    }
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  launcherBusy.value = false
 }
 
 async function load() {
@@ -1018,20 +1123,28 @@ async function saveTerminal() {
 }
 
 async function testNotify() {
+  if (saving.value) return
+  saving.value = true
   try {
     const r = await apiTest()
     toast(r.ok ? '✅ ' + t('common.ok') : '❌ ' + (r.message || t('common.fail')))
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    saving.value = false
   }
 }
 
 async function forceCheck() {
+  if (saving.value) return
+  saving.value = true
   try {
     const r = await forceAlertCheck()
     toast(`${t('settings.force_check')} · ${r.emitted?.length || 0}`)
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -1055,7 +1168,121 @@ onMounted(() => {
 .form-grid input[type=password],
 .form-grid input[type=number] { width: 100%; }
 .hint { margin-top: 12px; color: var(--sub); font-size: 12px; line-height: 1.55; }
-.password-card { grid-column: 1 / -1; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.password-card, .launcher-card { grid-column: 1 / -1; }
+.launcher-card {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 42%),
+    var(--card);
+}
+.launcher-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--logo-grad);
+}
+.launcher-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.launcher-title { margin: 0; }
+.launcher-hint { max-width: 680px; margin: 4px 0 0; }
+.launcher-overall {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  white-space: nowrap;
+}
+.launcher-overall.is-ready {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.launcher-overall.is-idle {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.launcher-overall-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
+}
+.launcher-content { margin-top: 16px; }
+.launcher-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.launcher-status-item {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: max(4px, var(--radius));
+  background: color-mix(in srgb, var(--bg) 62%, var(--card));
+}
+.launcher-status-item dt,
+.launcher-path-label {
+  color: var(--sub);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .45px;
+  text-transform: uppercase;
+}
+.launcher-status-item dd { margin: 8px 0 0; }
+.launcher-path {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: max(4px, var(--radius));
+  background: color-mix(in srgb, var(--bg) 62%, var(--card));
+}
+.launcher-path-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--txt);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.launcher-placeholder { min-height: 112px; }
+.launcher-actions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.launcher-actions button { width: 100%; min-width: 0; min-height: 36px; }
 .password-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .password-state { margin: 0; }
 .password-state.bad { color: var(--down); }
@@ -1069,9 +1296,19 @@ onMounted(() => {
   font-size: 12px;
   padding: 8px 12px;
 }
+@media (max-width: 900px) {
+  .launcher-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .launcher-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; gap: 5px; }
   .form-grid label { margin-top: 5px; }
+  .launcher-header { align-items: center; gap: 12px; }
+  .launcher-status-grid { grid-template-columns: 1fr; }
+  .launcher-path { grid-template-columns: 1fr; gap: 5px; }
+  .launcher-path-value { overflow: visible; text-overflow: clip; white-space: normal; word-break: break-all; }
+  .launcher-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .launcher-actions button:last-child { grid-column: 1 / -1; }
   .password-footer { flex-direction: column; align-items: stretch; }
   .password-footer button { width: 100%; }
 }

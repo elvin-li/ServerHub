@@ -782,6 +782,8 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
   font-size: 13px; opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none;
   max-width: 90vw; z-index: 99; border-left: 3px solid var(--accent);
   box-shadow: 0 4px 16px rgba(0,0,0,.3);
+  /* Error toasts may append the tool's own stderr tail on a second line. */
+  white-space: pre-line;
   bottom: max(24px, env(safe-area-inset-bottom));
 }
 .toast.show { opacity: 1; }

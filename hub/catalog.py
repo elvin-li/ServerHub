@@ -540,6 +540,50 @@ def _check_ports_free(rendered: str, template_id: str) -> None:
             raise api_error("catalog.port_in_use", port=port)
 
 
+#: A template variable is treated as a host port when its name says so.  Every
+#: shipped template spells these `HOST_PORT`, `WEB_PORT`, `MQTT_PORT`, `ADMIN_PORT`
+#: and so on, and each one appears in the compose file as `"{{VAR}}:<container>"`.
+def _is_port_var(name: str) -> bool:
+    return "PORT" in str(name or "").upper()
+
+
+def _port_taken(port: int, claimed: dict[int, str]) -> bool:
+    return port in claimed or _port_is_bound(port)
+
+
+def _next_free_port(preferred: int, claimed: dict[int, str], reserved: set[int]) -> int:
+    """First free host port at or after *preferred*.
+
+    Why this exists: every shipped template hardcodes a conventional default
+    (AdGuard 3000, Uptime Kuma 3001, Postgres 5432, Redis 6379 …) and a busy host
+    already uses many of them.  Refusing the install was technically correct and
+    practically useless -- a third of the catalogue was uninstallable here purely
+    because the suggested port was occupied, with no way forward from the UI.
+    Every one of those ports is variable-driven, so moving it is safe.
+
+    *reserved* holds ports already handed out earlier in this same install, so a
+    template asking for three ports cannot be given the same one twice.
+    """
+    start = preferred if 1 <= preferred <= 65535 else 8000
+    for candidate in range(start, 65536):
+        if candidate in reserved or _port_taken(candidate, claimed):
+            continue
+        return candidate
+    raise api_error("catalog.no_free_port", port=start)
+
+
+#: Ports where the number *is* the protocol contract, so moving one produces a
+#: service that starts, looks healthy and is unreachable: a DNS server on 54 or an
+#: HTTPS endpoint on 4443 answers nobody that was not told to look there.  Only
+#: ports above the IANA system range are relocated automatically; a conflict below
+#: it is still refused so the operator resolves it deliberately.
+_PROTOCOL_PORT_CEILING = 1024
+
+
+def _may_relocate(port: int) -> bool:
+    return port > _PROTOCOL_PORT_CEILING
+
+
 class _InstallFailed(Exception):
     """`docker compose up` failed — triggers rollback of everything we made."""
 
@@ -584,13 +628,54 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         raise api_error("catalog.unknown_template", id=str(template_id))
     meta, body = _parse_template(src)
     values: dict[str, str] = {}
+    # Ports the operator typed themselves are honoured exactly; ports that came
+    # from a template default (or that we had to invent) may be moved when taken.
+    port_claims = _ports_claimed_by_stacks(exclude_id=template_id)
+    handed_out: set[int] = set()
+    remapped: list[str] = []
+
+    def resolve_port(name: str, preferred: str | int, explicit: bool) -> str:
+        try:
+            wanted = int(str(preferred).strip())
+        except (TypeError, ValueError):
+            wanted = 0
+        if explicit:
+            # An explicit choice is a requirement, not a hint: silently moving it
+            # would leave the operator with an app on a port they did not pick.
+            if wanted and _port_taken(wanted, port_claims):
+                owner = port_claims.get(wanted)
+                if owner:
+                    raise api_error("catalog.port_claimed", port=wanted, stack=owner)
+                raise api_error("catalog.port_in_use", port=wanted)
+            handed_out.add(wanted)
+            return str(wanted)
+        if wanted and _port_taken(wanted, port_claims) and not _may_relocate(wanted):
+            # A system port is part of the protocol, not a preference.
+            owner = port_claims.get(wanted)
+            if owner:
+                raise api_error("catalog.port_claimed", port=wanted, stack=owner)
+            raise api_error("catalog.port_in_use", port=wanted)
+        chosen = _next_free_port(wanted or 8000, port_claims, handed_out)
+        handed_out.add(chosen)
+        if wanted and chosen != wanted:
+            remapped.append(f"{name} {wanted} -> {chosen}")
+        return str(chosen)
+
     for v in meta.get("vars") or []:
         name = v["name"]
         raw_default = v.get("default")
-        if variables and name in variables and variables[name] not in (None, ""):
+        supplied = bool(variables and name in variables and variables[name] not in (None, ""))
+        if supplied and _is_port_var(name):
+            values[name] = resolve_port(name, variables[name], explicit=True)
+        elif supplied:
             # A user may legitimately paste "{{SERVICES}}/foo" from the prefilled
             # default, so expand their input too rather than writing it literally.
             values[name] = _expand_auto(str(variables[name]))
+        elif _is_port_var(name) and (raw_default not in (None, "") or v.get("required", True)):
+            # Covers both "default is taken" and "template declares no default at
+            # all", which previously failed as a missing required variable even
+            # though the panel is perfectly able to pick a port.
+            values[name] = resolve_port(name, raw_default or 0, explicit=False)
         elif raw_default == "__RANDOM__":
             values[name] = _rand_password(16)
         elif raw_default not in (None, ""):
@@ -616,7 +701,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     _list_cache["t"] = 0
     _list_cache["items"] = None
     # Auto-injected placeholders so shipped templates never need to hardcode a
-    # developer's absolute paths (9 of them used to embed /Users/<dev>/...).
+    # developer-specific absolute paths that would make templates non-portable.
     if "HOST_IP" not in values:
         values["HOST_IP"] = host_ip()
     values.setdefault("HOME", str(Path.home()))
@@ -718,6 +803,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         msg = ((p.stdout or "") + (p.stderr or "")).strip() or f"exit {p.returncode}"
         if p.returncode != 0:
             raise _InstallFailed(msg)
+        if remapped:
+            # The app is not on the port the template advertises, so say so here
+            # rather than letting the operator hunt for it.
+            msg = f"{msg}\nports moved (default in use): {', '.join(remapped)}".strip()
         if url:
             msg = f"{msg}\n→ {url}".strip()
         return {
@@ -728,6 +817,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "url": url,
             "notes": notes,
             "stack_id": template_id,
+            "remapped_ports": remapped,
         }
     except HTTPException:
         # api_error() raised inside the try block: nothing started, still roll back.

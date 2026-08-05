@@ -17,16 +17,22 @@ self.addEventListener('install', (event) => {
 })
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((key) => key.startsWith('serverhub-') && key !== CACHE_NAME)
-          .map((key) => caches.delete(key))
-      )
+  event.waitUntil((async () => {
+    const keys = await caches.keys()
+    const oldCaches = keys.filter(
+      (key) => key.startsWith('serverhub-') && key !== CACHE_NAME,
     )
-  )
-  self.clients.claim()
+    await Promise.all(oldCaches.map((key) => caches.delete(key)))
+    await self.clients.claim()
+
+    // Only an upgrade has an older ServerHub cache. Refresh its open windows so
+    // tabs still executing the prior hashed bundle move to this build. A first
+    // install claims the page without forcing a redundant navigation.
+    if (oldCaches.length) {
+      const windows = await self.clients.matchAll({ type: 'window' })
+      await Promise.all(windows.map((client) => client.navigate(client.url)))
+    }
+  })())
 })
 
 // Allow main app to trigger cache update (e.g. after deploy)

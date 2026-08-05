@@ -329,7 +329,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
         kind = kind or "launchd"
 
     elif kind == "script":
-        # match configured log sources by id substring / gravity etc.
+        # Match configured log sources by exact or fuzzy service ID.
         try:
             from hub import logs_svc
             sources = logs_svc.log_sources()

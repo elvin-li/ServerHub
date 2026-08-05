@@ -18,7 +18,10 @@
     <div class="dash-grid" style="margin-bottom:12px" v-if="data?.array || data?.totals">
       <div class="tile span-3">
         <h3>{{ t('main.array_status') }}</h3>
-        <div class="v" style="font-size:16px;color:var(--ok)">{{ data?.array?.status || 'started' }}</div>
+        <div
+          class="v"
+          :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok)' : 'var(--warn)' }"
+        >{{ data?.array?.status || t('network.unknown') }}</div>
         <div class="sub">{{ data?.array?.system_count ?? 0 }} + {{ data?.array?.data_count ?? 0 }}</div>
       </div>
       <div class="tile span-3">
@@ -397,8 +400,9 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { getStorage } from '../api/client'
+import { getStorage, manageStorageDevice, setDiskPower } from '../api/client'
 import { injectI18n } from '../i18n'
+import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 
 const toast = inject('toast')
@@ -418,6 +422,15 @@ const formatFs = ref('ExFAT')
 const formatName = ref('')
 const formatConfirm = ref('')
 let timer = null
+const refreshTimers = new Set()
+
+function scheduleRefresh(delay) {
+  const id = setTimeout(() => {
+    refreshTimers.delete(id)
+    void refresh()
+  }, delay)
+  refreshTimers.add(id)
+}
 
 const powerDisks = computed(() => data.value?.power_disks || [])
 const arrayDevices = computed(() => data.value?.array?.devices || (data.value?.volumes || []).filter(v =>
@@ -484,9 +497,13 @@ function kindBadge(d) {
 
 async function refresh() {
   loading.value = true
-  try { data.value = await getStorage() }
-  catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  try {
+    data.value = await getStorage()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    loading.value = false
+  }
 }
 
 async function power(d, action) {
@@ -500,21 +517,16 @@ async function power(d, action) {
   busy.value = true
   lastMsg.value = t('main_extra.running')
   try {
-    const r = await fetch(`/api/storage/disks/${encodeURIComponent(d.id)}/power`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.detail || j.message || t('main_extra.failed'))
+    const j = await setDiskPower(d.id, action)
     lastMsg.value = (j.message || '') + (j.log ? '\n' + (j.log || []).join('\n') : '')
     toast(j.ok ? `✅ ${labels[action]} ${d.id}` : `❌ ${j.message}`)
-    setTimeout(refresh, 1000)
+    if (j.ok) scheduleRefresh(1000)
   } catch (e) {
     toast('❌ ' + e.message)
     lastMsg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 async function manage(v, action) {
@@ -529,21 +541,16 @@ async function manage(v, action) {
   busy.value = true
   lastMsg.value = t('main_extra.running')
   try {
-    const r = await fetch(`/api/storage/manage/${encodeURIComponent(v.id)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('main_extra.failed')))
+    const j = await manageStorageDevice(v.id, { action })
     lastMsg.value = (j.message || '') + (j.log ? '\n' + (j.log || []).join('\n') : '')
     toast(j.ok ? `✅ ${action} ${v.id}` : `❌ ${j.message}`)
-    setTimeout(refresh, 800)
+    if (j.ok) scheduleRefresh(800)
   } catch (e) {
     toast('❌ ' + e.message)
     lastMsg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 function openRename(v) {
@@ -554,21 +561,21 @@ async function doRename() {
   if (!renameTarget.value || !renameName.value.trim()) return
   busy.value = true
   try {
-    const r = await fetch(`/api/storage/manage/${encodeURIComponent(renameTarget.value.id)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'rename', name: renameName.value.trim() }),
+    const j = await manageStorageDevice(renameTarget.value.id, {
+      action: 'rename',
+      name: renameName.value.trim(),
     })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('main_extra.failed')))
     toast(j.ok ? '✅ ' + t('main_extra.renamed') : `❌ ${j.message}`)
     lastMsg.value = j.message || ''
-    renameTarget.value = null
-    setTimeout(refresh, 800)
+    if (j.ok) {
+      renameTarget.value = null
+      scheduleRefresh(800)
+    }
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 function openFormat(v, whole) {
@@ -584,38 +591,36 @@ async function doFormat() {
   busy.value = true
   lastMsg.value = t('main_extra.formatting')
   try {
-    const r = await fetch(`/api/storage/manage/${encodeURIComponent(formatTarget.value.id)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: formatWhole.value ? 'eraseDisk' : 'eraseVolume',
-        name: formatName.value.trim() || 'UNTITLED',
-        fs: formatFs.value,
-        confirm: true,
-        confirm_name: formatConfirm.value.trim(),
-      }),
+    const j = await manageStorageDevice(formatTarget.value.id, {
+      action: formatWhole.value ? 'eraseDisk' : 'eraseVolume',
+      name: formatName.value.trim() || 'UNTITLED',
+      fs: formatFs.value,
+      confirm: true,
+      confirm_name: formatConfirm.value.trim(),
     })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || t('main_extra.failed')))
     lastMsg.value = (j.message || '') + (j.log ? '\n' + (j.log || []).join('\n') : '')
     toast(j.ok ? '✅ ' + t('main_extra.formatted') : `❌ ${j.message}`)
-    formatTarget.value = null
-    setTimeout(refresh, 1200)
+    if (j.ok) {
+      formatTarget.value = null
+      scheduleRefresh(1200)
+    }
   } catch (e) {
     toast('❌ ' + e.message)
     lastMsg.value = e.message
+  } finally {
+    busy.value = false
   }
-  busy.value = false
 }
 
 onMounted(() => {
-  refresh()
-  timer = setInterval(() => {
-    if (typeof document !== 'undefined' && document.hidden) return
-    refresh()
-  }, 45000)
+  void refresh()
+  timer = startVisibleInterval(refresh, 45000)
 })
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => {
+  if (timer) timer()
+  for (const id of refreshTimers) clearTimeout(id)
+  refreshTimers.clear()
+})
 
 
 // Escape dismisses each dialog, focus returns to whatever opened it, and Tab

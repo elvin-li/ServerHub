@@ -3,6 +3,7 @@ import App from './App.vue'
 import router from './router'
 import { initializeI18n, provideI18n } from './i18n'
 import { provideTheme } from './theme'
+import { registerServiceWorker } from './serviceWorker'
 import './styles.css'
 
 async function bootstrap() {
@@ -40,21 +41,11 @@ if ('vibrate' in navigator && 'ontouchstart' in window) {
   }, { passive: true })
 }
 
-// Register service worker for PWA offline support
+// Register service worker for PWA offline support. Existing tabs reload once
+// when a newly activated worker takes control, so they cannot keep running an
+// obsolete hashed bundle after a deployment.
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').then((reg) => {
-      // Detect new version available
-      reg.addEventListener('updatefound', () => {
-        const nw = reg.installing
-        if (!nw) return
-        nw.addEventListener('statechange', () => {
-          if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-            // New SW ready — notify user
-            window.dispatchEvent(new CustomEvent('sw-update-ready'))
-          }
-        })
-      })
-    }).catch(() => {})
+    registerServiceWorker().catch(() => {})
   })
 }

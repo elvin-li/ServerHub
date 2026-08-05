@@ -13,14 +13,12 @@ import json
 import platform
 import re
 import time
-from pathlib import Path
 
 from hub import __version__
 from hub.config import cfg
 from hub.host_address import configured_host, host_ip
+from hub.paths import BASE, CONFIG_FILE, DATA_DIR
 from hub.util import sh
-
-BASE = Path(__file__).resolve().parent.parent
 DEFAULT_THRESHOLDS = {
     "enabled": True,
     "cpu_pct": 90,
@@ -209,8 +207,8 @@ def get_management_access() -> dict:
         "version": __version__,
         "paths": {
             "base": str(BASE),
-            "services_yaml": str(BASE / "services.yaml"),
-            "data": str(BASE / "data"),
+            "services_yaml": str(CONFIG_FILE),
+            "data": str(DATA_DIR),
         },
     }
 
@@ -394,16 +392,24 @@ def collect_diagnostics() -> dict:
         bundle["vms"] = {"total": vm.get("total"), "running": vm.get("running")}
     except Exception:
         pass
-    # Persist last diagnostics for download convenience
-    try:
-        ddir = BASE / "data"
-        ddir.mkdir(exist_ok=True)
-        path = ddir / "diagnostics-latest.json"
-        path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2, default=str))
-        bundle["saved_path"] = str(path)
-    except Exception:
-        pass
+    # Persist last diagnostics for download convenience.  Generation and
+    # persistence are separate outcomes: callers can still render the in-memory
+    # snapshot when the state directory is full or read-only, but must not claim
+    # that a downloadable file was saved.
+    saved_path, save_error = _persist_diagnostics(bundle)
+    bundle["saved_path"] = saved_path
+    bundle["save_error"] = save_error
     return bundle
+
+
+def _persist_diagnostics(bundle: dict) -> tuple[str | None, str | None]:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        path = DATA_DIR / "diagnostics-latest.json"
+        path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2, default=str))
+        return str(path), None
+    except Exception as e:
+        return None, str(e)
 
 
 def unraid_settings_bundle(force: bool = False) -> dict:

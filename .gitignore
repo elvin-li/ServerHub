@@ -4,11 +4,14 @@ __pycache__/
 *.pyc
 web/node_modules/
 web/dist/
+.build/
+.perf-audit-dist/
 
 # ---- Secrets: session signing key, local client token, per-service
 #      credentials. Never commit. ----
 data/.session-secret
 data/.local-client-token
+data/.setup-token
 data/service-credentials.json
 .env
 .env.*
@@ -34,9 +37,25 @@ data/services.yaml.bak.*
 *.yaml.tmp
 *.log
 
+# Rotated/backup copies of the above. The named rules only match the live file,
+# but the rotator leaves siblings like auth-audit.jsonl.bak-<timestamp>, and
+# those carry the same username and client-address records as the original.
+# No data/*.jsonl file is tracked, so the broad rules cost nothing.
+data/*.jsonl
+data/*.jsonl.*
+
+# ---- WireGuard runtime state. The peer registry holds the client private
+#      keys this panel issued (0600 on disk); the pf staging files are copies
+#      of the machine's live ruleset and its real egress interface. ----
+data/wireguard-peers.json
+data/pf-anchor-wireguard
+data/pf.conf.staged
+data/wg*.sync.conf
+
 # ---- Stale editor/tool shadows ----
 *.orig
 
 # ---- OS / editor ----
 .DS_Store
 .claude/settings.local.json
+.claude/launch.json

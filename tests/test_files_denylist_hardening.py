@@ -14,10 +14,10 @@ covered by the existing suite, so the whole thing was green while these worked.
    macOS* — it only folds case on Windows.  The tests below therefore assert on
    real mixed-case spellings rather than trusting a helper to do the folding.
 
-2. The SGCC scraper's credential and session files were not deny-listed at all.
-   ``GET /api/files/download`` returned the grid-account password, a long-lived
-   Home Assistant token and an LLM API key in plain text.  Their 0600 mode is
-   irrelevant: the panel process is their owner.
+2. A private integration's credential and session files were not deny-listed.
+   ``GET /api/files/download`` could return account credentials, long-lived API
+   tokens, and browser cookies in plain text. Their 0600 mode is irrelevant:
+   the panel process is their owner.
 
 3. ``upload()`` never raised ``files.upload_would_overwrite`` even though the
    error code existed, so any upload silently clobbered its destination.
@@ -54,41 +54,41 @@ class TestCaseFoldingBypass(unittest.TestCase):
     """The exact spellings that were confirmed readable on this host."""
 
     def test_install_dir_with_different_capitalisation(self):
-        self.assertTrue(files_svc.is_protected(Path(str(BASE).replace("serverhub", "ServerHub"))))
+        self.assertTrue(files_svc.is_protected(_mixed_case(BASE)))
 
     def test_services_yaml_uppercased(self):
         self.assertTrue(
-            files_svc.is_protected(BASE.parent / "ServerHub" / "Services.YAML")
+            files_svc.is_protected(_mixed_case(BASE) / "Services.YAML")
         )
 
     def test_session_secret_titlecased(self):
         self.assertTrue(
-            files_svc.is_protected(BASE.parent / "ServerHub" / "data" / ".Session-Secret")
+            files_svc.is_protected(_mixed_case(BASE) / "data" / ".Session-Secret")
         )
 
     def test_local_client_token_via_mixed_case_dir(self):
         self.assertTrue(
             files_svc.is_protected(
-                BASE.parent / "ServerHub" / "data" / ".local-client-token"
+                _mixed_case(BASE) / "data" / ".local-client-token"
             )
         )
 
     def test_credential_store_mixed_case(self):
         self.assertTrue(
             files_svc.is_protected(
-                BASE.parent / "ServerHub" / "data" / "service-Credentials.json"
+                _mixed_case(BASE) / "data" / "service-Credentials.json"
             )
         )
 
     def test_setup_token_via_fully_uppercased_dir(self):
         self.assertTrue(
-            files_svc.is_protected(BASE.parent / "SERVERHUB" / "data" / ".setup-token")
+            files_svc.is_protected(_mixed_case(BASE) / "data" / ".setup-token")
         )
 
     def test_source_code_is_not_writable_via_mixed_case(self):
         """Overwriting hub/auth.py is arbitrary code execution on next restart."""
         self.assertTrue(
-            files_svc.is_protected(BASE.parent / "ServerHub" / "hub" / "auth.py")
+            files_svc.is_protected(_mixed_case(BASE) / "hub" / "auth.py")
         )
 
     def test_ssh_key_dir_mixed_case(self):
@@ -98,31 +98,35 @@ class TestCaseFoldingBypass(unittest.TestCase):
         self.assertTrue(files_svc.is_protected(_mixed_case(BASE / "services.yaml")))
 
 
-class TestSgccCredentialsAreProtected(unittest.TestCase):
-    SGCC = files_svc.SERVICES_ROOT / "sgcc_native"
+class TestPrivateIntegrationCredentialsAreProtected(unittest.TestCase):
+    PRIVATE_INTEGRATION = files_svc.SERVICES_ROOT / "private_integration"
 
     def test_credential_file(self):
-        self.assertTrue(files_svc.is_protected(self.SGCC / ".sgcc_cred"))
+        self.assertTrue(files_svc.is_protected(self.PRIVATE_INTEGRATION / ".private_cred"))
 
     def test_session_cookie_jar(self):
-        self.assertTrue(files_svc.is_protected(self.SGCC / ".sgcc_session"))
+        self.assertTrue(files_svc.is_protected(self.PRIVATE_INTEGRATION / ".private_session"))
 
     def test_browser_profile_cookie_database(self):
         self.assertTrue(
-            files_svc.is_protected(self.SGCC / ".sgcc_browser_profile" / "Default" / "Cookies")
+            files_svc.is_protected(
+                self.PRIVATE_INTEGRATION / ".private_browser_profile" / "Default" / "Cookies"
+            )
         )
 
-    def test_whole_scraper_directory(self):
-        self.assertTrue(files_svc.is_protected(self.SGCC))
+    def test_whole_integration_directory(self):
+        self.assertTrue(files_svc.is_protected(self.PRIVATE_INTEGRATION))
 
     def test_credential_file_mixed_case(self):
         self.assertTrue(
-            files_svc.is_protected(files_svc.SERVICES_ROOT / "SGCC_NATIVE" / ".SGCC_CRED")
+            files_svc.is_protected(
+                files_svc.SERVICES_ROOT / "PRIVATE_INTEGRATION" / ".PRIVATE_CRED"
+            )
         )
 
-    def test_sgcc_prefix_blocks_copies_elsewhere(self):
+    def test_private_prefix_blocks_copies_elsewhere(self):
         """A copy dragged into Downloads must not become downloadable."""
-        self.assertTrue(files_svc.is_protected(HOME / "Downloads" / ".sgcc_cred"))
+        self.assertTrue(files_svc.is_protected(HOME / "Downloads" / ".private_cred"))
 
 
 class TestOrdinaryFilesStillAllowed(unittest.TestCase):
@@ -219,8 +223,10 @@ class TestResolveSafeRefusesDirectly(unittest.TestCase):
             files_svc._resolve_safe(str(path), "services")
         self.assertEqual(ctx.exception.status_code, 403)
 
-    def test_sgcc_credentials(self):
-        self._refused(files_svc.SERVICES_ROOT / "sgcc_native" / ".sgcc_cred")
+    def test_private_integration_credentials(self):
+        self._refused(
+            files_svc.SERVICES_ROOT / "private_integration" / ".private_cred"
+        )
 
     def test_mixed_case_services_yaml(self):
         self._refused(BASE.parent / "ServerHub" / "Services.YAML")
@@ -262,8 +268,8 @@ class TestDenylistShape(unittest.TestCase):
         """The guard above only forbids the wrong primitive; this pins the right one."""
         self.assertEqual(files_svc._fold("/A/BcD.YAML"), "/a/bcd.yaml")
 
-    def test_sgcc_prefix_is_deny_listed(self):
-        self.assertIn(".sgcc", files_svc.PROTECTED_PREFIXES)
+    def test_private_integration_prefix_is_deny_listed(self):
+        self.assertIn(".private_", files_svc.PROTECTED_PREFIXES)
 
     def test_overwrite_guard_is_present(self):
         self.assertIn("files.upload_would_overwrite", self.source)

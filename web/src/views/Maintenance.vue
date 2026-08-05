@@ -32,7 +32,7 @@
               <span v-else class="badge">{{ t('maintenance.ready') }}</span>
             </td>
             <td class="ops">
-              <button class="tiny primary" :disabled="task.running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
+              <button class="tiny primary" :disabled="starting || task.running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
               <button class="tiny" @click="openLog(task)">{{ t('maintenance.log') }}</button>
             </td>
           </tr>
@@ -61,6 +61,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
+import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 
 const toast = inject('toast')
@@ -74,6 +75,7 @@ const logTitle = ref('')
 const logText = ref('')
 const curId = ref(null)
 let pollTimer = null
+let pollGeneration = 0
 let listTimer = null
 
 const anyRunning = computed(() => tasks.value.some(row => row.running))
@@ -92,65 +94,78 @@ async function refresh() {
     const list = await getMaintenance()
     tasks.value = Array.isArray(list) ? list : (list?.tasks || [])
     loadError.value = ''
+    return true
   } catch (e) {
     loadError.value = e.message || String(e)
-    // keep previous tasks if any
+    return false
   }
 }
 
 async function run(task) {
+  if (anyRunning.value) return
   if (task.confirm && !confirm(t('maintenance.confirm_run', { name: task.name }))) return
+  task.running = true
   try {
     await runMaintenance(task.id)
     toast('🚀 ' + t('maintenance.started', { name: task.name }))
     openLog(task)
-    refresh()
+    await refresh()
   } catch (e) {
+    task.running = false
     toast('❌ ' + (e.message || e))
   }
 }
 
-async function pollLog() {
-  if (!curId.value) return
+function stopLogPolling() {
+  pollGeneration += 1
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = null
+}
+
+async function pollLog(generation) {
+  const id = curId.value
+  if (!id || generation !== pollGeneration) return
   try {
-    const j = await getMaintenanceLog(curId.value)
+    const j = await getMaintenanceLog(id)
+    if (generation !== pollGeneration || curId.value !== id) return
     logText.value = j.log + (j.running ? '\n⏳…' : (j.rc == null ? '' : '\n' + t('maintenance.log_end', { rc: j.rc })))
     if (!j.running) {
-      clearInterval(pollTimer)
-      pollTimer = null
-      refresh()
+      stopLogPolling()
+      void refresh()
+      return
     }
-  } catch {}
+  } catch {
+    if (generation !== pollGeneration) return
+  }
+  if (generation === pollGeneration && curId.value === id) {
+    pollTimer = setTimeout(() => { void pollLog(generation) }, 1500)
+  }
 }
 
 function openLog(task) {
+  stopLogPolling()
   curId.value = task.id
   logTitle.value = task.name
   logOpen.value = true
   logText.value = t('maintenance.log_loading')
-  pollLog()
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = setInterval(pollLog, 1500)
+  const generation = pollGeneration
+  void pollLog(generation)
 }
 function closeLog() {
   logOpen.value = false
   curId.value = null
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  stopLogPolling()
 }
 
 onMounted(() => {
-  refresh()
-  // list is cheap but 4s was wasteful; 15s is enough for task status
-  listTimer = setInterval(() => {
-    if (typeof document !== 'undefined' && document.hidden) return
-    refresh()
-  }, 15000)
+  void refresh()
+  listTimer = startVisibleInterval(refresh, 15000)
 })
 onUnmounted(() => {
-  clearInterval(listTimer)
-  if (pollTimer) clearInterval(pollTimer)
+  if (typeof listTimer === 'function') listTimer()
+  listTimer = null
+  stopLogPolling()
 })
-
 
 // Escape dismisses each dialog, focus returns to whatever opened it, and Tab
 // cannot wander to the page behind the overlay.

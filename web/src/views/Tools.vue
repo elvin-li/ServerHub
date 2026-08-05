@@ -316,7 +316,7 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">DNS</h2>
           <div class="form-row">
-            <input v-model="dnsName" type="text" placeholder="example.com"  aria-label="example.com"/>
+            <input v-model="dnsName" type="text" placeholder="example.com" :aria-label="t('tools.dns_name')"/>
             <button class="primary" :disabled="loading" @click="doDns">Lookup</button>
             <button :disabled="loading" @click="doFlushDns">{{ t('tools.flush_dns') }}</button>
           </div>
@@ -388,6 +388,26 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import {
+  flushDns,
+  generateDiagnostics,
+  getDockerContainerSizes,
+  getDockerDiskUsage,
+  getListeningPorts,
+  getScheduler,
+  getSystemDiagnostics,
+  getSystemProcesses,
+  getSystemScheduler,
+  getToolsAbout,
+  getToolsAgents,
+  getToolsCatalog,
+  getToolsHardware,
+  getToolsSyslog,
+  getToolsUpdates,
+  lookupDns,
+  pingHost as pingHostApi,
+  pruneDocker,
+} from '../api/client'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -483,47 +503,42 @@ function openTile(tile) {
 
 async function loadCatalog() {
   try {
-    const r = await fetch('/api/tools/catalog')
-    catalog.value = await r.json()
+    catalog.value = await getToolsCatalog()
   } catch (e) { toast('❌ ' + e.message) }
 }
 
 async function loadDiag() {
   try {
-    const r = await fetch('/api/system/diagnostics')
-    diag.value = await r.json()
+    diag.value = await getSystemDiagnostics()
   } catch (e) { toast('❌ ' + e.message) }
 }
 
 async function genDiag() {
   loading.value = true
   try {
-    const r = await fetch('/api/diagnostics')
-    const j = await r.json()
-    diagMsg.value = j.saved_path || t('tools.diag_done')
-    toast('✅ ' + t('tools.diag_done'))
+    const j = await generateDiagnostics()
+    if (j.saved_path) {
+      diagMsg.value = j.saved_path
+      toast('✅ ' + t('tools.diag_done'))
+    } else {
+      diagMsg.value = t('tools.diag_save_failed', { error: j.save_error || t('common.failed') })
+      toast('❌ ' + diagMsg.value)
+    }
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 async function loadSyslog() {
   loading.value = true
   try {
-    const q = new URLSearchParams({
-      minutes: String(syslogMinutes.value),
-      level: syslogLevel.value,
-      limit: '100',
-    })
-    const r = await fetch('/api/tools/syslog?' + q)
-    syslog.value = await r.json()
+    syslog.value = await getToolsSyslog(syslogMinutes.value, syslogLevel.value, 100)
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 async function loadProc() {
   try {
-    const r = await fetch('/api/system/processes?limit=40')
-    const j = await r.json()
+    const j = await getSystemProcesses(40)
     processes.value = j.processes || []
   } catch (e) { toast('❌ ' + e.message) }
 }
@@ -531,8 +546,8 @@ async function loadProc() {
 async function loadDocker() {
   try {
     const [a, b] = await Promise.all([
-      fetch('/api/docker/df').then(r => r.json()),
-      fetch('/api/docker/sizes').then(r => r.json()),
+      getDockerDiskUsage(),
+      getDockerContainerSizes(),
     ])
     df.value = a
     sizes.value = b.containers || []
@@ -550,66 +565,54 @@ async function doPrune(what) {
   loading.value = true
   pruneMsg.value = ''
   try {
-    const r = await fetch('/api/tools/docker/prune', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ what, confirm: true }),
-    })
-    const j = await r.json()
+    const j = await pruneDocker(what)
     pruneMsg.value = j.message || ''
     toast(j.ok ? '✅ ' + (j.message || 'ok') : '❌ ' + (j.message || 'fail'))
     if (j.df) df.value = j.df
     await loadDocker()
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 async function loadSched() {
   try {
     let j
     try {
-      const r = await fetch('/api/scheduler')
-      if (r.ok) j = await r.json()
-    } catch {}
-    if (!j) {
-      const r = await fetch('/api/system/scheduler')
-      j = await r.json()
+      j = await getScheduler()
+    } catch (e) {
+      if (e.status !== 404) throw e
+      j = await getSystemScheduler()
     }
     timers.value = j.timers || []
-    const a = await fetch('/api/tools/agents').then(r => r.json())
-    agents.value = a
+    agents.value = await getToolsAgents()
   } catch (e) { toast('❌ ' + e.message) }
 }
 
 async function loadHw() {
   loading.value = true
   try {
-    const r = await fetch('/api/tools/hardware')
-    hw.value = await r.json()
+    hw.value = await getToolsHardware()
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 async function loadUpdates() {
   loading.value = true
   try {
-    const r = await fetch('/api/tools/updates')
-    updates.value = await r.json()
+    updates.value = await getToolsUpdates()
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 async function loadAbout() {
   try {
-    const r = await fetch('/api/tools/about')
-    about.value = await r.json()
+    about.value = await getToolsAbout()
   } catch (e) { toast('❌ ' + e.message) }
 }
 
 async function loadPorts() {
   try {
-    const r = await fetch('/api/tools/ports?limit=50')
-    ports.value = await r.json()
+    ports.value = await getListeningPorts(50)
   } catch (e) { toast('❌ ' + e.message) }
 }
 
@@ -617,28 +620,18 @@ async function doPing() {
   loading.value = true
   pingOut.value = ''
   try {
-    const r = await fetch('/api/tools/net/ping', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: pingHost.value, count: 3 }),
-    })
-    const j = await r.json()
+    const j = await pingHostApi(pingHost.value, 3)
     pingOut.value = j.output || j.message || ''
     toast(j.ok ? '✅ ping ok' : '❌ ping fail')
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 async function doDns() {
   loading.value = true
   dnsOut.value = ''
   try {
-    const r = await fetch('/api/tools/net/dns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: dnsName.value }),
-    })
-    const j = await r.json()
+    const j = await lookupDns(dnsName.value)
     if (j.ok) {
       dnsOut.value = (j.results || []).map(x => `${x.family} ${x.ip}`).join('\n')
         + (j.dig ? `\n\ndig:\n${j.dig}` : '')
@@ -646,18 +639,17 @@ async function doDns() {
       dnsOut.value = j.message || 'fail'
     }
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 async function doFlushDns() {
   loading.value = true
   try {
-    const r = await fetch('/api/tools/net/flush-dns', { method: 'POST' })
-    const j = await r.json()
+    const j = await flushDns()
     toast(j.ok ? '✅ ' + j.message : '❌ ' + j.message)
     dnsOut.value = (j.detail || []).join('\n')
   } catch (e) { toast('❌ ' + e.message) }
-  loading.value = false
+  finally { loading.value = false }
 }
 
 function reload() {

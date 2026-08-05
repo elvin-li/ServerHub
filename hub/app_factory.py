@@ -1,6 +1,7 @@
 """FastAPI application factory."""
 from __future__ import annotations
 
+import base64
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -12,6 +13,7 @@ from hub import __version__
 from hub.auth import require_auth
 from hub.config import cfg
 from hub.errors import error_payload
+from hub.macos_admin import use_admin_password
 from hub.paths import LEGACY_INDEX, STATIC_DIR
 from hub.routers import router
 from hub.routers.auth_api import router as auth_router
@@ -39,6 +41,29 @@ async def lifespan(app: FastAPI):
         metrics.stop_sampler()
         alerts.stop_alerter()
         network_svc.stop_alias_autobind()
+
+
+async def admin_password_scope(request: Request):
+    """Scope a web-entered macOS administrator password to this one request.
+
+    Privileged endpoints answer "admin.password_required" unless this header is
+    present; the SPA then shows its own password dialog and retries with it.
+    The value is base64-encoded UTF-8 so passwords containing non-latin
+    characters survive the HTTP header round trip.  It is decoded once, held in
+    a request-scoped contextvar, and never logged or persisted.
+    """
+    raw = (request.headers.get("x-admin-password") or "").strip()
+    password = ""
+    if raw:
+        try:
+            password = base64.b64decode(raw.encode("ascii"), validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            password = ""
+    if password:
+        with use_admin_password(password):
+            yield
+    else:
+        yield
 
 
 def create_app() -> FastAPI:
@@ -103,7 +128,10 @@ def create_app() -> FastAPI:
         return resp
 
     app.include_router(auth_router)
-    app.include_router(router, dependencies=[Depends(require_auth)])
+    app.include_router(
+        router,
+        dependencies=[Depends(require_auth), Depends(admin_password_scope)],
+    )
     # WebSocket routes do not run HTTP dependency injection. Both handlers below
     # apply their own stricter session + same-origin checks before accepting.
     app.add_api_websocket_route("/api/terminal/ws", terminal_websocket)

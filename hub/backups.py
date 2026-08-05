@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from hub.config import cfg
-from hub.paths import BASE
+from hub.paths import CONFIG_FILE, DATA_DIR
 
 BACKUP_ROOT = Path.home() / "Services" / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
@@ -18,7 +18,7 @@ def list_backups(limit: int = 40) -> list:
     roots = [
         BACKUP_ROOT,
         Path.home() / "Services" / "teslamate" / "backups",
-        BASE / "data",
+        DATA_DIR,
     ]
     for root in roots:
         if not root.is_dir():
@@ -81,7 +81,7 @@ def backup_configs() -> dict:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     dest = BACKUP_ROOT / f"configs_{stamp}.tgz"
     paths = [
-        BASE / "services.yaml",
+        CONFIG_FILE,
         Path.home() / "Services" / "teslamate" / "docker-compose.yml",
         Path.home() / "Services" / "music-assistant" / "docker-compose.yml",
     ]
@@ -89,7 +89,7 @@ def backup_configs() -> dict:
     agents = Path.home() / "Library" / "LaunchAgents"
     if agents.is_dir():
         for pl in agents.glob("*.plist"):
-            if any(x in pl.name for x in ("elvin", "homeassistant", "kidsmusic", "filebrowser", "onedrive", "gravity", "cloudflare")):
+            if any(x in pl.name for x in ("serverhub", "homeassistant", "filebrowser", "onedrive", "cloudflare")):
                 paths.append(pl)
     existing = [str(p) for p in paths if p.exists()]
     if not existing:

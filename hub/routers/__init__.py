@@ -8,7 +8,9 @@ from hub.routers import (
     containers,
     files_api,
     logs,
+    launcher_api,
     modules_api,
+    nas_storage,
     power,
     services_api,
     settings_api,
@@ -17,6 +19,7 @@ from hub.routers import (
     system_extra,
     terminal_api,
     unraid_parity,
+    wireguard_api,
 )
 
 router = APIRouter()
@@ -36,5 +39,8 @@ router.include_router(power.router)
 router.include_router(cloudflared_api.router)
 router.include_router(terminal_api.router)
 router.include_router(audit_api.router)
+router.include_router(launcher_api.router)
+router.include_router(nas_storage.router)
+router.include_router(wireguard_api.router)
 
 __all__ = ["router"]

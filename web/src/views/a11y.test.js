@@ -49,6 +49,32 @@ describe('modal dialogs', () => {
   })
 })
 
+describe('control names', () => {
+  // A placeholder is an example value ("auto", "nginx:alpine", "notify.notify");
+  // a name says what the control *is*.  Copying the placeholder into aria-label
+  // is worse than leaving the label off: the accessible name becomes the sample
+  // data, and it overrides the visible <label> that was already correct.  Every
+  // one of these sites had a neighbouring label carrying the real name.
+  const TAG = /<(?:input|textarea|select)\b[^>]*>/g
+
+  it('never reuse a placeholder as the accessible name', () => {
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      for (const tag of src.match(TAG) || []) {
+        const ph = tag.match(/\splaceholder="([^"]*)"/)
+        const al = tag.match(/\saria-label="([^"]*)"/)
+        if (ph && al && ph[1].trim() && ph[1] === al[1]) {
+          offenders.push(`${name}: aria-label duplicates placeholder "${ph[1]}"`)
+        }
+      }
+    }
+    expect(
+      offenders,
+      'aria-label must name the control, not repeat its example value',
+    ).toEqual([])
+  })
+})
+
 describe('service uninstall UI', () => {
   const src = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
 
@@ -74,6 +100,14 @@ describe('service uninstall UI', () => {
 })
 
 describe('timer lifecycle', () => {
+  it('does not overlap async polling requests', () => {
+    const apps = readFileSync(resolve(SRC, 'views', 'Apps.vue'), 'utf8')
+    expect(apps, 'setInterval(async …) starts another request before the prior one finishes')
+      .not.toMatch(/setInterval\s*\(\s*async\b/)
+    expect(apps).toContain('cfPollGeneration')
+    expect(apps).toMatch(/onUnmounted\s*\(\s*\(\)\s*=>\s*\{[\s\S]*stopCfLoginPolling\(\)/)
+  })
+
   it('clears every interval handle it declares', () => {
     const offenders = []
     for (const [name, src] of vueFiles()) {
@@ -90,10 +124,17 @@ describe('timer lifecycle', () => {
         // the page keeps polling the backend after navigation.  Both shapes are
         // legitimate here — clearInterval(t) for raw intervals, and t() for the
         // disposer startVisibleInterval returns.
-        const disposed =
+        const clearedDirectly =
           new RegExp(`clear(?:Interval|Timeout)\\s*\\(\\s*${handle}\\b`).test(tail) ||
           new RegExp(`\\b${handle}\\s*\\(\\s*\\)`).test(tail)
-        if (!disposed) offenders.push(`${name}: ${handle} never cleared on unmount`)
+        const clearedByHelper = [...src.matchAll(/function\s+(\w+)\s*\([^)]*\)\s*\{([\s\S]*?)\n\}/g)]
+          .some(([, fn, body]) =>
+            new RegExp(`clear(?:Interval|Timeout)\\s*\\(\\s*${handle}\\b`).test(body) &&
+            new RegExp(`\\b${fn}\\s*\\(\\s*\\)`).test(tail),
+          )
+        if (!clearedDirectly && !clearedByHelper) {
+          offenders.push(`${name}: ${handle} never cleared on unmount`)
+        }
       }
     }
     expect(offenders, 'a surviving timer keeps polling the backend after navigation').toEqual([])
@@ -173,6 +214,144 @@ describe('focus visibility', () => {
       .map(([sel]) => sel)
 
     expect(missing).toEqual([])
+  })
+})
+
+describe('launcher service feedback', () => {
+  const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+
+  it('clears the green panel state immediately after accepting stop', () => {
+    expect(settings).toContain("if (action === 'stop')")
+    expect(settings).toMatch(/panel_running:\s*false/)
+    expect(settings).toMatch(/panel_job_state:\s*'stopping'/)
+  })
+})
+
+describe('storage state semantics', () => {
+  const main = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+  const pool = readFileSync(resolve(SRC, 'views/Pool.vue'), 'utf8')
+
+  it('does not present a missing array status as started', () => {
+    expect(main).not.toContain("data?.array?.status || 'started'")
+    expect(main).toContain("data?.array?.status || t('network.unknown')")
+  })
+
+  it('preserves the saved pool free-space floor when editing other fields', () => {
+    expect(pool).toContain('minFreeGb.value = Number(data.min_free_gb) || 0')
+    expect(pool).toContain('min_free_gb: Number(minFreeGb.value) || 0')
+  })
+})
+
+describe('workload operation semantics', () => {
+  const compose = readFileSync(resolve(SRC, 'views/Compose.vue'), 'utf8')
+  const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+  const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+
+  it('serializes async job polling instead of overlapping requests', () => {
+    for (const [name, src] of [['Compose.vue', compose], ['Containers.vue', containers]]) {
+      expect(src, `${name} must not overlap job requests`).not.toMatch(/setInterval\s*\(\s*poll/)
+      expect(src, `${name} needs an in-flight response invalidation token`).toContain('jobPollGeneration')
+      expect(src, `${name} must invalidate polling on unmount`).toMatch(/onUnmounted\([^)]*stopJobPolling|onUnmounted\s*\(\s*\(\)\s*=>\s*\{[\s\S]*stopJobPolling\(\)/)
+    }
+  })
+
+  it('shows partial container batch failures as failures', () => {
+    expect(containers).toContain('function batchToast(j)')
+    expect(containers).toContain("t('docker.done_count'")
+    expect(containers).toContain('j.ok === false')
+  })
+
+  it('keeps graceful stop distinct from force kill for VMs', () => {
+    expect(vms).toContain("t('vms.confirm_kill'")
+    expect(vms).toContain("t('vms.confirm_restart_force'")
+    expect(vms).toContain("force: action !== 'stop'")
+    expect(vms).not.toContain('{ action, force: true }')
+  })
+})
+
+describe('network operation semantics', () => {
+  const network = readFileSync(resolve(SRC, 'views/Network.vue'), 'utf8')
+
+  it('keeps failed network forms open and only refreshes successful changes', () => {
+    for (const state of ['manualSvc', 'dnsSvc', 'portEdit', 'connectNet']) {
+      expect(network, `${state} must close only inside a success branch`)
+        .toMatch(new RegExp(`if \\(j\\.ok\\) \\{[\\s\\S]{0,120}${state}\\.value = null`))
+    }
+    expect(network).not.toMatch(/setTimeout\s*\(\s*\(\)\s*=>\s*refresh\(true\)/)
+    expect(network).toContain('for (const id of refreshTimers) clearTimeout(id)')
+  })
+
+  it('warns before connection-changing operations', () => {
+    for (const key of [
+      'network.confirm_manual',
+      'network.confirm_wifi',
+      'network.confirm_recreate_ports',
+      'network.confirm_disconnect',
+    ]) expect(network).toContain(key)
+  })
+})
+
+describe('operations polling and submission guards', () => {
+  const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+  const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+  const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+  const alerts = readFileSync(resolve(SRC, 'views/Alerts.vue'), 'utf8')
+
+  it('serializes maintenance and log refreshes', () => {
+    expect(maintenance).not.toContain('setInterval(')
+    expect(maintenance).toContain('startVisibleInterval(refresh, 15000)')
+    expect(maintenance).toContain('pollGeneration')
+    expect(logs).not.toContain('setInterval(')
+    expect(logs).toContain('startVisibleInterval(load, 6000)')
+    expect(logs).toContain('loadGeneration')
+  })
+
+  it('does not refresh a failed backup into the successful list', () => {
+    expect(backups).toContain('if (r.ok) await refresh()')
+  })
+
+  it('prevents duplicate alert checks and notification tests', () => {
+    expect(alerts).toContain('const busy = ref(false)')
+    expect(alerts).toMatch(/async function check\(\)[\s\S]*if \(busy\.value\) return[\s\S]*finally/)
+    expect(alerts).toMatch(/async function test\(\)[\s\S]*if \(busy\.value\) return[\s\S]*finally/)
+  })
+
+  it('does not report an unsaved diagnostics snapshot as saved', () => {
+    const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(tools).toContain("if (j.saved_path)")
+    expect(tools).toContain("t('tools.diag_save_failed'")
+    expect(tools).toContain('j.save_error')
+    expect(settings).toContain('const saved = Boolean(result.saved_path)')
+    expect(settings).toContain("t('settings.diag_save_failed'")
+    expect(settings).toContain('result.save_error')
+    expect(settings).toContain("toast(saved ? '✅ '")
+  })
+
+  it('keeps dashboard actions recoverable and polling serialized', () => {
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/async function act\(svc, action\)[\s\S]*if \(busy\.value\) return[\s\S]*finally/)
+    expect(dashboard).toContain('if (r.ok) scheduleActionRefresh()')
+    expect(dashboard).not.toContain('setTimeout(refresh, 1000)')
+    expect(dashboard).toContain('await Promise.all([refresh(), loadSensors(false)])')
+    expect(dashboard).toMatch(/onUnmounted\([\s\S]*clearTimeout\(actionRefreshTimer\)/)
+  })
+
+  it('keeps file navigation and terminal connection state current', () => {
+    const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(files).toContain('const request = ++listRequest')
+    expect(files).toContain('request !== listRequest || !activated.value')
+    expect(files).toMatch(/function deactivate\(\)[\s\S]*listRequest \+= 1/)
+    expect(files).toMatch(/onUnmounted\([\s\S]*listRequest \+= 1/)
+    expect(files.match(/if \(!j\?\.ok\) throw new Error/g)).toHaveLength(2)
+    expect(terminal).toContain('terminal handshake timeout')
+    expect(terminal).toMatch(/message\.type === 'ready'[\s\S]{0,100}clearConnectTimer\(\)/)
+    expect(terminal).toMatch(/function closeTerminal\(\)[\s\S]{0,100}clearConnectTimer\(\)/)
+    expect(terminal).toMatch(/function onSocketClose\(\)[\s\S]{0,100}clearConnectTimer\(\)/)
+    expect(settings).toMatch(/async function testNotify\(\)[\s\S]*if \(saving\.value\) return[\s\S]*finally/)
+    expect(settings).toMatch(/async function forceCheck\(\)[\s\S]*if \(saving\.value\) return[\s\S]*finally/)
   })
 })
 

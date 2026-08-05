@@ -75,7 +75,7 @@ stacks: []
 # Dashboard bookmark tiles, health-probed on the Bookmarks page.
 #   quick_links:
 #     - name: Router
-#       url: http://192.168.1.1
+#       url: http://192.0.2.1
 quick_links: []
 
 # Log files exposed on the Logs page.

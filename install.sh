@@ -17,8 +17,8 @@ PORT=8086
 WITH_MENUBAR=1
 PYTHON_MIN="3.10"
 
-LABEL_PANEL="com.elvin.serverhub"
-LABEL_MENUBAR="com.elvin.serverhub-menubar"
+LABEL_PANEL="local.serverhub.panel"
+LABEL_MENUBAR="local.serverhub.menubar"
 AGENTS="$HOME/Library/LaunchAgents"
 LOGS="$HOME/Library/Logs"
 VENV="$BASE/.venv"

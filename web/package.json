@@ -2,10 +2,14 @@
   "name": "serverhub-web",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^18.0.0 || ^20.0.0 || >=22.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build --target esnext",
     "preview": "vite preview",
+    "analyze": "vite build --config vite.analyze.config.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "check:dead-code": "knip"
@@ -15,20 +19,24 @@
     "@novnc/novnc": "1.7.0",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/xterm": "5.5.0",
+    "qrcode-generator": "2.0.4",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
-    "@vue/test-utils": "^2.4.6",
+    "@vue/test-utils": "2.4.11",
     "jsdom": "^25.0.1",
     "knip": "^5.88.1",
     "vite": "^6.0.7",
-    "vitest": "^3.2.4"
+    "vitest": "3.2.7"
   },
   "knip": {
     "entry": [
       "public/sw.js"
     ]
+  },
+  "overrides": {
+    "js-beautify": "2.0.3"
   }
 }
