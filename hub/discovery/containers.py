@@ -110,7 +110,3 @@ def _refresh():
     with _lock:
         _cache.update(t=time.time(), v=(items, engine_up))
     return list(items), engine_up
-
-
-# Back-compat alias
-discover_docker = discover_containers

@@ -67,23 +67,6 @@ def _brew_list_installed() -> set[str]:
     return formulas | casks
 
 
-def _brew_service_status(name: str) -> str | None:
-    """Return started|stopped|none|None."""
-    if not Path(BREW).is_file():
-        return None
-    rc, out, _ = sh([BREW, "services", "info", name, "--json"], timeout=15)
-    if rc != 0 or not out.strip():
-        return None
-    try:
-        data = json.loads(out)
-        if isinstance(data, list) and data:
-            data = data[0]
-        st = (data.get("status") or "").lower()
-        return st or "none"
-    except Exception:
-        return None
-
-
 def _screen_sharing_on() -> bool:
     # launchctl print system/com.apple.screensharing
     rc, out, _ = sh(

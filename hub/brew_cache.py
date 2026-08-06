@@ -77,11 +77,3 @@ def brew_services(force: bool = False) -> list[dict]:
 #: missing symbol here is an ImportError at module load, which takes down every
 #: route, not just the one that wanted brew state.
 brew_services_list = brew_services
-
-
-def service_state(name: str) -> str:
-    """`status` for one formula, or "" when brew does not know it."""
-    for item in brew_services():
-        if item.get("name") == name:
-            return str(item.get("status") or "")
-    return ""

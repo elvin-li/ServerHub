@@ -1739,6 +1739,8 @@ export default {
     check_boot: '开机自启',
     fix_boot: '安装 LaunchDaemon 以便重启后仍然生效',
     check_peer_origin: '客户端来源',
+    check_stale_runtime: '残留的接口占用记录',
+    fix_stale_runtime: '上一次启动中途失败留下的记录，下次启动会自动清理',
     fix_peer_origin: '从别的服务器抄来的客户端永远无法握手',
     enable: '启用',
     install: '安装',

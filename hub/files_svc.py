@@ -151,15 +151,6 @@ def default_roots() -> list[dict]:
     return out
 
 
-def _roots_map() -> dict[str, Path]:
-    m = {}
-    for r in default_roots():
-        m[r["id"]] = Path(r["path"]).resolve()
-        # also key by path for reverse lookup
-        m[str(Path(r["path"]).resolve())] = Path(r["path"]).resolve()
-    return m
-
-
 def _resolve_safe(path: str | None, root_id: str | None = None) -> Path:
     """Resolve path, ensure it stays under an allowed root and is not protected."""
     roots = default_roots()

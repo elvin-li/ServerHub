@@ -1738,6 +1738,8 @@ export default {
     check_boot: '起動時に開始',
     fix_boot: '再起動後も有効にするため LaunchDaemon を導入',
     check_peer_origin: 'ピアの出自',
+    check_stale_runtime: '残存したインターフェース登録',
+    fix_stale_runtime: '前回の起動が途中で失敗した残骸です。次回の開始時に自動で削除されます',
     fix_peer_origin: '別サーバーからコピーしたピアはハンドシェイクできません',
     enable: '有効化',
     install: '導入',

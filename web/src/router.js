@@ -1,6 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Dashboard from './views/Dashboard.vue'
 import Login from './views/Login.vue'
+import {
+  clearStaleChunkFlag, isChunkLoadError, recoverFromStaleChunk,
+} from './lib/chunkRecovery'
 // Dashboard is the landing page. Keep it eager and split every secondary page
 // into an on-demand chunk so first paint does not download the entire admin UI.
 const MainArray = () => import('./views/MainArray.vue')
@@ -108,6 +111,18 @@ router.beforeEach(() => {
 })
 router.afterEach(() => {
   barDone()
+  // The navigation resolved, so this shell is serving working chunks. Drop the
+  // guard so a future staleness can recover instead of being suppressed.
+  clearStaleChunkFlag()
+})
+
+// A lazy route whose chunk hash no longer exists on the server leaves the user on
+// a page that never opens. Treat it as a stale shell and reload once.
+router.onError((error) => {
+  if (isChunkLoadError(error)) {
+    barDone()
+    recoverFromStaleChunk()
+  }
 })
 
 router.beforeEach(async (to) => {

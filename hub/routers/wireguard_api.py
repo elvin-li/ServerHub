@@ -13,7 +13,7 @@ it is worth keeping.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
@@ -75,32 +75,67 @@ def api_wireguard_next_ip():
     return _call(wireguard_svc.next_ip)
 
 
+# The four endpoints below return key material -- a peer's private key, or the
+# server's own.  They are guarded exactly like the mutations and marked no-store.
+#
+# The global auth dependency already refuses non-admin sessions here, so this is
+# defence in depth rather than a patched hole.  It is still worth having: it does
+# not depend on a middleware path rule staying correct, and _guard additionally
+# demands a *browser* session, which a bearer-token client cannot present.
+#
+# no-store matters independently of authorization: without it a private key can
+# come to rest in the browser's disk cache or an intermediary long after the
+# session that fetched it has gone.
+_SECRET_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+}
+
+
 @router.get("/api/wireguard/conf")
-def api_wireguard_conf(reveal: bool = False):
+def api_wireguard_conf(request: Request, response: Response, reveal: bool = False):
     """The server config.  The private key is redacted unless explicitly revealed."""
+    _guard(request)
+    response.headers.update(_SECRET_HEADERS)
     return _call(wireguard_svc.view_conf, reveal=bool(reveal))
 
 
-@router.get("/api/wireguard/peers/{pubkey}/config")
-def api_wireguard_peer_config(pubkey: str, format: str = "wg"):
+# The peer key travels as a query parameter, not a path segment: WireGuard
+# public keys are raw base64, and Starlette percent-decodes the path BEFORE
+# routing, so a key containing "/" (encoded as %2F by the client) splits into
+# extra segments and the route 404s.  Query values are decoded after matching,
+# where %2F is safe.  Keys with "/" are common enough that this is not a corner
+# case -- it broke the config dialog for any such peer.
+@router.get("/api/wireguard/peers/config")
+def api_wireguard_peer_config(
+    request: Request, response: Response, pubkey: str, format: str = "wg"
+):
     """Re-issue one peer's config in the requested format."""
+    _guard(request)
+    response.headers.update(_SECRET_HEADERS)
     return _call(wireguard_svc.peer_conf, pubkey=pubkey, fmt=_check_format(format))
 
 
-@router.get("/api/wireguard/peers/{pubkey}/download", response_class=PlainTextResponse)
-def api_wireguard_peer_download(pubkey: str, format: str = "wg"):
+@router.get("/api/wireguard/peers/download", response_class=PlainTextResponse)
+def api_wireguard_peer_download(request: Request, pubkey: str, format: str = "wg"):
     """Same payload as ``/config`` but as a file download."""
+    _guard(request)
     result = _call(wireguard_svc.peer_conf, pubkey=pubkey, fmt=_check_format(format))
     return PlainTextResponse(
         result["content"],
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{result["filename"]}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{result["filename"]}"',
+            **_SECRET_HEADERS,
+        },
     )
 
 
 @router.get("/api/wireguard/export")
-def api_wireguard_export(format: str = "wg"):
+def api_wireguard_export(request: Request, response: Response, format: str = "wg"):
     """Every re-issuable peer in one response, for a bulk hand-out."""
+    _guard(request)
+    response.headers.update(_SECRET_HEADERS)
     return wireguard_svc.export_all(_check_format(format))
 
 

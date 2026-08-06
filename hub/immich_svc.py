@@ -39,7 +39,6 @@ _TTL = 30.0
 BASE = Path.home() / "Services" / "immich"
 ACCEL = Path.home() / ".immich-accelerator"
 WORKER_PID = ACCEL / "pids" / "worker.pid"
-WORKER_LOG = ACCEL / "logs" / "worker.log"
 #: The wrapper is installed as plain `bin/ffmpeg` so it wins on PATH ahead of
 #: the real binary; it is not named *-wrapper.sh on disk.
 FFMPEG_SHIM = ACCEL / "bin" / "ffmpeg"

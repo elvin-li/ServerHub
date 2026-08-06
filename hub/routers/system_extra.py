@@ -132,10 +132,6 @@ class NetDnsBody(BaseModel):
     servers: list[str] = []
 
 
-class NetServiceAction(BaseModel):
-    action: str  # set_dhcp | wifi_on | wifi_off
-
-
 @router.get("/api/system/network/services")
 def network_services():
     return {"services": network_svc.network_services()}

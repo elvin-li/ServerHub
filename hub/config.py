@@ -175,9 +175,3 @@ def update_settings(patch: dict[str, Any]) -> dict:
     data["settings"] = deep_merge(cur, patch)
     save_full(data)
     return data["settings"]
-
-
-def update_section(section: str, value: Any) -> None:
-    data = copy.deepcopy(cfg())
-    data[section] = value
-    save_full(data)

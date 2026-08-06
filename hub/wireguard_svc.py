@@ -46,6 +46,7 @@ from hub.util import port_open, sh
 
 WG = "/opt/homebrew/bin/wg"
 WG_QUICK = "/opt/homebrew/bin/wg-quick"
+RM = "/bin/rm"
 WIREGUARD_GO = "/opt/homebrew/bin/wireguard-go"
 
 #: wg-quick is a bash script with a `#!/usr/bin/env bash` shebang and refuses to
@@ -213,13 +214,23 @@ def installation() -> dict:
 
     tools = version(WG, ["--version"])
     userspace = version(WIREGUARD_GO, ["--version"])
+    # Presence is decided by the binaries being on disk, not by a subprocess
+    # succeeding.  Deriving it from `wg --version` meant any transient failure of
+    # that probe -- a timeout under load, a stray non-zero exit -- reported
+    # "wireguard-tools is not installed" and refused every operation, which is a
+    # wildly misleading answer on a host where it is plainly installed.  The
+    # version strings stay best-effort and are only used for display.
+    present = Path(WG).exists() and Path(WG_QUICK).exists()
     return {
         "wg": WG if Path(WG).exists() else "",
         "wg_quick": WG_QUICK if Path(WG_QUICK).exists() else "",
         "wireguard_go": WIREGUARD_GO if Path(WIREGUARD_GO).exists() else "",
         "tools_version": tools,
         "userspace_version": userspace,
-        "installed": bool(tools),
+        "installed": present,
+        #: True when the binaries are there but would not answer a version probe;
+        #: the page can distinguish "missing" from "installed but misbehaving".
+        "probe_failed": present and not tools,
         "conf_dir": str(conf_dir()),
         "conf_path": str(conf_path()),
         "conf_exists": conf_path().exists(),
@@ -982,6 +993,41 @@ def apply_live() -> dict:
     return {"ok": False, "error": result.get("error") or "sync_failed", "detail": err[:200]}
 
 
+#: Where wg-quick records which utun device it assigned to an interface.
+WG_RUN_DIR = Path("/var/run/wireguard")
+
+
+def runtime_state(interface: str | None = None) -> dict:
+    """What wg-quick believes about *interface*, read without elevation.
+
+    wg-quick stores the utun it picked in ``<iface>.name`` and the userspace
+    driver opens ``<utun>.sock`` alongside it.  A name file with no socket means a
+    previous run died between creating the device and finishing setup -- wg-quick
+    does not clean up after itself, and from then on every ``up`` aborts with
+    ``` `wg0' already exists as `utun8' ``` while ``down`` cannot find the
+    interface either.  That combination leaves the tunnel permanently unstartable
+    with a message that points at the wrong thing.
+
+    The name file is mode 0400 root, so its contents are unreadable here; presence
+    plus the absence of any socket is the signal, and both are visible from a stat.
+    """
+    iface = interface or settings()["interface"]
+    name_file = WG_RUN_DIR / f"{iface}.name"
+    try:
+        sockets = sorted(p.name for p in WG_RUN_DIR.glob("*.sock"))
+    except OSError:
+        sockets = []
+    recorded = name_file.exists()
+    return {
+        "interface": iface,
+        "name_file": str(name_file),
+        "name_file_present": recorded,
+        "sockets": sockets,
+        # Claimed by a previous run, but nothing is actually serving it.
+        "stale": recorded and not sockets,
+    }
+
+
 def interface_action(action: str) -> dict:
     """Bring the tunnel up, down, or cycle it."""
     verb = (action or "").strip().lower()
@@ -995,6 +1041,16 @@ def interface_action(action: str) -> dict:
         commands = [[BASH, WG_QUICK, "down", path], [BASH, WG_QUICK, "up", path]]
     else:
         commands = [[BASH, WG_QUICK, verb, path]]
+
+    # Clear a claim left behind by a run that died mid-setup.  Without this the
+    # operator is stuck for good: `up` refuses because wg-quick still thinks the
+    # interface exists, and `down` cannot remove the record because the device it
+    # names is gone.  Only done when nothing is actually serving the interface, so
+    # a live tunnel is never orphaned by this.
+    stale = runtime_state(cfg_interface := settings()["interface"])
+    if verb in ("up", "restart") and stale["stale"]:
+        commands.insert(0, [RM, "-f", stale["name_file"]])
+    del cfg_interface
 
     # sudo -n first so an operator with the packaged sudoers rule is not
     # prompted on every restart; without a rule the sequence falls through to

@@ -480,5 +480,36 @@ class SettingsValidationTests(unittest.TestCase):
         self.assertEqual(stored["subnet"], "10.20.0.0/24")
 
 
+class PeerKeyRouteShapeTests(unittest.TestCase):
+    """The peer key must ride in the query string, never the URL path.
+
+    Starlette percent-decodes the path BEFORE routing, so a base64 WireGuard
+    key containing "/" (client-encoded as %2F) splits into extra path segments
+    and the request 404s.  That is exactly what broke the config dialog's
+    format tabs and download link for every peer whose key contains a slash.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from hub.app_factory import create_app
+
+        cls.paths = set(create_app().openapi()["paths"])
+
+    def test_config_and_download_take_the_key_as_a_query_parameter(self):
+        for path in ("/api/wireguard/peers/config", "/api/wireguard/peers/download"):
+            self.assertIn(path, self.paths, f"{path} is not registered")
+
+    def test_no_route_embeds_the_peer_key_in_the_path(self):
+        offenders = sorted(
+            p for p in self.paths
+            if p.startswith("/api/wireguard/peers/") and "{pubkey}" in p
+        )
+        self.assertEqual(
+            offenders, [],
+            "a %2F-encoded key in these paths 404s before it reaches the handler:\n"
+            + "\n".join(offenders),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -443,6 +443,55 @@ def _updates_fresh() -> dict | None:
     return None
 
 
+_updates_warmer_stop: threading.Event | None = None
+_updates_warmer_thread: threading.Thread | None = None
+
+
+def start_updates_warmer(initial_delay: float = 25.0) -> None:
+    """Keep the update cache populated so no request ever pays for the probe.
+
+    ``brew outdated`` plus ``softwareupdate -l`` measured 11.5s cold here, and the
+    existing cache only helps *after* someone has already waited for it.  Whoever
+    opened the Tools page first absorbed the whole cost.
+
+    The refresh runs at two thirds of the TTL so the entry is replaced before it
+    expires and the window where a request finds nothing cached never opens.  The
+    initial delay keeps this off the startup path: the panel should be answering
+    requests long before it spends ten seconds asking Homebrew about updates.
+    """
+    global _updates_warmer_stop, _updates_warmer_thread
+    if _updates_warmer_thread and _updates_warmer_thread.is_alive():
+        return
+    stop = threading.Event()
+    interval = max(60.0, _UPDATES_TTL * 2 / 3)
+
+    def loop():
+        if stop.wait(initial_delay):
+            return
+        while True:
+            try:
+                check_updates(force=True)
+            except Exception:
+                # A warmer must never take the panel down; the next pass retries.
+                pass
+            if stop.wait(interval):
+                return
+
+    _updates_warmer_stop = stop
+    _updates_warmer_thread = threading.Thread(
+        target=loop, daemon=True, name="updates-warmer"
+    )
+    _updates_warmer_thread.start()
+
+
+def stop_updates_warmer() -> None:
+    global _updates_warmer_stop, _updates_warmer_thread
+    if _updates_warmer_stop is not None:
+        _updates_warmer_stop.set()
+    _updates_warmer_stop = None
+    _updates_warmer_thread = None
+
+
 def check_updates(force: bool = False) -> dict:
     """Lightweight update overview (cached 10 min — softwareupdate is expensive).
 

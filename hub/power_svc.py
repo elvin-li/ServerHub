@@ -27,8 +27,6 @@ from hub.host_address import host_ip
 from hub.util import port_open, sh
 
 VNC_PORT = 5900
-SS_PLIST = "/System/Library/LaunchDaemons/com.apple.screensharing.plist"
-SS_LABEL = "com.apple.screensharing"
 
 
 # ─── host identity (default NIC + MAC) ───────────────────────────────────────

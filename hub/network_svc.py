@@ -1224,19 +1224,6 @@ def stop_alias_autobind(timeout: float = 3.0) -> None:
     _alias_stop = None
 
 
-def set_primary_manual_on_device(device: str, ip: str, subnet: str, router: str = "") -> dict:
-    """Find networkservice for device and set manual IP (primary, not alias)."""
-    device = _validate_device(device)
-    svc_name = None
-    for s in network_services():
-        if s.get("device") == device:
-            svc_name = s["name"]
-            break
-    if not svc_name:
-        raise HTTPException(404, f"没有找到设备 {device} 对应的网络服务")
-    return set_service_manual(svc_name, ip, subnet, router)
-
-
 def _validate_device(device: str) -> str:
     device = (device or "").strip()
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9]*\d*$", device):

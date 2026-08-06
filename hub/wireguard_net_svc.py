@@ -180,6 +180,7 @@ def readiness() -> dict:
     nat = nat_installed()
     daemon = daemon_state()
     conflict = peer_origin_conflict()
+    runtime = wireguard_svc.runtime_state()
     forwarding = forwarding_enabled()
     pf_on = pf_enabled()
     egress = wan_interface()
@@ -239,6 +240,15 @@ def readiness() -> dict:
             "ok": not conflict["conflict"],
             "level": "error",
             "detail": f"{conflict['foreign']}/{conflict['total']} peers from another server",
+        },
+        {
+            # A claim left by a run that died mid-setup blocks every subsequent
+            # start with a message about the interface "already existing", which
+            # sends the operator looking in entirely the wrong place.
+            "id": "stale_runtime",
+            "ok": not runtime["stale"],
+            "level": "error" if runtime["stale"] else "warn",
+            "detail": runtime["name_file"] if runtime["stale"] else "",
         },
     ]
     blocking = [c for c in checks if not c["ok"] and c["level"] == "error"]

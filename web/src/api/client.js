@@ -694,8 +694,11 @@ export const importWireguardPeer = (body) =>
   json('/api/wireguard/peers/import', jsonBody('POST', body), WG_ACTION_TIMEOUT)
 export const setWireguardPsk = (pubkey, op) =>
   json('/api/wireguard/peers/psk', jsonBody('POST', { pubkey, op }), WG_ACTION_TIMEOUT)
+// The pubkey rides in the query string, never the path: keys are raw base64
+// and a "/" encoded as %2F would be decoded back into a path separator before
+// Starlette routes the request, 404-ing every key that contains one.
 export const getWireguardPeerConfig = (pubkey, format = 'wg') =>
-  json(`/api/wireguard/peers/${encodeURIComponent(pubkey)}/config?format=${encodeURIComponent(format)}`)
+  json(`/api/wireguard/peers/config?pubkey=${encodeURIComponent(pubkey)}&format=${encodeURIComponent(format)}`)
 export const controlWireguardInterface = (action) =>
   json('/api/wireguard/interface', jsonBody('POST', { action }), WG_CONTROL_TIMEOUT)
 export const syncWireguard = () =>
@@ -709,7 +712,7 @@ export const remediateWireguard = (target, enabled = true) =>
 /** Download URL for a peer config. A navigation, not a fetch, so the browser
  *  handles the attachment; the session cookie authorizes it. */
 export const wireguardPeerDownloadUrl = (pubkey, format = 'wg') =>
-  `/api/wireguard/peers/${encodeURIComponent(pubkey)}/download?format=${encodeURIComponent(format)}`
+  `/api/wireguard/peers/download?pubkey=${encodeURIComponent(pubkey)}&format=${encodeURIComponent(format)}`
 
 // Power & remote desktop
 export const getPower = () => json('/api/system/power')

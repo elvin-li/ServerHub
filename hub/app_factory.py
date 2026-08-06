@@ -23,12 +23,18 @@ from hub.vm_console import console_websocket
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from hub import alerts, metrics, network_svc
+    from hub import alerts, metrics, network_svc, tools_svc
 
     s = cfg().get("settings") or {}
     # SSD-friendly defaults: 90s metrics / 90s alerts (was 30/30)
     metrics.start_sampler(int(s.get("metrics_interval") or 90))
     alerts.start_alerter(int(s.get("alert_interval") or 90))
+    # `brew outdated` + `softwareupdate -l` is ~11.5s. Warm it in the background
+    # so the first visitor to the Tools page reads a cache instead of waiting.
+    try:
+        tools_svc.start_updates_warmer()
+    except Exception:
+        pass
     # Keep managed IP aliases on the highest-priority active NIC
     try:
         network_svc.start_alias_autobind()
@@ -41,6 +47,7 @@ async def lifespan(app: FastAPI):
         metrics.stop_sampler()
         alerts.stop_alerter()
         network_svc.stop_alias_autobind()
+        tools_svc.stop_updates_warmer()
 
 
 async def admin_password_scope(request: Request):

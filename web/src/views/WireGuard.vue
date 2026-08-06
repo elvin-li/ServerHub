@@ -289,8 +289,11 @@
         <p v-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn);line-height:1.5;margin:0 0 8px">
           {{ t('wg.endpoint_missing_warn') }}
         </p>
-        <pre class="mono" style="max-height:260px;overflow:auto;font-size:11px">{{ peerContent }}</pre>
-        <div v-if="qrSvg" style="text-align:center;margin-top:10px" v-html="qrSvg"></div>
+        <pre class="mono" style="max-height:180px;overflow:auto;font-size:11px">{{ peerContent }}</pre>
+        <!-- The QR must never be the thing that gets clipped: give it its own
+             bounded, centred box with a white quiet zone so a phone camera can
+             actually resolve it against a dark theme. -->
+        <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>
         <p v-else-if="qrTooLong" style="font-size:11px;color:var(--sub);margin-top:8px">
           {{ t('wg.qr_too_long') }}
         </p>
@@ -427,6 +430,7 @@ const CHECK_LABELS = {
   pf: 'wg.check_pf',
   boot: 'wg.check_boot',
   peer_origin: 'wg.check_peer_origin',
+  stale_runtime: 'wg.check_stale_runtime',
 }
 const CHECK_FIXES = {
   installed: 'wg.fix_installed',
@@ -438,6 +442,7 @@ const CHECK_FIXES = {
   pf: 'wg.fix_pf',
   boot: 'wg.fix_boot',
   peer_origin: 'wg.fix_peer_origin',
+  stale_runtime: 'wg.fix_stale_runtime',
 }
 const FORMAT_LABELS = {
   wg: 'wg.fmt_wg',
@@ -491,7 +496,12 @@ function renderQr(text, fmt) {
     const qr = qrcode(0, 'M')
     qr.addData(text)
     qr.make()
-    qrSvg.value = qr.createSvgTag({ cellSize: 3, margin: 8, scalable: true })
+    // `scalable: true` emits an SVG with a viewBox and no width/height, so the
+    // browser gives it no intrinsic size: inside a flex/auto-height dialog it
+    // either collapsed to nothing or overflowed and got clipped, which is why the
+    // code rendered only partially. The wrapper below constrains it instead, so
+    // the whole symbol is always visible and stays square.
+    qrSvg.value = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true })
   } catch {
     // qrcode-generator throws once the payload exceeds the largest version.
     qrTooLong.value = true
@@ -669,3 +679,26 @@ onUnmounted(() => {
   loadGeneration += 1
 })
 </script>
+
+<style scoped>
+/* A QR code is only useful if the whole symbol is visible and has a light quiet
+   zone. The generated SVG is scalable (viewBox, no width/height), so it needs an
+   explicitly sized box; without one it inherited no dimensions and was clipped. */
+.wg-qr {
+  margin: 12px auto 0;
+  width: 100%;
+  max-width: 300px;
+  padding: 12px;
+  background: #fff;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+.wg-qr :deep(svg) {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* Keep the modules crisp rather than smoothed when the box scales the symbol. */
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+}
+</style>

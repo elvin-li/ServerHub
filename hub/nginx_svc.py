@@ -1,7 +1,6 @@
 """System nginx reverse proxy management."""
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
@@ -77,17 +76,3 @@ def reload_nginx() -> dict:
         }
     invalidate_status()
     return {"ok": True, "message": "已重载\n" + t["message"]}
-
-
-def write_site(filename: str, content: str) -> dict:
-    """Drop a new site conf into conf.d (adaptive extension point)."""
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}\.conf$", filename):
-        raise HTTPException(400, "filename must be like my-site.conf")
-    CONF_D.mkdir(parents=True, exist_ok=True)
-    path = CONF_D / filename
-    path.write_text(content, encoding="utf-8")
-    t = test_config()
-    if not t["ok"]:
-        path.unlink(missing_ok=True)
-        raise HTTPException(400, "配置无效，已撤销写入\n" + t["message"])
-    return {"ok": True, "path": str(path), "message": t["message"]}

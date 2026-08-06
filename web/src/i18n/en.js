@@ -1738,6 +1738,8 @@ export default {
     check_boot: 'Starts at boot',
     fix_boot: 'Install the LaunchDaemon to survive a reboot',
     check_peer_origin: 'Peer origin',
+    check_stale_runtime: 'Leftover interface claim',
+    fix_stale_runtime: 'A previous run died mid-setup; the next start clears it automatically',
     fix_peer_origin: 'Peers copied from another server can never handshake',
     enable: 'Enable',
     install: 'Install',

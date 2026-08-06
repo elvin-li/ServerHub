@@ -4,7 +4,13 @@ import router from './router'
 import { initializeI18n, provideI18n } from './i18n'
 import { provideTheme } from './theme'
 import { registerServiceWorker } from './serviceWorker'
+import { installChunkRecovery } from './lib/chunkRecovery'
 import './styles.css'
+
+// Vite reports a failed chunk preload before the router sees it, so this is
+// registered ahead of bootstrap to catch the earliest signal that this tab is
+// running a shell whose assets the server has already replaced.
+installChunkRecovery()
 
 async function bootstrap() {
   // Keep English as the synchronous fallback, but fetch the selected non-English

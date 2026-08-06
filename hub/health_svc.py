@@ -85,6 +85,20 @@ def run_checks(force: bool = False) -> dict:
             fix if not up else "",
         ))
 
+    # One `launchctl list` for the whole function.
+    #
+    # This used to sit below the brew loop, which meant the loop had to ask
+    # launchctl about each service individually -- up to four extra subprocesses
+    # answering a question this single listing already answers.  The judgement is
+    # identical either way: a label with a PID in column one is running, which is
+    # exactly what the per-service probe checked for.
+    _, lc, _ = sh(["launchctl", "list"], timeout=5)
+    running_labels = set()
+    for line in lc.splitlines():
+        p = line.split("\t")
+        if len(p) == 3 and p[0] not in ("-", ""):
+            running_labels.add(p[2])
+
     # brew critical
     brew_states = brew_services_list()
     if brew_states:
@@ -100,9 +114,9 @@ def run_checks(force: bool = False) -> dict:
                 ok = st in ("started", "running")
                 if not ok and st in ("none", ""):
                     # 未经 brew services 纳管但由 LaunchAgent 直接加载时 brew 显示 none，
-                    # 需回查 launchctl 实际运行状态，避免误报
-                    rc_l, out_l, _ = sh(["launchctl", "list", f"homebrew.mxcl.{n}"], timeout=3)
-                    if rc_l == 0 and '"PID"' in out_l:
+                    # 需回查 launchctl 实际运行状态，避免误报。用上面那份全量列表，
+                    # 不再为每个服务单独开一个子进程。
+                    if f"homebrew.mxcl.{n}" in running_labels:
                         ok, st = True, "running (launchd)"
                 checks.append(_check(
                     f"brew_{n}", f"Homebrew {n}",
@@ -114,15 +128,10 @@ def run_checks(force: bool = False) -> dict:
         except Exception:
             pass
 
-    # LaunchAgents with KeepAlive that are not running
+    # LaunchAgents with KeepAlive that are not running.
+    # running_labels was built once at the top of this function.
     import glob, plistlib
     agents = Path.home() / "Library/LaunchAgents"
-    _, lc, _ = sh(["launchctl", "list"], timeout=5)
-    running_labels = set()
-    for line in lc.splitlines():
-        p = line.split("\t")
-        if len(p) == 3 and p[0] not in ("-", ""):
-            running_labels.add(p[2])
     for path in glob.glob(str(agents / "*.plist")):
         try:
             with open(path, "rb") as f:
