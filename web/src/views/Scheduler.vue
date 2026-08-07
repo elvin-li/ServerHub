@@ -16,7 +16,8 @@
       </p>
     </div>
 
-    <div class="dash-grid" style="margin-bottom:12px" v-if="data">
+    <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
+    <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
       <div class="tile span-4">
         <h3>{{ t('scheduler.timers') }}</h3>
         <div class="v">{{ data.count }}</div>
@@ -37,7 +38,8 @@
       <input v-model="q" type="text" :placeholder="t('scheduler.filter_ph')" style="min-width:200px"  :aria-label="t('scheduler.filter_ph')"/>
     </div>
 
-    <div class="table-wrap">
+    <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
+    <div v-else class="table-wrap">
       <table class="dense">
         <thead>
           <tr>
@@ -80,11 +82,13 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import { getScheduler } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+const loaded = ref(false)
 const q = ref('')
 
 const intervalCount = computed(() =>
@@ -121,6 +125,7 @@ async function load() {
   try { data.value = await getScheduler() }
   catch (e) { toast('❌ ' + e.message) }
   loading.value = false
+  loaded.value = true
 }
 
 onMounted(load)

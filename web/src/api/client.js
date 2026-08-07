@@ -139,6 +139,7 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
 }
 
 export const getAuthStatus = () => json('/api/auth/status')
+export const getSetupToken = () => json('/api/auth/setup-token')
 export const setupAuth = (username, password, setupToken) => json('/api/auth/setup', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ username, password, setup_token: setupToken }),

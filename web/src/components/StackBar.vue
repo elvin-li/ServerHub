@@ -50,7 +50,7 @@ function format(v) {
 .track {
   height: 16px;
   background: var(--bar-track);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   display: flex;
   border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);

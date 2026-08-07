@@ -6,11 +6,12 @@
     </div>
 
     <div class="toolbar">
-      <button class="primary" @click="refresh">{{ t('common.refresh') }}</button>
+      <button class="primary" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
-    <div v-if="!entries.length" class="placeholder">{{ t('audit.empty') }}</div>
+    <SkeletonLoader v-if="!loaded" :cols="6" :rows="8" />
+    <div v-else-if="!entries.length" class="placeholder">{{ t('audit.empty') }}</div>
     <template v-else>
       <div class="table-wrap">
         <table class="dense">
@@ -47,12 +48,18 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 
 const entries = ref([])
 const maxRetained = ref(0)
+// Without this the page rendered "no audit records" for the whole first request:
+// `!entries.length` cannot tell "not fetched yet" from "fetched, and empty".
+const loaded = ref(false)
+// In-flight guard for refresh(); also drives the button's :disabled.
+const busy = ref(false)
 
 // Newest first on screen: an operator opening this page is looking at what just
 // happened, not at the start of the file. The API returns oldest-first because
@@ -83,12 +90,19 @@ function detail(e) {
 }
 
 async function refresh() {
+  // Re-entry guard so repeated Refresh clicks do not issue concurrent reads whose
+  // responses can resolve out of order into the shared `entries`.
+  if (busy.value) return
+  busy.value = true
   try {
     const d = await getAuthAudit(200)
     entries.value = d.entries || []
     maxRetained.value = d.retained_lines || 0
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loaded.value = true
+    busy.value = false
   }
 }
 

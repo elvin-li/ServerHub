@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+from concurrent.futures import ThreadPoolExecutor
 
 from hub.config import cfg, update_settings
 from hub.host_address import configured_host, host_ip as effective_host_ip
@@ -9,10 +10,20 @@ from hub.util import sh
 
 
 def get_identity() -> dict:
-    rc, hostname, _ = sh(["/bin/hostname"], timeout=3)
-    rc2, comp, _ = sh(["/usr/sbin/scutil", "--get", "ComputerName"], timeout=3)
-    rc3, local, _ = sh(["/usr/sbin/scutil", "--get", "LocalHostName"], timeout=3)
-    rc4, model, _ = sh(["/usr/sbin/sysctl", "-n", "hw.model"], timeout=3)
+    # Five independent reads that used to run back to back. None of them feeds
+    # another, so the only thing the sequence bought was five process spawns
+    # worth of latency on a request the Settings page makes on every open.
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        f_host = ex.submit(sh, ["/bin/hostname"], timeout=3)
+        f_comp = ex.submit(sh, ["/usr/sbin/scutil", "--get", "ComputerName"], timeout=3)
+        f_local = ex.submit(sh, ["/usr/sbin/scutil", "--get", "LocalHostName"], timeout=3)
+        f_model = ex.submit(sh, ["/usr/sbin/sysctl", "-n", "hw.model"], timeout=3)
+        f_tz = ex.submit(time_zone)
+        rc, hostname, _ = f_host.result()
+        rc2, comp, _ = f_comp.result()
+        rc3, local, _ = f_local.result()
+        rc4, model, _ = f_model.result()
+        tz = f_tz.result()
     s = cfg().get("settings") or {}
     return {
         "hostname": hostname if rc == 0 else platform.node(),
@@ -24,7 +35,7 @@ def get_identity() -> dict:
         "host_ip": effective_host_ip(),
         "host_ip_config": configured_host(),
         "comment": s.get("server_comment") or s.get("description") or "",
-        "timezone": time_zone(),
+        "timezone": tz,
     }
 
 

@@ -89,9 +89,18 @@ async function load() {
   }
 }
 
-function copyLog() {
-  navigator.clipboard?.writeText(displayText.value || '')
-  toast(t('common.copied'))
+async function copyLog() {
+  // The success toast used to fire unconditionally on a call that was neither
+  // awaited nor caught, so on a non-secure context (where navigator.clipboard is
+  // undefined and `?.` short-circuits) or a denied permission the user was told
+  // the copy worked when nothing had been copied.
+  try {
+    if (!navigator.clipboard) throw new Error(t('common.copy_failed'))
+    await navigator.clipboard.writeText(displayText.value || '')
+    toast(t('common.copied'))
+  } catch {
+    toast('❌ ' + t('common.copy_failed'))
+  }
 }
 function downloadLog() {
   const blob = new Blob([displayText.value || ''], { type: 'text/plain' })

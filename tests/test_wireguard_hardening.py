@@ -30,6 +30,25 @@ from hub import wireguard_svc  # noqa: E402
 ROUTER = BASE / "hub" / "routers" / "wireguard_api.py"
 VIEW = BASE / "web" / "src" / "views" / "WireGuard.vue"
 
+#: The genuine Path.exists, captured before any patching.
+_REAL_EXISTS = Path.exists
+
+
+def _only_wireguard_missing(self: Path) -> bool:
+    """Report the WireGuard binaries as absent and tell the truth about the rest.
+
+    A blanket ``return_value=False`` on ``Path.exists`` is process-wide, and other
+    modules read the filesystem during the same call. Delegating keeps the lie
+    scoped to what the test is actually about.
+    """
+    if str(self) in {
+        wireguard_svc.WG,
+        wireguard_svc.WG_QUICK,
+        wireguard_svc.WIREGUARD_GO,
+    }:
+        return False
+    return _REAL_EXISTS(self)
+
 
 class InstallationDetectionTests(unittest.TestCase):
     """Presence must be a fact about the filesystem, not about a subprocess."""
@@ -50,7 +69,13 @@ class InstallationDetectionTests(unittest.TestCase):
                 wireguard_svc.installation()
 
     def test_missing_binaries_do_mean_uninstalled(self):
-        with patch.object(wireguard_svc.Path, "exists", return_value=False):
+        # Only the WireGuard binaries are made to look absent. `patch.object(
+        # wireguard_svc.Path, "exists", return_value=False)` reaches much further
+        # than this test: wireguard_svc.Path IS pathlib.Path, so it made every
+        # path in the process report itself missing -- including services.yaml,
+        # which config._bootstrap() then recreated from defaults, wiping the admin
+        # account, the apps and the bookmarks on every test run.
+        with patch.object(wireguard_svc.Path, "exists", _only_wireguard_missing):
             info = wireguard_svc.installation()
         self.assertFalse(info["installed"])
         self.assertFalse(info["probe_failed"], "absent is not the same as degraded")

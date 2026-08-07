@@ -18,7 +18,8 @@
       </p>
     </div>
 
-    <div class="dash-grid" style="margin-bottom:12px" v-if="data">
+    <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
+    <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
       <div class="tile span-4">
         <h3>{{ t('users.total') }}</h3>
         <div class="v">{{ data.count }}</div>
@@ -34,7 +35,8 @@
       </div>
     </div>
 
-    <div class="table-wrap">
+    <SkeletonLoader v-if="!loaded" :cols="8" :rows="6" />
+    <div v-else class="table-wrap">
       <table class="dense">
         <thead>
           <tr>
@@ -76,11 +78,16 @@
 import { inject, onMounted, ref } from 'vue'
 import { getUsers } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+// Latched, unlike `loading`: the skeleton stands in for content that has never
+// arrived. Keying it off `loading` would blank the populated table every time
+// the operator pressed Refresh.
+const loaded = ref(false)
 
 async function load() {
   loading.value = true
@@ -90,6 +97,7 @@ async function load() {
     toast('❌ ' + e.message)
   } finally {
     loading.value = false
+    loaded.value = true
   }
 }
 

@@ -77,6 +77,23 @@ SECRET_PATHS = [
         "data/terminal-audit.jsonl.1",
         "a rotated terminal audit log: recorded commands and their arguments",
     ),
+    (
+        "data/services.yaml.precredrestore.20260807-111549",
+        "an inventory snapshot taken before a credential restore; the "
+        "`.bak.*` rule matched only one of the several suffixes the panel "
+        "writes, and this one carries the same hosts and secrets as "
+        "services.yaml itself",
+    ),
+    (
+        "data/pf.conf.check",
+        "a copy of the machine's live firewall ruleset, which names its real "
+        "egress interface and internal addresses",
+    ),
+    (
+        "data/.services.yaml.lock",
+        "the inventory write mutex: pure runtime state that is meaningless in "
+        "a clone, and a tracked lock file would be checked out held",
+    ),
 ]
 
 

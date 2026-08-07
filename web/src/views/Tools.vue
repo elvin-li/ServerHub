@@ -140,7 +140,8 @@
     <!-- Docker -->
     <template v-else-if="tab==='docker'">
       <h2 class="section-title">docker system df</h2>
-      <div class="table-wrap" style="margin-bottom:12px">
+      <SkeletonLoader v-if="!tabLoaded.docker" :cols="5" :rows="4" />
+      <div v-else class="table-wrap" style="margin-bottom:12px">
         <table class="dense">
           <thead>
             <tr>
@@ -200,7 +201,8 @@
         <span class="meta" style="color:var(--sub)">{{ t('tools.tasks_n', { n: timers.length }) }}</span>
       </div>
       <h2 class="section-title">{{ t('tools.timers') }}</h2>
-      <div class="table-wrap" style="margin-bottom:14px">
+      <SkeletonLoader v-if="!tabLoaded.sched" :cols="4" :rows="5" />
+      <div v-else class="table-wrap" style="margin-bottom:14px">
         <table class="dense">
           <thead>
             <tr>
@@ -409,6 +411,7 @@ import {
   pruneDocker,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const router = useRouter()
@@ -421,6 +424,15 @@ const diag = ref(null)
 const diagMsg = ref('')
 const processes = ref([])
 const procQ = ref('')
+// Which tabs have finished at least one load, keyed by tab id.
+//
+// Needed because every tab's template renders the moment it is selected, while
+// its data is still in flight. The Docker tab therefore claimed "no data" (and
+// could not even fall back to "engine off", since `df` starts as {} and
+// `{}.engine_up === false` is false) and the Scheduler tab claimed "no timers".
+// The existing `v-else-if="tab!=='home' && loading"` placeholder cannot cover
+// this: it only fires when no tab template matched at all.
+const tabLoaded = ref({})
 const df = ref({})
 const sizes = ref([])
 const timers = ref([])
@@ -652,17 +664,35 @@ async function doFlushDns() {
   finally { loading.value = false }
 }
 
-function reload() {
-  if (tab.value === 'home') loadCatalog()
-  else if (tab.value === 'diag') loadDiag()
-  else if (tab.value === 'syslog') loadSyslog()
-  else if (tab.value === 'proc') loadProc()
-  else if (tab.value === 'docker') loadDocker()
-  else if (tab.value === 'sched') loadSched()
-  else if (tab.value === 'hw') loadHw()
-  else if (tab.value === 'updates') loadUpdates()
-  else if (tab.value === 'net') { loadPorts() }
-  else if (tab.value === 'about') loadAbout()
+// Owns `loading` for every tab. Only loadSyslog/loadHw/loadUpdates set it
+// themselves, so on the other seven tabs the Refresh button's :disabled="loading"
+// never engaged and repeated clicks issued concurrent duplicate requests. Setting
+// it here covers all of them from one place; the three that also set it are
+// idempotent about doing so.
+// Deliberately no `if (loading) return` guard: switchTab() and openTile() also
+// route through here, and dropping those calls would leave a newly selected tab
+// empty whenever the previous tab was still loading. Preventing the duplicate
+// Refresh click is the button's :disabled="loading", which now works on every tab
+// because this function is what sets the flag.
+async function reload() {
+  loading.value = true
+  try {
+    if (tab.value === 'home') await loadCatalog()
+    else if (tab.value === 'diag') await loadDiag()
+    else if (tab.value === 'syslog') await loadSyslog()
+    else if (tab.value === 'proc') await loadProc()
+    else if (tab.value === 'docker') await loadDocker()
+    else if (tab.value === 'sched') await loadSched()
+    else if (tab.value === 'hw') await loadHw()
+    else if (tab.value === 'updates') await loadUpdates()
+    else if (tab.value === 'net') await loadPorts()
+    else if (tab.value === 'about') await loadAbout()
+  } finally {
+    loading.value = false
+    // Replace rather than mutate so the template re-renders: `tabLoaded` is a
+    // plain object behind one ref, not a reactive map.
+    tabLoaded.value = { ...tabLoaded.value, [tab.value]: true }
+  }
 }
 
 onMounted(() => {
@@ -735,7 +765,7 @@ onMounted(() => {
   align-items: stretch;
   text-align: left;
   padding: 12px 12px 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--txt);

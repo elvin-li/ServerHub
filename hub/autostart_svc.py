@@ -216,7 +216,12 @@ def _launchd_items() -> list[dict]:
 
 
 def set_launchd_autostart(label: str, enabled: bool) -> dict:
-    if not re.match(r"^[\w.@+-]+$", label or ""):
+    # The hyphen is inside the class with no anchor on the first character, so
+    # "--foo" matches.  It is not exploitable at the sinks below, because the
+    # label is always interpolated behind a "gui/<uid>/" prefix and so can never
+    # be argv-initial -- but that is an accident of the current call sites, and a
+    # launchd label does not start with a hyphen in the first place.
+    if not re.match(r"^[\w.@+-]+$", label or "") or label.startswith("-"):
         raise HTTPException(400, "invalid label")
     path = AGENTS_DIR / f"{label}.plist"
     # find by Label field if filename differs

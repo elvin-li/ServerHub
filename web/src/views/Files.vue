@@ -95,8 +95,11 @@
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
                   <button v-if="it.is_file" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
-                  <button type="button" class="act-btn" @click="doRename(it)">{{ t('files.rename') }}</button>
-                  <button type="button" class="act-btn danger" @click="doDeleteOne(it)">{{ t('files.delete') }}</button>
+                  <!-- Bound to busy like the toolbar buttons: without it a second
+                       click during an in-flight delete issued a second request for
+                       the same path and then reported its failure. -->
+                  <button type="button" class="act-btn" :disabled="busy" @click="doRename(it)">{{ t('files.rename') }}</button>
+                  <button type="button" class="act-btn danger" :disabled="busy" @click="doDeleteOne(it)">{{ t('files.delete') }}</button>
                 </div>
               </td>
             </tr>
@@ -183,7 +186,13 @@ function fmtTime(ts) {
 async function activate() {
   activated.value = true
   error.value = ''
-  await loadOverview()
+  // Stop if the overview failed. loadList() clears `error` on entry, so calling
+  // it unconditionally erased the overview's message before it could render --
+  // leaving an empty roots picker and no explanation, or, when the subsequent
+  // listing happened to succeed, a page that looked entirely normal while the
+  // configured roots were missing.
+  const ok = await loadOverview()
+  if (!ok) return
   await loadList()
 }
 
@@ -206,8 +215,10 @@ async function loadOverview() {
       rootId.value = roots.value[0].id
       currentPath.value = roots.value[0].path
     }
+    return true
   } catch (e) {
     error.value = e.message || String(e)
+    return false
   }
 }
 
@@ -285,6 +296,7 @@ async function doMkdir() {
 }
 
 async function doRename(it) {
+  if (busy.value) return
   const name = prompt(t('files.rename_ph'), it.name)
   if (!name || name === it.name) return
   busy.value = true
@@ -300,6 +312,7 @@ async function doRename(it) {
 }
 
 async function doDeleteOne(it) {
+  if (busy.value) return
   if (!confirm(t('files.confirm_delete', { name: it.name }))) return
   busy.value = true
   try {
@@ -370,15 +383,19 @@ async function uploadFiles(fileList) {
   }
 }
 
+// Both entry points refuse to start a second batch while one is running.
+// uploadFiles' finally clears `busy` unconditionally, so an overlapping batch let
+// the first one to finish re-enable the toolbar (including Delete) while the other
+// was still uploading.
 function onUpload(e) {
   const files = e.target.files
-  uploadFiles(files)
+  if (!busy.value) uploadFiles(files)
   e.target.value = ''
 }
 
 function onDrop(e) {
   const files = e.dataTransfer?.files
-  if (files?.length) uploadFiles(files)
+  if (files?.length && !busy.value) uploadFiles(files)
 }
 
 async function openFullFB() {
@@ -462,7 +479,7 @@ onUnmounted(() => {
   text-align: center;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow, none);
 }
 .idle-icon { font-size: 42px; line-height: 1; margin-bottom: 12px; }
@@ -473,7 +490,7 @@ onUnmounted(() => {
 
 .files-toolbar { flex-wrap: wrap; gap: 8px; align-items: center; }
 .toolbar-spacer { flex: 1; }
-.meta-count { font-size: 12px; color: var(--sub); }
+/* .meta-count is fully covered by the global rule. */
 .upload-btn {
   display: inline-flex; align-items: center;
   padding: 5px 10px; font-size: 12px;
@@ -571,7 +588,7 @@ onUnmounted(() => {
   line-height: 1.2;
   height: 22px;
   padding: 0 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--txt);

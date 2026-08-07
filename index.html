@@ -78,7 +78,33 @@ const ACT={restart:"重启",stop:"停止",start:"启动",run:"立即运行"};
 let busy=false;
 
 function toast(msg){const t=$("toast");t.textContent=msg;t.style.opacity=1;setTimeout(()=>t.style.opacity=0,2800)}
-function esc(s){return String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;")}
+
+// Escapes the full set, including > and '. The single quote matters because
+// these values land inside quoted HTML attributes; leaving it out let a service
+// name close the attribute early.
+function esc(s){return String(s??"")
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;")}
+
+// Numbers that get interpolated into text or CSS lengths. Anything non-numeric
+// becomes "?" (or 0 for widths) so a string from the API cannot break out of a
+// style attribute and inject declarations.
+function num(v,fallback){const n=Number(v);return Number.isFinite(n)?n:fallback}
+function pct(v){return Math.max(0,Math.min(100,num(v,0)))}
+
+// esc() is not enough for href: it does not stop "javascript:", which executes
+// on click. Only absolute http/https and same-origin relative URLs are allowed.
+function safeUrl(u){
+  const raw=String(u??"").trim();
+  if(!raw)return "";
+  if(/^(https?:)?\/\//i.test(raw)||raw.startsWith("/"))
+    {try{const p=new URL(raw,location.origin);
+      return (p.protocol==="http:"||p.protocol==="https:")?p.href:""}catch(e){return ""}}
+  return "";
+}
+
+// State goes straight into a class attribute, so accept only the known values.
+function safeState(s){return ["ok","warn","down"].includes(String(s))?String(s):"down"}
 
 async function act(target,action,name){
   if(action==="stop"&&!confirm(`确定停止 ${name}？`))return;
@@ -97,11 +123,23 @@ async function act(target,action,name){
 
 function card(s){
   const btns=[];
-  if(s.url)btns.push(`<a class="lnk primary" href="${esc(s.url)}" target="_blank">打开</a>`);
-  for(const l of s.links||[])btns.push(`<a class="lnk" href="${esc(l.url)}" target="_blank">${esc(l.name)}</a>`);
-  for(const a of s.actions||[])
-    btns.push(`<button class="${a==="stop"?"danger":""}" onclick="act('${esc(s.id)}','${a}','${esc(s.name)}')">${ACT[a]}</button>`);
-  return `<div class="card"><div class="row"><span class="dot ${s.state}"></span><span class="name" title="${esc(s.id)}">${esc(s.name)}</span></div>
+  const url=safeUrl(s.url);
+  if(url)btns.push(`<a class="lnk primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">打开</a>`);
+  for(const l of s.links||[]){
+    const lu=safeUrl(l.url);
+    if(lu)btns.push(`<a class="lnk" href="${esc(lu)}" target="_blank" rel="noopener noreferrer">${esc(l.name)}</a>`);
+  }
+  // Data attributes + one delegated listener, never onclick="...". HTML-escaping
+  // cannot secure an inline handler: the parser decodes entities *before* the JS
+  // parser runs, so an escaped quote in a name still terminated the string
+  // literal and everything after it was executed as script.
+  for(const a of s.actions||[]){
+    if(!Object.prototype.hasOwnProperty.call(ACT,a))continue;
+    btns.push(`<button class="${a==="stop"?"danger":""}" data-role="act"`
+      +` data-target="${esc(s.id)}" data-action="${esc(a)}"`
+      +` data-name="${esc(s.name)}">${esc(ACT[a])}</button>`);
+  }
+  return `<div class="card"><div class="row"><span class="dot ${safeState(s.state)}"></span><span class="name" title="${esc(s.id)}">${esc(s.name)}</span></div>
     <div class="detail" title="${esc(s.detail)}">${esc(s.detail)}</div><div class="btns">${btns.join("")}</div></div>`;
 }
 
@@ -109,17 +147,23 @@ function render(d){
   const c=d.counts;
   $("summary").textContent=`${c.ok} 正常 · ${c.warn} 警告 · ${c.down} 停止`;
   document.title=(c.down?`🔴${c.down} `: c.warn?`🟡 `:"🟢 ")+"ServerHub";
-  const sys=d.system,sm=sys.smart||{};
+  const sys=d.system||{},sm=sys.smart||{};
+  // Every value here is escaped. These come from `uptime`, smartctl and df
+  // output rather than from a form, but they are still API-supplied strings
+  // reaching innerHTML, and this block previously interpolated all of them raw.
   $("sys").innerHTML=
-    `<div class="stat"><div class="k">负载 (1m/5m)</div><div class="v">${sys.load}</div></div>`+
-    `<div class="stat"><div class="k">内存空闲</div><div class="v">${sys.mem_free_pct??"?"}%</div><div class="bar"><i style="width:${100-(sys.mem_free_pct??50)}%"></i></div></div>`+
-    `<div class="stat"><div class="k">磁盘 ${sys.disk_used_gb}/${sys.disk_total_gb} GB</div><div class="v">${sys.disk_pct}%</div><div class="bar"><i style="width:${sys.disk_pct}%"></i></div></div>`+
-    `<div class="stat"><div class="k">SSD 累计写入 · 磨损 ${sm.wear??"?"}</div><div class="v">${sm.written??"—"}</div></div>`+
-    `<div class="stat"><div class="k">开机时长</div><div class="v" style="font-size:16px">${sys.uptime}</div></div>`;
-  $("groups").innerHTML=d.groups.map(g=>
-    `<h2>${esc(g.group)}</h2><div class="grid">${g.services.map(card).join("")}</div>`).join("");
-  $("links").innerHTML=d.links.map(l=>`<a href="${esc(l.url)}" target="_blank">${esc(l.name)}</a>`).join("");
-  $("ts").textContent="更新于 "+d.ts;
+    `<div class="stat"><div class="k">负载 (1m/5m)</div><div class="v">${esc(sys.load)}</div></div>`+
+    `<div class="stat"><div class="k">内存空闲</div><div class="v">${esc(num(sys.mem_free_pct,"?"))}%</div><div class="bar"><i style="width:${100-pct(sys.mem_free_pct??50)}%"></i></div></div>`+
+    `<div class="stat"><div class="k">磁盘 ${esc(num(sys.disk_used_gb,"?"))}/${esc(num(sys.disk_total_gb,"?"))} GB</div><div class="v">${esc(num(sys.disk_pct,"?"))}%</div><div class="bar"><i style="width:${pct(sys.disk_pct)}%"></i></div></div>`+
+    `<div class="stat"><div class="k">SSD 累计写入 · 磨损 ${esc(sm.wear??"?")}</div><div class="v">${esc(sm.written??"—")}</div></div>`+
+    `<div class="stat"><div class="k">开机时长</div><div class="v" style="font-size:16px">${esc(sys.uptime)}</div></div>`;
+  $("groups").innerHTML=(d.groups||[]).map(g=>
+    `<h2>${esc(g.group)}</h2><div class="grid">${(g.services||[]).map(card).join("")}</div>`).join("");
+  $("links").innerHTML=(d.links||[]).map(l=>{
+    const lu=safeUrl(l.url);
+    return lu?`<a href="${esc(lu)}" target="_blank" rel="noopener noreferrer">${esc(l.name)}</a>`:"";
+  }).join("");
+  $("ts").textContent="更新于 "+String(d.ts??"");
 }
 
 // ---- 维护任务 ----
@@ -127,15 +171,28 @@ let logTimer=null,curTask=null;
 
 function maintCard(t){
   const badge=t.running?`<span style="color:var(--warn)">⏳ 运行中…</span>`
-    :t.rc===null||t.rc===undefined?"":t.rc===0?`<span style="color:var(--ok)">✅ ${t.finished||""} 成功</span>`
-    :`<span style="color:var(--down)">❌ 退出码 ${t.rc}</span>`;
+    :t.rc===null||t.rc===undefined?"":t.rc===0?`<span style="color:var(--ok)">✅ ${esc(t.finished||"")} 成功</span>`
+    :`<span style="color:var(--down)">❌ 退出码 ${esc(t.rc)}</span>`;
+  // data-* + delegation, as in card(). t.confirm was interpolated directly into
+  // the JS argument list, so a non-boolean value from the API was injected as
+  // raw code rather than passed as data.
   return `<div class="card"><div class="row"><span class="name">${esc(t.name)}</span></div>
     <div class="detail" style="white-space:normal;min-height:28px">${esc(t.desc)}</div>
     <div class="btns">
-      <button onclick="runMaint('${esc(t.id)}',${t.confirm},'${esc(t.name)}')" ${t.running?"disabled":""}>运行</button>
-      <button onclick="openLog('${esc(t.id)}','${esc(t.name)}')">日志</button>
+      <button data-role="maint-run" data-id="${esc(t.id)}" data-name="${esc(t.name)}" data-confirm="${t.confirm?"1":"0"}" ${t.running?"disabled":""}>运行</button>
+      <button data-role="maint-log" data-id="${esc(t.id)}" data-name="${esc(t.name)}">日志</button>
       ${badge}</div></div>`;
 }
+
+// One listener for every generated button, so no markup carries executable code.
+document.addEventListener("click",e=>{
+  const b=e.target.closest("[data-role]");
+  if(!b)return;
+  const d=b.dataset;
+  if(d.role==="act")act(d.target,d.action,d.name);
+  else if(d.role==="maint-run")runMaint(d.id,d.confirm==="1",d.name);
+  else if(d.role==="maint-log")openLog(d.id,d.name);
+});
 
 async function refreshMaint(){
   try{const r=await fetch("/api/maintenance");const ts=await r.json();
@@ -144,7 +201,9 @@ async function refreshMaint(){
 
 async function runMaint(id,needConfirm,name){
   if(needConfirm&&!confirm(`确定执行「${name}」？`))return;
-  const r=await fetch(`/api/maintenance/${id}/run`,{method:"POST"});
+  // encodeURIComponent: the id is a config-supplied string, and an unencoded
+  // "../" or "?" in it would retarget the request to a different endpoint.
+  const r=await fetch(`/api/maintenance/${encodeURIComponent(id)}/run`,{method:"POST"});
   const j=await r.json().catch(()=>({}));
   if(!r.ok){toast("❌ "+(j.detail||"启动失败"));return}
   toast(`🚀 ${name} 已开始`);
@@ -154,7 +213,7 @@ async function runMaint(id,needConfirm,name){
 async function pollLog(){
   if(!curTask)return;
   try{
-    const r=await fetch(`/api/maintenance/${curTask}/log`);const j=await r.json();
+    const r=await fetch(`/api/maintenance/${encodeURIComponent(curTask)}/log`);const j=await r.json();
     const el=$("logtext");
     const stick=el.scrollTop+el.clientHeight>=el.scrollHeight-30;
     el.textContent=j.log+(j.running?"\n⏳ 运行中…":j.rc===null?"":`\n—— 结束（退出码 ${j.rc}）`);

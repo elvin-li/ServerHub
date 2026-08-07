@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import HTTPException
 
@@ -153,18 +154,37 @@ def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> 
 
 # ─── Aggregate status for the page ───────────────────────────────────────────
 
-def power_overview() -> dict:
+def _nic() -> tuple[str, str]:
+    """Default interface and its MAC. Serial by necessity: the MAC lookup needs
+    the interface name."""
     dev = _default_iface()
+    return dev, _iface_mac(dev)
+
+
+def power_overview() -> dict:
+    # Three independent branches: the NIC chain (route → ifconfig), `pmset -g`,
+    # and the Screen Sharing probe. `pmset -g` alone is the slow one, and the
+    # dashboard refreshes this tile on every heavy tick, so overlapping them
+    # removes the part of the wait that was pure sequencing.
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_nic = ex.submit(_nic)
+        f_womp = ex.submit(_womp_enabled)
+        f_ss = ex.submit(screensharing_status)
+        dev, mac = f_nic.result()
+        womp = f_womp.result()
+        screen_sharing = f_ss.result()
     return {
         "actions": list(_ACTIONS),
         "wol": {
-            "enabled": _womp_enabled(),
+            "enabled": womp,
             "iface": dev,
-            "mac": _iface_mac(dev),
+            "mac": mac,
             "hint": "网络唤醒仅能唤醒「睡眠中」的机器，且需局域网内其他设备发送唤醒包；无法从关机状态开机。",
         },
-        "screen_sharing": screensharing_status(),
-        "host_ip": _host_ip(),
+        "screen_sharing": screen_sharing,
+        # Already resolved inside screensharing_status(); host_ip() is cached, so
+        # this is a dict read rather than another lookup.
+        "host_ip": screen_sharing.get("host") or _host_ip(),
         "perf_tips": [
             "客户端「屏幕共享」App 菜单 › 显示 › 选「自适应质量」，弱网下更跟手。",
             "被控端降低分辨率/关闭动态壁纸与透明效果，可显著提升 VNC 流畅度。",

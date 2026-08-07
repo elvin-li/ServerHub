@@ -87,8 +87,20 @@
           <label>{{ t('settings.comment') }}</label>
           <input v-model="identityForm.comment" type="text" :aria-label="t('settings.comment')" />
         </div>
+        <!-- The fields above are blank until loadIdentity() succeeds, and Save
+             sends them unconditionally, so a failed load must disable Save
+             rather than let it write empty strings over the stored values. -->
+        <div
+          v-if="!identityLoaded"
+          class="tile"
+          style="margin-top:10px;border-left:3px solid var(--down)"
+          role="alert"
+        >
+          <div>{{ t('settings.identity_load_failed') }}</div>
+          <div v-if="identityError" class="sub mono" style="margin-top:4px">{{ identityError }}</div>
+        </div>
         <div class="btns" style="margin-top:12px">
-          <button class="primary" :disabled="saving" @click="saveIdentity">{{ t('settings.save_identity') }}</button>
+          <button class="primary" :disabled="saving || !identityLoaded" @click="saveIdentity">{{ t('settings.save_identity') }}</button>
           <button :disabled="saving" @click="loadIdentity">{{ t('common.reload') }}</button>
         </div>
       </div>
@@ -712,6 +724,14 @@ const form = ref(null)
 const host = ref(null)
 const identity = ref(null)
 const identityForm = ref({ computer_name: '', comment: '', host_ip: '' })
+// Whether identityForm holds the server's real values. Save is blocked until it
+// does: the form starts blank, saveIdentity() sends comment and host_ip
+// unconditionally, and the Identity tab renders with an enabled Save button
+// regardless of whether loadIdentity() succeeded. Saving after a failed load
+// therefore wrote empty strings over the stored comment and over host_ip -- the
+// value that resolves every app's link across the whole panel.
+const identityLoaded = ref(false)
+const identityError = ref('')
 const dockerInfo = ref(null)
 const sysBundle = ref(null)
 const launcher = ref(null)
@@ -830,23 +850,34 @@ async function runDiagnostics() {
   }
 }
 
+// The pick* handlers apply the choice locally and then persist it. The persist
+// used to be fire-and-forget with an empty .catch, so a server-side failure was
+// invisible: the setting appeared to stick and then silently reverted on the next
+// getSettings(). Report the failure instead -- the local change is still applied,
+// so the message says it was not saved rather than that it did not work.
+function persistUi(patch) {
+  putSettings({ ui: patch }).catch(e => {
+    toast('❌ ' + t('appearance.save_server_failed', { error: e.message || e }))
+  })
+}
+
 async function pickLocale(id) {
   if (await setLocale(id)) {
     toast('✅ ' + t('appearance.saved_local'))
-    putSettings({ ui: { locale: id, theme: theme.value, density: density.value } }).catch(() => {})
+    persistUi({ locale: id, theme: theme.value, density: density.value })
   }
 }
 
 function pickTheme(id) {
   setTheme(id)
   toast('✅ ' + t('theme.applied'))
-  putSettings({ ui: { locale: locale.value, theme: id, density: density.value } }).catch(() => {})
+  persistUi({ locale: locale.value, theme: id, density: density.value })
 }
 
 function pickDensity(id) {
   setDensity(id)
   toast('✅ ' + t('appearance.saved_local'))
-  putSettings({ ui: { locale: locale.value, theme: theme.value, density: id } }).catch(() => {})
+  persistUi({ locale: locale.value, theme: theme.value, density: id })
 }
 
 async function syncUiToServer() {
@@ -870,12 +901,21 @@ async function loadIdentity() {
       comment: identity.value.comment || '',
       host_ip: identity.value.host_ip_config || 'auto',
     }
+    identityLoaded.value = true
+    identityError.value = ''
   } catch (e) {
+    identityLoaded.value = false
+    identityError.value = e.message || String(e)
     toast('❌ ' + e.message)
   }
 }
 
 async function saveIdentity() {
+  // Refuse to write a form that was never populated from the server.
+  if (!identityLoaded.value) {
+    toast('❌ ' + t('settings.identity_load_failed'))
+    return
+  }
   saving.value = true
   try {
     const r = await putIdentity({
@@ -940,7 +980,14 @@ async function runLauncher(action) {
 
 async function load() {
   try {
-    const s = await getSettings()
+    // The host summary is only used for the hostname line; it does not feed the
+    // settings form, so waiting for /api/settings before asking for it added a
+    // whole round trip to every load of this page for no ordering reason.
+    const [s, hostInfo] = await Promise.all([
+      getSettings(),
+      getHost().catch(() => null),
+    ])
+    host.value = hostInfo
     form.value = {
       ...s,
       host_ip: s.host_ip_config || 'auto',
@@ -986,7 +1033,6 @@ async function load() {
         cwd: s.terminal?.cwd || '',
       },
     }
-    host.value = await getHost().catch(() => null)
     accountForm.value.username = form.value.auth.username
   } catch (e) {
     toast('❌ ' + e.message)
@@ -1056,6 +1102,10 @@ async function savePassword() {
     toast('❌ ' + error)
     return
   }
+  // Rotating the password bumps the session version, which signs out every other
+  // browser session. Worth confirming: the current-password field proves intent to
+  // change *a* password, not that the operator expected to be logged out elsewhere.
+  if (!confirm(t('settings.confirm_password_change'))) return
   savingPassword.value = true
   try {
     const r = await changeAuthPassword(
@@ -1091,8 +1141,9 @@ async function saveAdvanced() {
       },
     })
     toast('✅ ' + t('common.save'))
-    await load()
-    await loadSysBundle()
+    // Disjoint targets: load() rewrites `form`/`host`, loadSysBundle() rewrites
+    // `sysBundle`/`powerForm`. Neither reads what the other writes.
+    await Promise.all([load(), loadSysBundle()])
   } catch (e) {
     toast('❌ ' + e.message)
   }
@@ -1168,17 +1219,6 @@ onMounted(() => {
 .form-grid input[type=password],
 .form-grid input[type=number] { width: 100%; }
 .hint { margin-top: 12px; color: var(--sub); font-size: 12px; line-height: 1.55; }
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
 .password-card, .launcher-card { grid-column: 1 / -1; }
 .launcher-card {
   position: relative;
@@ -1210,7 +1250,7 @@ onMounted(() => {
   min-height: 28px;
   padding: 5px 10px;
   border: 1px solid currentColor;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .2px;

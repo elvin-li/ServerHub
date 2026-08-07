@@ -12,7 +12,8 @@
           <button class="tiny primary" @click="loadStacks">{{ t('common.refresh') }}</button>
           <button class="tiny" @click="showCreate=true">{{ t('compose.new_stack') }}</button>
         </div>
-        <div class="table-wrap">
+        <SkeletonLoader v-if="!loaded" :cols="3" :rows="4" />
+        <div v-else class="table-wrap">
           <table class="dense">
             <thead>
               <tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th></th></tr>
@@ -106,10 +107,12 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const stacks = ref([])
+const loaded = ref(false)
 const selected = ref(null)
 const compose = ref(null)
 const editor = ref('')
@@ -135,6 +138,10 @@ function stopJobPolling() {
   jobPollGeneration += 1
   if (jobTimer) clearTimeout(jobTimer)
   jobTimer = null
+  // run()/watchJob() now hold `busy` for the whole job, so releasing it here
+  // covers the cancel path too. watchJob calls this first and then re-sets busy,
+  // so the ordering is safe.
+  busy.value = false
 }
 
 async function loadStacks() {
@@ -143,6 +150,8 @@ async function loadStacks() {
     stacks.value = d.stacks || []
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loaded.value = true
   }
 }
 
@@ -216,7 +225,15 @@ async function run(s, action) {
   try {
     const r = await runStack(id, action)
     toast('🚀 ' + (r.message || 'started'))
-    if (r.job_id) watchJob(r.job_id)
+    if (r.job_id) {
+      // Stay busy until the job actually ends, not merely until the server
+      // acknowledged it. runStack returns as soon as the job is queued, so
+      // clearing busy here re-enabled Up/Update/Down while compose was still
+      // running and let a second operation be issued against the same stack
+      // mid-flight. watchJob clears it when the job reports not-running.
+      watchJob(r.job_id)
+      return
+    }
   } catch (e) {
     toast('❌ ' + e.message)
   }
@@ -226,21 +243,32 @@ async function run(s, action) {
 function watchJob(id) {
   stopJobPolling()
   jobLog.value = '…'
+  busy.value = true
   const generation = jobPollGeneration
 
   const poll = async () => {
     jobTimer = null
+    // Same visibility skip as Containers.vue: keep re-arming so the job is picked
+    // up again on return, without polling the host from a hidden tab.
+    if (typeof document !== 'undefined' && document.hidden) {
+      if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
+      return
+    }
     try {
       const j = await getStackJob(id)
       if (generation !== jobPollGeneration) return
       jobLog.value = j.log || ''
       if (!j.running) {
         stopJobPolling()
+        busy.value = false
         void loadStacks()
         return
       }
-    } catch {
+    } catch (e) {
       if (generation !== jobPollGeneration) return
+      // Surface it rather than leaving jobLog frozen on '…' forever, which is
+      // what a failed first poll looked like.
+      jobLog.value = `${jobLog.value === '…' ? '' : jobLog.value || ''}\n⚠ ${e.message || e}`.trim()
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }

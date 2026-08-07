@@ -165,7 +165,8 @@
         <button class="danger" :disabled="busy" @click="doPrune('images')">{{ t('docker.prune_images') }}</button>
         <button @click="loadImages" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
-      <div class="table-wrap">
+      <SkeletonLoader v-if="!subLoaded.images" :cols="6" :rows="6" />
+      <div v-else class="table-wrap">
         <table class="dense">
           <thead><tr><th>{{ t('docker.repo') }}</th><th>Tag</th><th>ID</th><th>{{ t('docker.size') }}</th><th>{{ t('docker.created') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
@@ -192,7 +193,8 @@
         <button class="danger" :disabled="busy" @click="doPrune('volumes')">{{ t('docker.prune_volumes') }}</button>
         <button @click="loadVolumes" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
-      <div class="table-wrap">
+      <SkeletonLoader v-if="!subLoaded.volumes" :cols="4" :rows="5" />
+      <div v-else class="table-wrap">
         <table class="dense">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th>{{ t('docker.mountpoint') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
@@ -217,7 +219,8 @@
         <button class="danger" :disabled="busy" @click="doPrune('networks')">{{ t('docker.prune_networks') }}</button>
         <button @click="loadNetworks" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
-      <div class="table-wrap">
+      <SkeletonLoader v-if="!subLoaded.networks" :cols="5" :rows="4" />
+      <div v-else class="table-wrap">
         <table class="dense">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th>Scope</th><th>ID</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
@@ -236,6 +239,7 @@
                 <span v-else class="sub">{{ t('docker.builtin') }}</span>
               </td>
             </tr>
+            <tr v-if="!networks.length"><td colspan="5" style="color:var(--sub)">{{ t('docker.no_networks') }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -247,7 +251,8 @@
           {{ t('docker.engine_hint') }}
         </p>
       </div>
-      <div v-if="engineInfo?.engine_up" class="two-col">
+      <SkeletonLoader v-if="!subLoaded.engine" variant="tiles" :rows="2" :span="6" :tile-height="260" />
+      <div v-else-if="engineInfo?.engine_up" class="two-col">
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('docker.engine_info') }}</h2>
           <div class="kv">
@@ -281,7 +286,9 @@
           </div>
         </div>
       </div>
-      <div v-else class="placeholder">{{ engineInfo?.message || t('docker.engine_off_or_loading') }}</div>
+      <!-- Reached only after the probe returned, so this states the engine is
+           down rather than hedging between "off" and "still loading". -->
+      <div v-else class="placeholder">{{ engineInfo?.message || t('docker.engine_off') }}</div>
     </template>
 
     <!-- logs drawer -->
@@ -306,7 +313,7 @@
           {{ t('docker.exec_hint') }}
         </p>
         <div class="row" style="gap:6px;margin-bottom:8px">
-          <input v-model="execCmd" type="text" style="flex:1" :placeholder="t('docker.exec_ph')" @keyup.enter="runExec"  :aria-label="t('docker.exec_ph')"/>
+          <input v-model="execCmd" type="text" style="flex:1" :placeholder="t('docker.exec_ph')" :disabled="busy" @keyup.enter="runExec"  :aria-label="t('docker.exec_ph')"/>
           <button class="primary tiny" :disabled="busy" @click="runExec">{{ t('docker.exec_run') }}</button>
         </div>
         <pre class="log" style="min-height:200px">{{ execOut || t('docker.exec_output_ph') }}</pre>
@@ -320,7 +327,7 @@
           <span id="ctr-run-title" class="name">{{ t('docker.create_run') }}</span>
           <button class="tiny" @click="showRun=false">{{ t('common.close') }}</button>
         </div>
-        <div class="run-form">
+        <div class="field-grid">
           <label>{{ t('docker.image') }} *</label>
           <input v-model="runForm.image" type="text" placeholder="nginx:alpine" :aria-label="t('docker.image')" />
           <label>{{ t('common.name') }}</label>
@@ -387,6 +394,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -402,6 +410,12 @@ const images = ref([])
 const volumes = ref([])
 const networks = ref([])
 const engineInfo = ref(null)
+// Per-tab first-load latch. The sub-tabs load lazily on click, so each one had a
+// window where its table asserted "no images" / "no volumes" and the engine tab
+// showed a message that hedged between "off" and "loading" because it genuinely
+// could not tell. Latched rather than derived from `busy`, so pressing Refresh
+// on a populated tab does not blank it back to shimmer bars.
+const subLoaded = ref({ images: false, volumes: false, networks: false, engine: false })
 const showRun = ref(false)
 const runPanel = ref(null)
 const pullImage = ref('')
@@ -530,6 +544,11 @@ function batchToast(j) {
 async function act(c, action) {
   if (action === 'stop' && !confirm(t('docker.confirm_stop', { name: c.name }))) return
   if (action === 'remove' && !confirm(t('docker.confirm_remove', { name: c.name }))) return
+  // restart and pause also take a running service offline, so they get the same
+  // confirmation as stop. Previously only stop/remove were guarded, and the
+  // restart/pause buttons sit immediately next to them in the row.
+  if (action === 'restart' && !confirm(t('docker.confirm_restart', { name: c.name }))) return
+  if (action === 'pause' && !confirm(t('docker.confirm_pause', { name: c.name }))) return
   busy.value = true
   try {
     const r = await containerAction(c.id, action)
@@ -618,6 +637,16 @@ function watchJob(id) {
 
   const poll = async () => {
     jobTimer = null
+    // Skip the fetch while the tab is hidden, but keep re-arming. The job keeps
+    // running server-side and the log is re-read as soon as the tab is visible
+    // again, so nothing is lost -- this only stops a background tab from asking
+    // the host for job status every 1.5s indefinitely. The page's main refresh
+    // already uses the visibility-aware helper in lib/poll.js; this hand-rolled
+    // loop needs its own check because it cannot use a fixed interval.
+    if (typeof document !== 'undefined' && document.hidden) {
+      if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
+      return
+    }
     try {
       const j = await getStackJob(id)
       if (generation !== jobPollGeneration) return
@@ -627,8 +656,12 @@ function watchJob(id) {
         void refresh()
         return
       }
-    } catch {
+    } catch (e) {
       if (generation !== jobPollGeneration) return
+      // Say so instead of leaving the log frozen at its last content. The loop
+      // still re-arms (a transient failure should recover), but the operator can
+      // now see that the job status is not being read.
+      jobLog.value = `${jobLog.value || ''}\n⚠ ${e.message || e}`.trim()
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }
@@ -684,6 +717,10 @@ function openExec(c) {
 }
 async function runExec() {
   if (!execC.value) return
+  // Re-entry guard. The Run button is bound to `busy`, but the command input
+  // fires this on Enter and was not, and busy was only set *after* entry -- so
+  // holding Enter issued concurrent `docker exec` calls into a live container.
+  if (busy.value) return
   busy.value = true
   try {
     const j = await execContainer(execC.value.id, execCmd.value)
@@ -700,16 +737,24 @@ async function openInspect(c) {
 }
 
 async function loadImages() {
-  try { images.value = (await getImages()).images || [] } catch (e) { toast('❌ ' + e.message) }
+  try { images.value = (await getImages()).images || [] }
+  catch (e) { toast('❌ ' + e.message) }
+  finally { subLoaded.value.images = true }
 }
 async function loadVolumes() {
-  try { volumes.value = (await getVolumes()).volumes || [] } catch (e) { toast('❌ ' + e.message) }
+  try { volumes.value = (await getVolumes()).volumes || [] }
+  catch (e) { toast('❌ ' + e.message) }
+  finally { subLoaded.value.volumes = true }
 }
 async function loadNetworks() {
-  try { networks.value = (await getNetworks()).networks || [] } catch (e) { toast('❌ ' + e.message) }
+  try { networks.value = (await getNetworks()).networks || [] }
+  catch (e) { toast('❌ ' + e.message) }
+  finally { subLoaded.value.networks = true }
 }
 async function loadEngine() {
-  try { engineInfo.value = await getDockerInfo() } catch (e) { toast('❌ ' + e.message) }
+  try { engineInfo.value = await getDockerInfo() }
+  catch (e) { toast('❌ ' + e.message) }
+  finally { subLoaded.value.engine = true }
 }
 async function doPrune(kind) {
   const tips = {
@@ -861,19 +906,3 @@ useDismissable(logDrawer, () => { closeLogs() }, logPanel)
 
 useDismissable(inspectData, () => { inspectData.value = null }, inspectPanel)
 </script>
-
-<style scoped>
-.run-form {
-  display: grid;
-  grid-template-columns: 100px 1fr;
-  gap: 8px 12px;
-  align-items: center;
-  font-size: 13px;
-}
-.run-form label { color: var(--sub); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
-.run-form input[type=text], .run-form select { width: 100%; }
-@media (max-width: 640px) {
-  .run-form { grid-template-columns: 1fr; }
-  .run-form label { margin-bottom: -4px; }
-}
-</style>

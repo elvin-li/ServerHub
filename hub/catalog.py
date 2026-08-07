@@ -743,8 +743,14 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             content = str(bf.get("content") or "")
             for k, v in values.items():
                 content = content.replace("{{" + k + "}}", str(v))
-            if not fp.exists():
-                fp.write_text(content)
+            # "x" so an existing file is never rewritten: these are deployment
+            # files the operator may have edited by hand, and a check-then-write
+            # trusts exists() with no way back if it answers wrongly.
+            try:
+                with fp.open("x", encoding="utf-8") as fh:
+                    fh.write(content)
+            except FileExistsError:
+                pass
         vars_file = dest_dir / ".serverhub-vars.json"
         vars_file.write_text(json.dumps(values, ensure_ascii=False, indent=2))
         vars_file.chmod(0o600)

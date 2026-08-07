@@ -23,6 +23,20 @@ _inv_cache: dict = {"t": 0.0, "v": None}
 _INV_TTL = 8.0
 
 
+def invalidate_inventory() -> None:
+    """Drop the app inventory snapshot so the next read reflects a change.
+
+    Public because the app store installs and uninstalls without going through
+    :func:`action`, and it has to be able to say "this list is stale now".  It
+    used to reach in and assign ``_inv_cache["t"] = 0`` from native_catalog,
+    wrapped in ``except Exception: pass`` -- so renaming this cache would have
+    turned invalidation into a silent no-op and left an uninstalled app showing
+    as installed.
+    """
+    _inv_cache["t"] = 0.0
+    _inv_cache["v"] = None
+
+
 def _host_ip() -> str:
     return host_ip()
 
@@ -805,8 +819,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
     kind, _, source_id = app_id.partition(":")
     if not source_id and app_id.startswith("native-"):
         kind, source_id = "native", app_id
-    _inv_cache["t"] = 0
-    _inv_cache["v"] = None
+    invalidate_inventory()
 
     # Autostart toggles
     if action_name in ("autostart_on", "autostart_off", "enable_autostart", "disable_autostart"):

@@ -5,9 +5,55 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 const CACHE_FINGERPRINT_PLACEHOLDER = '__SERVERHUB_CACHE_FINGERPRINT__'
+
 // Ratchet the initial application payload. Before locale splitting the entry
-// chunk was 258.70 kB; 150 KiB leaves headroom without allowing that regression.
-const ENTRY_CHUNK_BUDGET_BYTES = 150 * 1024
+// chunk was 258.70 kB.
+//
+// This constant was declared and then never referenced, so for some time the
+// build enforced nothing while the README advertised a 150 KiB gate. The entry
+// chunk had drifted to 167 KiB by the time that was noticed, which is why the
+// enforced ceiling below is not the 150 KiB target: turning the check on at the
+// target would have failed every build immediately.
+//
+// 150 KiB remains the goal. The ceiling is what is actually enforced, and it only
+// ever moves down — lower it whenever the payload shrinks, and treat a build that
+// needs it raised as a signal to split a chunk instead.
+const ENTRY_CHUNK_TARGET_BYTES = 150 * 1024
+const ENTRY_CHUNK_BUDGET_BYTES = 176 * 1024
+
+/** Fail the build when the entry chunk grows past the ratchet. */
+function enforceEntryChunkBudget() {
+  return {
+    name: 'serverhub-entry-chunk-budget',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const entry = Object.values(bundle).find(
+        (chunk) => chunk.type === 'chunk' && chunk.isEntry,
+      )
+      if (!entry) {
+        throw new Error('Entry chunk not found; cannot check the first-paint budget')
+      }
+      const bytes = Buffer.byteLength(entry.code, 'utf8')
+      const asKib = (n) => `${(n / 1024).toFixed(1)} KiB`
+      if (bytes > ENTRY_CHUNK_BUDGET_BYTES) {
+        throw new Error(
+          `Entry chunk ${entry.fileName} is ${asKib(bytes)}, over the `
+          + `${asKib(ENTRY_CHUNK_BUDGET_BYTES)} first-paint ceiling. Split a route or a `
+          + 'dependency out of the entry rather than raising the ceiling.',
+        )
+      }
+      if (bytes > ENTRY_CHUNK_TARGET_BYTES) {
+        // Visible but non-fatal: the gap between the ceiling and the target is
+        // pre-existing debt, and printing it each build keeps it from being
+        // forgotten again.
+        this.warn(
+          `Entry chunk is ${asKib(bytes)} — within the ${asKib(ENTRY_CHUNK_BUDGET_BYTES)} `
+          + `ceiling but over the ${asKib(ENTRY_CHUNK_TARGET_BYTES)} target.`,
+        )
+      }
+    },
+  }
+}
 const outDir = resolve(
   __dirname,
   process.env.SERVERHUB_WEB_OUT_DIR || '../static',
@@ -61,7 +107,7 @@ function fingerprintServiceWorker() {
 }
 
 export default defineConfig({
-  plugins: [vue(), fingerprintServiceWorker()],
+  plugins: [vue(), enforceEntryChunkBudget(), fingerprintServiceWorker()],
   base: '/',
   // Vitest runs the same resolver/plugin chain as the build, so a test that
   // imports a .vue file exercises the real single-file-component pipeline.

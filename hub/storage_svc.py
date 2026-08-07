@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hub.paths import SMARTCTL
@@ -172,13 +173,132 @@ def aggregate_capacity(vols: list, kinds: set | None = None) -> dict:
     }
 
 
+#: smartctl prints a version line and a copyright line before anything else,
+#: including before an error.  Those are the first thing a naive `serr or sout`
+#: picks up, which is why an unreadable external disk used to explain itself to
+#: the user as "smartctl 7.5 2025-04-30 ... Copyright (C) 2002-25 ...".
+_SMARTCTL_BANNER = re.compile(r"^(smartctl \d|Copyright \(C\)|===)", re.IGNORECASE)
+
+
+def _smartctl_failure(sout: str, serr: str) -> str:
+    """The reason a SMART read failed, in terms that mean something to a reader.
+
+    macOS gives userspace no SCSI/ATA passthrough for USB and Thunderbolt
+    bridges, so an external enclosure answers "Operation not supported by
+    device" no matter which `-d` transport is tried.  That is a property of the
+    connection, not a symptom of a failing drive, and saying so avoids reading
+    the Dashboard's "SMART unavailable" as a fault.
+    """
+    lines = [
+        line.strip()
+        for line in f"{serr}\n{sout}".splitlines()
+        if line.strip() and not _SMARTCTL_BANNER.match(line.strip())
+    ]
+    detail = " ".join(lines)[:120]
+    lowered = detail.lower()
+    if "not supported by device" in lowered or "unsupported" in lowered:
+        return "外置 USB/雷雳硬盘：macOS 不提供 SMART 直通，无法读取（非磁盘故障）"
+    if any(x in lowered for x in ("permission", "operation not permitted", "access denied")):
+        return "读取 SMART 需要授权：请运行 deploy/install-sudoers.sh"
+    return detail or "smartctl 不可用或需 sudo"
+
+
+def _probe_disk(d: str) -> dict:
+    """`diskutil info` + `smartctl -a` for one physical disk.
+
+    Split out of smart_devices() so disks can be probed concurrently. The calls
+    inside stay sequential: the sudo retry is conditional on the first smartctl
+    result, and the parallelism that matters here is across disks, not within one.
+    """
+    dev = f"/dev/{d}"
+    info = {
+        "device": dev, "id": d, "name": d,
+        "size": None, "size_bytes": None, "size_gb": None,
+        "smart": None, "error": None,
+    }
+    rc, iout, _ = sh(["diskutil", "info", dev], timeout=8)
+    if rc == 0:
+        for line in iout.splitlines():
+            if "Device / Media Name:" in line or "Media Name:" in line:
+                info["name"] = line.split(":", 1)[1].strip()
+            elif "Disk Size:" in line:
+                raw_size = line.split(":", 1)[1].strip()
+                info["size"] = raw_size.split("(")[0].strip()
+                byte_match = re.search(r"\(([\d,]+)\s+Bytes\)", raw_size, re.IGNORECASE)
+                if byte_match:
+                    size_bytes = int(byte_match.group(1).replace(",", ""))
+                    info["size_bytes"] = size_bytes
+                    info["size_gb"] = round(size_bytes / 2**30, 1)
+            elif "Solid State:" in line:
+                info["ssd"] = "Yes" in line
+            elif "Protocol:" in line:
+                info["protocol"] = line.split(":", 1)[1].strip()
+    # Most macOS NVMe devices are readable as the login user.  Avoid a
+    # failing sudo process on every disk; retry with passwordless sudo only
+    # when the direct read clearly failed for permissions.
+    rc, sout, serr = sh([SMARTCTL, "-a", dev], timeout=10)
+    msg_lower = f"{sout}\n{serr}".lower()
+    if rc not in (0, 4) and any(x in msg_lower for x in ("permission", "operation not permitted", "access denied")):
+        rc, sout, serr = sh(["sudo", "-n", SMARTCTL, "-a", dev], timeout=10)
+    if rc in (0, 4) and sout:
+        sm = {}
+        for line in sout.splitlines():
+            if "Data Units Written" in line and "[" in line:
+                sm["written"] = line.split("[")[1].rstrip("]")
+            elif "Percentage Used" in line:
+                sm["wear"] = line.split(":")[1].strip()
+            elif line.strip().startswith("Temperature:"):
+                sm["temp"] = line.split(":")[1].strip()
+            elif "Power On Hours" in line or "Power_On_Hours" in line:
+                if ":" in line:
+                    sm["power_on"] = line.split(":")[-1].strip()
+            elif "Serial Number:" in line:
+                sm["serial"] = line.split(":")[1].strip()
+            elif "Model Number:" in line or "Device Model:" in line:
+                sm["model"] = line.split(":")[1].strip()
+            elif "SMART overall-health" in line:
+                sm["health"] = line.split(":")[-1].strip()
+            elif line.strip().startswith("Critical Warning:"):
+                raw = line.split(":", 1)[1].strip()
+                sm["critical_warning"] = raw
+            elif line.strip().startswith("Available Spare:"):
+                sm["available_spare"] = line.split(":", 1)[1].strip()
+            elif line.strip().startswith("Unsafe Shutdowns:"):
+                sm["unsafe_shutdowns"] = line.split(":", 1)[1].strip()
+            elif line.strip().startswith("Media and Data Integrity Errors:"):
+                sm["media_errors"] = line.split(":", 1)[1].strip()
+            elif "Reallocated_Sector_Ct" in line:
+                sm["reallocated"] = line.split()[-1]
+            elif "Current_Pending_Sector" in line:
+                sm["pending"] = line.split()[-1]
+            elif "Offline_Uncorrectable" in line:
+                sm["uncorrectable"] = line.split()[-1]
+        if "health" not in sm:
+            critical = str(sm.get("critical_warning") or "0").lower()
+            sm["health"] = "PASSED" if critical in ("0", "0x00") else "WARNING"
+        info["smart"] = sm
+    else:
+        info["error"] = _smartctl_failure(sout, serr)
+    return info
+
+
 def smart_devices() -> list:
-    """Enumerate disks and pull SMART summary (cached 10 min)."""
+    """Enumerate disks and pull SMART summary (cached 10 min).
+
+    Each disk costs a `diskutil info` plus a `smartctl -a` (and sometimes a sudo
+    retry), and smartctl on a spinning disk is not fast. Probing them one after
+    another made a cold /api/storage scale linearly with disk count while the
+    dashboard's storage tile and the whole Main Array page waited on it. The
+    probes touch different devices and share no state, so they are independent;
+    the only reason they were serial is that they were written as a for loop.
+
+    Results are re-ordered to match `disk_ids` so the array table does not
+    reshuffle its rows depending on which disk answered first.
+    """
     global _smart_multi
     if time.time() - _smart_multi["t"] < 600 and _smart_multi["v"] is not None:
         return _smart_multi["v"]
 
-    devices = []
     rc, out, _ = sh(["diskutil", "list", "physical"], timeout=10)
     disk_ids = []
     if rc == 0:
@@ -189,85 +309,28 @@ def smart_devices() -> list:
     if not disk_ids:
         disk_ids = ["disk0"]
 
-    for d in disk_ids:
-        dev = f"/dev/{d}"
-        info = {
-            "device": dev, "id": d, "name": d,
-            "size": None, "size_bytes": None, "size_gb": None,
-            "smart": None, "error": None,
-        }
-        rc, iout, _ = sh(["diskutil", "info", dev], timeout=8)
-        if rc == 0:
-            for line in iout.splitlines():
-                if "Device / Media Name:" in line or "Media Name:" in line:
-                    info["name"] = line.split(":", 1)[1].strip()
-                elif "Disk Size:" in line:
-                    raw_size = line.split(":", 1)[1].strip()
-                    info["size"] = raw_size.split("(")[0].strip()
-                    byte_match = re.search(r"\(([\d,]+)\s+Bytes\)", raw_size, re.IGNORECASE)
-                    if byte_match:
-                        size_bytes = int(byte_match.group(1).replace(",", ""))
-                        info["size_bytes"] = size_bytes
-                        info["size_gb"] = round(size_bytes / 2**30, 1)
-                elif "Solid State:" in line:
-                    info["ssd"] = "Yes" in line
-                elif "Protocol:" in line:
-                    info["protocol"] = line.split(":", 1)[1].strip()
-        # Most macOS NVMe devices are readable as the login user.  Avoid a
-        # failing sudo process on every disk; retry with passwordless sudo only
-        # when the direct read clearly failed for permissions.
-        rc, sout, serr = sh([SMARTCTL, "-a", dev], timeout=10)
-        msg_lower = f"{sout}\n{serr}".lower()
-        if rc not in (0, 4) and any(x in msg_lower for x in ("permission", "operation not permitted", "access denied")):
-            rc, sout, serr = sh(["sudo", "-n", SMARTCTL, "-a", dev], timeout=10)
-        if rc in (0, 4) and sout:
-            sm = {}
-            for line in sout.splitlines():
-                if "Data Units Written" in line and "[" in line:
-                    sm["written"] = line.split("[")[1].rstrip("]")
-                elif "Percentage Used" in line:
-                    sm["wear"] = line.split(":")[1].strip()
-                elif line.strip().startswith("Temperature:"):
-                    sm["temp"] = line.split(":")[1].strip()
-                elif "Power On Hours" in line or "Power_On_Hours" in line:
-                    if ":" in line:
-                        sm["power_on"] = line.split(":")[-1].strip()
-                elif "Serial Number:" in line:
-                    sm["serial"] = line.split(":")[1].strip()
-                elif "Model Number:" in line or "Device Model:" in line:
-                    sm["model"] = line.split(":")[1].strip()
-                elif "SMART overall-health" in line:
-                    sm["health"] = line.split(":")[-1].strip()
-                elif line.strip().startswith("Critical Warning:"):
-                    raw = line.split(":", 1)[1].strip()
-                    sm["critical_warning"] = raw
-                elif line.strip().startswith("Available Spare:"):
-                    sm["available_spare"] = line.split(":", 1)[1].strip()
-                elif line.strip().startswith("Unsafe Shutdowns:"):
-                    sm["unsafe_shutdowns"] = line.split(":", 1)[1].strip()
-                elif line.strip().startswith("Media and Data Integrity Errors:"):
-                    sm["media_errors"] = line.split(":", 1)[1].strip()
-                elif "Reallocated_Sector_Ct" in line:
-                    sm["reallocated"] = line.split()[-1]
-                elif "Current_Pending_Sector" in line:
-                    sm["pending"] = line.split()[-1]
-                elif "Offline_Uncorrectable" in line:
-                    sm["uncorrectable"] = line.split()[-1]
-            if "health" not in sm:
-                critical = str(sm.get("critical_warning") or "0").lower()
-                sm["health"] = "PASSED" if critical in ("0", "0x00") else "WARNING"
-            info["smart"] = sm
-        else:
-            info["error"] = (serr or sout or "smartctl 不可用或需 sudo")[:120]
-        devices.append(info)
+    if len(disk_ids) == 1:
+        devices = [_probe_disk(disk_ids[0])]
+    else:
+        # Bounded: a Mac with many external disks should not spawn one thread per
+        # device. 4 covers the realistic case while keeping the worst-case
+        # subprocess count in check.
+        with ThreadPoolExecutor(max_workers=min(4, len(disk_ids))) as ex:
+            devices = list(ex.map(_probe_disk, disk_ids))
 
     _smart_multi = {"t": time.time(), "v": devices}
     return devices
 
 
 def storage_overview() -> dict:
-    vols = list_volumes()
-    disks = smart_devices()
+    # `df` and the SMART probe read different things and neither feeds the other,
+    # so overlap them: on a cold cache this takes the page from
+    # "df, then every disk" to "df alongside every disk".
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_vols = ex.submit(list_volumes)
+        f_disks = ex.submit(smart_devices)
+        vols = f_vols.result()
+        disks = f_disks.result()
     system_vols = [v for v in vols if v["kind"] == "system"]
     external_vols = [v for v in vols if v["kind"] == "external"]
     other_vols = [v for v in vols if v["kind"] not in ("system", "external")]

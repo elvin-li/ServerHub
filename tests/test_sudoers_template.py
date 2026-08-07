@@ -21,6 +21,8 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
+from hub.sudoers_policy import authorised, parse_template  # noqa: E402
+
 TEMPLATE = BASE / "deploy" / "sudoers.d" / "serverhub"
 INSTALLER = BASE / "deploy" / "install-sudoers.sh"
 
@@ -79,28 +81,43 @@ class RulesCoverWhatWeRunTests(unittest.TestCase):
     def assertGranted(self, needle: str, why: str):
         self.assertIn(needle, self.text, f"no sudoers rule for {needle!r} -- {why}")
 
-    def test_smart_health_reads(self):
-        for verb in ("-a ^/dev/", "-H ^/dev/", "-n standby ^/dev/"):
-            self.assertGranted(f"smartctl {verb}", "storage health page")
+    def test_smart_verbs_are_authorised_by_matching(self):
+        """Checked by matching, not by looking for a substring.
 
-    def test_smart_self_test_control(self):
-        # `smartctl -t` and -X write to the device, so these are the rules that
-        # replace the old blanket smartctl grant rather than adding to it.
-        for verb in ("-t short ^/dev/", "-t long ^/dev/", "-X ^/dev/"):
-            self.assertGranted(f"smartctl {verb}", "SMART self-tests")
-
-    def test_smart_transport_flag_variants_are_enumerated(self):
-        """An anchored device regex matches one argv element, so `-d nvme` needs its own rule."""
-        for verb in ("-t short -d nvme ^/dev/", "-X -d nvme ^/dev/", "-c -d nvme ^/dev/"):
-            self.assertGranted(f"smartctl {verb}", "NVMe transport flag")
+        Substring assertions are what let this file pass while the policy was
+        broken: it looked for `smartctl -a ^/dev/`, which is the form sudo never
+        matches, so the text being present proved nothing.  The shapes and the
+        matching semantics now live in hub/sudoers_policy, and
+        tests/test_sudoers_covers_call_sites.py checks the whole contract; this
+        keeps a direct assertion on the SMART verbs because they are the ones the
+        old blanket grant used to cover.
+        """
+        rules = parse_template(self.text, state_root=str(BASE), user="someone")
+        smartctl = "/opt/homebrew/bin/smartctl"
+        for args in (
+            "-a /dev/disk0",
+            "-H /dev/disk0",
+            "-n standby /dev/disk4",
+            "-t short /dev/disk0",
+            "-t long /dev/disk0",
+            "-X /dev/disk0",
+            "-t short -d nvme /dev/disk0",
+            "-X -d nvme /dev/disk0",
+            "-c -d nvme /dev/disk0",
+        ):
+            self.assertIsNotNone(
+                authorised(smartctl, args, rules),
+                f"no rule matches `smartctl {args}`, so it will ask for a password",
+            )
 
     def test_smart_device_argument_is_anchored(self):
         """A trailing `/dev/*` is a suffix wildcard, not a one-token placeholder.
 
         Verified on macOS sudo 1.9.17p2: `smartctl -a /dev/*` also matches
         `smartctl -a /dev/disk0 -V`, so any verb can be smuggled behind a
-        read-only one.  The anchored regex matches exactly one argv element and
-        sits in the last (only legal) regex position.
+        read-only one.  Ending every rule with `$` is what forbids the extra
+        argument -- the regex covers the whole argument string, so the anchor
+        applies to the end of the argv rather than to one element.
         """
         offenders = [
             stripped
@@ -134,9 +151,9 @@ class RulesCoverWhatWeRunTests(unittest.TestCase):
         sudo treats a trailing wildcard as a suffix match over ALL remaining
         argv elements (verified on macOS sudo 1.9.17p2): `networksetup
         -getairportpower *` also matches `-getairportpower en0 evil2 evil3`.
-        Every rule must therefore end in a literal token or an anchored regex.
-        A `*` is only tolerated mid-rule, where it matches exactly one element,
-        and only when a fixed tail argument follows it.
+        Every rule must therefore end in a literal token or in a regex anchored
+        with `$`.  A mid-rule `*` does not help either: it spans argument
+        boundaries as well, so this file no longer uses globs for varying fields.
         """
         offenders = []
         for line in self.text.splitlines():

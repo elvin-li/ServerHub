@@ -14,7 +14,8 @@ from typing import Optional
 from fastapi import Depends, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from hub.config import cfg, save_full
+from hub.config import cfg
+from hub.config import mutate as config_mutate
 from hub.errors import api_error
 from hub.paths import DATA_DIR
 
@@ -34,6 +35,22 @@ _login_attempts: dict[str, list[float]] = {}
 
 def _auth_cfg() -> dict:
     return (cfg().get("settings") or {}).get("auth") or {}
+
+
+def constant_time_equals(supplied: str | None, expected: str | None) -> bool:
+    """Constant-time equality for text that may contain any Unicode.
+
+    ``secrets.compare_digest`` raises TypeError on a str holding any non-ASCII
+    character.  Every value compared here arrives from the network: Starlette
+    decodes request headers as latin-1, so a single 0xFF byte in the local-token
+    header became U+00FF and turned the comparison inside ``require_auth`` into
+    an unhandled 500 on *every* protected endpoint -- reachable without any
+    credential.  Comparing the UTF-8 encodings keeps the timing property and
+    accepts arbitrary input, so a malformed value is a plain auth failure.
+    """
+    if supplied is None or expected is None:
+        return False
+    return hmac.compare_digest(str(supplied).encode("utf-8"), str(expected).encode("utf-8"))
 
 
 #: Role names.  ``admin`` is unrestricted; ``member`` is the family role, which
@@ -173,9 +190,53 @@ def _persistent_token(path: Path) -> str:
         return path.read_text(encoding="utf-8").strip()
 
 
+#: Loopback source addresses. A request from here originates on the machine
+#: itself, which is a stronger proof of access than any token.
+LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+
+#: How strictly the first-run token is enforced.
+#:
+#: ``auto``   - required only for a non-loopback claim (the default)
+#: ``always`` - required even on the machine itself
+#: ``never``  - not required at all
+SETUP_TOKEN_MODES = ("auto", "always", "never")
+
+
 def setup_token() -> str:
     """One-time token required to claim a fresh installation."""
     return _persistent_token(SETUP_TOKEN_FILE)
+
+
+def setup_token_mode() -> str:
+    mode = str((_auth_cfg() or {}).get("setup_token_mode") or "auto").strip().lower()
+    return mode if mode in SETUP_TOKEN_MODES else "auto"
+
+
+def is_loopback(request: Request | None) -> bool:
+    host = (request.client.host if request and request.client else "") or ""
+    return host in LOOPBACK_HOSTS
+
+
+def setup_token_required(request: Request | None = None) -> bool:
+    """Whether this particular claim has to present the first-run token.
+
+    Default is to require it only for a claim arriving from another machine.
+    Requiring it on loopback achieves nothing: ``/api/auth/setup-token`` already
+    hands the token to any loopback client on request, so a browser on this Mac can
+    always obtain it. Demanding it there is pure friction -- copy a 64-character
+    secret from one field into another -- with no attacker it excludes.
+
+    Off the machine it is doing real work. It is the only thing standing between
+    an unclaimed panel and whoever reaches it first, and this host publishes the
+    panel over a Cloudflare tunnel and a VPN, so "first" is not necessarily
+    someone in the house.
+    """
+    mode = setup_token_mode()
+    if mode == "never":
+        return False
+    if mode == "always":
+        return True
+    return not is_loopback(request)
 
 
 def consume_setup_token() -> None:
@@ -186,20 +247,31 @@ def consume_setup_token() -> None:
         pass
 
 
-def complete_setup(value: str | None, password: str, username: str) -> bool:
-    """Atomically claim a fresh installation with its one-time token.
+def complete_setup(
+    value: str | None,
+    password: str,
+    username: str,
+    *,
+    require_token: bool = True,
+) -> bool:
+    """Atomically claim a fresh installation.
 
     Token verification, password persistence, and token consumption share one
     lock so two simultaneous setup requests cannot both become administrators.
+
+    *require_token* comes from :func:`setup_token_required`; when it is False the
+    token is not demanded, but a token that *is* supplied must still be correct so
+    a stale or mistyped value fails loudly instead of being silently ignored.
     """
-    if not value:
+    if require_token and not value:
         return False
     with _setup_lock:
         if not setup_required():
             return False
-        expected = setup_token()
-        if not secrets.compare_digest(str(value), expected):
-            return False
+        if require_token or value:
+            expected = setup_token()
+            if not constant_time_equals(value or "", expected):
+                return False
         set_password(password, username, enable=True)
         consume_setup_token()
         return True
@@ -216,7 +288,7 @@ def local_client_authenticated(request: Request) -> bool:
     return (
         client in ("127.0.0.1", "::1")
         and bool(supplied)
-        and secrets.compare_digest(supplied, local_client_token())
+        and constant_time_equals(supplied, local_client_token())
     )
 
 
@@ -296,7 +368,7 @@ def verify_password(password: str) -> bool:
         except (ValueError, TypeError):
             return False
     legacy = str(a.get("password") or "")
-    return bool(legacy and legacy != "change-me" and secrets.compare_digest(password, legacy))
+    return bool(legacy and legacy != "change-me" and constant_time_equals(password, legacy))
 
 
 def set_password(password: str, username: str = "admin", *, enable: bool = True) -> None:
@@ -304,19 +376,28 @@ def set_password(password: str, username: str = "admin", *, enable: bool = True)
         # Stays a ValueError so non-HTTP callers (menu bar, CLI setup) keep
         # working; the API layer catches it and re-raises auth.password_too_short.
         raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
-    import copy
+    # Written through config.mutate, not save_full(deepcopy(cfg())): the latter
+    # rewrites the whole file from this process's cached snapshot, and with a
+    # second ServerHub sharing services.yaml (the packaged .app alongside the
+    # panel) whichever instance saved last reverted the other. That is how the
+    # stored username and password_hash went missing and dropped the panel back
+    # into "setup required". mutate() re-reads inside the write lock, so this
+    # only ever adds the credential to the current on-disk config.
+    digest = hash_password(password)
+    resolved = (username or "admin").strip() or "admin"
 
-    data = copy.deepcopy(cfg())
-    settings = data.setdefault("settings", {})
-    auth = dict(settings.get("auth") or {})
-    auth.update({
-        "enabled": bool(enable),
-        "username": (username or "admin").strip() or "admin",
-        "password_hash": hash_password(password),
-    })
-    auth.pop("password", None)
-    settings["auth"] = auth
-    save_full(data)
+    def apply(data: dict) -> None:
+        settings = data.setdefault("settings", {})
+        auth = dict(settings.get("auth") or {})
+        auth.update({
+            "enabled": bool(enable),
+            "username": resolved,
+            "password_hash": digest,
+        })
+        auth.pop("password", None)
+        settings["auth"] = auth
+
+    config_mutate(apply)
 
 
 def _secret() -> bytes:
@@ -502,7 +583,7 @@ def require_auth(
         return True
     if isinstance(credentials, HTTPBasicCredentials):
         user = str(_auth_cfg().get("username") or "admin")
-        if secrets.compare_digest(credentials.username, user) and verify_password(credentials.password):
+        if constant_time_equals(credentials.username, user) and verify_password(credentials.password):
             request.state.serverhub_auth_kind = "basic-admin"
             return True
     if local_client:

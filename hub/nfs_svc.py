@@ -159,7 +159,14 @@ def _validate_entry(entry: dict) -> dict:
         real == p or (p != "/" and real.startswith(p + "/")) for p in _PROTECTED_ROOTS if p != "/"
     ):
         raise NfsConfigError("nfs.protected_path", path=real)
-    if "\n" in path or '"' in path:
+    # exports(5) is whitespace-delimited, and render_line only quotes a path
+    # containing a literal space.  A tab (or \r, \v, \f) therefore split one
+    # validated path into several fields, so the directory actually exported was
+    # never the directory that was checked above, and the trailing fields became
+    # export *options*: a name like "pub\t-mapall=root" installs an
+    # identity-mapping option the request never asked for.  Reject every control
+    # character rather than just the newline.
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in path) or '"' in path:
         raise NfsConfigError("nfs.bad_path")
 
     clients_raw = entry.get("clients") or []
@@ -199,9 +206,21 @@ def _validate_entry(entry: dict) -> dict:
     }
 
 
+def _quote_path(path: str) -> str:
+    """Quote a path that would otherwise split into several exports(5) fields.
+
+    Any whitespace, not just a literal space: the field separator in exports(5)
+    is whitespace generally, so a tab in a directory name used to produce extra
+    fields that nfsd read as further paths and options.  Validation now rejects
+    control characters outright, and this is the second layer -- render_line is
+    also what the panel displays, so the two must not disagree.
+    """
+    return f'"{path}"' if any(c.isspace() for c in path) else path
+
+
 def render_line(entry: dict) -> str:
     """Structured export → one exports(5) line."""
-    parts = [f'"{entry["path"]}"' if " " in entry["path"] else entry["path"]]
+    parts = [_quote_path(entry["path"])]
     if entry.get("alldirs"):
         parts.append("-alldirs")
     if entry.get("readonly"):

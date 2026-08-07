@@ -5,18 +5,35 @@
       <span class="meta">{{ t('pages.wireguard_meta') }} · {{ data?.ts || '…' }}</span>
     </div>
 
+    <!-- Running status card -->
+    <div v-if="data" class="wg-status-bar" :class="{ running: data.running }">
+      <span class="wg-status-led"></span>
+      <span class="wg-status-text">{{ data.running ? t('wg.tunnel_running') : t('wg.tunnel_stopped') }}</span>
+      <span v-if="data.running" class="wg-status-meta">
+        {{ data.interface }} · {{ t('wg.listen_port') }} {{ data.listen_port }} · {{ data.active_count }}/{{ data.peer_count }} {{ t('wg.peers_online') }}
+      </span>
+    </div>
+
     <div class="toolbar">
-      <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
+      <button
+        v-if="!data?.running"
+        class="primary wg-start"
+        @click="control('up')"
+        :disabled="busy"
+      >&#9654; {{ t('wg.start') }}</button>
+      <button
+        v-else
+        class="danger wg-stop"
+        @click="control('down')"
+        :disabled="busy"
+      >&#9632; {{ t('wg.stop') }}</button>
+      <button @click="control('restart')" :disabled="busy" class="wg-restart">&#8635; {{ t('wg.restart') }}</button>
+      <span class="toolbar-sep"></span>
       <button @click="sync" :disabled="busy || !data?.running">{{ t('wg.sync') }}</button>
-      <button @click="control('restart')" :disabled="busy">{{ t('wg.restart') }}</button>
-      <button @click="control(data?.running ? 'down' : 'up')" :disabled="busy">
-        {{ data?.running ? t('wg.stop') : t('wg.start') }}
-      </button>
       <button @click="openConf" :disabled="busy">{{ t('wg.view_conf') }}</button>
       <button @click="ping" :disabled="busy || !data?.running">{{ t('wg.ping') }}</button>
-      <span v-if="data" class="badge" :class="data.running ? 'ok' : 'down'">
-        {{ data.running ? t('common.on') : t('common.off') }}
-      </span>
+      <span class="toolbar-grow"></span>
+      <button class="primary subtle" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
     </div>
 
     <!-- Not installed: nothing else on this page can work, so say only that. -->
@@ -54,8 +71,11 @@
                   @click="fixForwarding"
                   :disabled="busy"
                 >{{ t('wg.enable') }}</button>
+                <!-- Same action for both: installing the NAT rule rewrites
+                     /etc/pf.conf in the order pf requires, which is exactly what
+                     repairs a file pf is currently refusing. -->
                 <button
-                  v-else-if="c.id === 'nat'"
+                  v-else-if="c.id === 'nat' || c.id === 'pf_conf'"
                   class="tiny primary"
                   @click="fixNat"
                   :disabled="busy"
@@ -151,9 +171,9 @@
               <td class="mono">{{ p.allowed_ips }}</td>
               <td class="mono" style="font-size:10px">{{ p.endpoint || '—' }}</td>
               <td style="font-size:11px">
-                <span v-if="p.last_handshake" :class="p.active ? 'badge ok' : (p.stale ? 'badge warn' : 'badge')">
-                  {{ relativeAge(p.handshake_age) }}
-                </span>
+                <span v-if="p.active" class="badge ok">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
+                <span v-else-if="p.stale" class="badge warn">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
+                <span v-else-if="p.last_handshake" class="badge">{{ relativeAge(p.handshake_age) }}</span>
                 <span v-else style="color:var(--sub)">{{ t('wg.never') }}</span>
               </td>
               <td>
@@ -324,6 +344,21 @@
     <div v-if="settingsOpen" class="modal-bg" @click.self="settingsOpen = false">
       <div class="modal" role="dialog" aria-labelledby="wg-settings-title" ref="settingsPanel" tabindex="-1">
         <h3 id="wg-settings-title">{{ t('wg.settings') }}</h3>
+        <!-- The fields below fall back to literal defaults, so saving without a
+             successful read would overwrite the live port/MTU. Say so and offer
+             a retry instead of presenting an editable form that cannot be saved
+             for no visible reason. -->
+        <div
+          v-if="!settingsLoaded"
+          class="tile"
+          style="margin-bottom:10px;border-left:3px solid var(--down)"
+        >
+          <div>{{ t('wg.settings_load_failed') }}</div>
+          <div v-if="settingsError" class="sub mono" style="margin-top:4px">{{ settingsError }}</div>
+          <button class="tiny" style="margin-top:6px" :disabled="busy" @click="loadSettings">
+            {{ t('common.retry') }}
+          </button>
+        </div>
         <label>
           {{ t('wg.endpoint') }}
           <input v-model="cfgForm.endpoint" type="text" placeholder="vpn.example.com:51820" />
@@ -363,7 +398,7 @@
         </div>
         <div class="modal-actions">
           <button @click="settingsOpen = false">{{ t('common.cancel') }}</button>
-          <button class="primary" @click="saveSettings" :disabled="busy">{{ t('common.save') }}</button>
+          <button class="primary" @click="saveSettings" :disabled="busy || !settingsLoaded">{{ t('common.save') }}</button>
         </div>
       </div>
     </div>
@@ -425,8 +460,10 @@ const CHECK_LABELS = {
   conf: 'wg.check_conf',
   running: 'wg.check_running',
   endpoint: 'wg.check_endpoint',
+  endpoint_resolves: 'wg.check_endpoint_resolves',
   forwarding: 'wg.check_forwarding',
   nat: 'wg.check_nat',
+  pf_conf: 'wg.check_pf_conf',
   pf: 'wg.check_pf',
   boot: 'wg.check_boot',
   peer_origin: 'wg.check_peer_origin',
@@ -437,8 +474,10 @@ const CHECK_FIXES = {
   conf: 'wg.fix_conf',
   running: 'wg.fix_running',
   endpoint: 'wg.fix_endpoint',
+  endpoint_resolves: 'wg.fix_endpoint_resolves',
   forwarding: 'wg.fix_forwarding',
   nat: 'wg.fix_nat',
+  pf_conf: 'wg.fix_pf_conf',
   pf: 'wg.fix_pf',
   boot: 'wg.fix_boot',
   peer_origin: 'wg.fix_peer_origin',
@@ -463,8 +502,15 @@ const cfgForm = ref({
   wan_interface: '', dns: '', mtu: 1280,
 })
 
+// Peers copied from another server get their own callout below, which explains
+// the situation properly and names the keys. Leaving the check in this table as
+// well put the same finding on screen twice, once with room to explain it and
+// once without.
+const SELF_EXPLAINING = new Set(['peer_origin'])
 const blockingChecks = computed(
-  () => (readiness.value?.checks || []).filter((c) => !c.ok && c.level === 'error'),
+  () => (readiness.value?.checks || []).filter(
+    (c) => !c.ok && c.level === 'error' && !SELF_EXPLAINING.has(c.id),
+  ),
 )
 const downloadUrl = computed(
   () => (peerDialog.value ? wireguardPeerDownloadUrl(peerDialog.value.pubkey, peerFormat.value) : '#'),
@@ -519,15 +565,22 @@ async function load() {
   try {
     const [status, ready] = await Promise.all([
       getWireguard(),
-      getWireguardReadiness().catch(() => null),
+      // Keep the previous readiness on failure instead of collapsing to null.
+      // The blocking-checks panel renders on `readiness && !readiness.ready`, so
+      // a failed probe hid it entirely -- and a tunnel that is up but carrying no
+      // traffic (the normal macOS failure) then looked perfectly healthy.
+      getWireguardReadiness().catch(() => readiness.value),
     ])
     if (generation !== loadGeneration) return
     data.value = status
     readiness.value = ready
     if (status.installed) {
+      // Clear it on failure rather than leaving a stale suggestion: the address
+      // field uses this as its placeholder, and an IP that was free minutes ago
+      // may now be taken. An empty placeholder is honest; a wrong one is not.
       getWireguardNextIp()
         .then((r) => { if (generation === loadGeneration) nextIp.value = r.next_ip })
-        .catch(() => {})
+        .catch(() => { if (generation === loadGeneration) nextIp.value = '' })
     }
   } catch (e) {
     if (generation === loadGeneration) toast('❌ ' + e.message)
@@ -654,6 +707,12 @@ async function openConf(reveal = false) {
 }
 
 async function saveSettings() {
+  // Refuse to write when the current settings were never read back: the patch
+  // below would consist of this form's hardcoded defaults.
+  if (!settingsLoaded.value) {
+    toast('❌ ' + t('wg.settings_load_failed'))
+    return
+  }
   const patch = {}
   for (const [key, value] of Object.entries(cfgForm.value)) {
     if (value !== '' && value != null) patch[key] = value
@@ -662,12 +721,34 @@ async function saveSettings() {
   if (result) settingsOpen.value = false
 }
 
-onMounted(async () => {
-  await load()
+// Whether cfgForm reflects the server's real settings. Save is blocked until it
+// does: cfgForm is seeded with literal defaults (listen_port 51820, mtu 1280),
+// and saveSettings sends every non-empty field, so saving on top of a failed
+// load silently rewrote a working tunnel's port and MTU to those defaults --
+// with a success toast, and with the peers' configs left pointing at the old
+// port. The failure is latched rather than merely toasted because the toast is
+// gone by the time the user opens the dialog and presses Save.
+const settingsLoaded = ref(false)
+const settingsError = ref('')
+
+async function loadSettings() {
   try {
     const current = await getWireguardSettings()
     cfgForm.value = { ...cfgForm.value, ...current.settings }
-  } catch {}
+    settingsLoaded.value = true
+    settingsError.value = ''
+  } catch (e) {
+    settingsLoaded.value = false
+    settingsError.value = e.message || String(e)
+  }
+}
+
+onMounted(async () => {
+  // Independent reads: load() fills the status/readiness/peers view, loadSettings()
+  // only seeds cfgForm. Awaiting them in sequence made the page wait for two
+  // round trips of privileged shell-outs before anything rendered, for no
+  // ordering reason. Both swallow their own errors, so neither can reject here.
+  await Promise.all([load(), loadSettings()])
   // Peer handshake ages only matter at ~minute resolution; 20s keeps the table
   // live without hammering `wg show` (which is a privileged call per poll).
   poll = startVisibleInterval(load, 20000)
@@ -681,6 +762,41 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* ── Status bar ─────────────────────────────────────────────────────────── */
+.wg-status-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+  border: 1px solid var(--line); background: var(--card);
+}
+.wg-status-bar.running {
+  border-color: color-mix(in srgb, var(--ok) 25%, transparent);
+  background: color-mix(in srgb, var(--ok) 6%, var(--card));
+}
+.wg-status-bar:not(.running) {
+  border-color: color-mix(in srgb, var(--down) 25%, transparent);
+  background: color-mix(in srgb, var(--down) 6%, var(--card));
+}
+.wg-status-led {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  background: var(--down); box-shadow: 0 0 6px var(--down);
+}
+.wg-status-bar.running .wg-status-led {
+  background: var(--ok); box-shadow: 0 0 6px var(--ok);
+}
+.wg-status-text { font-weight: 700; font-size: 14px; }
+.wg-status-meta { font-size: 11px; color: var(--sub); margin-left: auto; }
+
+/* ── Toolbar refinements ────────────────────────────────────────────────── */
+.toolbar-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+.toolbar-grow { flex: 1; }
+.wg-start { min-width: 80px; }
+.wg-stop { min-width: 80px; }
+.wg-stop.danger { background: color-mix(in srgb, var(--down) 85%, #000); border-color: var(--down); color: #fff; }
+.wg-stop.danger:hover { background: var(--down); }
+.wg-restart { min-width: 80px; }
+button.subtle { opacity: .65; }
+button.subtle:hover { opacity: 1; }
+
 /* A QR code is only useful if the whole symbol is visible and has a light quiet
    zone. The generated SVG is scalable (viewBox, no width/height), so it needs an
    explicitly sized box; without one it inherited no dimensions and was clipped. */

@@ -8,6 +8,13 @@
       <button class="primary" @click="refresh">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" :placeholder="t('maintenance.filter_ph')"  :aria-label="t('maintenance.filter_ph')"/>
     </div>
+    <!-- loadError was only rendered inside the empty-table row, so once the table
+         had rows the 15s poll could fail indefinitely while stale task and run
+         state stayed on screen with nothing marking it. Shown here it is visible
+         in both states. -->
+    <div v-if="loadError && tasks.length" class="placeholder" role="alert" style="margin-bottom:10px">
+      {{ loadError }}
+    </div>
     <div class="table-wrap">
       <table class="dense">
         <thead>
@@ -103,7 +110,13 @@ async function refresh() {
 
 async function run(task) {
   if (anyRunning.value) return
-  if (task.confirm && !confirm(t('maintenance.confirm_run', { name: task.name }))) return
+  // Always confirm. Every maintenance entry is an arbitrary shell command that
+  // runs against the host (brew upgrade, HA update, container rebuild), so the
+  // safe default cannot be "fire on one click". Previously this was gated on
+  // task.confirm, which defaults to false in the API (hub/routers/api.py) and is
+  // absent from the documented example task, so the destructive entries shipped
+  // unguarded.
+  if (!confirm(t('maintenance.confirm_run', { name: task.name }))) return
   task.running = true
   try {
     await runMaintenance(task.id)
@@ -134,8 +147,11 @@ async function pollLog(generation) {
       void refresh()
       return
     }
-  } catch {
+  } catch (e) {
     if (generation !== pollGeneration) return
+    // Say so instead of leaving the modal on maintenance.log_loading forever.
+    // The loop still re-arms so a transient failure recovers on its own.
+    logText.value = `${logText.value === t('maintenance.log_loading') ? '' : logText.value || ''}\n⚠ ${e.message || e}`.trim()
   }
   if (generation === pollGeneration && curId.value === id) {
     pollTimer = setTimeout(() => { void pollLog(generation) }, 1500)

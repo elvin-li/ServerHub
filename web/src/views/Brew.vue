@@ -8,7 +8,8 @@
       <button class="primary" @click="refresh" :disabled="busy">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" :placeholder="t('brew.filter_ph')"  :aria-label="t('brew.filter_ph')"/>
     </div>
-    <div class="table-wrap">
+    <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
+    <div v-else class="table-wrap">
       <table class="dense">
         <thead>
           <tr>
@@ -54,12 +55,16 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { brewAction, getBrewServices } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const services = ref([])
 const busy = ref(false)
 const q = ref('')
+// The worst false-empty case in the app: `brew services list` is allowed 20s,
+// and for all of it this table asserted that no brew services were installed.
+const loaded = ref(false)
 let refreshTimer = null
 
 function scheduleRefresh() {
@@ -88,6 +93,8 @@ async function refresh() {
     services.value = j.services || []
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loaded.value = true
   }
 }
 

@@ -25,6 +25,9 @@ from urllib.parse import quote
 #: reference panel settled on for the same reason.
 DEFAULT_MTU = 1280
 
+#: Assumed when a peer's Endpoint carries no port. WireGuard's registered port.
+DEFAULT_PORT = 51820
+
 #: Formats :func:`render` understands, in the order the UI presents them.
 FORMATS = ("wg", "clash", "clashfull", "sr")
 
@@ -78,15 +81,26 @@ def _first_address(interface: dict) -> str:
 
 
 def _endpoint(peer: dict) -> tuple[str, str]:
-    """``host:port`` from a peer's Endpoint, defaulting the port."""
+    """``(host, port)`` from a peer's Endpoint, defaulting the port.
+
+    Splitting on the *last* colon is wrong for an unbracketed IPv6 literal: it
+    turns ``2408:8248::215`` into host ``2408:8248:`` and port ``215``, so the
+    generated Clash proxy and Shadowrocket URL both pointed at a truncated address
+    on a v6-only endpoint.  Brackets are the signal that a port follows; without
+    them, more than one colon means the whole value is the address.
+    """
     raw = str(peer.get("Endpoint") or "").strip()
     if not raw:
-        return "", str(51820)
-    # rsplit so an IPv6 literal in brackets keeps its colons.
-    host, _, port = raw.rpartition(":")
+        return "", str(DEFAULT_PORT)
+    if raw.startswith("["):
+        host, _, rest = raw.partition("]")
+        return host[1:].strip(), (rest.lstrip(":").strip() or str(DEFAULT_PORT))
+    if raw.count(":") > 1:
+        return raw, str(DEFAULT_PORT)
+    host, _, port = raw.partition(":")
     if not host:
-        return raw, str(51820)
-    return host.strip("[]"), (port.strip() or str(51820))
+        return raw, str(DEFAULT_PORT)
+    return host.strip(), (port.strip() or str(DEFAULT_PORT))
 
 
 def _csv(value: str) -> list[str]:

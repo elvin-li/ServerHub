@@ -17,8 +17,20 @@ from hub.paths import BREW
 from hub.util import sh
 
 #: Service state changes only on user action, and every caller in a single
-#: request wants the same snapshot.  Short enough that the UI stays truthful.
-_TTL = 6.0
+#: request wants the same snapshot.
+#:
+#: Deliberately longer than the caches that consume it. At 6s this expired before
+#: `apps_manage_svc._INV_TTL` (8s) did, so every inventory rebuild re-ran
+#: `brew services list --json` -- measured at 0.7-1.2s, which was a quarter of the
+#: whole Apps page payload. A dependency cache with a shorter lifetime than its
+#: consumer guarantees a miss on every consumer refresh, which is the opposite of
+#: what a cache is for.
+#:
+#: Raising it costs nothing in truthfulness because every path that changes service
+#: state calls invalidate_brew_services(): brew_svc.service_action, autostart_svc,
+#: and the native install/uninstall flows. The only staleness left is a start or
+#: stop performed outside the panel, which is bounded by this window.
+_TTL = 20.0
 
 _cache: dict[str, Any] = {"t": 0.0, "v": None}
 _lock = threading.Lock()

@@ -44,6 +44,15 @@
       </p>
     </div>
 
+    <!-- Three tables here list pool members, spare candidates and faults. Before
+         the first response all three read as "none", which on a storage page
+         looks like the pool lost its disks rather than like a pending request. -->
+    <template v-if="!loaded">
+      <SkeletonLoader variant="tiles" :rows="4" :span="3" :tile-height="52" style="margin-bottom:12px" />
+      <SkeletonLoader :cols="8" :rows="4" />
+    </template>
+
+    <template v-else>
     <h2 class="section-title">
       {{ t('pool.summary_title') }}
       <span class="badge" :class="preview ? 'warn' : 'ok'" style="margin-left:6px">
@@ -201,7 +210,7 @@
 
     <h2 class="section-title">{{ t('pool.config_title') }}</h2>
     <div class="tile" style="margin-bottom:12px">
-      <div class="form-grid-p">
+      <div class="field-grid">
         <label for="pool-name">{{ t('pool.name_label') }}</label>
         <input id="pool-name" v-model="poolName" type="text" :placeholder="t('pool.name_ph')" />
 
@@ -230,6 +239,7 @@
       role="status"
       aria-live="polite"
     >{{ lastMsg }}</pre>
+    </template>
 
     <!-- Clearing is metadata-only.  The wording has to make that unmistakable,
          because the button sits next to disk actions that really do erase. -->
@@ -255,6 +265,7 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -262,6 +273,7 @@ const { t } = injectI18n()
 const view = ref(null)
 const preview = ref(null)
 const loading = ref(false)
+const loaded = ref(false)
 const busy = ref(false)
 const lastMsg = ref('')
 const clearOpen = ref(false)
@@ -328,6 +340,7 @@ async function refresh() {
     toast('❌ ' + e.message)
   } finally {
     loading.value = false
+    loaded.value = true
   }
 }
 
@@ -408,39 +421,10 @@ useDismissable(clearOpen, () => { clearOpen.value = false }, clearPanel)
   font-weight: 500;
   color: var(--sub);
 }
-.form-grid-p {
-  display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 8px 12px;
-  align-items: center;
-  font-size: 13px;
-}
-.form-grid-p label {
-  color: var(--sub);
-  font-weight: 600;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-.form-grid-p input,
-.form-grid-p select {
-  width: 100%;
-  max-width: 320px;
-}
-/* Table captions carry context for screen readers without changing the layout. */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-@media (max-width: 640px) {
-  .form-grid-p { grid-template-columns: 1fr; }
-  .form-grid-p label { margin-bottom: -4px; }
-}
+/* Layout comes from the global .field-grid. Two things stay local: the wider
+   label column this page's longer labels need, and the field cap — a pool name
+   or min-free number does not benefit from stretching across a wide screen. */
+.field-grid { --field-label-w: 140px; }
+.field-grid input,
+.field-grid select { max-width: 320px; }
 </style>

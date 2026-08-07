@@ -430,7 +430,7 @@ onMounted(refresh)
 .service-copy strong,.managed-service strong,.file-service-row strong { font-size:12px; }
 .service-copy span,.managed-service span { color:var(--sub); font-size:10.5px; line-height:1.35; }
 .service-action { display:flex; align-items:center; gap:8px; }
-.mac-switch { position:relative; width:38px; height:22px; min-width:38px; padding:0; border:0; border-radius:999px; background:#999; }
+.mac-switch { position:relative; width:38px; height:22px; min-width:38px; padding:0; border:0; border-radius:var(--radius-pill); background:#999; }
 .mac-switch span { position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.28); transition:transform .16s ease; }
 .mac-switch[aria-checked="true"] { background:var(--ok); }
 .mac-switch[aria-checked="true"] span { transform:translateX(16px); }

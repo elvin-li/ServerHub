@@ -119,7 +119,8 @@
           </footer>
         </article>
       </div>
-      <div v-if="!filtered.length" class="placeholder">{{ t('apps.empty') }}</div>
+      <div v-if="!catalogLoaded" class="placeholder">{{ t('common.loading') }}</div>
+      <div v-else-if="!filtered.length" class="placeholder">{{ t('apps.empty') }}</div>
     </template>
 
     <!-- Managed inventory: native + docker + vm -->
@@ -143,7 +144,11 @@
         </span>
       </div>
 
-      <div class="managed-table-wrap">
+      <!-- This is the tab the page opens on, and the inventory walks launchd,
+           docker and the VM list before answering. Without this the landing view
+           stated "no managed apps" for the whole first request. -->
+      <SkeletonLoader v-if="!managedLoaded" :cols="7" :rows="8" />
+      <div v-else class="managed-table-wrap">
         <table class="managed-table">
           <thead>
             <tr>
@@ -340,15 +345,22 @@
             <textarea v-model="credentialForm.notes" rows="2" maxlength="1000" :aria-label="t('apps.credential_notes')"></textarea>
           </div>
           <p class="sub-line credential-security">{{ t('apps.credential_security') }}</p>
+          <!-- The form falls back to a hardcoded username and empty notes, so a
+               failed read must disable Save rather than let it overwrite the
+               stored record with those defaults. -->
+          <div v-if="!credentialLoaded" class="placeholder" role="alert" style="margin-bottom:8px">
+            <div>{{ t('apps.credential_load_failed') }}</div>
+            <div v-if="credentialError" class="sub mono" style="margin-top:4px">{{ credentialError }}</div>
+          </div>
           <div class="credential-actions">
             <button
               v-if="credential?.can_apply"
               type="button"
               class="primary"
-              :disabled="credentialBusy"
+              :disabled="credentialBusy || !credentialLoaded"
               @click="saveCredential(true)"
             >{{ t('apps.credential_apply_save') }}</button>
-            <button type="button" :disabled="credentialBusy" @click="saveCredential(false)">
+            <button type="button" :disabled="credentialBusy || !credentialLoaded" @click="saveCredential(false)">
               {{ t('apps.credential_save_only') }}
             </button>
             <button
@@ -598,11 +610,14 @@
       </div>
     </div>
 
-    <div ref="logPanel" v-if="logOpen" class="modal-bg" @click.self="logOpen = false" role="presentation">
+    <!-- closeJobLog, not `logOpen = false`: the job log polls every 1.5s and the
+         interval was only cleared when a poll happened to observe running:false,
+         so closing the modal left it running against the server indefinitely. -->
+    <div ref="logPanel" v-if="logOpen" class="modal-bg" @click.self="closeJobLog" role="presentation">
       <div class="modal install-modal" role="dialog" aria-modal="true" aria-labelledby="apps-log-title">
         <div class="modal-head">
           <h3 id="apps-log-title" class="modal-title">📋 {{ logTitle }}</h3>
-          <button type="button" @click="logOpen = false">{{ t('common.close') }}</button>
+          <button type="button" @click="closeJobLog">{{ t('common.close') }}</button>
         </div>
         <pre class="install-log">{{ logText }}</pre>
       </div>
@@ -612,6 +627,7 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   createCloudflareTunnel,
   deleteAppCredential,
@@ -642,6 +658,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 import { startVisibleInterval } from '../lib/poll'
 
 const toast = inject('toast')
@@ -653,6 +670,7 @@ const jobs = ref([])
 const catalog = ref([])
 const overview = ref({})
 const categories = ref([{ id: 'all', label: t('common.all') }])
+const router = useRouter()
 const managed = ref({ items: [], counts: null })
 const autostart = ref({ items: [], counts: null, groups: [] })
 const detail = ref(null)
@@ -660,6 +678,11 @@ const detailPanel = ref(null)
 const mq = ref('')
 const mkind = ref('all')
 const loading = ref(false)
+// Latched per data source, not derived from `loading`: the two tabs load
+// independently, and reusing `loading` would blank a populated table whenever the
+// other source refreshed.
+const managedLoaded = ref(false)
+const catalogLoaded = ref(false)
 const busy = ref(false)
 const logOpen = ref(false)
 const logPanel = ref(null)
@@ -674,6 +697,9 @@ const installUrl = ref('')
 const credential = ref(null)
 const credentialBusy = ref(false)
 const credentialForm = ref({ username: '', password: '', confirm: '', url: '', notes: '' })
+// Whether credentialForm reflects the stored record; gates Save. See loadCredential().
+const credentialLoaded = ref(false)
+const credentialError = ref('')
 const showCredentialPassword = ref(false)
 const q = ref('')
 const cat = ref('all')
@@ -873,6 +899,18 @@ function catalogOpenUrl(tpl) {
 async function launchOpen(it) {
   const u = openUrl(it) || catalogOpenUrl(it)
   if (!u) return
+  // The trigger buttons are bound to `busy` but this never set it, so repeat
+  // clicks fired concurrent manageApp(..., 'open') calls at the host.
+  if (busy.value) return
+  busy.value = true
+  try {
+    await launchOpenInner(it, u)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function launchOpenInner(it, u) {
   const isProto = /^(vnc|ssh|rdp|smb|afp|vnc):\/\//i.test(u)
 
   if (isScreenSharing(it) || isProto) {
@@ -926,6 +964,7 @@ async function loadManaged(force = false) {
     toast('❌ ' + e.message)
   } finally {
     loading.value = false
+    managedLoaded.value = true
   }
 }
 
@@ -945,8 +984,8 @@ async function setAutostartItem(it, enabled) {
   try {
     const result = await setAppAutostart(it.id, enabled)
     toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${it.name}` : '❌ ' + (result.message || ''))
-    await loadAutostart(true)
-    await loadManaged(true)
+    // Disjoint state (`autostart` vs `managed`) re-read after the same write.
+    await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {
@@ -960,8 +999,8 @@ async function setDockerPolicy(it, policy) {
   try {
     const result = await setDockerAutostartPolicy(name, policy)
     toast(result.ok ? `✅ restart=${policy}` : '❌ ' + (result.message || ''))
-    await loadAutostart(true)
-    await loadManaged(true)
+    // Disjoint state (`autostart` vs `managed`) re-read after the same write.
+    await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {
@@ -975,6 +1014,11 @@ async function runAutostartNow() {
   try {
     const result = await runAppAutostartNow()
     toast(result.ok ? '✅ ' + (result.message || 'ok') : '❌ ' + (result.message || 'fail'))
+    // This starts every autostart-enabled app, so the table it was launched from
+    // is immediately out of date. Nothing reloaded it before: the 15s poll only
+    // covers the Managed tab, so the Autostart rows kept their pre-run "stopped"
+    // chips until the user switched tabs and back.
+    await loadAutostart()
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {
@@ -1117,8 +1161,9 @@ async function cfStartSelected() {
     const result = await startCloudflareTunnel(cfSelectedTunnel.value)
     cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
     toast(result.ok ? '✅ ' + t('apps.tunnel_started', { name: cfSelectedTunnel.value }) : '❌ ' + (result.message || ''))
-    await cfRefresh()
-    await loadManaged(true)
+    // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
+    // action above already committed, so neither read depends on the other.
+    await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
@@ -1136,8 +1181,9 @@ async function cfStartToken() {
     cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
     toast(result.ok ? '✅ ' + t('apps.token_tunnel_started') : '❌ ' + (result.message || ''))
     cfToken.value = ''
-    await cfRefresh()
-    await loadManaged(true)
+    // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
+    // action above already committed, so neither read depends on the other.
+    await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
@@ -1147,13 +1193,17 @@ async function cfStartToken() {
 }
 
 async function cfStop() {
+  // Stopping the tunnel drops every externally published hostname. The panel's
+  // own service stop is confirmed (Settings.vue), so this is too.
+  if (!confirm(t('apps.cf_confirm_stop'))) return
   cfBusy.value = true
   try {
     const result = await stopCloudflare()
     cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
     toast(result.ok ? '✅ ' + t('apps.stopped') : '❌ ' + (result.message || ''))
-    await cfRefresh()
-    await loadManaged(true)
+    // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
+    // action above already committed, so neither read depends on the other.
+    await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {
@@ -1167,8 +1217,9 @@ async function cfRestart() {
     const result = await restartCloudflare()
     cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
     toast(result.ok ? '✅ ' + t('apps.restarted') : '❌ ' + (result.message || ''))
-    await cfRefresh()
-    await loadManaged(true)
+    // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
+    // action above already committed, so neither read depends on the other.
+    await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {
@@ -1246,12 +1297,25 @@ async function loadCredential(app) {
       url: result.url || openUrl(app) || '',
       notes: result.notes || '',
     }
+    credentialLoaded.value = true
+    credentialError.value = ''
   } catch (e) {
+    // Latch the failure and block Save. The form is pre-seeded with a hardcoded
+    // default username and empty notes, and saveCredential sends both, so saving
+    // on top of a failed read replaced the stored username and wiped the notes.
+    // A missing credential is not this case: the API returns 200 with an empty
+    // record for an app that has none, so a rejection here is a real failure.
+    credentialLoaded.value = false
+    credentialError.value = e.message || String(e)
     toast('❌ ' + e.message)
   }
 }
 
 async function saveCredential(applyToService) {
+  if (!credentialLoaded.value) {
+    toast('❌ ' + t('apps.credential_load_failed'))
+    return
+  }
   const f = credentialForm.value
   if (!f.username) {
     toast('❌ ' + t('settings.username_required'))
@@ -1302,14 +1366,23 @@ async function deleteCredential() {
   }
 }
 
+// Generation counter so overlapping opens cannot interleave. None of the three
+// triggers were disabled and this had no in-flight guard, so two clicks resolved
+// into the shared logText in whatever order the responses arrived -- leaving the
+// modal titled for one app and showing another's log.
+let managedLogGeneration = 0
+
 async function openManagedLogs(it) {
+  const generation = ++managedLogGeneration
   logOpen.value = true
   logTitle.value = (it.name || it.id) + ' · logs'
   logText.value = t('common.loading')
   try {
     const result = await getManagedAppLogs(it.id, 150)
+    if (generation !== managedLogGeneration) return
     logText.value = result.log || result.message || '—'
   } catch (e) {
+    if (generation !== managedLogGeneration) return
     logText.value = e.message
   }
 }
@@ -1338,8 +1411,7 @@ async function doManagedUninstall(it) {
     const result = await manageApp(it.id, 'uninstall', removeData)
     toast(result.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + (result.message || ''))
     detail.value = null
-    await loadManaged(true)
-    await loadCatalog()
+    await Promise.all([loadManaged(true), loadCatalog()])
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {
@@ -1418,6 +1490,8 @@ async function loadCatalog() {
     if (d.categories?.length) categories.value = d.categories
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    catalogLoaded.value = true
   }
 }
 
@@ -1430,9 +1504,13 @@ function openInstall(tpl) {
   installVars.value = vars
 }
 
+// "Open stack" sends the operator to the Compose page, which is this app's
+// dedicated stack view. It used to set tab.value = 'stacks', but the template
+// only branches on catalog / managed / autostart, so the button rendered a blank
+// page. It deliberately does not reuse goManage(): the adjacent "Manage" button
+// already does that, and the two are offered as distinct actions.
 function openPath() {
-  tab.value = 'stacks'
-  refresh()
+  router.push('/compose')
 }
 
 async function doInstall() {
@@ -1452,9 +1530,9 @@ async function doInstall() {
     if (r.url || r.url_hint) installUrl.value = r.url || r.url_hint
     toast(r.ok ? `✅ ${installTpl.value.name}` : '❌ ' + (r.message || t('common.fail')))
     if (r.ok) {
-      await loadCatalog()
-      await loadManaged(true)
-      refresh()
+      // Three independent re-reads after a successful install: catalog, managed
+      // list and stacks. refresh() was already fire-and-forget here.
+      await Promise.all([loadCatalog(), loadManaged(true), refresh()])
     }
   } catch (e) {
     installLog.value = '❌ ' + e.message
@@ -1487,8 +1565,10 @@ async function doUninstall(tpl) {
     if (r.message && !r.ok) {
       // show detail in console-friendly toast only; full msg may be long
     }
-    await loadCatalog()
-    await refresh()
+    // loadManaged too: uninstalling from the catalog left the app still listed
+    // under Managed until something else happened to refresh it, so the two
+    // uninstall paths disagreed -- doManagedUninstall() already reloads it.
+    await Promise.all([loadCatalog(), refresh(), loadManaged(true)])
   } catch (e) {
     toast('❌ ' + e.message)
   }
@@ -1520,6 +1600,15 @@ function openJob(jobId, title) {
   logTimer = setInterval(poll, 1500)
 }
 
+// Tear the poll down with the modal. Clearing curJob as well makes poll() a no-op
+// even if one call was already in flight when the modal closed.
+function closeJobLog() {
+  logOpen.value = false
+  curJob.value = null
+  if (logTimer) clearInterval(logTimer)
+  logTimer = null
+}
+
 async function poll() {
   if (!curJob.value) return
   try {
@@ -1530,7 +1619,11 @@ async function poll() {
       logTimer = null
       refresh()
     }
-  } catch {}
+  } catch (e) {
+    // Append rather than swallow: a failing poll used to leave the modal on
+    // "Loading…" forever with no indication that the job status was unreadable.
+    logText.value = `${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${e.message || e}`.trim()
+  }
 }
 
 onMounted(() => {
@@ -1612,7 +1705,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .cat-pill {
   font-size: 12px;
   padding: 6px 12px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   border: 1px solid var(--line);
   background: var(--btn);
   color: var(--txt) !important;
@@ -1728,7 +1821,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   height: 20px;
   min-width: 2.2em;
   padding: 0 7px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
@@ -1786,7 +1879,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .cat-tag {
   font-size: 11px;
   padding: 2px 7px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 16%, var(--card));
   color: var(--txt);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
@@ -1797,7 +1890,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .tag {
   font-size: 11px;
   padding: 2px 7px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--btn);
   color: var(--sub);
   border: 1px solid var(--line);
@@ -1960,11 +2053,8 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   word-break: break-all;
 }
 
-.meta-count {
-  font-size: 12px;
-  color: var(--sub);
-  white-space: nowrap;
-}
+/* Size and colour come from the global .meta-count. */
+.meta-count { white-space: nowrap; }
 
 .managed-table-wrap {
   overflow: auto;
@@ -2040,7 +2130,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   padding: 0 9px;
   font-size: 12px;
   font-weight: 600;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--btn-border);
   background: var(--btn);
   color: var(--txt);

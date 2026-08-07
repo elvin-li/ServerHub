@@ -21,6 +21,9 @@
             <option v-for="c in containers" :key="c.id" :value="c.id">{{ c.label }}</option>
           </select>
           <input v-else v-model="container" type="text" :disabled="connected" :placeholder="t('terminal.container_ph')"  :aria-label="t('terminal.container_ph')"/>
+          <!-- Only when discovery actually failed. An empty list with no error is
+               simply "no running containers" and needs no explanation. -->
+          <span v-if="containerListError" class="sub" style="color:var(--warn)">{{ containerListError }}</span>
         </label>
 
         <label v-if="target === 'container'" class="tsel">
@@ -86,6 +89,9 @@ const target = ref('host')
 const container = ref('')
 const shell = ref('/bin/sh')
 const containers = ref([])
+// Set when container discovery fails, so the empty picker explains itself instead
+// of looking like "you have no containers".
+const containerListError = ref('')
 const dialogOpen = ref(false)
 const opening = ref(false)
 const connected = ref(false)
@@ -137,8 +143,12 @@ async function load() {
       }))
       .filter(c => c.id)
     if (!container.value && containers.value.length) container.value = containers.value[0].id
-  } catch {
-    // Container discovery is optional; a manually entered name remains available.
+    containerListError.value = ''
+  } catch (error) {
+    // Container discovery is optional -- the template falls back to a free-text
+    // container field -- but say why the picker is empty rather than leaving the
+    // operator to guess whether Docker is down or they have no containers.
+    containerListError.value = error.message || String(error)
   }
 }
 

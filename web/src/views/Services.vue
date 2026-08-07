@@ -77,8 +77,14 @@
       </button>
     </div>
 
+    <!-- First load: neither the dense table's empty row nor the card grid's
+         placeholder can distinguish "not fetched" from "nothing installed", and
+         the services scan shells out per launchd job, so that window is long
+         enough to read. -->
+    <SkeletonLoader v-if="!loaded" :variant="dense ? 'table' : 'cards'" :cols="8" :rows="8" />
+
     <!-- Dense table -->
-    <template v-if="dense">
+    <template v-else-if="dense">
       <div class="table-wrap">
         <table class="dense svc-table">
           <thead>
@@ -340,6 +346,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -347,6 +354,9 @@ const { t } = injectI18n()
 const status = ref(null)
 const busy = ref(false)
 const loading = ref(false)
+// Latched at the end of the first refresh, including the 404 fallback path, so a
+// server old enough to lack /api/services still leaves the skeleton behind.
+const loaded = ref(false)
 const dense = ref(true)
 const q = ref('')
 const onlyBad = ref(false)
@@ -543,11 +553,14 @@ async function refresh(force = false) {
     }
   } finally {
     loading.value = false
+    loaded.value = true
   }
 }
 
 async function onAction(svc, action) {
-  if (['stop', 'remove', 'kill'].includes(action) && !confirm(t('services.confirm_action', { name: svc.name, action: actLabel(action) }))) return
+  // restart included: it interrupts a running service, which is the same class of
+  // disruption as stop and deserves the same prompt.
+  if (['stop', 'remove', 'kill', 'restart'].includes(action) && !confirm(t('services.confirm_action', { name: svc.name, action: actLabel(action) }))) return
   busy.value = true
   toast(t('services.running_action', { name: svc.name, action: actLabel(action) }))
   try {
@@ -564,7 +577,11 @@ async function onAction(svc, action) {
 
 async function bulkAction(ids, action) {
   if (!ids.length) return
-  if (action === 'stop' && !confirm(t('services.confirm_bulk', { n: ids.length, action: actLabel(action) }))) return
+  // Confirm anything that interrupts running services, not just stop. "Restart
+  // all warn" and the bulk-bar Restart both hit every selected service at once,
+  // which is a wider blast radius than a single stop.
+  if (['stop', 'restart'].includes(action)
+    && !confirm(t('services.confirm_bulk', { n: ids.length, action: actLabel(action) }))) return
   busy.value = true
   toast(t('services.bulk_running', { n: ids.length, action: actLabel(action) }))
   try {
@@ -655,10 +672,15 @@ async function saveOverride() {
       url: editForm.url || null,
       port: editForm.port || null,
     }
-    await updateServiceOverride(detail.value.id, body)
+    const saved = detail.value
+    await updateServiceOverride(saved.id, body)
     toast(`✅ ${t('common.save')}`)
-    await refresh(true)
-    await openDetail(detail.value, true)
+    // Both re-reads observe the same just-written override and neither feeds the
+    // other: refresh() rewrites the list, openDetail() rewrites the drawer. Run
+    // them together so saving costs one full service scan, not a scan followed
+    // by a detail fetch. `saved` is captured because the drawer may be closed by
+    // the time these resolve.
+    await Promise.all([refresh(true), openDetail(saved, true)])
   } catch (e) {
     toast(`❌ ${e.message || e}`)
   } finally {
@@ -744,7 +766,8 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .svc-page { min-width: 0; }
 .svc-toolbar { flex-wrap: wrap; gap: 8px; }
 .svc-toolbar .search { min-width: 200px; flex: 1; }
-.meta-count { font-size: 12px; color: var(--sub); font-weight: 600; }
+/* Size and colour come from the global .meta-count. */
+.meta-count { font-weight: 600; }
 .warn-tag {
   margin-left: 8px; color: var(--down); font-weight: 600; font-size: 12px;
 }
@@ -759,7 +782,7 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 }
 .prob-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 10px; border-radius: 999px; background: var(--bg);
+  padding: 3px 10px; border-radius: var(--radius-pill); background: var(--bg);
   border: 1px solid var(--line); cursor: pointer;
   transition: border-color .12s, background .12s;
 }
@@ -772,7 +795,7 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 }
 .chip {
   border: 1px solid var(--line); background: var(--card); color: var(--txt);
-  border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+  border-radius: var(--radius-pill); padding: 4px 12px; font-size: 12px; cursor: pointer;
   font-weight: 500; transition: border-color .12s, box-shadow .12s;
 }
 .chip.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }

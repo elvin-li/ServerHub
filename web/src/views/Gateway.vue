@@ -10,7 +10,8 @@
       <button :disabled="busy" @click="reload">{{ t('gateway.reload') }}</button>
     </div>
 
-    <div class="dash-grid" v-if="data">
+    <SkeletonLoader v-if="!loaded" variant="tiles" :rows="2" :span="6" :tile-height="72" />
+    <div class="dash-grid" v-else-if="data">
       <div class="tile span-4">
         <h3>{{ t('gateway.status') }}</h3>
         <div class="row">
@@ -30,7 +31,8 @@
     </div>
 
     <h2 class="section-title">{{ t('gateway.sites') }}</h2>
-    <div class="table-wrap">
+    <SkeletonLoader v-if="!loaded" :cols="4" :rows="4" />
+    <div v-else class="table-wrap">
       <table class="dense">
         <thead>
           <tr>
@@ -61,18 +63,24 @@
 import { inject, onMounted, ref } from 'vue'
 import { getNginx, reloadNginx, testNginx } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const busy = ref(false)
 const msg = ref('')
+// nginx config parsing walks the sites directory, so the first load is not
+// instant; the site table used to claim "no sites configured" until it returned.
+const loaded = ref(false)
 
 async function load() {
   try {
     data.value = await getNginx()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loaded.value = true
   }
 }
 

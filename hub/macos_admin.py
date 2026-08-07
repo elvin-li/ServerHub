@@ -158,6 +158,36 @@ def run_admin(command: Sequence[str], *, timeout: int = 120) -> dict:
     return run_admin_sequence([command], timeout=timeout)
 
 
+#: What sudo says when it declines to run something at all, as opposed to running
+#: it and having it fail.  Everything here is printed by sudo itself, before the
+#: command is executed.
+_SUDO_REFUSALS = (
+    "a password is required",
+    "no password was provided",
+    "sorry, try again",
+    "is not allowed to execute",
+    "may not run",
+    "no tty present",
+    "command not allowed",
+    "unable to initialize policy",
+)
+
+
+def sudo_refused(stderr: str) -> bool:
+    """Whether ``sudo -n`` declined, rather than the command having failed.
+
+    The distinction decides which of two very different things the operator is
+    told.  A refusal means "this needs a password", which the SPA can act on by
+    asking for one.  A non-zero exit from a command sudo *did* run means the
+    operation itself failed, and the only useful answer is that tool's own error
+    text.  Collapsing the two -- retrying every failure through the password path
+    and reporting ``password_required`` when it also failed -- put a password
+    prompt in front of problems no password could fix, and hid the real cause.
+    """
+    lowered = str(stderr or "").lower()
+    return any(marker in lowered for marker in _SUDO_REFUSALS)
+
+
 def sudo_capture(command: Sequence[str], *, timeout: int = 10) -> tuple[int, str, str]:
     """(rc, stdout, stderr) for a read-only command that needs root.
 

@@ -313,7 +313,7 @@ function formatLegend(v) {
   gap: 0;
   min-height: 60px;
   background: color-mix(in srgb, var(--bg) 50%, var(--card));
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   padding: 4px 4px 4px 0;
 }
@@ -390,7 +390,7 @@ function formatLegend(v) {
   gap: 5px;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 2px 9px 2px 6px;
   line-height: 1.2;
   transition: border-color .12s;

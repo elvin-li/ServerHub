@@ -728,6 +728,11 @@ def set_restart_policy(name: str, policy: str = "unless-stopped") -> dict:
     allowed = {"no", "always", "unless-stopped", "on-failure"}
     if policy not in allowed:
         raise HTTPException(400, f"bad policy {policy}")
+    # `name` is a bare positional, so an option-shaped value would be read by
+    # docker as a flag instead of as a container. The autostart route derives it
+    # from a caller-supplied "docker-ctr:<name>" id, so it needs the same guard
+    # the brew autostart path already uses.
+    name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("update", f"--restart={policy}", name, timeout=30)
     invalidate_status()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out), "policy": policy}

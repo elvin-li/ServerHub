@@ -78,8 +78,13 @@ def _adaptive_info() -> dict:
                 "compose_projects": _adaptive_cache["compose"],
                 "nginx_sites": _adaptive_cache["nginx"],
             }
-    compose = scan_new_compose_projects()
-    nginx = nginx_sites()
+    # Two unrelated filesystem scans (compose project tree, nginx sites dir).
+    # Both are behind this 60s cache, but every miss paid for them in sequence.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_compose = ex.submit(scan_new_compose_projects)
+        f_nginx = ex.submit(nginx_sites)
+        compose = f_compose.result()
+        nginx = f_nginx.result()
     with _lock:
         _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
     return {"compose_projects": compose, "nginx_sites": nginx}

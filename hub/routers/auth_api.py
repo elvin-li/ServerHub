@@ -22,7 +22,11 @@ class LoginBody(BaseModel):
 class SetupBody(BaseModel):
     username: str = Field(default="admin", min_length=1, max_length=64)
     password: str = Field(min_length=10, max_length=256)
-    setup_token: str = Field(min_length=32, max_length=128)
+    #: Optional at the schema level because a loopback claim does not need one.
+    #: Whether it is actually demanded is decided by auth.setup_token_required(),
+    #: which sees the request; the length bound stays so an over-long value is
+    #: rejected before it reaches a comparison.
+    setup_token: str = Field(default="", max_length=128)
 
 
 class ChangePasswordBody(BaseModel):
@@ -31,13 +35,39 @@ class ChangePasswordBody(BaseModel):
     new_password: str = Field(min_length=10, max_length=256)
 
 
+def _https_request(request: Request) -> bool:
+    """Whether the browser reached us over TLS, including via a proxy.
+
+    ServerHub is meant to be published through cloudflared or nginx, and both
+    terminate TLS and then speak plain HTTP to this origin.  Reading only
+    ``request.url.scheme`` therefore saw "http" on exactly the deployment that
+    is exposed to the internet, and the session cookie went out without
+    ``Secure`` -- so any later plain-HTTP request to the same host would leak it.
+
+    Trusting the forwarded headers is safe *for this decision* because the only
+    thing they can do is add ``Secure``, which is strictly more restrictive.
+    """
+    if request.url.scheme == "https":
+        return True
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if forwarded_proto == "https":
+        return True
+    # RFC 7239: Forwarded: for=...;proto=https;by=...
+    for element in (request.headers.get("forwarded") or "").split(","):
+        for param in element.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "proto" and value.strip().strip('"').lower() == "https":
+                return True
+    return False
+
+
 def _set_session(response: Response, request: Request, username: str) -> None:
     response.set_cookie(
         auth.COOKIE_NAME,
         auth.create_session(username),
         max_age=auth.SESSION_TTL,
         httponly=True,
-        secure=request.url.scheme == "https",
+        secure=_https_request(request),
         samesite="strict",
         path="/",
     )
@@ -53,6 +83,11 @@ def auth_status(request: Request):
     suggested_username = str(auth._auth_cfg().get("username") or "admin")
     return {
         "setup_required": auth.setup_required(),
+        # Lets the setup form omit the token field entirely when this claim does
+        # not need one, instead of showing a box the operator must go and fill
+        # from a file for no security gain.
+        "setup_token_required": auth.setup_token_required(request),
+        "setup_token_mode": auth.setup_token_mode(),
         "auth_required": auth.auth_enabled() or auth.setup_required(),
         "authenticated": authenticated,
         "username": username or suggested_username,
@@ -68,7 +103,10 @@ def auth_setup(body: SetupBody, request: Request, response: Response):
         raise api_error("auth.already_setup")
     try:
         completed = auth.complete_setup(
-            body.setup_token, body.password, body.username.strip() or "admin"
+            body.setup_token,
+            body.password,
+            body.username.strip() or "admin",
+            require_token=auth.setup_token_required(request),
         )
     except ValueError:
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
@@ -207,8 +245,30 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
 
 
 def secrets_compare(a: str, b: str) -> bool:
-    import secrets
-    return secrets.compare_digest(a, b)
+    """Constant-time comparison that tolerates non-ASCII submitted usernames.
+
+    A login body is attacker-controlled, and secrets.compare_digest rejects
+    non-ASCII str with TypeError -- so a username like "admın" answered 500
+    instead of "bad credentials".
+    """
+    return auth.constant_time_equals(a, b)
+
+
+@router.get("/api/auth/setup-token")
+def auth_setup_token(request: Request):
+    """Return the one-time setup token — only when unclaimed and from localhost.
+
+    This lets the first person to open the panel in a browser complete setup
+    without ever touching the terminal or asking an AI for help.  The token is
+    only disclosed to loopback clients (127.0.0.1 / ::1) and only while the
+    installation is still unclaimed.
+    """
+    if not auth.setup_required():
+        raise api_error("auth.already_setup")
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1"):
+        raise api_error("auth.setup_token_localhost_only")
+    return {"setup_token": auth.setup_token()}
 
 
 @router.post("/api/auth/logout")

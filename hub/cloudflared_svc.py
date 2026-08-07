@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -295,11 +297,70 @@ def _is_running() -> bool:
     return _process_running() or _launchd_running()
 
 
-def list_tunnels() -> list[dict]:
+#: Cached tunnel list.
+#:
+#: `cloudflared tunnel list` is a round trip to Cloudflare's API, and it was the
+#: single most expensive thing in the Apps page payload at ~1.6s of its ~4.5s.
+#: It had no cache at all, while the inventory around it caches for only 8s, so a
+#: browser sitting on that page re-queried a remote service every few seconds --
+#: and the 30s timeout meant an unreachable Cloudflare could hang the page for
+#: half a minute.
+#:
+#: The account's tunnel list changes when an operator creates or deletes a tunnel,
+#: which is minutes-to-days apart, not seconds. Five minutes is generous for
+#: freshness and removes the remote dependency from the page path entirely; the
+#: mutating paths below invalidate it so a newly created tunnel appears at once.
+_TUNNELS_TTL = 300.0
+_tunnels_cache: dict = {"t": 0.0, "v": None}
+#: One lock, so a second reader arriving mid-request waits for that answer rather
+#: than opening its own connection to Cloudflare.
+_tunnels_lock = threading.Lock()
+
+
+def invalidate_tunnels() -> None:
+    """Drop the cached tunnel list after creating or deleting a tunnel."""
+    with _tunnels_lock:
+        _tunnels_cache.update(t=0.0, v=None)
+
+
+def list_tunnels(force: bool = False) -> list[dict]:
     """Return tunnels from account (requires cert.pem)."""
+    if not force:
+        cached = _tunnels_cache["v"]
+        if cached is not None and time.time() - _tunnels_cache["t"] < _TUNNELS_TTL:
+            return list(cached)
+
+    with _tunnels_lock:
+        cached = _tunnels_cache["v"]
+        if not force and cached is not None and time.time() - _tunnels_cache["t"] < _TUNNELS_TTL:
+            return list(cached)
+        result = _list_tunnels_uncached()
+        if result is None:
+            # Could not reach Cloudflare. Serve the previous answer if there is
+            # one -- a stale tunnel list beats an empty page -- and do not cache
+            # the failure. Treating "empty" as failure here was the first attempt
+            # and it meant an account with no tunnels never cached at all, so the
+            # remote call ran on every single poll.
+            return list(cached) if cached is not None else []
+        _tunnels_cache.update(t=time.time(), v=list(result))
+        return result
+
+
+def _list_tunnels_uncached() -> list[dict] | None:
+    """Tunnels for the account, or None when the answer is unknown.
+
+    The distinction matters for caching. "This account has no tunnels" is a real,
+    cacheable answer; "cloudflared could not reach Cloudflare" is not, and caching
+    it would hide every tunnel for the whole TTL.
+    """
     if not _logged_in():
+        # Not an error and not transient: without a cert there is nothing to list.
         return []
-    rc, out, err = sh([_bin(), "tunnel", "list"], timeout=30)
+    # 10s, not 30: this sits on a page load, and a Cloudflare that has not
+    # answered in ten seconds is not going to make the page useful.
+    rc, out, err = sh([_bin(), "tunnel", "list"], timeout=10)
+    if rc != 0:
+        return None
     text = (out or "") + "\n" + (err or "")
     tunnels: list[dict] = []
     # ID NAME CREATED CONNECTIONS
@@ -369,43 +430,42 @@ def _write_launchagent_token() -> Path:
     # exits immediately with "flag provided but not defined: -edge" and dumps its
     # help text into the log, which under KeepAlive becomes a silent respawn loop.
     extra = _edge_workaround_args()
-    extra_xml = "".join(f"\n    <string>{a}</string>" for a in extra)
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{bin_path}</string>
-    <string>tunnel</string>
-    <string>--no-autoupdate</string>{extra_xml}
-    <string>run</string>
-    <string>--token-file</string>
-    <string>{TOKEN_FILE}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{LOG_FILE}</string>
-  <key>StandardErrorPath</key>
-  <string>{LOG_FILE}</string>
-  <key>WorkingDirectory</key>
-  <string>{STATE_DIR}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <key>HOME</key>
-    <string>{Path.home()}</string>
-  </dict>
-</dict>
-</plist>
-"""
-    PLIST.write_text(body)
+    # Serialised with plistlib rather than an f-string template.  Hand-built XML
+    # has to escape every interpolated value itself, and none of these were
+    # escaped: a path or flag containing &, < or " produced either a corrupt
+    # plist that launchd silently refuses, or -- given a value that ever becomes
+    # attacker-influenced -- injected extra <string> elements into
+    # ProgramArguments, which is arbitrary command execution at login.  plistlib
+    # escapes correctly by construction, and it is already what every other
+    # plist writer in this codebase uses (native_catalog, launcher_svc).
+    payload = {
+        "Label": LABEL,
+        # Position matters: --edge / --protocol belong to the `tunnel` command, so
+        # they must appear BEFORE the `run` subcommand.  Placed after it,
+        # cloudflared exits immediately with "flag provided but not defined:
+        # -edge" and dumps its help text into the log, which under KeepAlive
+        # becomes a silent respawn loop.  One list element per argv element, so
+        # launchd never word-splits them.
+        "ProgramArguments": [
+            str(bin_path),
+            "tunnel",
+            "--no-autoupdate",
+            *[str(a) for a in extra],
+            "run",
+            "--token-file",
+            str(TOKEN_FILE),
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(LOG_FILE),
+        "StandardErrorPath": str(LOG_FILE),
+        "WorkingDirectory": str(STATE_DIR),
+        "EnvironmentVariables": {
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            "HOME": str(Path.home()),
+        },
+    }
+    PLIST.write_bytes(plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False))
     return PLIST
 
 
@@ -599,6 +659,8 @@ def create_tunnel(name: str) -> dict:
     if not _logged_in():
         raise HTTPException(400, "请先登录 Cloudflare")
     rc, out, err = sh([_bin(), "tunnel", "create", name], timeout=60)
+    # The account list just changed; do not let the page show the old one.
+    invalidate_tunnels()
     ok = rc == 0
     msg = ((out or "") + "\n" + (err or "")).strip()
     tunnels = list_tunnels() if ok or _logged_in() else []

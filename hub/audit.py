@@ -141,8 +141,13 @@ def record(event: str, **fields: Any) -> dict:
         # secure_io creates the file 0600 from the first byte.  A plain
         # open("a") would leave it 0644 under the default umask until a later
         # chmod, and this log names accounts and source addresses.
-        if not AUDIT_PATH.exists():
-            secure_io.write_secret_text(AUDIT_PATH, "")
+        #
+        # Create-if-absent, not "check then write": the write_secret_text form
+        # opens with O_TRUNC, so any false negative from exists() emptied the
+        # entire audit trail before appending one line to it.  The same shape in
+        # config._bootstrap() destroyed a populated services.yaml on every test
+        # run, and here the loss would be the security history specifically.
+        secure_io.create_secret_text(AUDIT_PATH, "")
         with AUDIT_PATH.open("a", encoding="utf-8") as fh:
             # default=str: an audit write must not fail because a caller
             # passed an object json cannot encode.  Losing fidelity on one

@@ -186,6 +186,16 @@ def _validate_name(value: str) -> str:
     normalized = str(value or "").strip()
     if not _NAME_RE.fullmatch(normalized):
         raise ShareValidationError("shares.bad_name")
+    # Every current call site puts the name in a flag-argument slot (`-n <name>`,
+    # `-e <record>`, `-r <record>`), where getopt consumes it unconditionally.
+    # That is what makes a leading hyphen harmless *today* -- which is a property
+    # of the argv layout, not of the value, so it stops holding the moment an
+    # argument is repositioned.  A share name starting with "-" is never
+    # intentional, so pin it here instead of relying on `sharing`'s parser.
+    # Not cli_args._SAFE_POSITIONAL: that demands an ASCII alphanumeric first
+    # character and would reject legitimate non-Latin share names.
+    if normalized.startswith("-"):
+        raise ShareValidationError("shares.bad_name")
     return normalized
 
 

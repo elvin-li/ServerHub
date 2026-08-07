@@ -7,6 +7,8 @@
     <div class="toolbar">
       <button class="primary" @click="load">{{ t('common.refresh') }}</button>
     </div>
+    <SkeletonLoader v-if="!loaded" variant="cards" :rows="6" />
+    <div v-else-if="!Object.keys(byCat).length" class="placeholder">{{ t('common.none') }}</div>
     <div v-for="(list, cat) in byCat" :key="cat" style="margin-bottom:14px">
       <h2 class="section-title">{{ catLabel(cat) }}</h2>
       <div class="grid">
@@ -31,10 +33,14 @@
 import { inject, onMounted, ref } from 'vue'
 import { getModules } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const byCat = ref({})
+// The page previously rendered nothing at all until the response arrived, and
+// nothing again when the response was empty — indistinguishable from a crash.
+const loaded = ref(false)
 // Category labels come from the backend as stable ids; the visible label is
 // looked up so a locale switch relabels them instead of leaving them Chinese.
 function catLabel(cat) {
@@ -51,6 +57,8 @@ async function load() {
     byCat.value = j.by_category || {}
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loaded.value = true
   }
 }
 onMounted(load)

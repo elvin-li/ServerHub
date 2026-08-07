@@ -164,11 +164,25 @@ def create_app() -> FastAPI:
         def spa_fallback(full_path: str):
             if full_path == "api" or full_path.startswith("api/"):
                 return HTMLResponse("Not Found", status_code=404)
-            candidate = (static_root / full_path).resolve()
+            try:
+                candidate = (static_root / full_path).resolve()
+            except (OSError, ValueError):
+                # A path the filesystem cannot even represent is, by definition,
+                # not a static file, so the SPA shell is the right answer. This
+                # used to raise and return 500: a request path of a few thousand
+                # characters gives OSError "File name too long", and %00 decodes to
+                # an embedded null which Path rejects with ValueError. Any scanner
+                # or stale link hitting the panel produced a 500 and a traceback in
+                # the log, which reads like a broken server rather than a bad URL.
+                return FileResponse(index_file)
             # Never serve files outside the static dir (path-traversal guard).
             if candidate == static_root or static_root in candidate.parents:
-                if candidate.is_file():
-                    return FileResponse(candidate)
+                try:
+                    if candidate.is_file():
+                        return FileResponse(candidate)
+                except OSError:
+                    # Same class of unrepresentable path, reached via stat().
+                    pass
             return FileResponse(index_file)
     else:
 

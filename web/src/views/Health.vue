@@ -16,7 +16,8 @@
       </span>
     </div>
 
-    <div class="dash-grid" style="margin-bottom:12px" v-if="data?.summary">
+    <SkeletonLoader v-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="34" style="margin-bottom:12px" />
+    <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
         <h3>{{ t('health.passed') }}</h3>
         <div class="v" style="color:var(--ok)">{{ data.summary.ok }}</div>
@@ -42,7 +43,8 @@
       <button :class="{ active: filter==='warn' }" :aria-pressed="filter === 'warn'" @click="filter='warn'">{{ t('health.warnings') }}</button>
     </div>
 
-    <div class="table-wrap">
+    <SkeletonLoader v-if="!loaded" :cols="5" :rows="7" :label="t('common.scanning')" />
+    <div v-else class="table-wrap">
       <table class="dense">
         <thead>
           <tr>
@@ -76,11 +78,13 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import { getHealthChecks } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+const loaded = ref(false)
 const filter = ref('all')
 
 const filtered = computed(() => {
@@ -115,6 +119,7 @@ async function load() {
   try { data.value = await getHealthChecks() }
   catch (e) { toast('❌ ' + e.message) }
   loading.value = false
+  loaded.value = true
 }
 
 onMounted(load)

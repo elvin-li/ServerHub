@@ -1332,9 +1332,37 @@ def default_route() -> dict:
     }
 
 
+def _valid_lookup_target(host: str) -> bool:
+    """A hostname or IP literal that cannot be read as a ``dig`` option.
+
+    ``host`` reaches a bare positional slot (``dig +short <host>``), so a value
+    beginning with ``-`` is parsed as a flag rather than as data -- and this
+    endpoint returns the command's output to the caller, which makes it a read
+    primitive.  ``-f-`` tells dig to take its query list from stdin, ``-p``/``-b``
+    retarget the port and source address.
+
+    The previous check was ``^[a-zA-Z0-9._:-]+$``: the hyphen sits inside the
+    character class with no anchor on the first character, so ``--help`` and
+    ``-p53`` passed it.  ``cli_args.is_safe_hostname`` is the module that exists
+    for exactly this, and it is already used elsewhere in this file.
+    """
+    if cli_args.is_safe_hostname(host):
+        return True
+    # is_safe_hostname requires an alphanumeric first character, which would
+    # reject a bare IPv6 literal such as "::1".  A leading colon cannot be read
+    # as an option, so allow it when the whole value really is an address.
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
 def dns_resolve(host: str) -> dict:
     host = (host or "").strip()
-    if not host or not re.match(r"^[a-zA-Z0-9._:-]+$", host):
+    if not _valid_lookup_target(host):
         raise HTTPException(400, "非法主机名")
     rc, out, err = sh(["/usr/bin/dscacheutil", "-q", "host", "-a", "name", host], timeout=8)
     if rc != 0 or not out.strip():

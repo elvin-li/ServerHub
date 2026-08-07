@@ -26,6 +26,7 @@ CODES: dict[str, tuple[int, str]] = {
     "auth.rate_limited": (429, "too many attempts, retry in {retry} seconds"),
     "auth.already_setup": (409, "administrator password is already set"),
     "auth.bad_setup_token": (403, "invalid first-run setup token"),
+    "auth.setup_token_localhost_only": (403, "the setup token is only visible to localhost clients"),
     "auth.cannot_disable": (400, "authentication cannot be disabled"),
     "auth.password_too_short": (400, "password must be at least {min} characters"),
     "auth.password_reused": (400, "the new password must differ from the current one"),

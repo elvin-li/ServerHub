@@ -15,9 +15,18 @@
 #     this machine were 0644, which sudo tolerates but which lets any local
 #     account read the policy.
 #
+#  4. `visudo -cf` checks grammar, not whether a rule can ever match. 32 rules
+#     once shipped as `smartctl -a ^/dev/[A-Za-z0-9]+$`, which is valid syntax
+#     and is listed by `sudo -l`, but sudo only enters regex mode when the
+#     argument list BEGINS with `^` -- so those rules were glob-matched against a
+#     literal `^`, matched nothing, and SMART reads quietly asked for a password
+#     for as long as they were installed. `--verify` catches that class of bug by
+#     asking sudo what it will actually allow; see deploy/verify-sudoers.py.
+#
 # Usage:
 #     deploy/install-sudoers.sh            # install for the current user
 #     deploy/install-sudoers.sh --check    # validate only, change nothing
+#     deploy/install-sudoers.sh --verify   # audit the policy sudo has loaded
 #     deploy/install-sudoers.sh --user bob # install for a specific account
 set -euo pipefail
 
@@ -27,15 +36,21 @@ TARGET="/etc/sudoers.d/serverhub"
 STATE_ROOT="$(cd "$HERE/.." && pwd)"
 
 CHECK_ONLY=0
+VERIFY_ONLY=0
 RUN_USER="$(id -un)"
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK_ONLY=1 ;;
+    --verify) VERIFY_ONLY=1 ;;
     --user) shift; RUN_USER="${1:?--user needs a value}" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+if [ "$VERIFY_ONLY" -eq 1 ]; then
+  exec python3 "$HERE/verify-sudoers.py"
+fi
 
 if [ ! -f "$TEMPLATE" ]; then
   echo "template missing: $TEMPLATE" >&2
@@ -79,9 +94,14 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
 fi
 
 if [ -f "$TARGET" ]; then
+  # The backup stays in /etc/sudoers.d, which sudo reads -- but sudo skips file
+  # names containing a '.' or ending in '~' (sudoers(5)), so `serverhub.bak-...`
+  # is inert. Do NOT rename a backup to something without a dot to "restore" it;
+  # that loads it alongside the current policy instead of replacing it. Copy it
+  # over $TARGET instead.
   BACKUP="$TARGET.bak-$(date +%Y%m%d-%H%M%S)"
   sudo cp -p "$TARGET" "$BACKUP"
-  echo "backed up existing policy -> $BACKUP"
+  echo "backed up existing policy -> $BACKUP (inert: sudo skips names with a dot)"
 fi
 
 sudo install -m 0440 -o root -g wheel "$STAGED" "$TARGET"
@@ -97,5 +117,8 @@ else
   exit 1
 fi
 
+# Grammar was valid and the file is in place; now check that the rules sudo
+# loaded actually match the calls the panel makes. A rule that can never match is
+# indistinguishable from a missing one at runtime, and `visudo` cannot see it.
 echo
-echo "verify with:  sudo -n -l | grep NOPASSWD"
+python3 "$HERE/verify-sudoers.py"

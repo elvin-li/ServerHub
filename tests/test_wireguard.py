@@ -513,3 +513,61 @@ class PeerKeyRouteShapeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExportEndpointTests(unittest.TestCase):
+    """Every export format reads the Endpoint through the same parser.
+
+    A truncated host here is the worst kind of bug: the generated Clash proxy and
+    Shadowrocket URL both look complete, import without complaint, and can never
+    connect.
+    """
+
+    def test_a_bare_v6_endpoint_is_not_split_into_host_and_port(self):
+        host, port = wgx._endpoint(
+            {"Endpoint": "2408:8248:1e43:8080::215"}
+        )
+        self.assertEqual(host, "2408:8248:1e43:8080::215")
+        self.assertEqual(port, str(wgx.DEFAULT_PORT))
+
+    def test_a_bracketed_v6_endpoint_keeps_its_port(self):
+        self.assertEqual(
+            wgx._endpoint({"Endpoint": "[2408:8248::215]:51821"}),
+            ("2408:8248::215", "51821"),
+        )
+
+    def test_hostname_and_v4_are_unchanged(self):
+        self.assertEqual(
+            wgx._endpoint({"Endpoint": "vpn.example:51821"}),
+            ("vpn.example", "51821"),
+        )
+        self.assertEqual(
+            wgx._endpoint({"Endpoint": "vpn.example"}),
+            ("vpn.example", str(wgx.DEFAULT_PORT)),
+        )
+
+    def test_a_v6_endpoint_reaches_the_clash_proxy_intact(self):
+        conf = (
+            "[Interface]\n"
+            "PrivateKey = " + "A" * 42 + "=\n"
+            "Address = 10.10.0.2/32\n"
+            "[Peer]\n"
+            "PublicKey = " + "B" * 42 + "=\n"
+            "AllowedIPs = 10.10.0.0/24\n"
+            "Endpoint = [2408:8248:1e43:8080::215]:51821\n"
+        )
+        rendered = wgx.to_clash_proxy(conf, "home")
+        self.assertIn("server: 2408:8248:1e43:8080::215", rendered)
+        self.assertIn("port: 51821", rendered)
+
+    def test_a_v6_endpoint_reaches_the_shadowrocket_url_intact(self):
+        conf = (
+            "[Interface]\n"
+            "PrivateKey = " + "A" * 42 + "=\n"
+            "Address = 10.10.0.2/32\n"
+            "[Peer]\n"
+            "PublicKey = " + "B" * 42 + "=\n"
+            "Endpoint = [2408:8248:1e43:8080::215]:51821\n"
+        )
+        url = wgx.to_shadowrocket(conf, "home")
+        self.assertTrue(url.startswith("wireguard://2408:8248:1e43:8080::215:51821?"))

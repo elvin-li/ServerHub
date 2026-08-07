@@ -13,6 +13,7 @@ import json
 import platform
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from hub import __version__
 from hub.config import cfg
@@ -424,41 +425,62 @@ def unraid_settings_bundle(force: bool = False) -> dict:
 
     from hub import identity_svc, network_svc
 
-    try:
-        identity = identity_svc.get_identity()
-    except Exception as e:
-        identity = {"error": str(e)}
-    try:
-        alias = network_svc.alias_auto_status()
-    except Exception:
-        alias = None
-    # defer heavy pieces only once per cache window
-    try:
-        shares = get_share_globals()
-    except Exception as e:
-        shares = {"error": str(e), "smb_running": False, "share_count": 0}
-    try:
-        sched = get_scheduler_summary()
-    except Exception as e:
-        sched = {"timers": [], "count": 0, "error": str(e)}
-    try:
-        vms = get_vm_settings()
-    except Exception as e:
-        vms = {"total": 0, "running": 0, "items": [], "error": str(e)}
+    # Twelve independent collectors, each shelling out one to three times
+    # (systemsetup, pmset, sharing, launchctl, diskutil, scutil …). They were run
+    # one after another — several of them inline in the dict literal below — so
+    # the Settings page paid for the whole chain in sequence on every cache miss.
+    # Nothing here reads another's output, so the sequence bought nothing.
+    #
+    # Failure semantics are preserved exactly: the five collectors that had a
+    # try/except keep their specific fallback, and the rest still propagate, since
+    # .result() re-raises in this thread just as a direct call would have.
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        f_identity = ex.submit(identity_svc.get_identity)
+        f_alias = ex.submit(network_svc.alias_auto_status)
+        f_shares = ex.submit(get_share_globals)
+        f_sched = ex.submit(get_scheduler_summary)
+        f_vms = ex.submit(get_vm_settings)
+        f_datetime = ex.submit(get_datetime_info)
+        f_power = ex.submit(get_power_info)
+        f_disk = ex.submit(get_disk_settings)
+        f_mgmt = ex.submit(get_management_access)
+        f_other = ex.submit(get_other_settings)
+        f_thresholds = ex.submit(get_thresholds)
+
+        try:
+            identity = f_identity.result()
+        except Exception as e:
+            identity = {"error": str(e)}
+        try:
+            alias = f_alias.result()
+        except Exception:
+            alias = None
+        try:
+            shares = f_shares.result()
+        except Exception as e:
+            shares = {"error": str(e), "smb_running": False, "share_count": 0}
+        try:
+            sched = f_sched.result()
+        except Exception as e:
+            sched = {"timers": [], "count": 0, "error": str(e)}
+        try:
+            vms = f_vms.result()
+        except Exception as e:
+            vms = {"total": 0, "running": 0, "items": [], "error": str(e)}
 
     v = {
         "ts": time.strftime("%H:%M:%S"),
         "identity": identity,
-        "datetime": get_datetime_info(),
-        "power": get_power_info(),
-        "disk": get_disk_settings(),
-        "management": get_management_access(),
+        "datetime": f_datetime.result(),
+        "power": f_power.result(),
+        "disk": f_disk.result(),
+        "management": f_mgmt.result(),
         "shares": shares,
         "alias_auto": alias,
-        "other": get_other_settings(),
+        "other": f_other.result(),
         "scheduler": sched,
         "vms": vms,
-        "thresholds": get_thresholds(),
+        "thresholds": f_thresholds.result(),
         "sections": [
             {"id": "appearance", "label": "显示设置", "unraid": "Display Settings"},
             {"id": "identity", "label": "标识", "unraid": "Identification"},

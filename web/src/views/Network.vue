@@ -25,6 +25,14 @@
       </span>
     </div>
 
+    <!-- /api/system/network runs `networksetup` per configured service and a
+         `docker network inspect` per network, so the first response is one of the
+         slowest in the app. Every tab below reads the same `data` object, so all
+         seven were simultaneously asserting "no addresses" / "no services" /
+         "no published ports" for the whole wait. One latch covers them all. -->
+    <SkeletonLoader v-if="!loaded" :cols="6" :rows="7" />
+
+    <template v-else>
     <!-- Mobile-friendly network status summary -->
     <div class="net-summary" v-if="data">
       <div class="net-summary-item">
@@ -132,7 +140,7 @@
         <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
           <h3 style="margin:0;flex:1">{{ t('network.autobind_title') }}</h3>
           <label style="font-size:12px;color:var(--sub);display:flex;align-items:center;gap:6px">
-            <input type="checkbox" v-model="autoBindOn" @change="saveAutoBind" /> {{ t('network.autobind_on') }}
+            <input type="checkbox" v-model="autoBindOn" :disabled="busy" @change="saveAutoBind" /> {{ t('network.autobind_on') }}
           </label>
           <button class="tiny primary" :disabled="busy" @click="runAutoBind">{{ t('network.align_now') }}</button>
         </div>
@@ -159,7 +167,7 @@
             >{{ ip }}</span>
             <span v-if="!(data.alias_auto.config?.ips||[]).length" style="color:var(--sub)">{{ t('network.not_configured') }}</span>
           </div>
-          <div class="form-n" style="margin-top:10px">
+          <div class="field-grid" style="margin-top:10px">
             <label>{{ t('network.alias_list') }}</label>
             <input v-model="autoIpsText" type="text" :placeholder="t('network.alias_list_ph')" style="width:100%"  :aria-label="t('network.alias_list_ph')"/>
           </div>
@@ -216,7 +224,7 @@
 
       <div class="tile">
         <h3 style="margin-top:0">{{ t('network.add_alias_title') }}</h3>
-        <div class="form-n">
+        <div class="field-grid">
           <label>{{ t('network.th_nic') }}</label>
           <select v-model="aliasForm.device" :aria-label="t('network.th_nic')">
             <option v-for="i in deviceOptions" :key="i" :value="i">{{ i }}</option>
@@ -441,6 +449,7 @@
         </div>
       </template>
     </template>
+    </template>
 
     <!-- Manual IP modal -->
     <div ref="manualPanel" v-if="manualSvc" class="modal-bg" @click.self="manualSvc=null" role="presentation">
@@ -449,7 +458,7 @@
           <span id="net-manual-title" class="name">{{ t('network.static_ip') }} · {{ manualSvc.name }}</span>
           <button class="tiny" @click="manualSvc=null">{{ t('common.close') }}</button>
         </div>
-        <div class="form-n">
+        <div class="field-grid">
           <label>{{ t('network.ip_addr') }}</label>
           <input v-model="manualForm.ip" type="text" :placeholder="t('network.static_ip_ph')"  :aria-label="t('network.static_ip_ph')"/>
           <label>{{ t('network.subnet_mask') }}</label>
@@ -543,11 +552,13 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+const loaded = ref(false)
 const busy = ref(false)
 const msg = ref('')
 const tab = ref('switch')
@@ -678,6 +689,7 @@ async function refresh(force = false) {
     toast('❌ ' + e.message)
   } finally {
     loading.value = false
+    loaded.value = true
   }
 }
 
@@ -718,6 +730,10 @@ async function saveAutoBind() {
     data.value = { ...data.value, alias_auto: j }
   } catch (e) {
     toast('❌ ' + e.message)
+    // Put the checkbox back. It is bound with v-model, so on failure it kept the
+    // flipped position while the server state was unchanged -- the one control on
+    // this page that showed a setting it had not actually applied.
+    autoBindOn.value = !autoBindOn.value
   } finally {
     busy.value = false
   }
@@ -756,6 +772,10 @@ async function applyProfile(profile) {
 }
 
 async function saveOrder() {
+  // Service order decides which interface is primary egress, so this can move
+  // the machine onto a different network path -- the same class of change as the
+  // confirmed actions elsewhere on this page.
+  if (!confirm(t('network.confirm_order'))) return
   busy.value = true
   try {
     const j = await setNetworkServiceOrder(orderList.value.map(s => s.name))
@@ -884,6 +904,11 @@ function openDns(s) {
 async function applyDns() {
   if (!dnsSvc.value) return
   const servers = dnsServers.value.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean)
+  // Rewriting a service's resolvers can break name resolution for the very
+  // session viewing this page. Every sibling connectivity action here already
+  // confirms (applyProfile, toggleService, setDhcp, applyManual, wifi); this one
+  // was the exception.
+  if (!confirm(t('network.confirm_dns', { name: dnsSvc.value.name }))) return
   busy.value = true
   try {
     const j = await setNetworkDns(dnsSvc.value.name, servers)
@@ -1046,30 +1071,23 @@ useDismissable(connectNet, () => { connectNet.value = null }, connectPanel)
 }
 .msg-box {
   font-size: 11px; white-space: pre-wrap; max-height: 100px; overflow: auto;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm);
   padding: 8px 10px; margin-bottom: 12px; font-family: ui-monospace, Menlo, monospace;
 }
-.form-n {
-  display: grid;
-  grid-template-columns: 100px 1fr;
-  gap: 8px 12px;
-  align-items: center;
-  font-size: 13px;
-}
-.form-n label { color: var(--sub); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
-.form-n input { width: 100%; }
+/* Layout comes from the global .field-grid; 100px is that grid's default, so
+   this page needs no knob. Note this also makes the selects in these forms
+   full-width, matching every other form in the app — the local copy of this rule
+   only ever set `input`, which is why Network's dropdowns were the odd ones out. */
 .log-pre {
   font-size: 11px; white-space: pre-wrap; overflow: auto;
   font-family: ui-monospace, Menlo, monospace;
   background: var(--bg); border: 1px solid var(--line);
-  border-radius: 4px; padding: 8px;
+  border-radius: var(--radius-sm); padding: 8px;
 }
 @media (max-width: 640px) {
   .net-summary { grid-template-columns: repeat(2, 1fr); gap: 6px; }
   .net-summary-item { padding: 6px 8px; }
   .net-summary-value { font-size: 12px; }
-  .form-n { grid-template-columns: 1fr; }
-  .form-n label { margin-bottom: -4px; }
   .msg-box { font-size: 10px; max-height: 80px; }
 }
 </style>

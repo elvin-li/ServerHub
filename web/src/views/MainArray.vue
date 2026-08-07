@@ -14,6 +14,16 @@
       </span>
     </div>
 
+    <!-- Storage is the page where a false empty state is most alarming: five
+         separate tables would each claim there were no disks, no volumes and no
+         SMART data while the first scan was still running. Gate all of them on
+         one latch rather than per table, so the page fills in as a unit. -->
+    <template v-if="!loaded">
+      <SkeletonLoader variant="tiles" :rows="4" :span="3" :tile-height="40" style="margin-bottom:12px" />
+      <SkeletonLoader :cols="9" :rows="5" />
+    </template>
+
+    <template v-else>
     <!-- Unraid-style array summary -->
     <div class="dash-grid" style="margin-bottom:12px" v-if="data?.array || data?.totals">
       <div class="tile span-3">
@@ -347,6 +357,7 @@
         </tbody>
       </table>
     </div>
+    </template>
 
     <!-- Rename modal -->
     <div ref="renamePanel" v-if="renameTarget" class="modal-bg" @click.self="renameTarget=null" role="presentation">
@@ -376,7 +387,7 @@
         <p style="font-size:12px;color:var(--down);line-height:1.5;margin-bottom:10px">
           ⚠️ {{ t('main_extra.format_warn') }}
         </p>
-        <div class="form-grid-m">
+        <div class="field-grid">
           <label>{{ t('main_extra.fs') }}</label>
           <select v-model="formatFs" :aria-label="t('main_extra.fs')">
             <option v-for="f in fsTypes" :key="f" :value="f">{{ f }}</option>
@@ -404,11 +415,13 @@ import { getStorage, manageStorageDevice, setDiskPower } from '../api/client'
 import { injectI18n } from '../i18n'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+const loaded = ref(false)
 const busy = ref(false)
 const lastMsg = ref('')
 const showSystemVols = ref(false)
@@ -503,6 +516,7 @@ async function refresh() {
     toast('❌ ' + e.message)
   } finally {
     loading.value = false
+    loaded.value = true
   }
 }
 
@@ -630,17 +644,6 @@ useDismissable(formatTarget, () => { formatTarget.value = null }, formatPanel)
 </script>
 
 <style scoped>
-.form-grid-m {
-  display: grid;
-  grid-template-columns: 100px 1fr;
-  gap: 8px 12px;
-  align-items: center;
-  font-size: 13px;
-}
-.form-grid-m label { color: var(--sub); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
-.form-grid-m input, .form-grid-m select { width: 100%; }
-@media (max-width: 640px) {
-  .form-grid-m { grid-template-columns: 1fr; }
-  .form-grid-m label { margin-bottom: -4px; }
-}
+/* Layout comes from the global .field-grid; this page just keeps its label
+   column at the width it has always had. */
 </style>

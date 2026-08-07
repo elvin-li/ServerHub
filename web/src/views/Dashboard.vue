@@ -1,7 +1,26 @@
 <template>
   <div class="dash">
-    <!-- Skeleton loading state -->
-    <template v-if="!host && !sensors">
+    <!-- A failed load must not read as "still loading". The banner stays up while
+         the failure persists and clears on the next successful poll, so stale
+         tiles below it are never presented as current. -->
+    <div
+      v-if="loadError"
+      class="tile"
+      style="margin-bottom:12px;border-left:3px solid var(--down)"
+      role="alert"
+    >
+      <div class="row">
+        <span class="name">{{ t('dashboard.load_failed') }}</span>
+        <button class="tiny" :disabled="loading" @click="refreshHeavy(true)">
+          {{ t('common.retry') }}
+        </button>
+      </div>
+      <div class="sub mono" style="margin-top:4px">{{ loadError }}</div>
+    </div>
+
+    <!-- Skeleton loading state. Gated on loadError too: without that, a failed
+         first load left this placeholder on screen permanently. -->
+    <template v-if="!host && !sensors && !loadError">
       <div class="host-strip">
         <div class="host-main">
           <div class="skeleton skeleton-title" style="width:140px"></div>
@@ -52,8 +71,12 @@
            :href="ss.running ? ss.vnc_url : undefined"
            :title="ss.running ? t('power.connect') : t('power.off')"
          ><Monitor :size="14" /></a>
-         <button v-if="!ss.running" class="tiny primary" :disabled="ssBusy || loading" @click="enableSS" :title="t('power.enable_ss')"><Play :size="13" /></button>
-         <button v-else class="tiny danger" :disabled="ssBusy" @click="disableSS" :title="t('power.disable_ss')"><Square :size="13" /></button>
+         <!-- Both toggles require a successful power read. Without that gate a
+              failed probe left powerData empty, so !ss.running was true and the
+              Enable button appeared even when Screen Sharing was already on. -->
+         <button v-if="powerLoaded && !ss.running" class="tiny primary" :disabled="ssBusy || loading" @click="enableSS" :title="t('power.enable_ss')"><Play :size="13" /></button>
+         <button v-else-if="powerLoaded" class="tiny danger" :disabled="ssBusy" @click="disableSS" :title="t('power.disable_ss')"><Square :size="13" /></button>
+         <button v-else class="tiny" disabled :title="t('power.state_unknown')"><Play :size="13" /></button>
          <button class="tiny" :disabled="!ss.vnc_url" @click="copyVnc" :title="t('power.copy')"><Copy :size="13" /></button>
       </span>
       <span class="pwr-group">
@@ -471,9 +494,21 @@ const bookmarks = ref([])
 const health = ref(null)
 const busy = ref(false)
 const loading = ref(false)
+// Latched failure for the three loads the page cannot render without (status,
+// sensors, host). Every loader here used to swallow its rejection, which had two
+// consequences on the landing page: a backend that started failing left the
+// previous numbers on screen indefinitely with nothing marking them stale, and a
+// failed *first* load left the skeleton up forever because the skeleton is gated
+// on host/sensors still being null. Secondary tiles (bookmarks, health, ports)
+// keep their quiet .catch: one failing probe should not raise a page-level alarm.
+const loadError = ref('')
 const pwrBusy = ref(false)
 const ssBusy = ref(false)
 const powerData = ref({})
+// False until getPower() has succeeded at least once, and again after a failure.
+// Gates the Screen Sharing toggle so an unreadable state is never rendered as
+// "off" with an Enable button next to it.
+const powerLoaded = ref(false)
 const metricMins = ref(60)
 let timer = null
 let heavyTimer = null
@@ -692,7 +727,16 @@ function setMetricMins(m) {
 async function loadPower() {
   try {
     powerData.value = await getPower()
-  } catch {}
+    powerLoaded.value = true
+  } catch {
+    // Do NOT clear powerData. ss.running is derived from it, so on failure the
+    // old value is a better answer than {} -- with {} the pill rendered "Screen
+    // Sharing off" and offered an Enable button whatever the real state was, so a
+    // failed probe invited the operator to enable something already running.
+    // powerLoaded going false is what the template uses to withhold the toggle
+    // rather than guess at the state.
+    powerLoaded.value = false
+  }
 }
 async function doPower(action) {
   const names = { sleep: t('power.sleep'), restart: t('power.restart'), shutdown: t('power.shutdown') }
@@ -784,13 +828,21 @@ function formatBps(bps) {
 }
 
 async function refresh() {
-  try { status.value = await getStatus() } catch {}
+  try {
+    status.value = await getStatus()
+    loadError.value = ''
+  } catch (e) {
+    loadError.value = e.message || String(e)
+  }
 }
 async function loadSensors(force = false) {
   try {
     // Prefer cache (server TTL ~6s); force only on manual refresh
     sensors.value = await getSensors(force)
-  } catch {}
+    loadError.value = ''
+  } catch (e) {
+    loadError.value = e.message || String(e)
+  }
 }
 async function loadMetrics() {
   try {
@@ -805,7 +857,9 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     loadMetrics(),
     loadSensors(forceSensors),
     getStorage(true).then(s => { storage.value = s }).catch(() => {}),
-    getHost().then(h => { host.value = h }).catch(() => {}),
+    // host drives the skeleton gate, so its failure has to be visible rather
+    // than leaving the page on placeholders.
+    getHost().then(h => { host.value = h }).catch(e => { loadError.value = e.message || String(e) }),
     getAlerts(12).then(a => { alerts.value = a.alerts || [] }).catch(() => {}),
     getContainers(withDockerStats).then(c => {
       containers.value = c.containers || []
@@ -886,7 +940,7 @@ onUnmounted(() => {
 .host-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .host-pills .pill {
   background: var(--btn); border: 1px solid var(--line);
-  color: var(--txt); padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  color: var(--txt); padding: 4px 10px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600;
 }
 .host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
 .host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
@@ -904,7 +958,7 @@ onUnmounted(() => {
 }
 .cpu-head { margin-bottom: 4px; }
 .cpu-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin-bottom: 8px; }
-.cpu-facts > div { min-width: 0; padding: 5px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.cpu-facts > div { min-width: 0; padding: 5px 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
 .cpu-facts span, .cpu-facts b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cpu-facts span { color: var(--sub); font-size: 9px; text-transform: uppercase; letter-spacing: .3px; }
 .cpu-facts b { margin-top: 2px; color: var(--txt); font: 700 11px ui-monospace, Menlo, monospace; }
@@ -922,7 +976,7 @@ onUnmounted(() => {
   margin-top: 8px;
 }
 .mb {
-  background: var(--bg); border-radius: 4px; padding: 5px 8px;
+  background: var(--bg); border-radius: var(--radius-sm); padding: 5px 8px;
   border: 1px solid var(--line);
 }
 .mb .k { font-size: 9px; color: var(--sub); text-transform: uppercase; letter-spacing: .3px; }
@@ -933,7 +987,7 @@ onUnmounted(() => {
 .disk-head { align-items: end; }
 .disk-head .sub { margin: 0; white-space: nowrap; }
 .disk-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-.disk-item { min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.disk-item { min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
 .disk-primary { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
 .disk-primary strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .disk-primary-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
@@ -947,7 +1001,7 @@ onUnmounted(() => {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
 }
 .ns {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 10px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px;
 }
 .ns .k { font-size: 9px; color: var(--sub); text-transform: uppercase; letter-spacing: .3px; }
 .ns .v2 { font-size: 15px; font-weight: 800; margin-top: 3px; font-family: ui-monospace, Menlo, monospace; }
@@ -968,7 +1022,7 @@ onUnmounted(() => {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
 }
 .hg {
-  text-align: center; padding: 12px 6px; border-radius: 4px;
+  text-align: center; padding: 12px 6px; border-radius: var(--radius-sm);
   border: 1px solid var(--line); background: var(--bg);
 }
 .hg .n { font-size: 24px; font-weight: 800; }

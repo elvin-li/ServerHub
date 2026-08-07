@@ -8,8 +8,11 @@ health:
 from __future__ import annotations
 
 import concurrent.futures
+import ipaddress
+import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from hub.config import cfg
@@ -18,18 +21,96 @@ from hub.host_address import resolve_value
 _cache = {"t": 0.0, "v": None}
 _TTL = 45.0
 
+#: A probe is an HTTP reachability check, nothing else.  urlopen also speaks
+#: file:, ftp: and data:, and bookmark URLs are not all typed by the operator --
+#: some are derived from container labels and VM metadata discovered at runtime --
+#: so a "bookmark" could otherwise make the panel read a local file and report
+#: its status back through the dashboard.
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+#: Suffixes that mean "a host on my own network", where a self-signed
+#: certificate is the norm rather than a sign of interception.
+_PRIVATE_SUFFIXES = (".local", ".lan", ".internal", ".home", ".arpa")
+
+
+def _is_private_host(host: str) -> bool:
+    """Whether *host* names the local machine or a LAN host, by literal form.
+
+    Certificate verification is skipped only for these.  Home services on the
+    LAN legitimately serve self-signed certificates, so verifying them would
+    turn every such bookmark permanently red -- but a public host has no such
+    excuse, and probing it without verification means a network attacker can
+    decide what the dashboard reports.
+
+    Deliberately decided from the literal hostname and *not* from a DNS lookup.
+    A resolver is not a trustworthy input for a security decision: split-horizon
+    DNS, and fake-IP proxies such as Clash or Surge, map every public name into a
+    private-looking range (198.18.0.0/15 in the case that surfaced this), which
+    would have silently turned verification off for the entire internet.  The
+    cost of the strict reading is a self-signed *public* hostname probing red,
+    which is the correct outcome anyway.
+    """
+    name = (host or "").strip().strip("[]").lower()
+    if not name:
+        return False
+    if name == "localhost" or name.endswith(_PRIVATE_SUFFIXES):
+        return True
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        # Not a literal address.  A dotless short name is a LAN name in
+        # practice ("nas", "pi"); anything with a dot is treated as a real
+        # public DNS name and gets verified.
+        return "." not in name
+    return bool(
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects that leave http/https.
+
+    Without this, validating the bookmark URL up front is pointless: the remote
+    server can answer 302 to a file: or ftp: location and urllib will follow it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if (urllib.parse.urlsplit(newurl).scheme or "").lower() not in _ALLOWED_SCHEMES:
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
 
 def _probe(url: str, timeout: float = 3.0) -> dict:
-    import ssl
     t0 = time.time()
     try:
+        parts = urllib.parse.urlsplit(url)
+        scheme = (parts.scheme or "").lower()
+        if scheme not in _ALLOWED_SCHEMES:
+            return {"ok": False, "status": None, "ms": 0,
+                    "error": f"unsupported scheme: {scheme or 'none'}"}
         req = urllib.request.Request(
             url,
             method="GET",
             headers={"User-Agent": "ServerHub-BookmarkProbe/1.0"},
         )
-        ctx = ssl._create_unverified_context() if url.startswith("https") else None
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        handlers: list = [_SchemeSafeRedirects]
+        if scheme == "https":
+            if _is_private_host(parts.hostname or ""):
+                # LAN service: a self-signed certificate is expected here, and
+                # there is no meaningful interception risk inside the home network.
+                ctx = ssl._create_unverified_context()
+            else:
+                # Public host: verify, so a network attacker cannot decide what
+                # the dashboard reports about an internet-facing service.
+                ctx = ssl.create_default_context()
+            handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        # One opener so the scheme-safe redirect handler applies on every path.
+        opener = urllib.request.build_opener(*handlers)
+        with opener.open(req, timeout=timeout) as r:
             code = r.status
             r.read(256)
         ms = int((time.time() - t0) * 1000)

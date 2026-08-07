@@ -19,7 +19,9 @@
       <pre class="log-pre" role="status" aria-live="polite">{{ msg }}</pre>
     </div>
 
-    <div v-if="!vms.length" class="placeholder">
+    <SkeletonLoader v-if="!loaded" variant="cards" :rows="4" />
+
+    <div v-else-if="!vms.length" class="placeholder">
       {{ t('vms.empty') }}
       <span v-if="!data?.utm_available">{{ t('vms.no_utm') }}</span>
       <span v-if="!data?.orb_available">{{ t('vms.no_orb') }}</span>
@@ -79,7 +81,7 @@
           <span id="vm-create-title" class="name">{{ t('vms.create_title') }}</span>
           <button class="tiny" @click="showCreate=false">{{ t('common.close') }}</button>
         </div>
-        <div class="form-m">
+        <div class="field-grid">
           <label for="vm-create-distro">{{ t('vms.distro') }}</label>
           <select id="vm-create-distro" v-model="createForm.distro" :aria-label="t('vms.distro')">
             <option v-for="d in (data?.orb_distros || distros)" :key="d" :value="d">{{ d }}</option>
@@ -155,10 +157,14 @@ import { createVm, getVms, vmAction } from '../api/client'
 import { startVisibleInterval } from '../lib/poll'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
+// The empty placeholder also volunteers "UTM not installed" / "OrbStack not
+// installed", which is an alarming thing to assert before the probe has run.
+const loaded = ref(false)
 const busy = ref(false)
 const msg = ref('')
 const showCreate = ref(false)
@@ -244,6 +250,8 @@ async function refresh() {
     data.value = await getVms()
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loaded.value = true
   }
 }
 
@@ -261,7 +269,12 @@ async function act(v, action) {
   if (action === 'delete' && !confirm(t('vms.confirm_delete', { name: v.name }))) return
   if (action === 'stop' && !confirm(t('vms.confirm_stop', { name: v.name }))) return
   if (action === 'kill' && !confirm(t('vms.confirm_kill', { name: v.name }))) return
-  if (action === 'restart' && v.backend === 'utm' && !confirm(t('vms.confirm_restart_force', { name: v.name }))) return
+  // force:true is sent for every action except stop (see the vmAction call below),
+  // so restart and suspend are hard operations on every backend -- not just UTM.
+  // Gating the confirmation on backend === 'utm' let an orb restart/suspend go out
+  // forcibly on a single click.
+  if (action === 'restart' && !confirm(t('vms.confirm_restart_force', { name: v.name }))) return
+  if (action === 'suspend' && !confirm(t('vms.confirm_restart_force', { name: v.name }))) return
   if (action === 'shell') {
     try {
       const j = requireOk(await vmAction(v.id, { action: 'shell' }))
@@ -403,13 +416,6 @@ useDismissable(renameTarget, () => { renameTarget.value = null }, renamePanel)
   font-size: 11px; white-space: pre-wrap; max-height: 120px; overflow: auto;
   margin: 0; font-family: ui-monospace, Menlo, monospace;
 }
-.form-m {
-  display: grid;
-  grid-template-columns: 110px 1fr;
-  gap: 8px 12px;
-  align-items: center;
-  font-size: 13px;
-}
-.form-m label { color: var(--sub); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
-.form-m input, .form-m select { width: 100%; }
+/* Layout comes from the global .field-grid. */
+.field-grid { --field-label-w: 110px; }
 </style>

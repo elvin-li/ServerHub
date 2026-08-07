@@ -132,7 +132,7 @@ class BootstrapModeTests(_ConfigSandbox):
         # A packaged install can have an unwritable install dir; _bootstrap must
         # not raise there, because cfg() is responsible for surfacing that.
         with mock.patch.object(
-            secure_io, "write_secret_text", side_effect=OSError("read-only")
+            secure_io, "create_secret_text", side_effect=OSError("read-only")
         ):
             config._bootstrap()
         self.assertFalse(self.yaml.exists())
@@ -351,9 +351,32 @@ class WiringTests(unittest.TestCase):
     def test_config_uses_the_secure_helpers(self):
         src = (BASE / "hub" / "config.py").read_text(encoding="utf-8")
         self.assertRegex(src, r"from hub import secure_io")
-        self.assertIn("secure_io.write_secret_text(YAML_PATH", src)
+        self.assertIn("secure_io.create_secret_text(YAML_PATH", src)
         self.assertIn("secure_io.replace_secret_text(YAML_PATH", src)
         self.assertIn("secure_io.copy_secret_file(YAML_PATH", src)
+
+    def test_bootstrap_does_not_use_the_truncating_helper(self):
+        """Creating the config must not be able to overwrite one.
+
+        write_secret_text opens with O_TRUNC, so reaching it from the bootstrap
+        path turns any false negative about the file's existence into total data
+        loss.  That is not theoretical: it emptied a populated services.yaml on
+        every test-suite run.  Bootstrapping goes through the O_EXCL helper, where
+        a wrong answer is a no-op.  See
+        tests/test_config_bootstrap_never_destroys.py.
+        """
+        src = (BASE / "hub" / "config.py").read_text(encoding="utf-8")
+        self.assertNotIn(
+            "secure_io.write_secret_text(YAML_PATH",
+            src,
+            "bootstrap must create with O_EXCL, not truncate",
+        )
+        bootstrap = src[src.index("def _bootstrap("):src.index("def cfg(")]
+        self.assertNotIn(
+            "YAML_PATH.exists()",
+            bootstrap,
+            "bootstrap must not branch on exists(); let O_EXCL decide atomically",
+        )
 
     def test_config_does_not_copy2_the_backup(self):
         # copy2 creates the destination at the umask and copies the mode only
@@ -380,3 +403,68 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackupRetentionTests(_ConfigSandbox):
+    """The pre-image history has to be deep enough to actually recover from.
+
+    services.yaml holds the admin credential. It was once cleared, and by the time
+    anyone noticed, the retained pre-images had all rotated past the point where
+    the credential still existed -- a months-old archive was the only remaining
+    source. These tests pin the window so it cannot quietly shrink back.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.yaml.write_text("settings:\n  a: 1\n", encoding="utf-8")
+        os.chmod(self.yaml, 0o600)
+
+    def test_the_window_is_deep_enough_to_survive_a_burst_of_writes(self):
+        self.assertGreaterEqual(
+            config.BACKUP_RETENTION,
+            30,
+            "a shallow window rotates the whole history within minutes of "
+            "ordinary settings traffic, which is how the credential became "
+            "unrecoverable from data/ at all",
+        )
+
+    def test_writes_beyond_the_window_prune_the_oldest_and_keep_the_newest(self):
+        # One more write than the window, each with a distinct epoch suffix so
+        # ordering is unambiguous.
+        total = config.BACKUP_RETENTION + 5
+        base = 1_700_000_000
+        for i in range(total):
+            with mock.patch.object(config.time, "time", return_value=base + i):
+                config.save_full({"settings": {"a": i}})
+
+        baks = sorted(p.name for p in self.data.glob("services.yaml.bak.*"))
+        self.assertEqual(
+            len(baks),
+            config.BACKUP_RETENTION,
+            f"expected the window to cap at {config.BACKUP_RETENTION}, got {len(baks)}",
+        )
+        # The suffix is a fixed-width epoch, so the newest sort last.
+        newest_kept = baks[-1]
+        self.assertEqual(
+            newest_kept,
+            f"services.yaml.bak.{base + total - 1}",
+            "pruning must drop the oldest copies, never the most recent one",
+        )
+        self.assertNotIn(
+            f"services.yaml.bak.{base}",
+            baks,
+            "the oldest copy should have been pruned once the window filled",
+        )
+
+    def test_every_retained_backup_stays_private(self):
+        base = 1_700_000_000
+        with NoChmod():
+            for i in range(3):
+                with mock.patch.object(config.time, "time", return_value=base + i):
+                    config.save_full({"settings": {"a": i}})
+        for bak in self.data.glob("services.yaml.bak.*"):
+            self.assertEqual(
+                mode_of(bak),
+                0o600,
+                f"{bak.name} is a verbatim copy of the credentials file",
+            )

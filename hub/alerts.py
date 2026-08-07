@@ -278,7 +278,12 @@ def _loop(interval: int = 90):
         for g in st.get("groups") or []:
             for s in g.get("services") or []:
                 baseline[s["id"]] = s.get("state")
-        if not STATE_FILE.exists():
+        # Seed a baseline only on a genuinely fresh install.  Keyed on the state
+        # actually loading rather than on STATE_FILE.exists(): a false negative
+        # there would replace the operator's saved state with a fresh baseline,
+        # discarding the per-service history that suppresses repeat alerts, so the
+        # next sweep would re-announce everything as if it had just changed.
+        if not _load_state():
             _save_state(baseline)
     except Exception:
         pass

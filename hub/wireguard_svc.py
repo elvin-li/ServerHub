@@ -30,19 +30,28 @@ the native macOS authorization sheet, and never to an interactive tty prompt.
 """
 from __future__ import annotations
 
+import fcntl
 import ipaddress
 import json
+import os
 import re
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from hub import wireguard_export
 from hub.config import cfg, update_settings
-from hub.macos_admin import run_admin, run_admin_sequence, sudo_capture
+from hub.macos_admin import (
+    run_admin,
+    run_admin_sequence,
+    sudo_capture,
+    sudo_refused,
+)
 from hub.paths import DATA_DIR
 from hub.secure_io import write_secret_text
-from hub.util import port_open, sh
+from hub.util import sh
 
 WG = "/opt/homebrew/bin/wg"
 WG_QUICK = "/opt/homebrew/bin/wg-quick"
@@ -67,7 +76,52 @@ BASH = _modern_bash()
 #: Homebrew's prefix differs between Apple silicon and Intel; probe both.
 _CONF_DIRS = ("/opt/homebrew/etc/wireguard", "/usr/local/etc/wireguard")
 
+#: Where wg-quick records which utun device it assigned to an interface.
+WG_RUN_DIR = Path("/var/run/wireguard")
+
+#: Kernel-assigned tunnel devices wireguard-go can land on.
+_UTUN_RE = re.compile(r"^utun\d{1,3}$")
+
+#: wg-quick treats a ``<iface>.name`` record as describing a live socket only
+#: when the two were created within this many seconds of each other.  Mirrored
+#: from its own ``get_real_interface`` so both agree on what counts as live.
+_NAME_SOCKET_SKEW = 2
+
 REGISTRY_PATH = DATA_DIR / "wireguard-peers.json"
+
+#: Serialises read-modify-write of the server config *across processes*.
+_LOCK_PATH = DATA_DIR / "wireguard.lock"
+
+
+@contextmanager
+def conf_lock() -> Iterator[None]:
+    """Hold an exclusive lock over the server config and the peer registry.
+
+    Every peer operation is a read-modify-write of two files: it reads the current
+    peer list, appends or removes one, and writes both back.  Without a lock two
+    of those interleaving lose a peer outright -- the second writer's snapshot
+    predates the first writer's change, so writing it back silently deletes it.
+    Address allocation has the same shape and would hand the same IP to two peers.
+
+    An in-process lock is not sufficient here.  A packaged ``ServerHub.app`` and a
+    source checkout can both be running against the same state directory -- that
+    configuration exists on the machine this was written for, and it is already
+    documented as having cost the stored admin credentials the same way.  So this
+    is an ``flock``, which the kernel arbitrates between processes.
+
+    The slow part -- pushing the result into the running interface -- is
+    deliberately left outside: it re-reads the whole config from disk, so running
+    it after another writer's change still applies a consistent file.
+    """
+    fd = os.open(_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 #: Interface names WireGuard accepts and we are willing to manage.
 _IFACE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,14}$")
@@ -102,6 +156,60 @@ DEFAULTS = {
     "lan_cidr": "",
     "wan_interface": "",
 }
+
+
+#: A DNS name, deliberately narrow: this value is written verbatim into client
+#: config files and into a ``wireguard://`` URL.
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
+
+
+def split_endpoint(value: str) -> tuple[str, str]:
+    """``(host, port)`` from an endpoint, port empty when absent.
+
+    An IPv6 literal is full of colons, so "contains a colon" cannot mean "has a
+    port".  Both the bracketed form (``[2408:...::1]:51821``) and the bare one
+    (``2408:...::1``) have to be understood: the bare form is what an operator
+    naturally types, the bracketed form is what has to be written into a config.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "", ""
+    if raw.startswith("["):
+        host, _, rest = raw.partition("]")
+        return host[1:].strip(), rest.lstrip(":").strip()
+    if raw.count(":") > 1:
+        # More than one colon and no brackets: an unbracketed IPv6 address, which
+        # has no room left to express a port.
+        return raw, ""
+    host, _, port = raw.partition(":")
+    return host.strip(), port.strip()
+
+
+def format_endpoint(host: str, port: int | str) -> str:
+    """``host:port``, bracketing *host* when it is an IPv6 literal."""
+    text = str(host or "").strip()
+    if not text:
+        return ""
+    if ":" in text:
+        text = f"[{text}]"
+    return f"{text}:{port}"
+
+
+def _valid_endpoint(value: str) -> bool:
+    """Whether *value* is a dialable ``host`` or ``host:port``.
+
+    Accepts a hostname, an IPv4 literal or an IPv6 literal, bracketed or bare.
+    """
+    host, port = split_endpoint(value)
+    if not host:
+        return False
+    if port and not (port.isdigit() and 1 <= int(port) <= 65535):
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return bool(_HOSTNAME_RE.match(host))
 
 
 class WireGuardError(ValueError):
@@ -179,7 +287,12 @@ def save_settings(patch: dict) -> dict:
             except ValueError:
                 raise WireGuardError("wg.bad_subnet", subnet=str(value)[:40])
         elif key == "endpoint" and value:
-            if not re.match(r"^[A-Za-z0-9._-]{1,253}(?::\d{1,5})?$", str(value)):
+            # A hostname, an IPv4 literal, or an IPv6 literal -- each optionally
+            # with a port.  The previous pattern allowed no colons except before a
+            # port, which silently made an IPv6 endpoint unconfigurable: on a
+            # connection where IPv4 is behind carrier NAT and IPv6 is the only
+            # publicly reachable path, that ruled out the only address that works.
+            if not _valid_endpoint(str(value)):
                 raise WireGuardError("wg.bad_endpoint", endpoint=str(value)[:60])
         elif key == "wan_interface" and value:
             if not re.match(r"^[a-z][a-z0-9]{0,14}$", str(value)):
@@ -427,27 +540,240 @@ def peer_records() -> list[dict]:
     return records
 
 
+# ── which device is this interface, really ───────────────────────────────────
+#
+# On Linux "wg0" is both the wg-quick interface name and the kernel device, so
+# `wg show wg0` works and none of this is needed.  macOS has no kernel WireGuard
+# driver: wg-quick starts wireguard-go on a *kernel-assigned* utun, records the
+# mapping in /var/run/wireguard/wg0.name, and from then on every `wg` subcommand
+# must be given the utun.  `wg` itself does no such translation -- it derives the
+# UAPI socket path straight from the name it was handed -- so `wg show wg0 dump`
+# looks for a wg0.sock that by construction never exists and fails with
+# "Unable to access interface: No such file or directory" on a perfectly healthy
+# tunnel.  Passing the friendly name here is therefore not a corner case: it made
+# the page report "not running" forever, left the peer table without a single
+# handshake or byte count, and made `wg syncconf` fail on every peer change, so
+# adding or revoking a peer edited the file and never reached the live tunnel.
+
+def _sockets() -> list[str]:
+    """Device names of the WireGuard UAPI sockets currently present."""
+    try:
+        return sorted(p.stem for p in WG_RUN_DIR.glob("*.sock"))
+    except OSError:
+        return []
+
+
+def _recorded_device(name_file: Path) -> str:
+    """The utun *name_file* names, resolved without elevation.
+
+    The record is mode 0400 root, so reading it usually fails from the panel's
+    account.  wg-quick's own fallback works on timestamps -- it accepts a record
+    only when the socket it names was created within a couple of seconds of it --
+    and that same pairing identifies the device from the outside: the socket whose
+    creation is contemporaneous with the record is the one this record describes.
+    Using wg-quick's rule rather than inventing one keeps both ends agreeing about
+    which tunnels are live.
+    """
+    try:
+        recorded = name_file.read_text(errors="replace").strip()
+    except OSError:
+        recorded = ""
+    if _UTUN_RE.match(recorded) or _IFACE_RE.match(recorded):
+        return recorded
+
+    try:
+        anchor = name_file.stat().st_mtime
+    except OSError:
+        return ""
+    paired = []
+    for device in _sockets():
+        try:
+            skew = abs((WG_RUN_DIR / f"{device}.sock").stat().st_mtime - anchor)
+        except OSError:
+            continue
+        if skew <= _NAME_SOCKET_SKEW:
+            paired.append((skew, device))
+    # Two tunnels started in the same second are indistinguishable this way, and
+    # guessing between them would point `wg syncconf` at someone else's
+    # interface.  Reporting "unknown" is recoverable; that is not.
+    if len(paired) == 1:
+        return paired[0][1]
+    return ""
+
+
+def real_interface(interface: str | None = None) -> str:
+    """The device name ``wg`` answers to for *interface*, or ``""`` if unknown.
+
+    Cheapest and most certain first:
+
+    1. A socket already carries this name -- the interface *is* the device (Linux,
+       or an operator who configured a utun outright).
+    2. wg-quick left a ``<iface>.name`` record; resolve through it.
+    3. Exactly one WireGuard socket exists on the machine, and no record claims
+       another name, so it can only be ours.
+
+    Deliberately unprivileged: status is polled every 20 seconds and resolution
+    must not cost a sudo round-trip.  When it comes back empty :func:`_dump` falls
+    back to identifying the interface by its public key, which does need root.
+    """
+    iface = interface or settings()["interface"]
+    sockets = _sockets()
+    if iface in sockets:
+        return iface
+
+    name_file = WG_RUN_DIR / f"{iface}.name"
+    if name_file.exists():
+        return _recorded_device(name_file)
+
+    try:
+        others = [p for p in WG_RUN_DIR.glob("*.name") if p.stem != iface]
+    except OSError:
+        others = []
+    claimed = {_recorded_device(p) for p in others}
+    unclaimed = [d for d in sockets if d not in claimed]
+    if len(unclaimed) == 1:
+        return unclaimed[0]
+    return ""
+
+
 # ── live state ───────────────────────────────────────────────────────────────
 
-def _dump(interface: str) -> tuple[bool, list[list[str]], str]:
-    """Parse ``wg show <iface> dump`` into rows.
+#: Field counts in `wg show ... dump` output: 5 for the interface row
+#: (private key, public key, listen port, fwmark) and 9 for a peer row.  Under
+#: `wg show all dump` every row carries the device name in front, which is how a
+#: prefixed row is recognised without depending on the caller's arguments.
+_DUMP_INTERFACE_FIELDS = 4
+_DUMP_PEER_FIELDS = 8
 
-    The dump format is tab-separated and stable across versions, unlike the
-    human-readable output: first row is the interface
-    (private key, public key, listen port, fwmark), each later row is a peer
-    (public key, preshared key, endpoint, allowed ips, latest handshake,
-    rx bytes, tx bytes, persistent keepalive).
+
+def _dump_value(field: str) -> str:
+    """A dump field, with ``wg``'s placeholder for "no value" turned into empty."""
+    text = str(field or "").strip()
+    return "" if text in ("(none)", "off") else text
+
+
+def _dump_rows(text: str, device: str = "") -> list[list[str]]:
+    """Tab-separated dump rows, with ``wg show all``'s device column removed.
+
+    The dump format is stable across versions, unlike the human-readable output:
+    the first row is the interface (private key, public key, listen port, fwmark)
+    and each later row is a peer (public key, preshared key, endpoint, allowed
+    ips, latest handshake, rx bytes, tx bytes, persistent keepalive).
     """
-    rc, out, err = sh([WG, "show", interface, "dump"], timeout=10)
+    rows = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) in (_DUMP_INTERFACE_FIELDS + 1, _DUMP_PEER_FIELDS + 1):
+            # Prefixed by `wg show all dump`; keep only the requested device.
+            if device and fields[0] != device:
+                continue
+            fields = fields[1:]
+        rows.append(fields)
+    return rows
+
+
+def _dump_all() -> tuple[dict[str, list[list[str]]], str]:
+    """Every WireGuard interface's dump, keyed by device name.
+
+    ``wg show all dump`` is one privileged call for the whole machine, which is
+    what makes it usable as a fallback: when the utun cannot be worked out from
+    the filesystem, the interface can still be recognised by its own public key.
+    """
+    rc, out, err = sh([WG, "show", "all", "dump"], timeout=10)
     if rc != 0:
-        # The UAPI socket is root-owned: retry with root.  sudo_capture uses
-        # the web-entered password when this request carries one (management
-        # from another device), else the packaged passwordless sudoers rules.
-        rc, out, err = sudo_capture([WG, "show", interface, "dump"], timeout=10)
+        rc, out, err = sudo_capture([WG, "show", "all", "dump"], timeout=10)
     if rc != 0:
-        return False, [], (err or out or "").strip()[:200]
-    rows = [line.split("\t") for line in out.splitlines() if line.strip()]
-    return True, rows, ""
+        return {}, (err or out or "").strip()[:200]
+    grouped: dict[str, list[list[str]]] = {}
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) < 2:
+            continue
+        grouped.setdefault(fields[0], []).append(fields[1:])
+    return grouped, ""
+
+
+def _identify(grouped: dict[str, list[list[str]]]) -> str:
+    """Pick the device serving *our* config out of every running interface.
+
+    The server's public key is the identity: it is derived from the private key in
+    wg0.conf and appears in the interface row of the dump, so a match is proof
+    rather than a guess.  The listen port is the second-best signal, for the
+    window after an operator changed the key on disk without restarting.
+
+    The expected values come from the config file directly rather than from
+    :func:`server_identity`, which mints a keypair when the file has none -- a
+    write-shaped side effect that has no business firing on a status poll.
+    """
+    iface_block = read_conf()["interface"]
+    try:
+        expected_key = public_from_private(str(iface_block.get("PrivateKey") or ""))
+    except WireGuardError:
+        expected_key = ""
+    expected_port = str(iface_block.get("ListenPort") or "").strip()
+
+    by_port = ""
+    for device, rows in grouped.items():
+        head = rows[0] if rows else []
+        if len(head) < 3:
+            continue
+        if expected_key and head[1].strip() == expected_key:
+            return device
+        if expected_port and head[2].strip() == expected_port:
+            by_port = by_port or device
+    if by_port:
+        return by_port
+    return next(iter(grouped)) if len(grouped) == 1 else ""
+
+
+def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
+    """``(device, dump rows, error)`` for whatever is currently serving *interface*.
+
+    *interface* is the wg-quick name the operator configured; the UAPI socket may
+    live under a different, kernel-assigned name.  Resolution is tried from the
+    filesystem first because it needs no elevation, then from the dump of every
+    interface, which recognises ours by public key.  The device is returned
+    alongside the rows because callers that go on to *change* the interface
+    (``wg syncconf``) need the same name, and resolving twice means two privileged
+    round-trips for one operation.
+    """
+    device = real_interface(interface)
+    first_error = ""
+    if device:
+        rc, out, err = sh([WG, "show", device, "dump"], timeout=10)
+        if rc != 0:
+            # The UAPI socket is root-owned: retry with root.  sudo_capture uses
+            # the web-entered password when this request carries one (management
+            # from another device), else the packaged passwordless sudoers rules.
+            rc, out, err = sudo_capture([WG, "show", device, "dump"], timeout=10)
+        if rc == 0:
+            return device, _dump_rows(out, device), ""
+        first_error = (err or out or "").strip()[:200]
+
+    grouped, error = _dump_all()
+    if not grouped:
+        # `wg show interfaces` needs no elevation, so it separates "the tunnel is
+        # down" from "the dump could not be read".  Those call for opposite
+        # responses -- start the interface, or fix the sudoers rule -- and the old
+        # code reported the kernel's "No such file or directory" for both.
+        rc, out, _ = sh([WG, "show", "interfaces"], timeout=8)
+        if rc == 0 and not out.strip():
+            return "", [], "not running"
+        return "", [], first_error or error or "interface not found"
+    device = _identify(grouped)
+    if not device:
+        return "", [], first_error or "could not tell which interface is ours"
+    return device, grouped[device], ""
+
+
+def _dump(interface: str) -> tuple[bool, list[list[str]], str]:
+    """``(running, rows, error)``, the shape :func:`status` consumes."""
+    device, rows, error = live_interface(interface)
+    return bool(device), rows, error
 
 
 def _human_bytes(value: int) -> str:
@@ -477,15 +803,27 @@ def status(force: bool = False) -> dict:
     listen_port = 0
     server_public = ""
     if up and rows:
+        # Canonical column order, guaranteed by :func:`_dump_rows`: an interface
+        # row is (private key, public key, listen port, fwmark) and a peer row is
+        # (public key, preshared key, endpoint, allowed ips, latest handshake,
+        # rx, tx, keepalive).  `wg show all dump` prefixes every row with the
+        # device name; that column is removed at the point the output is parsed,
+        # so nothing downstream has to know which command produced it.
+        #
+        # Compensating for the prefix *here* instead was tried and is why the page
+        # showed the listen port where the server key belongs and reported every
+        # peer as never having handshaked: with the column already gone, the
+        # shifted indices read one field to the left and the 9-field guard
+        # rejected every (8-field) peer row.
         head = rows[0]
-        if len(head) >= 3:
+        if len(head) >= _DUMP_INTERFACE_FIELDS:
             server_public = head[1].strip()
             try:
                 listen_port = int(head[2])
             except ValueError:
                 listen_port = 0
         for row in rows[1:]:
-            if len(row) < 8:
+            if len(row) < _DUMP_PEER_FIELDS:
                 continue
             public = row[0].strip()
             try:
@@ -497,8 +835,12 @@ def status(force: bool = False) -> dict:
             except ValueError:
                 rx, tx = 0, 0
             live[public] = {
-                "endpoint": row[2].strip(),
-                "allowed_ips": row[3].strip(),
+                # `wg` writes the literal "(none)" for a field it has no value
+                # for.  Passed through, that reached the page as a peer whose
+                # remote endpoint was the word "(none)"; it means "not connected"
+                # and has to read as empty.
+                "endpoint": _dump_value(row[2]),
+                "allowed_ips": _dump_value(row[3]),
                 "last_handshake": handshake,
                 "rx": rx,
                 "tx": tx,
@@ -590,19 +932,34 @@ def used_addresses() -> set[str]:
     return used
 
 
-def next_ip() -> dict:
-    """The lowest free host address in the configured subnet."""
+def allocate_ip(taken: set[str]) -> str:
+    """The lowest address in the subnet that is not in *taken*.
+
+    Takes the claimed set as an argument rather than reading it, so a batch can
+    allocate several addresses before any of them is written to disk.  Deriving it
+    from the config each time only works if every peer is persisted immediately,
+    which is what forced batch creation to rewrite the config once per peer.
+    """
     cfg_ = settings()
     network = ipaddress.ip_network(cfg_["subnet"], strict=False)
-    used = used_addresses()
     server = str(network.network_address + 1)
     for host in network.hosts():
         candidate = str(host)
-        if candidate == server:
+        if candidate == server or candidate in taken:
             continue
-        if candidate not in used:
-            return {"next_ip": f"{candidate}/32", "used": len(used), "subnet": cfg_["subnet"]}
+        return f"{candidate}/32"
     raise WireGuardError("wg.subnet_full", subnet=cfg_["subnet"])
+
+
+def next_ip() -> dict:
+    """The lowest free host address in the configured subnet."""
+    cfg_ = settings()
+    used = used_addresses()
+    return {
+        "next_ip": allocate_ip(used),
+        "used": len(used),
+        "subnet": cfg_["subnet"],
+    }
 
 
 def _validate_ip(value: str) -> str:
@@ -675,14 +1032,10 @@ def client_allowed_ips(mode: str) -> str:
 
 def _endpoint_for_clients() -> str:
     """``host:port`` clients dial.  Empty when the operator has not set a host."""
-    cfg_ = settings()
-    endpoint = str(cfg_["endpoint"] or "").strip()
-    port = server_identity()["listen_port"]
-    if not endpoint:
+    host, port = split_endpoint(settings()["endpoint"])
+    if not host:
         return ""
-    if ":" in endpoint:
-        return endpoint
-    return f"{endpoint}:{port}"
+    return format_endpoint(host, port or server_identity()["listen_port"])
 
 
 def build_client_conf(
@@ -736,52 +1089,80 @@ def add_peer(
         raise WireGuardError("wg.bad_mode", mode=str(mode)[:20])
     mode = mode.lower()
 
-    address = _validate_ip(ip) if ip else next_ip()["next_ip"]
-    if address.split("/")[0] in used_addresses():
+    with conf_lock():
+        # Allocation reads the claimed set and the write commits it; both have to
+        # be inside one lock or two concurrent additions get the same address.
+        entry, meta, result = _mint_peer(
+            label=label, ip=ip, mode=mode, psk=psk, keep_key=keep_key,
+            taken=used_addresses(),
+        )
+        peers = _peers_for_write()
+        peers.append(entry)
+        _write_conf(peers)
+
+        registry = _load_registry()
+        registry["peers"][entry["public_key"]] = meta
+        _save_registry(registry)
+
+    apply_result = apply_live()
+    result["applied"] = apply_result.get("ok", False)
+    return result
+
+
+def _mint_peer(
+    *,
+    label: str,
+    ip: str,
+    mode: str,
+    psk: bool,
+    keep_key: bool,
+    taken: set[str],
+) -> tuple[dict, dict, dict]:
+    """Generate one peer's keys and records without writing anything.
+
+    Split out so a batch can mint every peer first and persist once.  *taken* is
+    the set of addresses already claimed, and the caller extends it between calls;
+    that is what lets several peers be allocated before any of them is on disk.
+    """
+    address = _validate_ip(ip) if ip else allocate_ip(taken)
+    if address.split("/")[0] in taken:
         raise WireGuardError("wg.ip_in_use", ip=address)
 
     private, public = generate_keypair()
     preshared = generate_psk() if psk else ""
 
-    peers = _peers_for_write()
-    peers.append({
+    entry = {
         "public_key": public,
         "ip": address,
         "preshared_key": preshared,
         "name": label,
         "keepalive": settings()["keepalive"],
-    })
-    _write_conf(peers)
-
-    registry = _load_registry()
-    registry["peers"][public] = {
+    }
+    meta = {
         "name": label,
         "ip": address,
         "mode": mode,
         "created": int(time.time()),
         # Retaining the private key is what makes re-issue possible; opting out
-        # keeps only the public half, so the config below is the single copy.
+        # keeps only the public half, so the config handed back is the single copy.
         **({"private_key": private} if keep_key else {}),
         **({"preshared_key": preshared} if preshared else {}),
     }
-    _save_registry(registry)
-
-    conf = build_client_conf(
-        private_key=private, ip=address, mode=mode, preshared_key=preshared
-    )
-    apply_result = apply_live()
-    return {
+    result = {
         "ok": True,
         "name": label,
         "ip": address,
         "pub": public,
         "mode": mode,
         "psk": preshared,
-        "client_conf": conf,
+        "client_conf": build_client_conf(
+            private_key=private, ip=address, mode=mode, preshared_key=preshared
+        ),
         "reissuable": bool(keep_key),
-        "applied": apply_result.get("ok", False),
+        "applied": False,
         "endpoint_configured": bool(_endpoint_for_clients()),
     }
+    return entry, meta, result
 
 
 def batch_add(
@@ -803,12 +1184,37 @@ def batch_add(
     if not _NAME_RE.match(base):
         raise WireGuardError("wg.bad_name")
 
+    if (mode or "").lower() not in ("full", "split"):
+        raise WireGuardError("wg.bad_mode", mode=str(mode)[:20])
+    mode = mode.lower()
+
+    # Every peer is minted first and the config is written once.  Calling add_peer
+    # in a loop rewrote wg0.conf, took a backup and ran a privileged `wg syncconf`
+    # for each one -- fifty of each for a batch of fifty, which is slow enough to
+    # outrun the request timeout and leaves a partially-created batch behind when
+    # it does.
     created = []
-    for index in range(total):
-        # Names must stay unique and within the name pattern; the registry is
-        # keyed by public key, so a collision here is only cosmetic.
-        label = f"{base}-{index + 1}"[:32]
-        created.append(add_peer(name=label, mode=mode, psk=psk, keep_key=keep_key))
+    with conf_lock():
+        peers = _peers_for_write()
+        taken = used_addresses()
+        registry = _load_registry()
+        for index in range(total):
+            # Names must stay unique and within the name pattern; the registry is
+            # keyed by public key, so a collision here is only cosmetic.
+            label = f"{base}-{index + 1}"[:32]
+            entry, meta, result = _mint_peer(
+                label=label, ip="", mode=mode, psk=psk, keep_key=keep_key, taken=taken
+            )
+            peers.append(entry)
+            registry["peers"][entry["public_key"]] = meta
+            taken.add(entry["ip"].split("/")[0])
+            created.append(result)
+
+        _write_conf(peers)
+        _save_registry(registry)
+    applied = apply_live().get("ok", False)
+    for result in created:
+        result["applied"] = applied
     return {"ok": True, "created": len(created), "peers": created}
 
 
@@ -817,14 +1223,20 @@ def del_peer(pubkey: str) -> dict:
     public = str(pubkey or "").strip()
     if not _KEY_RE.match(public):
         raise WireGuardError("wg.bad_key")
-    remaining = [p for p in _peers_for_write() if p["public_key"] != public]
-    if len(remaining) == len(_peers_for_write()):
-        raise WireGuardError("wg.peer_not_found", pubkey=public[:16])
-    _write_conf(remaining)
+    with conf_lock():
+        # One read, not two.  Comparing against a second, independent read of the
+        # config meant a peer added between them made the counts match and the
+        # deletion report "no such peer" -- while the first read, which no longer
+        # contained that new peer, was what got written back, silently dropping it.
+        peers = _peers_for_write()
+        remaining = [p for p in peers if p["public_key"] != public]
+        if len(remaining) == len(peers):
+            raise WireGuardError("wg.peer_not_found", pubkey=public[:16])
+        _write_conf(remaining)
 
-    registry = _load_registry()
-    registry["peers"].pop(public, None)
-    _save_registry(registry)
+        registry = _load_registry()
+        registry["peers"].pop(public, None)
+        _save_registry(registry)
 
     apply_live()
     return {"ok": True, "pubkey": public, "remaining": len(remaining)}
@@ -839,11 +1251,7 @@ def import_peer(*, pubkey: str, ip: str, name: str = "", psk: str = "") -> dict:
     public = str(pubkey or "").strip()
     if not _KEY_RE.match(public):
         raise WireGuardError("wg.bad_key")
-    if public in {p["public_key"] for p in _peers_for_write()}:
-        raise WireGuardError("wg.peer_exists", pubkey=public[:16])
     address = _validate_ip(ip)
-    if address.split("/")[0] in used_addresses():
-        raise WireGuardError("wg.ip_in_use", ip=address)
     label = str(name or "").strip()
     if label and not _NAME_RE.match(label):
         raise WireGuardError("wg.bad_name")
@@ -851,25 +1259,30 @@ def import_peer(*, pubkey: str, ip: str, name: str = "", psk: str = "") -> dict:
     if preshared and not _KEY_RE.match(preshared):
         raise WireGuardError("wg.bad_key")
 
-    peers = _peers_for_write()
-    peers.append({
-        "public_key": public,
-        "ip": address,
-        "preshared_key": preshared,
-        "name": label,
-        "keepalive": settings()["keepalive"],
-    })
-    _write_conf(peers)
+    with conf_lock():
+        if address.split("/")[0] in used_addresses():
+            raise WireGuardError("wg.ip_in_use", ip=address)
+        peers = _peers_for_write()
+        if public in {p["public_key"] for p in peers}:
+            raise WireGuardError("wg.peer_exists", pubkey=public[:16])
+        peers.append({
+            "public_key": public,
+            "ip": address,
+            "preshared_key": preshared,
+            "name": label,
+            "keepalive": settings()["keepalive"],
+        })
+        _write_conf(peers)
 
-    registry = _load_registry()
-    registry["peers"][public] = {
-        "name": label,
-        "ip": address,
-        "mode": "imported",
-        "created": int(time.time()),
-        **({"preshared_key": preshared} if preshared else {}),
-    }
-    _save_registry(registry)
+        registry = _load_registry()
+        registry["peers"][public] = {
+            "name": label,
+            "ip": address,
+            "mode": "imported",
+            "created": int(time.time()),
+            **({"preshared_key": preshared} if preshared else {}),
+        }
+        _save_registry(registry)
     apply_live()
     return {"ok": True, "pubkey": public, "ip": address, "name": label}
 
@@ -887,22 +1300,31 @@ def toggle_psk(*, pubkey: str, op: str) -> dict:
     if action not in ("add", "remove"):
         raise WireGuardError("wg.bad_action", action=action[:20])
 
-    peers = _peers_for_write()
-    target = next((p for p in peers if p["public_key"] == public), None)
-    if target is None:
-        raise WireGuardError("wg.peer_not_found", pubkey=public[:16])
+    with conf_lock():
+        peers = _peers_for_write()
+        target = next((p for p in peers if p["public_key"] == public), None)
+        if target is None:
+            raise WireGuardError("wg.peer_not_found", pubkey=public[:16])
 
-    preshared = generate_psk() if action == "add" else ""
-    target["preshared_key"] = preshared
-    _write_conf(peers)
+        preshared = generate_psk() if action == "add" else ""
+        target["preshared_key"] = preshared
+        _write_conf(peers)
 
-    registry = _load_registry()
-    entry = registry["peers"].setdefault(public, {})
-    if preshared:
-        entry["preshared_key"] = preshared
-    else:
-        entry.pop("preshared_key", None)
-    _save_registry(registry)
+        # Only update a registry entry that already exists.  `setdefault` used to
+        # create one for peers this panel never issued, which is how toggling a PSK
+        # on an imported peer quietly reclassified it: `peer_records` reads "has a
+        # registry entry" as `known`, so the peer stopped counting as foreign and
+        # the copied-from-another-server detection lost sight of it.  The stored
+        # copy is only ever used to re-issue a config, which needs a private key
+        # this peer does not have, so fabricating the entry bought nothing either.
+        registry = _load_registry()
+        entry = registry["peers"].get(public)
+        if entry is not None:
+            if preshared:
+                entry["preshared_key"] = preshared
+            else:
+                entry.pop("preshared_key", None)
+            _save_registry(registry)
 
     apply_live()
     return {"ok": True, "pubkey": public, "psk": preshared, "op": action}
@@ -973,8 +1395,11 @@ def apply_live() -> dict:
     """
     cfg_ = settings()
     interface = cfg_["interface"]
-    up, _, _ = _dump(interface)
-    if not up:
+    # `wg` addresses the kernel-assigned device, not the wg-quick name.  Passing
+    # the friendly name made every sync fail, so a peer added through the panel
+    # landed in the file and never in the running tunnel until a full restart.
+    device, _, _ = live_interface(interface)
+    if not device:
         return {"ok": True, "applied": False, "reason": "not_running"}
 
     try:
@@ -984,48 +1409,56 @@ def apply_live() -> dict:
     staged = DATA_DIR / f"{interface}.sync.conf"
     write_secret_text(staged, stripped)
 
-    rc, _, err = sh(["sudo", "-n", WG, "syncconf", interface, str(staged)], timeout=30)
+    rc, _, err = sh(["sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30)
     if rc == 0:
-        return {"ok": True, "applied": True}
-    result = run_admin([WG, "syncconf", interface, str(staged)], timeout=120)
+        return {"ok": True, "applied": True, "device": device}
+    result = run_admin([WG, "syncconf", device, str(staged)], timeout=120)
     if result.get("ok"):
-        return {"ok": True, "applied": True}
+        return {"ok": True, "applied": True, "device": device}
     return {"ok": False, "error": result.get("error") or "sync_failed", "detail": err[:200]}
-
-
-#: Where wg-quick records which utun device it assigned to an interface.
-WG_RUN_DIR = Path("/var/run/wireguard")
 
 
 def runtime_state(interface: str | None = None) -> dict:
     """What wg-quick believes about *interface*, read without elevation.
 
     wg-quick stores the utun it picked in ``<iface>.name`` and the userspace
-    driver opens ``<utun>.sock`` alongside it.  A name file with no socket means a
-    previous run died between creating the device and finishing setup -- wg-quick
+    driver opens ``<utun>.sock`` alongside it.  A record with no live socket means
+    a previous run died between creating the device and finishing setup -- wg-quick
     does not clean up after itself, and from then on every ``up`` aborts with
     ``` `wg0' already exists as `utun8' ``` while ``down`` cannot find the
     interface either.  That combination leaves the tunnel permanently unstartable
     with a message that points at the wrong thing.
 
-    The name file is mode 0400 root, so its contents are unreadable here; presence
-    plus the absence of any socket is the signal, and both are visible from a stat.
+    Staleness is judged against *the socket this record names*, resolved through
+    :func:`real_interface`.  Judging it against "any socket at all" was wrong on
+    any machine running a second userspace tunnel: that tunnel's socket made a
+    genuinely stale record look healthy, the automatic cleanup never fired, and
+    the interface stayed unstartable with no indication why.
     """
     iface = interface or settings()["interface"]
     name_file = WG_RUN_DIR / f"{iface}.name"
-    try:
-        sockets = sorted(p.name for p in WG_RUN_DIR.glob("*.sock"))
-    except OSError:
-        sockets = []
     recorded = name_file.exists()
+    device = real_interface(iface)
+    live = bool(device) and (WG_RUN_DIR / f"{device}.sock").exists()
     return {
         "interface": iface,
         "name_file": str(name_file),
         "name_file_present": recorded,
-        "sockets": sockets,
+        "sockets": [f"{name}.sock" for name in _sockets()],
+        "real_interface": device,
+        "live": live,
         # Claimed by a previous run, but nothing is actually serving it.
-        "stale": recorded and not sockets,
+        "stale": recorded and not live,
     }
+
+
+#: `wg-quick down` on macOS walks every network service with `networksetup` to
+#: restore DNS and deletes one route per peer, all serially.  The old 60s budget
+#: expired part-way through on a host with several services and a handful of
+#: peers, and the timeout kills sudo mid-teardown: the socket is already gone but
+#: `<iface>.name` has not been removed yet, which is precisely the wedged state
+#: the stale-claim cleanup exists to undo.  Better not to create it.
+_WG_QUICK_TIMEOUT = 180
 
 
 def interface_action(action: str) -> dict:
@@ -1047,20 +1480,63 @@ def interface_action(action: str) -> dict:
     # interface exists, and `down` cannot remove the record because the device it
     # names is gone.  Only done when nothing is actually serving the interface, so
     # a live tunnel is never orphaned by this.
-    stale = runtime_state(cfg_interface := settings()["interface"])
-    if verb in ("up", "restart") and stale["stale"]:
-        commands.insert(0, [RM, "-f", stale["name_file"]])
-    del cfg_interface
+    state = runtime_state(settings()["interface"])
+    if verb in ("up", "restart") and state["stale"]:
+        commands.insert(0, [RM, "-f", state["name_file"]])
+
+    # Asking for `up` on a tunnel that is already serving traffic is not a
+    # failure, and it must not be treated as one: the previous code answered
+    # wg-quick's "already exists" by tearing the interface down and bringing it
+    # back, dropping every live session to reach a state that already held.
+    if verb == "up" and state["live"]:
+        return {"ok": True, "action": verb, "already_running": True}
 
     # sudo -n first so an operator with the packaged sudoers rule is not
-    # prompted on every restart; without a rule the sequence falls through to
-    # run_admin_sequence, which either uses the web-entered administrator
-    # password or reports "password_required" so the SPA can ask for it.
+    # prompted on every restart.  A *refusal* from sudo means no rule covers this
+    # and the sequence is retried through run_admin_sequence, which either uses
+    # the web-entered administrator password or reports "password_required" so
+    # the SPA can ask for it.  A failure from wg-quick itself is reported as
+    # itself -- no password can fix a bad config, and saying "password required"
+    # sent operators looking in the wrong place entirely.
     for command in commands:
-        rc, _, _ = sh(["sudo", "-n", *command], timeout=60)
-        if rc != 0:
-            return run_admin_sequence(commands, timeout=180)
+        rc, out, err = sh(["sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
+        if rc == 0:
+            continue
+        if sudo_refused(err):
+            return run_admin_sequence(commands, timeout=_WG_QUICK_TIMEOUT + 60)
+        combined = ((err or "") + "\n" + (out or "")).strip()
+        # A zombie claim can appear between the check above and this call (or the
+        # record can name a device that has since gone).  One repair attempt,
+        # only when nothing is serving the interface.
+        if verb in ("up", "restart") and "already exists" in combined:
+            fresh = runtime_state(settings()["interface"])
+            if fresh["live"]:
+                return {"ok": True, "action": verb, "already_running": True}
+            sh(["sudo", "-n", RM, "-f", fresh["name_file"]], timeout=20)
+            rc, out, err = sh(["sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
+            if rc == 0:
+                continue
+            combined = ((err or "") + "\n" + (out or "")).strip()
+        return {
+            "ok": False,
+            "error": "failed",
+            "message": _wg_quick_reason(combined),
+        }
     return {"ok": True, "action": verb}
+
+
+def _wg_quick_reason(output: str) -> str:
+    """The line of wg-quick output that says what went wrong.
+
+    wg-quick echoes every command it runs with a ``[#]`` prefix, so its stderr is
+    mostly a transcript.  Surfacing the tail of that verbatim buries the one line
+    that matters under `route`/`networksetup` noise; its own diagnostics are the
+    ones prefixed ``wg-quick:``.
+    """
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    diagnostics = [line for line in lines if line.lower().startswith("wg-quick:")]
+    chosen = diagnostics or [line for line in lines if not line.startswith("[")] or lines
+    return " ".join(chosen)[-300:]
 
 
 def view_conf(reveal: bool = False) -> dict:
@@ -1108,10 +1584,3 @@ def ping_peers(timeout_ms: int = 800) -> dict:
         "reachable": reachable,
         "total": len(results),
     }
-
-
-
-
-def port_reachable() -> bool | None:
-    """Whether the configured listen port answers locally."""
-    return port_open(server_identity()["listen_port"], host="127.0.0.1", timeout=0.5)

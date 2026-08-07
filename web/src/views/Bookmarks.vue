@@ -15,7 +15,11 @@
         }) }}
       </span>
     </div>
-    <div class="bm-page-grid">
+    <SkeletonLoader v-if="!loaded" variant="cards" :rows="8" />
+    <!-- Empty state: the grid is a bare v-for, so with no bookmarks the page
+         showed only the static hint below and read as broken rather than empty. -->
+    <div v-else-if="!(data?.bookmarks || []).length" class="placeholder">{{ t('common.none') }}</div>
+    <div v-else class="bm-page-grid">
       <a
         v-for="b in data?.bookmarks || []"
         :key="b.url"
@@ -48,11 +52,15 @@
 import { inject, onMounted, ref } from 'vue'
 import { getBookmarks } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+// Every bookmark is probed over the network before the response returns, so an
+// empty grid is the normal state for a second or more on first paint.
+const loaded = ref(false)
 
 function healthOf(b) {
   if (b?.health) return b.health
@@ -100,6 +108,7 @@ async function refresh(force = false) {
     toast('❌ ' + e.message)
   }
   loading.value = false
+  loaded.value = true
 }
 
 onMounted(() => refresh(false))

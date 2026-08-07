@@ -15,7 +15,11 @@
 # interactive password prompt or a separate, far broader grant.
 #
 # Verify with:
-#     sudo -n -l | grep NOPASSWD
+#     deploy/install-sudoers.sh --verify
+#
+# which asks sudo what it will actually allow without a password and holds the
+# answer against the calls the panel makes.  `sudo -n -l | grep NOPASSWD` only
+# shows that a rule is loaded, not that it can ever match -- see below.
 #
 # Remove with:
 #     sudo rm /etc/sudoers.d/serverhub
@@ -45,12 +49,34 @@
 # `networksetup -getairportpower *` also matches `-getairportpower en0 evil2
 # evil3`, and `smartctl -a /dev/*` matches `-a /dev/disk0 -V` -- i.e. any verb
 # can be smuggled behind a read-only one (verified on macOS sudo 1.9.17p2).
-# Where a field legitimately varies, this file therefore uses anchored regular
-# expressions (`^...$`, supported since sudo 1.9.10), which match exactly one
-# argv element:
-#   * disk device nodes  ^/dev/[A-Za-z0-9]+$   (/dev/disk0, /dev/disk4s2, ...)
-#   * interface names    ^[A-Za-z0-9]+$        (en0, en7, ...)
-#   * IPv4 literals      ^[0-9.]+$             for interface aliases
+# Where a field legitimately varies, this file therefore uses regular
+# expressions (supported since sudo 1.9.10).  Their scope is easy to get wrong,
+# and getting it wrong fails OPEN-looking but CLOSED: the rule is listed by
+# `sudo -l` and never matches, so the feature silently needs a password forever.
+#
+# Per sudoers(5): "If the arguments in a Cmnd begin with the '^' character, they
+# will be interpreted as a regular expression."  The `^` therefore has to be the
+# FIRST character of the argument list, and the expression then has to describe
+# the WHOLE argument string -- verb, flags, operand, and the spaces between them:
+#
+#   WRONG  /opt/homebrew/bin/smartctl -a ^/dev/[A-Za-z0-9]+$
+#          args begin with `-a`, so the whole list is matched as a shell glob and
+#          the literal characters `^`, `+`, `$` are matched literally.  This form
+#          never matches `smartctl -a /dev/disk0` (verified on sudo 1.9.17p2).
+#   RIGHT  /opt/homebrew/bin/smartctl ^-a /dev/[A-Za-z0-9]+$
+#
+# Consequences worth remembering:
+#   * regex mode replaces glob mode entirely -- a `*` inside a regex rule is a
+#     regex quantifier, not "any token", so the two syntaxes cannot be mixed;
+#   * because the regex spans the whole argument string it can pin fields that a
+#     glob cannot, and a trailing `$` genuinely forbids extra arguments;
+#   * the comma/colon/equals escaping that sudoers requires in glob mode is NOT
+#     required inside a regex (sudoers(5)), so `standby,now` is written plainly.
+#
+# Fields this file varies, and the sub-expression used for each:
+#   * disk device nodes  /dev/[A-Za-z0-9]+     (/dev/disk0, /dev/disk4s2, ...)
+#   * interface names    [a-z0-9]+             (en0, utun4, bridge100, ...)
+#   * IPv4 literals      ([0-9]{1,3}\.){3}[0-9]{1,3}
 #
 # Replace serverhub with the account that runs ServerHub if it differs.
 # ---------------------------------------------------------------------------
@@ -60,11 +86,18 @@
 # cannot write to the filesystem.
 # Read-only reporting, the standby timer, and self-test control.
 #
-# Every shape the panel issues is enumerated, including the optional `-d nvme`
-# transport flag: the anchored device regex matches exactly one argv element, so
-# a rule ending `-t short ^/dev/...$` will NOT match `-t short -d nvme
-# /dev/disk0`, and the variants have to be spelled out.  The same anchoring is
-# what prevents smuggling a second verb behind the device name.
+# Every shape the panel issues is covered, including the optional `-d nvme`
+# transport flag, which the code places differently depending on the caller:
+# hub/smart_test_svc._smartctl injects it between the verb and the device
+# (`-c -d nvme /dev/disk0`), while device_type()'s transport probe puts it first
+# (`-d nvme -i /dev/disk0`).  Only `-i` is reached both ways, so only `-i`
+# carries both alternatives.  The trailing `$` is what prevents smuggling a
+# second verb behind the device name.
+#
+# `-a` and `-H` deliberately do NOT accept `-d nvme`: their call sites
+# (storage_svc._disk_detail, health_svc) build argv literally and never add
+# transport flags.  tests/test_sudoers_covers_call_sites.py cross-checks this
+# against the source, so widening the code without widening the policy fails.
 #
 # This replaces a blanket `NOPASSWD: /opt/homebrew/bin/smartctl` that was
 # installed separately (/etc/sudoers.d/serverhub-smartctl). That grant made the
@@ -73,27 +106,15 @@
 # write access than to "read disk health".
 Cmnd_Alias SERVERHUB_SMART = \
     /opt/homebrew/bin/smartctl -V, \
-    /opt/homebrew/bin/smartctl -a ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -H ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -i ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -i -d nvme ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -c ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -c -d nvme ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -l selftest ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -l selftest -d nvme ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -n standby ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -s standby\,now ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -s standby\,off ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t short ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t short -d nvme ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t long ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t long -d nvme ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t conveyance ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t conveyance -d nvme ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t offline ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -t offline -d nvme ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -X ^/dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl -X -d nvme ^/dev/[A-Za-z0-9]+$
+    /opt/homebrew/bin/smartctl ^-a /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^-H /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^(-d nvme )?-i( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^-c( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^-l selftest( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^-n standby /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^-s standby,(now|off) /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^-t (short|long|conveyance|offline)( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /opt/homebrew/bin/smartctl ^-X( -d nvme)? /dev/[A-Za-z0-9]+$
 
 # --- Power preferences ------------------------------------------------------
 # One rule per key the panel is allowed to set (hub/power_svc.set_power_pref
@@ -103,14 +124,7 @@ Cmnd_Alias SERVERHUB_SMART = \
 # server-side): a trailing `*` would turn each rule into a prefix grant for
 # arbitrary extra arguments.
 Cmnd_Alias SERVERHUB_PMSET = \
-    /usr/bin/pmset -a disksleep ^[0-9]+$, \
-    /usr/bin/pmset -a displaysleep ^[0-9]+$, \
-    /usr/bin/pmset -a sleep ^[0-9]+$, \
-    /usr/bin/pmset -a womp ^[0-9]+$, \
-    /usr/bin/pmset -a powernap ^[0-9]+$, \
-    /usr/bin/pmset -a networkoversleep ^[0-9]+$, \
-    /usr/bin/pmset -a ttyskeepawake ^[0-9]+$, \
-    /usr/bin/pmset -a lowpowermode ^[0-9]+$
+    /usr/bin/pmset ^-a (disksleep|displaysleep|sleep|womp|powernap|networkoversleep|ttyskeepawake|lowpowermode) [0-9]+$
 
 # --- Screen Sharing daemon only ---------------------------------------------
 # NOT a blanket launchctl grant: the plist path and service label are pinned to
@@ -128,21 +142,21 @@ Cmnd_Alias SERVERHUB_SCREENSHARING = \
 # Managed IP aliases and Wi-Fi power.  `alias`/`-alias` only; the panel cannot
 # reconfigure an interface's primary address, MTU, or bring a link down.
 #
-# Argument pinning here is constrained by the sudoers grammar: a regex argument
-# is only legal as the LAST one in a rule, so the free-running fields (interface
-# name, alias address) fall back to `*`.  sudo's wildcard matching is loose --
-# verified on macOS sudo 1.9.17p2, `setairportpower * on` also matches
-# `setairportpower en0 evil on` -- so the security of these rules rests on the
-# fixed tail: anything appended after it can never match, and anything shifted
-# into the wildcard slots still leaves the verb and the trailing field where the
-# rule pins them.  networksetup and ifconfig reject the malformed shapes that
-# remains reachable (`alias`/`-alias` only; no MTU changes, no link down).
+# These rules used to mix `*` globs with a trailing regex, on the belief that a
+# regex was only legal as the last argument.  It is not: because a regex spans
+# the entire argument string (see the header), every field can be pinned at once,
+# so the globs are gone.  That closes a real hole -- sudo's `*` does not mean
+# "one token", so `-setairportpower * on` also matched `-setairportpower en0 evil
+# on` (verified on macOS sudo 1.9.17p2).  Now the interface name is constrained
+# to a plausible name and the operand to `on`/`off`, with nothing after it.
+#
+# Shapes come from hub/network_svc: add_alias() runs `ifconfig <dev> alias <ip>
+# netmask <mask>`, remove_alias() runs `ifconfig <dev> -alias <ip>`.
 Cmnd_Alias SERVERHUB_NETWORK = \
-    /sbin/ifconfig * alias * netmask ^[0-9.]+$, \
-    /sbin/ifconfig * -alias ^[0-9.]+$, \
-    /usr/sbin/networksetup -getairportpower ^[A-Za-z0-9]+$, \
-    /usr/sbin/networksetup -setairportpower * on, \
-    /usr/sbin/networksetup -setairportpower * off
+    /sbin/ifconfig ^[a-z0-9]+ alias ([0-9]{1,3}\.){3}[0-9]{1,3} netmask ([0-9]{1,3}\.){3}[0-9]{1,3}$, \
+    /sbin/ifconfig ^[a-z0-9]+ -alias ([0-9]{1,3}\.){3}[0-9]{1,3}$, \
+    /usr/sbin/networksetup ^-getairportpower [a-z0-9]+$, \
+    /usr/sbin/networksetup ^-setairportpower [a-z0-9]+ (on|off)$
 
 # --- DNS cache flush --------------------------------------------------------
 # Pinned to mDNSResponder with -HUP.  A bare killall grant would allow signalling
@@ -151,26 +165,58 @@ Cmnd_Alias SERVERHUB_DNS = \
     /usr/bin/killall -HUP mDNSResponder
 # --- WireGuard ---------------------------------------------------------------
 # `wg show ... dump` is read-only and is what the panel polls for peer state; it
-# needs root because the UAPI socket is root-owned, and without this rule the
+# needs root because the UAPI socket is root-owned, and without a rule the
 # WireGuard page can only ever show "not running".
 #
-# `wg syncconf` and `wg-quick` are pinned to the exact interface and config path
-# the panel manages.  This matters: a bare `wg syncconf *` grant would let any
-# file on disk be loaded as an interface config, and a bare `wg-quick *` grant is
-# worse still, because wg-quick executes PostUp/PostDown lines from its config
-# file as root — i.e. arbitrary code execution.  Pinning the path means only the
-# panel-owned config, whose contents the panel generates, can be applied.
+# macOS has no kernel WireGuard driver, so `wg0' is only a wg-quick label: the
+# tunnel actually runs on a kernel-assigned utun and `wg` has to be handed *that*
+# name.  `wg show wg0 dump` therefore fails against a perfectly healthy tunnel,
+# which is why pinning that one interface was not enough.  Two forms replace it:
+#
+#   show all dump   - one call covering every interface, so the panel can pick out
+#                     its own by public key even when the utun number is unknown.
+#   show utunN dump - the direct read once the utun is known.
+#
+# Both expose the private key of any *other* userspace WireGuard interface on the
+# machine; that is inherent to the dump format, and the alternative is a page that
+# cannot work at all.  Neither can change anything.
+#
+# `wg syncconf` and `wg-quick` are pinned to the exact config path the panel
+# manages.  This matters: a bare `wg syncconf *` grant would let any file on disk
+# be loaded as an interface config, and a bare `wg-quick *` grant is worse still,
+# because wg-quick executes PostUp/PostDown lines from its config file as root —
+# i.e. arbitrary code execution.  Pinning the path means only the panel-owned
+# config, whose contents the panel generates, can be applied — to whichever
+# device the interface turns out to be running on.
 #
 # wg-quick is invoked through Homebrew bash by absolute path: its own shebang is
 # `#!/usr/bin/env bash`, and under sudo the scrubbed PATH resolves `env bash` to
 # Apple's bash 3.2, which wg-quick rejects ("Version mismatch: bash 3 detected").
 Cmnd_Alias SERVERHUB_WIREGUARD = \
-    /opt/homebrew/bin/wg show wg0 dump, \
+    /opt/homebrew/bin/wg show all dump, \
     /opt/homebrew/bin/wg show interfaces, \
+    /opt/homebrew/bin/wg show wg0 dump, \
+    /opt/homebrew/bin/wg show utun[0-9] dump, \
+    /opt/homebrew/bin/wg show utun[0-9][0-9] dump, \
+    /opt/homebrew/bin/wg show utun[0-9][0-9][0-9] dump, \
     /opt/homebrew/bin/wg syncconf wg0 __SERVERHUB_STATE__/data/wg0.sync.conf, \
+    /opt/homebrew/bin/wg syncconf utun[0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
+    /opt/homebrew/bin/wg syncconf utun[0-9][0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
+    /opt/homebrew/bin/wg syncconf utun[0-9][0-9][0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
     /bin/rm -f /var/run/wireguard/wg0.name, \
     /opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick up /opt/homebrew/etc/wireguard/wg0.conf, \
     /opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick down /opt/homebrew/etc/wireguard/wg0.conf
+
+# --- pf / launchd state (WireGuard prerequisites) ----------------------------
+# Read-only probes, both needed to tell "configured on disk" from "actually in
+# effect".  That gap is where this feature failed silently: pf rejects a whole
+# pf.conf whose rule classes are out of order, so the NAT rule never loaded while
+# every file it needs was present and correct.  The anchor and the job label are
+# pinned; neither command can change any rule or job state.
+Cmnd_Alias SERVERHUB_WIREGUARD_STATE = \
+    /sbin/pfctl -s info, \
+    /sbin/pfctl -a serverhub-wireguard -s nat, \
+    /bin/launchctl print system/com.wireguard.wg0
 # --- IP forwarding (WireGuard routing) --------------------------------------
 # Enumerated to the single key WireGuard needs.  A wildcard on sysctl -w would
 # expose every kernel tunable on the machine.
@@ -192,4 +238,5 @@ __SERVERHUB_USER__ ALL=(root) NOPASSWD: SERVERHUB_SMART, \
                            SERVERHUB_DNS, \
                            SERVERHUB_POWER, \
                            SERVERHUB_WIREGUARD, \
+                           SERVERHUB_WIREGUARD_STATE, \
                            SERVERHUB_FORWARDING

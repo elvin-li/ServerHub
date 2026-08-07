@@ -169,7 +169,9 @@ fi
 
 # ── config ───────────────────────────────────────────────────────────────────
 mkdir -p "$BASE/data" "$LOGS"
-chmod 700 "$BASE/data"
+# Clear macOS provenance xattr that can block chmod/writes in sandboxed contexts
+xattr -d com.apple.provenance "$BASE/data" 2>/dev/null || true
+chmod 700 "$BASE/data" 2>/dev/null || true
 # Native clients and first-run setup use independent bearer secrets. They are
 # generated locally and never placed in services.yaml or command arguments.
 if [[ ! -s "$BASE/data/.local-client-token" ]]; then
@@ -235,6 +237,69 @@ if [[ "$WITH_MENUBAR" == "1" ]]; then
   say "Installing launch agent: $LABEL_MENUBAR"
   write_plist "$LABEL_MENUBAR" "menubar.py" "serverhub-menubar"
   reload_agent "$LABEL_MENUBAR"
+fi
+
+# ── WireGuard system integration ────────────────────────────────────────────
+if command -v wg-quick >/dev/null 2>&1; then
+  say "Setting up WireGuard system integration"
+
+  # Install / update the WireGuard LaunchDaemon (runs wg-quick on boot).
+  # Uses exec-sleep wrapper so wg-quick's exit after setup does not trigger
+  # endless respawns that pile up duplicate processes.
+  WG_PLIST_SRC="/opt/homebrew/etc/wireguard/com.wireguard.wg0.plist"
+  WG_PLIST_DST="/Library/LaunchDaemons/com.wireguard.wg0.plist"
+  if [[ -f "$WG_PLIST_SRC" ]]; then
+    TMP_PLIST="$(mktemp -t wg-launchd)"
+    cat > "$TMP_PLIST" <<'WGPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>com.wireguard.wg0</string>
+    <key>ProgramArguments</key><array>
+        <string>/opt/homebrew/bin/bash</string>
+        <string>-c</string>
+        <string>/opt/homebrew/bin/wg-quick up /opt/homebrew/etc/wireguard/wg0.conf && exec sleep infinity</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>UserName</key><string>root</string>
+    <key>GroupName</key><string>wheel</string>
+    <key>EnvironmentVariables</key><dict>
+        <key>PATH</key><string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardErrorPath</key><string>/var/log/wireguard-wg0.log</string>
+    <key>StandardOutPath</key><string>/var/log/wireguard-wg0.log</string>
+</dict></plist>
+WGPLIST
+    sudo cp "$TMP_PLIST" "$WG_PLIST_DST" && rm -f "$TMP_PLIST"
+    sudo chown root:wheel "$WG_PLIST_DST" 2>/dev/null || true
+    sudo chmod 644 "$WG_PLIST_DST" 2>/dev/null || true
+    sudo launchctl unload "$WG_PLIST_DST" 2>/dev/null || true
+    sudo launchctl load "$WG_PLIST_DST" 2>/dev/null || true
+    say "WireGuard LaunchDaemon installed"
+  else
+    warn "WireGuard config not found at $WG_PLIST_SRC; skipping LaunchDaemon"
+  fi
+
+  # Set up PF NAT so WireGuard peers can reach the internet
+  if [[ -f "$BASE/data/pf-anchor-wireguard" ]]; then
+    sudo mkdir -p /etc/pf.anchors 2>/dev/null || true
+    sudo cp "$BASE/data/pf-anchor-wireguard" /etc/pf.anchors/serverhub-wireguard 2>/dev/null || true
+    if ! grep -q 'serverhub-wireguard' /etc/pf.conf 2>/dev/null; then
+      echo '' | sudo tee -a /etc/pf.conf >/dev/null
+      echo 'nat-anchor "serverhub-wireguard"' | sudo tee -a /etc/pf.conf >/dev/null
+      echo 'anchor "serverhub-wireguard"' | sudo tee -a /etc/pf.conf >/dev/null
+      echo 'load anchor "serverhub-wireguard" from "/etc/pf.anchors/serverhub-wireguard"' | sudo tee -a /etc/pf.conf >/dev/null
+    fi
+    sudo pfctl -E 2>/dev/null || true
+    sudo pfctl -f /etc/pf.conf 2>/dev/null || true
+    say "PF NAT rules installed"
+  fi
+fi
+
+# Install / refresh sudoers rules for passwordless privileged operations
+if [[ -x "$BASE/deploy/install-sudoers.sh" ]]; then
+  say "Installing sudoers rules"
+  "$BASE/deploy/install-sudoers.sh"
 fi
 
 # ── verify ───────────────────────────────────────────────────────────────────

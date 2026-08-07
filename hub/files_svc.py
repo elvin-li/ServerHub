@@ -108,6 +108,12 @@ FB_BIN = SERVICES_ROOT / "filebrowser" / "filebrowser-bin"
 FB_DB = SERVICES_ROOT / "filebrowser" / "filebrowser.db"
 FB_PORT = 8125
 FB_ROOT_DEFAULT = SERVICES_ROOT / "media"
+# Not /tmp: that directory is world-writable and sticky, so any other local
+# account could pre-create this name as a symlink and have ServerHub append the
+# child's output into a file of the attacker's choosing, running as the panel
+# user.  ~/Library/Logs is the macOS convention, is inside the 0700 home, and is
+# already where the LaunchAgent variant of this service writes.
+FB_LOG = HOME / "Library" / "Logs" / "filebrowser-hub.log"
 
 # Session note: whether this hub session started FB (so stop can free memory)
 _started_by_hub = False
@@ -294,11 +300,27 @@ def list_dir(path: str | None = None, root_id: str | None = None) -> dict:
     }
 
 
+def _clean_component(value: str | None) -> str:
+    """A single path component: no separators and no control characters.
+
+    Stripping only ``/`` and ``\\`` left tabs, newlines and other control bytes
+    in the name.  That is not just cosmetic: a directory created here can later
+    be handed to ``POST /api/nfs/exports``, and exports(5) is whitespace
+    delimited, so a name containing a tab split one validated path into several
+    fields in the root-owned /etc/exports.  Names like this are never
+    intentional, so refuse them at the point of creation too.
+    """
+    text = (value or "").strip().replace("/", "").replace("\\", "")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
+        raise api_error("files.bad_name")
+    return text
+
+
 def mkdir(path: str, name: str, root_id: str | None = None) -> dict:
     parent = _resolve_safe(path, root_id)
     if not parent.is_dir():
         raise api_error("files.parent_not_a_dir")
-    name = (name or "").strip().replace("/", "").replace("\\", "")
+    name = _clean_component(name)
     if not name or name in (".", ".."):
         raise api_error("files.bad_name")
     dest = (parent / name).resolve()
@@ -326,7 +348,7 @@ def delete_path(path: str, root_id: str | None = None) -> dict:
 
 def rename_path(path: str, new_name: str, root_id: str | None = None) -> dict:
     p = _resolve_safe(path, root_id)
-    new_name = (new_name or "").strip().replace("/", "").replace("\\", "")
+    new_name = _clean_component(new_name)
     if not new_name or new_name in (".", ".."):
         raise api_error("files.bad_name")
     dest = (p.parent / new_name).resolve()
@@ -453,7 +475,16 @@ def ensure_filebrowser() -> dict:
         FB_ROOT_DEFAULT.mkdir(parents=True, exist_ok=True)
         SERVICES_ROOT.joinpath("filebrowser").mkdir(parents=True, exist_ok=True)
         try:
-            with open("/tmp/filebrowser-hub.log", "ab") as log:
+            FB_LOG.parent.mkdir(parents=True, exist_ok=True)
+            # O_NOFOLLOW refuses to follow a symlink planted at this exact path,
+            # so a pre-existing link fails the start instead of redirecting the
+            # child's stdout into whatever it points at.
+            log_fd = os.open(
+                FB_LOG,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                0o600,
+            )
+            with os.fdopen(log_fd, "ab") as log:
                 subprocess.Popen(
                     [
                         str(FB_BIN), "-d", str(FB_DB), "-r", str(FB_ROOT_DEFAULT),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Query, Request
 
@@ -87,20 +88,52 @@ def vm_console_session(console_id: str, request: Request):
     }
 
 
+def _iface_addresses(route_iface: str) -> list[dict]:
+    """Resolve the candidate interfaces' IPv4 addresses.
+
+    The `ipconfig getifaddr` calls are independent of one another but must wait on
+    default_interface(), which names the first candidate — hence the split: the
+    caller overlaps this whole chain with the rest of the host probe.
+    """
+    candidates = [i for i in dict.fromkeys((route_iface, "en0", "en1", "bridge0", "utun0")) if i]
+    if not candidates:
+        return []
+    with ThreadPoolExecutor(max_workers=len(candidates)) as ex:
+        results = ex.map(
+            lambda iface: (iface, sh(["/usr/sbin/ipconfig", "getifaddr", iface], timeout=2)),
+            candidates,
+        )
+        return [
+            {"iface": iface, "ip": ip}
+            for iface, (r, ip, _) in results
+            if r == 0 and ip
+        ]
+
+
 @router.get("/api/system/host")
 def host_info():
-    rc, hostname, _ = sh(["/bin/hostname"], timeout=3)
-    lan = host_ip()
-    ifaces = []
-    route_iface = default_interface()
-    for iface in dict.fromkeys((route_iface, "en0", "en1", "bridge0", "utun0")):
-        if not iface:
-            continue
-        r, ip, _ = sh(["/usr/sbin/ipconfig", "getifaddr", iface], timeout=2)
-        if r == 0 and ip:
-            ifaces.append({"iface": iface, "ip": ip})
-    rc3, model, _ = sh(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
-    rc4, ncpu, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
+    # The dashboard re-reads this on every heavy tick and Settings on every open.
+    # It was nine subprocess spawns in a row: hostname, a route lookup, up to five
+    # sequential `ipconfig getifaddr` calls, and two sysctls. Only the interface
+    # sweep depends on anything (it needs the default interface name first), so
+    # everything else overlaps with it.
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        f_hostname = ex.submit(sh, ["/bin/hostname"], timeout=3)
+        f_model = ex.submit(sh, ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
+        f_ncpu = ex.submit(sh, ["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
+        f_engine = ex.submit(engine_up)
+        # route lookup → per-interface lookups, kept together in one branch.
+        f_ifaces = ex.submit(lambda: _iface_addresses(default_interface()))
+
+        rc, hostname, _ = f_hostname.result()
+        rc3, model, _ = f_model.result()
+        rc4, ncpu, _ = f_ncpu.result()
+        orbstack = f_engine.result()
+        ifaces = f_ifaces.result()
+
+    # Was called twice (once as `lan`, once inline); it is the same value both
+    # times and both fields are documented to carry it.
+    ip = host_ip()
     return {
         "hostname": hostname if rc == 0 else platform.node(),
         "platform": platform.platform(),
@@ -108,10 +141,10 @@ def host_info():
         "python": platform.python_version(),
         "cpu": model if rc3 == 0 else "",
         "ncpu": int(ncpu) if rc4 == 0 and ncpu.isdigit() else None,
-        "host_ip": host_ip(),
-        "lan_ip": lan,
+        "host_ip": ip,
+        "lan_ip": ip,
         "interfaces": ifaces,
-        "orbstack": engine_up(),
+        "orbstack": orbstack,
         "docker_cli": DOCKER,
         "orb_cli": ORB,
     }

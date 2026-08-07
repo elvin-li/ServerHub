@@ -67,6 +67,31 @@ def write_secret_text(path: Path | str, content: str, *, encoding: str = "utf-8"
     return p
 
 
+def create_secret_text(path: Path | str, content: str, *, encoding: str = "utf-8") -> bool:
+    """Create ``path`` with ``content`` only if it does not exist yet.
+
+    Returns True if the file was created, False if it was already there.
+
+    This exists because "write the defaults if the config is missing" must not be
+    expressed as ``if not path.exists(): write_secret_text(...)``.  That reads the
+    filesystem twice and trusts the first answer: when ``exists()`` returned a
+    false negative, the second step truncated a fully populated services.yaml
+    down to defaults and took the admin account, every app and every bookmark
+    with it.  O_EXCL asks the kernel to make the decision and the write in one
+    step, so a wrong answer means "nothing happened" rather than "data gone".
+    """
+    p = Path(path)
+    _ensure_private_parents(p)
+    try:
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, SECRET_MODE)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding=encoding) as fh:
+        fh.write(content)
+    os.chmod(p, SECRET_MODE)
+    return True
+
+
 def replace_secret_text(
     path: Path | str, content: str, *, encoding: str = "utf-8"
 ) -> Path:
@@ -113,5 +138,8 @@ def make_secret_dir(path: Path | str) -> Path:
     """Create ``path`` (and parents) owner-only."""
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
-    os.chmod(p, SECRET_DIR_MODE)
+    try:
+        os.chmod(p, SECRET_DIR_MODE)
+    except PermissionError:
+        pass
     return p

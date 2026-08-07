@@ -1173,18 +1173,25 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
     else:
         logs.append("Home Assistant 已在运行")
 
-    # keep update script if missing
+    # Write the update script only if it is not there, so an operator who has
+    # customised it keeps their version.  Created with "x" rather than after an
+    # exists() check: the check-then-write form silently overwrites whenever
+    # exists() answers wrongly, which is how a populated services.yaml was reset
+    # to defaults elsewhere in this codebase.
     upd = ha_dir / "update-homeassistant.sh"
-    if not upd.exists():
-        upd.write_text(
-            "#!/bin/bash\n"
-            "set -e\n"
-            f'HA_DIR="{ha_dir}"\n'
-            'cd "$HA_DIR"\n'
-            "./venv/bin/pip install --upgrade homeassistant\n"
-            f'launchctl kickstart -k "gui/$(id -u)/{label}"\n'
-        )
+    try:
+        with upd.open("x", encoding="utf-8") as fh:
+            fh.write(
+                "#!/bin/bash\n"
+                "set -e\n"
+                f'HA_DIR="{ha_dir}"\n'
+                'cd "$HA_DIR"\n'
+                "./venv/bin/pip install --upgrade homeassistant\n"
+                f'launchctl kickstart -k "gui/$(id -u)/{label}"\n'
+            )
         upd.chmod(0o755)
+    except FileExistsError:
+        pass
 
     url = _app_url(app) or f"http://{_host_for_url()}:8123"
     return {

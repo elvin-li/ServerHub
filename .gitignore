@@ -33,16 +33,29 @@ data/audit_monitor.out
 data/terminal-audit.jsonl
 data/auth-audit.jsonl
 data/diagnostics-latest.json
-data/services.yaml.bak.*
 *.yaml.tmp
 *.log
 
-# Rotated/backup copies of the above. The named rules only match the live file,
-# but the rotator leaves siblings like auth-audit.jsonl.bak-<timestamp>, and
-# those carry the same username and client-address records as the original.
-# No data/*.jsonl file is tracked, so the broad rules cost nothing.
+# Rotated/backup copies of the above, matched by family rather than by name.
+# Every single-name rule here has already been escaped once by a sibling the
+# code writes under a different suffix: the auth-audit rotator appends
+# .bak-<timestamp>, and a credential restore writes
+# services.yaml.precredrestore.<timestamp>, which `data/services.yaml.bak.*`
+# did not cover -- so a full copy of services.yaml became stageable. These
+# backups carry exactly what the live file carries (service addresses,
+# credentials, usernames, client addresses), so the pattern must cover any
+# suffix, not the suffixes seen so far.
+# Nothing under data/ is tracked, so the broad rules cost nothing.
 data/*.jsonl
 data/*.jsonl.*
+data/services.yaml.*
+data/pf.conf.*
+
+# Runtime lock files. `hub/config.py` holds data/.services.yaml.lock as a
+# mutex around inventory writes; it is always zero bytes, but it is per-machine
+# runtime state and a committed copy would be a permanent stale lock artifact
+# in every clone.
+data/*.lock
 
 # ---- WireGuard runtime state. The peer registry holds the client private
 #      keys this panel issued (0600 on disk); the pf staging files are copies

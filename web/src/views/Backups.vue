@@ -10,7 +10,8 @@
       <button :disabled="busy" @click="refresh">{{ t('backups.refresh_list') }}</button>
     </div>
     <div v-if="msg" class="card" style="margin-bottom:12px;white-space:pre-wrap;font-size:13px">{{ msg }}</div>
-    <div class="table-wrap">
+    <SkeletonLoader v-if="!loaded" :cols="4" :rows="5" />
+    <div v-else class="table-wrap">
       <table class="dense">
         <thead>
           <tr><th>{{ t('backups.file') }}</th><th>{{ t('backups.dir') }}</th><th>{{ t('backups.size') }}</th><th>{{ t('backups.time') }}</th></tr>
@@ -35,6 +36,7 @@
 import { inject, onMounted, ref } from 'vue'
 import { backupConfigs, backupPostgres, getBackups } from '../api/client'
 import { injectI18n } from '../i18n'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -42,6 +44,9 @@ const backups = ref([])
 const root = ref('')
 const busy = ref(false)
 const msg = ref('')
+// Separates "listing not fetched yet" from "no backups exist", which the empty
+// row could not express: a fresh page claimed there were no backups at all.
+const loaded = ref(false)
 
 function fmt(t) {
   return t ? new Date(t * 1000).toLocaleString() : ''
@@ -54,6 +59,8 @@ async function refresh() {
     root.value = d.root || ''
   } catch (e) {
     toast('❌ ' + e.message)
+  } finally {
+    loaded.value = true
   }
 }
 
