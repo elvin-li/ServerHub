@@ -330,3 +330,83 @@ class ConcurrentWriteTests(PeerOpsTestCase):
             self.assertIn(
                 "conf_lock()", body, f"{name} mutates the config without the lock"
             )
+
+
+class ReissueSourceOfTruthTests(PeerOpsTestCase):
+    """A re-issued config must describe what the server will actually accept.
+
+    Two files hold a peer: the server config decides what the tunnel accepts, the
+    registry holds what a server config cannot express (the client's private key,
+    its name, its tunnel mode).  Re-issuing used to read the address and the
+    preshared key from the registry too, which is invisible until it is wrong: the
+    two are written in sequence and can be restored from backups independently, and
+    once they disagree the panel hands out a config the server is certain to reject.
+    The operator sees a client that will not connect and nothing anywhere says why.
+    """
+
+    def _reissued_peer_block(self, pubkey: str) -> dict:
+        from hub import wireguard_export
+
+        body = wireguard_svc.peer_conf(pubkey, "wg")["content"]
+        return wireguard_export.parse_conf(body)["peers"][0]
+
+    def _reissued_interface(self, pubkey: str) -> dict:
+        from hub import wireguard_export
+
+        body = wireguard_svc.peer_conf(pubkey, "wg")["content"]
+        return wireguard_export.parse_conf(body)["interface"]
+
+    def _set_registry(self, pubkey: str, **fields):
+        data = json.loads(self.registry.read_text())
+        data["peers"][pubkey].update(fields)
+        self.registry.write_text(json.dumps(data))
+
+    def test_a_stale_registry_psk_is_not_put_into_the_config(self):
+        """Server has no PSK; a leftover registry copy must not resurrect it."""
+        created = wireguard_svc.add_peer(name="phone", psk=True)
+        wireguard_svc.toggle_psk(pubkey=created["pub"], op="remove")
+        # Model the registry not having kept up, e.g. restored from a backup.
+        self._set_registry(created["pub"], preshared_key=_key("z"))
+
+        block = self._reissued_peer_block(created["pub"])
+        self.assertNotIn("PresharedKey", block)
+
+    def test_a_psk_the_server_has_is_included_even_if_the_registry_lost_it(self):
+        created = wireguard_svc.add_peer(name="phone", psk=True)
+        server_psk = next(
+            r["preshared_key"] for r in wireguard_svc.peer_records()
+            if r["public_key"] == created["pub"]
+        )
+        data = json.loads(self.registry.read_text())
+        data["peers"][created["pub"]].pop("preshared_key", None)
+        self.registry.write_text(json.dumps(data))
+
+        block = self._reissued_peer_block(created["pub"])
+        self.assertEqual(block.get("PresharedKey"), server_psk)
+
+    def test_the_address_comes_from_the_server_config(self):
+        created = wireguard_svc.add_peer(name="phone")
+        self._set_registry(created["pub"], ip="10.10.0.99/32")
+        interface = self._reissued_interface(created["pub"])
+        self.assertEqual(interface["Address"], created["ip"])
+
+    def test_a_peer_removed_from_the_server_cannot_be_re_issued(self):
+        """A config for a peer the server no longer has could only ever fail."""
+        created = wireguard_svc.add_peer(name="phone")
+        # Drop it from the config but leave the registry entry behind.
+        wireguard_svc._write_conf([])
+        with self.assertRaises(wireguard_svc.WireGuardError) as caught:
+            wireguard_svc.peer_conf(created["pub"], "wg")
+        self.assertEqual(caught.exception.code, "wg.peer_not_found")
+
+    def test_the_registry_still_supplies_the_private_key_and_mode(self):
+        created = wireguard_svc.add_peer(name="phone", mode="full")
+        interface = self._reissued_interface(created["pub"])
+        self.assertTrue(interface["PrivateKey"])
+        block = self._reissued_peer_block(created["pub"])
+        self.assertIn("0.0.0.0/0", block["AllowedIPs"])
+
+    def test_a_re_issued_config_matches_the_one_handed_out_at_creation(self):
+        created = wireguard_svc.add_peer(name="phone", psk=True)
+        again = wireguard_svc.peer_conf(created["pub"], "wg")["content"]
+        self.assertEqual(again, created["client_conf"])

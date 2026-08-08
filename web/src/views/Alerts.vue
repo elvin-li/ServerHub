@@ -10,8 +10,9 @@
       <button :disabled="busy" @click="test">{{ t('alerts.test_notify') }}</button>
       <router-link class="btn" to="/settings">{{ t('alerts.notify_settings') }}</router-link>
     </div>
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
-    <div v-else-if="!alerts.length" class="placeholder">{{ t('alerts.empty') }}</div>
+    <div v-else-if="!alerts.length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
     <div v-else class="table-wrap">
       <table class="dense">
         <thead>
@@ -36,6 +37,7 @@ import { inject, onMounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -44,6 +46,7 @@ const busy = ref(false)
 // "No alerts" is the good news on this page, so showing it before the first
 // response lands is the most misleading possible placeholder.
 const loaded = ref(false)
+const loadError = ref('')
 
 function fmt(t) {
   return t ? new Date(t * 1000).toLocaleString() : ''
@@ -55,7 +58,9 @@ async function refresh() {
   try {
     const d = await getAlerts(100)
     alerts.value = d.alerts || []
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     busy.value = false

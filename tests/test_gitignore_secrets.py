@@ -58,6 +58,19 @@ SECRET_PATHS = [
     ("data/service-credentials.json", "the per-service credential index"),
     ("services.yaml", "the live inventory: real host addresses and secrets"),
     ("services.yaml.bak.1", "a backup of the live inventory (services.yaml.bak.*)"),
+    (
+        "services.yaml.bak-20260807-182329",
+        "a backup of the live inventory with a dash before the timestamp -- the "
+        "form the panel actually writes at the repository root.  The `.bak.*` "
+        "rule matched only the dotted form, and this table only listed the "
+        "dotted form, so a verbatim copy of services.yaml sat stageable in the "
+        "working tree while both the rule and this test looked correct",
+    ),
+    (
+        "services.yaml.precredrestore.20260807-111549",
+        "an inventory snapshot before a credential restore, at the repository "
+        "root rather than under data/",
+    ),
     ("data/services.yaml.bak.1", "a backup of the live inventory under data/"),
     (".env", "conventional home for deployment secrets"),
     ("data/tunnel.key", "any private key (*.key)"),
@@ -98,19 +111,40 @@ SECRET_PATHS = [
 
 
 def git_ignores(rel: str) -> tuple[bool, str]:
-    """Return (ignored, matching rule) for *rel* according to git itself."""
+    """Return (ignored, matching rule) for *rel* according to git itself.
+
+    The exit status alone is not the answer.  Under ``-v``, ``git check-ignore``
+    exits 0 whenever *any* pattern matched -- including a negation -- and prints
+    that pattern with a leading ``!``.  So a whitelisted path such as
+    ``services.yaml.example`` comes back as rc=0 with
+    ``.gitignore:33:!services.yaml.example``, which reads as "ignored" if only the
+    status is consulted.  Without ``-v`` the same path exits 1, i.e. the two
+    invocations disagree on the very question being asked.
+
+    The negation is therefore resolved from the pattern text.  ``-v`` is kept
+    because the rule is worth reporting in a failure message, and because a
+    negation matching a *secret* path is precisely the precedence bug this file
+    exists to catch -- silently coercing rc=0 to "ignored" would hide it.
+    """
     proc = subprocess.run(
         ["git", "check-ignore", "-v", "--no-index", "--", rel],
         cwd=BASE,
         capture_output=True,
         text=True,
     )
-    # 0 = ignored (stdout names the rule), 1 = not ignored, >1 = git error.
+    # 0 = some pattern matched (stdout names it), 1 = none did, >1 = git error.
     if proc.returncode == 1:
         return False, ""
     if proc.returncode != 0:
         raise AssertionError(f"git check-ignore failed for {rel}: {proc.stderr.strip()}")
-    return True, proc.stdout.strip()
+    rule = proc.stdout.strip()
+    # Format: `<source>:<lineno>:<pattern>\t<pathname>`.  Split the pattern off
+    # by field position rather than searching for "!", which would also fire on
+    # a path or pattern that merely contains one.
+    head = rule.split("\t")[0]
+    parts = head.split(":", 2)
+    pattern = parts[2] if len(parts) == 3 else ""
+    return not pattern.startswith("!"), rule
 
 
 class GitIgnoreCoversSecretsTests(unittest.TestCase):

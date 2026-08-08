@@ -1,6 +1,6 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import router from './router'
+import router, { warmLandingChunk } from './router'
 import { initializeI18n, provideI18n } from './i18n'
 import { provideTheme } from './theme'
 import { registerServiceWorker } from './serviceWorker'
@@ -13,6 +13,12 @@ import './styles.css'
 installChunkRecovery()
 
 async function bootstrap() {
+  // Kick off the landing page's chunk before awaiting anything, so it downloads
+  // alongside the dictionary fetch below and the router's auth-status probe
+  // rather than after them. Deliberately not awaited: the router owns rendering
+  // it, this only removes the wait.
+  warmLandingChunk()
+
   // Keep English as the synchronous fallback, but fetch the selected non-English
   // dictionary before first render so the page never flashes untranslated keys.
   await initializeI18n()

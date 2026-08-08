@@ -23,7 +23,7 @@ LAUNCHER_LABEL = "local.serverhub.launcher"
 LEGACY_MENUBAR_LABEL = "local.serverhub.menubar"
 UID = os.getuid()
 DOMAIN = f"gui/{UID}"
-AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
+from hub.paths import AGENTS_DIR  # noqa: E402
 LAUNCHER_PLIST = AGENTS_DIR / f"{LAUNCHER_LABEL}.plist"
 PANEL_PLIST = AGENTS_DIR / f"{PANEL_LABEL}.plist"
 

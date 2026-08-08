@@ -84,14 +84,20 @@
       <button class="tiny primary" @click="applySwUpdate">{{ t('common.reload_now') }}</button>
     </div>
     <!-- Command palette (Cmd+K) -->
-    <div v-if="cmdOpen" class="cmd-palette-bg" @click.self="cmdOpen=false">
-      <div class="cmd-palette" role="dialog" aria-label="Quick navigation">
+    <div v-if="cmdOpen" class="cmd-palette-bg" @click.self="cmdOpen=false" role="presentation">
+      <div
+        ref="cmdPanel"
+        class="cmd-palette"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('common.cmd_title')"
+        tabindex="-1"
+      >
         <input
           ref="cmdInput"
           v-model="cmdQuery"
           type="text"
           :placeholder="t('common.cmd_ph')"
-          @keydown.esc="cmdOpen=false"
           @keydown.enter="cmdGo(cmdIdx)"
           @keydown.up.prevent="cmdIdx = Math.max(0, cmdIdx - 1)"
           @keydown.down.prevent="cmdIdx = Math.min(cmdResults.length - 1, cmdIdx + 1)"
@@ -131,6 +137,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { AUTH_LOST_EVENT, getStatus, logoutAuth, putSettings } from './api/client'
 import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
+import { useDismissable } from './composables/useDismissable'
 
 const route = useRoute()
 const router = useRouter()
@@ -153,6 +160,7 @@ const cmdOpen = ref(false)
 const cmdQuery = ref('')
 const cmdIdx = ref(0)
 const cmdInput = ref(null)
+const cmdPanel = ref(null)
 let toastTimer = null
 let poll = null
 let ptrStartY = 0
@@ -375,6 +383,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   stopPoll()
+  clearTimeout(toastTimer)
   document.body.style.overflow = ''
   document.removeEventListener('touchstart', ptrTouchStart)
   document.removeEventListener('touchmove', ptrTouchMove)
@@ -458,4 +467,10 @@ function cmdGo(i) {
   cmdOpen.value = false
   router.push(item.to)
 }
+
+// Escape used to be bound to the search input alone, so it stopped working the
+// moment focus moved off it, and Tab wandered into the page behind the overlay.
+// The composable owns Escape at the document level, traps Tab inside the panel,
+// and returns focus to whatever was focused before Cmd+K.
+useDismissable(cmdOpen, () => { cmdOpen.value = false }, cmdPanel)
 </script>

@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub.config import cfg
-from hub.paths import AGENTS_DIR, DOCKER, ORB, UID, UTMCTL
+from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
 from hub.util import sh
 
 
@@ -95,9 +95,11 @@ def run_action(target, action):
         return sh([DOCKER, action, target], timeout=90)
     # brew formula services (when not registered as local LaunchAgent)
     if action in ("start", "stop", "restart", "run") and str(target).startswith("homebrew.mxcl."):
-        import shutil as _shutil
         pkg = str(target).replace("homebrew.mxcl.", "", 1)
-        brew = _shutil.which("brew") or "/opt/homebrew/bin/brew"
+        # hub.paths.BREW rather than a local `which(...) or "/opt/homebrew/..."`:
+        # that form has no /usr/local fallback, so on an Intel host with brew off
+        # PATH this branch found nothing and the service silently never started.
+        brew = BREW
         if Path(brew).exists():
             act = "restart" if action == "run" else action
             return sh([brew, "services", act, pkg], timeout=90)

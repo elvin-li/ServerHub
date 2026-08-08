@@ -16,6 +16,7 @@
       </span>
     </div>
 
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
@@ -65,7 +66,7 @@
             <td class="mono" style="max-width:320px;font-size:11px">{{ c.detail }}</td>
             <td style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix || (c.ok ? '—' : '') }}</td>
           </tr>
-          <tr v-if="!filtered.length">
+          <tr v-if="!filtered.length && !loadError">
             <td colspan="5" style="color:var(--sub)">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>
           </tr>
         </tbody>
@@ -79,12 +80,14 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { getHealthChecks } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadError = ref('')
 const filter = ref('all')
 
 const filtered = computed(() => {
@@ -116,8 +119,13 @@ function levelBadge(c) {
 
 async function load() {
   loading.value = true
-  try { data.value = await getHealthChecks() }
-  catch (e) { toast('❌ ' + e.message) }
+  try {
+    data.value = await getHealthChecks()
+    loadError.value = ''
+  } catch (e) {
+    loadError.value = e.message || String(e)
+    toast('❌ ' + e.message)
+  }
   loading.value = false
   loaded.value = true
 }

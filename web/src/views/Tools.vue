@@ -108,6 +108,7 @@
       <div class="log-box mono" v-if="(syslog.lines||[]).length">
         <div v-for="(ln,i) in syslog.lines" :key="i">{{ ln }}</div>
       </div>
+      <LoadFailure v-else-if="tabError.syslog" :detail="tabError.syslog" :retry="reload" :busy="loading" />
       <div v-else class="placeholder">{{ syslog.message || t('tools.no_data') }}</div>
     </template>
 
@@ -160,7 +161,7 @@
               <td>{{ l.size }}</td>
               <td>{{ l.reclaimable }}</td>
             </tr>
-            <tr v-if="!(df.lines||[]).length">
+            <tr v-if="!(df.lines||[]).length && !tabError.docker">
               <td colspan="5" style="color:var(--sub)">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -219,7 +220,7 @@
               <td class="mono" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
               <td class="mono" style="max-width:360px;overflow:hidden;text-overflow:ellipsis" :title="row.program">{{ row.program }}</td>
             </tr>
-            <tr v-if="!timers.length">
+            <tr v-if="!timers.length && !tabError.sched">
               <td colspan="4" style="color:var(--sub)">{{ t('tools.no_timers') }}</td>
             </tr>
           </tbody>
@@ -274,7 +275,10 @@
           </tbody>
         </table>
       </div>
-      <div v-if="!hw" class="placeholder">{{ t('common.loading') }}</div>
+      <!-- This branch used to be the only thing a failed hardware read produced,
+           so the tab sat on "Loading…" forever. -->
+      <LoadFailure v-if="tabError.hw" :detail="tabError.hw" :retry="reload" :busy="loading" />
+      <div v-else-if="!hw" class="placeholder">{{ t('common.loading') }}</div>
     </template>
 
     <!-- Updates -->
@@ -383,7 +387,26 @@
       </div>
     </template>
 
-    <div v-else-if="tab!=='home' && loading" class="placeholder">{{ t('common.loading') }}</div>
+    <!-- Only the diagnostics branch above carries a data guard (`&& diag`), so
+         this tail is what covers that tab before its first response — it was
+         written as a generic `tab!=='home' && loading` but can never fire for any
+         other tab. Spelled out here, with the failure case it was missing: when
+         the load failed, neither branch matched and the tab rendered blank. -->
+    <template v-else-if="tab === 'diag'">
+      <div
+        v-if="diagError"
+        class="tile"
+        style="border-left:3px solid var(--down)"
+        role="alert"
+      >
+        <div class="row">
+          <span class="name">{{ t('tools.diag_load_failed') }}</span>
+          <button class="tiny" :disabled="loading" @click="reload">{{ t('common.retry') }}</button>
+        </div>
+        <div class="sub mono" style="margin-top:4px">{{ diagError }}</div>
+      </div>
+      <SkeletonLoader v-else variant="tiles" :rows="3" :span="4" :tile-height="120" />
+    </template>
   </div>
 </template>
 
@@ -412,6 +435,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const router = useRouter()
@@ -421,6 +445,7 @@ const tab = ref('home')
 const loading = ref(false)
 const catalog = ref({ tiles: [] })
 const diag = ref(null)
+const diagError = ref('')
 const diagMsg = ref('')
 const processes = ref([])
 const procQ = ref('')
@@ -433,6 +458,17 @@ const procQ = ref('')
 // The existing `v-else-if="tab!=='home' && loading"` placeholder cannot cover
 // this: it only fires when no tab template matched at all.
 const tabLoaded = ref({})
+// Failure text per tab, same keying as tabLoaded. Every loader here used to
+// swallow its rejection into a toast, which left the tab showing whatever its
+// no-data branch says — and for the hardware tab that branch is "Loading…", so a
+// failed read claimed the page was still loading indefinitely.
+const tabError = ref({})
+
+/** Record a tab's load failure so its own panel can explain and offer a retry. */
+function noteTabError(id, e) {
+  tabError.value = { ...tabError.value, [id]: e.message || String(e) }
+  toast('❌ ' + e.message)
+}
 const df = ref({})
 const sizes = ref([])
 const timers = ref([])
@@ -522,7 +558,14 @@ async function loadCatalog() {
 async function loadDiag() {
   try {
     diag.value = await getSystemDiagnostics()
-  } catch (e) { toast('❌ ' + e.message) }
+    diagError.value = ''
+  } catch (e) {
+    // Latched, not just toasted. The toast is gone in four seconds, and the
+    // diagnostics tab renders nothing at all without `diag`, so a failed load
+    // used to leave a permanently blank page with no explanation and no way back.
+    diagError.value = e.message || String(e)
+    toast('❌ ' + e.message)
+  }
 }
 
 async function genDiag() {
@@ -544,7 +587,7 @@ async function loadSyslog() {
   loading.value = true
   try {
     syslog.value = await getToolsSyslog(syslogMinutes.value, syslogLevel.value, 100)
-  } catch (e) { toast('❌ ' + e.message) }
+  } catch (e) { noteTabError('syslog', e) }
   finally { loading.value = false }
 }
 
@@ -552,7 +595,7 @@ async function loadProc() {
   try {
     const j = await getSystemProcesses(40)
     processes.value = j.processes || []
-  } catch (e) { toast('❌ ' + e.message) }
+  } catch (e) { noteTabError('proc', e) }
 }
 
 async function loadDocker() {
@@ -563,7 +606,7 @@ async function loadDocker() {
     ])
     df.value = a
     sizes.value = b.containers || []
-  } catch (e) { toast('❌ ' + e.message) }
+  } catch (e) { noteTabError('docker', e) }
 }
 
 async function doPrune(what) {
@@ -597,14 +640,14 @@ async function loadSched() {
     }
     timers.value = j.timers || []
     agents.value = await getToolsAgents()
-  } catch (e) { toast('❌ ' + e.message) }
+  } catch (e) { noteTabError('sched', e) }
 }
 
 async function loadHw() {
   loading.value = true
   try {
     hw.value = await getToolsHardware()
-  } catch (e) { toast('❌ ' + e.message) }
+  } catch (e) { noteTabError('hw', e) }
   finally { loading.value = false }
 }
 
@@ -612,14 +655,14 @@ async function loadUpdates() {
   loading.value = true
   try {
     updates.value = await getToolsUpdates()
-  } catch (e) { toast('❌ ' + e.message) }
+  } catch (e) { noteTabError('updates', e) }
   finally { loading.value = false }
 }
 
 async function loadAbout() {
   try {
     about.value = await getToolsAbout()
-  } catch (e) { toast('❌ ' + e.message) }
+  } catch (e) { noteTabError('about', e) }
 }
 
 async function loadPorts() {
@@ -676,6 +719,11 @@ async function doFlushDns() {
 // because this function is what sets the flag.
 async function reload() {
   loading.value = true
+  // Clear this tab's previous failure up front: the loaders only ever set it, so
+  // without this a banner would survive the reload that fixed it.
+  if (tabError.value[tab.value]) {
+    tabError.value = { ...tabError.value, [tab.value]: '' }
+  }
   try {
     if (tab.value === 'home') await loadCatalog()
     else if (tab.value === 'diag') await loadDiag()

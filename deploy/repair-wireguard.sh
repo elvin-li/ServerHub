@@ -95,7 +95,47 @@ if not s["endpoint"]:
 PYEOF
 
 # ── 1. sudoers ───────────────────────────────────────────────────────────────
+# Refuse to install a policy that pins a `wg` the running code does not call, or
+# one that is not on disk.  sudo matches the whole argv, so a rule naming a
+# different (or absent) binary does not merely fail to help: `sudo -n` is refused,
+# every status poll falls back to asking for a password, and the page returns to
+# reporting "not running" against a live tunnel -- which is the exact fault this
+# script exists to have fixed.  Cheaper to catch here than to debug there.
 say "1/5  sudoers policy"
+"$PY" - "$HERE/sudoers.d/serverhub" <<'PYEOF'
+import pathlib
+import re
+import sys
+
+sys.path.insert(0, ".")
+from hub import wireguard_svc as w
+
+template = pathlib.Path(sys.argv[1]).read_text()
+granted = sorted({
+    match.group(1)
+    for match in re.finditer(r"^\s+(\S+)/wg (?:show|syncconf) ", template, re.M)
+})
+if not granted:
+    sys.exit("the template grants no `wg` read at all; the page cannot work")
+
+resolved = str(pathlib.Path(w.WG).parent)
+print(f"    代码调用   {w.WG}")
+for directory in granted:
+    binary = pathlib.Path(directory) / "wg"
+    print(f"    模板授权   {binary}  {'(存在)' if binary.exists() else '(不存在)'}")
+
+if resolved not in granted:
+    sys.exit(
+        f"REFUSING: the template grants {granted} but hub/wireguard_svc.py calls "
+        f"{w.WG}. sudo matches the full argv, so installing this would make every "
+        "status read fall back to a password prompt and the page would report "
+        '"not running" against a live tunnel.'
+    )
+missing = [d for d in granted if not (pathlib.Path(d) / "wg").exists()]
+if missing:
+    sys.exit(f"REFUSING: granted `wg` does not exist in {missing}")
+print("    ok  授权的二进制与代码调用一致且存在")
+PYEOF
 "$HERE/install-sudoers.sh"
 
 # ── 2. /etc/pf.conf ──────────────────────────────────────────────────────────

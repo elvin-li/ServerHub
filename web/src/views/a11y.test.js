@@ -13,7 +13,12 @@ import { resolve } from 'node:path'
 const SRC = resolve(__dirname, '..')
 
 function vueFiles() {
-  const out = []
+  // App.vue sits at the src root, not under views/ or components/, so scanning
+  // only those two directories skipped the application shell entirely -- and
+  // the shell owns the command palette, a real dialog that was missing
+  // aria-modal, had Escape bound to its input alone (so tabbing to the result
+  // list lost the keybinding), and trapped focus nowhere.
+  const out = [['App.vue', readFileSync(resolve(SRC, 'App.vue'), 'utf8')]]
   for (const dir of ['views', 'components']) {
     for (const f of readdirSync(resolve(SRC, dir))) {
       if (f.endsWith('.vue')) out.push([`${dir}/${f}`, readFileSync(resolve(SRC, dir, f), 'utf8')])
@@ -22,11 +27,28 @@ function vueFiles() {
   return out
 }
 
+/**
+ * Every shape the panel uses to darken the page behind a dialog.
+ *
+ * A literal `class="modal-bg"` was too narrow twice over: it missed the
+ * `drawer-bg` overlays entirely, and it missed any overlay carrying a second
+ * class. Three real drawers (Apps detail, Containers logs, Containers inspect)
+ * sat unannounced behind that gap -- each one focus-trapped and Escape-closable
+ * via useDismissable, so they behaved correctly for a keyboard user while
+ * telling a screen reader nothing about what had opened.
+ *
+ * `cmd-palette-bg` is a third spelling, used once, for the Cmd+K palette. It is
+ * listed explicitly rather than matched by a `-bg$` suffix rule: several
+ * unrelated classes end in -bg, and a pattern loose enough to catch them would
+ * demand a dialog role from things that are not dialogs.
+ */
+const OVERLAY = /class="(?:[^"]*\s)?(?:modal-bg|drawer-bg|cmd-palette-bg)(?:\s[^"]*)?"/g
+
 describe('modal dialogs', () => {
-  it('pair every .modal-bg overlay with a dialog role', () => {
+  it('pair every overlay with a dialog role', () => {
     const offenders = []
     for (const [name, src] of vueFiles()) {
-      const overlays = (src.match(/class="modal-bg"/g) || []).length
+      const overlays = (src.match(OVERLAY) || []).length
       const dialogs = (src.match(/role="dialog"/g) || []).length
       if (overlays > dialogs) offenders.push(`${name} (${overlays} overlays, ${dialogs} dialogs)`)
     }
@@ -146,8 +168,6 @@ describe('dialog keyboard contract', () => {
   // a backdrop click or an X button is unreachable for anyone driving the panel
   // from the keyboard, and that is exactly how new modals regressed before:
   // copied from an older one that predates the composable.
-  const OVERLAY = /class="(?:[^"]*\s)?(?:modal-bg|drawer-bg)(?:\s[^"]*)?"/g
-
   for (const [name, src] of vueFiles()) {
     const overlays = (src.match(OVERLAY) || []).length
     if (!overlays) continue

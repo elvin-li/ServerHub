@@ -92,6 +92,48 @@
         </table>
       </div>
 
+      <!-- Non-blocking gaps. The traffic flows without these, so they must not
+           look like failures, but they were previously computed by the server and
+           then rendered nowhere at all: `boot` in particular reports whether the
+           tunnel comes back after a reboot, and the action that fixes it existed
+           in the API with nothing on the page able to call it. -->
+      <div
+        v-if="warningChecks.length"
+        class="tile"
+        style="margin-bottom:12px;border-left:3px solid var(--warn)"
+      >
+        <h3>{{ t('wg.warnings') }}</h3>
+        <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
+          {{ t('wg.warnings_hint') }}
+        </p>
+        <table class="dense">
+          <tbody>
+            <tr v-for="c in warningChecks" :key="c.id">
+              <td style="width:28px"><span class="led warn"></span></td>
+              <td><strong>{{ checkLabel(c.id) }}</strong></td>
+              <td style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
+              <td class="mono" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
+              <td style="text-align:right">
+                <button
+                  v-if="c.id === 'boot'"
+                  class="tiny primary wg-fix-boot"
+                  @click="fixDaemon"
+                  :disabled="busy"
+                >{{ t('wg.install') }}</button>
+                <!-- Installing the NAT rule ends with `pfctl -E`, which is what
+                     turns pf on, so this is the same action as for the NAT row. -->
+                <button
+                  v-else-if="c.id === 'pf'"
+                  class="tiny primary"
+                  @click="fixNat"
+                  :disabled="busy"
+                >{{ t('wg.enable') }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <!-- Peers copied from another server can never handshake here. This is a
            config-shape problem, not a runtime one, so it gets its own callout. -->
       <div
@@ -512,6 +554,15 @@ const blockingChecks = computed(
     (c) => !c.ok && c.level === 'error' && !SELF_EXPLAINING.has(c.id),
   ),
 )
+// `running` is already the status bar at the top of the page and the Start button
+// next to it, so repeating it as a warning row would be the third statement of the
+// same fact.
+const ALREADY_SHOWN = new Set([...SELF_EXPLAINING, 'running'])
+const warningChecks = computed(
+  () => (readiness.value?.checks || []).filter(
+    (c) => !c.ok && c.level === 'warn' && !ALREADY_SHOWN.has(c.id),
+  ),
+)
 const downloadUrl = computed(
   () => (peerDialog.value ? wireguardPeerDownloadUrl(peerDialog.value.pubkey, peerFormat.value) : '#'),
 )
@@ -616,6 +667,10 @@ function control(action) {
 
 const fixForwarding = () => withBusy(() => setWireguardForwarding(true), 'wg.forwarding_enabled')
 const fixNat = () => withBusy(() => remediateWireguard('nat', true), 'wg.nat_installed')
+// Boot persistence. The service and the endpoint for this both existed; nothing on
+// the page called them, so an operator whose LaunchDaemon was missing (or was some
+// other build's) had no way to install the one the panel manages.
+const fixDaemon = () => withBusy(() => remediateWireguard('daemon', true), 'wg.boot_installed')
 
 async function createPeer() {
   const created = await withBusy(

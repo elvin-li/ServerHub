@@ -81,6 +81,7 @@
          placeholder can distinguish "not fetched" from "nothing installed", and
          the services scan shells out per launchd job, so that window is long
          enough to read. -->
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="() => refresh(true)" :busy="loading" />
     <SkeletonLoader v-if="!loaded" :variant="dense ? 'table' : 'cards'" :cols="8" :rows="8" />
 
     <!-- Dense table -->
@@ -132,7 +133,7 @@
                 </div>
               </td>
             </tr>
-            <tr v-if="!filtered.length">
+            <tr v-if="!filtered.length && !loadError">
               <td colspan="8" class="empty-row">{{ t('services.empty') }}</td>
             </tr>
           </tbody>
@@ -168,7 +169,7 @@
           </article>
         </div>
       </template>
-      <div v-if="!filtered.length" class="placeholder">{{ t('services.empty') }}</div>
+      <div v-if="!filtered.length && !loadError" class="placeholder">{{ t('services.empty') }}</div>
     </template>
 
     <!-- Detail drawer -->
@@ -347,6 +348,7 @@ import {
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -357,6 +359,7 @@ const loading = ref(false)
 // Latched at the end of the first refresh, including the 404 fallback path, so a
 // server old enough to lack /api/services still leaves the skeleton behind.
 const loaded = ref(false)
+const loadError = ref('')
 const dense = ref(true)
 const q = ref('')
 const onlyBad = ref(false)
@@ -539,8 +542,10 @@ async function refresh(force = false) {
   loading.value = true
   try {
     status.value = await getServices(force)
+    loadError.value = ''
   } catch (e) {
     if (e.status !== 404) {
+      loadError.value = e.message || String(e)
       toast(`❌ ${e.message || e}`)
       return
     }
@@ -548,7 +553,12 @@ async function refresh(force = false) {
       // Older servers expose only the classic status endpoint. The client does
       // not currently accept a force flag here, so use its supported signature.
       status.value = await getStatus()
+      // The 404 was expected on an older server and the fallback worked, so this
+      // is a success: latching the 404 here would show a permanent error banner
+      // on every old install.
+      loadError.value = ''
     } catch (fallbackError) {
+      loadError.value = fallbackError.message || String(fallbackError)
       toast(`❌ ${fallbackError.message || fallbackError}`)
     }
   } finally {

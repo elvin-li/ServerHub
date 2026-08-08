@@ -19,9 +19,10 @@
       <pre class="log-pre" role="status" aria-live="polite">{{ msg }}</pre>
     </div>
 
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="4" />
 
-    <div v-else-if="!vms.length" class="placeholder">
+    <div v-else-if="!vms.length && !loadError" class="placeholder">
       {{ t('vms.empty') }}
       <span v-if="!data?.utm_available">{{ t('vms.no_utm') }}</span>
       <span v-if="!data?.orb_available">{{ t('vms.no_orb') }}</span>
@@ -158,6 +159,7 @@ import { startVisibleInterval } from '../lib/poll'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -165,6 +167,7 @@ const data = ref(null)
 // The empty placeholder also volunteers "UTM not installed" / "OrbStack not
 // installed", which is an alarming thing to assert before the probe has run.
 const loaded = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const msg = ref('')
 const showCreate = ref(false)
@@ -248,7 +251,9 @@ function requireOk(result) {
 async function refresh() {
   try {
     data.value = await getVms()
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loaded.value = true

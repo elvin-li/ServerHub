@@ -21,7 +21,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from hub.sudoers_policy import authorised, parse_template  # noqa: E402
+from hub.sudoers_policy import SMARTCTL, authorised, parse_template  # noqa: E402
 
 TEMPLATE = BASE / "deploy" / "sudoers.d" / "serverhub"
 INSTALLER = BASE / "deploy" / "install-sudoers.sh"
@@ -93,7 +93,10 @@ class RulesCoverWhatWeRunTests(unittest.TestCase):
         old blanket grant used to cover.
         """
         rules = parse_template(self.text, state_root=str(BASE), user="someone")
-        smartctl = "/opt/homebrew/bin/smartctl"
+        # The pinned copy, not /opt/homebrew: Homebrew's prefix is writable by the
+        # account the rules are granted to, so naming it there would make every
+        # argument regex below decorative.  See the template header.
+        smartctl = SMARTCTL
         for args in (
             "-a /dev/disk0",
             "-H /dev/disk0",
@@ -196,33 +199,51 @@ class RulesCoverWhatWeRunTests(unittest.TestCase):
             "a wildcard path would let any file be loaded as an interface config",
         )
 
-    def test_wg_quick_is_path_pinned(self):
-        # wg-quick executes PostUp/PostDown from its config file as root, so a
-        # wildcard here would be arbitrary code execution as root.
-        self.assertGranted("wg-quick up /opt/homebrew/etc/wireguard/wg0.conf", "tunnel up")
-        for bad in ("wg-quick up *", "wg-quick down *"):
-            self.assertNotIn(bad, self.text, f"{bad} is arbitrary root code execution")
+    def test_wg_quick_is_not_granted_at_all(self):
+        """No passwordless wg-quick, at any path, with any arguments.
 
-    def test_wg_quick_rule_matches_how_the_code_invokes_it(self):
-        """sudo matches the whole argv, so an interpreter prefix must agree.
+        This used to be granted with the config path pinned, on the reasoning that
+        only the panel's own config could be applied.  Pinning the path does not
+        help: wg-quick EXECUTES the PostUp/PostDown lines of the config it is
+        handed, as root, and the panel has to be able to write that config because
+        it generates it.  The grant was therefore a root code path with extra
+        steps.  Two further problems compound it -- /opt/homebrew/bin/wg-quick is
+        writable by the granted account, and it can only run under Homebrew bash,
+        which loads dylibs from a writable prefix.
 
-        The service launches wg-quick through a modern bash by absolute path,
-        because under sudo's scrubbed PATH its `#!/usr/bin/env bash` shebang finds
-        Apple's bash 3.2 and wg-quick refuses to run.  A rule written without that
-        prefix would never match the real invocation, and the tunnel controls would
-        fail with a password prompt no web request can answer.
+        Tunnel up/down now goes through hub/macos_admin, which asks the operator
+        for their macOS password once. The read-only `wg show` rules stay
+        passwordless, so the WireGuard page still renders state.
+        """
+        rules = parse_template(self.text, state_root=str(BASE), user="someone")
+        offenders = [r for r in rules if "wg-quick" in r]
+        self.assertEqual(
+            offenders,
+            [],
+            "wg-quick is passwordless again; its config is writable by this "
+            "account and wg-quick runs that config's hooks as root:\n"
+            + "\n".join(offenders),
+        )
+
+    def test_the_code_can_still_bring_the_tunnel_up_without_that_rule(self):
+        """Removing the grant must not leave the page unable to start the tunnel.
+
+        `interface_action` tries `sudo -n` first and falls through to
+        run_admin_sequence on refusal, which uses the operator's web-entered
+        password or reports password_required so the SPA can ask for it.
         """
         service = (BASE / "hub" / "wireguard_svc.py").read_text()
-        uses_bash_prefix = bool(re.search(r"\[\s*BASH\s*,\s*WG_QUICK\s*,", service))
-        rule_has_bash_prefix = bool(
-            re.search(r"/bin/bash /opt/homebrew/bin/wg-quick (?:up|down) ", self.text)
+        self.assertIn(
+            "run_admin_sequence",
+            service,
+            "with no wg-quick rule and no admin fallback, tunnel up/down would "
+            "fail with a password prompt no web request can answer",
         )
-        self.assertEqual(
-            uses_bash_prefix,
-            rule_has_bash_prefix,
-            "hub/wireguard_svc.py and the sudoers rule disagree on whether "
-            "wg-quick is launched through an explicit bash; sudo matches the full "
-            "argv, so one of them will never match",
+        self.assertRegex(
+            service,
+            r"WG_QUICK",
+            "the service no longer references wg-quick at all; tunnel up/down "
+            "has to go somewhere",
         )
 
     def test_ip_forwarding_is_enumerated_not_wildcarded(self):

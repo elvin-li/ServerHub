@@ -24,6 +24,7 @@ worse than admitting ignorance.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -213,24 +214,52 @@ class IdentifyTests(unittest.TestCase):
 
 
 class SudoersCoverageTests(unittest.TestCase):
+    """The rules have to cover the *shape* of what the code runs.
+
+    Asserted against whichever directory the policy grants rather than a literal
+    ``/opt/homebrew/bin``: which binary is safe to grant is a separate question
+    being settled separately (the Homebrew path is writable by the granted account,
+    so a root-owned copy is preferable), and pinning it here would make this file
+    fight that change while testing nothing extra.  Whether the granted binary is
+    the one the code actually calls is its own invariant, checked below.
+    """
+
     def setUp(self):
         self.text = (BASE / "deploy" / "sudoers.d" / "serverhub").read_text()
+        self.prefixes = sorted({
+            match.group(1)
+            for match in re.finditer(
+                r"^\s+(\S+)/wg (?:show|syncconf) ", self.text, re.MULTILINE
+            )
+        })
+
+    def test_some_wg_binary_is_granted_at_all(self):
+        self.assertTrue(self.prefixes, "no `wg` rule at all; the page cannot work")
 
     def test_the_real_device_reads_are_granted(self):
         # Without one of these the page cannot read state at all: the utun number
         # is assigned at runtime, so `wg show wg0 dump` is not a usable rule.
-        self.assertIn("/opt/homebrew/bin/wg show all dump", self.text)
-        self.assertIn("/opt/homebrew/bin/wg show utun[0-9] dump", self.text)
+        for prefix in self.prefixes:
+            self.assertIn(f"{prefix}/wg show all dump", self.text)
+            self.assertIn(f"{prefix}/wg show utun[0-9] dump", self.text)
 
     def test_syncconf_on_the_real_device_is_granted_and_path_pinned(self):
-        self.assertIn(
-            "/opt/homebrew/bin/wg syncconf utun[0-9] "
-            "__SERVERHUB_STATE__/data/wg0.sync.conf",
-            self.text,
-        )
+        for prefix in self.prefixes:
+            self.assertIn(
+                f"{prefix}/wg syncconf utun[0-9] "
+                "__SERVERHUB_STATE__/data/wg0.sync.conf",
+                self.text,
+            )
         # A wildcard path would let any file on disk be loaded as an interface
         # config; the device may vary, the config must not.
         self.assertNotIn("wg syncconf utun[0-9] *", self.text)
+
+    # Whether the granted binary is the one the code actually resolves is a
+    # cross-cutting invariant that already has a home in
+    # tests/test_sudoers_covers_call_sites.py, where it is checked for every
+    # privileged binary at once rather than just this feature's.  Restating it here
+    # would report the same inconsistency twice and make the suite noisier without
+    # making it stricter.
 
     def test_no_rule_ends_in_a_bare_wildcard(self):
         """A trailing `*` matches every remaining argument, so it is a prefix grant."""
@@ -415,3 +444,73 @@ class DumpShapeContractTests(unittest.TestCase):
         peer = self._status(dump)["peers"][0]
         self.assertEqual(peer["endpoint"], "")
         self.assertFalse(peer["psk"])
+
+
+class ErrorDisclosureTests(unittest.TestCase):
+    """A failure message must not carry the server's private key.
+
+    The first field of every ``wg show ... dump`` line is the interface's *private
+    key*.  Sourcing an error string from ``stderr or stdout`` therefore publishes it
+    whenever the command exits non-zero after writing part of a dump -- and that
+    string is returned by the status endpoint, which any signed-in session can read,
+    and rendered into the readiness table on the page.
+    """
+
+    #: 44 characters, the real shape: 43 of base64 payload plus the '=' pad.
+    PRIVATE = "kPrivateKeyMaterial" + "A" * 24 + "="
+    PUBLIC = "kPublicKeyMaterial" + "B" * 25 + "="
+
+    def _status_with_failing_dump(self, stdout: str, stderr: str) -> dict:
+        with (
+            patch.object(wireguard_svc, "real_interface", return_value="utun8"),
+            patch.object(wireguard_svc, "sh", return_value=(1, stdout, stderr)),
+            patch.object(wireguard_svc, "sudo_capture", return_value=(1, stdout, stderr)),
+            patch.object(wireguard_svc, "peer_records", return_value=[]),
+            patch.object(
+                wireguard_svc, "read_conf",
+                return_value={"interface": {"ListenPort": "51820"}, "peers": []},
+            ),
+            patch.object(wireguard_svc, "public_from_private", return_value="PUB"),
+            patch.object(
+                wireguard_svc, "installation",
+                return_value={
+                    "installed": True, "conf_exists": True, "tools_version": "v1",
+                    "conf_path": "/x", "conf_dir": "/x",
+                },
+            ),
+        ):
+            return wireguard_svc.status()
+
+    def test_a_partial_dump_on_failure_is_not_reported(self):
+        partial = f"{self.PRIVATE}\t{self.PUBLIC}\t51820\toff\n"
+        result = self._status_with_failing_dump(partial, "")
+        self.assertNotIn(self.PRIVATE, result["state_error"])
+        self.assertNotIn(self.PRIVATE, repr(result))
+
+    def test_stderr_is_still_reported(self):
+        """Suppressing stdout must not leave the operator with no diagnosis."""
+        result = self._status_with_failing_dump("", "Unable to access interface")
+        self.assertIn("Unable to access interface", result["state_error"])
+
+    def test_a_key_in_stderr_is_redacted(self):
+        result = self._status_with_failing_dump("", f"broke on {self.PRIVATE} sorry")
+        self.assertNotIn(self.PRIVATE, result["state_error"])
+        self.assertIn("[redacted]", result["state_error"])
+
+    def test_there_is_always_some_diagnosis(self):
+        result = self._status_with_failing_dump("", "")
+        self.assertTrue(result["state_error"].strip())
+
+    def test_wg_quick_output_is_redacted_before_it_reaches_the_browser(self):
+        noisy = (
+            "[#] wireguard-go utun\n"
+            f"[#] wg set utun8 private-key {self.PRIVATE}\n"
+            "wg-quick: `wg0' already exists as `utun8'\n"
+        )
+        reason = wireguard_svc._wg_quick_reason(noisy)
+        self.assertNotIn(self.PRIVATE, reason)
+        self.assertIn("already exists", reason)
+
+    def test_the_redactor_leaves_ordinary_text_alone(self):
+        text = "Unable to access interface: No such file or directory"
+        self.assertEqual(wireguard_svc._redact_keys(text), text)

@@ -10,9 +10,10 @@ from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.status import invalidate_status
 from hub.util import sh
 
-BREW = "/opt/homebrew/bin/brew"
-if not os.path.isfile(BREW):
-    BREW = "/usr/local/bin/brew"
+# One definition, in hub.paths: it tries `which brew` before the two standard
+# prefixes, so a Homebrew in a custom prefix is found too. Local copies of this
+# fallback drifted from it and disagreed about whether brew existed.
+from hub.paths import BREW  # noqa: E402
 
 
 def _brew_env() -> dict:

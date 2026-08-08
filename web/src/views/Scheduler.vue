@@ -16,6 +16,7 @@
       </p>
     </div>
 
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
       <div class="tile span-4">
@@ -62,7 +63,7 @@
               {{ row.program || '—' }}
             </td>
           </tr>
-          <tr v-if="!filtered.length">
+          <tr v-if="!filtered.length && !loadError">
             <td colspan="5" style="color:var(--sub)">
               {{ loading ? t('common.loading') : t('common.none') }}
             </td>
@@ -83,12 +84,14 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { getScheduler } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadError = ref('')
 const q = ref('')
 
 const intervalCount = computed(() =>
@@ -122,8 +125,13 @@ function formatCal(c) {
 
 async function load() {
   loading.value = true
-  try { data.value = await getScheduler() }
-  catch (e) { toast('❌ ' + e.message) }
+  try {
+    data.value = await getScheduler()
+    loadError.value = ''
+  } catch (e) {
+    loadError.value = e.message || String(e)
+    toast('❌ ' + e.message)
+  }
   loading.value = false
   loaded.value = true
 }

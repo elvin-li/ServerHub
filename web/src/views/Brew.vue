@@ -8,6 +8,7 @@
       <button class="primary" @click="refresh" :disabled="busy">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" :placeholder="t('brew.filter_ph')"  :aria-label="t('brew.filter_ph')"/>
     </div>
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
     <div v-else class="table-wrap">
       <table class="dense">
@@ -42,7 +43,7 @@
               >{{ labels[a] || a }}</button>
             </td>
           </tr>
-          <tr v-if="!filtered.length">
+          <tr v-if="!filtered.length && !loadError">
             <td colspan="5" style="color:var(--sub)">{{ t('brew.empty') }}</td>
           </tr>
         </tbody>
@@ -56,6 +57,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { brewAction, getBrewServices } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -65,6 +67,7 @@ const q = ref('')
 // The worst false-empty case in the app: `brew services list` is allowed 20s,
 // and for all of it this table asserted that no brew services were installed.
 const loaded = ref(false)
+const loadError = ref('')
 let refreshTimer = null
 
 function scheduleRefresh() {
@@ -91,7 +94,9 @@ async function refresh() {
   try {
     const j = await getBrewServices()
     services.value = j.services || []
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loaded.value = true

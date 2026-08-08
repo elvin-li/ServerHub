@@ -18,6 +18,7 @@
       </p>
     </div>
 
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
       <div class="tile span-4">
@@ -65,7 +66,7 @@
               {{ (u.groups || []).slice(0, 6).join(', ') }}{{ (u.groups||[]).length > 6 ? '…' : '' }}
             </td>
           </tr>
-          <tr v-if="!(data?.users||[]).length">
+          <tr v-if="!(data?.users||[]).length && !loadError">
             <td colspan="8" style="color:var(--sub)">{{ loading ? t('common.loading') : t('users.empty') }}</td>
           </tr>
         </tbody>
@@ -79,6 +80,7 @@ import { inject, onMounted, ref } from 'vue'
 import { getUsers } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -88,12 +90,15 @@ const loading = ref(false)
 // arrived. Keying it off `loading` would blank the populated table every time
 // the operator pressed Refresh.
 const loaded = ref(false)
+const loadError = ref('')
 
 async function load() {
   loading.value = true
   try {
     data.value = await getUsers()
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loading.value = false

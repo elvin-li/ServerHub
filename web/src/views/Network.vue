@@ -30,6 +30,7 @@
          slowest in the app. Every tab below reads the same `data` object, so all
          seven were simultaneously asserting "no addresses" / "no services" /
          "no published ports" for the whole wait. One latch covers them all. -->
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="loading" />
     <SkeletonLoader v-if="!loaded" :cols="6" :rows="7" />
 
     <template v-else>
@@ -310,7 +311,7 @@
                 </template>
               </td>
             </tr>
-            <tr v-if="!(data?.services||[]).length">
+            <tr v-if="!(data?.services||[]).length && !loadError">
               <td colspan="8" style="color:var(--sub)">{{ data?.services_error || t('network.no_services') }}</td>
             </tr>
           </tbody>
@@ -411,7 +412,7 @@
                   <button class="tiny" :disabled="busy" @click="openPortEdit(p.container)">{{ t('network.change_port') }}</button>
                 </td>
               </tr>
-              <tr v-if="!filteredDockerPorts.length">
+              <tr v-if="!filteredDockerPorts.length && !loadError">
                 <td colspan="7" style="color:var(--sub)">{{ t('network.no_published') }}</td>
               </tr>
             </tbody>
@@ -553,12 +554,14 @@ import {
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const msg = ref('')
 const tab = ref('switch')
@@ -676,6 +679,7 @@ async function refresh(force = false) {
   loading.value = true
   try {
     data.value = await getSystemNetwork(force)
+    loadError.value = ''
     syncOrderFromData()
     if (deviceOptions.value.length && !deviceOptions.value.includes(aliasForm.value.device)) {
       aliasForm.value.device = deviceOptions.value[0]
@@ -686,6 +690,7 @@ async function refresh(force = false) {
       autoIpsText.value = (aa.config.ips || []).join(', ')
     }
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loading.value = false

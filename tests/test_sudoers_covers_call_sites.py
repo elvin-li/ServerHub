@@ -35,11 +35,16 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
+from hub import paths as _paths  # noqa: E402
+from hub import wireguard_svc as _wireguard_svc  # noqa: E402
 from hub.sudoers_policy import (  # noqa: E402  (needs sys.path above)
     FORBIDDEN,
+    PINNED_BIN_DIR,
     REQUIRED,
+    UNPINNED_EQUIVALENTS,
     authorised,
     dead_regex_rules,
+    executed_paths,
     parse_template,
     split_rule,
     unpinned_rules,
@@ -51,9 +56,14 @@ TEMPLATE = BASE / "deploy" / "sudoers.d" / "serverhub"
 #: Module-level constants that appear inside argv lists, so a call site can be
 #: compared against a rule as a concrete path.
 CONSTANTS = {
-    "SMARTCTL": "/opt/homebrew/bin/smartctl",
-    "WG": "/opt/homebrew/bin/wg",
-    "WG_QUICK": "/opt/homebrew/bin/wg-quick",
+    # Taken from the modules rather than written out, because these two are
+    # resolved at import time: hub.paths.pinned_or() returns the root-owned copy
+    # under /usr/local/libexec/serverhub when the installer has put it there, and
+    # the Homebrew path otherwise. Hardcoding either one would make this file
+    # agree with the policy on a machine where the code does not.
+    "SMARTCTL": _paths.SMARTCTL,
+    "WG": _wireguard_svc.WG,
+    "WG_QUICK": _wireguard_svc.WG_QUICK,
     "BASH": "/opt/homebrew/bin/bash",
     "RM": "/bin/rm",
     "PFCTL": "/sbin/pfctl",
@@ -359,6 +369,80 @@ class SudoersCoverageTests(unittest.TestCase):
         ]
         self.assertEqual(
             leaks, [], "the policy authorises shapes it must refuse:\n" + "\n".join(leaks)
+        )
+
+    def test_the_binaries_the_code_resolves_are_the_ones_granted(self):
+        """A PATH-resolved binary can drift away from the path sudoers pins.
+
+        `hub.paths.SMARTCTL` is `shutil.which("smartctl") or "/opt/homebrew/..."`,
+        so what the code executes depends on the PATH of whatever launched the
+        panel.  Today both resolve to the granted path and there is only one
+        smartctl installed -- but a second copy earlier in PATH (a /usr/local/bin
+        install, say) would silently move every privileged SMART call to a binary
+        no rule covers, and SMART reads would go back to asking for a password
+        with nothing to show why.
+        """
+        # executed_paths, not just the rule's binary: a script reached as an
+        # argument to a pinned interpreter is executed by the rule without ever
+        # being that rule's binary.
+        granted = {p for rule in self.rules for p in executed_paths(rule)}
+        # WG_QUICK is intentionally absent from the policy -- see
+        # test_wg_quick_is_deliberately_not_granted.
+        resolved = {
+            "hub.paths.SMARTCTL": _paths.SMARTCTL,
+            "hub.wireguard_svc.WG": _wireguard_svc.WG,
+        }
+        drifted = [
+            f"{name} = {value} (no rule names this path)"
+            for name, value in resolved.items()
+            if value not in granted
+        ]
+        self.assertEqual(
+            drifted,
+            [],
+            "the code would run a binary the policy does not authorise, so the "
+            "call prompts for a password no web request can answer. If the paths "
+            "below are under /opt/homebrew the pinned copies are missing -- run "
+            "deploy/install-sudoers.sh:\n" + "\n".join(drifted),
+        )
+
+    def test_the_pinned_copies_are_what_gets_granted(self):
+        """The policy must name the root-owned copies, never the Homebrew ones.
+
+        Homebrew chowns its prefix to the installing account, so a rule naming
+        /opt/homebrew/bin/smartctl can be satisfied by any program that account
+        cares to put there: the argument regexes become decorative and the grant
+        is plain passwordless root.  Reverting the path looks like a cosmetic
+        change, which is exactly why it is asserted.
+        """
+        granted = {p for rule in self.rules for p in executed_paths(rule)}
+        self.assertIn(PINNED_BIN_DIR + "/smartctl", granted)
+        self.assertIn(PINNED_BIN_DIR + "/wg", granted)
+        reopened = sorted(set(UNPINNED_EQUIVALENTS) & granted)
+        self.assertEqual(
+            reopened,
+            [],
+            "these paths live in a directory the granted account owns, so "
+            "granting them reopens passwordless root:\n" + "\n".join(reopened),
+        )
+
+    def test_wg_quick_is_deliberately_not_granted(self):
+        """Its absence is a decision, not an oversight.
+
+        wg-quick executes the PostUp/PostDown lines of the config it is handed, as
+        root, and the panel has to be able to write that config because it
+        generates it.  No argument pinning fixes that, so tunnel up/down goes
+        through hub/macos_admin instead and asks for the operator's password once.
+        The read-only `wg show` rules stay passwordless, so the page still renders.
+        """
+        granted = {p for rule in self.rules for p in executed_paths(rule)}
+        self.assertNotIn("/opt/homebrew/bin/wg-quick", granted)
+        service = (BASE / "hub" / "wireguard_svc.py").read_text()
+        self.assertIn(
+            "run_admin_sequence",
+            service,
+            "with no passwordless rule, tunnel up/down has to have a password "
+            "path or the WireGuard page cannot start the tunnel at all",
         )
 
     def test_device_patterns_cannot_escape_dev(self):

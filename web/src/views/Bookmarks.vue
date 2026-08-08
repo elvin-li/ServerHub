@@ -15,6 +15,7 @@
         }) }}
       </span>
     </div>
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="8" />
     <!-- Empty state: the grid is a bare v-for, so with no bookmarks the page
          showed only the static hint below and read as broken rather than empty. -->
@@ -53,6 +54,7 @@ import { inject, onMounted, ref } from 'vue'
 import { getBookmarks } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -61,6 +63,7 @@ const loading = ref(false)
 // Every bookmark is probed over the network before the response returns, so an
 // empty grid is the normal state for a second or more on first paint.
 const loaded = ref(false)
+const loadError = ref('')
 
 function healthOf(b) {
   if (b?.health) return b.health
@@ -104,7 +107,9 @@ async function refresh(force = false) {
     // Shared client, not a raw fetch: it checks r.ok, so an expired session
     // fires AUTH_LOST_EVENT instead of writing the 401 body into `data`.
     data.value = await getBookmarks(force)
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   }
   loading.value = false

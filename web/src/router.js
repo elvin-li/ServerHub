@@ -1,11 +1,25 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import Dashboard from './views/Dashboard.vue'
-import Login from './views/Login.vue'
 import {
   clearStaleChunkFlag, isChunkLoadError, recoverFromStaleChunk,
 } from './lib/chunkRecovery'
-// Dashboard is the landing page. Keep it eager and split every secondary page
-// into an on-demand chunk so first paint does not download the entire admin UI.
+
+// Every page, including the two entry points, is an on-demand chunk.
+//
+// Dashboard used to be imported eagerly on the reasoning that the landing page
+// should not wait for a second request. That held when it was small; it has since
+// grown to 64 KB of source and, because LineChart and StackBar are used nowhere
+// else, it dragged those in too — 27% of the first-paint bundle. Everyone paid
+// for it: a deep link to /containers downloaded the whole dashboard, and an
+// unauthenticated visitor was sent to /login and downloaded it anyway.
+//
+// Login was eager for the same reason and has the mirror-image problem: an
+// authenticated visitor never renders it.
+//
+// The round trip that eagerness was avoiding is given back by warmLandingChunk(),
+// which starts the fetch for whichever of the two this URL will actually use,
+// concurrently with bootstrap's dictionary load and the auth-status probe.
+const Dashboard = () => import('./views/Dashboard.vue')
+const Login = () => import('./views/Login.vue')
 const MainArray = () => import('./views/MainArray.vue')
 const Pool = () => import('./views/Pool.vue')
 const Files = () => import('./views/Files.vue')
@@ -69,6 +83,26 @@ const routes = [
   // Catch-all → redirect to dashboard
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
+
+/**
+ * Start downloading the chunk this URL is going to need, without waiting for it.
+ *
+ * Called before the app mounts, so the request overlaps the locale dictionary
+ * load and the `/api/auth/status` probe in the guard below — both of which the
+ * first navigation already blocks on. By the time the guard resolves the chunk is
+ * normally in the module cache, so making these two routes lazy costs no extra
+ * serial round trip on first paint.
+ *
+ * Only one of the two is warmed: the point is to stop shipping both.
+ * Failures are ignored on purpose — this is a prefetch, and the router will
+ * request the chunk again (and surface a real error) when it actually navigates.
+ */
+export function warmLandingChunk(pathname = window.location.pathname) {
+  const load = pathname === '/login' ? Login : Dashboard
+  try {
+    void load()?.catch?.(() => {})
+  } catch {}
+}
 
 const router = createRouter({
   history: createWebHistory(),

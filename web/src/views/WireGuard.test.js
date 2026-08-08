@@ -169,3 +169,210 @@ describe('WireGuard page', () => {
     expect(wrapper.text()).toContain('[Interface]')
   })
 })
+
+describe('WireGuard readiness table', () => {
+  beforeEach(() => {
+    for (const fn of Object.values(api)) {
+      if (typeof fn?.mockReset === 'function') fn.mockReset()
+    }
+    api.wireguardPeerDownloadUrl.mockReturnValue('/download')
+  })
+
+  /** Rows in the blocking-gaps table, by the check label each one renders. */
+  function blockingRows(wrapper) {
+    const table = wrapper.findAll('table.dense')[0]
+    if (!table) return []
+    return table.findAll('tbody tr').map((row) => row.findAll('td')[1]?.text() ?? '')
+  }
+
+  it('renders one row per problem, not one per check that mentions it', async () => {
+    // Several gates sit downstream of one another: NAT cannot load out of a
+    // pf.conf pf refuses, and an endpoint cannot resolve correctly if none is
+    // set. The server suppresses the downstream check; the page must therefore
+    // never receive -- or render -- two rows saying the same thing.
+    const { wrapper } = await mountView({}, {
+      checks: [
+        { id: 'installed', ok: true, level: 'error', detail: 'v1.0' },
+        { id: 'endpoint', ok: false, level: 'error', detail: '' },
+        { id: 'pf_conf', ok: false, level: 'error', detail: '/etc/pf.conf:12: Rules must be in order' },
+      ],
+      blocking: ['endpoint', 'pf_conf'],
+    })
+    const rows = blockingRows(wrapper)
+    expect(rows).toHaveLength(2)
+    expect(new Set(rows).size).toBe(rows.length)
+  })
+
+  it('gives every row a label and a remedy rather than a bare id', async () => {
+    const { wrapper } = await mountView({}, {
+      checks: [
+        { id: 'endpoint_resolves', ok: false, level: 'error', detail: 'vpn.example -> 2001:db8::1 (not this host)' },
+        { id: 'pf_conf', ok: false, level: 'error', detail: '/etc/pf.conf:12' },
+      ],
+      blocking: ['endpoint_resolves', 'pf_conf'],
+    })
+    const text = wrapper.text()
+    // Resolved through the explicit label/fix maps, so a new check id added on the
+    // server without a translation shows up here rather than on the page.
+    for (const key of [
+      'wg.check_endpoint_resolves', 'wg.fix_endpoint_resolves',
+      'wg.check_pf_conf', 'wg.fix_pf_conf',
+    ]) {
+      expect(text).toContain(key)
+    }
+    expect(text).not.toContain('endpoint_resolves ')
+  })
+
+  it('offers the same repair action for a broken pf.conf as for a missing NAT rule', async () => {
+    // Installing the NAT rule rewrites /etc/pf.conf in the order pf requires,
+    // which is exactly what repairs a file pf is currently refusing.
+    const { wrapper } = await mountView({}, {
+      checks: [{ id: 'pf_conf', ok: false, level: 'error', detail: '/etc/pf.conf:12' }],
+      blocking: ['pf_conf'],
+    })
+    api.remediateWireguard.mockResolvedValue({ ok: true })
+    const install = wrapper.findAll('button').find((b) => b.text() === 'wg.install')
+    expect(install).toBeTruthy()
+    await install.trigger('click')
+    await flushPromises()
+    expect(api.remediateWireguard).toHaveBeenCalledWith('nat', true)
+  })
+
+  it('does not repeat the foreign-peer finding in the table and its own callout', async () => {
+    // The callout below explains the situation and names the keys; the table row
+    // could only restate it with less room.
+    const { wrapper } = await mountView({}, {
+      checks: [
+        { id: 'peer_origin', ok: false, level: 'error', detail: '5/5 peers from another server' },
+        { id: 'pf_conf', ok: false, level: 'error', detail: '/etc/pf.conf:12' },
+      ],
+      blocking: ['peer_origin', 'pf_conf'],
+      peer_origin: { conflict: true, foreign: 5, total: 5, foreign_keys: [] },
+    })
+    expect(wrapper.text()).toContain('wg.foreign_peers_title')
+    expect(blockingRows(wrapper)).toEqual(['wg.check_pf_conf'])
+  })
+
+  it('says nothing when every gate is satisfied', async () => {
+    const { wrapper } = await mountView({ running: true }, {
+      checks: [{ id: 'installed', ok: true, level: 'error', detail: 'v1.0' }],
+      ready: true,
+      blocking: [],
+    })
+    expect(wrapper.text()).not.toContain('wg.not_ready')
+  })
+
+  it('keeps warnings out of the blocking table', async () => {
+    const { wrapper } = await mountView({}, {
+      checks: [
+        { id: 'pf_conf', ok: false, level: 'error', detail: '/etc/pf.conf:12' },
+        { id: 'boot', ok: false, level: 'warn', detail: '/Library/LaunchDaemons/x.plist' },
+      ],
+      blocking: ['pf_conf'],
+      warnings: ['boot'],
+    })
+    expect(blockingRows(wrapper)).toEqual(['wg.check_pf_conf'])
+  })
+})
+
+describe('WireGuard non-blocking warnings', () => {
+  beforeEach(() => {
+    for (const fn of Object.values(api)) {
+      if (typeof fn?.mockReset === 'function') fn.mockReset()
+    }
+    api.wireguardPeerDownloadUrl.mockReturnValue('/download')
+  })
+
+  /** Rows in the warnings tile, by the check label each one renders. */
+  function warningRows(wrapper) {
+    const tile = wrapper.findAll('.tile').find((t) => t.text().includes('wg.warnings'))
+    if (!tile) return []
+    return tile.findAll('tbody tr').map((row) => row.findAll('td')[1]?.text() ?? '')
+  }
+
+  it('shows warn-level checks, which previously rendered nowhere at all', async () => {
+    // The server computed these and the page dropped them, so whether the tunnel
+    // survives a reboot was information the operator could not see.
+    const { wrapper } = await mountView({ running: true }, {
+      checks: [
+        { id: 'boot', ok: false, level: 'warn', detail: '/Library/LaunchDaemons/x.plist' },
+      ],
+      ready: true,
+      blocking: [],
+      warnings: ['boot'],
+    })
+    expect(warningRows(wrapper)).toEqual(['wg.check_boot'])
+    expect(wrapper.text()).toContain('wg.fix_boot')
+  })
+
+  it('offers boot persistence, an action the API had and the page could not reach', async () => {
+    const { wrapper } = await mountView({ running: true }, {
+      checks: [{ id: 'boot', ok: false, level: 'warn', detail: '/x.plist' }],
+      ready: true,
+      blocking: [],
+      warnings: ['boot'],
+    })
+    api.remediateWireguard.mockResolvedValue({ ok: true })
+    const button = wrapper.find('button.wg-fix-boot')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    await flushPromises()
+    expect(api.remediateWireguard).toHaveBeenCalledWith('daemon', true)
+  })
+
+  it('does not restate the interface state, which the status bar already carries', async () => {
+    const { wrapper } = await mountView({ running: false }, {
+      checks: [
+        { id: 'running', ok: false, level: 'warn', detail: 'wg0' },
+        { id: 'boot', ok: false, level: 'warn', detail: '/x.plist' },
+      ],
+      ready: true,
+      blocking: [],
+      warnings: ['running', 'boot'],
+    })
+    expect(warningRows(wrapper)).toEqual(['wg.check_boot'])
+    // Still stated once, by the status bar and its Start button.
+    expect(wrapper.text()).toContain('wg.tunnel_stopped')
+  })
+
+  it('keeps blocking gaps out of the warnings tile and vice versa', async () => {
+    const { wrapper } = await mountView({}, {
+      checks: [
+        { id: 'endpoint', ok: false, level: 'error', detail: '' },
+        { id: 'boot', ok: false, level: 'warn', detail: '/x.plist' },
+      ],
+      blocking: ['endpoint'],
+      warnings: ['boot'],
+    })
+    expect(warningRows(wrapper)).toEqual(['wg.check_boot'])
+    const blocking = wrapper.findAll('table.dense')[0]
+    expect(blocking.text()).toContain('wg.check_endpoint')
+    expect(blocking.text()).not.toContain('wg.check_boot')
+  })
+
+  it('says nothing when there are no warnings', async () => {
+    const { wrapper } = await mountView({ running: true }, {
+      checks: [{ id: 'installed', ok: true, level: 'error', detail: 'v1.0' }],
+      ready: true,
+      blocking: [],
+      warnings: [],
+    })
+    expect(wrapper.text()).not.toContain('wg.warnings')
+  })
+
+  it('offers to enable pf, since installing the NAT rule is what turns it on', async () => {
+    const { wrapper } = await mountView({ running: true }, {
+      checks: [{ id: 'pf', ok: false, level: 'warn', detail: 'pfctl status' }],
+      ready: true,
+      blocking: [],
+      warnings: ['pf'],
+    })
+    api.remediateWireguard.mockResolvedValue({ ok: true })
+    const tile = wrapper.findAll('.tile').find((t) => t.text().includes('wg.warnings'))
+    const button = tile.findAll('button').find((b) => b.text() === 'wg.enable')
+    expect(button).toBeTruthy()
+    await button.trigger('click')
+    await flushPromises()
+    expect(api.remediateWireguard).toHaveBeenCalledWith('nat', true)
+  })
+})

@@ -58,7 +58,9 @@
       <pre class="log" style="max-height:160px;margin-top:6px" role="log" aria-live="polite">{{ jobLog }}</pre>
     </div>
 
-    <div v-if="!data?.engine_up" class="placeholder">{{ t('docker.engine_off') }}</div>
+    <LoadFailure v-if="listError" :detail="listError" :retry="refresh" :busy="busy" />
+    <!-- Only claim the engine is down once a reply actually said so. -->
+    <div v-else-if="!data?.engine_up" class="placeholder">{{ t('docker.engine_off') }}</div>
 
     <template v-else-if="tab==='containers'">
       <template v-for="grp in displayGroups" :key="grp.name">
@@ -165,6 +167,7 @@
         <button class="danger" :disabled="busy" @click="doPrune('images')">{{ t('docker.prune_images') }}</button>
         <button @click="loadImages" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
+      <LoadFailure v-if="subError.images" :detail="subError.images" :retry="loadImages" :busy="busy" />
       <SkeletonLoader v-if="!subLoaded.images" :cols="6" :rows="6" />
       <div v-else class="table-wrap">
         <table class="dense">
@@ -180,7 +183,7 @@
                 <button class="tiny danger" :disabled="busy" @click="rmi(im)">{{ t('docker.remove') }}</button>
               </td>
             </tr>
-            <tr v-if="!images.length"><td colspan="6" style="color:var(--sub)">{{ t('docker.no_images') }}</td></tr>
+            <tr v-if="!images.length && !subError.images"><td colspan="6" style="color:var(--sub)">{{ t('docker.no_images') }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -193,6 +196,7 @@
         <button class="danger" :disabled="busy" @click="doPrune('volumes')">{{ t('docker.prune_volumes') }}</button>
         <button @click="loadVolumes" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
+      <LoadFailure v-if="subError.volumes" :detail="subError.volumes" :retry="loadVolumes" :busy="busy" />
       <SkeletonLoader v-if="!subLoaded.volumes" :cols="4" :rows="5" />
       <div v-else class="table-wrap">
         <table class="dense">
@@ -206,7 +210,7 @@
                 <button class="tiny danger" :disabled="busy" @click="rmVol(v)">{{ t('docker.remove') }}</button>
               </td>
             </tr>
-            <tr v-if="!volumes.length"><td colspan="4" style="color:var(--sub)">{{ t('docker.no_volumes') }}</td></tr>
+            <tr v-if="!volumes.length && !subError.volumes"><td colspan="4" style="color:var(--sub)">{{ t('docker.no_volumes') }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -219,6 +223,7 @@
         <button class="danger" :disabled="busy" @click="doPrune('networks')">{{ t('docker.prune_networks') }}</button>
         <button @click="loadNetworks" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
+      <LoadFailure v-if="subError.networks" :detail="subError.networks" :retry="loadNetworks" :busy="busy" />
       <SkeletonLoader v-if="!subLoaded.networks" :cols="5" :rows="4" />
       <div v-else class="table-wrap">
         <table class="dense">
@@ -239,7 +244,7 @@
                 <span v-else class="sub">{{ t('docker.builtin') }}</span>
               </td>
             </tr>
-            <tr v-if="!networks.length"><td colspan="5" style="color:var(--sub)">{{ t('docker.no_networks') }}</td></tr>
+            <tr v-if="!networks.length && !subError.networks"><td colspan="5" style="color:var(--sub)">{{ t('docker.no_networks') }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -251,6 +256,7 @@
           {{ t('docker.engine_hint') }}
         </p>
       </div>
+      <LoadFailure v-if="subError.engine" :detail="subError.engine" :retry="loadEngine" :busy="busy" />
       <SkeletonLoader v-if="!subLoaded.engine" variant="tiles" :rows="2" :span="6" :tile-height="260" />
       <div v-else-if="engineInfo?.engine_up" class="two-col">
         <div class="card">
@@ -288,14 +294,14 @@
       </div>
       <!-- Reached only after the probe returned, so this states the engine is
            down rather than hedging between "off" and "still loading". -->
-      <div v-else class="placeholder">{{ engineInfo?.message || t('docker.engine_off') }}</div>
+      <div v-else-if="!subError.engine" class="placeholder">{{ engineInfo?.message || t('docker.engine_off') }}</div>
     </template>
 
     <!-- logs drawer -->
-    <div v-if="logDrawer" class="drawer-bg" @click.self="closeLogs">
-      <div ref="logPanel" class="drawer">
+    <div v-if="logDrawer" class="drawer-bg" @click.self="closeLogs" role="presentation">
+      <div ref="logPanel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="ctr-log-drawer-title" tabindex="-1">
         <div class="row" style="margin-bottom:10px">
-          <span class="name">{{ t('docker.logs') }} · {{ logName }}</span>
+          <span id="ctr-log-drawer-title" class="name">{{ t('docker.logs') }} · {{ logName }}</span>
           <button class="tiny" @click="closeLogs">{{ t('common.close') }}</button>
         </div>
         <pre class="log" ref="logEl">{{ logText }}</pre>
@@ -360,10 +366,10 @@
     </div>
 
     <!-- inspect -->
-    <div v-if="inspectData" class="drawer-bg" @click.self="inspectData=null">
-      <div ref="inspectPanel" class="drawer" style="overflow:auto">
+    <div v-if="inspectData" class="drawer-bg" @click.self="inspectData=null" role="presentation">
+      <div ref="inspectPanel" class="drawer" style="overflow:auto" role="dialog" aria-modal="true" aria-labelledby="ctr-inspect-title" tabindex="-1">
         <div class="row" style="margin-bottom:10px">
-          <span class="name">{{ t('common.details') }} · {{ inspectData.Name }}</span>
+          <span id="ctr-inspect-title" class="name">{{ t('common.details') }} · {{ inspectData.Name }}</span>
           <button class="tiny" @click="inspectData=null">{{ t('common.close') }}</button>
         </div>
         <div class="kv">
@@ -395,6 +401,7 @@ import {
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -416,6 +423,11 @@ const engineInfo = ref(null)
 // could not tell. Latched rather than derived from `busy`, so pressing Refresh
 // on a populated tab does not blank it back to shimmer bars.
 const subLoaded = ref({ images: false, volumes: false, networks: false, engine: false })
+// Per-tab failure text, keyed the same way. Kept separate from `subLoaded` so a
+// failed tab does not hold the skeleton up forever, and so switching tabs does not
+// carry one tab's error onto another.
+const subError = ref({ images: '', volumes: '', networks: '', engine: '' })
+const listError = ref('')
 const showRun = ref(false)
 const runPanel = ref(null)
 const pullImage = ref('')
@@ -532,8 +544,15 @@ function toggleAll(items, ev) {
 }
 
 async function refresh() {
-  try { data.value = await getContainers(true) }
-  catch (e) { toast('❌ ' + e.message) }
+  try {
+    data.value = await getContainers(true)
+    listError.value = ''
+  } catch (e) {
+    // Without this, a failed list read left `data` null and the page rendered
+    // "engine is not running" — blaming Docker for what was an API failure.
+    listError.value = e.message || String(e)
+    toast('❌ ' + e.message)
+  }
 }
 
 function batchToast(j) {
@@ -737,24 +756,40 @@ async function openInspect(c) {
 }
 
 async function loadImages() {
-  try { images.value = (await getImages()).images || [] }
-  catch (e) { toast('❌ ' + e.message) }
-  finally { subLoaded.value.images = true }
+  try {
+    images.value = (await getImages()).images || []
+    subError.value.images = ''
+  } catch (e) {
+    subError.value.images = e.message || String(e)
+    toast('❌ ' + e.message)
+  } finally { subLoaded.value.images = true }
 }
 async function loadVolumes() {
-  try { volumes.value = (await getVolumes()).volumes || [] }
-  catch (e) { toast('❌ ' + e.message) }
-  finally { subLoaded.value.volumes = true }
+  try {
+    volumes.value = (await getVolumes()).volumes || []
+    subError.value.volumes = ''
+  } catch (e) {
+    subError.value.volumes = e.message || String(e)
+    toast('❌ ' + e.message)
+  } finally { subLoaded.value.volumes = true }
 }
 async function loadNetworks() {
-  try { networks.value = (await getNetworks()).networks || [] }
-  catch (e) { toast('❌ ' + e.message) }
-  finally { subLoaded.value.networks = true }
+  try {
+    networks.value = (await getNetworks()).networks || []
+    subError.value.networks = ''
+  } catch (e) {
+    subError.value.networks = e.message || String(e)
+    toast('❌ ' + e.message)
+  } finally { subLoaded.value.networks = true }
 }
 async function loadEngine() {
-  try { engineInfo.value = await getDockerInfo() }
-  catch (e) { toast('❌ ' + e.message) }
-  finally { subLoaded.value.engine = true }
+  try {
+    engineInfo.value = await getDockerInfo()
+    subError.value.engine = ''
+  } catch (e) {
+    subError.value.engine = e.message || String(e)
+    toast('❌ ' + e.message)
+  } finally { subLoaded.value.engine = true }
 }
 async function doPrune(kind) {
   const tips = {

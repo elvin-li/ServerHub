@@ -313,6 +313,7 @@
           <button @click="loadDockerInfo">{{ t('common.refresh') }}</button>
         </div>
       </div>
+      <LoadFailure v-else-if="dockerError" :detail="dockerError" :retry="loadDockerInfo" />
       <div v-else class="placeholder">{{ t('common.loading') }}</div>
     </div>
 
@@ -714,6 +715,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t, locale, locales, setLocale } = injectI18n()
@@ -733,6 +735,7 @@ const identityForm = ref({ computer_name: '', comment: '', host_ip: '' })
 const identityLoaded = ref(false)
 const identityError = ref('')
 const dockerInfo = ref(null)
+const dockerError = ref('')
 const sysBundle = ref(null)
 const launcher = ref(null)
 const launcherBusy = ref(false)
@@ -933,8 +936,17 @@ async function saveIdentity() {
 }
 
 async function loadDockerInfo() {
-  try { dockerInfo.value = await getDockerInfo() }
-  catch (e) { toast('❌ ' + e.message) }
+  try {
+    dockerInfo.value = await getDockerInfo()
+    dockerError.value = ''
+  } catch (e) {
+    // The tab's fallback branch renders "Loading…" whenever dockerInfo is null,
+    // so swallowing this left the panel claiming it was still loading forever —
+    // and the Refresh button lives inside the loaded branch, so there was no way
+    // to retry from the page.
+    dockerError.value = e.message || String(e)
+    toast('❌ ' + e.message)
+  }
 }
 
 async function loadLauncher() {

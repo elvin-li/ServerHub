@@ -22,7 +22,7 @@ from hub import __version__, metrics
 from hub import cli_args
 from hub.host_address import host_ip
 from hub.docker_cli import docker, engine_up
-from hub.paths import BASE, DOCKER, ORB
+from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.util import sh
 
 
@@ -518,7 +518,10 @@ def _check_updates_uncached() -> dict:
         "hint": "仅检查不安装 · 安装请到「维护」页 · 结果缓存 10 分钟",
         "cached_ttl": _UPDATES_TTL,
     }
-    brew = shutil.which("brew") or "/opt/homebrew/bin/brew"
+    # hub.paths.BREW, not a local which()-or-default: the local form omits the
+    # /usr/local prefix, so on Intel with brew off PATH the updates card reported
+    # "no brew" while the rest of the panel used brew happily.
+    brew = BREW
     if Path(brew).exists():
         rc, out, err = sh([brew, "outdated", "--verbose"], timeout=45)
         lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]

@@ -119,7 +119,8 @@
           </footer>
         </article>
       </div>
-      <div v-if="!catalogLoaded" class="placeholder">{{ t('common.loading') }}</div>
+      <LoadFailure v-if="catalogError" :detail="catalogError" :retry="loadCatalog" :busy="busy" />
+      <div v-else-if="!catalogLoaded" class="placeholder">{{ t('common.loading') }}</div>
       <div v-else-if="!filtered.length" class="placeholder">{{ t('apps.empty') }}</div>
     </template>
 
@@ -147,6 +148,12 @@
       <!-- This is the tab the page opens on, and the inventory walks launchd,
            docker and the VM list before answering. Without this the landing view
            stated "no managed apps" for the whole first request. -->
+      <LoadFailure
+        v-if="managedError"
+        :detail="managedError"
+        :retry="() => loadManaged(true)"
+        :busy="loading"
+      />
       <SkeletonLoader v-if="!managedLoaded" :cols="7" :rows="8" />
       <div v-else class="managed-table-wrap">
         <table class="managed-table">
@@ -207,7 +214,7 @@
                 </div>
               </td>
             </tr>
-            <tr v-if="!filteredManaged.length">
+            <tr v-if="!filteredManaged.length && !managedError">
               <td colspan="7" class="empty-row">{{ t('apps.managed_empty') }}</td>
             </tr>
           </tbody>
@@ -294,11 +301,11 @@
     </template>
 
     <!-- Detail drawer -->
-    <div v-if="detail" class="drawer-bg" @click.self="closeDetail">
-      <aside ref="detailPanel" class="drawer">
+    <div v-if="detail" class="drawer-bg" @click.self="closeDetail" role="presentation">
+      <aside ref="detailPanel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="apps-detail-title" tabindex="-1">
         <div class="drawer-head">
           <div>
-            <h2 class="drawer-title">{{ detail.name }}</h2>
+            <h2 id="apps-detail-title" class="drawer-title">{{ detail.name }}</h2>
             <div class="app-badges" style="margin-top:6px">
               <span class="chip" :class="kindChip(detail.kind)">{{ kindLabel(detail.kind) }}</span>
               <span class="chip" :class="detail.state === 'ok' ? 'chip-ok' : 'chip-muted'">{{ stateLabel(detail.state) }}</span>
@@ -659,6 +666,7 @@ import {
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 import { startVisibleInterval } from '../lib/poll'
 
 const toast = inject('toast')
@@ -683,6 +691,8 @@ const loading = ref(false)
 // other source refreshed.
 const managedLoaded = ref(false)
 const catalogLoaded = ref(false)
+const managedError = ref('')
+const catalogError = ref('')
 const busy = ref(false)
 const logOpen = ref(false)
 const logPanel = ref(null)
@@ -778,6 +788,20 @@ const autostartByGroup = computed(() => {
   }
   return m
 })
+
+/**
+ * The headline of a possibly multi-line backend message, for a toast.
+ *
+ * Install and uninstall failures can be several lines long -- a pkg-based cask
+ * explains that Homebrew cannot be run as root and prints the command to run on
+ * the Mac instead. That belongs in the install log, which is a <pre>; a toast
+ * carrying it covers the page.
+ */
+function firstLine(message) {
+  const text = String(message ?? '').trim()
+  if (!text) return t('common.fail')
+  return text.split('\n')[0]
+}
 
 function kindLabel(k) {
   if (k === 'native') return t('apps.kind_native')
@@ -960,7 +984,9 @@ async function loadManaged(force = false) {
   loading.value = true
   try {
     managed.value = await getManagedApps(force)
+    managedError.value = ''
   } catch (e) {
+    managedError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loading.value = false
@@ -1488,7 +1514,9 @@ async function loadCatalog() {
     catalog.value = d.templates || []
     overview.value = d
     if (d.categories?.length) categories.value = d.categories
+    catalogError.value = ''
   } catch (e) {
+    catalogError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     catalogLoaded.value = true
@@ -1528,7 +1556,11 @@ async function doInstall() {
     installLog.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '') + (r.path ? `\n→ ${r.path}` : '')
     if (r.notes) installLog.value += `\n\n${r.notes}`
     if (r.url || r.url_hint) installUrl.value = r.url || r.url_hint
-    toast(r.ok ? `✅ ${installTpl.value.name}` : '❌ ' + (r.message || t('common.fail')))
+    // First line only in the toast. A failure message can be several lines --
+    // a pkg-based cask, for instance, explains that brew cannot be elevated and
+    // prints the command to run on the Mac instead. The full text is right there
+    // in installLog; a five-line toast just hides the rest of the page.
+    toast(r.ok ? `✅ ${installTpl.value.name}` : '❌ ' + firstLine(r.message))
     if (r.ok) {
       // Three independent re-reads after a successful install: catalog, managed
       // list and stacks. refresh() was already fire-and-forget here.
@@ -1561,7 +1593,7 @@ async function doUninstall(tpl) {
   busy.value = true
   try {
     const r = await uninstallCatalog(tpl.id, { remove_data: removeData })
-    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${tpl.name}` : '❌ ' + (r.message || t('common.fail')))
+    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${tpl.name}` : '❌ ' + firstLine(r.message))
     if (r.message && !r.ok) {
       // show detail in console-friendly toast only; full msg may be long
     }

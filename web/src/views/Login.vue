@@ -23,8 +23,10 @@
             {{ copied ? t('common.copied') : t('common.copy') }}
           </button>
         </div>
-        <div v-if="setupMode && tokenNeeded && tokenError" class="token-error">
-          {{ t('auth.token_fetch_failed') }}
+        <div class="token-error-live" role="alert" aria-live="assertive">
+          <div v-if="setupMode && tokenNeeded && tokenError" class="token-error">
+            {{ t('auth.token_fetch_failed') }}
+          </div>
         </div>
         <label>
           <span>{{ t('auth.username') }}</span>
@@ -43,7 +45,15 @@
           <span>{{ t('auth.confirm_password') }}</span>
           <input v-model="confirmPassword" type="password" autocomplete="new-password" minlength="10" maxlength="256" required />
         </label>
-        <p v-if="error" class="login-error">{{ error }}</p>
+        <!-- The live region is rendered unconditionally and only its text
+             changes. Putting role="alert" on a v-if element instead means the
+             node does not exist when the region is first read, and whether an
+             alert that appears with the node is announced varies by screen
+             reader -- a failed login would then be silent for the one user who
+             cannot see the red box. -->
+        <div class="login-error-live" role="alert" aria-live="assertive">
+          <p v-if="error" class="login-error">{{ error }}</p>
+        </div>
         <button class="primary login-submit" :disabled="busy">
           {{ busy ? t('auth.processing') : (setupMode ? t('auth.create_admin') : t('auth.login')) }}
         </button>
@@ -172,6 +182,19 @@ label input { width: 100%; min-height: 44px; font-size: 16px; border-radius: 8px
 .setup-note { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 10%, var(--bg)); border-left: 3px solid var(--accent); }
 .setup-note span { color: var(--sub); font-size: 12px; line-height: 1.45; }
 .login-submit { min-height: 48px; margin-top: 2px; font-size: 15px; font-weight: 700; border-radius: 8px; }
+/* The live-region wrappers are in the DOM from first paint so a screen reader is
+   already watching them when the error lands.  While empty they must still cost
+   nothing: taking them out of flow keeps the form from spending one of its 14px
+   gaps on an invisible box.  Deliberately not display:none or visibility:hidden
+   -- either one drops the element out of the accessibility tree, so the error
+   would once again arrive as a *new* live region rather than as content added to
+   one already being watched, which is the announcement browsers miss. */
+.login-error-live:empty, .token-error-live:empty {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
 .login-error { color: var(--down); font-size: 12px; padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; animation: shake .3s ease; }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }

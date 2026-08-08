@@ -53,6 +53,9 @@
     </template>
 
     <template v-else>
+    <!-- A failed read would otherwise render as "no members, no candidates, no
+         faults", which on a storage pool reads like the pool lost its disks. -->
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="loading || busy" />
     <h2 class="section-title">
       {{ t('pool.summary_title') }}
       <span class="badge" :class="preview ? 'warn' : 'ok'" style="margin-left:6px">
@@ -130,7 +133,7 @@
               >{{ t('pool.remove') }}</button>
             </td>
           </tr>
-          <tr v-if="!selectedMembers.length">
+          <tr v-if="!selectedMembers.length && !loadError">
             <td colspan="8" style="color:var(--sub)">{{ t('pool.empty_members') }}</td>
           </tr>
         </tbody>
@@ -168,7 +171,7 @@
               >{{ t('pool.add') }}</button>
             </td>
           </tr>
-          <tr v-if="!availableCandidates.length">
+          <tr v-if="!availableCandidates.length && !loadError">
             <td colspan="6" style="color:var(--sub)">{{ t('pool.empty_candidates') }}</td>
           </tr>
         </tbody>
@@ -201,7 +204,7 @@
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
           </tr>
-          <tr v-if="!shownFaults.length">
+          <tr v-if="!shownFaults.length && !loadError">
             <td colspan="5" style="color:var(--sub)">{{ t('pool.empty_faults') }}</td>
           </tr>
         </tbody>
@@ -266,6 +269,7 @@ import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } fr
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -274,6 +278,7 @@ const view = ref(null)
 const preview = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const lastMsg = ref('')
 const clearOpen = ref(false)
@@ -336,7 +341,9 @@ async function refresh() {
   loading.value = true
   try {
     syncFromView(await getStoragePool(true))
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loading.value = false

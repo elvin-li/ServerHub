@@ -10,7 +10,6 @@ Methods:
 """
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import shutil
@@ -26,9 +25,10 @@ from hub.host_address import host_ip
 from hub.util import sh
 
 SERVICES_ROOT = Path.home() / "Services"
-BREW = "/opt/homebrew/bin/brew"
-if not Path(BREW).is_file():
-    BREW = "/usr/local/bin/brew"
+# One definition, in hub.paths: it tries `which brew` before the two standard
+# prefixes. The app store is the worst place to disagree about where brew is --
+# every install and uninstall goes through it.
+from hub.paths import BREW  # noqa: E402
 
 
 def _brew_env() -> dict:
@@ -87,16 +87,27 @@ def _screen_sharing_on() -> bool:
 NATIVE_APPS: list[dict[str, Any]] = [
     {
         "id": "native-wireguard",
-        "name": "WireGuard (native app)",
-        "desc": "Official macOS WireGuard client · steadier than a Docker VPN",
+        "name": "WireGuard（原生工具链）",
+        "desc": "wg / wg-quick + 用户态实现 · 面板「WireGuard」页依赖它",
         "category": "network",
         "tags": ["vpn", "wireguard", "native"],
         "featured": True,
-        "method": "brew_cask",
-        "package": "wireguard",
-        "check": "app:WireGuard",
-        "notes": "After installing, open WireGuard.app and import your config. Forward the UDP port on your router if you need inbound access.",
-        "open": "WireGuard",
+        # This entry used to be `brew_cask` / `package: wireguard`, which cannot
+        # install: `brew info --cask wireguard` answers "No Cask with this name
+        # exists".  Homebrew ships WireGuard only as formulae (wireguard-tools and
+        # wireguard-go); the official GUI client is a Mac App Store app, not a
+        # cask.  So every attempt to install this from the app store failed, and
+        # the check `app:WireGuard` never matched either, which left the entry
+        # permanently showing as not installed on a host where the tunnel worked.
+        "method": "brew_multi",
+        "packages": ["wireguard-tools", "wireguard-go"],
+        # bin:wg is the thing the panel actually needs; the brew: check keeps
+        # reporting it installed if the binary is shadowed.
+        "check": ["bin:wg", "brew:wireguard-tools"],
+        "notes": (
+            "装好后到「WireGuard」页生成服务端与客户端配置。"
+            "macOS 没有内核态 WireGuard，隧道运行在 wireguard-go 的 utun 设备上。"
+        ),
     },
     {
         "id": "native-tailscale",
@@ -451,9 +462,14 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "category": "backup",
         "tags": ["backup", "native"],
         "featured": False,
-        "method": "brew_formula",
-        "package": "duplicacy",
-        "check": "bin:duplicacy",
+        # `brew_formula` / `duplicacy` does not exist -- Homebrew answers "No
+        # available formula with the name". Duplicacy ships as the cask
+        # `duplicacy-cli`, whose `binary` artifact symlinks
+        # /opt/homebrew/bin/duplicacy, so `bin:duplicacy` stays the right check
+        # and no root is needed (the prefix belongs to the installing account).
+        "method": "brew_cask",
+        "package": "duplicacy-cli",
+        "check": ["bin:duplicacy", "brew:duplicacy-cli"],
         "service": False,
     },
     {
@@ -704,18 +720,15 @@ def _needs_admin_retry(msg: str) -> bool:
     )
 
 
-def _brew_shell_command(cmd: list[str]) -> str:
-    """Single shell line for `do shell script` (admin prompt)."""
-    env = (
-        'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; '
-        "export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1; "
-    )
-    return env + " ".join(shlex.quote(c) for c in cmd)
+#: What Homebrew says when it is started as root.  It exempts only `services`,
+#: `--prefix`, `setup-sandbox` and `as-console-user`
+#: (Library/Homebrew/brew.sh: check-run-command-as-root), so no install or
+#: uninstall can be elevated by running brew itself with more privilege.
+_BREW_ROOT_REFUSAL = "running homebrew as root"
 
 
-def _run_osascript_admin(shell_cmd: str, timeout: int = 900) -> dict:
-    script = f"do shell script {json.dumps(shell_cmd)} with administrator privileges"
-    return _run(["/usr/bin/osascript", "-e", script], timeout=timeout)
+def _brew_refuses_root(msg: str) -> bool:
+    return _BREW_ROOT_REFUSAL in (msg or "").lower()
 
 
 def _run_brew(
@@ -724,24 +737,49 @@ def _run_brew(
     timeout: int = 900,
     admin_on_sudo_fail: bool = True,
 ) -> dict:
-    """Run brew; on pkg/cask sudo failures, retry via macOS admin password dialog."""
+    """Run brew as the panel's own user, reporting sudo needs instead of hiding them.
+
+    There used to be a retry here that re-ran the whole brew command as root,
+    through `osascript ... with administrator privileges`.  It could never
+    succeed: Homebrew refuses to run as root outright, exempting only
+    `services`, `--prefix`, `setup-sandbox` and `as-console-user`
+    (Library/Homebrew/brew.sh: check-run-command-as-root).  So a pkg-based cask
+    install popped a password dialog -- on the Mac's own display, which nobody is
+    watching when the panel is driven from a phone -- waited up to 900 seconds for
+    it, and then failed with Homebrew's root warning as the error message.
+
+    What actually needs root is the macOS package installer that brew invokes
+    *internally*, not brew itself.  There is no way to hand that inner sudo a
+    password from here without a tty, so this reports the situation precisely and
+    tells the operator the one command that does work.  Everything that does not
+    need root -- every formula, and every cask whose artifact is an .app, since
+    /Applications is admin-writable -- installs normally through this path.
+    """
     cmd = [BREW, *brew_args]
     r = _run(cmd, timeout=timeout)
-    if r["ok"] or not admin_on_sudo_fail or not _needs_admin_retry(r.get("message") or ""):
+    if r["ok"] or not admin_on_sudo_fail:
         return r
-    r_admin = _run_osascript_admin(_brew_shell_command(cmd), timeout=timeout)
-    if r_admin["ok"]:
-        return r_admin
-    low = (r_admin.get("message") or "").lower()
-    if "user canceled" in low or "canceled" in low or "-128" in (r_admin.get("message") or ""):
-        r_admin["message"] = "已取消管理员授权（安装 pkg 类应用需要输入登录密码）。"
-        return r_admin
-    r_admin["message"] = (
-        (r.get("message") or "")
-        + "\n\n--- 已尝试管理员授权安装 ---\n"
-        + (r_admin.get("message") or "")
-    )[-4000:]
-    return r_admin
+
+    if _brew_refuses_root(r.get("message") or ""):
+        # Should be unreachable: the panel does not run as root. Worth saying
+        # plainly rather than passing Homebrew's warning through as-is.
+        r["message"] = (
+            "Homebrew 拒绝以 root 运行，面板不应以 root 启动。\n"
+            "请以普通用户运行面板后重试。\n\n" + (r.get("message") or "")
+        )[-4000:]
+        return r
+
+    if _needs_admin_retry(r.get("message") or ""):
+        r["error"] = "password_required"
+        r["message"] = (
+            "这个包需要 root 权限运行 macOS 安装器（pkg 类 cask），"
+            "而 brew 本身不能以 root 运行，所以面板无法代为授权。\n"
+            "请在这台 Mac 上打开终端执行：\n"
+            f"  {' '.join(shlex.quote(c) for c in cmd)}\n\n"
+            "不需要 root 的包（所有 formula，以及 .app 类 cask）可以直接在面板安装。\n\n"
+            + (r.get("message") or "")
+        )[-4000:]
+    return r
 
 
 def _brew_install_ok(msg: str, rc: int) -> bool:
@@ -913,12 +951,13 @@ def install_native(app_id: str, variables: dict | None = None) -> dict:
     _list_cache["t"] = 0
     _list_cache["v"] = None
     invalidate_brew_services()
-    try:
-        from hub import apps_manage_svc
-        apps_manage_svc._inv_cache["t"] = 0
-        apps_manage_svc._inv_cache["v"] = None
-    except Exception:
-        pass
+    # The Apps page reads its own inventory snapshot, so it has to be dropped
+    # too or the app it just installed keeps showing as absent.  The import is
+    # local because these two modules each read from the other; keeping both
+    # directions lazy is what stops that from becoming an import cycle.
+    from hub import apps_manage_svc
+
+    apps_manage_svc.invalidate_inventory()
 
     method = app.get("method")
     logs: list[str] = []
@@ -1244,6 +1283,11 @@ def uninstall_native(app_id: str, *, remove_data: bool = False) -> dict:
     # Uninstall runs `brew services stop`; drop the shared snapshot so the next
     # read does not report the stopped service as still running.
     invalidate_brew_services()
+    # Same for the Apps page inventory.  Only the install path used to do this,
+    # so an uninstalled app went on being listed as installed for up to _INV_TTL.
+    from hub import apps_manage_svc
+
+    apps_manage_svc.invalidate_inventory()
 
     method = app.get("method")
     logs: list[str] = []

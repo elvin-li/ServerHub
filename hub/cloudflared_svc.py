@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from hub.paths import AGENTS_DIR
+from hub.paths import AGENTS_DIR, BREW
 from hub import secure_io
 from hub.util import sh
 
@@ -474,7 +474,11 @@ def _launchctl_bootout() -> None:
     sh(["/bin/launchctl", "bootout", f"gui/{uid}/{LABEL}"], timeout=15)
     # also stop bare brew agent so it doesn't fight us
     sh(["/bin/launchctl", "bootout", f"gui/{uid}/homebrew.mxcl.cloudflared"], timeout=10)
-    sh(["/opt/homebrew/bin/brew", "services", "stop", "cloudflared"], timeout=30)
+    # BREW, not a literal: hub.paths resolves it through `which` and both standard
+    # prefixes, so this still stops the agent on a host where Homebrew is not in
+    # /opt/homebrew. With the literal the call just failed silently and the brew
+    # agent kept competing with ours for the tunnel.
+    sh([BREW, "services", "stop", "cloudflared"], timeout=30)
 
 
 def _launchctl_bootstrap() -> dict:

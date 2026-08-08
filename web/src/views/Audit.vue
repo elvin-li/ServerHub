@@ -10,8 +10,9 @@
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="6" :rows="8" />
-    <div v-else-if="!entries.length" class="placeholder">{{ t('audit.empty') }}</div>
+    <div v-else-if="!entries.length && !loadError" class="placeholder">{{ t('audit.empty') }}</div>
     <template v-else>
       <div class="table-wrap">
         <table class="dense">
@@ -49,6 +50,7 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -58,6 +60,7 @@ const maxRetained = ref(0)
 // Without this the page rendered "no audit records" for the whole first request:
 // `!entries.length` cannot tell "not fetched yet" from "fetched, and empty".
 const loaded = ref(false)
+const loadError = ref('')
 // In-flight guard for refresh(); also drives the button's :disabled.
 const busy = ref(false)
 
@@ -98,7 +101,9 @@ async function refresh() {
     const d = await getAuthAudit(200)
     entries.value = d.entries || []
     maxRetained.value = d.retained_lines || 0
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loaded.value = true

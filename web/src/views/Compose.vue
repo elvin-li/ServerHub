@@ -12,6 +12,7 @@
           <button class="tiny primary" @click="loadStacks">{{ t('common.refresh') }}</button>
           <button class="tiny" @click="showCreate=true">{{ t('compose.new_stack') }}</button>
         </div>
+        <LoadFailure v-if="loadError" :detail="loadError" :retry="loadStacks" :busy="busy" />
         <SkeletonLoader v-if="!loaded" :cols="3" :rows="4" />
         <div v-else class="table-wrap">
           <table class="dense">
@@ -108,11 +109,13 @@ import {
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const stacks = ref([])
 const loaded = ref(false)
+const loadError = ref('')
 const selected = ref(null)
 const compose = ref(null)
 const editor = ref('')
@@ -148,7 +151,9 @@ async function loadStacks() {
   try {
     const d = await getStacks()
     stacks.value = d.stacks || []
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loaded.value = true

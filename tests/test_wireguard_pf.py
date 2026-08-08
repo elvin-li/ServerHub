@@ -22,6 +22,7 @@ these are all checkable before anything goes near /etc.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 import subprocess
 import sys
@@ -250,7 +251,7 @@ class SupersededCheckTests(unittest.TestCase):
             patch.object(
                 net, "endpoint_resolution",
                 return_value=overrides.get("resolution") or {
-                    "endpoint": "", "resolved": [], "unreachable": [],
+                    "endpoint": "", "resolved": [], "unreachable": [], "suggest": [],
                     "ok": False, "reason": "not_set",
                 },
             ),
@@ -308,7 +309,7 @@ class SupersededCheckTests(unittest.TestCase):
             resolution={
                 "endpoint": "vpn.example", "resolved": ["2001:4860::1"],
                 "unreachable": ["2001:4860::1"], "ok": False,
-                "reason": "not_this_host",
+                "reason": "not_this_host", "suggest": [],
             },
         )
         self.assertNotIn("endpoint", result["blocking"])
@@ -463,3 +464,197 @@ class EndpointResolutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DaemonDetailTests(unittest.TestCase):
+    """"A boot job is installed" and "it is the job we manage" are different facts.
+
+    The variant found on the real host wrapped the command in
+    ``bash -c '... && exec sleep infinity'``.  It does bring the tunnel up at boot,
+    so it is not a failure -- but the lingering process is what launchd counts as
+    the job running, so stopping the tunnel from the panel leaves launchd reporting
+    a running job against a stopped tunnel and makes ``kickstart`` a no-op.
+    Reporting only the plist path gave the operator no way to tell that apart from
+    the job the panel would have written.
+    """
+
+    def _daemon(self, **overrides) -> dict:
+        base = {
+            "label": "com.wireguard.wg0",
+            "plist_path": "/Library/LaunchDaemons/com.wireguard.wg0.plist",
+            "installed": True,
+            "loaded": True,
+            "managed": True,
+            "respawn_loop": False,
+        }
+        base.update(overrides)
+        return base
+
+    def test_the_managed_job_reports_just_its_path(self):
+        self.assertEqual(
+            net._daemon_detail(self._daemon()),
+            "/Library/LaunchDaemons/com.wireguard.wg0.plist",
+        )
+
+    def test_a_foreign_job_is_named_as_such(self):
+        detail = net._daemon_detail(self._daemon(managed=False))
+        self.assertIn("not the job this panel manages", detail)
+
+    def test_a_respawn_loop_outranks_the_managed_notice(self):
+        """The loop is the actionable fault; say that, not "not ours"."""
+        detail = net._daemon_detail(self._daemon(managed=False, respawn_loop=True))
+        self.assertIn("loop", detail)
+        self.assertNotIn("not the job", detail)
+
+    def test_an_absent_job_reports_where_it_would_go(self):
+        detail = net._daemon_detail(self._daemon(installed=False, managed=False))
+        self.assertEqual(detail, "/Library/LaunchDaemons/com.wireguard.wg0.plist")
+
+    def test_a_foreign_job_is_not_treated_as_a_failure(self):
+        """It does start the tunnel at boot, so `ok` must stay true."""
+        with (
+            patch.object(net, "daemon_state", return_value=self._daemon(managed=False)),
+            patch.object(net, "nat_installed", return_value={
+                "anchor_path": "/x", "anchor_exists": True, "referenced": True,
+                "complete": True, "on_disk": True, "wiring_ok": True,
+                "conf_parses": True, "conf_error": "", "loaded": True,
+                "anchor_body": "",
+            }),
+            patch.object(net, "forwarding_enabled", return_value=True),
+            patch.object(net, "pf_enabled", return_value=True),
+            patch.object(net, "wan_interface", return_value="en0"),
+            patch.object(net, "peer_origin_conflict", return_value={
+                "conflict": False, "reason": "", "foreign": 0, "total": 1,
+            }),
+            patch.object(net, "endpoint_resolution", return_value={
+                "endpoint": "vpn.example", "resolved": ["93.184.216.34"],
+                "unreachable": [], "ok": True, "reason": "",
+            }),
+            patch.object(net.wireguard_svc, "settings", return_value={
+                "interface": "wg0", "subnet": "10.10.0.0/24", "listen_port": 51820,
+                "dns": "", "mtu": 1280, "keepalive": 25, "endpoint": "vpn.example",
+                "lan_cidr": "", "wan_interface": "en0",
+            }),
+            patch.object(net.wireguard_svc, "installation", return_value={
+                "installed": True, "conf_exists": True, "tools_version": "v1",
+                "conf_path": "/x/wg0.conf",
+            }),
+            patch.object(net.wireguard_svc, "status", return_value={
+                "running": True, "state_error": "",
+            }),
+            patch.object(net.wireguard_svc, "runtime_state", return_value={
+                "stale": False, "name_file": "", "real_interface": "utun8",
+                "live": True,
+            }),
+        ):
+            result = net.readiness()
+        boot = next(c for c in result["checks"] if c["id"] == "boot")
+        self.assertTrue(boot["ok"])
+        self.assertIn("not the job this panel manages", boot["detail"])
+        self.assertTrue(result["ready"], result["blocking"])
+
+
+class EndpointSuggestionTests(unittest.TestCase):
+    """Naming the address the record should point at, not just that it is wrong.
+
+    "not this host" leaves the operator to find the right address, and the obvious
+    way to do that -- read ifconfig, pick a global v6 -- picks a *temporary privacy
+    address* most of the time, because macOS holds several in the same /64 at once
+    and rotates them within a day or two.  A record pointing at one works this
+    afternoon and fails tomorrow, which is a worse outcome than no suggestion.
+    """
+
+    #: Real output shape from the host this was written for.
+    IFCONFIG = """en7: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	inet 192.168.1.206 netmask 0xffffff00 broadcast 192.168.1.255
+	inet6 fe80::53:2cad:c272:7ad2%en7 prefixlen 64 secured scopeid 0x13
+	inet6 2408:8248:1e43:8080:40c:dda6:c436:609b prefixlen 64 autoconf secured
+	inet6 2408:8248:1e43:8080:61ef:809b:162c:dfec prefixlen 64 deprecated autoconf temporary
+	inet6 2408:8248:1e43:8080::215 prefixlen 64 dynamic
+	inet6 2408:8248:1e43:8080:145e:4e16:a93c:6b23 prefixlen 64 autoconf temporary
+	inet6 fd07:b51a:cc66:0:a617:db5e:ab7:e9f1 prefixlen 64 dynamic
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+	inet6 ::1 prefixlen 128
+	inet 127.0.0.1 netmask 0xff000000
+"""
+
+    def _suggestions(self, output: str = "") -> list[str]:
+        with patch.object(net, "sh", return_value=(0, output or self.IFCONFIG, "")):
+            return net.stable_local_addresses()
+
+    def test_the_dhcp_or_manual_address_is_recommended_first(self):
+        """`dynamic` outlives the prefix churn that rotates the others."""
+        self.assertEqual(self._suggestions()[0], "2408:8248:1e43:8080::215")
+
+    def test_a_secured_autoconf_address_is_the_second_choice(self):
+        self.assertEqual(
+            self._suggestions()[1], "2408:8248:1e43:8080:40c:dda6:c436:609b"
+        )
+
+    def test_temporary_and_deprecated_addresses_are_never_recommended(self):
+        for address in self._suggestions():
+            self.assertNotIn("61ef", address)   # deprecated temporary
+            self.assertNotIn("145e", address)   # live temporary
+
+    def test_a_unique_local_address_is_never_recommended(self):
+        """fc00::/7 is bound to the interface and unreachable from outside.
+
+        It is `dynamic`, so a rank-only ordering would put it near the top -- and
+        suggesting it is worse than suggesting nothing, because it looks like an
+        answer.
+        """
+        for address in self._suggestions():
+            self.assertFalse(
+                ipaddress.ip_address(address).is_private, f"{address} is not routable"
+            )
+
+    def test_loopback_and_link_local_are_excluded(self):
+        joined = " ".join(self._suggestions())
+        self.assertNotIn("::1", joined)
+        self.assertNotIn("fe80", joined)
+
+    def test_ipv4_is_not_offered_as_a_v6_record_value(self):
+        for address in self._suggestions():
+            self.assertIn(":", address)
+
+    def test_a_host_with_no_global_v6_suggests_nothing(self):
+        only_v4 = "en0: flags=8863 mtu 1500\n\tinet 192.168.1.5 netmask 0xffffff00\n"
+        self.assertEqual(self._suggestions(only_v4), [])
+
+    def test_the_detail_names_the_address_to_use(self):
+        resolution = {
+            "endpoint": "vpn.example",
+            "resolved": ["2408:8248:1e84:400a::1"],
+            "unreachable": ["2408:8248:1e84:400a::1"],
+            "ok": False,
+            "reason": "not_this_host",
+            "suggest": ["2408:8248:1e43:8080::215"],
+        }
+        detail = net._resolution_detail(resolution)
+        self.assertIn("not this host", detail)
+        self.assertIn("2408:8248:1e43:8080::215", detail)
+
+    def test_no_suggestion_leaves_the_detail_unchanged(self):
+        resolution = {
+            "endpoint": "vpn.example",
+            "resolved": ["192.168.1.5"],
+            "unreachable": ["192.168.1.5"],
+            "ok": False,
+            "reason": "not_this_host",
+            "suggest": [],
+        }
+        self.assertNotIn("this host is", net._resolution_detail(resolution))
+
+    def test_a_v4_only_mismatch_does_not_suggest_a_v6_address(self):
+        """The record that is wrong is the A record; a AAAA is not the fix."""
+        infos = [(None, None, None, None, ("192.168.1.9", 0))]
+        with (
+            patch.object(
+                net.wireguard_svc, "settings", return_value={"endpoint": "vpn.example"}
+            ),
+            patch.object(net.socket, "getaddrinfo", return_value=infos),
+            patch.object(net, "_local_addresses", return_value={"192.168.1.206"}),
+        ):
+            result = net.endpoint_resolution()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["suggest"], [])

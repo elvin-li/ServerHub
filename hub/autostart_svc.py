@@ -19,10 +19,13 @@ from hub.docker_cli import engine_up
 from hub.util import sh
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 
-AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
-BREW = "/opt/homebrew/bin/brew"
-if not Path(BREW).is_file():
-    BREW = "/usr/local/bin/brew"
+from hub.paths import AGENTS_DIR  # noqa: E402
+# Imported rather than redefined: hub.paths tries `which brew` before the two
+# standard prefixes, so a Homebrew installed anywhere else is still found. The
+# local copy this replaces only knew /opt/homebrew and /usr/local, which meant
+# autostart quietly reported "brew missing" on a host where other pages using
+# hub.paths.BREW worked fine.
+from hub.paths import BREW  # noqa: E402
 
 _cache: dict = {"t": 0.0, "v": None}
 _TTL = 12.0

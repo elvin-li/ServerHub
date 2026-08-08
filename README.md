@@ -103,7 +103,7 @@ npm --prefix web run build
 .venv/bin/python -m vulture hub tests app.py menubar.py --min-confidence 100
 ```
 
-生产构建输出到 `static/`。Vite 构建会校验首屏入口 JavaScript 的体积：超过 176 KiB 的上限直接构建失败，超过 150 KiB 的目标值只打印警告。上限与目标值之间的差距是历史欠债——这个检查曾经只声明了常量而没有接上，等发现时入口 chunk 已经涨到 167 KiB。上限只应下调，不要为了让构建通过而上调。英语词典作为同步回退，中、日文词典按当前语言异步加载。修改词典时须保持三种语言的键和占位符一致，`npm --prefix web test` 会验证该契约。
+生产构建输出到 `static/`。Vite 构建会校验首屏入口 JavaScript 不超过 150 KiB，超出直接构建失败；该预算只应下调，需要上调时应当改为把路由或依赖拆出入口。所有页面（含 `/` 与 `/login`）都是按需加载的 chunk，`main.js` 启动时会并行预热当前 URL 对应的那一个，因此懒加载不会给首屏多加一次串行往返。英语词典作为同步回退，中、日文词典按当前语言异步加载。修改词典时须保持三种语言的键和占位符一致，`npm --prefix web test` 会验证该契约。
 
 构建确认无误后，如需重启本机 LaunchAgent，可自动匹配当前实际安装的标签。面板任务历史上使用过三种命名：`install.sh` 写入 `local.serverhub.panel`，原生 ServerHub.app 写入 `local.serverhub`，早期发行安装为 `com.elvin.serverhub`。下面的片段依次探测，命中即重启：
 

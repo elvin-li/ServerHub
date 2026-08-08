@@ -21,8 +21,16 @@ data/service-credentials.json
 
 # ---- Live service inventory: holds host addresses and per-service secrets.
 #      services.yaml.example is the committed template. ----
+#
+# Matched by family, for the same reason the data/ rules below are: `.bak.*`
+# covered only one of the suffixes the panel actually writes.  The copy found in
+# this working tree was `services.yaml.bak-<timestamp>` -- a dash, not a dot --
+# so a verbatim copy of the live inventory was stageable while the `.bak.*` rule
+# and the test guarding it both looked correct.  Any suffix, not the suffixes
+# seen so far.
 services.yaml
-services.yaml.bak.*
+services.yaml.*
+!services.yaml.example
 
 # ---- Runtime data / telemetry ----
 data/metrics.jsonl

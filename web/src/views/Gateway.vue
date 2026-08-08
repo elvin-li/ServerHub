@@ -10,6 +10,7 @@
       <button :disabled="busy" @click="reload">{{ t('gateway.reload') }}</button>
     </div>
 
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="busy" />
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="2" :span="6" :tile-height="72" />
     <div class="dash-grid" v-else-if="data">
       <div class="tile span-4">
@@ -49,7 +50,7 @@
             <td class="mono">{{ (s.server_names || []).join(', ') || '—' }}</td>
             <td class="mono" style="font-size:11px">{{ (s.upstreams || []).join(' · ') || '—' }}</td>
           </tr>
-          <tr v-if="!(data?.sites || []).length">
+          <tr v-if="!(data?.sites || []).length && !loadError">
             <td colspan="4" style="color:var(--sub)">{{ t('gateway.empty') }}</td>
           </tr>
         </tbody>
@@ -64,6 +65,7 @@ import { inject, onMounted, ref } from 'vue'
 import { getNginx, reloadNginx, testNginx } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -73,11 +75,14 @@ const msg = ref('')
 // nginx config parsing walks the sites directory, so the first load is not
 // instant; the site table used to claim "no sites configured" until it returned.
 const loaded = ref(false)
+const loadError = ref('')
 
 async function load() {
   try {
     data.value = await getNginx()
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loaded.value = true

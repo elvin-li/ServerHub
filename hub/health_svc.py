@@ -7,6 +7,7 @@ import time
 
 from hub.docker_cli import engine_up
 from hub.nginx_svc import overview as nginx_overview, test_config as nginx_test
+from hub.paths import SMARTCTL
 from hub.util import port_open, sh
 from hub.brew_cache import brew_services_list
 from pathlib import Path
@@ -152,8 +153,14 @@ def run_checks(force: bool = False) -> dict:
                 f"launchctl kickstart -k gui/$(id -u)/{label}",
             ))
 
-    # SMART quick (cached style)
-    rc, out, _ = sh(["sudo", "-n", "/opt/homebrew/bin/smartctl", "-H", "/dev/disk0"], timeout=10)
+    # SMART quick (cached style).
+    #
+    # SMARTCTL, not a literal /opt/homebrew path: the sudoers policy grants the
+    # root-owned copy under /usr/local/libexec/serverhub (Homebrew's prefix is
+    # writable by the panel's own account, so granting it would be passwordless
+    # root).  A hardcoded Homebrew path here matches no rule, so this probe would
+    # ask for a password nobody can type and the health card would go blank.
+    rc, out, _ = sh(["sudo", "-n", SMARTCTL, "-H", "/dev/disk0"], timeout=10)
     if rc in (0, 4) and out:
         ok = "PASSED" in out.upper() or "OK" in out.upper()
         checks.append(_check(

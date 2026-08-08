@@ -24,6 +24,9 @@
     </template>
 
     <template v-else>
+    <!-- Without this a failed scan fell through to the tables' own empty rows and
+         reported no disks, no volumes and no SMART data on a storage page. -->
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="loading || busy" />
     <!-- Unraid-style array summary -->
     <div class="dash-grid" style="margin-bottom:12px" v-if="data?.array || data?.totals">
       <div class="tile span-3">
@@ -94,7 +97,7 @@
               </div>
             </td>
           </tr>
-          <tr v-if="!arrayDevices.length">
+          <tr v-if="!arrayDevices.length && !loadError">
             <td colspan="9" style="color:var(--sub)">{{ t('main_extra.empty_array_vols') }}</td>
           </tr>
         </tbody>
@@ -132,7 +135,7 @@
               <button v-if="(d.actions||[]).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
             </td>
           </tr>
-          <tr v-if="!unassigned.length">
+          <tr v-if="!unassigned.length && !loadError">
             <td colspan="7" style="color:var(--sub)">{{ t('main_extra.empty_unassigned') }}</td>
           </tr>
         </tbody>
@@ -210,7 +213,7 @@
               <span v-if="!(d.actions||[]).length" class="sub">—</span>
             </td>
           </tr>
-          <tr v-if="!powerDisks.length">
+          <tr v-if="!powerDisks.length && !loadError">
             <td colspan="9" style="color:var(--sub)">{{ t('main_extra.empty_disks') }}</td>
           </tr>
         </tbody>
@@ -351,7 +354,7 @@
               <span v-if="!(v.actions||[]).length" class="sub">{{ t('main_extra.locked') }}</span>
             </td>
           </tr>
-          <tr v-if="!managedVols.length">
+          <tr v-if="!managedVols.length && !loadError">
             <td colspan="6" style="color:var(--sub)">{{ t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
@@ -416,12 +419,14 @@ import { injectI18n } from '../i18n'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const lastMsg = ref('')
 const showSystemVols = ref(false)
@@ -512,7 +517,9 @@ async function refresh() {
   loading.value = true
   try {
     data.value = await getStorage()
+    loadError.value = ''
   } catch (e) {
+    loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
   } finally {
     loading.value = false

@@ -181,11 +181,51 @@ def ports_for_pid(pid: str | int) -> list[int]:
 
 
 # ports that are almost never HTTP UI
+# 6380 is here because a second Redis on the +1 port is the standard way to run
+# one: sub2api does exactly that, and probing it wrote 6237 "Possible SECURITY
+# ATTACK ... sending POST or Host: commands to Redis" lines into its log before
+# anyone noticed.  Redis aborts such a connection, so the probe was pure cost.
 _NON_HTTP_PORTS = {
     22, 53, 123, 143, 993, 995, 25, 465, 587,
-    1883, 8883, 5432, 5433, 3306, 6379, 27017, 5672, 11211,
+    1883, 8883, 5432, 5433, 3306, 6379, 6380, 27017, 5672, 11211,
     445, 139, 548, 2049, 5353, 5900, 3283,
 }
+# Ports found to speak neither HTTP nor TLS, so the next refresh does not probe
+# them again.  The port list above only knows *default* ports; anything on a
+# non-default one (the 6380 case, and any future service like it) is caught only
+# by having actually looked.  Bounded TTL because a port that is silent now may
+# be a web UI after the operator installs something there.
+_NOT_HTTP_TTL = 1800.0
+_not_http_cache: dict[int, float] = {}
+_not_http_lock = threading.Lock()
+
+
+def _recently_not_http(port: int) -> bool:
+    """Whether *port* failed protocol classification recently."""
+    with _not_http_lock:
+        seen = _not_http_cache.get(port)
+        if seen is None:
+            return False
+        if time.time() - seen >= _NOT_HTTP_TTL:
+            del _not_http_cache[port]
+            return False
+        return True
+
+
+def _mark_not_http(port: int) -> None:
+    """Remember that *port* answers TCP but speaks no recognised protocol."""
+    with _not_http_lock:
+        _not_http_cache[port] = time.time()
+
+
+def invalidate_not_http_cache() -> None:
+    """Forget which ports failed classification, so the next call re-probes.
+
+    Needed by tests: they bind ephemeral ports, and the kernel is free to hand
+    the same number to a later test that does expect HTTP detection.
+    """
+    with _not_http_lock:
+        _not_http_cache.clear()
 
 
 #: How long to wait for the peer's first bytes.  A local service that speaks
@@ -247,17 +287,25 @@ def guess_http_url(port: int) -> str | None:
     timeout for any port that accepts TCP but speaks neither protocol: the
     plaintext attempt failed in ~12ms and the TLS attempt ran to its timeout
     because the peer never sent a ServerHello.  Live Redis on 6380 measured
-    802ms that way, and the hardcoded `_NON_HTTP_PORTS` guard could not catch it
-    -- that set lists 6379.
+    802ms that way, and the hardcoded `_NON_HTTP_PORTS` guard did not catch it --
+    that set listed only 6379.  6380 is in the set now, but a default-port list
+    is the wrong last line of defence, so a port that classifies as neither
+    protocol is also remembered and not probed again for `_NOT_HTTP_TTL`.
     """
     if port in _NON_HTTP_PORTS:
+        return None
+    if _recently_not_http(port):
         return None
     if not port_open(port, host="localhost", timeout=0.35):
         return None
     proto, head = _probe_protocol(port)
     if not proto:
         # Accepts connections but speaks neither HTTP nor TLS.  No URL, and no
-        # second timeout spent confirming it.
+        # second timeout spent confirming it.  Remembered so that a service on a
+        # non-default port is probed once rather than once per refresh: the probe
+        # sends a real `GET / ... Host:` line, which a non-HTTP daemon may log as
+        # an attack.
+        _mark_not_http(port)
         return None
     hip = host_ip()
     if proto == "http":

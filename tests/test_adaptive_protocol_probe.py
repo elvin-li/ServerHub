@@ -201,6 +201,68 @@ class _NginxLikeTLSServer:
 class NonWebPortTests(unittest.TestCase):
     """A port that is not a web UI must yield nothing, and must do it quickly."""
 
+    def setUp(self):
+        # These tests bind ephemeral ports and the classifier now remembers the
+        # ones that spoke no protocol, so a reused port number would otherwise
+        # leak a verdict from a previous test.
+        adaptive.invalidate_not_http_cache()
+
+    def test_unclassifiable_port_is_probed_only_once(self):
+        """A non-HTTP port is probed once, not once per status refresh.
+
+        The probe sends a literal `GET / HTTP/1.1` with a `Host:` header.  Redis
+        treats that as cross-protocol scripting: it logged 6237 "Possible
+        SECURITY ATTACK" lines and aborted the connection each time, so every
+        repeat was cost with no possible benefit.  `_NON_HTTP_PORTS` now lists
+        6380, but such a list only covers the port numbers someone thought of,
+        which is the weakness that let 6380 through in the first place.
+        """
+        probed = []
+        real_probe = adaptive._probe_protocol
+
+        def counting_probe(port):
+            probed.append(port)
+            return real_probe(port)
+
+        adaptive._probe_protocol = counting_probe
+        try:
+            with _FakeServer(_redis_like) as srv:
+                first = adaptive.guess_http_url(srv.port)
+                second = adaptive.guess_http_url(srv.port)
+                third = adaptive.guess_http_url(srv.port)
+        finally:
+            adaptive._probe_protocol = real_probe
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertIsNone(third)
+        self.assertEqual(
+            len(probed),
+            1,
+            f"port was probed {len(probed)} times; a port already known to speak "
+            "no recognised protocol must not be probed again",
+        )
+
+    def test_not_http_verdict_expires(self):
+        """The verdict is not permanent: a port may become a web UI later."""
+        adaptive._mark_not_http(19997)
+        self.assertTrue(adaptive._recently_not_http(19997))
+        adaptive._not_http_cache[19997] = time.time() - adaptive._NOT_HTTP_TTL - 1
+        self.assertFalse(
+            adaptive._recently_not_http(19997),
+            "a stale verdict would hide a port that has since become a web UI",
+        )
+        self.assertNotIn(
+            19997,
+            adaptive._not_http_cache,
+            "expired entries must be dropped rather than accumulate",
+        )
+
+    def test_redis_default_and_alt_ports_short_circuit(self):
+        """Both 6379 and the +1 port a second Redis conventionally uses."""
+        for port in (6379, 6380):
+            with self.subTest(port=port):
+                self.assertIn(port, adaptive._NON_HTTP_PORTS)
+
     def test_redis_like_port_is_not_probed_as_https(self):
         """A port that answers with a non-HTTP, non-TLS reply yields no URL, fast."""
         with _FakeServer(_redis_like) as srv:
@@ -258,6 +320,11 @@ class NonWebPortTests(unittest.TestCase):
 
 
 class WebPortTests(unittest.TestCase):
+    def setUp(self):
+        # A previous test may have marked this ephemeral port number as speaking
+        # no protocol; without this, detection here would be skipped entirely.
+        adaptive.invalidate_not_http_cache()
+
     def test_real_http_server_is_still_detected(self):
         """The fast path must not regress: a plain HTTP server still yields a URL."""
 

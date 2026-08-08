@@ -279,27 +279,76 @@ def daemon_state() -> dict:
     }
 
 
-def _local_addresses() -> set[str]:
-    """Every global address configured on this host, v4 and v6.
+#: IPv6 address flags ``ifconfig`` prints that disqualify an address from being
+#: put in a DNS record: a temporary privacy address is rotated within a day or
+#: two, and a deprecated one is on its way out already.
+_UNSTABLE_V6_FLAGS = ("temporary", "deprecated")
+
+
+def _local_address_lines() -> list[tuple[str, str]]:
+    """``(address, flags)`` for every global address bound to an interface.
 
     ``ifconfig`` rather than ``getaddrinfo``: the machine's own hostname often
     resolves to nothing useful, and what matters here is what is actually bound to
-    an interface.
+    an interface.  The flags are kept because they decide whether an address is
+    worth *recommending* -- see :func:`stable_local_addresses`.
     """
     rc, out, _ = sh(["/sbin/ifconfig"], timeout=6)
     if rc != 0:
-        return set()
-    found = set()
-    for match in re.finditer(r"\binet6?\s+([0-9a-fA-F:.]+)", out):
-        raw = match.group(1).split("%")[0]
+        return []
+    found = []
+    for line in out.splitlines():
+        match = re.match(r"\s*(inet6?)\s+([0-9a-fA-F:.]+)(.*)$", line)
+        if not match:
+            continue
+        raw = match.group(2).split("%")[0]
         try:
             address = ipaddress.ip_address(raw)
         except ValueError:
             continue
         if address.is_loopback or address.is_link_local or address.is_unspecified:
             continue
-        found.add(str(address))
+        found.append((str(address), match.group(3).lower()))
     return found
+
+
+def _local_addresses() -> set[str]:
+    """Every global address configured on this host, v4 and v6."""
+    return {address for address, _ in _local_address_lines()}
+
+
+def stable_local_addresses() -> list[str]:
+    """Global IPv6 addresses of this host worth pointing a DNS record at.
+
+    Ordered most durable first, and privacy addresses excluded.  The distinction
+    matters because the output is a recommendation an operator will paste into DNS:
+    macOS holds several addresses in the same /64 at once, most of them temporary
+    ones it rotates within a day or two, so naming the wrong one produces a record
+    that works this afternoon and fails tomorrow.  ``dynamic`` (DHCPv6 or manually
+    configured) is the most durable, then a ``secured`` autoconf address, which is
+    stable for the lifetime of the prefix.
+    """
+    def rank(flags: str) -> int:
+        if "dynamic" in flags:
+            return 0
+        if "secured" in flags:
+            return 1
+        return 2
+
+    candidates = []
+    for address, flags in _local_address_lines():
+        if ":" not in address:
+            continue
+        if any(flag in flags for flag in _UNSTABLE_V6_FLAGS):
+            continue
+        # A unique local address (fc00::/7) is the IPv6 equivalent of 10.0.0.0/8:
+        # perfectly real, bound to an interface, and not routable from outside.
+        # Recommending one for a public record would be worse than recommending
+        # nothing, because it looks like an answer.
+        if ipaddress.ip_address(address).is_private:
+            continue
+        candidates.append((rank(flags), address))
+    return [address for _, address in sorted(candidates)]
 
 
 def endpoint_resolution() -> dict:
@@ -337,6 +386,11 @@ def endpoint_resolution() -> dict:
         "unreachable": [],
         "ok": True,
         "reason": "",
+        # What the record *should* say, when this can be worked out.  Reporting only
+        # "not this host" left the operator to find the right address themselves,
+        # and the obvious way to do that -- read `ifconfig` and pick a global
+        # address -- picks a temporary privacy address about four times out of five.
+        "suggest": [],
     }
     if not host:
         result.update(ok=False, reason="not_set")
@@ -382,6 +436,8 @@ def endpoint_resolution() -> dict:
             bad.append(address)
     if bad:
         result.update(ok=False, reason="not_this_host", unreachable=bad)
+        if any(":" in address for address in bad):
+            result["suggest"] = stable_local_addresses()[:2]
     return result
 
 
@@ -409,6 +465,27 @@ def peer_origin_conflict() -> dict:
     }
 
 
+def _daemon_detail(daemon: dict) -> str:
+    """Say which boot job is installed, not merely that one is.
+
+    "Installed" is not the same as "the job this panel manages", and the
+    difference is observable: the variant found on the real host wrapped the
+    command in ``bash -c '... && exec sleep infinity'``, which keeps a process
+    alive purely so launchd counts the job as running.  Stopping the tunnel from
+    the panel then leaves that process behind, launchd goes on reporting the job as
+    running against a stopped tunnel, and ``launchctl kickstart`` becomes a no-op.
+    It does bring the tunnel up at boot, so this is not a failure -- but reporting
+    only the path gave the operator no way to tell the two apart.
+    """
+    if not daemon["installed"]:
+        return daemon["plist_path"]
+    if daemon["respawn_loop"]:
+        return f"{daemon['plist_path']} restarts wg-quick in a loop"
+    if not daemon["managed"]:
+        return f"{daemon['plist_path']} (not the job this panel manages)"
+    return daemon["plist_path"]
+
+
 def _resolution_detail(resolution: dict) -> str:
     """Name the addresses that cannot work, not merely that something cannot."""
     reason = resolution["reason"]
@@ -417,11 +494,18 @@ def _resolution_detail(resolution: dict) -> str:
     if reason == "dns_failed":
         return f"{resolution['endpoint']} does not resolve"
     if resolution["unreachable"]:
-        return (
+        detail = (
             f"{resolution['endpoint']} -> "
             + ", ".join(resolution["unreachable"])
             + " (not this host)"
         )
+        # `.get`: the suggestion is genuinely optional -- there is often no
+        # routable address of our own to name -- so a dict without one is
+        # describing a real state rather than being malformed.
+        suggest = resolution.get("suggest") or []
+        if suggest:
+            detail += "; this host is " + ", ".join(suggest)
+        return detail
     return f"{resolution['endpoint']} -> " + ", ".join(resolution["resolved"])
 
 
@@ -539,11 +623,7 @@ def readiness() -> dict:
             "id": "boot",
             "ok": bool(daemon["installed"]) and not daemon["respawn_loop"],
             "level": "warn",
-            "detail": (
-                f"{daemon['plist_path']} restarts wg-quick in a loop"
-                if daemon["respawn_loop"]
-                else daemon["plist_path"]
-            ),
+            "detail": _daemon_detail(daemon),
         },
         {
             "id": "peer_origin",

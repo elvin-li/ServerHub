@@ -23,7 +23,8 @@
       </span>
     </div>
 
-    <div v-if="!data" class="card page-placeholder" role="status" aria-live="polite">
+    <LoadFailure v-if="!data && loadError" :detail="loadError" :retry="refresh" :busy="loading" />
+    <div v-else-if="!data" class="card page-placeholder" role="status" aria-live="polite">
       {{ loading ? t('common.loading') : t('shares.unavailable') }}
     </div>
 
@@ -237,11 +238,13 @@ import {
 } from '../api/client'
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const busyLabel = ref('')
 const editing = ref(null)
@@ -281,9 +284,15 @@ useDismissable(sheetOpen, closeSheet, sheetPanel)
 async function refresh() {
   if (loading.value) return
   loading.value = true
-  try { data.value = await getShares() }
-  catch (error) { toast(`❌ ${error.message}`) }
-  finally { loading.value = false }
+  try {
+    data.value = await getShares()
+    loadError.value = ''
+  } catch (error) {
+    // "Sharing is unavailable" was asserted for any failure, which conflates a
+    // host that has file sharing switched off with a request that never landed.
+    loadError.value = error.message || String(error)
+    toast(`❌ ${error.message}`)
+  } finally { loading.value = false }
 }
 
 function openCreate() {
