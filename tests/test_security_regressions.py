@@ -718,6 +718,73 @@ class DiscoveryHostileInputTests(unittest.TestCase):
             self.assertEqual(self.apps.collect_apps(engine_up=True), [])
 
 
+class SwiftLauncherPortTests(unittest.TestCase):
+    """The menu-bar app must validate SERVERHUB_PORT, as app.py does.
+
+    The raw environment value was interpolated straight into the panel URL and
+    force-unwrapped, which was wrong twice over.  ``abc``/``-1``/``80 90`` made
+    ``URL(string:)`` return nil and crashed the app (verified: the pre-fix binary
+    exits 133, SIGTRAP).  And a value containing a slash was not a port at all --
+    ``SERVERHUB_PORT=8086/../x`` produced ``http://127.0.0.1:8086/../x``, and
+    since every API call appends a path to that base, it redirected requests
+    which carry the local-client token in a header.
+
+    ``launchctl setenv`` is available to any process running as the same user, so
+    the value is not trusted merely because the LaunchAgent normally supplies it.
+
+    Checked statically: the repo has no Swift test harness, and the behavioural
+    verification was done by compiling both revisions and running them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.path = BASE / "macos" / "ServerHubLauncher.swift"
+        if not cls.path.is_file():
+            raise unittest.SkipTest("Swift launcher not present")
+        cls.source = cls.path.read_text()
+
+    def test_the_port_is_validated_before_use(self):
+        self.assertIn(
+            "validatedPort",
+            self.source,
+            "SERVERHUB_PORT must be validated, not interpolated as given",
+        )
+
+    def test_the_environment_value_is_not_used_raw(self):
+        raw_use = re.search(
+            r'port\s*=\s*ProcessInfo\.processInfo\.environment\["SERVERHUB_PORT"\]\s*\?\?',
+            self.source,
+        )
+        self.assertIsNone(
+            raw_use,
+            "the raw SERVERHUB_PORT value is assigned straight to `port`; a "
+            "non-numeric value crashes the app and a value containing '/' "
+            "injects into the panel URL path",
+        )
+
+    def test_the_panel_url_is_not_force_unwrapped_from_the_port(self):
+        offenders = [
+            line.strip()
+            for line in self.source.splitlines()
+            if "http://127.0.0.1:\\(port)" in line and line.rstrip().endswith("!")
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "panelURL force-unwraps a URL built from the port: " + "; ".join(offenders),
+        )
+
+    def test_the_range_matches_app_py(self):
+        """Both sides must agree on which ports are acceptable."""
+        self.assertIn("(1...65535)", self.source)
+        app_py = (BASE / "app.py").read_text()
+        self.assertIn("1 <= port <= 65535", app_py)
+
+    def test_the_fallback_port_matches_app_py(self):
+        self.assertIn('return "8086"', self.source)
+        self.assertIn("return 8086", (BASE / "app.py").read_text())
+
+
 class ComposeFilePrivacyTests(unittest.TestCase):
     """A compose file carries the stack's generated credentials.
 

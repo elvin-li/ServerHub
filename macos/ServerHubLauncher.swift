@@ -309,11 +309,39 @@ private final class ServiceManager: @unchecked Sendable {
             pythonURL = root.appendingPathComponent(".venv/bin/python")
             isBundledRuntime = false
         }
-        port = ProcessInfo.processInfo.environment["SERVERHUB_PORT"] ?? "8086"
+        port = Self.validatedPort(ProcessInfo.processInfo.environment["SERVERHUB_PORT"])
         UserDefaults.standard.set(root.path, forKey: "ServerHubInstallRoot")
     }
 
-    var panelURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
+    /// A TCP port, or the default, matching `app.py:_port()`.
+    ///
+    /// The raw environment value used to be interpolated into `panelURL` as-is,
+    /// which was wrong in two ways.  A non-numeric value ("abc", "-1", "80 90")
+    /// made `URL(string:)` return nil and the force-unwrap below crash the
+    /// menu-bar app.  Worse, a value containing a slash was not a port at all:
+    /// `SERVERHUB_PORT=8086/../x` produced `http://127.0.0.1:8086/../x`, and
+    /// since every API call is built by appending a path to `panelURL`, that
+    /// redirected requests which carry the local-client token in a header.
+    ///
+    /// `launchctl setenv` is available to any process running as this user, so
+    /// the value is not self-supplied just because the LaunchAgent normally sets
+    /// it.  Validating here also keeps the app and `app.py` agreeing on which
+    /// port they mean, instead of silently talking past each other.
+    static func validatedPort(_ raw: String?) -> String {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              let parsed = Int(trimmed),
+              (1...65535).contains(parsed)
+        else { return "8086" }
+        return String(parsed)
+    }
+
+    /// Never force-unwrapped: `port` is validated, and the fallback keeps a bad
+    /// value from being fatal even if that ever changes.
+    var panelURL: URL {
+        URL(string: "http://127.0.0.1:\(port)")
+            ?? URL(string: "http://127.0.0.1:8086")!
+    }
     var setupURL: URL { panelURL.appendingPathComponent("settings") }
     var errorLogURL: URL { logsURL.appendingPathComponent("serverhub.err.log") }
     private var agentsURL: URL { home.appendingPathComponent("Library/LaunchAgents", isDirectory: true) }
