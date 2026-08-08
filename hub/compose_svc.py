@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from hub import secure_io
 from hub.containers_svc import _stack_paths
 from hub.paths import DOCKER
 from hub.status import invalidate_status as inv
@@ -54,15 +55,18 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
         v = validate_compose_text(content, cwd=str(p.parent))
         if not v.get("ok"):
             raise HTTPException(400, v.get("message") or "compose invalid")
-    # backup
+    # A compose file carries the generated database and admin passwords for the
+    # stack, which is the payload secure_io was written for.  write_text() then
+    # chmod() creates the file at the umask default -- 0644 here -- so both the
+    # backup and the new content were world-readable for the length of the write.
+    # replace_secret_text does the same temp-file-then-rename atomically, with the
+    # restrictive mode applied from the first byte.
     bak = p.with_suffix(p.suffix + ".bak")
     if p.exists():
-        bak.write_text(p.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
-        bak.chmod(0o600)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(p)
+        secure_io.write_secret_text(
+            bak, p.read_text(encoding="utf-8", errors="replace")
+        )
+    secure_io.replace_secret_text(p, content)
     inv()
     return {"ok": True, "path": str(p), "message": "已保存", "backup": str(bak)}
 
@@ -118,21 +122,26 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     (root / "data").mkdir(exist_ok=True)
     compose = root / "docker-compose.yml"
-    compose.write_text(content, encoding="utf-8")
-    compose.chmod(0o600)
-    # register in services.yaml stacks if not present
-    from hub.config import cfg, save_full
-    import copy
-    data = copy.deepcopy(cfg())
-    stacks = data.get("stacks") or []
-    if not any(s.get("id") == stack_id for s in stacks):
+    # 0600 from creation: the content routinely contains generated credentials.
+    secure_io.write_secret_text(compose, content)
+    # Register in services.yaml stacks if not present, through config.mutate: it
+    # re-reads inside the write lock, so this only ever *adds* the stack.  The old
+    # save_full(deepcopy(cfg())) wrote a snapshot taken before the lock was held,
+    # reverting whatever another process had committed since -- routine, not rare,
+    # on a machine running the packaged app alongside a source checkout.
+    from hub.config import mutate
+
+    def apply(data: dict) -> None:
+        stacks = data.setdefault("stacks", [])
+        if any(entry.get("id") == stack_id for entry in stacks):
+            return
         stacks.append({
             "id": stack_id,
             "name": name or stack_id,
             "path": str(root),
             "compose_file": "docker-compose.yml",
         })
-        data["stacks"] = stacks
-        save_full(data)
+
+    mutate(apply)
     inv()
     return {"ok": True, "path": str(compose), "id": stack_id}

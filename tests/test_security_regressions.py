@@ -718,6 +718,109 @@ class DiscoveryHostileInputTests(unittest.TestCase):
             self.assertEqual(self.apps.collect_apps(engine_up=True), [])
 
 
+class ComposeFilePrivacyTests(unittest.TestCase):
+    """A compose file carries the stack's generated credentials.
+
+    ``secure_io``'s own docstring names this payload -- "generated database and
+    admin passwords inside compose files" -- yet ``compose_svc`` wrote them with
+    ``write_text()`` and chmod'ed afterwards, so the compose file, its ``.bak``
+    and the temp file it was renamed from were each created at the umask default
+    (0644 here) and only then tightened.  A local process only has to win that
+    window once, and a password cannot be un-leaked.
+    """
+
+    def setUp(self):
+        from hub import compose_svc
+
+        self.svc = compose_svc
+        self.tmp = Path(tempfile.mkdtemp(prefix="serverhub-compose-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.stack = self.tmp / "Services" / "demo"
+        self.stack.mkdir(parents=True)
+        self.compose = self.stack / "docker-compose.yml"
+
+    def _save(self, content, *, existing=None, suppress_chmod=False):
+        if existing is not None:
+            self.compose.write_text(existing)
+            os.chmod(self.compose, 0o600)
+        patches = [
+            mock.patch.object(
+                self.svc, "_find_stack",
+                lambda sid: {"id": "demo", "compose_path": str(self.compose),
+                             "path": str(self.stack), "name": "demo"},
+            ),
+            # Not about compose syntax, and docker need not be installed.
+            mock.patch.object(self.svc, "validate_compose_text",
+                              lambda *a, **k: {"ok": True}),
+            mock.patch.object(self.svc, "inv", lambda: None),
+            mock.patch.object(Path, "home", staticmethod(lambda: self.tmp)),
+        ]
+        if suppress_chmod:
+            patches += [mock.patch("os.chmod"), mock.patch.object(Path, "chmod")]
+        old_umask = os.umask(0) if suppress_chmod else None
+        for p in patches:
+            p.start()
+        try:
+            return self.svc.save_compose("demo", content)
+        finally:
+            for p in reversed(patches):
+                p.stop()
+            if old_umask is not None:
+                os.umask(old_umask)
+
+    SECRET = (
+        "services:\n  db:\n    image: postgres:17\n"
+        "    environment:\n      POSTGRES_PASSWORD: generated-secret\n"
+    )
+
+    def test_the_compose_file_is_private_at_creation(self):
+        # chmod suppressed and umask open: only the creation mode survives, which
+        # is exactly the state a concurrent reader would have found.
+        self._save(self.SECRET, suppress_chmod=True)
+        self.assertEqual(mode_of(self.compose), 0o600)
+
+    def test_the_backup_is_private_at_creation(self):
+        self._save(self.SECRET, existing="services: {}\n", suppress_chmod=True)
+        backup = self.compose.with_suffix(self.compose.suffix + ".bak")
+        self.assertTrue(backup.exists())
+        self.assertEqual(mode_of(backup), 0o600)
+
+    def test_the_new_content_lands_and_the_backup_keeps_the_old(self):
+        old = "services:\n  db:\n    image: postgres:16\n"
+        self._save(self.SECRET, existing=old)
+        self.assertEqual(self.compose.read_text(), self.SECRET)
+        backup = self.compose.with_suffix(self.compose.suffix + ".bak")
+        self.assertEqual(backup.read_text(), old)
+
+    def test_no_temp_file_is_left_behind(self):
+        self._save(self.SECRET, existing="services: {}\n")
+        leftovers = [p.name for p in self.stack.iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [], f"leftover temp file: {leftovers}")
+
+    def test_a_compose_path_outside_services_is_refused(self):
+        outside = self.tmp / "elsewhere" / "docker-compose.yml"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("services: {}\n")
+        with (
+            mock.patch.object(
+                self.svc, "_find_stack",
+                lambda sid: {"id": "x", "compose_path": str(outside),
+                             "path": str(outside.parent)},
+            ),
+            mock.patch.object(self.svc, "validate_compose_text",
+                              lambda *a, **k: {"ok": True}),
+            mock.patch.object(Path, "home", staticmethod(lambda: self.tmp)),
+        ):
+            with self.assertRaises(Exception) as raised:
+                self.svc.save_compose("x", self.SECRET)
+        self.assertEqual(getattr(raised.exception, "status_code", None), 403)
+        self.assertEqual(
+            outside.read_text(),
+            "services: {}\n",
+            "a refused save must not have written anything",
+        )
+
+
 class AuditRedactionTests(unittest.TestCase):
     """Key material must be dropped by the redactor, not by caller discipline.
 
