@@ -70,7 +70,14 @@ def _refresh():
     items, engine_up = [], rc == 0
     if rc == 0:
         for line in out.splitlines():
-            p = line.split("\t")
+            # maxsplit=3: the last field is a Docker *label*, which is an
+            # arbitrary string.  A plain split() turned a label containing a tab
+            # into five fields, and the four-way unpack below then raised
+            # ValueError -- uncaught, straight out of discover_containers() and
+            # into /api/status, so one crafted `docker run --label` broke the
+            # dashboard for everyone.  Capping the split keeps any extra tabs
+            # inside the project field where they are harmless.
+            p = line.split("\t", 3)
             if len(p) < 4:
                 continue
             name, st, status, project = p

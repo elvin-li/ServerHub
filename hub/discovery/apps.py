@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hub import cli_args
 from hub.config import cfg
 from hub.host_address import resolve_value
 from hub.util import port_open, sh
@@ -16,7 +17,14 @@ def collect_apps(engine_up):
                           "url": a.get("url"), "group": a.get("group", "应用"),
                           "actions": ["stop"] if engine_up else ["start"]})
             continue
-        rc, _, _ = sh(["pgrep", "-x", a["process"]], timeout=3)
+        # `process` sits in a bare positional slot, so a value starting with "-"
+        # would be read by pgrep as a flag rather than as a pattern.  A missing
+        # key used to raise KeyError here and take the whole status response with
+        # it, so an unnamed entry is now skipped instead.
+        process = str(a.get("process") or "").strip()
+        if not process or not cli_args.is_safe_positional(process):
+            continue
+        rc, _, _ = sh(["pgrep", "-x", process], timeout=3)
         running = rc == 0
         p = port_open(a.get("port"))
         state = "ok" if running and p in (None, True) else ("warn" if running else "down")

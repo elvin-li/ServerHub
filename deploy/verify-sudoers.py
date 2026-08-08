@@ -20,6 +20,7 @@ Exit status: 0 clean, 1 a required call is missing or a forbidden one is allowed
 from __future__ import annotations
 
 import getpass
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ sys.path.insert(0, str(BASE))
 
 from hub.sudoers_policy import (  # noqa: E402
     FORBIDDEN,
+    PINNED_BIN_DIR,
     REQUIRED,
     authorised,
     dead_regex_rules,
@@ -133,16 +135,50 @@ if swappable:
         for path in hits:
             say(f"        writable: {path}")
 
+# A warning, not a failure, and the distinction is the point. The only rule left
+# in this category is `wg syncconf <state>/data/wg0.sync.conf`, whose config the
+# panel has to be able to write because it generates it -- and `wg syncconf`
+# applies peers, it does not execute anything from the file the way wg-quick
+# executes PostUp. Counting it as a failure would leave --verify permanently red,
+# and a check that always fails is a check people learn to ignore.
 writable_args = writable_argument_rules(rules)
 if writable_args:
-    problems.append(f"{len(writable_args)} rule(s) take a writable file argument")
-    say("\nthese rules hand a file this account can rewrite to a root command.")
-    say("Whether that is root code execution depends on the program: wg-quick")
-    say("executes the PostUp/PostDown lines of the config it is given.")
+    say("\nnote: these rules hand a file this account can rewrite to a root")
+    say("command. That is by design where the panel generates the file, but it")
+    say("is only safe while the program does not execute its contents -- wg-quick")
+    say("does (PostUp/PostDown), which is why it is not granted at all:")
     for rule, hits in writable_args:
         say("   ", rule)
         for path in hits:
             say(f"        writable: {path}")
+
+# The template promises that --verify notices a stale copy, so it has to. A
+# pinned binary is a snapshot: `brew upgrade` moves the original and leaves the
+# copy behind at the old version. That still works -- it is simply older -- so it
+# is a warning, but an unreported one would quietly become years old.
+stale: list[str] = []
+for tool in ("smartctl", "wg"):
+    pinned = Path(PINNED_BIN_DIR) / tool
+    if not pinned.exists():
+        problems.append(f"pinned {tool} is missing")
+        say(f"\n{pinned} does not exist, so every rule naming it can never")
+        say("match and the feature will ask for a password. Reinstall with")
+        say("  deploy/install-sudoers.sh")
+        continue
+    current = shutil.which(tool)
+    if not current:
+        continue
+    try:
+        if Path(current).read_bytes() != pinned.read_bytes():
+            stale.append(f"{tool}: {pinned} differs from {current}")
+    except OSError:
+        pass
+if stale:
+    say("\nnote: a pinned copy is out of date with the installed build")
+    say("(it still works, it is just an older version). Refresh with")
+    say("  deploy/install-sudoers.sh")
+    for line in stale:
+        say("   ", line)
 
 if not problems:
     say(

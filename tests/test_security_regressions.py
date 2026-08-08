@@ -520,5 +520,485 @@ class LegacyIndexEscapingTests(unittest.TestCase):
                 self.assertIn("encodeURIComponent", call)
 
 
+class ContentSecurityPolicyTests(unittest.TestCase):
+    """The SPA's protection against `javascript:` URLs is the CSP, nothing else.
+
+    Vue does not sanitize `:href`.  The SPA binds it straight to server-supplied
+    URLs in ~18 places -- bookmarks, service links, container WebUI links, share
+    and VNC URLs -- and those values come from services.yaml and from Docker
+    labels discovered at runtime, not from a trusted constant.  A `javascript:`
+    URL there would execute on click.
+
+    What stops it is `script-src 'self'` with no `unsafe-inline`: per CSP,
+    `javascript:` URLs are governed by script-src and are refused without
+    `unsafe-inline`.  So adding `unsafe-inline` to script-src would not merely
+    "allow inline scripts" -- it would turn every one of those bindings into a
+    live XSS sink.  That consequence is not visible at the line where someone
+    would make the change, which is why it is pinned here.
+
+    The legacy fallback UI does not rely on this; index.html sanitizes URLs
+    itself via safeUrl(), because it must also work if the header is ever lost.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+
+        from hub.app_factory import create_app
+
+        response = TestClient(create_app()).get("/api/auth/status")
+        cls.csp = response.headers.get("content-security-policy", "")
+        cls.headers = response.headers
+
+    def _directive(self, name: str) -> str:
+        match = re.search(rf"(?:^|;)\s*{re.escape(name)}\s([^;]*)", self.csp)
+        return match.group(1).strip() if match else ""
+
+    def test_a_policy_is_sent_at_all(self):
+        self.assertTrue(self.csp, "no Content-Security-Policy header was sent")
+
+    def test_script_src_forbids_inline(self):
+        script_src = self._directive("script-src")
+        self.assertEqual(script_src, "'self'", f"script-src is {script_src!r}")
+        self.assertNotIn(
+            "unsafe-inline",
+            script_src,
+            "unsafe-inline in script-src re-enables javascript: URLs, and the "
+            "SPA binds :href directly to URLs from config and Docker labels",
+        )
+        self.assertNotIn("unsafe-eval", script_src)
+
+    def test_the_other_containment_directives_hold(self):
+        self.assertEqual(self._directive("object-src"), "'none'")
+        self.assertEqual(self._directive("base-uri"), "'none'")
+        self.assertEqual(self._directive("frame-ancestors"), "'none'")
+        self.assertEqual(self._directive("default-src"), "'self'")
+
+    def test_the_defensive_headers_are_present(self):
+        self.assertEqual(self.headers.get("x-content-type-options"), "nosniff")
+        self.assertEqual(self.headers.get("x-frame-options"), "DENY")
+
+    def test_the_spa_really_does_bind_href_to_server_data(self):
+        """Keeps the docstring above honest.
+
+        If the SPA ever sanitizes these itself, this test should be updated
+        deliberately rather than the CSP reliance quietly becoming stale.
+        """
+        web = BASE / "web" / "src"
+        if not web.is_dir():
+            self.skipTest("SPA sources not present")
+        bindings = 0
+        for vue in web.rglob("*.vue"):
+            bindings += len(re.findall(r':href="', vue.read_text()))
+        self.assertGreater(
+            bindings,
+            5,
+            "expected the SPA to bind :href to data in several places; if that "
+            "is no longer true, revisit whether the CSP is still load-bearing",
+        )
+
+    def test_the_only_v_html_is_a_locally_generated_qr_code(self):
+        """v-html is safe here only because the value is machine-generated.
+
+        qrcode-generator's createSvgTag emits <svg>/<rect>/<path> from encoded
+        modules and never interpolates the payload as markup, so a hostile peer
+        config cannot become elements.  Any *other* v-html would not have that
+        property.
+        """
+        web = BASE / "web" / "src"
+        if not web.is_dir():
+            self.skipTest("SPA sources not present")
+        sinks = []
+        for vue in web.rglob("*.vue"):
+            for line in vue.read_text().splitlines():
+                if "v-html" in line:
+                    sinks.append(f"{vue.relative_to(web)}: {line.strip()}")
+        self.assertEqual(
+            len(sinks),
+            1,
+            "a new v-html appeared; each one needs its own argument for why the "
+            "value cannot contain markup:\n" + "\n".join(sinks),
+        )
+        self.assertIn("qrSvg", sinks[0], sinks[0])
+
+
+class DiscoveryHostileInputTests(unittest.TestCase):
+    """Discovery parses attacker-influenceable text, so it must not crash.
+
+    ``docker ps --format`` output ends with a *label*, which is an arbitrary
+    string.  The parse split on every tab and then unpacked four names, so a
+    label containing a tab produced five fields and raised ValueError -- uncaught,
+    out of ``discover_containers()`` and into ``/api/status``.  One crafted
+    ``docker run --label`` took the dashboard down for every user.
+    """
+
+    def setUp(self):
+        from hub.discovery import apps, containers
+
+        self.apps = apps
+        self.containers = containers
+        self.addCleanup(containers.invalidate_containers)
+
+    def _discover(self, docker_output: str):
+        self.containers.invalidate_containers()
+        with mock.patch.object(
+            self.containers, "sh", return_value=(0, docker_output, "")
+        ):
+            return self.containers.discover_containers(force=True)
+
+    def test_a_tab_in_a_label_does_not_raise(self):
+        items, _ = self._discover("web\trunning\tUp 2 hours\tproj\tINJECTED")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], "web")
+
+    def test_many_tabs_in_a_label_do_not_raise(self):
+        items, _ = self._discover("web\trunning\tUp 2 hours\ta\tb\tc\td")
+        self.assertEqual(len(items), 1)
+        self.assertIsInstance(items[0]["group"], str)
+
+    def test_a_short_line_is_skipped_not_fatal(self):
+        items, _ = self._discover("web\trunning")
+        self.assertEqual(items, [])
+
+    def test_normal_output_still_parses_correctly(self):
+        items, engine_up = self._discover(
+            "web\trunning\tUp 2 hours (healthy)\tteslamate\n"
+            "db\texited\tExited (0) 3 days ago\tteslamate\n"
+            "solo\trunning\tUp 5 minutes\t"
+        )
+        self.assertTrue(engine_up)
+        self.assertEqual({i["id"] for i in items}, {"web", "db", "solo"})
+        states = {i["id"]: i["state"] for i in items}
+        self.assertEqual(states["web"], "ok")
+        self.assertEqual(states["db"], "stopped")
+
+    def test_an_unhealthy_container_is_still_flagged(self):
+        items, _ = self._discover("web\trunning\tUp 1 hour (unhealthy)\tp")
+        self.assertEqual(items[0]["state"], "warn")
+
+    def test_an_option_shaped_process_name_never_reaches_pgrep(self):
+        """`process` is a bare positional, so "-f" would be a pgrep flag."""
+        calls = []
+
+        def fake_sh(argv, **kw):
+            calls.append(argv)
+            return (1, "", "")
+
+        config = {"apps": [
+            {"id": "good", "process": "syncthing"},
+            {"id": "opt", "process": "-f"},
+            {"id": "opt2", "process": "--help"},
+            {"id": "missing"},
+            {"id": "blank", "process": "   "},
+        ]}
+        with (
+            mock.patch.object(self.apps, "sh", fake_sh),
+            mock.patch.object(self.apps, "cfg", lambda: config),
+            mock.patch.object(self.apps, "port_open", lambda p: None),
+        ):
+            items = self.apps.collect_apps(engine_up=True)
+
+        patterns = [argv[2] for argv in calls if len(argv) > 2]
+        self.assertIn("syncthing", patterns)
+        self.assertNotIn("-f", patterns)
+        self.assertNotIn("--help", patterns)
+        self.assertEqual(
+            [i["id"] for i in items],
+            ["good"],
+            "an entry with an unusable process name must be skipped, not listed",
+        )
+
+    def test_an_app_entry_without_a_process_key_does_not_raise(self):
+        # This used to be a KeyError, which took the whole status response down.
+        with (
+            mock.patch.object(self.apps, "sh", lambda *a, **k: (1, "", "")),
+            mock.patch.object(self.apps, "cfg", lambda: {"apps": [{"id": "x"}]}),
+            mock.patch.object(self.apps, "port_open", lambda p: None),
+        ):
+            self.assertEqual(self.apps.collect_apps(engine_up=True), [])
+
+
+class AuditRedactionTests(unittest.TestCase):
+    """Key material must be dropped by the redactor, not by caller discipline.
+
+    ``hub/audit.py`` states that redaction is applied by key name inside
+    ``record()`` precisely so no caller has to remember -- but the hint list had
+    no entry for key material, so ``private_key``, ``psk`` and
+    ``preshared_key`` were written verbatim.  WireGuard peer events are audited
+    and a peer's private key *is* the credential, so the safety net was missing
+    exactly where it mattered most.  No caller was actually leaking (they pass
+    only the public half by hand), which is the situation this closes.
+    """
+
+    def setUp(self):
+        from hub import audit
+
+        self.audit = audit
+
+    def test_key_material_is_redacted(self):
+        for field in (
+            "private_key", "privatekey", "psk", "preshared_key", "presharedkey",
+            "wg_key", "signing_key", "passphrase", "seed", "bearer", "key",
+            "password", "current_password", "setup_token", "session", "cookie",
+        ):
+            with self.subTest(field=field):
+                self.assertTrue(
+                    self.audit._is_secret_key(field), f"{field} is not redacted"
+                )
+
+    def test_the_public_half_of_a_keypair_is_kept(self):
+        """pubkey is how the operator identifies a peer; dropping it blinds the trail."""
+        for field in ("pubkey", "public_key", "publickey", "peer_pubkey"):
+            with self.subTest(field=field):
+                self.assertFalse(self.audit._is_secret_key(field))
+
+    def test_ordinary_fields_are_kept(self):
+        for field in (
+            "username", "client", "ip", "name", "device", "mount", "volume",
+            "action", "outcome", "reason", "mode", "op", "count", "kind",
+            "enabled", "created", "prefix", "urgency", "batch", "imported",
+        ):
+            with self.subTest(field=field):
+                self.assertFalse(
+                    self.audit._is_secret_key(field),
+                    f"{field} is a legitimate audit field and must survive",
+                )
+
+    def test_redaction_reaches_nested_structures(self):
+        got = self.audit.redact(
+            {"peer": {"pubkey": "PUB", "private_key": "PRIV", "psk": "PSK"},
+             "peers": [{"psk": "x", "name": "phone"}],
+             "ok": True}
+        )
+        self.assertEqual(
+            got,
+            {"peer": {"pubkey": "PUB"}, "peers": [{"name": "phone"}], "ok": True},
+        )
+
+    def test_every_audit_call_site_field_survives_redaction(self):
+        """The redactor must not silently start dropping a real audit field."""
+        source = "\n".join(
+            p.read_text() for p in (BASE / "hub").rglob("*.py")
+        )
+        used = set()
+        for call in re.finditer(r"audit\.record\((.*?)\)\n", source, re.S):
+            used.update(re.findall(r"(\w+)\s*=", call.group(1)))
+        dropped = sorted(f for f in used if self.audit._is_secret_key(f))
+        self.assertEqual(
+            dropped,
+            [],
+            "these fields are passed to audit.record but would be redacted, so "
+            "the event would lose them: " + ", ".join(dropped),
+        )
+
+
+class PinnedBinaryResolutionTests(unittest.TestCase):
+    """A "pinned" copy is only worth using if it is genuinely root-owned.
+
+    The sudoers policy names /usr/local/libexec/serverhub/<tool>, so if that path
+    were ever writable by the panel account, trusting it would be *worse* than
+    not pinning at all: the rule would point straight at a file the attacker
+    controls, with the argument narrowing lending it false credibility.
+    ``pinned_or`` therefore verifies ownership instead of assuming it.
+    """
+
+    def setUp(self):
+        from hub import paths
+
+        self.paths = paths
+        self.tmp = Path(tempfile.mkdtemp(prefix="serverhub-pin-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _resolve(self, name, fallback="/opt/homebrew/bin/tool"):
+        with mock.patch.object(self.paths, "PINNED_BIN_DIR", self.tmp):
+            return self.paths.pinned_or(name, fallback)
+
+    def test_a_missing_copy_falls_back(self):
+        self.assertEqual(self._resolve("absent"), "/opt/homebrew/bin/tool")
+
+    def test_a_copy_this_account_owns_is_refused(self):
+        """The decisive case: a file we can rewrite must never be trusted."""
+        tool = self.tmp / "smartctl"
+        tool.write_text("#!/bin/sh\necho pwned\n")
+        os.chmod(tool, 0o755)
+        self.assertEqual(
+            self._resolve("smartctl"),
+            "/opt/homebrew/bin/tool",
+            "a pinned path owned by this account was trusted; the sudoers rule "
+            "names that path, so trusting it hands over passwordless root",
+        )
+
+    def test_a_non_executable_copy_is_refused(self):
+        tool = self.tmp / "smartctl"
+        tool.write_text("")
+        os.chmod(tool, 0o644)
+        self.assertEqual(self._resolve("smartctl"), "/opt/homebrew/bin/tool")
+
+    def test_ownership_is_checked_not_assumed(self):
+        tool = self.tmp / "tool"
+        tool.write_text("x")
+        self.assertFalse(
+            self.paths._is_root_owned(tool),
+            "_is_root_owned must reject a file owned by this account",
+        )
+        # A real root-owned system binary, as the positive control.
+        self.assertTrue(self.paths._is_root_owned(Path("/bin/sh")))
+
+    def test_a_group_or_world_writable_root_file_is_refused(self):
+        # Root-owned is not sufficient: 0777 root:wheel is still anyone's to edit.
+        self.assertFalse(
+            self.paths._is_root_owned(Path("/tmp")),
+            "/tmp is root-owned but world-writable, so it must not read as pinned",
+        )
+
+    def test_the_policy_and_the_code_name_the_same_directory(self):
+        """If these drift, sudo authorises one file and the panel runs another."""
+        from hub import sudoers_policy
+
+        self.assertEqual(
+            str(self.paths.PINNED_BIN_DIR),
+            str(sudoers_policy.PINNED_BIN_DIR),
+            "hub.paths and hub.sudoers_policy disagree on the pinned directory, "
+            "so every privileged call would silently need a password",
+        )
+
+    def test_the_policy_forbids_the_unpinned_homebrew_paths(self):
+        from hub import sudoers_policy
+
+        for path in ("/opt/homebrew/bin/smartctl", "/opt/homebrew/bin/wg"):
+            self.assertIn(
+                path,
+                sudoers_policy.UNPINNED_EQUIVALENTS,
+                f"{path} must stay on the forbidden list; granting it again is "
+                "the escalation the pinning exists to close",
+            )
+
+
+class SudoersSwappableBinaryTests(unittest.TestCase):
+    """Pinning a rule's arguments is worthless if the program can be replaced.
+
+    A NOPASSWD rule naming a binary the granting account can rewrite is
+    passwordless root however precisely the argument list is spelled: overwrite
+    the file, run the rule, and the argument regex authorises your own code.
+
+    On Apple Silicon this is the default state of everything under
+    /opt/homebrew -- brew chowns its prefix to the installing user -- so rules
+    naming smartctl, wg, wg-quick or bash look pinned and are not.  ``visudo -cf``
+    checks grammar and verify-sudoers checks whether a rule can *match*; neither
+    can see this.
+
+    Writability is injected here rather than probed, so the tests are
+    deterministic and say nothing about the machine they run on.
+    """
+
+    def setUp(self):
+        from hub import sudoers_policy
+
+        self.policy = sudoers_policy
+
+    def test_the_binary_is_the_executed_path(self):
+        self.assertEqual(
+            self.policy.executed_paths("/usr/bin/pmset ^-a womp [0-9]+$"),
+            ["/usr/bin/pmset"],
+        )
+
+    def test_an_interpreters_script_argument_is_also_executed(self):
+        # Two replaceable files, not one: bash runs wg-quick.
+        self.assertEqual(
+            self.policy.executed_paths(
+                "/opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick up /etc/wg0.conf"
+            ),
+            ["/opt/homebrew/bin/bash", "/opt/homebrew/bin/wg-quick"],
+        )
+
+    def test_a_non_interpreter_does_not_absorb_its_path_argument(self):
+        rule = "/opt/homebrew/bin/wg syncconf wg0 /tmp/wg0.sync.conf"
+        self.assertEqual(self.policy.executed_paths(rule), ["/opt/homebrew/bin/wg"])
+        self.assertEqual(self.policy.path_arguments(rule), ["/tmp/wg0.sync.conf"])
+
+    def test_a_regex_argument_list_is_not_read_as_paths(self):
+        # "/dev/[A-Za-z0-9]+" is a pattern, not a file that could be writable.
+        self.assertEqual(
+            self.policy.path_arguments(
+                "/opt/homebrew/bin/smartctl ^-a /dev/[A-Za-z0-9]+$"
+            ),
+            [],
+        )
+
+    def test_a_writable_binary_is_reported(self):
+        rules = [
+            "/opt/homebrew/bin/smartctl -V",
+            "/usr/bin/pmset ^-a womp [0-9]+$",
+        ]
+        found = self.policy.swappable_rules(
+            rules, writable=lambda p: p.startswith("/opt/homebrew/")
+        )
+        self.assertEqual(
+            [rule for rule, _ in found], ["/opt/homebrew/bin/smartctl -V"]
+        )
+        self.assertEqual(found[0][1], ["/opt/homebrew/bin/smartctl"])
+
+    def test_root_owned_binaries_are_not_reported(self):
+        rules = [
+            "/usr/bin/pmset ^-a womp [0-9]+$",
+            "/sbin/shutdown -h now",
+            "/bin/launchctl print system/com.wireguard.wg0",
+        ]
+        self.assertEqual(self.policy.swappable_rules(rules, writable=lambda p: False), [])
+
+    def test_a_writable_config_argument_is_reported_separately(self):
+        """wg-quick executes PostUp from its config, so this is a root code path.
+
+        It is reported apart from the executed set because the consequence
+        depends on the program, and because it survives making every binary
+        immutable -- the panel has to be able to write the config it generates.
+        """
+        rule = (
+            "/opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick up "
+            "/opt/homebrew/etc/wireguard/wg0.conf"
+        )
+        found = self.policy.writable_argument_rules(
+            [rule], writable=lambda p: p.endswith("wg0.conf")
+        )
+        self.assertEqual(found, [(rule, ["/opt/homebrew/etc/wireguard/wg0.conf"])])
+
+    def test_a_readonly_file_in_a_writable_directory_is_not_pinned(self):
+        """Unlink and replace needs only the directory, not the file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "tool"
+            target.write_text("#!/bin/sh\n")
+            # Read-only file, writable parent. No chmod back: TemporaryDirectory
+            # removes it either way, and a cleanup hook would run after the
+            # directory is already gone.
+            os.chmod(target, 0o555)
+            self.assertTrue(
+                self.policy.user_writable(str(target)),
+                "a read-only file inside a writable directory can still be "
+                "swapped, so it must not count as pinned",
+            )
+
+    def test_a_symlink_to_a_writable_target_is_not_pinned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.write_text("#!/bin/sh\n")
+            link = Path(tmp) / "link"
+            link.symlink_to(real)
+            self.assertTrue(self.policy.user_writable(str(link)))
+
+    def test_a_root_owned_system_binary_reads_as_pinned(self):
+        # /usr/bin/pmset is root:wheel inside root-owned directories on every
+        # supported macOS, so this also proves the probe is not simply true.
+        self.assertFalse(self.policy.user_writable("/usr/bin/pmset"))
+
+    def test_the_verifier_treats_a_swappable_rule_as_a_failure(self):
+        source = (BASE / "deploy" / "verify-sudoers.py").read_text()
+        self.assertIn("swappable_rules", source)
+        self.assertIn(
+            "problems.append",
+            source.split("swappable_rules(rules)")[1][:400],
+            "a swappable binary must count as a policy failure, not a warning",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

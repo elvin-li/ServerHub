@@ -81,10 +81,40 @@ _SECRET_HINTS = (
     "passwd",
     "api_key",
     "apikey",
+    # Key material.  The WireGuard events are the reason: a peer's private key
+    # and preshared key are the credential itself, and the callers currently pass
+    # only the public half by hand -- which is exactly the "left to each caller to
+    # remember" arrangement this module's docstring says it exists to replace.  A
+    # field named private_key, psk or preshared_key was not covered by any hint
+    # above, so the safety net had a hole precisely where the most sensitive
+    # values are.
+    "key",
+    "psk",
+    "preshared",
+    "passphrase",
+    "private",
+    "seed",
+    "bearer",
 )
+
+#: Field names that contain a secret hint but are genuinely public.
+#:
+#: ``pubkey`` is a peer's identity -- it is what the operator matches a device by,
+#: and dropping it would make the WireGuard trail unreadable.  This list is
+#: deliberately tiny and explicit: the default for anything key-shaped is to
+#: redact, and an addition here is a claim that the value is safe to write to
+#: disk.
+_PUBLIC_EXCEPTIONS = (
+    "pubkey",
+    "public_key",
+    "publickey",
+)
+
 
 def _is_secret_key(key: str) -> bool:
     lowered = str(key).lower()
+    if any(allowed in lowered for allowed in _PUBLIC_EXCEPTIONS):
+        return False
     return any(hint in lowered for hint in _SECRET_HINTS)
 
 
