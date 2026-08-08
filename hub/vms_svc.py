@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from hub import vm_console
 from hub.config import override
 from hub.paths import ORBCTL, UTMCTL
-from hub.util import port_open, sh
+from hub.util import fan_out, port_open, sh
 
 
 # Short TTL shared by status feed, bookmarks, and /api/vms (dedupe utmctl/orbctl).
@@ -58,13 +58,30 @@ def _orb_available() -> bool:
     return bool(ORBCTL) and __import__("pathlib").Path(ORBCTL).exists()
 
 
+def _probe_port(port) -> bool | None:
+    """Port reachability that never raises, so one VM cannot cost the listing.
+
+    ``fan_out`` re-raises on iteration, which would turn a single unreachable
+    host into an empty VM list rather than one row reading "warn".
+    """
+    try:
+        return port_open(port)
+    except Exception:
+        return False
+
+
 def _list_utm_vms_uncached() -> list[dict]:
     if not _utm_available():
         return []
     rc, out, err = sh([UTMCTL, "list"], timeout=10)
     if rc != 0:
         return []
-    items = []
+    # Parsed first, probed second, assembled third.  The per-VM work in the old
+    # single loop was a TCP connect against the VM's configured port, which costs
+    # the full 0.6s timeout whenever the guest is not listening yet -- so a host
+    # with several port-mapped VMs paid that serially on every refresh.  Parsing
+    # and override lookups stay on this thread; only the socket waits fan out.
+    rows = []
     for line in out.splitlines()[1:]:
         # UUID Status Name (name may have spaces)
         parts = line.split(None, 2)
@@ -74,10 +91,20 @@ def _list_utm_vms_uncached() -> list[dict]:
         ov = override(name) or override(uuid) or {}
         if ov.get("hide"):
             continue
+        rows.append({"uuid": uuid, "status": status, "name": name, "ov": ov})
+
+    # None where no port is configured, matching the previous conditional.
+    probes = fan_out(
+        lambda port: _probe_port(port) if port else None,
+        [row["ov"].get("port") for row in rows],
+    )
+
+    items = []
+    for row, p in zip(rows, probes):
+        uuid, status, name, ov = row["uuid"], row["status"], row["name"], row["ov"]
         started = status in ("started", "running")
         suspended = status in ("paused", "suspended")
         stopped = status in ("stopped", "stop", "shutdown")
-        p = port_open(ov.get("port")) if ov.get("port") else None
         # ok=运行 / warn=挂起或端口异常 / stopped=主动停止(灰) / down=意外异常(红)
         if started and p is False:
             state = "warn"

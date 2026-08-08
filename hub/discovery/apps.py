@@ -3,19 +3,41 @@ from __future__ import annotations
 from hub import cli_args
 from hub.config import cfg
 from hub.host_address import resolve_value
-from hub.util import port_open, sh
+from hub.util import fan_out, port_open, sh
+
+# Both collectors here probe one configured entry at a time, and a single probe
+# is a `pgrep` (up to 3s) plus a TCP connect (0.6s against a closed port).  In
+# series that made the collectors scale with the number of configured entries, on
+# the /api/status path the dashboard polls every few seconds -- ten apps with
+# nothing listening cost tens of seconds before anything rendered.  The probes
+# touch different processes and different ports and share no state, so they
+# overlap safely.
+
+
+def _probe_app(entry):
+    """``(running, port_state)`` for one app.  Never raises.
+
+    A probe that blows up must cost its own entry and nothing else: this runs
+    behind /api/status, where a single exception used to take the whole response
+    down rather than one row of it.
+    """
+    process, port = entry
+    try:
+        rc, _, _ = sh(["pgrep", "-x", process], timeout=3)
+        return rc == 0, port_open(port)
+    except Exception:
+        return False, None
 
 
 def collect_apps(engine_up):
-    items = []
+    # Config resolution stays on this thread.  It is cheap, and keeping cfg()
+    # out of the workers avoids putting avoidable traffic through the shared
+    # config lock while the probes are in flight.
+    plans: list[dict] = []
     for raw in cfg().get("apps") or []:
         a = resolve_value(raw)
         if a.get("container_engine") or a.get("docker_engine"):
-            items.append({"id": a["id"], "kind": "app-engine", "name": a.get("name", "OrbStack"),
-                          "state": "ok" if engine_up else "down",
-                          "detail": "OrbStack 引擎运行中" if engine_up else "OrbStack 引擎未运行",
-                          "url": a.get("url"), "group": a.get("group", "应用"),
-                          "actions": ["stop"] if engine_up else ["start"]})
+            plans.append({"kind": "engine", "app": a})
             continue
         # `process` sits in a bare positional slot, so a value starting with "-"
         # would be read by pgrep as a flag rather than as a pattern.  A missing
@@ -24,9 +46,26 @@ def collect_apps(engine_up):
         process = str(a.get("process") or "").strip()
         if not process or not cli_args.is_safe_positional(process):
             continue
-        rc, _, _ = sh(["pgrep", "-x", process], timeout=3)
-        running = rc == 0
-        p = port_open(a.get("port"))
+        plans.append({"kind": "app", "app": a, "process": process})
+
+    probed = [p for p in plans if p["kind"] == "app"]
+    for plan, result in zip(
+        probed,
+        fan_out(_probe_app, [(p["process"], p["app"].get("port")) for p in probed]),
+    ):
+        plan["result"] = result
+
+    items = []
+    for plan in plans:
+        a = plan["app"]
+        if plan["kind"] == "engine":
+            items.append({"id": a["id"], "kind": "app-engine", "name": a.get("name", "OrbStack"),
+                          "state": "ok" if engine_up else "down",
+                          "detail": "OrbStack 引擎运行中" if engine_up else "OrbStack 引擎未运行",
+                          "url": a.get("url"), "group": a.get("group", "应用"),
+                          "actions": ["stop"] if engine_up else ["start"]})
+            continue
+        running, p = plan["result"]
         state = "ok" if running and p in (None, True) else ("warn" if running else "down")
         detail = (f"运行中 · :{a['port']}" if p else "运行中") if running else "已停止"
         items.append({"id": a["id"], "kind": "app", "name": a.get("name", a["id"]),
@@ -36,12 +75,33 @@ def collect_apps(engine_up):
     return items
 
 
+def _probe_port(port):
+    """Port reachability that never raises, for use inside the pool."""
+    try:
+        return port_open(port)
+    except Exception:
+        return False
+
+
 def collect_scripts():
+    scripts = [resolve_value(raw) for raw in cfg().get("scripts") or []]
+    # Flattened across scripts *and* their ports, so a machine with several
+    # multi-port scripts overlaps every check rather than only the outer loop.
+    # The (index, port) pairing is what lets the flat results be put back
+    # together in configuration order.
+    checks = [(i, port) for i, s in enumerate(scripts) for port in (s.get("ports") or [])]
+    states = fan_out(_probe_port, [port for _, port in checks])
+
+    reachable: dict[int, set] = {}
+    for (index, port), ok in zip(checks, states):
+        if ok:
+            reachable.setdefault(index, set()).add(port)
+
     items = []
-    for raw in cfg().get("scripts") or []:
-        s = resolve_value(raw)
+    for index, s in enumerate(scripts):
         ports = s.get("ports") or []
-        up = [p for p in ports if port_open(p)]
+        live = reachable.get(index, set())
+        up = [p for p in ports if p in live]
         if len(up) == len(ports) and ports:
             state, detail = "ok", "运行中 · " + " ".join(f":{p}" for p in ports)
         elif up:

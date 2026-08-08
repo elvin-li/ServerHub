@@ -16,7 +16,7 @@ from hub.config import cfg
 from hub.host_address import host_ip, resolve_value
 from hub.macos_admin import run_admin, run_admin_sequence
 from hub.paths import BASE, STATE_ROOT
-from hub.util import port_open, sh
+from hub.util import fan_out, port_open, sh
 
 SHARING = "/usr/sbin/sharing"
 SYSTEMSETUP = "/usr/sbin/systemsetup"
@@ -172,12 +172,20 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     if not shares:
         legacy_rc, legacy_output, _ = sh([SHARING, "-l"], timeout=8)
         shares = _legacy_shares(legacy_output) if legacy_rc == 0 else []
-    for share in shares:
-        share["size_mb"] = (
-            _dir_size_mb(str(share["path"]))
-            if include_sizes and share.get("path")
-            else None
-        )
+    # `du -sm` per share, and on a share holding real data it runs for seconds --
+    # the timeout is 15 of them.  Serially the listing cost the sum, so a handful of
+    # populated shares could hold the page past a minute; they are separate trees
+    # with no shared state, so they are walked concurrently.  `fan_out` preserves the
+    # order `sharing` reported, which is what the table renders.
+    wanted = [
+        index
+        for index, share in enumerate(shares)
+        if include_sizes and share.get("path")
+    ]
+    measured = fan_out(lambda i: _dir_size_mb(str(shares[i]["path"])), wanted)
+    sizes = dict(zip(wanted, measured))
+    for index, share in enumerate(shares):
+        share["size_mb"] = sizes.get(index)
         share["url"] = _connection_url(share.get("smb_name"))
     return shares
 
@@ -317,6 +325,14 @@ def remove_smb_share(record_name: str) -> dict:
     return {"ok": True}
 
 
+def _probe_port(port) -> bool | None:
+    """Port reachability that never raises, for use inside the pool."""
+    try:
+        return port_open(port)
+    except Exception:
+        return False
+
+
 def file_services() -> list[dict]:
     services = [
         {"id": "filebrowser", "name": "FileBrowser", "port": 8125, "url": None},
@@ -327,9 +343,14 @@ def file_services() -> list[dict]:
         link["name"]: link["url"]
         for link in resolve_value(cfg().get("quick_links") or [])
     }
-    for service in services:
+    # Each probe waits out the full connect timeout when nothing is listening, so
+    # in series the shares page paid that once per service before rendering.
+    # Only the socket waits fan out -- no privileged call is involved here, which
+    # matters because this module also uses run_admin, and the administrator
+    # password is not visible inside a worker thread.
+    reachable = fan_out(_probe_port, [service["port"] for service in services])
+    for service, up in zip(services, reachable):
         service["url"] = links.get(service["name"], f"http://{host}:{service['port']}")
-        up = port_open(service["port"])
         service["state"] = "ok" if up else "down"
         service["detail"] = f"port :{service['port']} " + ("reachable" if up else "unreachable")
     return services

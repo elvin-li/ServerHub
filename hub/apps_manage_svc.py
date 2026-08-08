@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from hub.docker_cli import docker, engine_up
 from hub.host_address import host_ip
 from hub.paths import DOCKER
-from hub.util import sh
+from hub.util import fan_out, sh
 
 SERVICES_ROOT = Path.home() / "Services"
 _inv_cache: dict = {"t": 0.0, "v": None}
@@ -226,6 +226,37 @@ def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
         return {"ok": False, "message": str(e)}
 
 
+def _container_log(lines: int):
+    """A tail-reader for one container, bound to *lines*.  Never raises.
+
+    Returns the same "stdout or stderr, last 4000 chars" body the serial version
+    produced, so a failing container still contributes its error text rather
+    than removing its section from the document.
+    """
+    def read(name: str) -> str:
+        try:
+            _, out, err = docker("logs", "--tail", str(lines), name, timeout=30)
+        except Exception as exc:  # noqa: BLE001 - one container must not lose the rest
+            return str(exc)[-4000:]
+        return (out or err or "")[-4000:]
+
+    return read
+
+
+def _inspect(name: str) -> tuple[int, str]:
+    """``(rc, stdout)`` for one container inspect.  Never raises.
+
+    ``fan_out`` re-raises on iteration, so an exception here would lose every
+    container's detail rather than one container's.  A non-zero rc is already a
+    case the caller handles by falling back to the list fields.
+    """
+    try:
+        rc, out, _ = docker("inspect", name, timeout=15)
+        return rc, out
+    except Exception:
+        return 1, ""
+
+
 def _docker_detail(source_id: str) -> dict:
     from hub import containers_svc
     path = str(SERVICES_ROOT / source_id)
@@ -244,9 +275,19 @@ def _docker_detail(source_id: str) -> dict:
     networks = []
     ports = []
     env_sample = []
-    for c in related:
+    # `docker inspect` carries a 15s timeout and was issued once per container in
+    # series, so a stack of six put up to a minute and a half on the critical path
+    # of one detail page.  The inspects are independent reads, so they overlap;
+    # parsing and list-building stay in this loop, in `related` order, because the
+    # four lists below are rendered as tables and appending from workers would
+    # interleave rows differently on every refresh.
+    inspected = fan_out(
+        lambda name: _inspect(name),
+        [c.get("id") or c.get("name") for c in related],
+    )
+
+    for c, (rc, out) in zip(related, inspected):
         name = c.get("id") or c.get("name")
-        rc, out, err = docker("inspect", name, timeout=15)
         if rc != 0:
             # fall back to list fields
             if c.get("ports"):
@@ -363,14 +404,23 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
     # fallback: logs of matching containers
     from hub import containers_svc
     containers = containers_svc.list_containers(with_stats=False).get("containers") or []
-    chunks = []
+    matching = []
     for c in containers:
         name = c.get("name") or ""
         labels = c.get("labels") or {}
         proj = labels.get("com.docker.compose.project") or ""
         if proj == source_id or name.startswith(source_id):
-            rc, out, err = docker("logs", "--tail", str(lines), name, timeout=30)
-            chunks.append(f"===== {name} =====\n{(out or err or '')[-4000:]}")
+            matching.append(name)
+
+    # `docker logs` carries a 30s timeout and ran once per container in series, so
+    # a stack of five could sit for two and a half minutes before returning any
+    # log at all.  The reads are independent; `fan_out` preserves order, which
+    # matters because the chunks are concatenated into one document and the
+    # operator should not see the sections reshuffle between refreshes.
+    chunks = [
+        f"===== {name} =====\n{body}"
+        for name, body in zip(matching, fan_out(_container_log(lines), matching))
+    ]
     return {"ok": bool(chunks), "log": "\n\n".join(chunks) or "无日志", "source": "docker logs"}
 
 
