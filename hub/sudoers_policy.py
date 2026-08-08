@@ -44,10 +44,34 @@ __all__ = [
     "writable_argument_rules",
     "REQUIRED",
     "FORBIDDEN",
+    "PINNED_BIN_DIR",
+    "UNPINNED_EQUIVALENTS",
 ]
 
-SMARTCTL = "/opt/homebrew/bin/smartctl"
-WG = "/opt/homebrew/bin/wg"
+#: The paths the POLICY names, which are deliberately not the Homebrew ones.
+#:
+#: Homebrew chowns its whole prefix to the installing account, so granting
+#: /opt/homebrew/bin/smartctl is passwordless root: rewrite the binary and the
+#: argument regex authorises your own code.  deploy/install-sudoers.sh therefore
+#: copies both tools into a root-owned directory and the template grants only
+#: those copies; hub/paths.pinned_or() makes the panel invoke the same file.
+#:
+#: Written as literals rather than imported from hub.paths on purpose.  This is
+#: the contract the policy document has to satisfy, and it must not quietly
+#: follow the code to a different path -- that agreement is what
+#: tests/test_sudoers_covers_call_sites.py checks, and it can only check it if
+#: the two sides are stated independently.
+PINNED_BIN_DIR = "/usr/local/libexec/serverhub"
+SMARTCTL = f"{PINNED_BIN_DIR}/smartctl"
+WG = f"{PINNED_BIN_DIR}/wg"
+
+#: Homebrew paths that must NOT be granted.  Kept explicit because reverting to
+#: them looks like a harmless path change and silently reopens the escalation.
+UNPINNED_EQUIVALENTS = (
+    "/opt/homebrew/bin/smartctl",
+    "/opt/homebrew/bin/wg",
+    "/opt/homebrew/bin/wg-quick",
+)
 
 #: Invocations the panel makes that MUST be passwordless, as (binary, arguments).
 #:
@@ -104,6 +128,17 @@ FORBIDDEN: tuple[tuple[str, str], ...] = (
     ("/usr/sbin/sysctl", "-w kern.securelevel=0"),
     (WG, "show eth0 dump"),
     (WG, "syncconf wg0 /tmp/evil.conf"),
+    # The Homebrew copies, which live in a directory the granted account owns.
+    # Granting any of these makes the argument narrowing above decorative.
+    ("/opt/homebrew/bin/smartctl", "-V"),
+    ("/opt/homebrew/bin/smartctl", "-a /dev/disk0"),
+    ("/opt/homebrew/bin/wg", "show interfaces"),
+    # wg-quick executes its config's PostUp/PostDown as root and the panel has to
+    # be able to write that config, so no argument pinning can make it safe.
+    (
+        "/opt/homebrew/bin/bash",
+        "/opt/homebrew/bin/wg-quick up /opt/homebrew/etc/wireguard/wg0.conf",
+    ),
     ("/bin/rm", "-rf /"),
     ("/bin/rm", "-f /etc/sudoers"),
     ("/bin/chmod", "777 /etc/sudoers"),

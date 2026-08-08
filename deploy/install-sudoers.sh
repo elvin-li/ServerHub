@@ -93,6 +93,52 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+# --- root-owned copies of the granted binaries -------------------------------
+# The policy names /usr/local/libexec/serverhub/<tool>, not /opt/homebrew/bin,
+# because Homebrew's prefix is owned by the account being granted: whoever can
+# rewrite the binary can run their own code as root through the rule, however
+# tightly the arguments are pinned. See the "PINNED BINARIES" note in the
+# template.
+#
+# The copies go in BEFORE the policy on purpose. The reverse order leaves a
+# window where the rules name files that do not exist, and in that window every
+# privileged read fails by asking for a password no web request can answer --
+# which is indistinguishable from the feature being broken.
+PINNED_DIR="/usr/local/libexec/serverhub"
+PINNED_TOOLS="smartctl wg"
+
+echo
+echo "pinning binaries into $PINNED_DIR:"
+sudo /bin/mkdir -p "$PINNED_DIR"
+sudo /usr/sbin/chown root:wheel "$PINNED_DIR"
+sudo /bin/chmod 0755 "$PINNED_DIR"
+
+for tool in $PINNED_TOOLS; do
+  src="$(command -v "$tool" || true)"
+  if [ -z "$src" ]; then
+    echo "  $tool: NOT FOUND on PATH; rules naming it will not match" >&2
+    echo "  install it first (brew install smartmontools wireguard-tools)" >&2
+    exit 1
+  fi
+  # -L so the Homebrew symlink is dereferenced and the real executable is copied;
+  # a copied symlink would still point back into the writable prefix.
+  sudo /bin/cp -L "$src" "$PINNED_DIR/$tool"
+  sudo /usr/sbin/chown root:wheel "$PINNED_DIR/$tool"
+  sudo /bin/chmod 0755 "$PINNED_DIR/$tool"
+  echo "  $tool <- $src"
+done
+
+# Prove the result is actually pinned rather than assuming it: a "pinned" copy
+# that is still writable by this account would be worse than none, because the
+# policy names it and the argument narrowing would look meaningful.
+for tool in $PINNED_TOOLS; do
+  if [ -w "$PINNED_DIR/$tool" ] || [ -w "$PINNED_DIR" ]; then
+    echo "REFUSING: $PINNED_DIR/$tool is writable by $RUN_USER" >&2
+    exit 1
+  fi
+done
+echo "  verified: not writable by $RUN_USER"
+
 if [ -f "$TARGET" ]; then
   # The backup stays in /etc/sudoers.d, which sudo reads -- but sudo skips file
   # names containing a '.' or ending in '~' (sudoers(5)), so `serverhub.bak-...`

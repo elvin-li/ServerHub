@@ -21,6 +21,42 @@
 # answer against the calls the panel makes.  `sudo -n -l | grep NOPASSWD` only
 # shows that a rule is loaded, not that it can ever match -- see below.
 #
+# ---------------------------------------------------------------------------
+# PINNED BINARIES: WHY NOT /opt/homebrew
+# ---------------------------------------------------------------------------
+# Everything below narrows the ARGUMENTS a command may receive.  That is only
+# worth something if the command itself cannot be replaced -- and a Homebrew
+# binary can be.  `brew` chowns its entire prefix to the installing account, so
+# on a default Apple Silicon install:
+#
+#     /opt/homebrew/bin            drwxr-xr-x  <panel user>  admin
+#     /opt/homebrew/bin/smartctl   symlink owned by <panel user>
+#     /opt/homebrew/bin/wg         symlink owned by <panel user>
+#
+# Granting those paths is passwordless root: overwrite the binary, run the rule,
+# and the argument regex authorises your own code.  That defeats
+# hub/macos_admin.py, whose entire purpose is to require the operator's macOS
+# password before anything runs as root -- code execution as the panel user
+# would escalate to root with no password at all.
+#
+# So the rules below name /usr/local/libexec/serverhub/<tool> instead.
+# /usr/local is root:wheel and Homebrew does not touch it on Apple Silicon.
+# deploy/install-sudoers.sh copies the binaries there as root:wheel 0755, and
+# hub/paths.pinned_or() makes the panel invoke the copy when it exists, so the
+# path the code runs and the path sudo authorises are the same one.
+#
+# Only smartctl and wg are pinned this way.  Both are self-contained Mach-O
+# executables with no Homebrew dylib dependencies (checked with otool -L), so a
+# copy is complete and behaves identically -- smartctl's drive database is
+# compiled in, not read from the prefix.
+#
+# The copies go stale on `brew upgrade`.  `--verify` compares them against the
+# current Homebrew build and tells you to re-run the installer; a stale copy
+# still functions, it is just an older version.
+#
+# wg-quick is NOT pinned and NOT granted -- see the WireGuard section for the
+# three reasons, one of which no binary pinning can fix.
+#
 # Remove with:
 #     sudo rm /etc/sudoers.d/serverhub
 #
@@ -104,17 +140,23 @@
 # narrowing here meaningless and was materially dangerous: smartctl's -s, -t and
 # -X verbs write to the device, so an unrestricted grant is closer to raw device
 # write access than to "read disk health".
+#
+# The path is /usr/local/libexec/serverhub/smartctl, NOT /opt/homebrew/bin: see
+# the "PINNED BINARIES" note in the header.  deploy/install-sudoers.sh creates
+# that copy root:wheel 0755, and hub/paths.py resolves SMARTCTL to it when it is
+# present.  Granting the Homebrew path instead would make every rule below
+# decorative, because that file is writable by the account being granted.
 Cmnd_Alias SERVERHUB_SMART = \
-    /opt/homebrew/bin/smartctl -V, \
-    /opt/homebrew/bin/smartctl ^-a /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^-H /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^(-d nvme )?-i( -d nvme)? /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^-c( -d nvme)? /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^-l selftest( -d nvme)? /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^-n standby /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^-s standby,(now|off) /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^-t (short|long|conveyance|offline)( -d nvme)? /dev/[A-Za-z0-9]+$, \
-    /opt/homebrew/bin/smartctl ^-X( -d nvme)? /dev/[A-Za-z0-9]+$
+    /usr/local/libexec/serverhub/smartctl -V, \
+    /usr/local/libexec/serverhub/smartctl ^-a /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^-H /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^(-d nvme )?-i( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^-c( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^-l selftest( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^-n standby /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^-s standby,(now|off) /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^-t (short|long|conveyance|offline)( -d nvme)? /dev/[A-Za-z0-9]+$, \
+    /usr/local/libexec/serverhub/smartctl ^-X( -d nvme)? /dev/[A-Za-z0-9]+$
 
 # --- Power preferences ------------------------------------------------------
 # One rule per key the panel is allowed to set (hub/power_svc.set_power_pref
@@ -192,20 +234,50 @@ Cmnd_Alias SERVERHUB_DNS = \
 # wg-quick is invoked through Homebrew bash by absolute path: its own shebang is
 # `#!/usr/bin/env bash`, and under sudo the scrubbed PATH resolves `env bash` to
 # Apple's bash 3.2, which wg-quick rejects ("Version mismatch: bash 3 detected").
+# wg-quick up/down are deliberately NOT here, and that is a change from earlier
+# versions of this file.  Three independent problems made them unfixable as a
+# passwordless grant:
+#
+#   1. /opt/homebrew/bin/wg-quick is writable by the granted account.
+#   2. It has to be launched through /opt/homebrew/bin/bash (Apple's bash 3.2 is
+#      too old), and that bash loads libreadline, libhistory, libncursesw and
+#      libintl from /opt/homebrew/opt/*/lib -- also writable.  So even a
+#      root-owned copy of bash could be subverted through a dylib.
+#   3. Decisively: wg-quick EXECUTES the PostUp/PostDown lines of the config file
+#      it is handed, as root, and the panel must be able to write that config
+#      because it generates it.  No amount of binary pinning closes that; a
+#      writable wg-quick config simply is a root code path.
+#
+# hub/wireguard_svc.interface_action already handles their absence correctly: it
+# tries `sudo -n` first, and on refusal falls through to run_admin_sequence,
+# which uses the operator's web-entered password or reports password_required so
+# the SPA can ask.  So tunnel up/down still works, it just asks once.  All the
+# read-only status polling below stays passwordless, which is what the WireGuard
+# page needs to render at all.
+#
+# One residual worth naming rather than rediscovering.  The utun in the syncconf
+# rules is a character class, not a literal, because the device number is assigned
+# by the kernel at runtime and cannot be known when this file is written.  So the
+# grant covers *any* userspace WireGuard interface on the machine, and an attacker
+# who already had code execution as this account could reconfigure a second,
+# unrelated tunnel's peers without a password.  It is bounded -- `wg syncconf`
+# applies configuration through the UAPI socket and does not execute anything, so
+# this is not code execution -- and it is not closable here: pinning the argument
+# would require knowing a value that does not exist yet.  Note also that the
+# ownership check in hub/wireguard_svc.live_interface does NOT mitigate it: that
+# check runs in the panel, and the concern is a caller who invokes sudo directly.
 Cmnd_Alias SERVERHUB_WIREGUARD = \
-    /opt/homebrew/bin/wg show all dump, \
-    /opt/homebrew/bin/wg show interfaces, \
-    /opt/homebrew/bin/wg show wg0 dump, \
-    /opt/homebrew/bin/wg show utun[0-9] dump, \
-    /opt/homebrew/bin/wg show utun[0-9][0-9] dump, \
-    /opt/homebrew/bin/wg show utun[0-9][0-9][0-9] dump, \
-    /opt/homebrew/bin/wg syncconf wg0 __SERVERHUB_STATE__/data/wg0.sync.conf, \
-    /opt/homebrew/bin/wg syncconf utun[0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
-    /opt/homebrew/bin/wg syncconf utun[0-9][0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
-    /opt/homebrew/bin/wg syncconf utun[0-9][0-9][0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
-    /bin/rm -f /var/run/wireguard/wg0.name, \
-    /opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick up /opt/homebrew/etc/wireguard/wg0.conf, \
-    /opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick down /opt/homebrew/etc/wireguard/wg0.conf
+    /usr/local/libexec/serverhub/wg show all dump, \
+    /usr/local/libexec/serverhub/wg show interfaces, \
+    /usr/local/libexec/serverhub/wg show wg0 dump, \
+    /usr/local/libexec/serverhub/wg show utun[0-9] dump, \
+    /usr/local/libexec/serverhub/wg show utun[0-9][0-9] dump, \
+    /usr/local/libexec/serverhub/wg show utun[0-9][0-9][0-9] dump, \
+    /usr/local/libexec/serverhub/wg syncconf wg0 __SERVERHUB_STATE__/data/wg0.sync.conf, \
+    /usr/local/libexec/serverhub/wg syncconf utun[0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
+    /usr/local/libexec/serverhub/wg syncconf utun[0-9][0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
+    /usr/local/libexec/serverhub/wg syncconf utun[0-9][0-9][0-9] __SERVERHUB_STATE__/data/wg0.sync.conf, \
+    /bin/rm -f /var/run/wireguard/wg0.name
 
 # --- pf / launchd state (WireGuard prerequisites) ----------------------------
 # Read-only probes, both needed to tell "configured on disk" from "actually in

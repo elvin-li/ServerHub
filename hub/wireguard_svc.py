@@ -49,11 +49,11 @@ from hub.macos_admin import (
     sudo_capture,
     sudo_refused,
 )
-from hub.paths import DATA_DIR
+from hub.paths import DATA_DIR, pinned_or
 from hub.secure_io import write_secret_text
 from hub.util import sh
 
-WG = "/opt/homebrew/bin/wg"
+WG = pinned_or("wg", "/opt/homebrew/bin/wg")
 WG_QUICK = "/opt/homebrew/bin/wg-quick"
 RM = "/bin/rm"
 WIREGUARD_GO = "/opt/homebrew/bin/wireguard-go"
@@ -646,6 +646,30 @@ _DUMP_INTERFACE_FIELDS = 4
 _DUMP_PEER_FIELDS = 8
 
 
+def _redact_keys(text: str) -> str:
+    """Blank out anything shaped like a WireGuard key.
+
+    Defence in depth for strings that end up in an API response or a log. The
+    callers below already avoid the streams that carry key material; this makes a
+    future caller that forgets harmless rather than a disclosure.
+    """
+    return re.sub(r"[A-Za-z0-9+/]{42}[A-Za-z0-9+/=]=", "[redacted]", str(text or ""))
+
+
+def _tool_error(stderr: str, fallback: str) -> str:
+    """A reportable failure reason for a ``wg`` command.
+
+    Deliberately stderr-only.  The obvious-looking ``stderr or stdout`` fallback is
+    a disclosure here: the first field of every ``wg show ... dump`` line is the
+    interface's *private key*, and this string is returned by the status endpoint
+    (which any signed-in session can read) and rendered into the readiness table.
+    A partial dump on a non-zero exit would have published the server's private key
+    into the page.
+    """
+    text = _redact_keys(stderr).strip()
+    return (text or fallback)[:200]
+
+
 def _dump_value(field: str) -> str:
     """A dump field, with ``wg``'s placeholder for "no value" turned into empty."""
     text = str(field or "").strip()
@@ -685,7 +709,8 @@ def _dump_all() -> tuple[dict[str, list[list[str]]], str]:
     if rc != 0:
         rc, out, err = sudo_capture([WG, "show", "all", "dump"], timeout=10)
     if rc != 0:
-        return {}, (err or out or "").strip()[:200]
+        del out  # carries key material; never reported
+        return {}, _tool_error(err, "could not read interface state")
     grouped: dict[str, list[list[str]]] = {}
     for line in out.splitlines():
         if not line.strip():
@@ -752,7 +777,7 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
             rc, out, err = sudo_capture([WG, "show", device, "dump"], timeout=10)
         if rc == 0:
             return device, _dump_rows(out, device), ""
-        first_error = (err or out or "").strip()[:200]
+        first_error = _tool_error(err, "")
 
     grouped, error = _dump_all()
     if not grouped:
@@ -1336,6 +1361,19 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
     Only possible for peers whose private key was retained; anything else would
     require the client to be re-enrolled, and saying so is better than emitting a
     config with a placeholder key that silently never connects.
+
+    The two sources are used for what each is authoritative about.  The server
+    config decides what the tunnel will *accept* -- the peer's address and its
+    preshared key -- so those are read from there.  The registry supplies only what
+    a server config cannot hold: the client's private key, its name, and its tunnel
+    mode.
+
+    Taking the address and the preshared key from the registry as well was wrong in
+    a way that is invisible until a client tries to connect: the two files are
+    written in sequence and can be restored from backups independently, and this
+    host has already had that happen more than once.  Once they disagree, the panel
+    hands out a config the server is guaranteed to reject, and the operator sees a
+    client that will not connect with nothing anywhere explaining why.
     """
     public = str(pubkey or "").strip()
     if not _KEY_RE.match(public):
@@ -1347,11 +1385,19 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
     if not private:
         raise WireGuardError("wg.peer_not_reissuable", pubkey=public[:16])
 
+    configured = next(
+        (r for r in peer_records() if r["public_key"] == public), None
+    )
+    if configured is None:
+        # In the registry but not in the config: the peer was removed from the
+        # server, so a config for it could only ever fail to connect.
+        raise WireGuardError("wg.peer_not_found", pubkey=public[:16])
+
     conf = build_client_conf(
         private_key=private,
-        ip=str(meta.get("ip") or ""),
+        ip=configured["ip"] or str(meta.get("ip") or ""),
         mode=str(meta.get("mode") or "split"),
-        preshared_key=str(meta.get("preshared_key") or ""),
+        preshared_key=configured["preshared_key"],
     )
     cfg_ = settings()
     name = str(meta.get("name") or "peer")
@@ -1536,7 +1582,10 @@ def _wg_quick_reason(output: str) -> str:
     lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
     diagnostics = [line for line in lines if line.lower().startswith("wg-quick:")]
     chosen = diagnostics or [line for line in lines if not line.startswith("[")] or lines
-    return " ".join(chosen)[-300:]
+    # wg-quick's transcript should not contain key material -- it feeds the config
+    # through a file descriptor rather than an argument -- but this string is
+    # returned to the browser, so it is redacted rather than trusted to stay clean.
+    return _redact_keys(" ".join(chosen))[-300:]
 
 
 def view_conf(reveal: bool = False) -> dict:
