@@ -19,7 +19,7 @@ from hub import __version__
 from hub.config import cfg
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
-from hub.util import sh
+from hub.util import fan_out, sh
 DEFAULT_THRESHOLDS = {
     "enabled": True,
     "cpu_pct": 90,
@@ -31,22 +31,38 @@ _bundle_cache: dict = {"t": 0.0, "v": None}
 _BUNDLE_TTL = 25.0  # settings page is interactive but not real-time
 
 
+def _clock_now() -> str:
+    rc, now, _ = sh(["/bin/date", "+%Y-%m-%d %H:%M:%S %Z"], timeout=3)
+    return now if rc == 0 else time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _ntp_enabled() -> bool | None:
+    """None when systemsetup would not say, which the page renders as unknown."""
+    rc, out, _ = sh(["/usr/sbin/systemsetup", "-getusingnetworktime"], timeout=4)
+    return "on" in out.lower() if rc == 0 and out else None
+
+
+def _ntp_server() -> str | None:
+    rc, out, _ = sh(["/usr/sbin/systemsetup", "-getnetworktimeserver"], timeout=4)
+    return out.split(":", 1)[-1].strip() if rc == 0 and out and ":" in out else None
+
+
 def get_datetime_info() -> dict:
-    """Date / timezone / NTP-ish info (macOS)."""
+    """Date / timezone / NTP-ish info (macOS).
+
+    The two `systemsetup` reads are the slow ones -- it is a notoriously unhurried
+    binary and each carries its own 4s timeout -- and neither depends on the other
+    or on the clock and timezone reads beside them.
+    """
     from hub.identity_svc import time_zone
 
-    rc, now, _ = sh(["/bin/date", "+%Y-%m-%d %H:%M:%S %Z"], timeout=3)
-    tz = time_zone()
-    ntp_on = None
-    ntp_server = None
-    rc2, out2, _ = sh(["/usr/sbin/systemsetup", "-getusingnetworktime"], timeout=4)
-    if rc2 == 0 and out2:
-        ntp_on = "on" in out2.lower()
-    rc3, out3, _ = sh(["/usr/sbin/systemsetup", "-getnetworktimeserver"], timeout=4)
-    if rc3 == 0 and out3 and ":" in out3:
-        ntp_server = out3.split(":", 1)[-1].strip()
+    now, tz, ntp_on, ntp_server = fan_out(
+        lambda probe: probe(),
+        [_clock_now, time_zone, _ntp_enabled, _ntp_server],
+        max_workers=4,
+    )
     return {
-        "now": now if rc == 0 else time.strftime("%Y-%m-%d %H:%M:%S"),
+        "now": now,
         "timezone": tz or "",
         "ntp_enabled": ntp_on,
         "ntp_server": ntp_server,
@@ -87,8 +103,7 @@ def get_ups_info() -> dict:
     }
 
 
-def get_power_info() -> dict:
-    """Power management snapshot (pmset)."""
+def _pmset_settings() -> dict:
     rc, out, _ = sh(["/usr/bin/pmset", "-g"], timeout=5)
     settings: dict = {}
     if rc == 0:
@@ -107,15 +122,32 @@ def get_power_info() -> dict:
                         settings[key] = val
                 except Exception:
                     settings[key] = val
-    sleep_prevented_by = []
-    rc2, out2, _ = sh(["/usr/bin/pmset", "-g", "assertions"], timeout=5)
-    if rc2 == 0:
-        for line in out2.splitlines():
+    return settings
+
+
+def _pmset_assertions() -> list[str]:
+    sleep_prevented_by: list[str] = []
+    rc, out, _ = sh(["/usr/bin/pmset", "-g", "assertions"], timeout=5)
+    if rc == 0:
+        for line in out.splitlines():
             if "pid " in line and "named:" in line:
                 sleep_prevented_by.append(line.strip()[:160])
             if "sleep prevented by" in line.lower():
                 sleep_prevented_by.append(line.strip())
-    ups = get_ups_info()
+    return sleep_prevented_by
+
+
+def get_power_info() -> dict:
+    """Power management snapshot (pmset).
+
+    Two `pmset` reads and the UPS probe answer unrelated questions; the settings
+    dump says nothing about what is currently holding the machine awake.
+    """
+    settings, sleep_prevented_by, ups = fan_out(
+        lambda probe: probe(),
+        [_pmset_settings, _pmset_assertions, get_ups_info],
+        max_workers=3,
+    )
     return {
         "settings": settings,
         "displaysleep": settings.get("displaysleep"),
@@ -156,24 +188,37 @@ def set_power_pref(key: str, value: int) -> dict:
     return {"ok": rc == 0, "key": key, "value": value, "message": msg or "已应用", "power": get_power_info()}
 
 
-def get_disk_settings() -> dict:
-    """Disk-related settings summary for Settings page."""
-    power = get_power_info()
-    smart = {}
+def _storage_snapshot() -> tuple[dict, list]:
     try:
         from hub import storage_svc
         st = storage_svc.collect_storage(force=False)
         smart = (st.get("system") or {}).get("smart") or st.get("smart") or {}
-        disks = st.get("disks") or []
+        return smart, st.get("disks") or []
     except Exception:
-        disks = []
-        st = {}
-    power_disks = []
+        return {}, []
+
+
+def _power_disks() -> list:
     try:
         from hub import disk_power_svc
-        power_disks = disk_power_svc.list_power_disks()
+        return disk_power_svc.list_power_disks()
     except Exception:
-        pass
+        return []
+
+
+def get_disk_settings() -> dict:
+    """Disk-related settings summary for Settings page.
+
+    Three independent reads, each of which is a page payload in its own right:
+    the pmset snapshot, the storage inventory and the per-disk power states. Each
+    absorbs its own failure, as it did serially -- a missing storage module left
+    the disk list empty rather than failing the settings page.
+    """
+    power, (smart, disks), power_disks = fan_out(
+        lambda probe: probe(),
+        [get_power_info, _storage_snapshot, _power_disks],
+        max_workers=3,
+    )
     return {
         "disksleep_minutes": power.get("disksleep"),
         "smart": smart,
@@ -336,63 +381,148 @@ def get_vm_settings() -> dict:
         return {"error": str(e), "total": 0, "running": 0, "items": []}
 
 
+def _diag_identity() -> dict:
+    try:
+        from hub import identity_svc
+        return {"identity": identity_svc.get_identity()}
+    except Exception as e:
+        return {"identity": {"error": str(e)}}
+
+
+def _diag_datetime() -> dict:
+    return {"datetime": get_datetime_info()}
+
+
+def _diag_power() -> dict:
+    """The power section, from one reading.
+
+    ``get_power_info()`` was called twice here -- once for the body and once for the
+    assertion count -- which ran ``pmset`` twice to answer one question.
+    """
+    info = get_power_info()
+    return {"power": {
+        **{k: v for k, v in info.items() if k != "assertions"},
+        "assertions_count": len(info.get("assertions") or []),
+    }}
+
+
+def _diag_management() -> dict:
+    return {"management": get_management_access()}
+
+
+def _diag_other() -> dict:
+    return {"other": get_other_settings()}
+
+
+def _diag_docker() -> dict:
+    try:
+        from hub import docker_info_svc
+        di = docker_info_svc.engine_info()
+        return {"docker": {
+            "engine_up": di.get("engine_up"),
+            "version": (di.get("info") or {}).get("ServerVersion"),
+            "containers_running": (di.get("info") or {}).get("ContainersRunning"),
+            "orb_version": di.get("orb_version"),
+        }}
+    except Exception as e:
+        return {"docker": {"error": str(e)}}
+
+
+def _diag_alias_auto() -> dict:
+    try:
+        from hub import network_svc
+        return {"alias_auto": network_svc.alias_auto_status()}
+    except Exception as e:
+        return {"alias_auto": {"error": str(e)}}
+
+
+def _diag_alerts() -> dict:
+    try:
+        from hub import alerts
+        return {"recent_alerts": alerts.list_alerts(20)}
+    except Exception:
+        return {"recent_alerts": []}
+
+
+def _diag_health() -> dict:
+    try:
+        from hub import health_svc
+        return {"health": health_svc.run_checks()}
+    except Exception as e:
+        return {"health": {"error": str(e)}}
+
+
+def _diag_metrics() -> dict:
+    try:
+        from hub import metrics
+        hist = metrics.history(30)
+        return {"metrics_latest": hist[-1] if hist else None}
+    except Exception:
+        return {"metrics_latest": None}
+
+
+def _diag_vms() -> dict:
+    """Empty on failure, not ``{"vms": None}``.
+
+    The serial version used a bare ``except: pass`` after assigning nothing, so a
+    failure left the key out of the bundle entirely.  Returning ``{}`` reproduces
+    that rather than inventing a null the download schema never contained.
+    """
+    try:
+        vm = get_vm_settings()
+        return {"vms": {"total": vm.get("total"), "running": vm.get("running")}}
+    except Exception:
+        return {}
+
+
+#: The diagnostics sections, in the order they appear in the saved JSON.
+_DIAG_SECTIONS = (
+    _diag_identity,
+    _diag_datetime,
+    _diag_power,
+    _diag_management,
+    _diag_other,
+    _diag_docker,
+    _diag_alias_auto,
+    _diag_alerts,
+    _diag_health,
+    _diag_metrics,
+    _diag_vms,
+)
+
+
 def collect_diagnostics() -> dict:
-    """Unraid Diagnostics-style snapshot (JSON, not full syslog dump)."""
+    """Unraid Diagnostics-style snapshot (JSON, not full syslog dump).
+
+    Eleven sections, each interrogating a different subsystem and none reading
+    another's output.  Collected in turn this was the deepest serial path in the
+    API -- 23 subprocesses back to back, several of them whole page payloads in
+    their own right (``health_svc.run_checks``, ``docker_info_svc.engine_info``),
+    so the bundle cost roughly the sum of every page it summarises.
+
+    Seven of the eleven sections absorb their own failure and report it in place.
+    Four -- ``datetime``, ``power``, ``management``, ``other`` -- do not, and a raise
+    from any of them still fails the whole bundle, exactly as it did serially. That
+    is a pre-existing gap rather than something introduced here, and it is worth
+    closing: a diagnostics bundle that 500s because one subsystem is broken is
+    useless precisely when it is needed, and the page offers this as a download
+    button. Changing it is a behaviour change, so it is left for its own commit
+    and pinned as-is by
+    tests/test_read_path_concurrency.py::test_an_unwrapped_section_still_fails_the_bundle.
+
+    ``fan_out`` returns results in submission order, so the saved JSON keeps its
+    section order.
+    """
     bundle: dict = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "platform": platform.platform(),
         "python": platform.python_version(),
         "hostname": platform.node(),
     }
-    try:
-        from hub import identity_svc
-        bundle["identity"] = identity_svc.get_identity()
-    except Exception as e:
-        bundle["identity"] = {"error": str(e)}
-    bundle["datetime"] = get_datetime_info()
-    bundle["power"] = {
-        k: v for k, v in get_power_info().items() if k != "assertions"
-    }
-    bundle["power"]["assertions_count"] = len(get_power_info().get("assertions") or [])
-    bundle["management"] = get_management_access()
-    bundle["other"] = get_other_settings()
-    try:
-        from hub import docker_info_svc
-        di = docker_info_svc.engine_info()
-        bundle["docker"] = {
-            "engine_up": di.get("engine_up"),
-            "version": (di.get("info") or {}).get("ServerVersion"),
-            "containers_running": (di.get("info") or {}).get("ContainersRunning"),
-            "orb_version": di.get("orb_version"),
-        }
-    except Exception as e:
-        bundle["docker"] = {"error": str(e)}
-    try:
-        from hub import network_svc
-        bundle["alias_auto"] = network_svc.alias_auto_status()
-    except Exception as e:
-        bundle["alias_auto"] = {"error": str(e)}
-    try:
-        from hub import alerts
-        bundle["recent_alerts"] = alerts.list_alerts(20)
-    except Exception:
-        bundle["recent_alerts"] = []
-    try:
-        from hub import health_svc
-        bundle["health"] = health_svc.run_checks()
-    except Exception as e:
-        bundle["health"] = {"error": str(e)}
-    try:
-        from hub import metrics
-        hist = metrics.history(30)
-        bundle["metrics_latest"] = hist[-1] if hist else None
-    except Exception:
-        bundle["metrics_latest"] = None
-    try:
-        vm = get_vm_settings()
-        bundle["vms"] = {"total": vm.get("total"), "running": vm.get("running")}
-    except Exception:
-        pass
+    for section in fan_out(
+        lambda probe: probe(), _DIAG_SECTIONS, max_workers=len(_DIAG_SECTIONS)
+    ):
+        bundle.update(section)
     # Persist last diagnostics for download convenience.  Generation and
     # persistence are separate outcomes: callers can still render the in-memory
     # snapshot when the state directory is full or read-only, but must not claim

@@ -414,14 +414,30 @@ def _service(
 
 
 def system_services() -> list[dict]:
-    screen_launchd, screen_detail = _launchd_state("com.apple.screensharing")
-    screen_port = bool(port_open(VNC_PORT, host="localhost", timeout=0.4))
-    screen_enabled = True if screen_port else screen_launchd
-    remote_login, remote_login_detail = _systemsetup_state("-getremotelogin", "com.openssh.sshd")
-    apple_events, apple_events_detail = _systemsetup_state(
-        "-getremoteappleevents", "com.apple.AEServer"
+    """macOS sharing services, probed together.
+
+    Five unrelated questions: a launchd label, a VNC connect, two `systemsetup`
+    reads and the content-cache status. `systemsetup` in particular is slow enough
+    to notice on its own, and asking these in turn made the page cost their sum.
+    """
+    (
+        (screen_launchd, screen_detail),
+        screen_port,
+        (remote_login, remote_login_detail),
+        (apple_events, apple_events_detail),
+        (content_cache, content_detail),
+    ) = fan_out(
+        lambda probe: probe(),
+        [
+            lambda: _launchd_state("com.apple.screensharing"),
+            lambda: bool(port_open(VNC_PORT, host="localhost", timeout=0.4)),
+            lambda: _systemsetup_state("-getremotelogin", "com.openssh.sshd"),
+            lambda: _systemsetup_state("-getremoteappleevents", "com.apple.AEServer"),
+            _content_cache_state,
+        ],
+        max_workers=5,
     )
-    content_cache, content_detail = _content_cache_state()
+    screen_enabled = True if screen_port else screen_launchd
     return [
         _service(
             "screen_sharing", screen_enabled, controllable=True, requires_admin=True,
@@ -497,11 +513,24 @@ def open_system_settings() -> dict:
 
 
 def shares_overview() -> dict:
-    host = host_ip()
+    """The shares page payload.
+
+    `host_ip`, the macOS service probes, the SMB share list and the file-service
+    probes are independent of one another, so they go in one wave rather than four.
+    `file_services()` is read once and used for both keys: the `services` key is a
+    compatibility alias for clients released before the grouped response, and
+    calling the function twice ran every file-service probe twice to produce two
+    identical lists.
+    """
     try:
         hostname = socket.gethostname()
     except OSError:
         hostname = ""
+    host, services, smb, files = fan_out(
+        lambda probe: probe(),
+        [host_ip, system_services, list_smb_shares, file_services],
+        max_workers=4,
+    )
     return {
         "host": {
             "name": hostname,
@@ -509,11 +538,11 @@ def shares_overview() -> dict:
             "smb_url": f"smb://{host}",
             "vnc_url": f"vnc://{host}:{VNC_PORT}",
         },
-        "system_services": system_services(),
-        "smb": list_smb_shares(),
-        "file_services": file_services(),
+        "system_services": services,
+        "smb": smb,
+        "file_services": files,
         # Compatibility for clients released before the grouped response.
-        "services": file_services(),
+        "services": files,
         "capabilities": {
             "smb_management": True,
             "system_settings_fallback": True,

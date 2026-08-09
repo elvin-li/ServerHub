@@ -316,17 +316,33 @@ def conf_path(interface: str | None = None) -> Path:
     return conf_dir() / f"{interface or settings()['interface']}.conf"
 
 
+def _binary_version(binary: str) -> str:
+    """First line of ``<binary> --version``, or "" when it would not answer.
+
+    Deliberately *not* memoised, though it looks like an obvious candidate: the
+    string is static and :func:`installation` runs as a route guard on every
+    ``/api/wireguard/*`` request as well as inside
+    :func:`wireguard_net_svc.readiness`, so a cache would save two spawns per
+    readiness read.
+
+    It would also make a transient failure sticky.  ``installation`` reports
+    ``probe_failed`` from this result, and the whole point of that field -- see the
+    comment below -- is that a one-off timeout must not be treated as authoritative.
+    Caching "" for a TTL turns a blip into a minute of the panel insisting the tools
+    are degraded, and caching a success does the same in reverse. Two spawns is not
+    worth that, so the duplication is left in place and only the two probes overlap.
+    """
+    if not Path(binary).exists():
+        return ""
+    rc, out, err = sh([binary, "--version"], timeout=8)
+    text = (out or err or "").strip().splitlines()
+    return text[0][:120] if text and rc == 0 else ""
+
+
 def installation() -> dict:
     """Which WireGuard pieces are present, and their versions."""
-    def version(binary: str, args: list[str]) -> str:
-        if not Path(binary).exists():
-            return ""
-        rc, out, err = sh([binary, *args], timeout=8)
-        text = (out or err or "").strip().splitlines()
-        return text[0][:120] if text and rc == 0 else ""
-
-    tools = version(WG, ["--version"])
-    userspace = version(WIREGUARD_GO, ["--version"])
+    # Two unrelated binaries; on a cold cache they answer in one wave instead of two.
+    tools, userspace = fan_out(_binary_version, [WG, WIREGUARD_GO], max_workers=2)
     # Presence is decided by the binaries being on disk, not by a subprocess
     # succeeding.  Deriving it from `wg --version` meant any transient failure of
     # that probe -- a timeout under load, a stray non-zero exit -- reported
@@ -1240,7 +1256,35 @@ def batch_add(
     applied = apply_live().get("ok", False)
     for result in created:
         result["applied"] = applied
-    return {"ok": True, "created": len(created), "peers": created}
+    return {"ok": True, "created": len(created), "peers": _batch_payload(created)}
+
+
+#: Secrets in a mint result that a retained peer can be asked for again later.
+_REISSUABLE_SECRETS = ("client_conf", "psk")
+
+
+def _batch_payload(created: list[dict]) -> list[dict]:
+    """Batch results with key material stripped from the peers that still have it.
+
+    A batch of fifty used to return fifty client configs -- each containing a
+    private key -- plus fifty preshared keys, and the only caller reads `created`,
+    the count.  Fifty private keys crossed the wire and sat in browser memory for
+    nothing.
+
+    Peers created with ``keep_key=False`` are the exception and must keep their
+    config: that key is generated, handed over once and never stored, so
+    withholding it here would not protect it, it would destroy it.  Those are
+    exactly the entries whose ``reissuable`` is false.
+    """
+    payload = []
+    for result in created:
+        if not result.get("reissuable"):
+            payload.append(result)
+            continue
+        payload.append(
+            {k: v for k, v in result.items() if k not in _REISSUABLE_SECRETS}
+        )
+    return payload
 
 
 def del_peer(pubkey: str) -> dict:

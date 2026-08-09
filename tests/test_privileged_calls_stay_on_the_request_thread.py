@@ -109,19 +109,53 @@ def _called_names(node: ast.AST) -> set[str]:
     return names
 
 
+def _callable_names(node: ast.AST) -> list[str]:
+    """The function name(s) *node* stands for, when used as a callable.
+
+    A bare name or attribute is the callable itself.  A lambda is a wrapper, so
+    what matters is what it calls: ``lambda: _launchd_state("com.apple.x")`` puts
+    ``_launchd_state`` on the worker, and ``lambda probe: probe()`` puts whatever
+    was passed in -- which is why the *items* of a ``fan_out`` are inspected too.
+    """
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        return [node.attr]
+    if isinstance(node, ast.Lambda):
+        return sorted(_called_names(node.body))
+    return []
+
+
 def _submitted_callables(tree: ast.Module) -> list[str]:
-    """Names handed to ``.submit(...)`` or ``.map(...)`` as the callable."""
-    out = []
+    """Everything this module hands to a worker thread.
+
+    Three shapes reach an executor, and only the first was originally checked:
+
+    * ``ex.submit(fn)`` / ``ex.map(fn, items)`` -- the callable is the first
+      argument.
+    * ``fan_out(fn, items)`` -- same, one level of indirection removed.  The
+      ``ex.map`` itself lives in ``hub/util.py`` where the probe is a parameter and
+      therefore unresolvable, so scanning only for ``.map(...)`` saw *none* of the
+      twenty-odd ``fan_out`` call sites.
+    * ``fan_out(lambda probe: probe(), [a, b, c])`` -- the callables are the items,
+      not the probe.  This is the dominant shape for fanning out a fixed set of
+      unrelated reads, and it is exactly where a privileged helper is most likely
+      to be added by someone extending a list.
+    """
+    out: list[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        if not isinstance(node, ast.Call) or not node.args:
             continue
-        if node.func.attr not in {"submit", "map"} or not node.args:
-            continue
-        first = node.args[0]
-        if isinstance(first, ast.Name):
-            out.append(first.id)
-        elif isinstance(first, ast.Attribute):
-            out.append(first.attr)
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in {"submit", "map"}:
+            out.extend(_callable_names(node.args[0]))
+        elif (isinstance(func, ast.Name) and func.id == "fan_out") or (
+            isinstance(func, ast.Attribute) and func.attr == "fan_out"
+        ):
+            out.extend(_callable_names(node.args[0]))
+            if len(node.args) > 1 and isinstance(node.args[1], (ast.List, ast.Tuple)):
+                for item in node.args[1].elts:
+                    out.extend(_callable_names(item))
     return out
 
 
@@ -179,6 +213,92 @@ class TheRuleTests(unittest.TestCase):
             "in, or keep the privileged call off the executor:\n  "
             + "\n  ".join(offenders),
         )
+
+    def test_the_analysis_sees_fan_out_call_sites(self):
+        """`fan_out` is how this codebase fans out; the scan must reach inside it.
+
+        The ``ex.map`` lives in hub/util.py where the probe is a parameter, so a scan
+        that only looked for ``.submit``/``.map`` resolved nothing and silently
+        exempted every ``fan_out`` caller -- most of the parallel code in hub/.
+        """
+        shapes = ast.parse(
+            "def a(): pass\n"
+            "def b(): pass\n"
+            "def _helper(x): pass\n"
+            "def direct():\n"
+            "    return fan_out(a, items)\n"
+            "def as_items():\n"
+            "    return fan_out(lambda p: p(), [a, b])\n"
+            "def wrapped():\n"
+            "    return fan_out(lambda p: p(), [lambda: _helper(1)])\n"
+        )
+        seen = set(_submitted_callables(shapes))
+        self.assertIn("a", seen, "fan_out(probe, items) was not seen")
+        self.assertIn("b", seen, "callables passed as fan_out items were not seen")
+        self.assertIn("_helper", seen, "a lambda wrapper hid the real callable")
+
+    def test_the_analysis_would_catch_a_privileged_helper_in_a_fan_out(self):
+        """Positive control for the shape this file now guards.
+
+        ``wireguard_net_svc.readiness`` fans out seven probes and deliberately keeps
+        four -- ``status``, ``nat_installed``, ``daemon_state``, ``pf_enabled`` --
+        on the request thread because they reach ``sudo_capture``. Nothing but this
+        check stands between that split and someone tidying the four stragglers
+        into the list.
+        """
+        violation = ast.parse(
+            "def daemon_state():\n"
+            "    return sudo_capture(['launchctl', 'print', 'system/x'])\n"
+            "def safe_probe():\n"
+            "    return 1\n"
+            "def readiness():\n"
+            "    return fan_out(lambda p: p(), [safe_probe, daemon_state])\n"
+        )
+        found = []
+        functions = _module_functions(violation)
+        for entry in _submitted_callables(violation):
+            seen: set[str] = set()
+            stack = [(entry, 0, [entry])]
+            while stack:
+                name, depth, trail = stack.pop()
+                if name in seen or depth > self.MAX_DEPTH:
+                    continue
+                seen.add(name)
+                body = functions.get(name)
+                if body is None:
+                    continue
+                for callee in sorted(_called_names(body)):
+                    if callee in PASSWORD_DEPENDENT:
+                        found.append(" -> ".join(trail + [callee]))
+                    elif callee in functions:
+                        stack.append((callee, depth + 1, trail + [callee]))
+        self.assertEqual(
+            found,
+            ["daemon_state -> sudo_capture"],
+            "the rule cannot see a privileged helper added to a fan_out list, so it "
+            "would not catch the regression it exists to catch",
+        )
+
+    def test_the_readiness_split_is_still_intact(self):
+        """The four password-dependent probes stay off the pool, by name.
+
+        Asserted directly as well as by the generic rule above, because this is the
+        one place in hub/ where privileged and fanned-out probes sit in the same
+        function and the split is easy to lose while editing.
+        """
+        source = (HUB / "wireguard_net_svc.py").read_text()
+        start = source.index("def readiness")
+        body = source[start: source.index("\ndef ", start + 10)]
+        fan_start = body.index("fan_out(")
+        fanned = body[fan_start: body.index(")", body.index("max_workers"))]
+        for probe in ("nat_installed", "daemon_state", "pf_enabled", "status"):
+            self.assertNotIn(
+                probe,
+                fanned,
+                f"{probe} reaches sudo_capture and must not be fanned out; the "
+                "password is empty on a worker and the failure is silent",
+            )
+        self.assertIn("peer_origin_conflict", fanned, "the safe probes stopped overlapping")
 
     def test_the_analysis_actually_sees_the_executors(self):
         """Without this, a parsing change that found nothing would pass vacuously."""

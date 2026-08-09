@@ -36,7 +36,7 @@ from hub import wireguard_svc
 from hub.macos_admin import run_admin_sequence, sudo_capture
 from hub.paths import DATA_DIR
 from hub.secure_io import write_secret_text
-from hub.util import sh
+from hub.util import fan_out, sh
 
 SYSCTL = "/usr/sbin/sysctl"
 PFCTL = "/sbin/pfctl"
@@ -528,18 +528,54 @@ def _nat_detail(nat: dict, egress: str) -> str:
 
 
 def readiness() -> dict:
-    """Every gate between "config exists" and "a client actually gets traffic"."""
-    install = wireguard_svc.installation()
+    """Every gate between "config exists" and "a client actually gets traffic".
+
+    Eleven independent probes, none of which reads another's output.  Read in turn
+    they cost the sum of eleven timeouts, and this is the page an operator opens
+    precisely when the tunnel is not working -- when those probes are at their
+    slowest.
+
+    Four of them stay on the request thread, and that split is load-bearing rather
+    than cautious.  ``wireguard_svc.status``, :func:`nat_installed`,
+    :func:`daemon_state` and :func:`pf_enabled` all reach ``sudo_capture``, which
+    reads the operator's password from a ContextVar.  A ContextVar is not inherited
+    by a pool worker, so on a worker that read returns "" -- and the failure is
+    silent: the call does not raise, it falls back to ``sudo -n``, and answers
+    ``password_required`` about a password the operator just typed.  See
+    tests/test_privileged_calls_stay_on_the_request_thread.py.
+
+    The remaining seven touch nothing privileged and go in one wave.
+    """
+    # `fan_out` re-raises on iteration, exactly as the serial version propagated the
+    # first failure, so a broken probe still surfaces rather than being swallowed.
+    (
+        install,
+        cfg_,
+        conflict,
+        resolution,
+        runtime,
+        forwarding,
+        egress,
+    ) = fan_out(
+        lambda probe: probe(),
+        [
+            wireguard_svc.installation,
+            wireguard_svc.settings,
+            peer_origin_conflict,
+            endpoint_resolution,
+            wireguard_svc.runtime_state,
+            forwarding_enabled,
+            wan_interface,
+        ],
+        max_workers=7,
+    )
+
+    # Password-dependent, so deliberately serial on the request thread.
     state = wireguard_svc.status()
-    cfg_ = wireguard_svc.settings()
     nat = nat_installed()
     daemon = daemon_state()
-    conflict = peer_origin_conflict()
-    resolution = endpoint_resolution()
-    runtime = wireguard_svc.runtime_state()
-    forwarding = forwarding_enabled()
     pf_on = pf_enabled()
-    egress = wan_interface()
+
     endpoint = str(cfg_.get("endpoint") or "").strip()
 
     checks = [

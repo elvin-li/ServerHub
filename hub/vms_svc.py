@@ -258,8 +258,15 @@ def _orb_item(name: str, status: str, raw: dict) -> dict | None:
 
 
 def list_all_vms() -> dict:
-    utm = list_utm_vms()
-    orb = list_orb_machines()
+    """Both hypervisors' inventories.
+
+    UTM and OrbStack are separate binaries that know nothing about each other, so
+    one listing does not inform the other. `fan_out` keeps them in order, which is
+    what puts UTM's rows ahead of OrbStack's in the combined list.
+    """
+    utm, orb = fan_out(
+        lambda probe: probe(), [list_utm_vms, list_orb_machines], max_workers=2
+    )
     return {
         "vms": utm + orb,
         "utm_count": len(utm),
