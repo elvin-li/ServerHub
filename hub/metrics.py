@@ -226,7 +226,11 @@ def _loop(interval: int = 90):
                 sensors_svc.collect_sensors(force=(tick % 3 == 1))
             except Exception:
                 pass
-            record_sample()
+            # The first pass flushes rather than buffering, which is what
+            # start_sampler used to do on the caller's thread.  Taking it here
+            # keeps a data point on disk promptly without the startup path
+            # waiting for it.
+            record_sample(immediate=(tick == 1))
         except Exception:
             pass
         _stop.wait(interval)
@@ -242,10 +246,13 @@ def start_sampler(interval: int = 90):
     if _thread and _thread.is_alive():
         return
     _stop.clear()
-    try:
-        record_sample(immediate=True)
-    except Exception:
-        pass
+    # Deliberately not sampling here.  This runs inside the FastAPI lifespan, so
+    # anything it waits for delays the moment uvicorn starts serving -- and a cold
+    # _sample() measured 1257ms on this host, which is most of the window where a
+    # restarted panel looks hung.  The sampler thread takes the first sample as
+    # its own first iteration instead, so nothing is lost: _loop samples before
+    # its first wait, and latest_sample() already falls back to tailing the
+    # metrics file while _last_sample is still unset.
     _thread = threading.Thread(
         target=_loop, args=(max(30, int(interval)),), daemon=True, name="metrics-sampler"
     )
