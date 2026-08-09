@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from hub.macos_admin import run_admin, run_admin_sequence
-from hub.util import sh
+from hub.util import fan_out, sh
 
 TMUTIL = "/usr/bin/tmutil"
 DISKUTIL = "/usr/sbin/diskutil"
@@ -134,9 +134,36 @@ def list_snapshots(mount: str = "/") -> list[dict]:
     return items
 
 
+def _tm_destinations() -> dict | None:
+    return _plist([TMUTIL, "destinationinfo", "-X"])
+
+
+def _tm_status() -> dict | None:
+    return _plist([TMUTIL, "status", "-X"])
+
+
+def _tm_latest_backup() -> str:
+    rc, latest, _ = sh([TMUTIL, "latestbackup"], timeout=12)
+    return latest.strip() if rc == 0 else ""
+
+
 def time_machine_overview() -> dict:
-    """Destinations, schedule and current run state for Time Machine."""
-    dest = _plist([TMUTIL, "destinationinfo", "-X"]) or {}
+    """Destinations, schedule and current run state for Time Machine.
+
+    The three `tmutil` reads answer unrelated questions and none consumes another's
+    output, but `latestbackup` alone can block for its full 12s timeout when a
+    network destination is unreachable -- which used to delay the destination list
+    and the progress percentage behind it. `_plist` returns None and
+    `_tm_latest_backup` returns "" on every failure, so nothing here raises into
+    fan_out.
+    """
+    dest, status, latest_path = fan_out(
+        lambda probe: probe(),
+        [_tm_destinations, _tm_status, _tm_latest_backup],
+        max_workers=3,
+    )
+    dest = dest or {}
+    status = status or {}
     destinations = []
     for entry in dest.get("Destinations") or []:
         if not isinstance(entry, dict):
@@ -152,7 +179,6 @@ def time_machine_overview() -> dict:
             "mounted": bool(mount_point) and Path(mount_point).is_dir(),
         })
 
-    status = _plist([TMUTIL, "status", "-X"]) or {}
     running = bool(status.get("Running"))
     progress = status.get("Progress") if isinstance(status.get("Progress"), dict) else {}
     percent = progress.get("Percent") if isinstance(progress, dict) else None
@@ -160,9 +186,6 @@ def time_machine_overview() -> dict:
         percent_val = round(float(percent) * 100, 1) if percent is not None else None
     except (TypeError, ValueError):
         percent_val = None
-
-    rc, latest, _ = sh([TMUTIL, "latestbackup"], timeout=12)
-    latest_path = latest.strip() if rc == 0 else ""
 
     return {
         "configured": bool(destinations),
@@ -186,10 +209,24 @@ def overview(force: bool = False) -> dict:
     if not force and _overview_cache["v"] is not None and now - _overview_cache["t"] < _CACHE_TTL:
         return _overview_cache["v"]
 
+    mounts = snapshot_mounts()
+    # One `diskutil apfs listSnapshots` per volume, plus the Time Machine read that
+    # used to sit as a serial tail after the whole loop. None of them depends on
+    # another, so they all go in one wave: an uncached read now costs one probe
+    # instead of one-per-attached-disk-plus-three. `list_snapshots` swallows its own
+    # failures via `_plist`, and `fan_out` keeps `snapshot_mounts()` order so the
+    # volume table does not reshuffle between refreshes.
+    probes = [(lambda m=mount: list_snapshots(m)) for mount in mounts]
+    results = fan_out(
+        lambda probe: probe(),
+        probes + [time_machine_overview],
+        max_workers=min(len(probes) + 1, 8),
+    )
+    per_mount, time_machine = results[:-1], results[-1]
+
     volumes = []
     total = 0
-    for mount in snapshot_mounts():
-        snaps = list_snapshots(mount)
+    for mount, snaps in zip(mounts, per_mount):
         if not snaps and mount != "/":
             # A non-APFS or snapshot-less external volume adds no signal.
             continue
@@ -207,7 +244,7 @@ def overview(force: bool = False) -> dict:
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "volumes": volumes,
         "total": total,
-        "time_machine": time_machine_overview(),
+        "time_machine": time_machine,
     }
     _overview_cache.update(t=now, v=data)
     return data

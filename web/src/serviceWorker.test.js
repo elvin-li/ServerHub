@@ -42,7 +42,7 @@ describe('service worker updates', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
-  it('reloads an already-controlled tab once when the new worker takes over', async () => {
+  it('never reloads on controllerchange; the update banner owns the refresh', async () => {
     const { serviceWorker } = harness()
     const reload = vi.fn()
 
@@ -50,7 +50,7 @@ describe('service worker updates', () => {
     serviceWorker.emit('controllerchange')
     serviceWorker.emit('controllerchange')
 
-    expect(reload).toHaveBeenCalledTimes(1)
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('activates a worker that was already waiting when the page loaded', async () => {

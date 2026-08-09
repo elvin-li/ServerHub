@@ -417,7 +417,7 @@
             <span class="led" :class="c.level === 'error' ? 'err' : 'warn'"></span>
             <div style="flex:1">
               <div class="name">{{ c.name }}</div>
-              <div class="detail" style="margin:0">{{ c.detail }}</div>
+              <div class="detail" style="margin:0">{{ errText(c.detail) }}</div>
             </div>
           </div>
         </div>
@@ -466,7 +466,7 @@ import {
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
-const { t } = injectI18n()
+const { t, errText } = injectI18n()
 
 const status = ref(null)
 const storage = ref(null)

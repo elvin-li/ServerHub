@@ -2007,6 +2007,11 @@ export default {
     usage: {
       bad_volume: 'Unknown volume',
     },
+    immich: {
+      worker_down: 'not running — uploads get no thumbnails, no transcoding, no face recognition',
+      worker_quarantined: 'quarantined — the media volume had write faults, so the worker is deliberately kept stopped (delete ~/.immich-accelerator/worker.quarantine once the hardware is repaired)',
+      worker_lift_quarantine: 'repair the media volume’s USB link first, then delete the quarantine marker',
+    },
   },
   storage: {
     title: 'Storage',

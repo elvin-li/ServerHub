@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -19,6 +20,37 @@ from hub.routers import router
 from hub.routers.auth_api import router as auth_router
 from hub.terminal_pty import terminal_websocket
 from hub.vm_console import console_websocket
+
+
+#: Handlers are attached to the "serverhub" parent, not to the root logger.
+#: Nothing in this project configured logging at all, so every
+#: ``logging.getLogger("serverhub.…").info(…)`` in the codebase was discarded:
+#: with no handler anywhere, Python's lastResort handler takes over and it starts
+#: at WARNING.  That is why the only pre-existing logger (hub/macos_admin.py) logs
+#: exclusively at warning level.  Configuring "serverhub" rather than the root
+#: keeps uvicorn's own loggers untouched -- they carry their own handlers and
+#: propagate=False, so duplicating records there would double every access line.
+_LOG_ROOT = "serverhub"
+
+
+def _configure_logging() -> None:
+    """Send serverhub.* records to stderr, which launchd captures to the log file.
+
+    Idempotent: create_app() runs once per process in production but many times
+    across the test suite, and adding a handler per call would multiply every
+    line by the number of apps built so far.
+    """
+    logger = logging.getLogger(_LOG_ROOT)
+    if any(getattr(h, "_serverhub", False) for h in logger.handlers):
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s:    %(name)s: %(message)s"))
+    handler._serverhub = True  # type: ignore[attr-defined]
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    # Without this the records also reach the root logger, and uvicorn's
+    # configuration of it would print them a second time.
+    logger.propagate = False
 
 
 @asynccontextmanager
@@ -74,7 +106,22 @@ async def admin_password_scope(request: Request):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="ServerHub", version=__version__, lifespan=lifespan)
+    _configure_logging()
+    # This is a host-control API, not a public developer service.  FastAPI's
+    # defaults expose /docs, /redoc and /openapi.json without authentication;
+    # the schema enumerates privileged operations such as container exec, file
+    # deletion/upload and nginx/cloudflared control even though those operations
+    # themselves correctly return 401.  Keep schema generation available through
+    # app.openapi() for internal tests, but do not register unauthenticated HTTP
+    # routes that publish the blueprint to every LAN client.
+    app = FastAPI(
+        title="ServerHub",
+        version=__version__,
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     # Compress large JSON/text payloads (status/network/logs) to cut LAN transfer.
     app.add_middleware(GZipMiddleware, minimum_size=1024)

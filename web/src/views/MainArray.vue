@@ -135,7 +135,7 @@
               <button v-if="(d.actions||[]).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
             </td>
           </tr>
-          <tr v-if="!unassigned.length && !loadError">
+          <tr v-if="!unassigned.length && !loadError && !pendingFull">
             <td colspan="7" style="color:var(--sub)">{{ t('main_extra.empty_unassigned') }}</td>
           </tr>
         </tbody>
@@ -213,7 +213,7 @@
               <span v-if="!(d.actions||[]).length" class="sub">—</span>
             </td>
           </tr>
-          <tr v-if="!powerDisks.length && !loadError">
+          <tr v-if="!powerDisks.length && !loadError && !pendingFull">
             <td colspan="9" style="color:var(--sub)">{{ t('main_extra.empty_disks') }}</td>
           </tr>
         </tbody>
@@ -354,7 +354,7 @@
               <span v-if="!(v.actions||[]).length" class="sub">{{ t('main_extra.locked') }}</span>
             </td>
           </tr>
-          <tr v-if="!managedVols.length && !loadError">
+          <tr v-if="!managedVols.length && !loadError && !pendingFull">
             <td colspan="6" style="color:var(--sub)">{{ t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
@@ -441,6 +441,11 @@ const formatName = ref('')
 const formatConfirm = ref('')
 let timer = null
 const refreshTimers = new Set()
+// Progressive first paint: the light overview (capacity + SMART) renders in
+// ~300ms, then the full payload backfills power state and managed volumes.
+// loadSeq guards that backfill so it can never overwrite a newer refresh.
+const pendingFull = ref(false)
+let loadSeq = 0
 
 function scheduleRefresh(delay) {
   const id = setTimeout(() => {
@@ -514,6 +519,7 @@ function kindBadge(d) {
 }
 
 async function refresh() {
+  loadSeq++
   loading.value = true
   try {
     data.value = await getStorage()
@@ -524,6 +530,39 @@ async function refresh() {
   } finally {
     loading.value = false
     loaded.value = true
+  }
+}
+
+// First paint only: the polling interval and every manual refresh keep using
+// refresh() above, so this staged path runs exactly once per page visit.
+async function loadInitial() {
+  const mySeq = ++loadSeq
+  loading.value = true
+  try {
+    data.value = await getStorage(true)
+    loadError.value = ''
+  } catch (e) {
+    loadError.value = e.message || String(e)
+    toast('❌ ' + e.message)
+  } finally {
+    loading.value = false
+    loaded.value = true
+  }
+  pendingFull.value = true
+  try {
+    const full = await getStorage()
+    if (mySeq === loadSeq) {
+      data.value = full
+      loadError.value = ''
+    }
+  } catch (e) {
+    // Keep the light data on screen; the next poll or a manual refresh retries
+    // the full payload.  Only a total failure shows the load error.
+    if (mySeq === loadSeq && !data.value) {
+      loadError.value = e.message || String(e)
+    }
+  } finally {
+    if (mySeq === loadSeq) pendingFull.value = false
   }
 }
 
@@ -634,7 +673,7 @@ async function doFormat() {
 }
 
 onMounted(() => {
-  void refresh()
+  void loadInitial()
   timer = startVisibleInterval(refresh, 45000)
 })
 onUnmounted(() => {

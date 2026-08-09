@@ -2008,6 +2008,11 @@ export default {
     usage: {
       bad_volume: '未知的卷',
     },
+    immich: {
+      worker_down: '未运行 —— 上传的照片不会生成缩略图/不会转码/不做人脸识别',
+      worker_quarantined: '已隔离停止 —— 媒体卷曾出现写入故障，worker 被刻意禁止启动（修复硬件后删除 ~/.immich-accelerator/worker.quarantine）',
+      worker_lift_quarantine: '先修复媒体卷 USB 链路，再删除隔离标记',
+    },
   },
   storage: {
     title: '存储',

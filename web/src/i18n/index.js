@@ -104,6 +104,18 @@ export function t(key, params) {
   return format(val, params)
 }
 
+// Health checks ship stable machine codes (same registry as api_error in
+// hub/errors.py) instead of prose, so the panel can translate them.
+const ERR_CODE = /^[a-z0-9]+(?:\.[a-z0-9_]+)+$/
+
+/** Translate an errors.py code ('area.code'); anything else passes through. */
+function errText(v) {
+  if (typeof v !== 'string' || !ERR_CODE.test(v)) return v
+  const key = `err.${v}`
+  const s = t(key)
+  return s === key ? v : s
+}
+
 function applyDocumentLocale(id) {
   if (typeof document !== 'undefined') {
     document.documentElement.setAttribute('lang', id === 'zh-CN' ? 'zh-CN' : id)
@@ -146,6 +158,10 @@ function useI18n() {
       void loc.value
       return t(key, params)
     },
+    errText: (v) => {
+      void loc.value
+      return errText(v)
+    },
     setLocale,
     /** computed helper: tRef('nav.dashboard') */
     tt: (key) => computed(() => {
@@ -166,6 +182,10 @@ export function provideI18n(app) {
     t: (key, params) => {
       void locale.value
       return t(key, params)
+    },
+    errText: (v) => {
+      void locale.value
+      return errText(v)
     },
     setLocale,
   }

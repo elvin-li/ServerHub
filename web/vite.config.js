@@ -5,6 +5,7 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 const CACHE_FINGERPRINT_PLACEHOLDER = '__SERVERHUB_CACHE_FINGERPRINT__'
+const PRECACHE_PLACEHOLDER = '__SERVERHUB_PRECACHE_ASSETS__'
 
 // Ratchet the initial application payload. Before locale splitting the entry
 // chunk was 258.70 kB; 150 KiB leaves headroom without allowing that regression.
@@ -68,27 +69,49 @@ function fingerprintServiceWorker() {
     closeBundle() {
       const serviceWorkerPath = resolve(outDir, 'sw.js')
       const serviceWorker = readFileSync(serviceWorkerPath, 'utf8')
-      if (!serviceWorker.includes(CACHE_FINGERPRINT_PLACEHOLDER)) {
+      if (
+        !serviceWorker.includes(CACHE_FINGERPRINT_PLACEHOLDER)
+        || !serviceWorker.includes(PRECACHE_PLACEHOLDER)
+      ) {
         // Vite may call closeBundle more than once for one build. The first pass
-        // has already replaced the placeholder, so accept only our exact final
-        // cache-name shape; anything else is still a broken public asset.
-        if (/const CACHE_NAME = 'serverhub-[a-f0-9]{16}'/.test(serviceWorker)) return
+        // has already replaced the placeholders, so accept only our exact final
+        // shapes; anything else is still a broken public asset.
+        if (
+          /const CACHE_NAME = 'serverhub-[a-f0-9]{16}'/.test(serviceWorker)
+          && /const PRECACHE_ASSETS = \[/.test(serviceWorker)
+        ) return
         throw new Error('Service worker cache fingerprint placeholder is missing')
       }
+
+      const outputFiles = listOutputFiles(outDir)
 
       // Hash paths and bytes in a fixed order. Excluding sw.js avoids a
       // self-referential hash and makes identical builds produce the same ID.
       const hash = createHash('sha256')
-      for (const relativePath of listOutputFiles(outDir).filter((path) => path !== 'sw.js')) {
+      for (const relativePath of outputFiles.filter((path) => path !== 'sw.js')) {
         hash.update(relativePath)
         hash.update('\0')
         hash.update(readFileSync(resolve(outDir, relativePath)))
         hash.update('\0')
       }
       const fingerprint = hash.digest('hex').slice(0, 16)
+
+      // First-paint assets: entry + vendor chunks and all CSS. Lazy route
+      // chunks stay network-fetched so the install cache does not grow with
+      // every view in the app.
+      const precache = outputFiles
+        .filter((path) => {
+          if (!path.startsWith('assets/')) return false
+          const name = path.slice('assets/'.length)
+          return path.endsWith('.css') || /^index-/.test(name) || /^vendor-/.test(name)
+        })
+        .map((path) => `/${path}`)
+
       writeFileSync(
         serviceWorkerPath,
-        serviceWorker.replaceAll(CACHE_FINGERPRINT_PLACEHOLDER, fingerprint),
+        serviceWorker
+          .replaceAll(CACHE_FINGERPRINT_PLACEHOLDER, fingerprint)
+          .replaceAll(PRECACHE_PLACEHOLDER, JSON.stringify(precache)),
       )
     },
   }

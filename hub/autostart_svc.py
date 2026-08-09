@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import engine_up
-from hub.util import sh
+from hub.util import fan_out, sh
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 
 from hub.paths import AGENTS_DIR  # noqa: E402
@@ -61,14 +61,36 @@ def _write_plist(path: Path, data: dict) -> None:
         plistlib.dump(data, f)
 
 
-def _launchctl_loaded(label: str) -> bool:
+def _loaded_labels() -> str:
+    """One `launchctl list` covering every loaded job in this session.
+
+    This used to be called once *per label* from inside the plist loop, which is
+    what made /api/apps/autostart cost 63 subprocesses on a 29-agent host:
+    `launchctl list` already reports every job, so asking it again for each agent
+    was N-1 invocations of one command answering one question.
+    """
+    rc, out, _ = sh(["/bin/launchctl", "list"], timeout=8)
+    return out or "" if rc == 0 else ""
+
+
+def _launchctl_loaded(label: str, loaded_snapshot: str | None = None) -> bool:
+    """Whether *label* is loaded, cheapest signal first.
+
+    Both probes mean the same thing and the answer is their OR, so the order is
+    free to change: consult the shared `launchctl list` snapshot when the caller has
+    one, and pay for a per-label `launchctl print` only when the snapshot does not
+    already say yes. For a loaded agent that is zero extra subprocesses.
+    """
+    if loaded_snapshot is not None and label in loaded_snapshot:
+        return True
     rc, out, _ = sh(["/bin/launchctl", "print", f"{_uid_domain()}/{label}"], timeout=5)
     if rc == 0 and out:
         return True
+    if loaded_snapshot is not None:
+        # Already checked above; re-running `list` would ask the same question twice.
+        return False
     rc2, out2, _ = sh(["/bin/launchctl", "list"], timeout=8)
-    if rc2 == 0 and label in (out2 or ""):
-        return True
-    return False
+    return rc2 == 0 and label in (out2 or "")
 
 
 # ─── Docker ──────────────────────────────────────────────────────────────────
@@ -184,20 +206,41 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
 
 # ─── LaunchAgents (user) ─────────────────────────────────────────────────────
 
-def _launchd_items() -> list[dict]:
+def _launchd_items(loaded_snapshot: str | None = None) -> list[dict]:
     items = []
     if not AGENTS_DIR.is_dir():
         return items
+
+    # Parse and filter the plists first — pure filesystem work — so the subprocess
+    # probes below are paid only for agents that survive the filter.
+    parsed = []
     for path in sorted(AGENTS_DIR.glob("*.plist")):
         pl = _read_plist(path)
         label = pl.get("Label") or path.stem
         # skip brew-managed (shown under brew) to reduce dupes — still include non-mxcl
         if label.startswith("homebrew.mxcl."):
             continue  # covered by brew list
+        parsed.append((path, pl, label))
+    if not parsed:
+        return items
+
+    if loaded_snapshot is None:
+        loaded_snapshot = _loaded_labels()
+
+    # Whatever the snapshot cannot answer needs its own `launchctl print`. Those are
+    # independent of one another, so probe them together instead of walking the list.
+    # `_launchctl_loaded` cannot raise, which is what fan_out requires.
+    unknown = [label for _, _, label in parsed if label not in loaded_snapshot]
+    probed = dict(zip(
+        unknown,
+        fan_out(lambda lb: _launchctl_loaded(lb, loaded_snapshot), unknown),
+    ))
+
+    for path, pl, label in parsed:
         run_at = bool(pl.get("RunAtLoad"))
         keep = pl.get("KeepAlive")
         disabled = bool(pl.get("Disabled"))
-        loaded = _launchctl_loaded(label)
+        loaded = True if label in loaded_snapshot else probed.get(label, False)
         auto = run_at and not disabled
         items.append({
             "id": f"launchd:{label}",
@@ -271,7 +314,7 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
 
 # ─── Global login autostart script ───────────────────────────────────────────
 
-def _script_status() -> dict:
+def _script_status(loaded_snapshot: str | None = None) -> dict:
     plist = AGENTS_DIR / "local.serverhub.autostart.plist"
     script = Path.home() / "Services" / "autostart.sh"
     pl = _read_plist(plist) if plist.exists() else {}
@@ -281,7 +324,11 @@ def _script_status() -> dict:
         "name": "登录自启脚本 (autostart.sh)",
         "label": "local.serverhub.autostart",
         "autostart": bool(pl.get("RunAtLoad")) and plist.exists(),
-        "running": _launchctl_loaded("local.serverhub.autostart") if plist.exists() else False,
+        "running": (
+            _launchctl_loaded("local.serverhub.autostart", loaded_snapshot)
+            if plist.exists()
+            else False
+        ),
         "plist": str(plist) if plist.exists() else None,
         "script": str(script) if script.exists() else None,
         "detail": "登录后启动已配置的本地服务",
@@ -319,10 +366,21 @@ def overview(force: bool = False) -> dict:
     if not force and _cache["v"] is not None and now - _cache["t"] < _TTL:
         return _cache["v"]
 
-    docker_items = _docker_autostart_items()
-    brew_items = _brew_service_items()
-    launchd_items = _launchd_items()
-    script = _script_status()
+    # Four independent inventories — docker inspect, the shared brew snapshot, the
+    # LaunchAgents directory and the login script — plus one `launchctl list` that
+    # the last two both read. Taking the snapshot first means it is fetched once
+    # rather than once per collector, and the collectors then overlap.
+    loaded_snapshot = _loaded_labels()
+    docker_items, brew_items, launchd_items, script = fan_out(
+        lambda fn: fn(),
+        [
+            _docker_autostart_items,
+            _brew_service_items,
+            lambda: _launchd_items(loaded_snapshot),
+            lambda: _script_status(loaded_snapshot),
+        ],
+        max_workers=4,
+    )
 
     items = [script] + brew_items + launchd_items + docker_items
     counts = {

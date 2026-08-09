@@ -39,6 +39,10 @@ _TTL = 30.0
 BASE = Path.home() / "Services" / "immich"
 ACCEL = Path.home() / ".immich-accelerator"
 WORKER_PID = ACCEL / "pids" / "worker.pid"
+#: Explicit quarantine marker written by ops/keepalive when the media volume
+#: shows write faults; keep-immich-alive.sh refuses to start the worker while
+#: it exists, so "worker stopped" has a different meaning in that state.
+QUARANTINE = ACCEL / "worker.quarantine"
 #: The wrapper is installed as plain `bin/ffmpeg` so it wins on PATH ahead of
 #: the real binary; it is not named *-wrapper.sh on disk.
 FFMPEG_SHIM = ACCEL / "bin" / "ffmpeg"
@@ -166,12 +170,26 @@ def run_checks(force: bool = False) -> dict:
     ))
 
     # --- native worker ---
+    # Failure prose lives in errors.CODES + the SPA's err.* i18n keys (the
+    # panel translates codes like api_error payloads); hub/ must not grow
+    # hardcoded user-facing Chinese.
     pid = worker_pid()
+    if pid:
+        w_detail = f"pid={pid} 运行 {_worker_uptime(pid)}"
+        w_fix = ""
+    elif QUARANTINE.is_file():
+        # Not a crash: keepalive deliberately keeps the worker stopped because
+        # the media volume had write faults.  Say so, otherwise the panel
+        # looks like it is reporting an ordinary failure that can simply be
+        # restarted away.
+        w_detail = "immich.worker_quarantined"
+        w_fix = "immich.worker_lift_quarantine"
+    else:
+        w_detail = "immich.worker_down"
+        w_fix = "~/Services/immich/start-worker-native.sh"
     checks.append(_check(
         "immich_worker", "原生 worker（转码/ML 队列）", "error", pid is not None,
-        f"pid={pid} 运行 {_worker_uptime(pid)}" if pid
-        else "未运行 —— 上传的照片不会生成缩略图/不会转码/不做人脸识别",
-        "~/Services/immich/start-worker-native.sh",
+        w_detail, w_fix,
     ))
 
     # --- native ML ---

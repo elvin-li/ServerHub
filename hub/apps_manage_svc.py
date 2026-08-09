@@ -794,15 +794,63 @@ def _vm_logs(source_id: str, lines: int = 80) -> dict:
 
 # ─── Public API ──────────────────────────────────────────────────────────────
 
+#: Fallbacks for a collector that failed outright.  A backend being unreachable
+#: should cost its own section of the Apps page, not the page.
+_COLLECTOR_FALLBACK = {
+    "docker": [], "native": [], "vms": [], "engine": False, "host": "",
+}
+
+
+def _collect(entry):
+    """Run one inventory collector by name, absorbing its own failure.
+
+    Dispatched by name rather than by passing callables so the fallback for a
+    failure is declared next to it: ``fan_out`` re-raises on iteration, and an
+    unreachable Docker socket must not empty the native and VM sections too.
+    """
+    which, argument = entry
+    try:
+        if which == "docker":
+            return _docker_stacks()
+        if which == "native":
+            return _native_apps(force=bool(argument))
+        if which == "vms":
+            return _vms()
+        if which == "engine":
+            return engine_up()
+        return _host_ip()
+    except Exception:
+        return _COLLECTOR_FALLBACK[which]
+
+
 def inventory(force: bool = False) -> dict:
     now = time.time()
     if not force and _inv_cache["v"] is not None and now - _inv_cache["t"] < _INV_TTL:
         return _inv_cache["v"]
 
-    docker_items = _docker_stacks()
-    # force=True must re-probe brew/bin so panel picks up just-installed natives
-    native_items = _native_apps(force=force)
-    vm_items = _vms()
+    # The three collectors are independent aggregations over different backends --
+    # compose stacks, Homebrew/native installs, and VMs -- and each shells out
+    # several times.  Run in series their latencies simply added, so the Apps page
+    # waited for Docker, then brew, then utmctl before rendering anything, even
+    # though each collector is internally overlapped already.
+    #
+    # engine_up() and _host_ip() join the same batch: both are cheap but neither
+    # depends on the others, and engine_up in particular can block on a Docker
+    # socket that is not answering.
+    #
+    # Nested pools are fine here: each fan_out builds and disposes its own, and no
+    # inner task waits on an outer one, so there is nothing to deadlock against.
+    # force=True must re-probe brew/bin so the panel picks up just-installed natives.
+    docker_items, native_items, vm_items, engine, host = fan_out(
+        _collect,
+        [
+            ("docker", None),
+            ("native", force),
+            ("vms", None),
+            ("engine", None),
+            ("host", None),
+        ],
+    )
     all_items = native_items + docker_items + vm_items
     # sort: running first, then kind, name
     def sort_key(x):
@@ -825,8 +873,8 @@ def inventory(force: bool = False) -> dict:
         "ts": time.strftime("%H:%M:%S"),
         "items": all_items,
         "counts": counts,
-        "host_ip": _host_ip(),
-        "engine_up": engine_up(),
+        "host_ip": host,
+        "engine_up": engine,
     }
     _inv_cache.update(t=time.time(), v=v)
     return v

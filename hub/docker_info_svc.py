@@ -5,17 +5,10 @@ import json
 
 from hub.docker_cli import docker, engine_up
 from hub.paths import DOCKER, ORB
-from hub.util import sh
+from hub.util import fan_out, sh
 
 
-def engine_info() -> dict:
-    if not engine_up():
-        return {
-            "engine_up": False,
-            "docker_cli": DOCKER,
-            "orb_cli": ORB,
-            "message": "引擎未运行",
-        }
+def _slim_info() -> dict:
     rc, out, err = docker("info", "--format", "{{json .}}", timeout=15)
     info = {}
     if rc == 0 and out.strip():
@@ -46,20 +39,46 @@ def engine_info() -> dict:
         "HttpsProxy": info.get("HttpsProxy"),
         "NoProxy": info.get("NoProxy"),
     }
-    rc2, ver, _ = docker("version", "--format", "{{json .}}", timeout=10)
-    version = {}
-    if rc2 == 0 and ver.strip():
+    return slim
+
+
+def _version() -> dict:
+    rc, ver, _ = docker("version", "--format", "{{json .}}", timeout=10)
+    if rc == 0 and ver.strip():
         try:
-            version = json.loads(ver)
+            return json.loads(ver)
         except json.JSONDecodeError:
             pass
-    # orb version
-    rc3, orb_v, _ = sh([ORB, "version"], timeout=5)
+    return {}
+
+
+def _orb_version() -> str:
+    rc, orb_v, _ = sh([ORB, "version"], timeout=5)
+    return orb_v if rc == 0 else ""
+
+
+def engine_info() -> dict:
+    if not engine_up():
+        return {
+            "engine_up": False,
+            "docker_cli": DOCKER,
+            "orb_cli": ORB,
+            "message": "引擎未运行",
+        }
+
+    # `docker info`, `docker version` and `orb version` ask three unrelated questions
+    # of two different binaries, so the page waited out the sum of their timeouts
+    # (15s + 10s + 5s worst case) to render one panel. None of them reads the others'
+    # output. Each helper swallows its own failure and returns an empty value, which
+    # is what fan_out requires, so one slow engine no longer holds up the other two.
+    slim, version, orb_v = fan_out(
+        lambda probe: probe(), [_slim_info, _version, _orb_version], max_workers=3
+    )
     return {
         "engine_up": True,
         "docker_cli": DOCKER,
         "orb_cli": ORB,
-        "orb_version": orb_v if rc3 == 0 else "",
+        "orb_version": orb_v,
         "info": slim,
         "version": version,
     }

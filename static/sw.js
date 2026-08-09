@@ -1,6 +1,9 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-const CACHE_NAME = 'serverhub-5331d959688d56e4'
+const CACHE_NAME = 'serverhub-2b7b62bb2b546e92'
+// Vite replaces the placeholder with the first-paint assets (entry + vendor
+// chunks and CSS) of the build output.
+const PRECACHE_ASSETS = ["/assets/Apps-BPws-GXp.css","/assets/Bookmarks-CmO1-9tu.css","/assets/Compose-Xwt2I3WS.css","/assets/Dashboard-BXV6sOTW.css","/assets/Files-BmSpWPVS.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-CuLylBqG.css","/assets/Logs-BQ6oAIpl.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-MCrVcGgE.css","/assets/Pool-WTeE8dOI.css","/assets/Services-jo3Sjc3h.css","/assets/Settings-CT0ISL_h.css","/assets/Shares-D1y9Byl1.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-zqGm35wn.css","/assets/Tools-DHNuKtAn.css","/assets/VMs-A_c68-4Z.css","/assets/WireGuard-DFr8bFHO.css","/assets/index-B12m2YTV.css","/assets/index-sudiUwNr.js","/assets/vendor-qnL6aF8z.js"]
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -8,10 +11,12 @@ const SHELL_ASSETS = [
   '/favicon.svg',
   '/site.webmanifest',
 ]
+// A hung backend must not hang a navigation; fall back to the cached shell.
+const NAV_TIMEOUT_MS = 2500
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS.concat(PRECACHE_ASSETS)))
   )
   self.skipWaiting()
 })
@@ -23,15 +28,10 @@ self.addEventListener('activate', (event) => {
       (key) => key.startsWith('serverhub-') && key !== CACHE_NAME,
     )
     await Promise.all(oldCaches.map((key) => caches.delete(key)))
+    // Claim the open windows but never force-navigate them: a bulk reload of
+    // every tab after a deploy turned into a blank-screen storm. Tabs move to
+    // the new build through the sw-update-ready banner instead.
     await self.clients.claim()
-
-    // Only an upgrade has an older ServerHub cache. Refresh its open windows so
-    // tabs still executing the prior hashed bundle move to this build. A first
-    // install claims the page without forcing a redundant navigation.
-    if (oldCaches.length) {
-      const windows = await self.clients.matchAll({ type: 'window' })
-      await Promise.all(windows.map((client) => client.navigate(client.url)))
-    }
   })())
 })
 
@@ -50,15 +50,22 @@ self.addEventListener('fetch', (event) => {
 
   // Network-first for navigation (HTML), cache-first for assets
   if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const clone = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
-          return response
-        })
-        .catch(() => caches.match(request).then((r) => r || caches.match('/')))
-    )
+    event.respondWith((async () => {
+      // Race the network against a timeout so a stalled backend falls back to
+      // the cached shell instead of leaving the browser spinner spinning.
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), NAV_TIMEOUT_MS)
+      try {
+        const response = await fetch(request, { signal: controller.signal })
+        const clone = response.clone()
+        caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+        return response
+      } catch {
+        return (await caches.match(request)) || (await caches.match('/'))
+      } finally {
+        clearTimeout(timer)
+      }
+    })())
   } else if (url.pathname.startsWith('/assets/')) {
     // Immutable hashed assets — cache-first
     event.respondWith(

@@ -17,6 +17,7 @@ from hub.config import cfg, override
 from hub.errors import api_error
 from hub.docker_cli import docker, docker_json, engine_up, redact_env
 from hub.paths import DATA_DIR, DOCKER
+from hub.host_address import resolve_value
 from hub.status import invalidate_status
 
 # long-running compose / pull jobs (reuse pattern of maintenance)
@@ -221,7 +222,7 @@ def _build_container_list() -> tuple[bool, list]:
         project = p[6] if len(p) > 6 else ""
         service = p[7] if len(p) > 7 else ""
         size = p[8] if len(p) > 8 else ""
-        ov = override(name)
+        ov = resolve_value(override(name))
         if ov.get("hide"):
             continue
         if state == "running" and "unhealthy" in status:

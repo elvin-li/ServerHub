@@ -63,8 +63,8 @@
             <td>
               <span class="badge" :class="levelBadge(c)">{{ levelLabel(c) }}</span>
             </td>
-            <td class="mono" style="max-width:320px;font-size:11px">{{ c.detail }}</td>
-            <td style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix || (c.ok ? '—' : '') }}</td>
+            <td class="mono" style="max-width:320px;font-size:11px">{{ errText(c.detail) }}</td>
+            <td style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? errText(c.fix) : (c.ok ? '—' : '') }}</td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
             <td colspan="5" style="color:var(--sub)">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>
@@ -83,7 +83,7 @@ import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
-const { t } = injectI18n()
+const { t, errText } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
 const loaded = ref(false)

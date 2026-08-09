@@ -2007,6 +2007,11 @@ export default {
     usage: {
       bad_volume: '不明なボリュームです',
     },
+    immich: {
+      worker_down: '未実行 —— アップロード写真のサムネイル生成/トランスコード/顔認識が行われません',
+      worker_quarantined: '隔離により停止中 —— メディアボリュームで書き込み障害が発生したため、worker は意図的に停止されています（ハードウェア修復後に ~/.immich-accelerator/worker.quarantine を削除してください）',
+      worker_lift_quarantine: '先にメディアボリュームの USB 接続を修理してから、隔離マーカーを削除してください',
+    },
   },
   storage: {
     title: 'ストレージ',

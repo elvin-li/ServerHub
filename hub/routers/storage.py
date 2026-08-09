@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fastapi import APIRouter
@@ -12,19 +13,27 @@ router = APIRouter(tags=["storage"])
 
 @router.get("/api/storage")
 def storage(light: bool = False):
-    data = storage_svc.storage_overview()
     if light:
-        return data
-    # attach power-manageable disks (HDD sleep/wake)
-    try:
-        data["power_disks"] = disk_power_svc.list_power_disks()
-    except Exception as e:
-        data["power_disks"] = []
-        data["power_error"] = str(e)
-    try:
-        data["managed"] = disk_manage_svc.overview()
-    except Exception as e:
-        data["managed"] = {"volumes": [], "error": str(e)}
+        return storage_svc.storage_overview()
+    # The three sections read independent state, so run them concurrently and
+    # pay for the slowest one instead of their sum.  Error semantics are
+    # unchanged from the serial version: an overview failure propagates (the
+    # response is the overview itself, so there is nothing to fall back to),
+    # while a power or managed failure degrades just its own key.
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_overview = ex.submit(storage_svc.storage_overview)
+        f_power = ex.submit(disk_power_svc.list_power_disks)
+        f_managed = ex.submit(disk_manage_svc.overview)
+        data = f_overview.result()
+        try:
+            data["power_disks"] = f_power.result()
+        except Exception as e:
+            data["power_disks"] = []
+            data["power_error"] = str(e)
+        try:
+            data["managed"] = f_managed.result()
+        except Exception as e:
+            data["managed"] = {"volumes": [], "error": str(e)}
     return data
 
 
@@ -58,14 +67,22 @@ class DiskManageBody(BaseModel):
 
 @router.post("/api/storage/manage/{device_id}")
 def storage_manage_action(device_id: str, body: DiskManageBody):
-    return disk_manage_svc.disk_action(
-        device_id,
-        body.action,
-        name=body.name,
-        fs=body.fs,
-        confirm=body.confirm,
-        confirm_name=body.confirm_name,
-    )
+    try:
+        return disk_manage_svc.disk_action(
+            device_id,
+            body.action,
+            name=body.name,
+            fs=body.fs,
+            confirm=body.confirm,
+            confirm_name=body.confirm_name,
+        )
+    finally:
+        # Manage actions mutate the same mount/presence state the power panel
+        # renders.  This module may import both services without the cycle a
+        # direct disk_manage_svc -> disk_power_svc edge would create, so the
+        # cross-module invalidation lives here.  Fired even on a rejected
+        # action: dropping the cache costs one refetch and can never lie.
+        disk_power_svc.invalidate_power_disks()
 
 
 class PoolPlanBody(BaseModel):

@@ -46,7 +46,13 @@ def _plist(cmd: list[str], timeout: int = 30) -> dict | list | None:
 #: partition, so a 25-volume host spent ~3.7s in serial subprocesses on every
 #: /api/storage request.  A short TTL keeps the page responsive while still
 #: reflecting a mount/unmount the user just performed.
-_INFO_TTL = 8.0
+#:
+#: Raised from 8s to 30s: the storage page polls every 45s, so at 8s every poll
+#: expired the cache and re-ran the whole fan-out (~2s on a 25-node tree) for
+#: data nothing could have changed in between.  Freshness after a real
+#: mount/unmount/eject/rename/format is still guaranteed because every one of
+#: those paths calls invalidate_disk_info() unconditionally.
+_INFO_TTL = 30.0
 _INFO_CACHE: dict[str, tuple[float, dict]] = {}
 _INFO_LOCK = threading.Lock()
 
@@ -87,7 +93,11 @@ def invalidate_disk_info() -> None:
 
 
 def _diskutil_info_uncached(node: str) -> dict:
-    pl = _plist(["/usr/sbin/diskutil", "info", "-plist", node], timeout=15)
+    # Five seconds caps a wedged diskutil (typically a sleeping external disk);
+    # on timeout _plist() returns None and this yields {}, so the walk below
+    # keeps the tree structure and simply renders that node without details
+    # instead of holding the whole overview until the disk answers.
+    pl = _plist(["/usr/sbin/diskutil", "info", "-plist", node], timeout=5)
     return pl if isinstance(pl, dict) else {}
 
 
@@ -116,9 +126,10 @@ def _fetch_shared(node: str) -> dict:
     if not owner:
         try:
             # Bounded so a wedged diskutil cannot pin an unrelated request
-            # forever; falling back to an empty dict matches _plist()'s own
-            # behaviour on failure.
-            return future.result(timeout=_INFO_TTL + 20)
+            # forever; the fetch itself is capped at five seconds, so a joiner
+            # waiting much longer than that is already an anomaly.  Falling
+            # back to an empty dict matches _plist()'s own behaviour on failure.
+            return future.result(timeout=15)
         except Exception:
             return {}
 
@@ -223,13 +234,13 @@ def _is_system_related(info: dict, device_id: str) -> bool:
 
 def list_managed_volumes() -> list[dict]:
     """All diskutil volumes with mount/format metadata for management UI."""
-    pl = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=20)
+    pl = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=5)
     if not isinstance(pl, dict):
         return []
 
     # Real physical whole disks (disk0, external HDDs) vs synthetic APFS containers (disk1/2/3…)
     physical_wholes: set[str] = set()
-    pphys = _plist(["/usr/sbin/diskutil", "list", "-plist", "physical"], timeout=15)
+    pphys = _plist(["/usr/sbin/diskutil", "list", "-plist", "physical"], timeout=5)
     if isinstance(pphys, dict):
         for x in pphys.get("WholeDisks") or []:
             physical_wholes.add(str(x))

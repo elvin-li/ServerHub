@@ -211,6 +211,21 @@ CODES: dict[str, tuple[int, str]] = {
     "container.bad_network_name": (400, "invalid network name"),
     "container.builtin_network": (400, "built-in networks cannot be removed"),
     "container.no_compose_file": (400, "this stack has no compose file"),
+    # ── immich hybrid stack (health-check prose, resolved by the SPA) ───────
+    "immich.worker_down": (
+        503,
+        "not running — uploads get no thumbnails, no transcoding, no face recognition",
+    ),
+    "immich.worker_quarantined": (
+        409,
+        "quarantined — the media volume had write faults, so the worker is "
+        "deliberately kept stopped (delete ~/.immich-accelerator/worker.quarantine "
+        "once the hardware is repaired)",
+    ),
+    "immich.worker_lift_quarantine": (
+        409,
+        "repair the media volume's USB link first, then delete the quarantine marker",
+    ),
 }
 
 

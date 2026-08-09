@@ -29,7 +29,7 @@ from pathlib import Path
 from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
-from hub.util import sh
+from hub.util import fan_out, sh
 
 HISTORY_PATH = DATA_DIR / "smart-tests.json"
 
@@ -73,6 +73,15 @@ _DEVICE_TYPE_CANDIDATES: tuple[tuple[str, ...], ...] = ((), ("-d", "nvme"))
 #: device node → the flag tuple that worked, so the probe runs once per process.
 _device_type_cache: dict[str, tuple[str, ...]] = {}
 
+#: One lock per device node, guarding that device's transport probe.
+_device_type_locks: dict[str, threading.Lock] = {}
+_device_type_locks_guard = threading.Lock()
+
+#: Concurrent per-disk SMART reads. Each disk is an independent controller
+#: conversation, so the ceiling is about not queueing dozens of smartctl processes
+#: on a host with a large enclosure rather than about contention.
+_DEVICE_WORKERS = 8
+
 
 def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     """Run smartctl unprivileged, retrying under ``sudo -n`` on a denial.
@@ -95,18 +104,37 @@ def _unsupported(out: str, err: str) -> bool:
     return "not supported by device" in f"{out}\n{err}".lower()
 
 
+def _device_type_lock(device: str) -> threading.Lock:
+    with _device_type_locks_guard:
+        lock = _device_type_locks.get(device)
+        if lock is None:
+            lock = _device_type_locks[device] = threading.Lock()
+        return lock
+
+
 def device_type(device: str) -> tuple[str, ...]:
-    """The smartctl ``-d`` flags this device answers to (possibly none)."""
+    """The smartctl ``-d`` flags this device answers to (possibly none).
+
+    Single-flight per device. The probe costs up to two ``smartctl -i`` spawns, and
+    now that disks are read concurrently, threads arriving on a cold cache would
+    each pay for it and then race to store the same answer. The fast path stays
+    lock-free, and the check is repeated inside the lock because the winner fills
+    the cache while the others are still waiting on it.
+    """
     cached = _device_type_cache.get(device)
     if cached is not None:
         return cached
-    for flags in _DEVICE_TYPE_CANDIDATES:
-        rc, out, err = _raw_smartctl([*flags, "-i", device], timeout=12)
-        if rc in (0, 4) and not _unsupported(out, err):
-            _device_type_cache[device] = flags
-            return flags
-    _device_type_cache[device] = ()
-    return ()
+    with _device_type_lock(device):
+        cached = _device_type_cache.get(device)
+        if cached is not None:
+            return cached
+        for flags in _DEVICE_TYPE_CANDIDATES:
+            rc, out, err = _raw_smartctl([*flags, "-i", device], timeout=12)
+            if rc in (0, 4) and not _unsupported(out, err):
+                _device_type_cache[device] = flags
+                return flags
+        _device_type_cache[device] = ()
+        return ()
 
 
 def _smartctl(args: list[str], *, timeout: int = 20) -> tuple[int, str, str]:
@@ -151,7 +179,21 @@ def _selftest_raw(device: str) -> tuple[int, str, str]:
     return _smartctl(["-l", "selftest", device], timeout=15)
 
 
-def _capabilities(device: str, selftest: tuple[int, str, str] | None = None) -> dict:
+def _caps_raw(device: str) -> tuple[int, str, str]:
+    """Raw ``smartctl -c`` output for *device*.
+
+    Shared for the same reason as :func:`_selftest_raw`: :func:`_capabilities` reads
+    it for the supported-test list and :func:`_in_progress` reads it for the
+    percentage, and running it twice asked one command the same question twice.
+    """
+    return _smartctl(["-c", device], timeout=15)
+
+
+def _capabilities(
+    device: str,
+    selftest: tuple[int, str, str] | None = None,
+    caps_raw: tuple[int, str, str] | None = None,
+) -> dict:
     """Which self-tests *this* device offers, plus its estimated durations.
 
     An empty ``supported`` list is a real and common answer, not a parse failure:
@@ -159,9 +201,10 @@ def _capabilities(device: str, selftest: tuple[int, str, str] | None = None) -> 
     at all.  ``reason`` carries the drive's own wording so the page can explain
     why there is no button rather than showing an inert one.
 
-    *selftest* lets a caller that already ran :func:`_selftest_raw` pass it in.
+    *selftest* and *caps_raw* let a caller that already ran :func:`_selftest_raw` or
+    :func:`_caps_raw` pass the output in instead of paying for it again.
     """
-    rc, out, err = _smartctl(["-c", device], timeout=15)
+    rc, out, err = caps_raw if caps_raw is not None else _caps_raw(device)
     text = out or ""
     lowered = text.lower()
     log_rc, log_out, log_err = selftest if selftest is not None else _selftest_raw(device)
@@ -258,9 +301,13 @@ def _selftest_log(device: str, selftest: tuple[int, str, str] | None = None) -> 
     return rows
 
 
-def _in_progress(device: str) -> dict:
-    """Whether a self-test is currently running on *device*, and how far along."""
-    rc, out, _ = _smartctl(["-c", device], timeout=15)
+def _in_progress(device: str, caps_raw: tuple[int, str, str] | None = None) -> dict:
+    """Whether a self-test is currently running on *device*, and how far along.
+
+    *caps_raw* lets :func:`_device_report` reuse the ``smartctl -c`` output that
+    :func:`_capabilities` also reads, instead of spawning it a second time.
+    """
+    rc, out, _ = caps_raw if caps_raw is not None else _caps_raw(device)
     if rc not in (0, 4) or not out:
         return {"running": False, "percent_remaining": None}
     m = re.search(r"Self-test routine in progress.*?(\d+)%\s*of test remaining", out, re.DOTALL | re.IGNORECASE)
@@ -510,20 +557,30 @@ def abort_test(device: str) -> dict:
 
 # ── page payload ─────────────────────────────────────────────────────────────
 
-def overview(force: bool = False) -> dict:
-    now = time.time()
-    if not force and _cache["v"] is not None and now - _cache["t"] < _CACHE_TTL:
-        return _cache["v"]
+def _device_report(node: str) -> dict:
+    """Everything the page shows for one disk.
 
-    devices = []
-    for node in _device_nodes():
-        # One selftest read shared by the capability probe and the log parser.
-        selftest = _selftest_raw(node)
-        caps = _capabilities(node, selftest=selftest)
+    Cannot raise: this runs inside :func:`fan_out`, where an escaping exception is
+    re-raised on iteration and would cost every other disk's report as well as this
+    one. A disk that fails to answer is reported as unreadable, which is what the
+    page already renders for external enclosures.
+    """
+    try:
+        # Resolve the transport flags first. Both reads below need them, and probing
+        # from inside the pair would make one of them wait on the other's probe.
+        device_type(node)
+        # `smartctl -l selftest` and `smartctl -c` are separate conversations with
+        # the drive and neither parses the other's output.
+        selftest, caps_raw = fan_out(
+            lambda probe: probe(),
+            [lambda: _selftest_raw(node), lambda: _caps_raw(node)],
+            max_workers=2,
+        )
+        caps = _capabilities(node, selftest=selftest, caps_raw=caps_raw)
         log = _selftest_log(node, selftest=selftest)
-        progress = _in_progress(node)
+        progress = _in_progress(node, caps_raw=caps_raw)
         failures = [r for r in log if r["index"] and not r["passed"]]
-        devices.append({
+        return {
             "device": node,
             "id": node.rsplit("/", 1)[-1],
             "capabilities": caps,
@@ -532,7 +589,48 @@ def overview(force: bool = False) -> dict:
             "last_result": log[0]["status"] if log else "",
             "failures": len(failures),
             "progress": progress,
-        })
+        }
+    except Exception as e:  # noqa: BLE001 -- see docstring
+        return {
+            "device": node,
+            "id": node.rsplit("/", 1)[-1],
+            "capabilities": {
+                "readable": False,
+                "available": False,
+                "supported": [],
+                "reason": "probe_failed",
+                "device_type": "auto",
+                "estimated_minutes": {},
+                "detail": str(e)[:200],
+            },
+            "log": [],
+            "log_count": 0,
+            "last_result": "",
+            "failures": 0,
+            "progress": {"running": False, "percent_remaining": None},
+        }
+
+
+def overview(force: bool = False) -> dict:
+    now = time.time()
+    if not force and _cache["v"] is not None and now - _cache["t"] < _CACHE_TTL:
+        return _cache["v"]
+
+    nodes = _device_nodes()
+    # One disk's SMART reads tell you nothing about another's, but in series the page
+    # cost grew with every attached disk, and each smartctl read is tens of
+    # milliseconds at best -- far worse on a drive that is spinning up or already
+    # failing, which is the situation this page exists for. `passwordless_available`
+    # joins the same wave rather than trailing it. `fan_out` preserves
+    # `diskutil list physical` order, so the table does not reshuffle between
+    # refreshes, and `_device_report` absorbs its own failures.
+    probes = [(lambda n=node: _device_report(n)) for node in nodes]
+    results = fan_out(
+        lambda probe: probe(),
+        probes + [passwordless_available],
+        max_workers=min(len(probes) + 1, _DEVICE_WORKERS),
+    )
+    devices, passwordless = list(results[:-1]), results[-1]
 
     schedule = get_schedule()
     period = SCHEDULE_INTERVALS.get(schedule["interval"], 0)
@@ -545,7 +643,7 @@ def overview(force: bool = False) -> dict:
         "schedule": schedule,
         "next_due": next_due,
         "overdue": bool(period) and schedule_due(),
-        "passwordless_sudo": passwordless_available(),
+        "passwordless_sudo": passwordless,
         "smartctl": SMARTCTL,
         "smartctl_installed": Path(SMARTCTL).exists(),
         "history": history(30),
