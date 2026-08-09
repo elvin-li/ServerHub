@@ -16,6 +16,7 @@ import socket
 import threading
 import time
 import glob
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hub import __version__, metrics
@@ -23,7 +24,7 @@ from hub import cli_args
 from hub.host_address import host_ip
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
-from hub.util import fan_out, sh
+from hub.util import fan_out, sh, ttl_memo
 
 
 # ─── Catalog (Unraid Tools home tiles) ───────────────────────────────────────
@@ -104,6 +105,17 @@ def top_processes(limit: int = 25) -> list:
 
 # ─── Docker ──────────────────────────────────────────────────────────────────
 
+#: `docker system df` makes the daemon walk every image, container, volume and
+#: build-cache entry to total their sizes, and it was the one heavy Docker read in
+#: this module with no cache: the Tools page asked for it directly, `diagnostics()`
+#: asked again in the same payload, and `docker_prune()` asks a third time.  Sizes
+#: move when images are pulled or pruned, not between two polls seconds apart, so a
+#: short window collapses the duplicates without showing stale figures.  Pruning
+#: invalidates explicitly, since that is the one caller that just changed them.
+_DOCKER_DF_TTL = 30.0
+
+
+@ttl_memo(_DOCKER_DF_TTL)
 def docker_disk_usage() -> dict:
     if not engine_up():
         return {"engine_up": False, "raw": "", "lines": []}
@@ -176,6 +188,9 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
             "allowed": list(cmds.keys()),
         }
     rc, out, err = docker(*cmds[what], timeout=180)
+    # A prune is exactly the event the cached totals describe, so the cached copy is
+    # wrong the moment this returns.  Drop it before reporting the new figures.
+    docker_disk_usage.invalidate()
     return {
         "ok": rc == 0,
         "what": what,
@@ -187,33 +202,62 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
 # ─── Diagnostics / system info ───────────────────────────────────────────────
 
 def diagnostics() -> dict:
+    # Six unrelated questions -- the hostname, three sysctls, the boot time, and the
+    # Docker engine's disk totals -- and not one of them reads another's answer.  Run
+    # top to bottom this was the whole payload's latency added up, and `docker system
+    # df` alone is most of it, so the four cheap sysctls sat waiting behind it for no
+    # reason.  Each probe absorbs its own failure and returns the same fallback the
+    # serial version used, which is what `fan_out` requires.
+    def probe_hostname() -> str:
+        rc, out, _ = sh(["/bin/hostname"], timeout=3)
+        return out if rc == 0 else platform.node()
+
+    def probe_cpu() -> str:
+        rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
+        return out if rc == 0 else ""
+
+    def probe_ncpu() -> int | None:
+        rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
+        return int(out) if rc == 0 and out.isdigit() else None
+
+    def probe_mem_gb() -> float | None:
+        rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=3)
+        return round(int(out) / 2**30, 1) if rc == 0 and out.isdigit() else None
+
+    def probe_uptime() -> int | None:
+        try:
+            rc, boot, _ = sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
+            if rc == 0 and "sec =" in boot:
+                m = re.search(r"sec\s*=\s*(\d+)", boot)
+                if m:
+                    return int(time.time()) - int(m.group(1))
+        except Exception:
+            pass
+        return None
+
+    def probe_docker() -> tuple[bool, dict]:
+        # Kept as one unit so the `if eng` guard is preserved exactly; `engine_up`
+        # is itself cached and single-flighted, so asking here costs nothing.
+        try:
+            eng = engine_up()
+            return eng, (docker_disk_usage() if eng else {})
+        except Exception:
+            return False, {}
+
     load1, load5, load15 = os.getloadavg()
-    rc, hostname, _ = sh(["/bin/hostname"], timeout=3)
-    rc2, model, _ = sh(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
-    rc3, ncpu, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
-    rc4, memsize, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=3)
-    mem_gb = None
-    if rc4 == 0 and memsize.isdigit():
-        mem_gb = round(int(memsize) / 2**30, 1)
-    eng = engine_up()
-    df = docker_disk_usage() if eng else {}
-    uptime_s = None
-    try:
-        # kern.boottime
-        rc5, boot, _ = sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
-        if rc5 == 0 and "sec =" in boot:
-            m = re.search(r"sec\s*=\s*(\d+)", boot)
-            if m:
-                uptime_s = int(time.time()) - int(m.group(1))
-    except Exception:
-        pass
+    hostname, model, ncpu, mem_gb, uptime_s, (eng, df) = fan_out(
+        lambda probe: probe(),
+        [probe_hostname, probe_cpu, probe_ncpu, probe_mem_gb, probe_uptime, probe_docker],
+        max_workers=6,
+    )
+
     du = shutil.disk_usage("/")
     return {
-        "hostname": hostname if rc == 0 else platform.node(),
+        "hostname": hostname,
         "platform": platform.platform(),
         "arch": platform.machine(),
-        "cpu": model if rc2 == 0 else "",
-        "ncpu": int(ncpu) if rc3 == 0 and ncpu.isdigit() else None,
+        "cpu": model,
+        "ncpu": ncpu,
         "mem_gb": mem_gb,
         "load": [round(load1, 2), round(load5, 2), round(load15, 2)],
         "uptime_sec": uptime_s,
@@ -529,45 +573,68 @@ def check_updates(force: bool = False) -> dict:
         return _check_updates_uncached()
 
 
-def _check_updates_uncached() -> dict:
-    result = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "brew": {"ok": False, "outdated": [], "count": 0, "raw": ""},
-        "macos": {"ok": False, "lines": [], "raw": ""},
-        "hint": "仅检查不安装 · 安装请到「维护」页 · 结果缓存 10 分钟",
-        "cached_ttl": _UPDATES_TTL,
-    }
+def _brew_outdated() -> dict:
+    """`brew outdated`, as the updates card wants it.  Never raises."""
     # hub.paths.BREW, not a local which()-or-default: the local form omits the
     # /usr/local prefix, so on Intel with brew off PATH the updates card reported
     # "no brew" while the rest of the panel used brew happily.
     brew = BREW
-    if Path(brew).exists():
+    if not Path(brew).exists():
+        return {"ok": False, "outdated": [], "count": 0, "raw": ""}
+    try:
         rc, out, err = sh([brew, "outdated", "--verbose"], timeout=45)
-        lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
-        result["brew"] = {
-            "ok": rc == 0,
-            "outdated": lines[:40],
-            "count": len(lines),
-            "raw": (err or "")[:200] if rc != 0 else "",
-        }
-    # softwareupdate -l is slow; run with shorter timeout and accept partial
-    rc2, out2, err2 = sh(
-        ["/usr/sbin/softwareupdate", "-l"],
-        timeout=45,
-    )
-    raw = (out2 or err2 or "").strip()
+    except Exception as exc:  # noqa: BLE001 - reported in the card
+        return {"ok": False, "outdated": [], "count": 0, "raw": str(exc)[:200]}
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    return {
+        "ok": rc == 0,
+        "outdated": lines[:40],
+        "count": len(lines),
+        "raw": (err or "")[:200] if rc != 0 else "",
+    }
+
+
+def _macos_updates() -> dict:
+    """`softwareupdate -l`, filtered.  Never raises."""
+    try:
+        # slow by nature; a tight timeout and a partial answer beat blocking
+        rc, out, err = sh(["/usr/sbin/softwareupdate", "-l"], timeout=45)
+    except Exception as exc:  # noqa: BLE001 - reported in the card
+        return {"ok": False, "lines": [], "raw": str(exc)[:1500], "has_updates": False}
+    raw = (out or err or "").strip()
     interesting = [
         ln for ln in raw.splitlines()
         if ln.strip() and not ln.startswith("Software Update Tool")
     ]
-    result["macos"] = {
-        "ok": rc2 == 0,
+    return {
+        "ok": rc == 0,
         "lines": interesting[:30],
         "raw": raw[:1500],
         "has_updates": any(
             "Label:" in ln or "recommended" in ln.lower() or "*" in ln
             for ln in interesting
         ),
+    }
+
+
+def _check_updates_uncached() -> dict:
+    # Two unrelated package managers asked two unrelated questions, each with a 45s
+    # timeout -- so in series the worst case was the 90s the docstring warns about,
+    # and the ordinary case was the sum of two slow commands for no reason.  They
+    # share nothing and neither needs elevation, so they run together and the cost
+    # becomes the slower of the two.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        brew_future = ex.submit(_brew_outdated)
+        macos_future = ex.submit(_macos_updates)
+        brew_result = brew_future.result()
+        macos_result = macos_future.result()
+
+    result = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "brew": brew_result,
+        "macos": macos_result,
+        "hint": "仅检查不安装 · 安装请到「维护」页 · 结果缓存 10 分钟",
+        "cached_ttl": _UPDATES_TTL,
     }
     _updates_cache.update(t=time.time(), v=result)
     return result

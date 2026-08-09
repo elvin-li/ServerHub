@@ -48,11 +48,13 @@ sys.path.insert(0, str(BASE))
 
 from hub import (  # noqa: E402
     apps_manage_svc,
+    disk_manage_svc,
     disk_power_svc,
     native_catalog,
     network_svc,
     raid_svc,
     shares_svc,
+    tools_svc,
     vms_svc,
     wireguard_svc,
 )
@@ -1600,6 +1602,253 @@ class NativeAppAutostartLookupTests(unittest.TestCase):
             ),
             "flags should be unknown, not wrong",
         )
+
+
+class UpdateCheckTests(unittest.TestCase):
+    """Two package managers, two unrelated questions, each with a 45s timeout."""
+
+    def _run(self, brew=None, macos=None):
+        def slow_brew():
+            time.sleep(PROBE_DELAY)
+            return {"ok": True, "outdated": ["pkg 1.0 < 2.0"], "count": 1, "raw": ""}
+
+        def slow_macos():
+            time.sleep(PROBE_DELAY)
+            return {"ok": True, "lines": ["* Label: macOS 26.1"], "raw": "raw",
+                    "has_updates": True}
+
+        tools_svc._updates_cache.update(t=0.0, v=None)
+        self.addCleanup(tools_svc._updates_cache.update, t=0.0, v=None)
+        with (
+            mock.patch.object(tools_svc, "_brew_outdated", brew or slow_brew),
+            mock.patch.object(tools_svc, "_macos_updates", macos or slow_macos),
+        ):
+            started = time.time()
+            out = tools_svc.check_updates(force=True)
+            return out, time.time() - started
+
+    def test_the_two_package_managers_are_asked_together(self):
+        _, elapsed = self._run()
+        self.assertLess(elapsed, 2 * PROBE_DELAY * 0.8, f"took {elapsed:.2f}s")
+
+    def test_both_answers_land_in_their_own_keys(self):
+        out, _ = self._run()
+        self.assertEqual(out["brew"]["count"], 1)
+        self.assertTrue(out["macos"]["has_updates"])
+        self.assertIn("ts", out)
+        self.assertEqual(out["cached_ttl"], tools_svc._UPDATES_TTL)
+
+    def test_a_failing_brew_probe_does_not_hide_the_macos_answer(self):
+        out, _ = self._run(brew=lambda: {"ok": False, "outdated": [], "count": 0,
+                                         "raw": "brew exploded"})
+        self.assertFalse(out["brew"]["ok"])
+        self.assertTrue(out["macos"]["ok"], "the macOS side should still be reported")
+
+    def test_the_result_is_cached_for_the_next_caller(self):
+        first, _ = self._run()
+        # Second call must not re-probe: patches are gone, so a probe would use the
+        # real commands and the counts would change.
+        second = tools_svc.check_updates()
+        self.assertEqual(first["ts"], second["ts"])
+
+
+class DockerDiskUsageCacheTests(unittest.TestCase):
+    """`docker system df` makes the daemon total every image and volume."""
+
+    def setUp(self):
+        tools_svc.docker_disk_usage.invalidate()
+        self.addCleanup(tools_svc.docker_disk_usage.invalidate)
+
+    def test_repeat_callers_share_one_invocation(self):
+        calls = []
+
+        def fake_docker(*args, **kw):
+            calls.append(args)
+            time.sleep(PROBE_DELAY)
+            return 0, "TYPE TOTAL ACTIVE SIZE RECLAIMABLE\nImages 3 1 1GB 500MB (50%)", ""
+
+        with (
+            mock.patch.object(tools_svc, "engine_up", lambda: True),
+            mock.patch.object(tools_svc, "docker", fake_docker),
+        ):
+            first = tools_svc.docker_disk_usage()
+            second = tools_svc.docker_disk_usage()
+            third = tools_svc.docker_disk_usage()
+
+        self.assertEqual(
+            len(calls), 1, f"three callers should share one `docker system df`, ran {len(calls)}"
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(second, third)
+        self.assertEqual(first["lines"][0]["type"], "Images")
+
+    def test_a_prune_drops_the_cached_totals(self):
+        # The numbers a prune reports must not be the ones it just invalidated.
+        with (
+            mock.patch.object(tools_svc, "engine_up", lambda: True),
+            mock.patch.object(
+                tools_svc, "docker",
+                lambda *a, **kw: (0, "TYPE TOTAL ACTIVE SIZE RECLAIMABLE\n"
+                                     "Images 9 9 9GB 0B (0%)", ""),
+            ),
+        ):
+            tools_svc.docker_disk_usage()
+            calls = []
+
+            def counting(*args, **kw):
+                calls.append(args)
+                return 0, "TYPE TOTAL ACTIVE SIZE RECLAIMABLE\nImages 1 1 1GB 0B (0%)", ""
+
+            with mock.patch.object(tools_svc, "docker", counting):
+                result = tools_svc.docker_prune("dangling", confirm=True)
+
+        # One call for the prune itself, one for the fresh df it reports.
+        self.assertIn(("system", "df"), calls, "the prune should re-read the totals")
+        self.assertEqual(result["df"]["lines"][0]["total"], "1")
+
+
+class SystemDiagnosticsTests(unittest.TestCase):
+    """Five small reads that used to queue behind `docker system df`."""
+
+    def _run(self):
+        def slow_sh(cmd, *a, **kw):
+            time.sleep(PROBE_DELAY)
+            if cmd[:1] == ["/bin/hostname"]:
+                return 0, "testhost", ""
+            if cmd[-1] == "machdep.cpu.brand_string":
+                return 0, "Test CPU", ""
+            if cmd[-1] == "hw.ncpu":
+                return 0, "10", ""
+            if cmd[-1] == "hw.memsize":
+                return 0, str(32 * 2**30), ""
+            if cmd[-1] == "kern.boottime":
+                return 0, "{ sec = 1000, usec = 0 }", ""
+            return 1, "", ""
+
+        def slow_df():
+            time.sleep(PROBE_DELAY)
+            return {"engine_up": True, "raw": "", "lines": []}
+
+        with (
+            mock.patch.object(tools_svc, "sh", slow_sh),
+            mock.patch.object(tools_svc, "engine_up", lambda: True),
+            mock.patch.object(tools_svc, "docker_disk_usage", slow_df),
+        ):
+            started = time.time()
+            out = tools_svc.diagnostics()
+            return out, time.time() - started
+
+    def test_the_six_reads_overlap(self):
+        _, elapsed = self._run()
+        self.assertLess(elapsed, 6 * PROBE_DELAY * 0.8, f"took {elapsed:.2f}s for six reads")
+
+    def test_every_field_still_comes_from_its_own_read(self):
+        out, _ = self._run()
+        self.assertEqual(out["hostname"], "testhost")
+        self.assertEqual(out["cpu"], "Test CPU")
+        self.assertEqual(out["ncpu"], 10)
+        self.assertEqual(out["mem_gb"], 32.0)
+        self.assertTrue(out["orbstack"])
+        self.assertIsNotNone(out["uptime_sec"])
+
+    def test_a_failed_read_falls_back_exactly_as_the_serial_version_did(self):
+        with (
+            mock.patch.object(tools_svc, "sh", lambda *a, **kw: (1, "", "nope")),
+            mock.patch.object(tools_svc, "engine_up", lambda: False),
+        ):
+            out = tools_svc.diagnostics()
+        # hostname fell back to platform.node(), the rest to empty/None.
+        self.assertTrue(out["hostname"])
+        self.assertEqual(out["cpu"], "")
+        self.assertIsNone(out["ncpu"])
+        self.assertIsNone(out["mem_gb"])
+        self.assertIsNone(out["uptime_sec"])
+        self.assertEqual(out["docker_df"], {})
+
+    def test_an_exploding_docker_probe_does_not_lose_the_sysctls(self):
+        def boom():
+            raise OSError("daemon gone")
+
+        with (
+            mock.patch.object(tools_svc, "engine_up", lambda: True),
+            mock.patch.object(tools_svc, "docker_disk_usage", boom),
+        ):
+            out = tools_svc.diagnostics()
+        self.assertFalse(out["orbstack"])
+        self.assertEqual(out["docker_df"], {})
+        self.assertTrue(out["hostname"], "the rest of the payload should survive")
+
+
+class ManagedVolumePrologueTests(unittest.TestCase):
+    """The four reads that open a managed-volume listing."""
+
+    TREE = {"AllDisksAndPartitions": [
+        {"DeviceIdentifier": "disk0", "Size": 500 * 2**30, "Partitions": [
+            {"DeviceIdentifier": "disk0s1", "Size": 500 * 2**30},
+        ]},
+        {"DeviceIdentifier": "disk4", "Size": 100 * 2**30, "Partitions": [
+            {"DeviceIdentifier": "disk4s1", "Size": 100 * 2**30},
+        ]},
+    ]}
+
+    def setUp(self):
+        disk_manage_svc.invalidate_disk_info()
+        self.addCleanup(disk_manage_svc.invalidate_disk_info)
+
+    def _run(self):
+        def slow_plist(argv, **kw):
+            time.sleep(PROBE_DELAY)
+            if "physical" in argv:
+                return {"WholeDisks": ["disk0", "disk4"]}
+            return {k: v for k, v in self.TREE.items()}
+
+        def slow_sh(cmd, *a, **kw):
+            time.sleep(PROBE_DELAY)
+            if cmd[:3] == ["/bin/df", "-P", "/"]:
+                return 0, "Filesystem\n/dev/disk0s1 1 1 1 1% /\n", ""
+            return 1, "", ""
+
+        def slow_info(node):
+            time.sleep(PROBE_DELAY)
+            if node == "/":
+                return {"ParentWholeDisk": "disk0"}
+            return {"MediaName": f"Media {node}", "TotalSize": 1}
+
+        with (
+            mock.patch.object(disk_manage_svc, "_plist", slow_plist),
+            mock.patch.object(disk_manage_svc, "sh", slow_sh),
+            mock.patch.object(disk_manage_svc, "_diskutil_info", slow_info),
+            mock.patch.object(disk_manage_svc, "_prefetch_disk_info", lambda nodes: None),
+        ):
+            started = time.time()
+            out = disk_manage_svc.list_managed_volumes()
+            return out, time.time() - started
+
+    def test_the_four_opening_reads_overlap(self):
+        _, elapsed = self._run()
+        # Four prologue reads plus the per-node lookups the walk still makes; the
+        # bound only has to exclude the prologue having been serial.
+        self.assertLess(elapsed, 8 * PROBE_DELAY, f"took {elapsed:.2f}s")
+
+    def test_the_boot_disk_is_still_classified_from_the_shared_reads(self):
+        # This is the safety-critical output: a volume wrongly marked non-system is
+        # offered erase and rename.
+        out, _ = self._run()
+        by_id = {v["id"]: v for v in out}
+        self.assertTrue(by_id["disk0"]["system"])
+        self.assertTrue(by_id["disk0s1"]["system"])
+        self.assertEqual(by_id["disk0"]["actions"], [])
+        self.assertEqual(by_id["disk0s1"]["actions"], [])
+        self.assertFalse(by_id["disk4"]["system"])
+        self.assertTrue(by_id["disk4"]["actions"])
+
+    def test_an_empty_device_tree_returns_nothing(self):
+        with (
+            mock.patch.object(disk_manage_svc, "_plist", lambda argv, **kw: {}),
+            mock.patch.object(disk_manage_svc, "sh", lambda *a, **kw: (1, "", "")),
+            mock.patch.object(disk_manage_svc, "_diskutil_info", lambda n: {}),
+        ):
+            self.assertEqual(disk_manage_svc.list_managed_volumes(), [])
 
 
 class DeliberatelySerialTests(unittest.TestCase):

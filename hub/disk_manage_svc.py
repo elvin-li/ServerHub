@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from hub.errors import api_error
-from hub.util import sh
+from hub.util import fan_out, sh
 
 DISK_RE = re.compile(r"^disk\d+(s\d+)*$")
 WHOLE_RE = re.compile(r"^disk\d+$")
@@ -234,29 +234,52 @@ def _is_system_related(info: dict, device_id: str) -> bool:
 
 def list_managed_volumes() -> list[dict]:
     """All diskutil volumes with mount/format metadata for management UI."""
-    pl = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=5)
-    if not isinstance(pl, dict):
+    # Four reads open this listing and none consumes another's output: the device
+    # tree, the physical whole-disk list, the root device per `df`, and `diskutil
+    # info /`.  Taken in turn they were four subprocesses of pure prologue before any
+    # per-node work could start, on the branch that dominates /api/storage.
+    #
+    # Each probe returns the empty value the serial version would have produced
+    # rather than raising, which is what `fan_out` requires.
+    def probe_tree() -> dict:
+        found = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=5)
+        return found if isinstance(found, dict) else {}
+
+    def probe_physical() -> set[str]:
+        # Real physical whole disks (disk0, external HDDs) vs synthetic APFS
+        # containers (disk1/2/3…).
+        found = _plist(["/usr/sbin/diskutil", "list", "-plist", "physical"], timeout=5)
+        if not isinstance(found, dict):
+            return set()
+        return {str(x) for x in found.get("WholeDisks") or []}
+
+    def probe_root_df() -> set[str]:
+        found: set[str] = set()
+        rc, dfout, _ = sh(["/bin/df", "-P", "/"], timeout=5)
+        if rc == 0:
+            for line in dfout.splitlines()[1:]:
+                parts = line.split()
+                if not parts:
+                    continue
+                m = re.search(r"/dev/(disk\d+)", parts[0])
+                if m:
+                    found.add(m.group(1))
+        return found
+
+    def probe_root_info() -> dict:
+        try:
+            return _diskutil_info("/")
+        except Exception:
+            return {}
+
+    pl, physical_wholes, system_wholes, root_info = fan_out(
+        lambda probe: probe(),
+        [probe_tree, probe_physical, probe_root_df, probe_root_info],
+        max_workers=4,
+    )
+    if not pl:
         return []
 
-    # Real physical whole disks (disk0, external HDDs) vs synthetic APFS containers (disk1/2/3…)
-    physical_wholes: set[str] = set()
-    pphys = _plist(["/usr/sbin/diskutil", "list", "-plist", "physical"], timeout=5)
-    if isinstance(pphys, dict):
-        for x in pphys.get("WholeDisks") or []:
-            physical_wholes.add(str(x))
-
-    # Build set of system whole disks from root
-    system_wholes = set(physical_wholes)  # start empty of external later
-    system_wholes = set()
-    rc, dfout, _ = sh(["/bin/df", "-P", "/"], timeout=5)
-    if rc == 0:
-        for line in dfout.splitlines()[1:]:
-            fs = line.split()[0]
-            m = re.search(r"/dev/(disk\d+)", fs)
-            if m:
-                system_wholes.add(m.group(1))
-    # also from diskutil info /
-    root_info = _diskutil_info("/")
     if root_info.get("ParentWholeDisk"):
         system_wholes.add(root_info["ParentWholeDisk"])
     # Physical store of APFS container
