@@ -23,7 +23,7 @@ from hub import cli_args
 from hub.host_address import host_ip
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
-from hub.util import sh
+from hub.util import fan_out, sh
 
 
 # ─── Catalog (Unraid Tools home tiles) ───────────────────────────────────────
@@ -387,6 +387,28 @@ def hardware_profile(force: bool = False) -> dict:
         return _hardware_profile_uncached()
 
 
+def _profiler_report(entry) -> tuple[int, str]:
+    """``(rc, truncated text)`` for one system_profiler data type.  Never raises.
+
+    Truncation happens here rather than at the call site so the 4000-character
+    cap is applied to each report independently, exactly as the serial version
+    did, and so an exploding report yields its message instead of costing the
+    other three.
+    """
+    _, data_type = entry
+    try:
+        rc, out, err = sh(
+            ["/usr/sbin/system_profiler", data_type, "-detailLevel", "mini"],
+            timeout=12,
+        )
+    except Exception as exc:  # noqa: BLE001 - one report must not lose the rest
+        return 1, str(exc)[:4000]
+    text = (out or err or "").strip()
+    if len(text) > 4000:
+        text = text[:4000] + "\n…(truncated)"
+    return rc, text
+
+
 def _hardware_profile_uncached() -> dict:
     sections = {}
     # Keep only quick types — skip network/displays by default (slow & rarely needed)
@@ -396,14 +418,11 @@ def _hardware_profile_uncached() -> dict:
         ("storage", "SPStorageDataType"),
         ("power", "SPPowerDataType"),
     ]
-    for key, dt in types:
-        rc, out, err = sh(
-            ["/usr/sbin/system_profiler", dt, "-detailLevel", "mini"],
-            timeout=12,
-        )
-        text = (out or err or "").strip()
-        if len(text) > 4000:
-            text = text[:4000] + "\n…(truncated)"
+    # Four independent `system_profiler` reports, each with a 12s timeout, ran one
+    # after another -- so the hardware page's latency was their sum even though no
+    # report depends on another.  `fan_out` keeps them in the declared order,
+    # which is the order the sections are rendered in.
+    for (key, dt), (rc, text) in zip(types, fan_out(_profiler_report, types)):
         sections[key] = {
             "ok": rc == 0,
             "data_type": dt,

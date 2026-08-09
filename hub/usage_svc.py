@@ -24,12 +24,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import time
 from pathlib import Path
 
 from hub import files_svc
 from hub.errors import api_error
-from hub.util import sh
+from hub.util import fan_out, sh
 
 MDUTIL = "/usr/bin/mdutil"
 
@@ -59,6 +60,34 @@ _NEVER_WALK = (
 )
 
 _HASH_CHUNK = 1024 * 1024
+
+#: Concurrent readers per walk.
+#:
+#: These walks are `os.scandir` + `stat` + `read`: the threads sit in syscalls
+#: with the GIL released, so the useful width is set by how many concurrent
+#: metadata reads the volume will service, not by core count.
+#:
+#: Four because that is what measured fastest, and because more is actively
+#: worse.  Walking ~421k files under ~/Services, taking the minimum of several
+#: rounds (this host has enough background load that a single reading measures the
+#: neighbours instead of the code):
+#:
+#:     serial   13.8s      w=3   9.0s     w=6  10.1s
+#:     w=1      13.7s      w=4   6.9s     w=8  10.2s
+#:     w=2      13.8s      w=5   8.5s     w=12 10.4s
+#:
+#: The w=1 row is the control: it runs the concurrent code path with no
+#: concurrency and lands on the serial time, so the speedup below it is threads
+#: rather than an incidental rewrite of the walk.  Past ~5 the extra threads queue
+#: inside APFS rather than overlap and give the time back.
+#:
+#: Deliberately not `util.MAX_PROBE_WORKERS` (8): that ceiling is for probes
+#: blocked on separate subprocesses and sockets, which do not contend with each
+#: other.  Every thread here queues against the same volume.
+_SCAN_WORKERS = 4
+
+#: Entries a worker claims from the shared ceiling in one go.  See _Budget.
+_LEASE = 4096
 
 
 def _is_never_walk(path: Path) -> bool:
@@ -162,21 +191,28 @@ def _resolve(path: str | None, root_id: str | None) -> Path:
 
 
 class _Budget:
-    """Shared wall-clock + entry ceiling for one walk.
+    """Shared wall-clock + entry ceiling for one walk, across any number of threads.
 
-    The clock is sampled once per :data:`_CLOCK_EVERY` entries rather than on
-    every one: a directory walk calls this hundreds of thousands of times, and at
-    that rate ``time.monotonic()`` stops being free.  The granularity costs at
-    most a few milliseconds of overshoot.
+    The entry ceiling is handed out in blocks (:data:`_LEASE`) rather than
+    decremented per entry.  A walk calls into the budget hundreds of thousands of
+    times, so a lock on every entry would cost more than the concurrency it
+    guards: leasing takes the lock once per few thousand entries instead, and the
+    only inaccuracy is that a run can stop with up to one unspent lease per
+    thread still on the books -- irrelevant against a ceiling in the millions.
+
+    ``deadline`` is written once at construction and only read afterwards, and
+    ``truncated`` only ever goes False -> True, so neither needs the lock.
+
+    Callers do not spend directly; each thread takes its own :class:`_Spender`.
     """
 
-    __slots__ = ("deadline", "remaining", "truncated", "_tick")
+    __slots__ = ("deadline", "truncated", "_remaining", "_lock")
 
     def __init__(self, seconds: float, entries: int):
         self.deadline = time.monotonic() + seconds
-        self.remaining = entries
         self.truncated = False
-        self._tick = 0
+        self._remaining = entries
+        self._lock = threading.Lock()
 
     def expired(self) -> bool:
         """Check the clock unconditionally (for use between coarse work items)."""
@@ -185,15 +221,48 @@ class _Budget:
             return True
         return False
 
-    def spend(self, n: int = 1) -> bool:
-        self.remaining -= n
-        if self.remaining <= 0:
+    def lease(self, size: int = _LEASE) -> int:
+        """Claim up to *size* entries from the shared ceiling; 0 when exhausted."""
+        with self._lock:
+            granted = min(size, self._remaining)
+            self._remaining -= granted
+        if granted <= 0:
             self.truncated = True
-            return False
+        return granted
+
+    def spender(self) -> "_Spender":
+        return _Spender(self)
+
+
+class _Spender:
+    """One thread's view of a :class:`_Budget`.
+
+    Holds an unshared lease so the common path touches no lock, and samples the
+    clock once per :data:`_CLOCK_EVERY` entries -- a walk calls ``spend`` often
+    enough that ``time.monotonic()`` stops being free.  The granularity costs at
+    most a few milliseconds of overshoot.
+    """
+
+    __slots__ = ("_budget", "_left", "_tick")
+
+    def __init__(self, budget: _Budget):
+        self._budget = budget
+        self._left = 0
+        self._tick = 0
+
+    def expired(self) -> bool:
+        return self._budget.expired()
+
+    def spend(self, n: int = 1) -> bool:
+        self._left -= n
+        if self._left <= 0:
+            self._left = self._budget.lease()
+            if self._left <= 0:
+                return False
         self._tick += 1
         if self._tick >= _CLOCK_EVERY:
             self._tick = 0
-            return not self.expired()
+            return not self._budget.expired()
         return True
 
 
@@ -201,19 +270,113 @@ class _Budget:
 _CLOCK_EVERY = 512
 
 
-def _dir_size(path: Path, budget: _Budget) -> tuple[int, int]:
-    """(bytes, file count) under *path*, following no symlinks."""
+def _walk_parallel(target: Path, budget: _Budget, make_sink, on_file, *,
+                   workers: int = _SCAN_WORKERS) -> list:
+    """Walk everything under *target* with *workers* threads; return their sinks.
+
+    A shared stack of pending directories that every worker pops from, rather than
+    a static split of the top level.  The tree's own shape then decides the
+    parallelism: a root whose entire content hangs off one subdirectory overlaps
+    just as well as one with forty children, which a top-level split cannot do.
+
+    *make_sink* is called once per worker and *on_file*(entry, sink) once per file,
+    both on the worker's thread -- so a sink is never shared and needs no locking.
+    The caller merges the returned sinks.
+
+    Termination is "every worker is idle and the stack is empty".  Exhausting the
+    budget ends the walk for everyone: a worker that returned while others waited
+    on the condition would hang the request until its timeout.
+    """
+    stack: list[Path] = [target]
+    cond = threading.Condition()
+    idle = 0
+    finished = False
+
+    def _next() -> Path | None:
+        nonlocal idle, finished
+        with cond:
+            while True:
+                if finished:
+                    return None
+                if stack:
+                    return stack.pop()
+                idle += 1
+                if idle >= workers:
+                    # Nobody is walking and nothing is queued: the tree is done.
+                    finished = True
+                    cond.notify_all()
+                    return None
+                cond.wait()
+                idle -= 1
+
+    def _push(paths: list[Path]) -> None:
+        if not paths:
+            return
+        with cond:
+            stack.extend(paths)
+            cond.notify_all()
+
+    def _stop() -> None:
+        nonlocal finished
+        with cond:
+            finished = True
+            cond.notify_all()
+
+    def run(_index: int):
+        sink = make_sink()
+        spender = budget.spender()
+        while True:
+            current = _next()
+            if current is None:
+                return sink
+            if spender.expired():
+                _stop()
+                return sink
+            subdirs: list[Path] = []
+            try:
+                with os.scandir(current) as it:
+                    for entry in it:
+                        if not spender.spend():
+                            _stop()
+                            return sink
+                        try:
+                            if entry.is_symlink():
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                child = Path(entry.path)
+                                if not _is_never_walk(child):
+                                    subdirs.append(child)
+                            elif entry.is_file(follow_symlinks=False):
+                                on_file(entry, sink)
+                        except OSError:
+                            continue
+            except (OSError, PermissionError):
+                pass
+            _push(subdirs)
+
+    # fan_out builds a pool of exactly len(items) threads here, which is what the
+    # all-idle termination rule counts on.
+    return fan_out(run, range(workers), max_workers=workers)
+
+
+def _dir_size(path: Path, spender: _Spender) -> tuple[int, int]:
+    """(bytes, file count) under *path*, following no symlinks.
+
+    Takes a :class:`_Spender` rather than the budget itself: several of these run
+    at once, one per child of the directory being listed, and each needs its own
+    unshared lease.
+    """
     total = 0
     files = 0
     stack = [path]
     while stack:
         current = stack.pop()
-        if budget.expired():
+        if spender.expired():
             break
         try:
             with os.scandir(current) as it:
                 for entry in it:
-                    if not budget.spend():
+                    if not spender.spend():
                         return total, files
                     try:
                         if entry.is_symlink():
@@ -251,6 +414,11 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
     except (OSError, PermissionError):
         raise api_error("files.permission_denied", path=str(target))
 
+    # Split the listing first, then size the directories concurrently.  Sizing
+    # them one after another was the whole cost of this endpoint: 34 children of
+    # ~/Services took 11.3s serially without coming near the budget, so every bit
+    # of it was one thread waiting on a device that had capacity to spare.
+    subdirs: list[os.DirEntry] = []
     for entry in entries:
         try:
             if entry.is_symlink():
@@ -259,15 +427,7 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
                 child = Path(entry.path)
                 if _is_never_walk(child) or files_svc.is_protected(child):
                     continue
-                size, files = _dir_size(child, budget)
-                children.append({
-                    "name": entry.name,
-                    "path": entry.path,
-                    "kind": "dir",
-                    "bytes": size,
-                    "gb": round(size / 2**30, 2),
-                    "files": files,
-                })
+                subdirs.append(entry)
             elif entry.is_file(follow_symlinks=False):
                 size = entry.stat(follow_symlinks=False).st_size
                 own_files += 1
@@ -282,6 +442,21 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
                 })
         except OSError:
             continue
+
+    sizes = fan_out(
+        lambda e: _dir_size(Path(e.path), budget.spender()),
+        subdirs,
+        max_workers=_SCAN_WORKERS,
+    )
+    for entry, (size, files) in zip(subdirs, sizes):
+        children.append({
+            "name": entry.name,
+            "path": entry.path,
+            "kind": "dir",
+            "bytes": size,
+            "gb": round(size / 2**30, 2),
+            "files": files,
+        })
 
     children.sort(key=lambda c: c["bytes"], reverse=True)
     total = sum(c["bytes"] for c in children)
@@ -312,36 +487,31 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
     budget = _Budget(SCAN_SECONDS, SCAN_ENTRIES)
     started = time.monotonic()
 
-    found: list[tuple[int, str, float]] = []
-    stack = [target]
-    scanned = 0
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as it:
-                for entry in it:
-                    if not budget.spend():
-                        stack.clear()
-                        break
-                    try:
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            child = Path(entry.path)
-                            if not _is_never_walk(child):
-                                stack.append(child)
-                        elif entry.is_file(follow_symlinks=False):
-                            st = entry.stat(follow_symlinks=False)
-                            scanned += 1
-                            found.append((st.st_size, entry.path, st.st_mtime))
-                            if len(found) > cap * 20:
-                                found.sort(key=lambda x: x[0], reverse=True)
-                                del found[cap:]
-                    except OSError:
-                        continue
-        except (OSError, PermissionError):
-            continue
+    # Each worker keeps its own trimmed top list.  Merging per-worker top-N lists
+    # is exact for a global top-N as long as each local list is never trimmed
+    # below `cap` -- a file that belongs in the global top `cap` cannot have been
+    # dropped from its own worker's list while `cap` larger ones from that same
+    # worker survive.
+    # `scanned` counts files seen, not files kept, so it is tracked separately --
+    # deriving it from the retained list would report the trim size instead.
+    def _sink() -> dict:
+        return {"seen": 0, "top": []}
 
+    def _on_file(entry, sink: dict) -> None:
+        try:
+            st = entry.stat(follow_symlinks=False)
+        except OSError:
+            return
+        sink["seen"] += 1
+        top = sink["top"]
+        top.append((st.st_size, entry.path, st.st_mtime))
+        if len(top) > cap * 20:
+            top.sort(key=lambda x: x[0], reverse=True)
+            del top[cap:]
+
+    sinks = _walk_parallel(target, budget, _sink, _on_file)
+    scanned = sum(s["seen"] for s in sinks)
+    found = [item for sink in sinks for item in sink["top"]]
     found.sort(key=lambda x: x[0], reverse=True)
     items = [
         {
@@ -380,6 +550,22 @@ def _hash_file(path: Path, *, partial: bool) -> str | None:
     return digest.hexdigest()
 
 
+def _hash_group(paths: list[str], budget: _Budget, *, partial: bool) -> list[str | None]:
+    """Hash *paths* concurrently, in order, stopping once the budget is spent.
+
+    The deadline is still checked per file rather than only per group: full
+    hashing is the expensive stage and a single group of 8 GB files can consume a
+    whole budget on its own.  Once expired, the remaining entries come back None,
+    which the caller treats the same way it treats an unreadable file.
+    """
+    def _one(p: str) -> str | None:
+        if budget.expired():
+            return None
+        return _hash_file(Path(p), partial=partial)
+
+    return fan_out(_one, paths, max_workers=_SCAN_WORKERS)
+
+
 def duplicates(path: str | None = None, root_id: str | None = None, min_mb: float = 1.0) -> dict:
     """Groups of byte-identical files under *path*.
 
@@ -392,31 +578,21 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
     budget = _Budget(DUP_SECONDS, DUP_CANDIDATES)
     started = time.monotonic()
 
-    by_size: dict[int, list[str]] = {}
-    stack = [target]
-    while stack:
-        current = stack.pop()
+    def _sink() -> dict[int, list[str]]:
+        return {}
+
+    def _on_file(entry, sink: dict[int, list[str]]) -> None:
         try:
-            with os.scandir(current) as it:
-                for entry in it:
-                    if not budget.spend():
-                        stack.clear()
-                        break
-                    try:
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            child = Path(entry.path)
-                            if not _is_never_walk(child):
-                                stack.append(child)
-                        elif entry.is_file(follow_symlinks=False):
-                            size = entry.stat(follow_symlinks=False).st_size
-                            if size >= floor:
-                                by_size.setdefault(size, []).append(entry.path)
-                    except OSError:
-                        continue
-        except (OSError, PermissionError):
-            continue
+            size = entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            return
+        if size >= floor:
+            sink.setdefault(size, []).append(entry.path)
+
+    by_size: dict[int, list[str]] = {}
+    for partial_sink in _walk_parallel(target, budget, _sink, _on_file):
+        for size, paths in partial_sink.items():
+            by_size.setdefault(size, []).extend(paths)
 
     groups: list[dict] = []
     wasted = 0
@@ -427,23 +603,18 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
             break
         if len(paths) < 2:
             continue
+        # Both hash stages fan out over the candidate files.  Reading a megabyte
+        # (or eight gigabytes) is I/O, and hashlib releases the GIL for buffers
+        # this size, so these overlap for real rather than taking turns.
         partial: dict[str, list[str]] = {}
-        for p in paths:
-            if budget.expired():
-                break
-            key = _hash_file(Path(p), partial=True)
+        for p, key in zip(paths, _hash_group(paths, budget, partial=True)):
             if key:
                 partial.setdefault(key, []).append(p)
         for candidates in partial.values():
             if len(candidates) < 2 or budget.expired():
                 continue
             full: dict[str, list[str]] = {}
-            for p in candidates:
-                # Full hashing is the expensive stage: a group of 8 GB files can
-                # exhaust the whole budget on its own, so check per file.
-                if budget.expired():
-                    break
-                key = _hash_file(Path(p), partial=False)
+            for p, key in zip(candidates, _hash_group(candidates, budget, partial=False)):
                 if key:
                     full.setdefault(key, []).append(p)
             for digest, matches in full.items():
@@ -477,6 +648,19 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
 
 # ── Spotlight indexing ───────────────────────────────────────────────────────
 
+def _spotlight_query(volume: str) -> tuple[int, str]:
+    """``(rc, text)`` from ``mdutil -s`` for one volume.  Never raises.
+
+    A volume that has just been unmounted must cost its own row, not the page:
+    ``fan_out`` re-raises on iteration.
+    """
+    try:
+        rc, text, err = sh([MDUTIL, "-s", volume], timeout=8)
+    except Exception as exc:  # noqa: BLE001
+        return 1, str(exc)
+    return rc, (text or err or "").strip()
+
+
 def spotlight_status() -> list[dict]:
     """Per-volume Spotlight indexing state.
 
@@ -494,10 +678,12 @@ def spotlight_status() -> list[dict]:
         except OSError:
             pass
 
+    # One `mdutil -s` per volume, 8s timeout each, previously in series -- so on
+    # the kind of machine this page exists for, with an array of volumes mounted,
+    # the latency was the volume count times that.  The queries are independent,
+    # and `fan_out` keeps the rows in mount order rather than answer order.
     out = []
-    for volume in volumes:
-        rc, text, err = sh([MDUTIL, "-s", volume], timeout=8)
-        blob = (text or err or "").strip()
+    for volume, (rc, blob) in zip(volumes, fan_out(_spotlight_query, volumes)):
         lowered = blob.lower()
         if "indexing enabled" in lowered:
             state = "enabled"

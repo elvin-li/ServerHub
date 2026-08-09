@@ -15,7 +15,7 @@ from hub.adaptive import (
 from hub.config import override
 from hub.host_address import resolve_template
 from hub.paths import AGENTS_DIR
-from hub.util import port_open, sh
+from hub.util import fan_out, port_open, sh
 
 
 def launchctl_table():
@@ -28,9 +28,41 @@ def launchctl_table():
     return t
 
 
+def _probe_port(port) -> bool | None:
+    """Port reachability that never raises, for use inside the pool."""
+    try:
+        return port_open(port)
+    except Exception:
+        return False
+
+
+def _enrich(entry):
+    """``enrich_service`` for one item, absorbing its own failures.
+
+    ``fan_out`` re-raises on iteration, so one service whose URL probe blew up
+    would otherwise empty the whole service list rather than losing its own
+    adaptive extras.
+    """
+    item, pl, pid = entry
+    try:
+        return enrich_service(item, pl=pl, pid=pid)
+    except Exception:
+        return item
+
+
 def discover_launchd():
     table = launchctl_table()
-    items = []
+    # Two network waits used to sit inside this loop, once per installed
+    # LaunchAgent: the port reachability check (a connect that costs its whole
+    # timeout when nothing is listening) and enrich_service, which probes a
+    # detected port for an HTTP or HTTPS URL.  Fifteen agents therefore put
+    # fifteen of each on /api/status, the endpoint the dashboard polls.
+    #
+    # So the work is staged instead: parse and resolve here, fan the connects out,
+    # decide state from the answers, then fan the enrichment out.  Plist reads and
+    # override lookups stay on this thread -- they are local and cheap, and
+    # ports_for_pid already answers from a shared lsof snapshot.
+    contexts = []
     for path in sorted(glob.glob(f"{AGENTS_DIR}/*.plist")):
         label = Path(path).stem
         ov = override(label)
@@ -69,7 +101,28 @@ def discover_launchd():
         name = ov.get("name") or friendly_name(label)
         group = ov.get("group") or guess_group(label, pl, interval)
 
-        p = port_open(port) if port else None
+        contexts.append({
+            "label": label, "ov": ov, "pl": pl, "interval": interval,
+            "launchservices_open": launchservices_open, "pid": pid, "last": last,
+            "loaded": loaded, "running": running, "port": port,
+            "detected": detected, "url": url, "name": name, "group": group,
+        })
+
+    # None where no port was resolved, matching the previous conditional.
+    reachability = fan_out(
+        lambda port: _probe_port(port) if port else None,
+        [ctx["port"] for ctx in contexts],
+    )
+
+    items = []
+    for ctx, p in zip(contexts, reachability):
+        label, ov, pl = ctx["label"], ctx["ov"], ctx["pl"]
+        interval, launchservices_open = ctx["interval"], ctx["launchservices_open"]
+        pid, last = ctx["pid"], ctx["last"]
+        loaded, running = ctx["loaded"], ctx["running"]
+        port, detected = ctx["port"], ctx["detected"]
+        url, name, group = ctx["url"], ctx["name"], ctx["group"]
+
         if interval:
             state = "ok" if loaded and last in ("0", None) else ("down" if not loaded else "warn")
             detail = (
@@ -111,7 +164,9 @@ def discover_launchd():
             item["meta"] = {"detected_ports": detected, "adaptive": not bool(ov.get("port"))}
             if not ov.get("port") or not ov.get("url") or not ov.get("name"):
                 item["auto"] = True
-        # keep enrich for any remaining gaps
-        item = enrich_service(item, pl=pl, pid=pid if running else None)
-        items.append(item)
-    return items
+        items.append((item, pl, pid if running else None))
+
+    # keep enrich for any remaining gaps.  Independent per service, and it can
+    # reach for a URL over the network, so it is the second thing worth
+    # overlapping; fan_out preserves order, and this list is rendered.
+    return fan_out(_enrich, items)

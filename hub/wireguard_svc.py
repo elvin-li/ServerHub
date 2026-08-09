@@ -51,7 +51,7 @@ from hub.macos_admin import (
 )
 from hub.paths import DATA_DIR, pinned_or
 from hub.secure_io import write_secret_text
-from hub.util import sh
+from hub.util import fan_out, sh
 
 WG = pinned_or("wg", "/opt/homebrew/bin/wg")
 WG_QUICK = "/opt/homebrew/bin/wg-quick"
@@ -1602,6 +1602,22 @@ def view_conf(reveal: bool = False) -> dict:
     return {"ok": True, "conf": redacted, "redacted": True}
 
 
+def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None]:
+    """``(reachable, latency_ms)`` for one peer.  Never raises.
+
+    ``fan_out`` re-raises on iteration, so an exception here would lose every
+    peer's result instead of marking one unreachable.
+    """
+    try:
+        rc, out, _ = sh(
+            ["/sbin/ping", "-c", "1", "-W", str(deadline_ms), "-n", host], timeout=8
+        )
+    except Exception:
+        return False, None
+    match = re.search(r"time=([\d.]+)\s*ms", out or "")
+    return rc == 0, float(match.group(1)) if match else None
+
+
 def ping_peers(timeout_ms: int = 800) -> dict:
     """ICMP-probe each peer's tunnel address.
 
@@ -1609,23 +1625,34 @@ def ping_peers(timeout_ms: int = 800) -> dict:
     only proves the peer's WireGuard is alive, not that traffic crosses the tunnel
     (a missing route or NAT rule breaks the second without touching the first).
     """
-    results = []
     deadline = max(200, min(int(timeout_ms or 800), 5000))
+    targets = []
     for record in peer_records():
         host = record["ip"].split("/")[0].split(",")[0].strip()
         if not host:
             continue
-        rc, out, _ = sh(
-            ["/sbin/ping", "-c", "1", "-W", str(deadline), "-n", host], timeout=8
-        )
-        match = re.search(r"time=([\d.]+)\s*ms", out or "")
-        results.append({
+        targets.append((record, host))
+
+    # One ICMP probe per peer, each waiting out its own deadline -- so in series
+    # this endpoint cost the peer count times up to five seconds, and a WireGuard
+    # server with a dozen phones on it simply timed out before answering. The
+    # probes are independent by definition: different addresses, no shared state,
+    # and nothing here is privileged, so they belong in a pool.
+    #
+    # `fan_out` keeps the results in peer order, which the table renders and
+    # which must not reshuffle by who answered first.
+    pinged = fan_out(lambda pair: _ping_once(pair[1], deadline), targets)
+
+    results = [
+        {
             "pubkey": record["public_key"],
             "name": record["name"],
             "ip": host,
-            "reachable": rc == 0,
-            "latency_ms": float(match.group(1)) if match else None,
-        })
+            "reachable": reachable,
+            "latency_ms": latency,
+        }
+        for (record, host), (reachable, latency) in zip(targets, pinged)
+    ]
     reachable = sum(1 for r in results if r["reachable"])
     return {
         "ok": True,
