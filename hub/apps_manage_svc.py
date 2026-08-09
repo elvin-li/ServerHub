@@ -428,10 +428,39 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
 
 def _native_apps(force: bool = False) -> list[dict]:
     from hub import native_catalog
+    installed = [a for a in native_catalog.list_native_apps(force=force)
+                 if a.get("installed")]
+
+    # Both autostart lookups used to be issued *inside* the per-app loop, so a
+    # whole `brew services` enumeration ran once for every brew-backed app.  On
+    # this machine that is 480ms x 8 apps, which was the single largest cost on
+    # the Apps page -- larger than Docker and the VM listing put together.  They
+    # answer the same question for every app, so they are read once here and
+    # indexed; the loop below does a dict lookup instead of a subprocess.
+    #
+    # Failures stay non-fatal, matching the per-app try/except this replaces: an
+    # unavailable brew or launchctl leaves the autostart flag unknown, exactly as
+    # before, rather than dropping the app from the inventory.
+    brew_autostart: dict = {}
+    launchd_autostart: dict = {}
+    try:
+        from hub import autostart_svc
+
+        if any(a.get("package") and a.get("method") in ("brew_formula", "brew_cask")
+               for a in installed):
+            brew_autostart = {
+                bi.get("name"): bi.get("autostart")
+                for bi in autostart_svc._brew_service_items()
+            }
+        launchd_autostart = {
+            bi.get("label"): bi.get("autostart")
+            for bi in autostart_svc._launchd_items()
+        }
+    except Exception:
+        pass
+
     items = []
-    for a in native_catalog.list_native_apps(force=force):
-        if not a.get("installed"):
-            continue
+    for a in installed:
         running = a.get("running")
         # CLI-only tools (no service): treat installed as ok, not "down"
         state = "ok" if running else ("down" if running is False else "ok")
@@ -465,27 +494,13 @@ def _native_apps(force: bool = False) -> list[dict]:
         auto_id = None
         if a.get("package") and a.get("method") in ("brew_formula", "brew_cask"):
             auto_id = f"brew:{a['package']}"
-            try:
-                from hub import autostart_svc
-                for bi in autostart_svc._brew_service_items():
-                    if bi.get("name") == a["package"]:
-                        auto = bi.get("autostart")
-                        break
-            except Exception:
-                pass
+            auto = brew_autostart.get(a["package"])
         elif a.get("launchd_label") or a.get("id") in ("native-filebrowser", "native-homeassistant"):
             label = a.get("launchd_label") or (
                 "local.filebrowser" if a.get("id") == "native-filebrowser" else "com.homeassistant.core"
             )
             auto_id = f"launchd:{label}"
-            try:
-                from hub import autostart_svc
-                for bi in autostart_svc._launchd_items():
-                    if bi.get("label") == label:
-                        auto = bi.get("autostart")
-                        break
-            except Exception:
-                pass
+            auto = launchd_autostart.get(label)
             if running:
                 acts = ["stop", "restart", "detail", "logs", "uninstall", "open", "autostart"]
             else:

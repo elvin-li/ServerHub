@@ -1495,6 +1495,113 @@ class AliasStatusTests(unittest.TestCase):
         self.assertTrue(by_ip["192.168.1.204"]["local_route"]["ok"])
 
 
+class NativeAppAutostartLookupTests(unittest.TestCase):
+    """The autostart lookups answer the same question for every app, so ask once.
+
+    Both used to be issued inside the per-app loop. That is an N+1: eight
+    brew-backed apps meant eight ``brew services`` enumerations and two
+    launchd-backed apps meant two ``launchctl`` reads.
+
+    In practice the brew side was already softened by a shared TTL cache -- 1079ms
+    on the first call and under a millisecond after -- so the measured saving is
+    only about 30ms, not the seconds a naive reading of the loop suggests. The
+    reason to pin it is structural rather than numeric: with the lookups hoisted,
+    the cost cannot scale with the number of installed apps at all, and it no
+    longer depends on a cache staying warm for the whole loop. ``_launchd_items``
+    is not cached (22-49ms every call), so that part is a real subprocess saved.
+    """
+
+    APPS = [
+        {"id": "a", "installed": True, "method": "brew_formula", "package": "pg"},
+        {"id": "b", "installed": True, "method": "brew_formula", "package": "redis"},
+        {"id": "c", "installed": True, "method": "brew_cask", "package": "docker"},
+        {"id": "d", "installed": True, "launchd_label": "local.one"},
+        {"id": "e", "installed": True, "launchd_label": "local.two"},
+        {"id": "skipped", "installed": False, "method": "brew_formula", "package": "no"},
+    ]
+
+    def _count_lookups(self):
+        from hub import apps_manage_svc, autostart_svc, native_catalog
+
+        calls = {"brew": 0, "launchd": 0}
+
+        def brew_items():
+            calls["brew"] += 1
+            return [{"name": "pg", "autostart": True},
+                    {"name": "redis", "autostart": False},
+                    {"name": "docker", "autostart": True}]
+
+        def launchd_items():
+            calls["launchd"] += 1
+            return [{"label": "local.one", "autostart": True},
+                    {"label": "local.two", "autostart": False}]
+
+        with (
+            mock.patch.object(
+                native_catalog, "list_native_apps", lambda force=False: self.APPS
+            ),
+            mock.patch.object(autostart_svc, "_brew_service_items", brew_items),
+            mock.patch.object(autostart_svc, "_launchd_items", launchd_items),
+            mock.patch.object(apps_manage_svc, "_host_ip", lambda: "10.0.0.1"),
+        ):
+            items = apps_manage_svc._native_apps(force=False)
+        return calls, items
+
+    def test_each_lookup_runs_once_regardless_of_app_count(self):
+        calls, _ = self._count_lookups()
+        self.assertEqual(
+            calls["brew"], 1,
+            f"brew services was enumerated {calls['brew']} times for 3 brew apps",
+        )
+        self.assertEqual(
+            calls["launchd"], 1,
+            f"launchctl was read {calls['launchd']} times for 2 launchd apps",
+        )
+
+    def test_the_autostart_flags_are_still_resolved_per_app(self):
+        _, items = self._count_lookups()
+        # Emitted ids are namespaced "native:<source id>".
+        flags = {i["source_id"]: i.get("autostart") for i in items}
+        self.assertIs(flags["a"], True, "brew formula flag lost")
+        self.assertIs(flags["b"], False, "a False flag must survive, not become None")
+        self.assertIs(flags["c"], True, "brew cask flag lost")
+        self.assertIs(flags["d"], True, "launchd flag lost")
+        self.assertIs(flags["e"], False)
+
+    def test_uninstalled_apps_are_still_excluded(self):
+        _, items = self._count_lookups()
+        self.assertNotIn("skipped", [i["source_id"] for i in items])
+
+    def test_an_unavailable_brew_leaves_flags_unknown_rather_than_dropping_apps(self):
+        """The per-app try/except this replaced failed soft; so must the hoist."""
+        from hub import apps_manage_svc, autostart_svc, native_catalog
+
+        with (
+            mock.patch.object(
+                native_catalog, "list_native_apps", lambda force=False: self.APPS
+            ),
+            mock.patch.object(
+                autostart_svc, "_brew_service_items", side_effect=OSError("no brew")
+            ),
+            mock.patch.object(autostart_svc, "_launchd_items", lambda: []),
+            mock.patch.object(apps_manage_svc, "_host_ip", lambda: "10.0.0.1"),
+        ):
+            items = apps_manage_svc._native_apps(force=False)
+
+        self.assertEqual(
+            len(items), 5,
+            "a failing autostart lookup dropped apps from the inventory",
+        )
+        self.assertTrue(
+            all(
+                i.get("autostart") is None
+                for i in items
+                if i["source_id"] in {"a", "b", "c"}
+            ),
+            "flags should be unknown, not wrong",
+        )
+
+
 class DeliberatelySerialTests(unittest.TestCase):
     """Not everything with several shell-outs should be fanned out.
 
