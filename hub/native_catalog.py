@@ -14,7 +14,9 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,7 @@ from fastapi import HTTPException
 
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.host_address import host_ip
-from hub.util import sh
+from hub.util import fan_out, sh
 
 SERVICES_ROOT = Path.home() / "Services"
 # One definition, in hub.paths: it tries `which brew` before the two standard
@@ -559,28 +561,46 @@ def _is_installed(app: dict, brew_installed: set[str] | None = None) -> bool:
 _list_cache: dict = {"t": 0.0, "v": None}
 _LIST_TTL = 30.0
 
+#: Concurrent per-app liveness probes in a catalog listing.  Bounded well under the
+#: catalog size: each probe is a `launchctl print`, and launchd serialises requests
+#: internally, so a wider pool would queue in the daemon instead of the process.
+_PROBE_WORKERS = 8
+
 
 def list_native_apps(force: bool = False) -> list[dict]:
     now = time.time()
     if not force and _list_cache["v"] is not None and now - _list_cache["t"] < _LIST_TTL:
         return _list_cache["v"]
 
-    brew_inst = _brew_list_installed()
-    # `brew services list --json` costs ~1.3s and four modules want it on the
-    # same request.  Go through the shared cache rather than shelling out here:
-    # this function is also called with force=True by catalog_overview(), and
-    # `force` must not bypass the cache — it means "re-read the template dir",
-    # not "make brew slow again".
+    # Three independent reads.  `brew services list --json` costs ~1.3s and is the
+    # dominant cost of this whole function, so the package list and the host address
+    # are overlapped with it rather than queued behind it.
+    #
+    # The service table goes through the shared cache rather than shelling out here:
+    # this function is also called with force=True by catalog_overview(), and `force`
+    # must not bypass that cache — it means "re-read the template dir", not "make
+    # brew slow again".
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_installed = ex.submit(_brew_list_installed)
+        f_services = ex.submit(brew_services_list)
+        f_host = ex.submit(host_ip)
+        brew_inst = f_installed.result()
+        service_rows = f_services.result()
+        host = f_host.result()
+
     service_states: dict[str, str] = {}
-    for s in brew_services_list():
+    for s in service_rows:
         name = s.get("name") or ""
         if name:
             service_states[name] = (s.get("status") or "").lower()
 
-    host = host_ip()
+    # Install and liveness probes are independent per app, and each can shell out
+    # (`launchctl print`, `brew list`, a `ps` scan).  Resolve them concurrently, then
+    # assemble the rows in catalog order below so the grid does not reshuffle by
+    # which probe answered first.  One `ps aux` is shared across the whole pass.
+    ps_snapshot = _PsSnapshot()
 
-    items = []
-    for app in NATIVE_APPS:
+    def probe(app: dict) -> tuple[bool, bool | None]:
         installed = _is_installed(app, brew_inst)
         running = None
         pkg = app.get("package")
@@ -591,20 +611,29 @@ def list_native_apps(force: bool = False) -> list[dict]:
         label = app.get("launchd_label")
         if running is None and label:
             running = _launchd_or_process_running(
-                label, app.get("process_match") or app.get("id") or ""
+                label, app.get("process_match") or app.get("id") or "", ps_snapshot
             )
         if running is None and app.get("id") == "native-filebrowser":
-            running = _launchd_or_process_running("local.filebrowser", "filebrowser")
+            running = _launchd_or_process_running(
+                "local.filebrowser", "filebrowser", ps_snapshot
+            )
         # CLI tools with process_match but no brew service / launchd:
         # True only when a matching process is up; otherwise leave None ("已安装")
         # so unused CLIs don't show as "已停止".
         if running is None and app.get("process_match") and not app.get("service") and not label:
-            if _process_running(str(app["process_match"])):
+            if _process_running(str(app["process_match"]), ps_snapshot):
                 running = True
         if running is None and app.get("open"):
             # cask apps: unknown process state unless we probe
             running = None
+        return installed, running
 
+    probed = fan_out(probe, NATIVE_APPS, max_workers=_PROBE_WORKERS)
+
+    items = []
+    for app, (installed, running) in zip(NATIVE_APPS, probed):
+        pkg = app.get("package")
+        label = app.get("launchd_label")
         url = _resolve_url(app.get("url_hint") or "", host, app.get("ports") or [])
         items.append({
             "id": app["id"],
@@ -631,15 +660,42 @@ def list_native_apps(force: bool = False) -> list[dict]:
     return items
 
 
-def _process_running(process_substr: str) -> bool:
-    """True if any process command line contains substr (best-effort)."""
+class _PsSnapshot:
+    """One `ps aux` shared by every app in a listing pass.
+
+    The process table is identical for all of them, but the probe used to be a
+    subprocess per app: a machine with many native CLI tools installed ran `ps aux`
+    once per catalog entry inside a single page load.  Reading it once and matching
+    in memory removes that multiplier.
+
+    Filled lazily, because the common case reaches no app that needs it at all --
+    and under a lock, because the probes now run concurrently and an unguarded memo
+    would let every thread that arrives first start its own `ps`.
+    """
+
+    def __init__(self) -> None:
+        self._lines: list[str] | None = None
+        self._lock = threading.Lock()
+
+    def lines(self) -> list[str]:
+        with self._lock:
+            if self._lines is None:
+                rc, out, _ = sh(["/bin/ps", "aux"], timeout=5)
+                self._lines = (out or "").splitlines() if rc == 0 else []
+            return self._lines
+
+
+def _process_running(process_substr: str, snapshot: _PsSnapshot | None = None) -> bool:
+    """True if any process command line contains substr (best-effort).
+
+    ``snapshot`` lets a caller walking a collection reuse a single `ps aux`; one-off
+    callers pass nothing and get their own read.
+    """
     if not process_substr:
         return False
-    rc, out, _ = sh(["/bin/ps", "aux"], timeout=5)
-    if rc != 0 or not out:
-        return False
+    lines = snapshot.lines() if snapshot is not None else _PsSnapshot().lines()
     needle = process_substr.lower()
-    for line in out.splitlines():
+    for line in lines:
         # skip the ps header and this grep-like self if any
         low = line.lower()
         if needle in low and "ps aux" not in low:
@@ -647,7 +703,9 @@ def _process_running(process_substr: str) -> bool:
     return False
 
 
-def _launchd_or_process_running(label: str, process_substr: str) -> bool:
+def _launchd_or_process_running(
+    label: str, process_substr: str, snapshot: _PsSnapshot | None = None
+) -> bool:
     if label:
         rc, out, _ = sh(
             ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
@@ -655,7 +713,7 @@ def _launchd_or_process_running(label: str, process_substr: str) -> bool:
         )
         if rc == 0 and "state = running" in (out or ""):
             return True
-    return _process_running(process_substr)
+    return _process_running(process_substr, snapshot)
 
 
 def _resolve_url(hint: str, host: str, ports: list) -> str:

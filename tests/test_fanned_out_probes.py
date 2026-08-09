@@ -34,6 +34,7 @@ they measure "did these overlap at all" rather than a performance target.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -44,7 +45,14 @@ from unittest import mock
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from hub import apps_manage_svc, shares_svc, vms_svc  # noqa: E402
+from hub import (  # noqa: E402
+    apps_manage_svc,
+    native_catalog,
+    raid_svc,
+    shares_svc,
+    vms_svc,
+    wireguard_svc,
+)
 from hub.discovery import apps as discovery_apps  # noqa: E402
 from hub.util import fan_out  # noqa: E402
 
@@ -56,9 +64,9 @@ PROBE_DELAY = 0.2
 def slow(result_for):
     """A probe that sleeps, so overlap is measurable."""
 
-    def probe(item):
+    def probe(*args, **kwargs):
         time.sleep(PROBE_DELAY)
-        return result_for(item)
+        return result_for(*args, **kwargs)
 
     return probe
 
@@ -445,6 +453,606 @@ class ContainerLogTests(unittest.TestCase):
         result, _ = self._logs(self._slow_docker, source_id="nothing-matches")
         self.assertFalse(result["ok"])
         self.assertEqual(result["log"], "无日志")
+
+
+class RaidCandidateTests(unittest.TestCase):
+    """``diskutil info`` per physical disk.
+
+    The RAID picker exists for machines with several disks, so walking them in turn
+    made the page slowest exactly where it is used most.
+    """
+
+    DEVICES = ["disk0", "disk2", "disk4", "disk6"]
+
+    def _listing(self):
+        return {
+            "AllDisksAndPartitions": [
+                {"DeviceIdentifier": device, "Size": 500 * 2**30}
+                for device in self.DEVICES
+            ]
+        }
+
+    def _run(self, info=None, listing=None):
+        info = info or (
+            lambda device: {
+                "MediaName": f"Media {device}",
+                "TotalSize": 500 * 2**30,
+                "Internal": True,
+                "SolidState": True,
+                "BusProtocol": "PCI-Express",
+            }
+        )
+        with (
+            mock.patch.object(raid_svc, "disk_topology", lambda: {}),
+            mock.patch.object(
+                raid_svc, "_plist", lambda *a, **kw: listing or self._listing()
+            ),
+            mock.patch.object(raid_svc, "_disk_info", slow(info)),
+        ):
+            started = time.time()
+            devices = raid_svc.candidate_devices()
+            return devices, time.time() - started
+
+    def test_order_follows_the_diskutil_listing(self):
+        devices, _ = self._run()
+        self.assertEqual([d["device"] for d in devices], self.DEVICES)
+        self.assertEqual([d["name"] for d in devices], [f"Media {d}" for d in self.DEVICES])
+
+    def test_the_info_reads_overlap(self):
+        _, elapsed = self._run()
+        self.assertLess(
+            elapsed,
+            len(self.DEVICES) * PROBE_DELAY * 0.8,
+            f"took {elapsed:.2f}s for {len(self.DEVICES)} disks",
+        )
+
+    def test_the_device_guard_still_rejects_odd_identifiers(self):
+        listing = {
+            "AllDisksAndPartitions": [
+                {"DeviceIdentifier": "disk0", "Size": 1},
+                {"DeviceIdentifier": "../etc/passwd", "Size": 1},
+                {"DeviceIdentifier": "", "Size": 1},
+                "not-a-dict",
+            ]
+        }
+        devices, _ = self._run(listing=listing)
+        self.assertEqual([d["device"] for d in devices], ["disk0"])
+
+    def test_a_disk_whose_info_comes_back_empty_still_gets_a_row(self):
+        # `_disk_info` answers {} for anything it could not read, so the row has to
+        # fall back to the listing's size and the device id as its name.
+        devices, _ = self._run(info=lambda device: {} if device == "disk4" else {
+            "MediaName": f"Media {device}", "TotalSize": 500 * 2**30,
+        })
+        self.assertEqual([d["device"] for d in devices], self.DEVICES)
+        blank = next(d for d in devices if d["device"] == "disk4")
+        self.assertEqual(blank["name"], "disk4")
+        self.assertEqual(blank["size_bytes"], 500 * 2**30)
+
+    def test_an_empty_listing_does_not_raise(self):
+        devices, _ = self._run(listing={"AllDisksAndPartitions": []})
+        self.assertEqual(devices, [])
+
+
+class NativeCatalogListingTests(unittest.TestCase):
+    """The app grid: one liveness probe per catalog entry, plus one shared `ps`.
+
+    Two separate wins are pinned here.  The probes overlap, and the process table
+    -- which is the same for every entry -- is read once for the whole pass instead
+    of once per entry.
+    """
+
+    APPS = [
+        {"id": "one", "name": "One", "launchd_label": "local.one"},
+        {"id": "two", "name": "Two", "launchd_label": "local.two"},
+        {"id": "three", "name": "Three", "launchd_label": "local.three"},
+        {"id": "four", "name": "Four", "launchd_label": "local.four"},
+    ]
+
+    #: No launchd label and no brew service, so these fall through to the `ps` scan.
+    PS_APPS = [
+        {"id": "p-one", "name": "P One", "process_match": "alpha"},
+        {"id": "p-two", "name": "P Two", "process_match": "beta"},
+        {"id": "p-three", "name": "P Three", "process_match": "gamma"},
+        {"id": "p-four", "name": "P Four", "process_match": "delta"},
+    ]
+
+    def setUp(self):
+        native_catalog._list_cache.update(t=0.0, v=None)
+        self.addCleanup(native_catalog._list_cache.update, t=0.0, v=None)
+
+    def _enter(self, apps, **extra):
+        """Push the shared patches onto an ExitStack and return it entered."""
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for target, value in {
+            "NATIVE_APPS": apps,
+            "_is_installed": lambda app, inst=None: True,
+            "_brew_list_installed": lambda: set(),
+            "brew_services_list": lambda: [],
+            "host_ip": lambda: "192.168.1.9",
+            **extra,
+        }.items():
+            stack.enter_context(mock.patch.object(native_catalog, target, value))
+        return stack
+
+    def test_rows_follow_catalog_order_within_the_sort(self):
+        # Nothing here is featured, so the sort is by name and must be total.
+        with self._enter(
+            self.APPS, _launchd_or_process_running=slow(lambda *a: True)
+        ):
+            items = native_catalog.list_native_apps(force=True)
+        self.assertEqual([i["id"] for i in items], ["four", "one", "three", "two"])
+        self.assertTrue(all(i["running"] for i in items))
+
+    def test_the_liveness_probes_overlap(self):
+        with self._enter(
+            self.APPS, _launchd_or_process_running=slow(lambda *a: True)
+        ):
+            started = time.time()
+            native_catalog.list_native_apps(force=True)
+            elapsed = time.time() - started
+        self.assertLess(
+            elapsed,
+            len(self.APPS) * PROBE_DELAY * 0.8,
+            f"took {elapsed:.2f}s for {len(self.APPS)} apps",
+        )
+
+    def test_the_process_table_is_read_once_for_the_whole_pass(self):
+        calls = []
+
+        def fake_sh(cmd, *a, **kw):
+            calls.append(list(cmd))
+            if cmd[:2] == ["/bin/ps", "aux"]:
+                time.sleep(PROBE_DELAY)
+                return 0, "USER PID COMMAND\nme 1 alpha\nme 2 beta\nme 3 gamma\nme 4 delta\n", ""
+            return 1, "", ""
+
+        with self._enter(self.PS_APPS, sh=fake_sh):
+            items = native_catalog.list_native_apps(force=True)
+
+        ps_calls = [c for c in calls if c[:2] == ["/bin/ps", "aux"]]
+        self.assertEqual(
+            len(ps_calls),
+            1,
+            f"one `ps aux` should serve every app; ran {len(ps_calls)} for {len(self.PS_APPS)}",
+        )
+        # And the shared table still answers each app's question correctly.
+        self.assertTrue(all(i["running"] for i in items))
+
+    def test_the_three_opening_reads_overlap(self):
+        def slow_value(value):
+            def read(*a, **kw):
+                time.sleep(PROBE_DELAY)
+                return value
+            return read
+
+        with (
+            mock.patch.object(native_catalog, "NATIVE_APPS", []),
+            mock.patch.object(native_catalog, "_brew_list_installed", slow_value(set())),
+            mock.patch.object(native_catalog, "brew_services_list", slow_value([])),
+            mock.patch.object(native_catalog, "host_ip", slow_value("192.168.1.9")),
+        ):
+            started = time.time()
+            native_catalog.list_native_apps(force=True)
+            elapsed = time.time() - started
+        self.assertLess(
+            elapsed, 3 * PROBE_DELAY * 0.8, f"took {elapsed:.2f}s for three reads"
+        )
+
+    def test_a_brew_service_state_still_wins_over_a_probe(self):
+        apps = [{"id": "svc", "name": "Svc", "service": True, "package": "pg",
+                 "launchd_label": "local.pg"}]
+        probed = []
+
+        def record(*a, **kw):
+            probed.append(a)
+            return False
+
+        with (
+            mock.patch.object(native_catalog, "NATIVE_APPS", apps),
+            mock.patch.object(native_catalog, "_is_installed", lambda app, inst=None: True),
+            mock.patch.object(native_catalog, "_brew_list_installed", lambda: {"pg"}),
+            mock.patch.object(
+                native_catalog, "brew_services_list",
+                lambda: [{"name": "pg", "status": "started"}],
+            ),
+            mock.patch.object(native_catalog, "host_ip", lambda: "192.168.1.9"),
+            mock.patch.object(native_catalog, "_launchd_or_process_running", record),
+        ):
+            items = native_catalog.list_native_apps(force=True)
+
+        self.assertTrue(items[0]["running"])
+        self.assertEqual(probed, [], "a known brew service state should not be re-probed")
+
+
+class WireGuardPingTests(unittest.TestCase):
+    """One ICMP probe per peer, each waiting out its own deadline."""
+
+    PEERS = [
+        {"public_key": f"key{i}", "name": f"peer{i}", "ip": f"10.10.0.{i + 2}/32"}
+        for i in range(4)
+    ]
+
+    def _run(self, ping=None):
+        def default(cmd, *a, **kw):
+            time.sleep(PROBE_DELAY)
+            return 0, "64 bytes from x: icmp_seq=0 ttl=64 time=1.5 ms", ""
+
+        with (
+            mock.patch.object(wireguard_svc, "peer_records", lambda: list(self.PEERS)),
+            mock.patch.object(wireguard_svc, "sh", ping or default),
+        ):
+            started = time.time()
+            out = wireguard_svc.ping_peers()
+            return out, time.time() - started
+
+    def test_results_follow_peer_order(self):
+        out, _ = self._run()
+        self.assertEqual([r["name"] for r in out["results"]], [p["name"] for p in self.PEERS])
+        self.assertEqual([r["ip"] for r in out["results"]], ["10.10.0.2", "10.10.0.3", "10.10.0.4", "10.10.0.5"])
+        self.assertEqual(out["reachable"], 4)
+        self.assertEqual(out["total"], 4)
+
+    def test_the_probes_overlap(self):
+        _, elapsed = self._run()
+        self.assertLess(
+            elapsed,
+            len(self.PEERS) * PROBE_DELAY * 0.8,
+            f"took {elapsed:.2f}s for {len(self.PEERS)} peers",
+        )
+
+    def test_one_exploding_probe_costs_only_its_own_peer(self):
+        def ping(cmd, *a, **kw):
+            if cmd[-1] == "10.10.0.4":
+                raise OSError("no route to host")
+            return 0, "time=1.5 ms", ""
+
+        out, _ = self._run(ping=ping)
+        self.assertEqual([r["name"] for r in out["results"]], [p["name"] for p in self.PEERS])
+        by_ip = {r["ip"]: r for r in out["results"]}
+        self.assertFalse(by_ip["10.10.0.4"]["reachable"])
+        self.assertIsNone(by_ip["10.10.0.4"]["latency_ms"])
+        self.assertEqual(out["reachable"], 3)
+
+    def test_a_peer_without_a_usable_address_is_skipped(self):
+        peers = [{"public_key": "k", "name": "blank", "ip": ""}, *self.PEERS]
+        with (
+            mock.patch.object(wireguard_svc, "peer_records", lambda: peers),
+            mock.patch.object(wireguard_svc, "sh", lambda *a, **kw: (0, "time=1.0 ms", "")),
+        ):
+            out = wireguard_svc.ping_peers()
+        self.assertEqual(out["total"], len(self.PEERS))
+        self.assertNotIn("blank", [r["name"] for r in out["results"]])
+
+    def test_no_peers_needs_no_pool(self):
+        with mock.patch.object(wireguard_svc, "peer_records", lambda: []):
+            out = wireguard_svc.ping_peers()
+        self.assertEqual(out, {"ok": True, "results": [], "reachable": 0, "total": 0})
+
+
+class PeerPingTests(unittest.TestCase):
+    """One ICMP probe per peer, each waiting out its own deadline.
+
+    In series this cost the peer count times up to five seconds, so a server with
+    a dozen phones on it timed out before answering at all.
+    """
+
+    RECORDS = [
+        {"public_key": "k1", "name": "phone", "ip": "10.7.0.2/32"},
+        {"public_key": "k2", "name": "laptop", "ip": "10.7.0.3/32"},
+        {"public_key": "k3", "name": "tablet", "ip": "10.7.0.4/32"},
+        {"public_key": "k4", "name": "broken", "ip": ""},
+    ]
+
+    def _ping(self, sh_impl):
+        from hub import wireguard_svc
+
+        with (
+            mock.patch.object(wireguard_svc, "peer_records", lambda: self.RECORDS),
+            mock.patch.object(wireguard_svc, "sh", sh_impl),
+        ):
+            started = time.time()
+            result = wireguard_svc.ping_peers(timeout_ms=500)
+            return result, time.time() - started
+
+    @staticmethod
+    def _slow_ping(cmd, **kwargs):
+        time.sleep(PROBE_DELAY)
+        host = cmd[-1]
+        if host == "10.7.0.3":
+            return 1, "", "timeout"
+        return 0, "64 bytes: time=1.23 ms", ""
+
+    def test_peers_without_an_address_are_skipped(self):
+        result, _ = self._ping(self._slow_ping)
+        self.assertEqual([r["name"] for r in result["results"]],
+                         ["phone", "laptop", "tablet"])
+
+    def test_reachability_and_latency_are_parsed(self):
+        result, _ = self._ping(self._slow_ping)
+        by = {r["name"]: r for r in result["results"]}
+        self.assertTrue(by["phone"]["reachable"])
+        self.assertEqual(by["phone"]["latency_ms"], 1.23)
+        self.assertFalse(by["laptop"]["reachable"])
+        self.assertIsNone(by["laptop"]["latency_ms"])
+
+    def test_the_summary_counts_match(self):
+        result, _ = self._ping(self._slow_ping)
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["reachable"], 2)
+
+    def test_the_pings_overlap(self):
+        _, elapsed = self._ping(self._slow_ping)
+        self.assertLess(
+            elapsed, 3 * PROBE_DELAY * 0.8, f"pings took {elapsed:.2f}s in series"
+        )
+
+    def test_a_raising_ping_marks_one_peer_not_all(self):
+        def boom(cmd, **kwargs):
+            if cmd[-1] == "10.7.0.3":
+                raise OSError("no route")
+            return 0, "time=2.0 ms", ""
+
+        result, _ = self._ping(boom)
+        self.assertEqual(result["total"], 3, "a raising ping emptied the results")
+        by = {r["name"]: r for r in result["results"]}
+        self.assertFalse(by["laptop"]["reachable"])
+        self.assertTrue(by["phone"]["reachable"])
+
+
+class HealthPortTests(unittest.TestCase):
+    def test_the_three_key_ports_are_probed_together(self):
+        from hub import health_svc
+
+        calls = []
+
+        def slow_port(port, **kwargs):
+            calls.append(port)
+            time.sleep(PROBE_DELAY)
+            return port == 8086
+
+        with mock.patch.object(health_svc, "port_open", slow_port):
+            started = time.time()
+            probed = fan_out(health_svc._probe_port, [8086, 8123, 8281])
+            elapsed = time.time() - started
+
+        self.assertEqual(probed, [True, False, False], "order or result changed")
+        self.assertEqual(sorted(calls), [8086, 8123, 8281])
+        self.assertLess(elapsed, 3 * PROBE_DELAY * 0.8, f"took {elapsed:.2f}s")
+
+    def test_a_raising_probe_reads_as_closed(self):
+        from hub import health_svc
+
+        with mock.patch.object(health_svc, "port_open", side_effect=OSError("down")):
+            self.assertFalse(health_svc._probe_port(8086))
+
+
+class LaunchdDiscoveryTests(unittest.TestCase):
+    """Two network stages per agent used to sit in one serial loop.
+
+    The reachability connect and ``enrich_service`` -- which probes a detected
+    port for a URL -- both ran per installed LaunchAgent, on the /api/status path
+    the dashboard polls.
+    """
+
+    SPECS = {
+        "local.alpha": {"ProgramArguments": ["/usr/local/bin/alpha", "--port", "9001"]},
+        "local.beta": {"ProgramArguments": ["/usr/local/bin/beta", "--port", "9002"]},
+        "local.gamma": {"ProgramArguments": ["/usr/local/bin/gamma", "--port", "9003"]},
+        "local.timer": {"StartInterval": 3600, "ProgramArguments": ["/bin/echo"]},
+        "local.hidden": {"ProgramArguments": ["/bin/true"]},
+    }
+    TABLE = {
+        "local.alpha": ("101", "0"),
+        "local.beta": ("102", "0"),
+        "local.gamma": ("-", "0"),
+        "local.timer": ("-", "0"),
+    }
+
+    def setUp(self):
+        import plistlib
+        import shutil
+        import tempfile
+
+        from hub.discovery import launchd
+
+        self.launchd = launchd
+        self.dir = Path(tempfile.mkdtemp(prefix="serverhub-launchd-test-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        for label, body in self.SPECS.items():
+            with open(self.dir / f"{label}.plist", "wb") as fh:
+                plistlib.dump({"Label": label, **body}, fh)
+
+    def _discover(self, port_impl=None, enrich_impl=None):
+        port_impl = port_impl or slow(lambda port: port != 9002)
+
+        def default_enrich(item, pl=None, pid=None):
+            time.sleep(PROBE_DELAY)
+            item["enriched"] = True
+            return item
+
+        with (
+            mock.patch.object(self.launchd, "AGENTS_DIR", str(self.dir)),
+            mock.patch.object(self.launchd, "launchctl_table", lambda: self.TABLE),
+            mock.patch.object(
+                self.launchd, "override",
+                lambda label: {"hide": True} if label == "local.hidden" else {},
+            ),
+            mock.patch.object(
+                self.launchd, "port_open", lambda port, **kw: port_impl(port)
+            ),
+            mock.patch.object(
+                self.launchd, "enrich_service", enrich_impl or default_enrich
+            ),
+            mock.patch.object(self.launchd, "resolve_template", lambda u: u),
+        ):
+            started = time.time()
+            items = self.launchd.discover_launchd()
+            return items, time.time() - started
+
+    def test_order_follows_the_sorted_plist_names(self):
+        items, _ = self._discover()
+        self.assertEqual(
+            [i["id"] for i in items],
+            ["local.alpha", "local.beta", "local.gamma", "local.timer"],
+        )
+
+    def test_hidden_agents_are_still_excluded(self):
+        items, _ = self._discover()
+        self.assertNotIn("local.hidden", [i["id"] for i in items])
+
+    def test_the_state_machine_is_unchanged(self):
+        items, _ = self._discover()
+        state = {i["id"]: i["state"] for i in items}
+        self.assertEqual(state["local.alpha"], "ok", "running, port reachable")
+        self.assertEqual(state["local.beta"], "warn", "running, port closed")
+        self.assertEqual(state["local.gamma"], "down", "not running")
+        self.assertEqual(state["local.timer"], "ok", "loaded interval job")
+
+    def test_every_item_is_still_enriched(self):
+        items, _ = self._discover()
+        self.assertTrue(all(i.get("enriched") for i in items))
+
+    def test_detected_ports_still_reach_the_metadata(self):
+        items, _ = self._discover()
+        alpha = next(i for i in items if i["id"] == "local.alpha")
+        self.assertEqual(alpha["port"], 9001)
+        self.assertEqual(alpha["meta"]["detected_ports"], [9001])
+
+    def test_both_network_stages_overlap(self):
+        _, elapsed = self._discover()
+        # 3 ports + 4 enrichments = 7 waits if nothing overlapped.
+        self.assertLess(elapsed, 7 * PROBE_DELAY * 0.6, f"took {elapsed:.2f}s")
+
+    def test_a_raising_enrich_keeps_its_row(self):
+        def boom(item, pl=None, pid=None):
+            if item["id"] == "local.beta":
+                raise RuntimeError("url probe exploded")
+            return item
+
+        items, _ = self._discover(port_impl=lambda p: True, enrich_impl=boom)
+        self.assertEqual(len(items), 4, "a raising enrich emptied the service list")
+        self.assertIn("local.beta", [i["id"] for i in items])
+
+
+class HardwareProfileTests(unittest.TestCase):
+    TYPES = [
+        ("hardware", "SPHardwareDataType"),
+        ("memory", "SPMemoryDataType"),
+        ("storage", "SPStorageDataType"),
+        ("power", "SPPowerDataType"),
+    ]
+
+    def test_reports_keep_their_declared_order_and_overlap(self):
+        import hub.disk_power_svc as dps
+        from hub import tools_svc
+
+        def slow_profiler(cmd, **kwargs):
+            time.sleep(PROBE_DELAY)
+            data_type = cmd[1]
+            if data_type == "SPPowerDataType":
+                return 1, "", f"cannot read {data_type}"
+            return 0, f"body for {data_type}", ""
+
+        # list_power_disks is imported inside the function, so it is patched where
+        # it is fetched from; otherwise this measures real disk enumeration.
+        with (
+            mock.patch.object(tools_svc, "sh", slow_profiler),
+            mock.patch.object(dps, "list_power_disks", lambda: []),
+        ):
+            started = time.time()
+            profile = tools_svc._hardware_profile_uncached()
+            elapsed = time.time() - started
+
+        sections = profile["sections"]
+        self.assertEqual(
+            list(sections), ["hardware", "memory", "storage", "power"],
+            "sections were reordered by completion time",
+        )
+        self.assertTrue(sections["hardware"]["ok"])
+        self.assertFalse(sections["power"]["ok"])
+        self.assertIn("cannot read", sections["power"]["text"])
+        self.assertLess(elapsed, 4 * PROBE_DELAY * 0.7, f"took {elapsed:.2f}s")
+
+    def test_each_report_is_truncated_independently(self):
+        from hub import tools_svc
+
+        with mock.patch.object(tools_svc, "sh", lambda *a, **k: (0, "x" * 9000, "")):
+            _, text = tools_svc._profiler_report(("hardware", "SPHardwareDataType"))
+        self.assertTrue(text.endswith("…(truncated)"))
+        self.assertLess(len(text), 4100)
+
+    def test_a_raising_report_becomes_a_failed_section(self):
+        from hub import tools_svc
+
+        with mock.patch.object(tools_svc, "sh", side_effect=RuntimeError("gone")):
+            rc, text = tools_svc._profiler_report(("hardware", "SPHardwareDataType"))
+        self.assertEqual(rc, 1)
+        self.assertIn("gone", text)
+
+
+class SpotlightStatusTests(unittest.TestCase):
+    def test_rows_follow_enumeration_order_and_overlap(self):
+        from hub import usage_svc
+
+        volumes = ["/", "/Volumes/Media", "/Volumes/Backup", "/Volumes/Scratch"]
+
+        def slow_mdutil(cmd, **kwargs):
+            time.sleep(PROBE_DELAY)
+            volume = cmd[2]
+            if volume == "/Volumes/Backup":
+                return 0, "Indexing disabled.", ""
+            if volume == "/Volumes/Scratch":
+                return 1, "", "no such volume"
+            return 0, "Indexing enabled.", ""
+
+        class FakePath:
+            def __init__(self, p):
+                self.p = p
+
+            def is_dir(self):
+                return True
+
+            def is_symlink(self):
+                return False
+
+            def iterdir(self):
+                return [FakePath(v) for v in volumes[1:]]
+
+            def __str__(self):
+                return self.p
+
+            def __lt__(self, other):
+                return self.p < other.p
+
+        with (
+            mock.patch.object(usage_svc, "sh", slow_mdutil),
+            mock.patch.object(usage_svc, "Path", lambda p: FakePath(p)),
+        ):
+            started = time.time()
+            rows = usage_svc.spotlight_status()
+            elapsed = time.time() - started
+
+        # "/" first, then the /Volumes children sorted, because the function
+        # sorts iterdir() -- so Backup precedes Media.
+        self.assertEqual(
+            [r["volume"] for r in rows], ["/"] + sorted(volumes[1:])
+        )
+        by = {r["volume"]: r for r in rows}
+        self.assertTrue(by["/"]["enabled"])
+        self.assertEqual(by["/Volumes/Backup"]["state"], "disabled")
+        self.assertFalse(by["/Volumes/Scratch"]["readable"])
+        self.assertEqual(by["/Volumes/Scratch"]["state"], "unknown")
+        self.assertLess(elapsed, 4 * PROBE_DELAY * 0.7, f"took {elapsed:.2f}s")
+
+    def test_a_vanished_volume_does_not_lose_the_page(self):
+        from hub import usage_svc
+
+        with mock.patch.object(usage_svc, "sh", side_effect=OSError("vanished")):
+            rc, blob = usage_svc._spotlight_query("/Volumes/Gone")
+        self.assertEqual(rc, 1)
+        self.assertIn("vanished", blob)
 
 
 class DeliberatelySerialTests(unittest.TestCase):

@@ -21,7 +21,7 @@ import re
 import time
 
 from hub.macos_admin import run_admin
-from hub.util import sh
+from hub.util import fan_out, sh
 
 DISKUTIL = "/usr/sbin/diskutil"
 
@@ -36,6 +36,12 @@ FILESYSTEMS = ("APFS", "JHFS+", "ExFAT")
 
 _cache: dict = {"t": 0.0, "v": None}
 _CACHE_TTL = 15.0
+
+#: Concurrent ``diskutil info`` reads.  Measured knee: throughput stops improving at
+#: 8 and degrades past it (16 and above ran slower than 8) because the requests
+#: contend inside diskutil rather than on the bus.  Same value and same reason as the
+#: constant in disk_manage_svc; kept local so neither module reaches into the other.
+_INFO_WORKERS = 8
 
 
 class RaidError(ValueError):
@@ -216,14 +222,25 @@ def candidate_devices() -> list[dict]:
     """
     topology = disk_topology()
     data = _plist([DISKUTIL, "list", "-plist", "physical"], timeout=12)
+
+    disks = [
+        (str(disk.get("DeviceIdentifier") or ""), disk)
+        for disk in data.get("AllDisksAndPartitions") or []
+        if isinstance(disk, dict)
+    ]
+    disks = [(device, disk) for device, disk in disks if _DEV_RE.fullmatch(device)]
+
+    # One `diskutil info` per disk, and none of them depends on another.  In series
+    # this grew with the number of physical disks -- and the machines this page
+    # exists for are the ones with the most of them.  `_disk_info` cannot raise (its
+    # `_plist` answers {} on every failure), which is what `fan_out` requires, and
+    # `fan_out` keeps `diskutil list` order so the picker does not reorder between
+    # refreshes.  Bounded width: concurrent `diskutil info` calls contend inside
+    # diskutil, and past 8 the batch measured slower rather than faster.
+    infos = fan_out(lambda item: _disk_info(item[0]), disks, max_workers=_INFO_WORKERS)
+
     out = []
-    for disk in data.get("AllDisksAndPartitions") or []:
-        if not isinstance(disk, dict):
-            continue
-        device = str(disk.get("DeviceIdentifier") or "")
-        if not _DEV_RE.fullmatch(device):
-            continue
-        info = _disk_info(device)
+    for (device, disk), info in zip(disks, infos):
         size = info.get("TotalSize") or disk.get("Size")
         record = topology.get(device) or {"volumes": [], "system": False}
         mounted = [
