@@ -1100,6 +1100,7 @@ export default {
     size: '大小',
     time: '时间',
     empty: '暂无备份文件',
+    truncated: '磁盘上共 {total} 个备份文件，此处显示最新的 {shown} 个。',
   },
   maintenance: {
     confirm_run: '确定执行「{name}」？',
@@ -1846,6 +1847,9 @@ export default {
     catalog: {
       no_free_port: '从 {port} 起已没有可用的主机端口',
       already_installed: '已安装于 {path}',
+      brew_missing: '未找到 Homebrew：{path}',
+      entry_incomplete: '目录条目 {app} 没有写明要安装的包',
+      install_busy: '{app} 正在安装或卸载中，请等当前操作结束后再试',
       confirm_required: '此操作需要确认',
       missing_token: '{name} 不能留空，请从 Cloudflare Zero Trust 复制真实 Token',
       missing_var: '缺少必填变量 {name}',
@@ -2012,6 +2016,7 @@ export default {
       worker_down: '未运行 —— 上传的照片不会生成缩略图/不会转码/不做人脸识别',
       worker_quarantined: '已隔离停止 —— 媒体卷曾出现写入故障，worker 被刻意禁止启动（修复硬件后删除 ~/.immich-accelerator/worker.quarantine）',
       worker_lift_quarantine: '先修复媒体卷 USB 链路，再删除隔离标记',
+      worker_running_while_quarantined: '隔离期内仍在运行 —— 它正在向未通过写屏障测试的卷写入，请先停止',
     },
   },
   storage: {

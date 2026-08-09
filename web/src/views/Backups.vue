@@ -29,12 +29,18 @@
           </tr>
         </tbody>
       </table>
+      <!-- The table is capped, so say so. Without this the older backups look
+           deleted rather than merely unlisted, which is the opposite of what a
+           backups page should tell you. -->
+      <p v-if="hiddenCount" class="meta" style="margin-top:8px">
+        {{ t('backups.truncated', { shown: backups.length, total }) }}
+      </p>
     </div>
   </div>
 </template>
 
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { backupConfigs, backupPostgres, getBackups } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -50,6 +56,10 @@ const msg = ref('')
 // row could not express: a fresh page claimed there were no backups at all.
 const loaded = ref(false)
 const loadError = ref('')
+// The API caps the rows it returns but reports how many exist, so the page can
+// tell "these are all of them" apart from "these are the newest 40".
+const total = ref(0)
+const hiddenCount = computed(() => Math.max(0, total.value - backups.value.length))
 
 function fmt(t) {
   return t ? new Date(t * 1000).toLocaleString() : ''
@@ -60,6 +70,9 @@ async function refresh() {
     const d = await getBackups()
     backups.value = d.backups || []
     root.value = d.root || ''
+    // A panel that predates `total` sends none; falling back to the row count
+    // keeps the note hidden rather than claiming everything is truncated.
+    total.value = d.total ?? (d.backups || []).length
     loadError.value = ''
   } catch (e) {
     loadError.value = e.message || String(e)

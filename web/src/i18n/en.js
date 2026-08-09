@@ -1099,6 +1099,7 @@ export default {
     size: 'Size',
     time: 'Time',
     empty: 'No backup files',
+    truncated: 'Showing the {shown} newest of {total} backup files on disk.',
   },
   maintenance: {
     confirm_run: 'Run “{name}”?',
@@ -1845,6 +1846,9 @@ export default {
     catalog: {
       no_free_port: 'No free host port is available at or above {port}',
       already_installed: 'Already installed at {path}',
+      brew_missing: 'Homebrew was not found at {path}',
+      entry_incomplete: 'Catalog entry {app} does not list the packages it installs',
+      install_busy: '{app} is already being installed or uninstalled — wait for it to finish',
       confirm_required: 'Confirmation is required for this action',
       missing_token: '{name} cannot be blank — paste the real token from Cloudflare Zero Trust',
       missing_var: 'Missing required variable {name}',
@@ -2011,6 +2015,7 @@ export default {
       worker_down: 'not running — uploads get no thumbnails, no transcoding, no face recognition',
       worker_quarantined: 'quarantined — the media volume had write faults, so the worker is deliberately kept stopped (delete ~/.immich-accelerator/worker.quarantine once the hardware is repaired)',
       worker_lift_quarantine: 'repair the media volume’s USB link first, then delete the quarantine marker',
+      worker_running_while_quarantined: 'running while quarantined — it is writing to a volume that failed write-barrier testing; stop it before it writes more',
     },
   },
   storage: {

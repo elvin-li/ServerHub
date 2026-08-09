@@ -1099,6 +1099,7 @@ export default {
     size: 'サイズ',
     time: '時刻',
     empty: 'バックアップなし',
+    truncated: 'ディスク上の {total} 件のうち、最新 {shown} 件を表示しています。',
   },
   maintenance: {
     confirm_run: '「{name}」を実行しますか？',
@@ -1845,6 +1846,9 @@ export default {
     catalog: {
       no_free_port: '{port} 以上に空きホストポートがありません',
       already_installed: 'すでに {path} にインストールされています',
+      brew_missing: 'Homebrew が {path} に見つかりません',
+      entry_incomplete: 'カタログ項目 {app} にインストール対象のパッケージが記載されていません',
+      install_busy: '{app} はインストールまたはアンインストール中です。完了までお待ちください',
       confirm_required: 'この操作には確認が必要です',
       missing_token: '{name} は空にできません。Cloudflare Zero Trust から実際のトークンを貼り付けてください',
       missing_var: '必須変数 {name} がありません',
@@ -2011,6 +2015,7 @@ export default {
       worker_down: '未実行 —— アップロード写真のサムネイル生成/トランスコード/顔認識が行われません',
       worker_quarantined: '隔離により停止中 —— メディアボリュームで書き込み障害が発生したため、worker は意図的に停止されています（ハードウェア修復後に ~/.immich-accelerator/worker.quarantine を削除してください）',
       worker_lift_quarantine: '先にメディアボリュームの USB 接続を修理してから、隔離マーカーを削除してください',
+      worker_running_while_quarantined: '隔離中にも関わらず実行中 —— 書き込みバリアテストに失敗したボリュームへ書き込んでいます。まず停止してください',
     },
   },
   storage: {
