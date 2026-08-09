@@ -496,15 +496,20 @@ def _launchctl_bootstrap() -> dict:
     sh(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"], timeout=15)
     ok = rc == 0 or _is_running()
     msg = (out or "") + (err or "")
+    running = False
     if ok:
         # wait briefly for process
         for _ in range(8):
-            if _is_running():
+            running = _is_running()
+            if running:
                 break
             time.sleep(0.4)
+    # One reading decides both fields.  They used to be two separate `_is_running()`
+    # calls -- each a full process-table scan -- which could disagree with each other
+    # and report ok=True alongside "start command issued, check the log".
     return {
-        "ok": ok or _is_running(),
-        "message": msg.strip() or ("已启动" if _is_running() else "启动命令已执行，请查看日志"),
+        "ok": ok or running,
+        "message": msg.strip() or ("已启动" if running else "启动命令已执行，请查看日志"),
     }
 
 

@@ -50,6 +50,7 @@ from hub import (  # noqa: E402
     apps_manage_svc,
     disk_power_svc,
     native_catalog,
+    network_svc,
     raid_svc,
     shares_svc,
     vms_svc,
@@ -1328,6 +1329,170 @@ class AppsInventoryTests(unittest.TestCase):
             seen["force"], True,
             "force must still reach _native_apps, or a just-installed app stays hidden",
         )
+
+
+class WiredFailoverTests(unittest.TestCase):
+    """The failover poller pings each wired link's gateway.
+
+    Every device is probed regardless -- the healthy pick reads the finished list --
+    so there was never a short-circuit to preserve, only timeouts to add up. This
+    runs on a timer, so a slow tick delays the next one.
+    """
+
+    DEVICES = [{"device": "en0"}, {"device": "en7"}, {"device": "en8"}, {"device": "en9"}]
+
+    def _run(self, probe=None, settings=None):
+        conf = {
+            "enabled": True,
+            "probe_timeout_ms": 300,
+            "recover_threshold": 99,   # high, so no wifi action is attempted
+            "fail_threshold": 99,
+            "power_save_wifi": False,
+            **(settings or {}),
+        }
+        calls = []
+
+        def default_probe(device, timeout_ms, iface=None):
+            time.sleep(PROBE_DELAY)
+            calls.append(device)
+            return {"ok": device == "en8", "device": device, "ip": "1.2.3.4",
+                    "gateway": "1.2.3.1"}
+
+        with (
+            mock.patch.object(network_svc, "_failover_settings", lambda: conf),
+            mock.patch.object(network_svc, "_wired_devices", lambda: list(self.DEVICES)),
+            mock.patch.object(network_svc, "interfaces", lambda: []),
+            mock.patch.object(network_svc, "wifi_power_status", lambda: {"on": None}),
+            mock.patch.object(
+                network_svc, "set_wifi_power",
+                lambda *a, **kw: self.fail("failover must not touch wifi in this test"),
+            ),
+            mock.patch.object(network_svc, "_probe_wired_device", probe or default_probe),
+        ):
+            started = time.time()
+            result = network_svc.network_failover_tick()
+            return result, time.time() - started
+
+    def test_the_gateway_probes_overlap(self):
+        _, elapsed = self._run()
+        self.assertLess(
+            elapsed,
+            len(self.DEVICES) * PROBE_DELAY * 0.8,
+            f"took {elapsed:.2f}s for {len(self.DEVICES)} wired devices",
+        )
+
+    def test_the_healthy_link_is_chosen_in_device_order(self):
+        # Two healthy links: the earlier one in configured order must win, regardless
+        # of which ping happened to answer first.
+        def probe(device, timeout_ms, iface=None):
+            time.sleep(PROBE_DELAY if device == "en7" else PROBE_DELAY * 2)
+            return {"ok": device in ("en7", "en8"), "device": device}
+
+        result, _ = self._run(probe=probe)
+        self.assertEqual(result["mode"], "wired")
+        self.assertEqual(result["active_wired"]["device"], "en7")
+
+    def test_one_exploding_probe_does_not_read_as_total_link_loss(self):
+        def probe(device, timeout_ms, iface=None):
+            if device == "en0":
+                raise OSError("interface went away")
+            return {"ok": device == "en8", "device": device}
+
+        result, _ = self._run(probe=probe)
+        self.assertEqual(result["mode"], "wired", "a healthy link was still present")
+        failed = next(p for p in result["wired_probes"] if p["device"] == "en0")
+        self.assertFalse(failed["ok"])
+        self.assertIn("probe failed", failed["reason"])
+        self.assertIn("interface went away", failed["reason"])
+
+    def test_probes_stay_in_device_order(self):
+        result, _ = self._run()
+        self.assertEqual(
+            [p["device"] for p in result["wired_probes"]],
+            [d["device"] for d in self.DEVICES],
+        )
+
+
+class AliasStatusTests(unittest.TestCase):
+    """Alias IP status: the interface table answers every IP at once."""
+
+    IPS = ["192.168.1.204", "192.168.1.205", "192.168.1.206", "192.168.1.207"]
+
+    TABLE = [
+        {"device": "en7", "up": True,
+         "addresses": [{"ip": "192.168.1.204", "alias": True, "netmask": "255.255.255.0"}]},
+        {"device": "en0", "up": True,
+         "addresses": [{"ip": "192.168.1.205", "alias": False, "netmask": "255.255.255.0"}]},
+    ]
+
+    def _run(self, route=None):
+        reads = collections.Counter()
+
+        def table():
+            reads["interface_addresses"] += 1
+            return [dict(row) for row in self.TABLE]
+
+        def default_route(ip):
+            time.sleep(PROBE_DELAY)
+            return {"ok": True, "interface": "en7", "flags": ""}
+
+        with (
+            mock.patch.object(
+                network_svc, "_alias_settings", lambda: {"ips": list(self.IPS)}
+            ),
+            mock.patch.object(
+                network_svc, "preferred_active_device", lambda: {"device": "en7"}
+            ),
+            mock.patch.object(network_svc, "interface_addresses", table),
+            mock.patch.object(network_svc, "_alias_local_route", route or default_route),
+        ):
+            started = time.time()
+            out = network_svc.alias_auto_status()
+            return out, time.time() - started, reads
+
+    def test_the_interface_table_is_read_once_not_once_per_ip(self):
+        _, _, reads = self._run()
+        self.assertEqual(
+            reads["interface_addresses"],
+            1,
+            f"one table read should serve {len(self.IPS)} ips; "
+            f"ran {reads['interface_addresses']}",
+        )
+
+    def test_the_route_lookups_overlap(self):
+        _, elapsed, _ = self._run()
+        self.assertLess(
+            elapsed,
+            len(self.IPS) * PROBE_DELAY * 0.8,
+            f"took {elapsed:.2f}s for {len(self.IPS)} ips",
+        )
+
+    def test_rows_follow_configured_ip_order(self):
+        out, _, _ = self._run()
+        self.assertEqual([r["ip"] for r in out["ips"]], self.IPS)
+
+    def test_the_shared_table_still_locates_each_ip(self):
+        out, _, _ = self._run()
+        by_ip = {r["ip"]: r for r in out["ips"]}
+        self.assertEqual([L["device"] for L in by_ip["192.168.1.204"]["locations"]], ["en7"])
+        self.assertTrue(by_ip["192.168.1.204"]["on_preferred"])
+        # Present but on the wrong device: located, but not on the preferred one.
+        self.assertEqual([L["device"] for L in by_ip["192.168.1.205"]["locations"]], ["en0"])
+        self.assertFalse(by_ip["192.168.1.205"]["on_preferred"])
+        # Absent entirely.
+        self.assertTrue(by_ip["192.168.1.206"]["missing"])
+
+    def test_a_failing_route_lookup_costs_only_its_own_row(self):
+        def route(ip):
+            if ip == "192.168.1.205":
+                raise OSError("route table busy")
+            return {"ok": True}
+
+        out, _, _ = self._run(route=route)
+        self.assertEqual([r["ip"] for r in out["ips"]], self.IPS)
+        by_ip = {r["ip"]: r for r in out["ips"]}
+        self.assertFalse(by_ip["192.168.1.205"]["local_route"]["ok"])
+        self.assertTrue(by_ip["192.168.1.204"]["local_route"]["ok"])
 
 
 class DeliberatelySerialTests(unittest.TestCase):

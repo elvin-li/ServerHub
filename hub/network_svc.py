@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import docker, engine_up
-from hub.util import sh
+from hub.util import fan_out, sh
 
 _cache = {"t": 0.0, "v": None}
 _CACHE_TTL = 6.0
@@ -789,10 +789,15 @@ def preferred_active_device() -> dict | None:
     return candidates[0]
 
 
-def find_ip_locations(ip: str) -> list[dict]:
-    """Where an IPv4 currently appears (device + alias flag)."""
+def find_ip_locations(ip: str, addresses: list | None = None) -> list[dict]:
+    """Where an IPv4 currently appears (device + alias flag).
+
+    ``addresses`` lets a caller checking several IPs read the interface table once
+    and share it: the table is the same for every IP, but this used to re-read it
+    per IP and then discard every row that did not match.
+    """
     found = []
-    for iface in interface_addresses():
+    for iface in addresses if addresses is not None else interface_addresses():
         for a in iface.get("addresses") or []:
             if a.get("ip") == ip:
                 found.append({
@@ -972,10 +977,25 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
 def alias_auto_status() -> dict:
     conf = _alias_settings()
     preferred = preferred_active_device()
+
+    # The interface table answers "where does this IP live" for every configured IP
+    # at once, so it is read once here rather than once per IP inside the loop.
+    addresses = interface_addresses()
+
+    def route(ip: str) -> dict:
+        """Never raises: one bad route lookup should not drop the whole page."""
+        try:
+            return _alias_local_route(ip)
+        except Exception as exc:  # noqa: BLE001 - surfaced in the row
+            return {"ok": False, "reason": f"route lookup failed: {exc}"}
+
+    # `route -n get` is genuinely per IP, so those overlap; order follows the
+    # configured list, which is what the page renders.
+    routes = fan_out(route, conf["ips"])
+
     ips_state = []
-    for ip in conf["ips"]:
-        locs = find_ip_locations(ip)
-        local_route = _alias_local_route(ip)
+    for ip, local_route in zip(conf["ips"], routes):
+        locs = find_ip_locations(ip, addresses=addresses)
         ips_state.append({
             "ip": ip,
             "locations": locs,
@@ -1079,13 +1099,32 @@ def network_failover_tick(force: bool = False) -> dict:
 
         wired = _wired_devices()
         iface_map = {iface.get("name"): iface for iface in interfaces()}
-        probes = [
-            _probe_wired_device(
-                item["device"], conf["probe_timeout_ms"], iface=iface_map.get(item["device"])
-            )
-            for item in wired
-        ]
-        healthy = next((probe for probe in probes if probe.get("ok")), None)
+
+        def probe(item) -> dict:
+            """Never raises: `fan_out` re-raises on iteration, and losing the whole
+            batch here would read as "no wired link" and switch Wi-Fi back on."""
+            device = item["device"]
+            try:
+                return _probe_wired_device(
+                    device, conf["probe_timeout_ms"], iface=iface_map.get(device)
+                )
+            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+                # The label stays ASCII on purpose: the payload is the operating
+                # system's own message ("no route to host"), which has no
+                # translation, and hub/errors.py is for text we author.
+                return {
+                    "ok": False, "device": device, "ip": None, "gateway": None,
+                    "reason": f"probe failed: {exc}",
+                }
+
+        # Every wired device is probed regardless -- the healthy pick below reads the
+        # finished list -- so there is no short-circuit to preserve, and in series a
+        # machine with two wired links waited out both ping timeouts on a poll that
+        # runs on a timer.  `fan_out` keeps device order, so which link is chosen as
+        # healthy stays deterministic rather than depending on which ping returned
+        # first.
+        probes = fan_out(probe, wired)
+        healthy = next((probe_result for probe_result in probes if probe_result.get("ok")), None)
         wifi = wifi_power_status()
         action = None
         action_result = None
