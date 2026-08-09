@@ -34,6 +34,7 @@ they measure "did these overlap at all" rather than a performance target.
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import json
 import sys
@@ -47,6 +48,7 @@ sys.path.insert(0, str(BASE))
 
 from hub import (  # noqa: E402
     apps_manage_svc,
+    disk_power_svc,
     native_catalog,
     raid_svc,
     shares_svc,
@@ -1053,6 +1055,145 @@ class SpotlightStatusTests(unittest.TestCase):
             rc, blob = usage_svc._spotlight_query("/Volumes/Gone")
         self.assertEqual(rc, 1)
         self.assertIn("vanished", blob)
+
+
+class _FakeCompleted:
+    def __init__(self, stdout=b"", returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+class DiskPowerListingTests(unittest.TestCase):
+    """The storage page: one `diskutil info` and possibly a `smartctl` per disk.
+
+    Two shared reads used to sit inside that per-disk loop -- the mount table and the
+    "what does `/` live on" question -- so a listing ran them once per disk to learn
+    something with a single answer.  Both are pinned here, because both are invisible
+    in the output: the rows are identical either way, only the subprocess count moves.
+    """
+
+    IDS = ["disk0", "disk2", "disk4", "disk6"]
+
+    DF_K = (
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        "/dev/disk0s1 100 50 50 50% /\n"
+        "/dev/disk2s1 200 100 100 50% /Volumes/Two\n"
+    )
+
+    def setUp(self):
+        self._reset()
+        self.addCleanup(self._reset)
+
+    def _reset(self):
+        disk_power_svc.list_power_disks.invalidate()
+        disk_power_svc._invalidate_root_disks()
+        disk_power_svc._invalidate_df()
+
+    def _run(self, power_state=None, diskutil_info=None):
+        """List with every shell-out faked, counting what actually ran."""
+        counts = collections.Counter()
+
+        def fake_sh(cmd, *a, **kw):
+            key = " ".join(str(c) for c in cmd)
+            counts[key] += 1
+            if cmd[:3] == ["/bin/df", "-P", "-k"]:
+                return 0, self.DF_K, ""
+            if cmd[:3] == ["/bin/df", "-P", "/"]:
+                return 0, "Filesystem\n/dev/disk0s1 1 1 1 1% /\n", ""
+            if cmd[:3] == ["/usr/sbin/diskutil", "info", "/"]:
+                return 0, "   Device Node: /dev/disk0s1\n", ""
+            return 1, "", ""
+
+        class FakeSubprocess:
+            @staticmethod
+            def run(cmd, *a, **kw):
+                counts[" ".join(str(c) for c in cmd)] += 1
+                return _FakeCompleted(b"", 1)
+
+        info = diskutil_info or (
+            lambda node: {
+                "MediaName": f"Media {node}",
+                "TotalSize": 500 * 10**9,
+                "SolidState": True,
+                "Internal": False,
+                "BusProtocol": "USB",
+                "Ejectable": True,
+            }
+        )
+        state = power_state or slow(lambda *a, **kw: "idle")
+
+        with (
+            mock.patch.object(disk_power_svc, "_list_whole_disks", lambda: list(self.IDS)),
+            mock.patch.object(disk_power_svc, "sh", fake_sh),
+            mock.patch.object(disk_power_svc, "subprocess", FakeSubprocess),
+            mock.patch.object(disk_power_svc, "_diskutil_info", info),
+            mock.patch.object(disk_power_svc, "_power_state", state),
+        ):
+            started = time.time()
+            rows = disk_power_svc.list_power_disks()
+            return rows, time.time() - started, counts
+
+    def test_order_follows_the_whole_disk_listing(self):
+        rows, _, _ = self._run()
+        self.assertEqual([r["id"] for r in rows], self.IDS)
+
+    def test_the_per_disk_probes_overlap(self):
+        _, elapsed, _ = self._run()
+        self.assertLess(
+            elapsed,
+            len(self.IDS) * PROBE_DELAY * 0.8,
+            f"took {elapsed:.2f}s for {len(self.IDS)} disks",
+        )
+
+    def test_the_mount_table_is_read_once_not_once_per_disk(self):
+        _, _, counts = self._run()
+        reads = counts["/bin/df -P -k"]
+        self.assertEqual(
+            reads, 1, f"one `df` should serve every disk; ran {reads} for {len(self.IDS)}"
+        )
+
+    def test_the_root_disk_question_is_asked_once_not_once_per_disk(self):
+        _, _, counts = self._run()
+        for command in ("/usr/sbin/diskutil info /", "/bin/df -P /"):
+            self.assertLessEqual(
+                counts[command],
+                1,
+                f"{command} ran {counts[command]} times for {len(self.IDS)} disks",
+            )
+
+    def test_the_shared_reads_still_classify_the_boot_disk(self):
+        # `/` is on disk0s1 in both fakes, so disk0 must come back as the system disk
+        # and must not be offered a sleep action.
+        rows, _, _ = self._run()
+        by_id = {r["id"]: r for r in rows}
+        self.assertTrue(by_id["disk0"]["system"])
+        self.assertFalse(by_id["disk0"]["can_sleep"])
+        self.assertEqual(by_id["disk0"]["actions"], [])
+        self.assertFalse(by_id["disk4"]["system"])
+
+    def test_the_shared_mount_table_still_attaches_volumes_per_disk(self):
+        rows, _, _ = self._run()
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual([v["mount"] for v in by_id["disk0"]["volumes"]], ["/"])
+        self.assertEqual([v["mount"] for v in by_id["disk2"]["volumes"]], ["/Volumes/Two"])
+        self.assertEqual(by_id["disk4"]["volumes"], [])
+
+    def test_one_unreadable_disk_drops_only_its_own_row(self):
+        def exploding(node):
+            if "disk4" in str(node):
+                raise OSError("bus reset")
+            return {"MediaName": "ok", "TotalSize": 1, "SolidState": True, "Internal": True}
+
+        rows, _, _ = self._run(diskutil_info=exploding)
+        self.assertEqual([r["id"] for r in rows], ["disk0", "disk2", "disk6"])
+
+    def test_invalidation_drops_both_derived_reads(self):
+        self._run()
+        self.assertIsNotNone(disk_power_svc._df_cache)
+        self.assertIsNotNone(disk_power_svc._root_disks)
+        disk_power_svc.invalidate_power_disks()
+        self.assertIsNone(disk_power_svc._df_cache)
+        self.assertIsNone(disk_power_svc._root_disks)
 
 
 class DeliberatelySerialTests(unittest.TestCase):

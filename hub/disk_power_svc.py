@@ -13,6 +13,7 @@ from __future__ import annotations
 import plistlib
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -20,10 +21,16 @@ from fastapi import HTTPException
 
 from hub.disk_manage_svc import invalidate_disk_info
 from hub.paths import SMARTCTL
-from hub.util import sh
+from hub.util import fan_out, sh, ttl_memo
 
 # Whole-disk identifiers only
 DISK_RE = re.compile(r"^disk\d+$")
+
+
+#: A wedged diskutil (typically an external HDD asleep) used to pin this whole
+#: listing at its subprocess timeout -- 12-15s per call.  Five seconds is far
+#: beyond a healthy answer and bounds the worst case instead.
+_DISKUTIL_TIMEOUT = 5
 
 
 def _diskutil_info(node: str) -> dict:
@@ -31,7 +38,7 @@ def _diskutil_info(node: str) -> dict:
     try:
         p = subprocess.run(
             ["/usr/sbin/diskutil", "info", "-plist", node],
-            capture_output=True, timeout=12,
+            capture_output=True, timeout=_DISKUTIL_TIMEOUT,
         )
         if p.returncode == 0 and p.stdout:
             return plistlib.loads(p.stdout)
@@ -43,11 +50,11 @@ def _diskutil_info(node: str) -> dict:
 def _list_whole_disks() -> list[str]:
     p = subprocess.run(
         ["/usr/sbin/diskutil", "list", "-plist", "physical"],
-        capture_output=True, timeout=15,
+        capture_output=True, timeout=_DISKUTIL_TIMEOUT,
     )
     if p.returncode != 0:
         # fallback text
-        rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=12)
+        rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=_DISKUTIL_TIMEOUT)
         ids = []
         for m in re.finditer(r"/dev/(disk\d+)\s", out or ""):
             if m.group(1) not in ids:
@@ -60,11 +67,35 @@ def _list_whole_disks() -> list[str]:
         return []
 
 
+#: The mount table, shared across one listing.  `df` reports every volume on the
+#: machine in a single call, but the per-disk helper below asked for the whole table
+#: and then threw away every row belonging to another disk -- so a listing ran one
+#: full `df` per disk to read one table.  Locked for the same reason as the root-disk
+#: memo: the per-disk work is concurrent now.
+_df_cache: list[str] | None = None
+_df_lock = threading.Lock()
+
+
+def _df_lines() -> list[str]:
+    """`df -P -k` output lines, read once per listing."""
+    global _df_cache
+    with _df_lock:
+        if _df_cache is None:
+            rc, out, _ = sh(["/bin/df", "-P", "-k"], timeout=8)
+            _df_cache = (out or "").splitlines() if rc == 0 else []
+        return _df_cache
+
+
+def _invalidate_df() -> None:
+    global _df_cache
+    with _df_lock:
+        _df_cache = None
+
+
 def _volumes_on_disk(disk_id: str) -> list[dict]:
     """Mounted volumes belonging to this whole disk."""
     vols = []
-    rc, out, _ = sh(["/bin/df", "-P", "-k"], timeout=8)
-    for line in (out or "").splitlines()[1:]:
+    for line in _df_lines()[1:]:
         parts = line.split()
         if len(parts) < 6:
             continue
@@ -89,6 +120,77 @@ def _volumes_on_disk(disk_id: str) -> list[dict]:
     return vols
 
 
+#: Whole disks that carry the running system, and the lock guarding the memo.
+#:
+#: Everything behind this asks about ``/``, not about a particular disk, but it used
+#: to be re-read inside the per-disk loop: three subprocesses (`diskutil info /`,
+#: `df -P /`, `diskutil info -plist /`) times the number of disks, to answer a
+#: question with one answer.  Resolved once per listing instead.
+_root_disks: set[str] | None = None
+_root_disks_lock = threading.Lock()
+
+
+def _root_whole_disks() -> set[str]:
+    """Every whole-disk id that ``/`` resolves to, read once and cached.
+
+    The lock is not decoration: the per-disk loop is now concurrent, and an
+    unguarded memo let every thread that found it empty start its own copy of all
+    three reads -- turning one `df` into one per worker.
+    """
+    global _root_disks
+    with _root_disks_lock:
+        if _root_disks is not None:
+            return _root_disks
+
+        found: set[str] = set()
+
+        # The device `/` sits on, as diskutil spells it.
+        rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
+        if rc == 0:
+            found.update(re.findall(r"/dev/(disk\d+)", out or ""))
+
+        # The same question through df, which reports the mounted device directly.
+        rc, root_dev, _ = sh(["/bin/df", "-P", "/"], timeout=5)
+        if rc == 0:
+            for line in (root_dev or "").splitlines()[1:]:
+                parts = line.split()
+                if not parts:
+                    continue
+                m = re.search(r"/dev/(disk\d+)", parts[0])
+                if m:
+                    found.add(m.group(1))
+
+        # APFS: root lives on a synthesised disk whose physical store is elsewhere,
+        # so neither read above names the disk an operator could spin down.
+        try:
+            p = subprocess.run(
+                ["/usr/sbin/diskutil", "info", "-plist", "/"],
+                capture_output=True, timeout=_DISKUTIL_TIMEOUT,
+            )
+            if p.returncode == 0:
+                rpl = plistlib.loads(p.stdout)
+                parent = rpl.get("ParentWholeDisk") or ""
+                if parent:
+                    found.add(str(parent))
+                for store in rpl.get("APFSPhysicalStores") or []:
+                    dev = store.get("APFSPhysicalStore") if isinstance(store, dict) else store
+                    if isinstance(dev, str):
+                        m = re.match(r"(disk\d+)", dev)
+                        if m:
+                            found.add(m.group(1))
+        except Exception:
+            pass
+
+        _root_disks = found
+        return _root_disks
+
+
+def _invalidate_root_disks() -> None:
+    global _root_disks
+    with _root_disks_lock:
+        _root_disks = None
+
+
 def _is_system_disk(info: dict, disk_id: str, volumes: list) -> bool:
     """Never allow sleep/eject of the boot / system APFS container parent."""
     # Root is usually on APFS container under disk0
@@ -103,58 +205,39 @@ def _is_system_disk(info: dict, disk_id: str, volumes: list) -> bool:
             # disk0 is typically the real whole disk
             if disk_id == "disk0":
                 return True
-    # Mount point of boot
-    rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=8)
-    if rc == 0 and f"/dev/{disk_id}" in out:
-        return True
-    # Parent of root device
-    rc, root_dev, _ = sh(["/bin/df", "-P", "/"], timeout=5)
-    if rc == 0:
-        for line in root_dev.splitlines()[1:]:
-            fs = line.split()[0]
-            m = re.search(r"/dev/(disk\d+)", fs)
-            if m and m.group(1) == disk_id:
-                return True
-            # APFS: root on disk3sX but whole physical is disk0 — check Physical Store
-    # walk APFS physical stores
-    p = subprocess.run(
-        ["/usr/sbin/diskutil", "info", "-plist", "/"],
-        capture_output=True, timeout=12,
-    )
-    if p.returncode == 0:
-        try:
-            rpl = plistlib.loads(p.stdout)
-            parent = rpl.get("ParentWholeDisk") or ""
-            if parent == disk_id:
-                return True
-            # APFS container parent
-            for key in ("APFSPhysicalStores",):
-                stores = rpl.get(key) or []
-                for s in stores:
-                    dev = s.get("APFSPhysicalStore") if isinstance(s, dict) else s
-                    if isinstance(dev, str) and dev.startswith(disk_id):
-                        return True
-        except Exception:
-            pass
-    return False
+    # Whatever `/` sits on, resolved once for the whole listing.
+    return disk_id in _root_whole_disks()
 
 
-def _power_state(disk_id: str, volumes: list, info: dict) -> str:
-    """active | idle | spun_down | offline"""
+def _power_state(disk_id: str, volumes: list, info: dict, probe: bool = True) -> str:
+    """active | idle | spun_down | offline
+
+    *probe* controls the ``smartctl -n standby`` power check.  Internal disks
+    and SSDs never spin down, so probing them only pays for a subprocess
+    (which on a wedged bus can even hang); callers skip it for those.
+    """
     if volumes:
         return "active"
     # exists?
     node = f"/dev/{disk_id}"
     if not Path(node).exists() and not info:
         return "offline"
+    if not probe:
+        # Unmounted but present, no spin state to discover.
+        return "idle"
     # smartctl check power mode
-    rc, out, err = sh(["sudo", "-n", SMARTCTL, "-n", "standby", node], timeout=10)
+    rc, out, err = sh(["sudo", "-n", SMARTCTL, "-n", "standby", node], timeout=_DISKUTIL_TIMEOUT)
     text = (out or "") + (err or "")
     if "STANDBY" in text.upper() or "Device is in STANDBY" in text:
         return "spun_down"
     if "SLEEP" in text.upper():
         return "spun_down"
     if rc == 2 or "STANDBY" in text:
+        return "spun_down"
+    if rc == -1:
+        # The probe timed out: the device is present but refuses to answer,
+        # which is exactly what a spun-down disk behind a USB bridge does.
+        # Report it as parked rather than holding the whole listing hostage.
         return "spun_down"
     # unmounted but present
     if info.get("Ejectable") or info.get("Removable") or info.get("RemovableMedia"):
@@ -165,11 +248,49 @@ def _power_state(disk_id: str, volumes: list, info: dict) -> str:
     return "idle"
 
 
+#: The storage page polls every 45s and the menu bar client polls too, and a
+#: cold listing costs one `diskutil info` per disk plus a smartctl probe per
+#: sleeping candidate -- 0.3-0.8s healthy, and wedged up to the subprocess
+#: timeouts when an external disk is asleep.  Mount/eject state changes rarely,
+#: and every path that does change it calls invalidate_power_disks(), so a
+#: 15s window trades imperceptible staleness for skipping the re-probe on
+#: nearly every read.
+_POWER_DISKS_TTL = 15.0
+
+
+#: Concurrent per-disk probes.  Each one is a `diskutil info` plus, for a sleeping
+#: candidate, a `smartctl` power query -- so this is bounded rather than one thread
+#: per disk: a dozen enclosure disks would otherwise put a dozen smartctl processes
+#: on a single controller at once.
+_DISK_PROBE_WORKERS = 6
+
+
+@ttl_memo(_POWER_DISKS_TTL)
 def list_power_disks() -> list:
-    disks = []
-    for disk_id in _list_whole_disks():
-        if not DISK_RE.match(disk_id):
-            continue
+    ids = [d for d in _list_whole_disks() if DISK_RE.match(d)]
+    if not ids:
+        return []
+
+    # Both shared reads are resolved before fanning out, so the workers find the
+    # memos populated rather than racing to fill them.  A listing reflects the state
+    # at its own start, so they are dropped first.
+    _invalidate_df()
+    _invalidate_root_disks()
+    _df_lines()
+    _root_whole_disks()
+
+    # One `diskutil info` per disk, plus a smartctl probe per sleeping candidate --
+    # and a probe against an external disk that is asleep costs the whole subprocess
+    # timeout.  In series the page waited for the sum of those; the disks are
+    # independent, so they overlap.  `fan_out` keeps `diskutil list` order, which is
+    # what the storage table renders.
+    return [d for d in fan_out(_describe_disk, ids, max_workers=_DISK_PROBE_WORKERS) if d]
+
+
+def _describe_disk(disk_id: str) -> dict | None:
+    """One row of the power listing.  Must not raise: `fan_out` re-raises on
+    iteration, which would cost the whole listing instead of one disk."""
+    try:
         node = f"/dev/{disk_id}"
         info = _diskutil_info(node)
         if not info:
@@ -207,7 +328,15 @@ def list_power_disks() -> list:
             can_sleep = False
             system = True
 
-        state = _power_state(disk_id, volumes, info)
+        state = _power_state(
+            disk_id,
+            volumes,
+            info,
+            # Only an explicit fact skips the probe: `Internal` or `SolidState`
+            # must be reported as true by diskutil.  A missing field keeps the
+            # probe, because an SSD behind some USB bridges reports neither.
+            probe=not (info.get("Internal") is True or info.get("SolidState") is True),
+        )
         if system:
             state = "active"  # boot disk is always considered running
         actions = []
@@ -236,7 +365,7 @@ def list_power_disks() -> list:
         else:
             kind = "hdd" if not ssd else "disk"
 
-        disks.append({
+        return {
             "id": disk_id,
             "device": node,
             "name": name,
@@ -255,8 +384,27 @@ def list_power_disks() -> list:
             "kind": kind,
             "actions": actions,
             "hint": _hint(system, ssd, can_sleep, state),
-        })
-    return disks
+        }
+    except Exception:
+        # One unreadable disk drops its own row rather than emptying the table.
+        return None
+
+
+def invalidate_power_disks() -> None:
+    """Drop the cached power listing after an operation changed disk state.
+
+    Kept beside the cross-module disk-info invalidation call sites below:
+    both caches describe the same physical state (what is mounted, what is
+    present), so they must be dropped together.  The manage side of the house
+    reaches this through routers/storage.py, which can import both services
+    without an import cycle.
+    """
+    list_power_disks.invalidate()
+    # Both derived reads describe the same physical state, so they go too --
+    # otherwise a disk that became the boot disk, or a volume that was just
+    # unmounted, would keep its old classification for the life of the process.
+    _invalidate_root_disks()
+    _invalidate_df()
 
 
 def _hint(system, ssd, can_sleep, state) -> str:
@@ -296,6 +444,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     # the managed-volumes list for up to the cache TTL.  Invalidate even on
     # failure -- a partial unmount still moved state.
     invalidate_disk_info()
+    invalidate_power_disks()
     if rc != 0:
         return {
             "ok": False,
@@ -313,6 +462,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
         # Eject removes the device node entirely, which is a second state change
         # after the unmount above -- the earlier invalidation predates it.
         invalidate_disk_info()
+        invalidate_power_disks()
         ok = rc2 == 0
         return {
             "ok": ok,
@@ -394,6 +544,7 @@ def wake_disk(disk_id: str) -> dict:
     # Waking remounts the volumes, so every cached `diskutil info` entry for this
     # disk and its children now reports the wrong mount point.
     invalidate_disk_info()
+    invalidate_power_disks()
     ok = rc2 == 0
     return {
         "ok": ok,
