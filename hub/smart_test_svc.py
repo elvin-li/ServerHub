@@ -39,7 +39,51 @@ _DEV_RE = re.compile(r"^/dev/disk\d{1,3}$")
 TEST_KINDS = ("short", "long", "conveyance", "offline")
 
 #: Rough ceilings so the UI can say "come back later" instead of polling forever.
+#: Only a fallback: a drive that reports its own polling times overrides these.
 _KIND_HINT_MINUTES = {"short": 2, "conveyance": 5, "long": 120, "offline": 30}
+
+#: How ``smartctl -c`` names each kind, which is not how the panel names them.
+#:
+#: The ATA spec -- and therefore smartctl -- calls the full surface scan the
+#: *extended* self-test; ``smartctl -t`` still takes ``long`` as the argument, so
+#: the panel uses "long" throughout.  Scanning the output for "long self-test"
+#: matched nothing on any real drive, so ``long`` never reached ``supported``:
+#: :func:`start_test` answered ``kind_unsupported``, and a schedule configured for
+#: it was journalled as ``unsupported`` and skipped on every run, so the disk was
+#: never actually scanned.  ``offline`` is keyed off the offline-data-collection
+#: block rather than a routine line, which is where smartctl reports it.
+_KIND_TOKENS: dict[str, tuple[str, ...]] = {
+    "short": ("short self-test",),
+    "long": ("extended self-test",),
+    "conveyance": ("conveyance self-test",),
+    "offline": ("offline data collection",),
+}
+
+#: The routine-line label whose recommended polling time gives each kind's duration.
+#: ``offline`` is absent: its cost is reported as "Total time to complete Offline
+#: data collection" in seconds, not as a polling time in minutes.
+_POLLING_LABELS = {"short": "Short", "long": "Extended", "conveyance": "Conveyance"}
+
+
+def _polling_time_pattern(label: str) -> str:
+    """Match *label*'s recommended polling time in minutes.
+
+    Two details that the previous ``(\\d+)\\s*minutes`` got wrong:
+
+    * smartctl parenthesises the number -- ``recommended polling time: (   2)
+      minutes.`` -- so the closing paren sits between the digits and the unit and
+      nothing ever matched.  Every duration therefore came from
+      :data:`_KIND_HINT_MINUTES` instead of from the drive.
+    * the gap may not cross into another routine's block.  A drive that names a
+      routine but omits its polling line would otherwise borrow the next
+      routine's number, reporting a 2-minute conveyance scan as the extended
+      test's duration.
+    """
+    gap = r"(?:(?!self-test routine).){0,80}?"
+    return (
+        rf"{label} self-test routine{gap}recommended polling time"
+        rf".{{0,40}}?\(\s*(\d+)\s*\)\s*minutes"
+    )
 
 SCHEDULE_INTERVALS = {
     "off": 0,
@@ -221,18 +265,13 @@ def _capabilities(
 
     supported: list[str] = []
     if not no_access and not selftest_unsupported:
-        for kind in ("short", "long", "conveyance", "offline"):
-            token = "offline data collection" if kind == "offline" else f"{kind} self-test"
-            if token in lowered:
+        for kind in TEST_KINDS:
+            if any(token in lowered for token in _KIND_TOKENS[kind]):
                 supported.append(kind)
 
     minutes: dict[str, int] = {}
-    for kind, pattern in (
-        ("short", r"Short self-test routine.*?\n.*?(\d+)\s*minutes"),
-        ("long", r"Extended self-test routine.*?\n.*?(\d+)\s*minutes"),
-        ("conveyance", r"Conveyance self-test routine.*?\n.*?(\d+)\s*minutes"),
-    ):
-        m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    for kind, label in _POLLING_LABELS.items():
+        m = re.search(_polling_time_pattern(label), text, re.IGNORECASE | re.DOTALL)
         if m:
             minutes[kind] = int(m.group(1))
 

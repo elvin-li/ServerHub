@@ -283,15 +283,9 @@ class AutostartOverviewTests(unittest.TestCase):
 # ── /api/smart ───────────────────────────────────────────────────────────────
 
 #: Real `smartctl -c` wording, so the parse assertions below describe production.
-#:
-#: Two quirks show up in the expected values and neither is caused by this change;
-#: they are pinned as-is so that fixing them is a deliberate, visible edit:
-#:
-#: * "long" never reaches `supported`. The scan looks for the literal "long
-#:   self-test" and smartctl writes "Extended self-test routine".
-#: * `estimated_minutes` always comes from the hardcoded `_KIND_HINT_MINUTES`
-#:   fallback, because the duration regex wants `(\d+)\s*minutes` and smartctl
-#:   writes `(   2) minutes.` -- the closing paren sits between the two.
+#: The parsing itself is covered in tests/test_smart_capability_parsing.py; here it
+#: only needs to prove the shared `-c` output survives being read once and handed to
+#: two consumers.
 CAPS_OUT = (
     "SMART capabilities:\n"
     "Short self-test routine\nrecommended polling time:  (   2) minutes\n"
@@ -365,10 +359,12 @@ class SmartOverviewTests(unittest.TestCase):
     def test_the_parsed_result_is_unchanged(self):
         data, _ = self._overview()
         first = data["devices"][0]
-        self.assertEqual(first["capabilities"]["supported"], ["short", "conveyance"])
-        # The hint fallback, not the drive's own numbers -- see CAPS_OUT.
         self.assertEqual(
-            first["capabilities"]["estimated_minutes"], {"short": 2, "conveyance": 5}
+            first["capabilities"]["supported"], ["short", "long", "conveyance"]
+        )
+        self.assertEqual(
+            first["capabilities"]["estimated_minutes"],
+            {"short": 2, "long": 120, "conveyance": 3},
         )
         self.assertEqual(first["log_count"], 1)
         self.assertEqual(first["last_result"], "Completed without error")
@@ -590,18 +586,34 @@ class HealthCheckTests(unittest.TestCase):
             self.assertIn(expected, ids, "one failing probe emptied the batch")
 
     def test_a_raising_immich_probe_becomes_its_own_warning(self):
-        def boom():
-            raise RuntimeError("immich module broken")
+        """`_immich_checks` is the boundary that absorbs this, so exercise the real one.
 
-        # `_immich_checks` is the boundary that absorbs this, so call the real one
-        # with the module import failing underneath it.
-        with mock.patch.dict(sys.modules, {"hub.immich_svc": None}):
-            data, tracker = self._run(immich=health_svc._immich_checks)
-        del tracker
+        Patch the attribute on the `hub` package, not `sys.modules`.
+        `_immich_checks` does `from hub import immich_svc`, which resolves as an
+        attribute lookup once anything else has imported the submodule -- so a
+        `sys.modules` entry takes effect in isolation and is ignored during a
+        full-suite run. An earlier version of this test did exactly that and
+        passed alone while failing together, which is the same trap
+        `ContainerLogTests._logs` documents in tests/test_fanned_out_probes.py.
+        """
+        class Exploding:
+            @staticmethod
+            def run_checks():
+                raise RuntimeError("immich module broken")
+
+        import hub
+
+        with (
+            mock.patch.object(hub, "immich_svc", Exploding, create=True),
+            mock.patch.dict(sys.modules, {"hub.immich_svc": Exploding}),
+        ):
+            data, _ = self._run(immich=health_svc._immich_checks)
+
         immich = [c for c in data["checks"] if c["id"] == "immich"]
         self.assertEqual(len(immich), 1)
         self.assertFalse(immich[0]["ok"])
         self.assertEqual(immich[0]["level"], "warn")
+        self.assertIn("immich module broken", immich[0]["detail"])
 
     def test_the_loaded_job_listing_is_read_once(self):
         _, tracker = self._run()
