@@ -1196,6 +1196,140 @@ class DiskPowerListingTests(unittest.TestCase):
         self.assertIsNone(disk_power_svc._root_disks)
 
 
+class AppsInventoryTests(unittest.TestCase):
+    """The Apps page aggregates three backends that have nothing to do with each other.
+
+    Compose stacks, Homebrew/native installs and VMs each shell out several
+    times.  Run in series their latencies simply added, so the page waited for
+    Docker, then brew, then utmctl before rendering anything -- even though every
+    collector is internally overlapped already.
+
+    Fanning them out also changes the failure mode, which is the more valuable
+    half: an unreachable Docker socket now costs the Docker section instead of
+    the whole page.
+    """
+
+    DOCKER = [
+        {"id": "docker:web", "kind": "docker", "name": "web", "state": "ok"},
+        {"id": "docker:db", "kind": "docker", "name": "db", "state": "down"},
+    ]
+    NATIVE = [{"id": "native:pg", "kind": "native", "name": "postgres", "state": "ok"}]
+    VMS = [{"id": "vm:ubuntu", "kind": "vm", "name": "ubuntu", "state": "warn"}]
+
+    def setUp(self):
+        apps_manage_svc._inv_cache.update(t=0.0, v=None)
+        self.addCleanup(apps_manage_svc._inv_cache.update, t=0.0, v=None)
+
+    def _inventory(self, **overrides):
+        """Run inventory() with every collector slowed and optionally broken."""
+
+        def slow(value):
+            def call(*args, **kwargs):
+                time.sleep(PROBE_DELAY)
+                if isinstance(value, Exception):
+                    raise value
+                return value
+            return call
+
+        values = {
+            "_docker_stacks": overrides.get("docker", self.DOCKER),
+            "_native_apps": overrides.get("native", self.NATIVE),
+            "_vms": overrides.get("vms", self.VMS),
+            "engine_up": overrides.get("engine", True),
+            "_host_ip": overrides.get("host", "192.168.1.9"),
+        }
+        with mock.patch.multiple(
+            apps_manage_svc, **{name: slow(v) for name, v in values.items()}
+        ):
+            started = time.time()
+            inventory = apps_manage_svc.inventory(force=True)
+            return inventory, time.time() - started
+
+    def test_every_section_reaches_the_payload(self):
+        inventory, _ = self._inventory()
+        self.assertEqual(len(inventory["items"]), 4)
+        self.assertEqual(inventory["host_ip"], "192.168.1.9")
+        self.assertIs(inventory["engine_up"], True)
+
+    def test_the_counts_are_unchanged(self):
+        inventory, _ = self._inventory()
+        self.assertEqual(
+            inventory["counts"],
+            {"total": 4, "native": 1, "docker": 2, "vm": 1, "running": 2, "stopped": 1},
+        )
+
+    def test_the_sort_is_unchanged(self):
+        """Running first, then native/docker/vm, then name."""
+        inventory, _ = self._inventory()
+        self.assertEqual(
+            [i["name"] for i in inventory["items"]],
+            ["postgres", "web", "ubuntu", "db"],
+        )
+
+    def test_the_collectors_overlap(self):
+        _, elapsed = self._inventory()
+        self.assertLess(
+            elapsed,
+            5 * PROBE_DELAY * 0.6,
+            f"the collectors took {elapsed:.2f}s; they ran in series",
+        )
+
+    def test_a_dead_docker_socket_costs_only_the_docker_section(self):
+        inventory, _ = self._inventory(docker=RuntimeError("socket gone"))
+        self.assertEqual(
+            [i["name"] for i in inventory["items"]],
+            ["postgres", "ubuntu"],
+            "a failing collector emptied sections that had nothing to do with it",
+        )
+        self.assertEqual(inventory["counts"]["docker"], 0)
+        self.assertEqual(inventory["host_ip"], "192.168.1.9")
+
+    def test_a_failing_engine_probe_reads_as_down(self):
+        inventory, _ = self._inventory(engine=RuntimeError("no socket"))
+        self.assertIs(inventory["engine_up"], False)
+        self.assertEqual(len(inventory["items"]), 4, "the item list is independent")
+
+    def test_the_cache_still_short_circuits(self):
+        calls = {"n": 0}
+
+        def counting(*args, **kwargs):
+            calls["n"] += 1
+            return self.DOCKER
+
+        with mock.patch.multiple(
+            apps_manage_svc,
+            _docker_stacks=counting,
+            _native_apps=lambda **kw: self.NATIVE,
+            _vms=lambda: self.VMS,
+            engine_up=lambda: True,
+            _host_ip=lambda: "192.168.1.9",
+        ):
+            apps_manage_svc.inventory(force=True)
+            apps_manage_svc.inventory(force=False)
+        self.assertEqual(calls["n"], 1, "the second call re-collected instead of caching")
+
+    def test_force_is_still_passed_to_the_native_collector(self):
+        seen = {}
+
+        def record_native(force=False):
+            seen["force"] = force
+            return []
+
+        with mock.patch.multiple(
+            apps_manage_svc,
+            _docker_stacks=lambda: [],
+            _native_apps=record_native,
+            _vms=lambda: [],
+            engine_up=lambda: True,
+            _host_ip=lambda: "h",
+        ):
+            apps_manage_svc.inventory(force=True)
+        self.assertIs(
+            seen["force"], True,
+            "force must still reach _native_apps, or a just-installed app stays hidden",
+        )
+
+
 class DeliberatelySerialTests(unittest.TestCase):
     """Not everything with several shell-outs should be fanned out.
 
