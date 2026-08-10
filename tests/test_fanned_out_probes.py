@@ -57,6 +57,7 @@ from hub import (  # noqa: E402
     network_svc,
     raid_svc,
     shares_svc,
+    storage_svc,
     tools_svc,
     vms_svc,
     wireguard_svc,
@@ -1967,6 +1968,98 @@ class ContainerListSingleFlightTests(unittest.TestCase):
             first["containers"][0]["name"] = "MUTATED"
             second = containers_svc.list_containers(True)
         self.assertNotEqual(second["containers"][0]["name"], "MUTATED")
+
+
+class SmartSnapshotTests(unittest.TestCase):
+    """The SMART snapshot: shared by simultaneous readers, and droppable.
+
+    Two separate defects, both invisible in a single-reader happy path. The cache was
+    a bare dict that computed outside any lock, so concurrent cold readers each ran
+    the whole per-disk probe; and nothing invalidated it, so with a ten-minute TTL a
+    disk that was ejected or erased kept its health row for the rest of that window.
+    """
+
+    def setUp(self):
+        storage_svc.invalidate_smart()
+        self.addCleanup(storage_svc.invalidate_smart)
+        self.calls = collections.Counter()
+        self._lock = threading.Lock()
+
+    def _sh(self, cmd, timeout=10):
+        joined = " ".join(str(c) for c in cmd)
+        if "smartctl" in joined:
+            key = "smartctl"
+        elif joined.startswith("diskutil info"):
+            key = "info"
+        else:
+            key = "list"
+        with self._lock:
+            self.calls[key] += 1
+        time.sleep(PROBE_DELAY)
+        if "list physical" in joined:
+            return 0, "/dev/disk0 (internal):\n/dev/disk4 (external):\n", ""
+        if "smartctl" in joined:
+            return 0, "SMART overall-health self-assessment test result: PASSED", ""
+        return 0, "Device / Media Name: Test\nDisk Size: 500.0 GB (500000000000 Bytes)", ""
+
+    def test_the_probe_count_does_not_grow_with_readers(self):
+        for readers in (2, 4, 8):
+            with self.subTest(readers=readers):
+                storage_svc.invalidate_smart()
+                self.calls.clear()
+                with mock.patch.object(storage_svc, "sh", self._sh):
+                    with ThreadPoolExecutor(max_workers=readers) as ex:
+                        list(ex.map(lambda _: storage_svc.smart_devices(), range(readers)))
+                self.assertEqual(
+                    self.calls["smartctl"], 2,
+                    f"{readers} readers ran smartctl {self.calls['smartctl']} times "
+                    f"for 2 disks; one probe per disk should serve all readers",
+                )
+
+    def test_every_reader_sees_the_same_disks_in_the_same_order(self):
+        with mock.patch.object(storage_svc, "sh", self._sh):
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                results = list(ex.map(lambda _: storage_svc.smart_devices(), range(4)))
+        for devices in results:
+            self.assertEqual([d["id"] for d in devices], ["disk0", "disk4"])
+            self.assertEqual([(d.get("smart") or {}).get("health") for d in devices],
+                             ["PASSED", "PASSED"])
+
+    def test_a_warm_snapshot_costs_no_subprocess(self):
+        with mock.patch.object(storage_svc, "sh", self._sh):
+            storage_svc.smart_devices()
+            self.calls.clear()
+            storage_svc.smart_devices()
+        self.assertEqual(sum(self.calls.values()), 0)
+
+    def test_invalidate_smart_forces_a_re_probe(self):
+        # Without this hook a disk removed from the machine kept its health row for
+        # the full ten-minute TTL.
+        with mock.patch.object(storage_svc, "sh", self._sh):
+            storage_svc.smart_devices()
+            storage_svc.invalidate_smart()
+            self.calls.clear()
+            storage_svc.smart_devices()
+        self.assertEqual(self.calls["smartctl"], 2)
+
+    def test_the_disk_routes_drop_the_snapshot(self):
+        """Both mutating storage routes must reach the invalidation.
+
+        Checked at the source, because the alternative is driving diskutil for real.
+        """
+        source = (BASE / "hub" / "routers" / "storage.py").read_text()
+        self.assertEqual(
+            source.count("storage_svc.invalidate_smart()"),
+            2,
+            "the power route and the manage route both change which disks are present",
+        )
+        for anchor in ("def storage_disk_power", "def storage_manage_action"):
+            start = source.index(anchor)
+            body = source[start: source.index("\n@router", start + 10)
+                          if "\n@router" in source[start:] else len(source)]
+            self.assertIn(
+                "invalidate_smart", body, f"{anchor} does not drop the SMART snapshot"
+            )
 
 
 class DeliberatelySerialTests(unittest.TestCase):

@@ -3,14 +3,21 @@ from __future__ import annotations
 
 import re
 import shutil
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hub.paths import SMARTCTL
-from hub.util import sh
+from hub.util import sh, ttl_memo
 
-_smart_multi = {"t": 0.0, "v": None}
+#: SMART is slow to read and slow to change: each disk costs a `diskutil info` plus a
+#: `smartctl -a`, and wear and error counters move over weeks.
+#:
+#: Behind ``ttl_memo`` rather than a bare dict.  The dict this replaces checked its
+#: timestamp and then computed outside any lock, so simultaneous cold readers -- the
+#: storage page, the dashboard tile and the menu-bar client all want this -- each ran
+#: the whole per-disk fan-out.  Measured with a counting fake: two readers spawned
+#: four `smartctl` where two would do, four readers spawned eight.
+_SMART_TTL = 600.0
 
 # skip noisy synthetic mounts
 SKIP_PREFIXES = (
@@ -282,6 +289,7 @@ def _probe_disk(d: str) -> dict:
     return info
 
 
+@ttl_memo(_SMART_TTL)
 def smart_devices() -> list:
     """Enumerate disks and pull SMART summary (cached 10 min).
 
@@ -295,10 +303,6 @@ def smart_devices() -> list:
     Results are re-ordered to match `disk_ids` so the array table does not
     reshuffle its rows depending on which disk answered first.
     """
-    global _smart_multi
-    if time.time() - _smart_multi["t"] < 600 and _smart_multi["v"] is not None:
-        return _smart_multi["v"]
-
     rc, out, _ = sh(["diskutil", "list", "physical"], timeout=10)
     disk_ids = []
     if rc == 0:
@@ -318,8 +322,16 @@ def smart_devices() -> list:
         with ThreadPoolExecutor(max_workers=min(4, len(disk_ids))) as ex:
             devices = list(ex.map(_probe_disk, disk_ids))
 
-    _smart_multi = {"t": time.time(), "v": devices}
     return devices
+
+
+def invalidate_smart() -> None:
+    """Drop the SMART snapshot after an operation changed which disks are present.
+
+    Nothing used to do this.  The TTL is ten minutes, so a disk ejected, mounted or
+    erased kept its old SMART row -- or kept appearing at all -- for that long.
+    """
+    smart_devices.invalidate()
 
 
 def storage_overview() -> dict:

@@ -54,7 +54,15 @@ class DiskPowerBody(BaseModel):
 
 @router.post("/api/storage/disks/{disk_id}/power")
 def storage_disk_power(disk_id: str, body: DiskPowerBody):
-    return disk_power_svc.disk_power_action(disk_id, body.action)
+    try:
+        return disk_power_svc.disk_power_action(disk_id, body.action)
+    finally:
+        # Sleeping, ejecting or waking a disk changes whether it answers SMART at
+        # all.  The service already drops its own caches; the SMART snapshot lives
+        # in a third module, so it is dropped here for the same reason the manage
+        # route below does it.  Fired even on failure: a partial eject still moved
+        # state, and dropping a cache can never lie.
+        storage_svc.invalidate_smart()
 
 
 class DiskManageBody(BaseModel):
@@ -83,6 +91,10 @@ def storage_manage_action(device_id: str, body: DiskManageBody):
         # cross-module invalidation lives here.  Fired even on a rejected
         # action: dropping the cache costs one refetch and can never lie.
         disk_power_svc.invalidate_power_disks()
+        # The SMART snapshot describes which disks are present, so an eject or an
+        # erase invalidates it too -- and its TTL is ten minutes, long enough for a
+        # removed disk to keep showing a health row for the rest of the session.
+        storage_svc.invalidate_smart()
 
 
 class PoolPlanBody(BaseModel):
