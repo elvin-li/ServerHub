@@ -19,6 +19,7 @@ from hub.docker_cli import docker, docker_json, engine_up, redact_env
 from hub.paths import DATA_DIR, DOCKER
 from hub.host_address import resolve_value
 from hub.status import invalidate_status
+from hub.util import ttl_memo
 
 # long-running compose / pull jobs (reuse pattern of maintenance)
 _cjobs: dict = {}
@@ -126,17 +127,45 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
 UPDATE_STATUS_PATH = DATA_DIR / "docker-update-status.json"
 
 # docker stats --no-stream is ~2s; cache aggressively for snappy UI
-_list_cache = {"t": 0.0, "items": None, "engine_up": True}
-_stats_cache = {"t": 0.0, "stats": {}}
 _LIST_TTL = 5.0
 _STATS_TTL = 15.0
-_cache_lock = threading.Lock()
+
+
+#: Both reads go through ``ttl_memo`` rather than a hand-rolled TTL dict.
+#:
+#: The dicts these replace checked the cache, released the lock, and only then ran
+#: the command -- which is correct only while callers arrive one at a time.  They do
+#: not: the panel polls, the menu-bar client polls, and a browser refresh adds a
+#: third reader, all landing within milliseconds.  Measured with four concurrent
+#: readers on a cold cache: four `docker ps`, four `docker inspect` and four
+#: `docker stats`, where one of each would have served all of them -- and
+#: `docker stats --no-stream` is the ~2s call, so that is four of those queued on the
+#: daemon at once.  ``ttl_memo`` holds the refresh lock across the computation, so
+#: the readers that arrive second join the first one's result.
+@ttl_memo(_LIST_TTL)
+def _container_list_cached() -> tuple[bool, list]:
+    return _build_container_list()
+
+
+@ttl_memo(_STATS_TTL)
+def _stats_cached() -> dict:
+    """Stats for whatever is currently running.
+
+    Deliberately zero-argument.  Keying this by the running-name tuple would look
+    tidier but would leave one cache entry per distinct set of running containers,
+    and ``ttl_memo`` only drops entries on invalidate -- so a host whose containers
+    come and go would accumulate them for the life of the process.  One entry on a
+    15s TTL is also exactly what the dict this replaces did.
+    """
+    engine_ok, items = _container_list_cached()
+    if not engine_ok:
+        return {}
+    return _fetch_stats([i["id"] for i in items if i.get("raw_state") == "running"])
 
 
 def invalidate_container_lists():
-    with _cache_lock:
-        _list_cache["t"] = 0
-        _stats_cache["t"] = 0
+    _container_list_cached.invalidate()
+    _stats_cached.invalidate()
 
 
 def _load_update_status() -> dict:
@@ -350,34 +379,18 @@ def _fetch_stats(running_names: list[str]) -> dict:
 
 
 def list_containers(with_stats: bool = True) -> dict:
-    now = time.time()
-    with _cache_lock:
-        if _list_cache["items"] is not None and now - _list_cache["t"] < _LIST_TTL:
-            engine_up_flag = _list_cache["engine_up"]
-            items = [dict(x) for x in _list_cache["items"]]  # shallow copy per item
-        else:
-            engine_up_flag, items = None, None
-
-    if items is None:
-        engine_up_flag, items = _build_container_list()
-        with _cache_lock:
-            _list_cache.update(t=time.time(), items=[dict(x) for x in items], engine_up=engine_up_flag)
+    engine_up_flag, cached_items = _container_list_cached()
+    # Shallow copy per item, as before: the cached list is now shared with every
+    # other reader of this TTL window, so a caller that edits a row -- or a
+    # serialiser that adds to it -- must not reach into the cache.
+    items = [dict(x) for x in cached_items]
 
     if not engine_up_flag:
         return {"engine_up": False, "containers": [], "stats": {}, "projects": []}
 
     stats = {}
     if with_stats:
-        with _cache_lock:
-            if _stats_cache["stats"] is not None and now - _stats_cache["t"] < _STATS_TTL:
-                stats = dict(_stats_cache["stats"])
-            else:
-                stats = None
-        if stats is None:
-            running = [i["id"] for i in items if i.get("raw_state") == "running"]
-            stats = _fetch_stats(running)
-            with _cache_lock:
-                _stats_cache.update(t=time.time(), stats=dict(stats))
+        stats = dict(_stats_cached())
 
     projects = {}
     for it in items:

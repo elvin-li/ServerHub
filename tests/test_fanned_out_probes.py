@@ -38,8 +38,10 @@ import collections
 import contextlib
 import json
 import sys
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -48,6 +50,7 @@ sys.path.insert(0, str(BASE))
 
 from hub import (  # noqa: E402
     apps_manage_svc,
+    containers_svc,
     disk_manage_svc,
     disk_power_svc,
     native_catalog,
@@ -1849,6 +1852,121 @@ class ManagedVolumePrologueTests(unittest.TestCase):
             mock.patch.object(disk_manage_svc, "_diskutil_info", lambda n: {}),
         ):
             self.assertEqual(disk_manage_svc.list_managed_volumes(), [])
+
+
+class ContainerListSingleFlightTests(unittest.TestCase):
+    """Simultaneous readers must share one `docker ps` / `inspect` / `stats`.
+
+    This is the other half of the concurrency work in this file: the probes above
+    were made to overlap, and these caches were made not to duplicate. The TTL dicts
+    these replaced checked the cache, released the lock and only then ran the
+    command, so every reader that arrived during a cold window ran the whole chain --
+    and `docker stats --no-stream` is the ~2s one.
+    """
+
+    ROWS = "\n".join(
+        f"id{i}\tctr{i}\timg{i}\trunning\tUp 2 hours\t\tproj\tsvc\t1MB" for i in range(3)
+    )
+
+    def setUp(self):
+        containers_svc.invalidate_container_lists()
+        self.addCleanup(containers_svc.invalidate_container_lists)
+        self.calls = collections.Counter()
+        self._lock = threading.Lock()
+
+    def _docker(self, *args, timeout=30):
+        kind = args[0] if args else "?"
+        with self._lock:
+            self.calls[kind] += 1
+        time.sleep(PROBE_DELAY)
+        if kind == "ps":
+            return 0, self.ROWS, ""
+        if kind == "inspect":
+            return 0, json.dumps([
+                {"Name": f"/ctr{i}",
+                 "HostConfig": {"NetworkMode": "bridge",
+                                "RestartPolicy": {"Name": "always"}},
+                 "NetworkSettings": {"Networks": {}}, "Mounts": [],
+                 "Config": {"Image": f"img{i}"},
+                 "Created": "2026-01-01T00:00:00Z"}
+                for i in range(3)
+            ]), ""
+        if kind == "stats":
+            return 0, "\n".join(
+                f"ctr{i}\t1%\t10MiB / 1GiB\t1%\t0B / 0B\t0B / 0B" for i in range(3)
+            ), ""
+        return 0, "", ""
+
+    @contextlib.contextmanager
+    def _patched(self, engine_up=True):
+        with (
+            mock.patch.object(containers_svc, "docker", self._docker),
+            mock.patch.object(containers_svc, "engine_up", lambda: engine_up),
+        ):
+            yield
+
+    def _read(self, readers):
+        with self._patched():
+            with ThreadPoolExecutor(max_workers=readers) as ex:
+                return list(ex.map(lambda _: containers_svc.list_containers(True), range(readers)))
+
+    def test_the_invocation_count_does_not_grow_with_readers(self):
+        for readers in (2, 4, 8):
+            with self.subTest(readers=readers):
+                containers_svc.invalidate_container_lists()
+                self.calls.clear()
+                self._read(readers)
+                for command in ("ps", "inspect", "stats"):
+                    self.assertEqual(
+                        self.calls[command], 1,
+                        f"{readers} readers ran `docker {command}` "
+                        f"{self.calls[command]} times; one should serve all",
+                    )
+
+    def test_every_reader_gets_the_same_answer(self):
+        results = self._read(4)
+        self.assertEqual({len(r["containers"]) for r in results}, {3})
+        self.assertTrue(all(len(r["stats"]) == 3 for r in results))
+        self.assertTrue(all(r["engine_up"] for r in results))
+
+    def test_a_warm_cache_costs_no_subprocess(self):
+        self._read(1)
+        self.calls.clear()
+        with self._patched():
+            containers_svc.list_containers(True)
+        self.assertEqual(sum(self.calls.values()), 0)
+
+    def test_invalidation_forces_a_fresh_read(self):
+        self._read(1)
+        containers_svc.invalidate_container_lists()
+        self.calls.clear()
+        with self._patched():
+            containers_svc.list_containers(True)
+        self.assertEqual(self.calls["ps"], 1)
+        self.assertEqual(self.calls["stats"], 1)
+
+    def test_stats_are_skipped_when_not_asked_for(self):
+        with self._patched():
+            out = containers_svc.list_containers(with_stats=False)
+        self.assertEqual(self.calls["stats"], 0, "`docker stats` is the ~2s call")
+        self.assertEqual(out["stats"], {})
+        self.assertEqual(len(out["containers"]), 3)
+
+    def test_an_engine_that_is_down_still_short_circuits(self):
+        with self._patched(engine_up=False):
+            out = containers_svc.list_containers(True)
+        self.assertEqual(
+            out, {"engine_up": False, "containers": [], "stats": {}, "projects": []}
+        )
+
+    def test_a_caller_cannot_edit_the_shared_cache(self):
+        # The rows are handed to several readers now, so a mutation by one of them
+        # must not be visible to the next.
+        with self._patched():
+            first = containers_svc.list_containers(True)
+            first["containers"][0]["name"] = "MUTATED"
+            second = containers_svc.list_containers(True)
+        self.assertNotEqual(second["containers"][0]["name"], "MUTATED")
 
 
 class DeliberatelySerialTests(unittest.TestCase):
