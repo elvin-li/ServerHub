@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import socket
 import subprocess
 import threading
@@ -109,6 +110,74 @@ def fan_out(probe, items, *, max_workers=MAX_PROBE_WORKERS):
         return [probe(items[0])]
     with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as ex:
         return list(ex.map(probe, items))
+
+
+def cached_snapshot(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """A whole-payload read: TTL cache, single-flight refresh, ``force`` bypass.
+
+    :func:`ttl_memo` covers per-key sub-reads.  This covers the other cache in every
+    service module -- the one holding an endpoint's entire payload behind a ``force``
+    flag -- which had been hand-written eight times, and every copy had the same two
+    defects:
+
+    * **No lock at all.**  ``_cache.update(t=..., v=...)`` is two key writes, not one
+      atomic publish, so a concurrent reader could observe the new timestamp beside
+      the previous payload and serve a stale answer as fresh for a whole TTL.
+    * **No single-flight.**  The TTL was tested and the build then ran outside any
+      lock, so overlapping callers all missed and all rebuilt.  That is worst exactly
+      where it matters: when a rebuild takes longer than the poll interval, every
+      poll arriving during a rebuild starts another one.
+
+    The builder may take a ``force`` parameter if it means something to it beyond the
+    cache -- ``apps_manage_svc.inventory`` re-probes brew for just-installed natives
+    -- and is called with no arguments otherwise.  Arity is resolved once, at
+    decoration time.
+
+    The cached object is returned as-is rather than copied, matching what every
+    hand-written version did; callers must not mutate it.
+
+    Exposes ``invalidate()`` / ``cache_clear()``, like :func:`ttl_memo`.
+    """
+    def decorate(build: Callable[..., T]) -> Callable[..., T]:
+        takes_force = bool(inspect.signature(build).parameters)
+        cache: dict[str, Any] = {"t": 0.0, "v": None}
+        access = threading.Lock()
+        refresh = threading.Lock()
+
+        def fresh() -> Any:
+            with access:
+                value = cache["v"]
+                if value is not None and time.time() - cache["t"] < ttl:
+                    return value
+            return None
+
+        @functools.wraps(build)
+        def wrapper(force: bool = False) -> T:
+            if not force:
+                hit = fresh()
+                if hit is not None:
+                    return hit
+            with refresh:
+                # Re-check: the caller holding the lock published while this one
+                # queued behind it, and rebuilding would defeat the point of waiting.
+                if not force:
+                    hit = fresh()
+                    if hit is not None:
+                        return hit
+                value = build(force) if takes_force else build()
+                with access:
+                    cache.update(t=time.time(), v=value)
+                return value
+
+        def invalidate() -> None:
+            with access:
+                cache.update(t=0.0, v=None)
+
+        wrapper.invalidate = invalidate  # type: ignore[attr-defined]
+        wrapper.cache_clear = invalidate  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorate
 
 
 def sh(cmd, timeout=10, shell=False):
