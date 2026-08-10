@@ -452,6 +452,12 @@
           <div v-for="(a,i) in sysBundle.power.assertions" :key="i" style="margin-bottom:6px">{{ a }}</div>
         </div>
         <div v-else class="sub">{{ t('settings.no_assertions') }}</div>
+        <p v-if="hiddenAssertions" class="hint">
+          {{ t('settings.assertions_truncated', {
+            shown: (sysBundle?.power?.assertions || []).length,
+            total: sysBundle?.power?.assertion_count,
+          }) }}
+        </p>
         <div class="btns" style="margin-top:10px">
           <button @click="loadSysBundle">{{ t('common.refresh') }}</button>
           <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>
@@ -706,7 +712,7 @@
 </template>
 
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
   getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, openLauncherApp,
@@ -737,6 +743,15 @@ const identityError = ref('')
 const dockerInfo = ref(null)
 const dockerError = ref('')
 const sysBundle = ref(null)
+//: How many sleep assertions the backend found but did not send.  A panel that
+//: predates `assertion_count` sends none, so fall back to the row count and keep
+//: the note hidden rather than claiming the list is short.
+const hiddenAssertions = computed(() => {
+  const power = sysBundle.value?.power
+  if (!power) return 0
+  const shown = (power.assertions || []).length
+  return Math.max(0, (power.assertion_count ?? shown) - shown)
+})
 const launcher = ref(null)
 const launcherBusy = ref(false)
 const launcherLoading = ref(false)

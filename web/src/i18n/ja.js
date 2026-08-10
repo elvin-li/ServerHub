@@ -301,6 +301,7 @@ export default {
     battery: 'バッテリー',
     charging: '充電中',
     assertions: 'スリープ阻止',
+    assertions_truncated: 'スリープ阻止 {total} 件のうち {shown} 件を表示しています。',
     no_assertions: 'なし',
     disk: 'ディスク設定',
     disk_hint: 'ディスクスリープ設定と電源状態',
@@ -1098,6 +1099,8 @@ export default {
     dir: 'ディレクトリ',
     size: 'サイズ',
     time: '時刻',
+    restore: '復元コマンド',
+    restore_copy: 'クリックでコピー。サーバー上で実行し、既存データを上書きします。',
     empty: 'バックアップなし',
     truncated: 'ディスク上の {total} 件のうち、最新 {shown} 件を表示しています。',
   },
@@ -1665,6 +1668,7 @@ export default {
     peers_online: 'オンライン',
     tunnel_running: 'トンネル稼働中',
     tunnel_stopped: 'トンネル停止中',
+    tunnel_unknown: 'トンネルの状態を読み取れません',
     peers: 'ピア',
     peer_name: '名前',
     peer_name_ph: 'スマホ、ノート PC…',
@@ -1796,6 +1800,10 @@ export default {
     cancel: 'キャンセル',
   },
   err: {
+    backup: {
+      busy: '{job} のバックアップが既に実行中です。完了までお待ちください',
+      name_taken: '{path} の隣に空きのバックアップファイル名が見つかりません',
+    },
     wg: {
       not_installed: 'wireguard-tools がインストールされていません — brew install wireguard-tools を実行してください',
       no_conf: '{path} に WireGuard 設定がありません',

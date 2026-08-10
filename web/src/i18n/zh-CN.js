@@ -302,6 +302,7 @@ export default {
     battery: '电池电量',
     charging: '充电中',
     assertions: '阻止休眠的进程',
+    assertions_truncated: '共 {total} 条阻止休眠记录，此处显示 {shown} 条。',
     no_assertions: '无断言信息',
     disk: '磁盘设置',
     disk_hint: '磁盘休眠策略与电源状态',
@@ -1099,6 +1100,8 @@ export default {
     dir: '目录',
     size: '大小',
     time: '时间',
+    restore: '恢复命令',
+    restore_copy: '点击复制。在服务器上执行，会覆盖现有数据。',
     empty: '暂无备份文件',
     truncated: '磁盘上共 {total} 个备份文件，此处显示最新的 {shown} 个。',
   },
@@ -1716,6 +1719,7 @@ export default {
     stop: '停止',
     tunnel_running: '隧道运行中',
     tunnel_stopped: '隧道已停止',
+    tunnel_unknown: '无法读取隧道状态',
     peers_online: '在线',
     connected: '已连接',
     disconnected: '已断开',
@@ -1797,6 +1801,10 @@ export default {
     cancel: '取消',
   },
   err: {
+    backup: {
+      busy: '已有一个 {job} 备份在运行，请等它结束',
+      name_taken: '在 {path} 旁边找不到可用的备份文件名',
+    },
     wg: {
       not_installed: '未安装 wireguard-tools — 请执行：brew install wireguard-tools',
       no_conf: '{path} 没有 WireGuard 配置文件',

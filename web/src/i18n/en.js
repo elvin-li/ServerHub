@@ -301,6 +301,7 @@ export default {
     battery: 'Battery',
     charging: 'charging',
     assertions: 'Sleep assertions',
+    assertions_truncated: 'Showing {shown} of {total} sleep assertions.',
     no_assertions: 'No assertions',
     disk: 'Disk settings',
     disk_hint: 'disk sleep policy and power state',
@@ -1098,6 +1099,8 @@ export default {
     dir: 'Directory',
     size: 'Size',
     time: 'Time',
+    restore: 'Restore with',
+    restore_copy: 'Click to copy. Run it on the server; it overwrites live data.',
     empty: 'No backup files',
     truncated: 'Showing the {shown} newest of {total} backup files on disk.',
   },
@@ -1715,6 +1718,7 @@ export default {
     stop: 'Stop',
     tunnel_running: 'Tunnel running',
     tunnel_stopped: 'Tunnel stopped',
+    tunnel_unknown: 'Tunnel state could not be read',
     peers_online: 'online',
     connected: 'Connected',
     disconnected: 'Disconnected',
@@ -1796,6 +1800,10 @@ export default {
     cancel: 'Cancel',
   },
   err: {
+    backup: {
+      busy: 'a {job} backup is already running; wait for it to finish',
+      name_taken: 'could not find a free backup filename beside {path}',
+    },
     wg: {
       not_installed: 'wireguard-tools is not installed — install it with: brew install wireguard-tools',
       no_conf: 'No WireGuard configuration at {path}',
