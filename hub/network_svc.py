@@ -12,6 +12,8 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import docker, engine_up
+from hub.host_address import default_route as host_default_route
+from hub.host_address import invalidate_routing
 from hub.util import fan_out, sh, ttl_memo
 
 _cache = {"t": 0.0, "v": None}
@@ -1394,19 +1396,10 @@ def routes(limit: int = 40) -> list:
     return rows
 
 
-def default_route() -> dict:
-    rc, out, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
-    info = {}
-    if rc == 0:
-        for line in out.splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                info[k.strip()] = v.strip()
-    return {
-        "gateway": info.get("gateway"),
-        "interface": info.get("interface"),
-        "raw": info,
-    }
+#: One definition, in hub.host_address, memoised and shared with the power page, the
+#: WireGuard NAT egress lookup and `host_ip()`.  The parse and the returned shape are
+#: unchanged; only the subprocess is now shared, and `_bust()` drops it.
+default_route = host_default_route
 
 
 def _valid_lookup_target(host: str) -> bool:
@@ -1663,6 +1656,11 @@ def _bust():
     _network_service_order_entries.invalidate()
     interfaces.invalidate()
     hardware_ports.invalidate()
+    # The routing table and the per-interface addresses belong in the same sweep:
+    # switching to DHCP, setting a manual address or reordering services changes
+    # which interface holds the default route and what address it carries, and every
+    # one of those handlers returns the new state by re-reading it.
+    invalidate_routing()
 
 
 def _build_overview(force_services: bool = False) -> dict:

@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import HTTPException
 
-from hub.host_address import host_ip
+from hub.host_address import default_interface, host_ip
 from hub.util import port_open, sh
 
 VNC_PORT = 5900
@@ -33,12 +33,13 @@ VNC_PORT = 5900
 # ─── host identity (default NIC + MAC) ───────────────────────────────────────
 
 def _default_iface() -> str:
-    rc, out, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
-    if rc == 0:
-        m = re.search(r"interface:\s*(\S+)", out)
-        if m:
-            return m.group(1)
-    return ""
+    """The interface holding the default route.
+
+    One definition, in hub.host_address.  This module's own copy meant
+    `/api/system/power` ran `route -n get default` twice for one answer: once here
+    for the WOL NIC, and once inside `host_ip()` for the Screen Sharing URL.
+    """
+    return default_interface()
 
 
 def _iface_mac(dev: str) -> str:

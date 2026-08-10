@@ -33,6 +33,7 @@ import socket
 from pathlib import Path
 
 from hub import wireguard_svc
+from hub.host_address import default_interface
 from hub.macos_admin import run_admin_sequence, sudo_capture
 from hub.paths import DATA_DIR
 from hub.secure_io import write_secret_text
@@ -61,13 +62,13 @@ _STAGE_DIR = DATA_DIR
 
 
 def _default_wan_interface() -> str:
-    """The interface holding the default route, e.g. ``en0``."""
-    rc, out, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
-    if rc == 0:
-        match = re.search(r"interface:\s*(\S+)", out)
-        if match:
-            return match.group(1)
-    return ""
+    """The interface holding the default route, e.g. ``en0``.
+
+    One definition, in hub.host_address, shared with the power page and the network
+    overview -- three modules used to ask the routing table this same question with
+    three timeouts and two parses between them.
+    """
+    return default_interface()
 
 
 def wan_interface() -> str:

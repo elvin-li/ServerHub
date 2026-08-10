@@ -10,7 +10,13 @@ import time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from hub.util import sh
+from hub.util import sh, ttl_memo
+
+#: Short: these are dependency reads, and every consumer already sits behind a
+#: longer cache of its own.  Long enough to collapse the readers inside one
+#: request, which is where every duplicate was measured.
+_ROUTE_TTL = 5.0
+_ADDRESS_TTL = 5.0
 
 _AUTO_VALUES = {"", "auto", "automatic", "dhcp", "dynamic"}
 _VAR_RE = re.compile(r"\$?\{([A-Za-z][A-Za-z0-9_.-]{0,63})\}")
@@ -49,12 +55,105 @@ def _usable_address(value: str) -> bool:
     return not (address.is_loopback or address.is_unspecified or address.is_link_local)
 
 
-def default_interface() -> str:
-    rc, output, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=3)
+@ttl_memo(_ROUTE_TTL)
+def _default_route_fields() -> tuple[tuple[str, str], ...]:
+    """One `route -n get default`, parsed into its ``key: value`` lines.
+
+    Four modules asked the routing table this same question and each shelled out
+    for it -- here, ``power_svc._default_iface``, ``wireguard_net_svc``'s WAN
+    lookup and ``network_svc.default_route`` -- with three different timeouts and
+    two different parses.  One ``/api/system/host`` read ran the command twice and
+    ``/api/system/power`` did too, because the NIC branch and the host-address
+    branch each started from scratch.
+
+    Returned as an immutable tuple of pairs so the memo cannot be corrupted by a
+    caller; :func:`default_route` builds a fresh dict from it per call.
+
+    Memoised for :data:`_ROUTE_TTL`, which is far shorter than the 30s that
+    :func:`detect_lan_ip` already caches the address *derived* from this -- so this
+    adds no staleness that the module did not already accept.  ``network_svc._bust()``
+    drops it alongside the interface and service-order caches, so a manual address
+    change, a service reorder or an alias edit is reflected immediately.
+    """
+    rc, output, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
     if rc != 0:
+        return ()
+    fields: list[tuple[str, str]] = []
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields.append((key.strip(), value.strip()))
+    return tuple(fields)
+
+
+def _route_fields(force: bool) -> dict[str, str]:
+    """The memoised route fields, re-read from the host when *force*.
+
+    ``force`` drops the memo and reads through it rather than passing a flag into
+    the memoised function: an argument would become part of the cache key, so
+    ``force=True`` would populate a *second* entry and leave the stale one to be
+    served to everyone else.  That is the specific mistake this module is exempted
+    for in tests/test_cache_single_flight.py, and re-introducing it broke
+    ``detect_lan_ip(force=True)``.
+    """
+    if force:
+        _default_route_fields.invalidate()
+    return dict(_default_route_fields())
+
+
+def default_route(*, force: bool = False) -> dict:
+    """Gateway and interface of the default route, plus the raw field map.
+
+    A fresh dict per call over an immutable memo: this is returned straight into an
+    API payload, and handing out the cached object would let one caller's annotation
+    become every later caller's answer.
+    """
+    raw = _route_fields(force)
+    return {
+        "gateway": raw.get("gateway"),
+        "interface": raw.get("interface"),
+        "raw": raw,
+    }
+
+
+def default_interface(*, force: bool = False) -> str:
+    """The interface holding the default route, e.g. ``en0``, or ``""``."""
+    return _route_fields(force).get("interface") or ""
+
+
+@ttl_memo(_ADDRESS_TTL)
+def _interface_address(interface: str) -> str:
+    rc, output, _ = sh(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
+    return output.strip() if rc == 0 else ""
+
+
+def interface_address(interface: str, *, force: bool = False) -> str:
+    """The IPv4 address of *interface*, or ``""``.
+
+    Memoised per interface, so the two callers that both ask about the default one
+    -- the host page's interface sweep and :func:`detect_lan_ip` -- share a spawn
+    while a sweep over five interfaces still runs its five concurrently.  ``ttl_memo``
+    locks per key, not globally, which is what keeps that fan-out a fan-out.
+    """
+    if not interface:
         return ""
-    match = re.search(r"^\s*interface:\s*(\S+)", output, re.MULTILINE)
-    return match.group(1) if match else ""
+    if force:
+        _interface_address.invalidate()
+    return _interface_address(interface)
+
+
+def invalidate_routing() -> None:
+    """Forget the routing table, the per-interface addresses and the LAN address.
+
+    Called by ``network_svc._bust()``, which every path that changes an address, a
+    DNS server, the service order or an alias already reaches.  Without it those
+    handlers would re-read and report the configuration they replaced.
+    """
+    _default_route_fields.invalidate()
+    _interface_address.invalidate()
+    with _cache_lock:
+        _detect_cache.update(t=0.0, value=None)
 
 
 def _cached_detection(now: float) -> str:
@@ -91,16 +190,19 @@ def detect_lan_ip(*, force: bool = False) -> str:
             if hit:
                 return hit
 
-        return _detect_lan_ip_uncached(now)
+        return _detect_lan_ip_uncached(now, force=force)
 
 
-def _detect_lan_ip_uncached(now: float) -> str:
+def _detect_lan_ip_uncached(now: float, *, force: bool = False) -> str:
     candidates: list[str] = []
-    interface = default_interface()
+    # `force` has to reach the two host reads below, not just this function's own
+    # cache.  Both are memoised now, so stopping at the outer cache would make
+    # `detect_lan_ip(force=True)` return the address it was asked to re-detect.
+    interface = default_interface(force=force)
     if interface:
-        rc, output, _ = sh(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
-        if rc == 0 and output:
-            candidates.append(output.strip())
+        address = interface_address(interface, force=force)
+        if address:
+            candidates.append(address)
     try:
         candidates.extend(
             item[4][0]

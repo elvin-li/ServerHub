@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Query, Request
 
 from hub import network_svc, tools_svc
-from hub.host_address import default_interface, host_ip
+from hub.host_address import default_interface, host_ip, interface_address
 from typing import Optional
 from urllib.parse import quote
 
@@ -96,14 +96,15 @@ def _iface_addresses(route_iface: str) -> list[dict]:
     caller overlaps this whole chain with the rest of the host probe.
     """
     candidates = [i for i in dict.fromkeys((route_iface, "en0", "en1", "bridge0", "utun0")) if i]
-    results = fan_out(
-        lambda iface: sh(["/usr/sbin/ipconfig", "getifaddr", iface], timeout=2),
-        candidates,
-    )
+    # `interface_address` is memoised per interface, so the sweep still runs its
+    # lookups concurrently while sharing the default interface's answer with
+    # `host_ip()` below -- which asked the same question about the same interface and
+    # paid for its own `ipconfig` doing it.
+    addresses = fan_out(interface_address, candidates)
     return [
-        {"iface": iface, "ip": ip}
-        for iface, (rc, ip, _) in zip(candidates, results)
-        if rc == 0 and ip
+        {"iface": iface, "ip": address}
+        for iface, address in zip(candidates, addresses)
+        if address
     ]
 
 

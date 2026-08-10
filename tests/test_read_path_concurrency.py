@@ -941,6 +941,10 @@ class SingleFlightTests(unittest.TestCase):
 
         host_address._detect_cache.update(t=0.0, value=None)
         self.addCleanup(host_address._detect_cache.update, t=0.0, value=None)
+        # The route lookup and the per-interface address are memoised too, and both
+        # outlive a test; without clearing them this observes no subprocess at all.
+        host_address.invalidate_routing()
+        self.addCleanup(host_address.invalidate_routing)
 
         calls = []
         lock = threading.Lock()
@@ -978,6 +982,11 @@ class SingleFlightTests(unittest.TestCase):
 
         host_address._detect_cache.update(t=0.0, value=None)
         self.addCleanup(host_address._detect_cache.update, t=0.0, value=None)
+        # Same reason as above, and this test is the one that catches the mistake:
+        # with a warm inner memo the first read consumes no answer, so `force` picks
+        # up the first one and looks like it re-detected when it did not.
+        host_address.invalidate_routing()
+        self.addCleanup(host_address.invalidate_routing)
 
         answers = iter(["192.168.1.9", "192.168.1.50"])
         calls = []
