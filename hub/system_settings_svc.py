@@ -19,7 +19,7 @@ from hub import __version__
 from hub.config import cfg
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
-from hub.util import cached_snapshot, fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh, ttl_memo
 DEFAULT_THRESHOLDS = {
     "enabled": True,
     "cpu_pct": 90,
@@ -145,11 +145,20 @@ def _pmset_assertions() -> list[str]:
     return sleep_prevented_by
 
 
+@ttl_memo(5.0)
 def get_power_info() -> dict:
     """Power management snapshot (pmset).
 
     Two `pmset` reads and the UPS probe answer unrelated questions; the settings
     dump says nothing about what is currently holding the machine awake.
+
+    Memoised briefly because the Settings bundle wants it twice -- once directly and
+    once through :func:`get_disk_settings` for the disk-sleep value -- so one
+    ``/api/settings/system`` read ran all three ``pmset`` commands twice. The TTL is
+    short rather than matching the bundle's 25s: this is also the whole payload of
+    ``/api/settings/power``, and an operator who has just changed a setting should not
+    wait out a long cache. :func:`set_power_pref` drops it explicitly, because after
+    changing pmset the re-read must see the new value and not the memo.
     """
     settings, sleep_prevented_by, ups = fan_out(
         lambda probe: probe(),
@@ -191,7 +200,10 @@ def set_power_pref(key: str, value: int) -> dict:
     msg = out or err or ""
     if rc != 0:
         msg = (msg or "失败") + f" · 可手动: sudo pmset -a {key} {value}"
-    # bust settings bundle cache so UI sees new pmset values
+    # Bust the caches so the UI sees the new pmset values. Order matters: the return
+    # value below re-reads get_power_info(), and without dropping its memo first that
+    # read would report the setting as it was before this call changed it.
+    get_power_info.invalidate()
     unraid_settings_bundle.invalidate()
     return {"ok": rc == 0, "key": key, "value": value, "message": msg or "已应用", "power": get_power_info()}
 
@@ -389,6 +401,22 @@ def get_vm_settings() -> dict:
         return {"error": str(e), "total": 0, "running": 0, "items": []}
 
 
+def _diag_host() -> dict:
+    """Interpreter and OS identity.
+
+    Goes through ``identity_svc.platform_string`` rather than ``platform.platform()``
+    so that this and the ``identity`` section beside it -- which also wants it -- share
+    one answer instead of racing to shell out twice.
+    """
+    from hub.identity_svc import platform_string
+
+    return {
+        "platform": platform_string(),
+        "python": platform.python_version(),
+        "hostname": platform.node(),
+    }
+
+
 def _diag_identity() -> dict:
     try:
         from hub import identity_svc
@@ -531,14 +559,16 @@ def collect_diagnostics() -> dict:
     ``fan_out`` returns results in submission order, so the saved JSON keeps its
     section order.
     """
-    bundle: dict = {
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "platform": platform.platform(),
-        "python": platform.python_version(),
-        "hostname": platform.node(),
-    }
+    bundle: dict = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    # `platform.platform()` is not the pure string-formatting call it looks like: on
+    # macOS it shells out to `uname -p` and then `file -b` on the Python binary, and
+    # both ran before the wave started, adding two serial spawns to the front of the
+    # bundle. It joins the wave instead. Python memoises the result internally, so on
+    # every later request this costs nothing at all.
     for section in fan_out(
-        lambda probe: probe(), _DIAG_SECTIONS, max_workers=len(_DIAG_SECTIONS)
+        lambda probe: probe(),
+        (_diag_host, *_DIAG_SECTIONS),
+        max_workers=len(_DIAG_SECTIONS) + 1,
     ):
         bundle.update(section)
     # Persist last diagnostics for download convenience.  Generation and

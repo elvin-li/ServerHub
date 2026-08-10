@@ -623,6 +623,7 @@ def list_native_apps(force: bool = False) -> list[dict]:
     # assemble the rows in catalog order below so the grid does not reshuffle by
     # which probe answered first.  One `ps aux` is shared across the whole pass.
     ps_snapshot = _PsSnapshot()
+    launchd_snapshot = _LaunchdSnapshot()
 
     def probe(app: dict) -> tuple[bool, bool | None]:
         installed = _is_installed(app, brew_inst)
@@ -635,11 +636,12 @@ def list_native_apps(force: bool = False) -> list[dict]:
         label = app.get("launchd_label")
         if running is None and label:
             running = _launchd_or_process_running(
-                label, app.get("process_match") or app.get("id") or "", ps_snapshot
+                label, app.get("process_match") or app.get("id") or "",
+                ps_snapshot, launchd_snapshot,
             )
         if running is None and app.get("id") == "native-filebrowser":
             running = _launchd_or_process_running(
-                "local.filebrowser", "filebrowser", ps_snapshot
+                "local.filebrowser", "filebrowser", ps_snapshot, launchd_snapshot
             )
         # CLI tools with process_match but no brew service / launchd:
         # True only when a matching process is up; otherwise leave None ("已安装")
@@ -726,16 +728,62 @@ def _process_running(process_substr: str, snapshot: _PsSnapshot | None = None) -
     return False
 
 
+class _LaunchdSnapshot:
+    """One `launchctl list` shared by every app in a listing pass.
+
+    Mirrors :class:`_PsSnapshot`, and for a sharper reason.  The probe used to be a
+    ``launchctl print`` per label -- thirty subprocesses in one Apps page load -- and
+    the comment on :data:`_PROBE_WORKERS` already recorded why widening the pool did
+    not help: launchd serialises these requests internally, so the concurrency queued
+    inside the daemon rather than in this process.  Overlapping work that the OS
+    serialises is not parallelism, it is thirty process spawns for one answer.
+
+    A single listing answers the question for every label at once.  ``launchctl list``
+    prints ``PID\\tStatus\\tLabel``, and a numeric pid in column one means the job is
+    running -- which is exactly what ``state = running`` reports.  The same
+    substitution is already made in ``health_svc._running_labels`` and
+    ``autostart_svc._loaded_labels``.
+
+    Filled lazily and under a lock, because the probes run concurrently and an
+    unguarded memo would let every thread that arrives first start its own listing.
+    """
+
+    def __init__(self) -> None:
+        self._running: set[str] | None = None
+        self._lock = threading.Lock()
+
+    def running_labels(self) -> set[str]:
+        with self._lock:
+            if self._running is None:
+                rc, out, _ = sh(["/bin/launchctl", "list"], timeout=6)
+                labels: set[str] = set()
+                if rc == 0:
+                    for line in (out or "").splitlines():
+                        parts = line.split("\t")
+                        if len(parts) == 3 and parts[0] not in ("-", "", "PID"):
+                            labels.add(parts[2])
+                self._running = labels
+            return self._running
+
+
 def _launchd_or_process_running(
-    label: str, process_substr: str, snapshot: _PsSnapshot | None = None
+    label: str,
+    process_substr: str,
+    snapshot: _PsSnapshot | None = None,
+    launchd: _LaunchdSnapshot | None = None,
 ) -> bool:
     if label:
-        rc, out, _ = sh(
-            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
-            timeout=5,
-        )
-        if rc == 0 and "state = running" in (out or ""):
-            return True
+        if launchd is not None:
+            if label in launchd.running_labels():
+                return True
+        else:
+            # No shared listing (single-app callers below); ask about this one label.
+            rc, out, _ = sh(
+                ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                timeout=5,
+            )
+            if rc == 0 and "state = running" in (out or ""):
+                return True
     return _process_running(process_substr, snapshot)
 
 

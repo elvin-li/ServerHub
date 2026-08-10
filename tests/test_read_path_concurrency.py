@@ -1066,3 +1066,356 @@ class SingleFlightTests(unittest.TestCase):
                 "_bust() did not clear the service-order memo, so a reconfigured "
                 "network would keep reporting the previous order",
             )
+
+
+# ── reads that were duplicated across concurrent sections ────────────────────
+
+class SharedHostReadTests(unittest.TestCase):
+    """Reads that two sections of one request each paid for.
+
+    These only show up when the sections run concurrently, which is why they survived
+    the earlier passes: in series the second caller hit a warm cache, so nothing was
+    duplicated. Once both sit inside the same fan-out they reach a cold cache together
+    and each shells out.
+    """
+
+    def test_the_timezone_is_read_once_for_concurrent_callers(self):
+        """`get_datetime_info` and `get_identity` both want it, in the same wave."""
+        from hub import identity_svc
+
+        identity_svc.time_zone.invalidate()
+        self.addCleanup(identity_svc.time_zone.invalidate)
+
+        calls = []
+        lock = threading.Lock()
+
+        def slow_sh(cmd, *a, **kw):
+            with lock:
+                calls.append([str(c) for c in cmd])
+            time.sleep(0.05)
+            return 0, "x -> /var/db/timezone/zoneinfo/Asia/Shanghai", ""
+
+        results = []
+        with mock.patch.object(identity_svc, "sh", slow_sh):
+            threads = [
+                threading.Thread(target=lambda: results.append(identity_svc.time_zone()))
+                for _ in range(6)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(
+            len(calls), 1,
+            f"six concurrent callers read /etc/localtime {len(calls)} times",
+        )
+        self.assertEqual(set(results), {"Asia/Shanghai"})
+
+    def test_the_platform_string_is_resolved_once(self):
+        """`platform.platform()` shells out to `uname -p` and then `file -b`.
+
+        `platform.uname()` is cached inside the standard library but
+        `platform.architecture()` is not, so two concurrent callers on a cold
+        interpreter each pay for the `file` call.
+        """
+        from hub import identity_svc
+
+        identity_svc.platform_string.invalidate()
+        self.addCleanup(identity_svc.platform_string.invalidate)
+
+        calls = []
+        lock = threading.Lock()
+
+        def slow(*a, **kw):
+            with lock:
+                calls.append(1)
+            time.sleep(0.05)
+            return "macOS-15.0-arm64"
+
+        results = []
+        with mock.patch.object(identity_svc.platform, "platform", slow):
+            threads = [
+                threading.Thread(
+                    target=lambda: results.append(identity_svc.platform_string())
+                )
+                for _ in range(6)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(len(calls), 1, f"resolved {len(calls)} times")
+        self.assertEqual(set(results), {"macOS-15.0-arm64"})
+
+    def test_the_diagnostics_header_shares_the_identity_platform_string(self):
+        """Both sections of the bundle want it; one answer should serve both."""
+        from hub import identity_svc, system_settings_svc
+
+        identity_svc.platform_string.invalidate()
+        self.addCleanup(identity_svc.platform_string.invalidate)
+
+        calls = []
+        with mock.patch.object(
+            identity_svc.platform, "platform",
+            lambda: calls.append(1) or "macOS-15.0-arm64",
+        ):
+            header = system_settings_svc._diag_host()
+            identity_svc.platform_string()
+
+        self.assertEqual(len(calls), 1, "the bundle header resolved it separately")
+        self.assertEqual(header["platform"], "macOS-15.0-arm64")
+
+    def test_identity_reads_in_one_wave(self):
+        """The LAN address and the platform string used to trail the pool.
+
+        Four spawns sat in the return dict itself -- `platform.platform()` twice over
+        and `host_ip()`'s route lookup plus address read -- after the five-wide pool
+        had already finished.
+        """
+        from hub import identity_svc
+
+        identity_svc.time_zone.invalidate()
+        identity_svc.platform_string.invalidate()
+        self.addCleanup(identity_svc.time_zone.invalidate)
+        self.addCleanup(identity_svc.platform_string.invalidate)
+
+        tracker = Concurrency()
+        with (
+            mock.patch.object(
+                identity_svc, "sh",
+                lambda cmd, *a, **k: tracker.run(str(cmd[0]), (0, "value", "")),
+            ),
+            mock.patch.object(
+                identity_svc, "effective_host_ip",
+                lambda: tracker.run("host_ip", "192.168.1.9"),
+            ),
+            mock.patch.object(
+                identity_svc, "platform_string",
+                lambda: tracker.run("platform", "macOS-15.0-arm64"),
+            ),
+            mock.patch.object(identity_svc, "configured_host", lambda: "auto"),
+            mock.patch.object(identity_svc, "cfg", lambda: {}),
+        ):
+            data = identity_svc.get_identity()
+
+        self.assertGreater(
+            tracker.peak, 5,
+            "the platform string and the LAN address still trail the pool rather "
+            f"than joining it (peak {tracker.peak})",
+        )
+        self.assertEqual(data["host_ip"], "192.168.1.9")
+        self.assertEqual(data["platform"], "macOS-15.0-arm64")
+
+
+class PowerInfoMemoTests(unittest.TestCase):
+    """One `pmset` triple per request, and a mutation that is visible immediately."""
+
+    def setUp(self):
+        from hub import system_settings_svc
+
+        self.svc = system_settings_svc
+        self.svc.get_power_info.invalidate()
+        self.addCleanup(self.svc.get_power_info.invalidate)
+
+    def test_the_settings_bundle_reads_pmset_once(self):
+        """It wants power info directly and again through `get_disk_settings`."""
+        calls = []
+        lock = threading.Lock()
+
+        def counting_sh(cmd, *a, **kw):
+            argv = [str(c) for c in cmd]
+            if "pmset" in argv[0]:
+                with lock:
+                    calls.append(argv)
+            return 0, "womp 1\n sleep 0\n displaysleep 10", ""
+
+        with (
+            mock.patch.object(self.svc, "sh", counting_sh),
+            mock.patch.object(self.svc, "get_ups_info", lambda: {}),
+            mock.patch.object(self.svc, "_storage_snapshot", lambda: ({}, [])),
+            mock.patch.object(self.svc, "_power_disks", lambda: []),
+        ):
+            self.svc.get_power_info()
+            self.svc.get_disk_settings()
+
+        settings_reads = [c for c in calls if c[1:] == ["-g"]]
+        self.assertEqual(
+            len(settings_reads), 1,
+            f"`pmset -g` ran {len(settings_reads)} times for one request",
+        )
+
+    def test_concurrent_callers_read_pmset_once(self):
+        calls = []
+        lock = threading.Lock()
+
+        def slow_sh(cmd, *a, **kw):
+            with lock:
+                calls.append([str(c) for c in cmd])
+            time.sleep(0.05)
+            return 0, "womp 1\n sleep 0", ""
+
+        with (
+            mock.patch.object(self.svc, "sh", slow_sh),
+            mock.patch.object(self.svc, "get_ups_info", lambda: {}),
+        ):
+            threads = [threading.Thread(target=self.svc.get_power_info) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(
+            len([c for c in calls if c[1:] == ["-g"]]), 1,
+            "six concurrent readers each ran the pmset triple",
+        )
+
+    def test_changing_a_setting_reports_the_new_value_not_the_memo(self):
+        """The ordering that makes the memo safe.
+
+        `set_power_pref` re-reads `get_power_info()` for its response. Without
+        dropping the memo first, the operator is told the setting still holds the
+        value they just changed away from -- which reads as "the change did not work".
+        """
+        answers = iter(["womp 0\n sleep 0", "womp 1\n sleep 0"])
+
+        def fake_sh(cmd, *a, **kw):
+            argv = [str(c) for c in cmd]
+            if "-a" in argv:
+                return 0, "ok", ""
+            if "pmset" in argv[0] and "-g" in argv and "assertions" not in argv \
+                    and "batt" not in argv:
+                return 0, next(answers), ""
+            return 0, "", ""
+
+        with (
+            mock.patch.object(self.svc, "sh", fake_sh),
+            mock.patch.object(self.svc, "get_ups_info", lambda: {}),
+        ):
+            self.assertEqual(self.svc.get_power_info()["womp"], 0, "fixture is wrong")
+            result = self.svc.set_power_pref("womp", 1)
+
+        self.assertEqual(
+            result["power"]["womp"], 1,
+            "the response served the pre-change memo, so the UI would show the "
+            "setting as unchanged",
+        )
+
+
+class LaunchdSnapshotTests(unittest.TestCase):
+    """One `launchctl list` per catalog listing, not one `launchctl print` per app.
+
+    The comment on `native_catalog._PROBE_WORKERS` already recorded that launchd
+    serialises these requests internally, so the concurrent per-label probes queued in
+    the daemon rather than overlapping. Thirty spawns for one answer is not a pool
+    problem, it is the wrong question: `launchctl list` prints every loaded job with
+    its pid, and a numeric pid in column one means running -- the same substitution
+    `health_svc._running_labels` and `autostart_svc._loaded_labels` already make.
+    """
+
+    LISTING = (
+        "PID\tStatus\tLabel\n"
+        "4242\t0\tlocal.alpha\n"
+        "-\t0\tlocal.stopped\n"
+        "1337\t0\thomebrew.mxcl.redis\n"
+    )
+
+    def test_one_listing_answers_every_label(self):
+        from hub import native_catalog
+
+        calls = []
+        lock = threading.Lock()
+
+        def counting_sh(cmd, *a, **kw):
+            argv = [str(c) for c in cmd]
+            with lock:
+                calls.append(argv)
+            return (0, self.LISTING, "") if "list" in argv else (1, "", "")
+
+        snapshot = native_catalog._LaunchdSnapshot()
+        with mock.patch.object(native_catalog, "sh", counting_sh):
+            for label in ("local.alpha", "homebrew.mxcl.redis", "local.stopped"):
+                snapshot.running_labels()
+
+        listings = [c for c in calls if "list" in c]
+        self.assertEqual(
+            len(listings), 1, f"three labels cost {len(listings)} listings"
+        )
+        self.assertEqual(
+            [c for c in calls if "print" in c], [], "a per-label print still ran"
+        )
+
+    def test_a_pid_means_running_and_a_dash_does_not(self):
+        from hub import native_catalog
+
+        snapshot = native_catalog._LaunchdSnapshot()
+        with mock.patch.object(
+            native_catalog, "sh", lambda *a, **k: (0, self.LISTING, "")
+        ):
+            running = snapshot.running_labels()
+
+        self.assertIn("local.alpha", running)
+        self.assertIn("homebrew.mxcl.redis", running)
+        self.assertNotIn(
+            "local.stopped", running, "a job with no pid was reported as running"
+        )
+        self.assertNotIn("Label", running, "the header row became a label")
+
+    def test_concurrent_probes_share_one_listing(self):
+        from hub import native_catalog
+
+        calls = []
+        lock = threading.Lock()
+
+        def slow_sh(cmd, *a, **kw):
+            with lock:
+                calls.append(1)
+            time.sleep(0.05)
+            return 0, self.LISTING, ""
+
+        snapshot = native_catalog._LaunchdSnapshot()
+        with mock.patch.object(native_catalog, "sh", slow_sh):
+            threads = [threading.Thread(target=snapshot.running_labels) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(len(calls), 1, f"eight probes ran {len(calls)} listings")
+
+    def test_a_caller_without_a_snapshot_still_probes_its_own_label(self):
+        """`_launchd_or_process_running` has single-app callers outside a listing."""
+        from hub import native_catalog
+
+        calls = []
+        with mock.patch.object(
+            native_catalog, "sh",
+            lambda cmd, *a, **k: calls.append([str(c) for c in cmd]) or (0, "state = running", ""),
+        ):
+            self.assertTrue(native_catalog._launchd_or_process_running("local.alpha", "alpha"))
+
+        self.assertTrue(
+            any("print" in c for c in calls),
+            "a caller with no shared listing should still ask about its own label",
+        )
+
+    def test_the_snapshot_path_falls_back_to_the_process_scan(self):
+        """A label absent from the listing is not the end of the question."""
+        from hub import native_catalog
+
+        snapshot = native_catalog._LaunchdSnapshot()
+        with (
+            mock.patch.object(
+                native_catalog, "sh", lambda *a, **k: (0, self.LISTING, "")
+            ),
+            mock.patch.object(
+                native_catalog, "_process_running", lambda substr, snap=None: True
+            ),
+        ):
+            self.assertTrue(
+                native_catalog._launchd_or_process_running(
+                    "local.absent", "someproc", None, snapshot
+                ),
+                "an unlisted label skipped the process scan",
+            )
