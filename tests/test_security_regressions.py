@@ -260,12 +260,46 @@ class BackupPrivacyTests(unittest.TestCase):
             os.umask(old_umask)
         self.assertEqual(mode_of(dest), 0o600)
 
-    def test_an_existing_world_readable_destination_is_tightened(self):
-        dest = self.tmp / "stale.tgz"
-        dest.write_text("old")
-        os.chmod(dest, 0o644)
-        backups._private_dest(dest)
-        self.assertEqual(mode_of(dest), 0o600)
+    def test_an_existing_destination_is_stepped_past_not_reused(self):
+        """A taken name yields a fresh private file rather than being rewritten.
+
+        This assertion used to be "an existing world-readable destination is
+        tightened", which encoded the earlier O_TRUNC strategy: reuse the path,
+        chmod it, let tar truncate it.  ``_private_dest`` now opens with O_EXCL
+        and steps to ``name-2`` instead, which is strictly stronger on both
+        counts -- the file written to is guaranteed brand-new, so a pre-existing
+        file or a planted symlink cannot be written through, and a second run in
+        the same second no longer truncates the first one's archive while both
+        report success.
+
+        So the property pinned here is the current one: the *returned* path is
+        private, and the pre-existing file is left alone rather than overwritten.
+        """
+        taken = self.tmp / "stale.tgz"
+        taken.write_text("an earlier backup")
+        os.chmod(taken, 0o644)
+
+        got = backups._private_dest(taken)
+
+        self.assertNotEqual(
+            got, taken, "an existing backup was reused as the destination"
+        )
+        self.assertEqual(
+            taken.read_text(),
+            "an earlier backup",
+            "the earlier archive must not be truncated or rewritten",
+        )
+        self.assertEqual(mode_of(got), 0o600, "the fresh destination must be private")
+
+    def test_the_returned_destination_is_always_the_private_one(self):
+        """Callers must use the returned path; both branches must be 0600."""
+        fresh = backups._private_dest(self.tmp / "fresh.tgz")
+        self.assertEqual(fresh, self.tmp / "fresh.tgz")
+        self.assertEqual(mode_of(fresh), 0o600)
+
+        stepped = backups._private_dest(self.tmp / "fresh.tgz")
+        self.assertNotEqual(stepped, fresh)
+        self.assertEqual(mode_of(stepped), 0o600)
 
     def test_success_is_judged_by_content_not_by_existence(self):
         # _private_dest pre-creates the file, so dest.exists() is always true

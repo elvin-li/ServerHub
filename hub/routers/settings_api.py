@@ -253,9 +253,21 @@ def export_services_yaml():
     )
 
 
+#: Rows the backups page renders.  The list is capped because the page is a table
+#: and a NAS accumulates a nightly dump indefinitely, but the total is reported
+#: alongside it: truncating in silence is how an operator concludes that the
+#: backups older than the cap were deleted.
+BACKUP_ROWS = 40
+
+
 @router.get("/api/backups")
 def get_backups():
-    return {"backups": backups.list_backups(), "root": str(backups.BACKUP_ROOT)}
+    found = backups.scan_backups()
+    return {
+        "backups": found[:BACKUP_ROWS],
+        "root": str(backups.BACKUP_ROOT),
+        "total": len(found),
+    }
 
 
 @router.post("/api/backups/postgres")
