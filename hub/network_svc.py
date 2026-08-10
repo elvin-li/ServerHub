@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import docker, engine_up
-from hub.util import fan_out, sh
+from hub.util import fan_out, sh, ttl_memo
 
 _cache = {"t": 0.0, "v": None}
 _CACHE_TTL = 6.0
@@ -26,6 +26,9 @@ _services_cache_lock = threading.Lock()
 _services_refresh_lock = threading.Lock()
 _services_cache_generation = 0
 _services_refresh_serial = 0
+
+#: TTL for the two interface-table memos, matching the caches around them.
+_INTERFACE_CACHE_TTL = 6.0
 
 #: Memo for `networksetup -listnetworkserviceorder`.
 #:
@@ -57,7 +60,7 @@ def _hex_netmask_to_dotted(mask: str) -> str:
     return mask
 
 
-def interfaces() -> list:
+def _interfaces_uncached() -> list:
     items = []
     rc, out, _ = sh(["/sbin/ifconfig", "-a"], timeout=8)
     if rc != 0:
@@ -140,7 +143,28 @@ def interfaces() -> list:
     return out
 
 
-def hardware_ports() -> list:
+@ttl_memo(_INTERFACE_CACHE_TTL)
+def interfaces() -> list:
+    """Every interface and its addresses, from one ``ifconfig -a``.
+
+    Memoised for the reason :data:`_order_cache` documents, which turned out to
+    apply here just as much: five call sites read this, two of them
+    (``interface_addresses`` and ``preferred_active_device``) on the same request,
+    so ``/api/system/network/alias/auto`` ran ``ifconfig -a`` twice per read and
+    ``/api/system/network`` more than that -- identical output each time.
+
+    Single-flight matters here specifically: these call sites now sit inside
+    fan-outs, so without it several workers miss a cold cache together and each
+    runs the command, which is the failure mode ``ttl_memo`` exists to prevent.
+
+    TTL matches the surrounding caches and ``_bust()`` clears it with them, so an
+    added or removed IP alias is not masked for longer than the page already
+    allows.
+    """
+    return _interfaces_uncached()
+
+
+def _hardware_ports_uncached() -> list:
     rc, out, _ = sh([NS, "-listallhardwareports"], timeout=8)
     if rc != 0:
         return []
@@ -158,6 +182,17 @@ def hardware_ports() -> list:
     if cur:
         items.append(cur)
     return items
+
+
+@ttl_memo(_INTERFACE_CACHE_TTL)
+def hardware_ports() -> list:
+    """Physical ports and their device names, from one ``networksetup`` call.
+
+    Three call sites, two of them inside loops, so this had the same duplication
+    as :func:`interfaces`.  The output is a static description of the hardware, not
+    live state, which is why a short TTL is enough.
+    """
+    return _hardware_ports_uncached()
 
 
 def _network_service_order_entries() -> list[dict]:
@@ -975,12 +1010,17 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
 
 
 def alias_auto_status() -> dict:
-    conf = _alias_settings()
-    preferred = preferred_active_device()
-
+    # Three independent opening reads. `_alias_settings` is config, the other two
+    # each drive their own subprocesses, and none consumes another's output -- so
+    # they were three waves of pure prologue before any per-IP work could start.
+    #
     # The interface table answers "where does this IP live" for every configured IP
     # at once, so it is read once here rather than once per IP inside the loop.
-    addresses = interface_addresses()
+    conf, preferred, addresses = fan_out(
+        lambda probe: probe(),
+        [_alias_settings, preferred_active_device, interface_addresses],
+        max_workers=3,
+    )
 
     def route(ip: str) -> dict:
         """Never raises: one bad route lookup should not drop the whole page."""
@@ -1624,6 +1664,11 @@ def _bust():
         _services_cache.update(t=0.0, v=None)
     with _order_cache_lock:
         _order_cache.update(t=0.0, v=None)
+    # Cleared with the rest: an added or removed IP alias changes `ifconfig`
+    # output, and `add_ip_alias`/`remove_ip_alias` reach here right after the
+    # command runs.
+    interfaces.invalidate()
+    hardware_ports.invalidate()
 
 
 def _build_overview(force_services: bool = False) -> dict:

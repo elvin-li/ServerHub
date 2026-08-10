@@ -594,3 +594,306 @@ class VmListingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── the interface table ──────────────────────────────────────────────────────
+
+class InterfaceTableMemoTests(unittest.TestCase):
+    """``ifconfig -a`` and ``networksetup -listallhardwareports``, read once.
+
+    Five call sites read the interface table and three read the hardware ports,
+    several of them inside loops. ``/api/system/network/alias/auto`` ran each twice
+    per request -- ``interface_addresses`` and ``preferred_active_device`` both need
+    the table -- and ``/api/system/network`` many more times, returning identical
+    output every time.
+
+    The risk a memo introduces is staleness, and it is a real one here: unlike a
+    binary's version string this *is* live state, so an added or removed IP alias
+    must not keep reading back the old table. Every mutation in the module reaches
+    ``_bust()``, which now clears these two with the caches that were already there.
+    Both halves are asserted, because a memo without working invalidation looks
+    exactly like a memo with it until someone changes an alias.
+    """
+
+    IFCONFIG = (
+        "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+        "\tinet 192.168.1.9 netmask 0xffffff00 broadcast 192.168.1.255\n"
+        "en1: flags=8863<UP,BROADCAST,SMART,RUNNING> mtu 1500\n"
+        "\tinet 10.0.0.5 netmask 0xffffff00 broadcast 10.0.0.255\n"
+    )
+    PORTS = (
+        "Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb:cc:dd:ee:ff\n\n"
+        "Hardware Port: Ethernet\nDevice: en1\nEthernet Address: 11:22:33:44:55:66\n"
+    )
+
+    def setUp(self):
+        from hub import network_svc
+
+        self.net = network_svc
+        self._reset()
+        self.addCleanup(self._reset)
+
+    def _reset(self):
+        self.net.interfaces.invalidate()
+        self.net.hardware_ports.invalidate()
+
+    def _counting_sh(self, extra=None):
+        calls: list[list[str]] = []
+        lock = threading.Lock()
+
+        def fake_sh(cmd, *a, **kw):
+            argv = [str(c) for c in cmd]
+            with lock:
+                calls.append(argv)
+            if "ifconfig" in argv[0]:
+                return 0, (extra or self.IFCONFIG), ""
+            if "-listallhardwareports" in argv:
+                return 0, self.PORTS, ""
+            return 1, "", ""
+
+        return calls, fake_sh
+
+    def test_repeated_reads_share_one_ifconfig(self):
+        calls, fake_sh = self._counting_sh()
+        with mock.patch.object(self.net, "sh", fake_sh):
+            first = self.net.interfaces()
+            second = self.net.interfaces()
+        ifconfigs = [c for c in calls if "ifconfig" in c[0]]
+        self.assertEqual(
+            len(ifconfigs), 1,
+            f"two reads ran `ifconfig -a` {len(ifconfigs)} times for identical output",
+        )
+        self.assertEqual([i["name"] for i in first], ["en0", "en1"])
+        self.assertEqual(first, second)
+
+    def test_repeated_reads_share_one_hardware_port_listing(self):
+        calls, fake_sh = self._counting_sh()
+        with mock.patch.object(self.net, "sh", fake_sh):
+            self.net.hardware_ports()
+            self.net.hardware_ports()
+        listings = [c for c in calls if "-listallhardwareports" in c]
+        self.assertEqual(len(listings), 1)
+
+    def test_concurrent_readers_do_not_stampede_a_cold_cache(self):
+        """The reason this uses ``ttl_memo`` rather than the older hand-rolled memo.
+
+        These call sites now sit inside fan-outs, so several workers reach a cold
+        cache together. A plain check-then-compute lets them all run the command.
+        """
+        calls = []
+        lock = threading.Lock()
+
+        def slow_sh(cmd, *a, **kw):
+            with lock:
+                calls.append([str(c) for c in cmd])
+            time.sleep(0.05)
+            return 0, self.IFCONFIG, ""
+
+        with mock.patch.object(self.net, "sh", slow_sh):
+            threads = [threading.Thread(target=self.net.interfaces) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        ifconfigs = [c for c in calls if "ifconfig" in c[0]]
+        self.assertEqual(
+            len(ifconfigs), 1,
+            f"six concurrent readers ran `ifconfig -a` {len(ifconfigs)} times",
+        )
+
+    def test_busting_the_caches_reveals_a_new_alias(self):
+        """The property that makes the memo safe to have at all."""
+        before = self.IFCONFIG
+        after = self.IFCONFIG + "\tinet 192.168.1.204 netmask 0xffffffff\n"
+
+        calls, fake_sh = self._counting_sh(extra=before)
+        with mock.patch.object(self.net, "sh", fake_sh):
+            self.assertNotIn(
+                "192.168.1.204",
+                str(self.net.interfaces()),
+                "the fixture already contained the alias; the test proves nothing",
+            )
+
+        _, fake_after = self._counting_sh(extra=after)
+        with mock.patch.object(self.net, "sh", fake_after):
+            self.assertNotIn(
+                "192.168.1.204", str(self.net.interfaces()),
+                "the cache should still be serving the old table at this point",
+            )
+            self.net._bust()
+            self.assertIn(
+                "192.168.1.204", str(self.net.interfaces()),
+                "_bust() did not clear the interface memo, so adding an IP alias "
+                "would keep reporting the old table",
+            )
+
+    def test_every_state_changing_command_reaches_bust(self):
+        """Structural, because a new mutation that forgets it fails silently."""
+        import ast
+
+        source = (BASE / "hub" / "network_svc.py").read_text()
+        tree = ast.parse(source)
+        markers = ("'alias'", "-alias", "-setnetworkserviceenabled", "-setdnsservers",
+                   "-setsearchdomains", "-setmanual", "-setdhcp")
+        offenders = []
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            body = ast.unparse(node)
+            if "sh(" not in body:
+                continue
+            if any(m in body for m in markers) and "_bust()" not in body:
+                offenders.append(node.name)
+        self.assertEqual(
+            offenders, [],
+            "these change network state without invalidating the interface memo, so "
+            f"the page would keep showing the previous table: {offenders}",
+        )
+
+
+class AliasAutoStatusTests(unittest.TestCase):
+    def test_the_three_opening_reads_overlap(self):
+        from hub import network_svc
+
+        tracker = Concurrency()
+        conf = {"ips": ["192.168.1.204"], "device": "en0", "enabled": True}
+        with (
+            mock.patch.object(network_svc, "_alias_settings",
+                              lambda: tracker.run("conf", conf)),
+            mock.patch.object(network_svc, "preferred_active_device",
+                              lambda: tracker.run("preferred", {"device": "en0"})),
+            mock.patch.object(network_svc, "interface_addresses",
+                              lambda: tracker.run("addresses", [])),
+            mock.patch.object(network_svc, "_alias_local_route",
+                              lambda ip: {"ok": True, "device": "en0"}),
+            mock.patch.object(network_svc, "find_ip_locations",
+                              lambda ip, addresses=None: [{"device": "en0"}]),
+        ):
+            data = network_svc.alias_auto_status()
+
+        self.assertGreater(
+            tracker.peak, 1, "three independent opening reads ran in sequence"
+        )
+        self.assertEqual([s["ip"] for s in data["ips"]], ["192.168.1.204"])
+        self.assertTrue(data["ips"][0]["on_preferred"])
+
+    def test_a_failing_route_lookup_still_yields_a_row(self):
+        from hub import network_svc
+
+        conf = {"ips": ["192.168.1.204", "192.168.1.205"], "device": "en0"}
+
+        def boom(ip):
+            if ip.endswith(".205"):
+                raise OSError("no route")
+            return {"ok": True, "device": "en0"}
+
+        with (
+            mock.patch.object(network_svc, "_alias_settings", lambda: conf),
+            mock.patch.object(network_svc, "preferred_active_device", lambda: None),
+            mock.patch.object(network_svc, "interface_addresses", lambda: []),
+            mock.patch.object(network_svc, "_alias_local_route", boom),
+            mock.patch.object(network_svc, "find_ip_locations",
+                              lambda ip, addresses=None: []),
+        ):
+            data = network_svc.alias_auto_status()
+
+        self.assertEqual(
+            [s["ip"] for s in data["ips"]],
+            ["192.168.1.204", "192.168.1.205"],
+            "a raising route lookup dropped its row instead of reporting the failure",
+        )
+        self.assertFalse(data["ips"][1]["local_route"]["ok"])
+
+
+# ── /api/cloudflared/status ──────────────────────────────────────────────────
+
+class CloudflaredStatusTests(unittest.TestCase):
+    """A local liveness check and a round-trip to Cloudflare, in one wave.
+
+    This endpoint is polled, and the tunnel list is a remote API call, so the page
+    used to wait for Cloudflare before it could report whether the daemon was even
+    running.
+
+    What is *not* fanned out matters as much: ``_is_running`` short-circuits on
+    ``ps`` before touching launchctl, and ``_launchd_running`` tries its second
+    label only when the first misses. Overlapping those would add a spawn to the
+    healthy path in order to save one on the broken path.
+    """
+
+    def _status(self, tunnels=None, running=True):
+        from hub import cloudflared_svc
+
+        tracker = Concurrency()
+        import contextlib
+
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for name, value in {
+            "_ensure_dirs": lambda: None,
+            "_load_state": lambda: {"mode": "token", "tunnel_name": "home"},
+            "_is_running": lambda: tracker.run("running", running),
+            "_logged_in": lambda: True,
+            "list_tunnels": tunnels or (
+                lambda: tracker.run("tunnels", [{"id": "abc", "name": "home"}])
+            ),
+            "_login_process_pending": lambda: False,
+            "_bin": lambda: "/opt/homebrew/bin/cloudflared",
+        }.items():
+            stack.enter_context(mock.patch.object(cloudflared_svc, name, value))
+        return cloudflared_svc.status(), tracker
+
+    def test_the_liveness_check_and_the_tunnel_list_overlap(self):
+        _, tracker = self._status()
+        self.assertGreater(
+            tracker.peak, 1,
+            "the daemon state waited behind a network call to Cloudflare",
+        )
+
+    def test_the_payload_is_unchanged(self):
+        data, _ = self._status()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["running"])
+        self.assertEqual(data["state"], "ok")
+        self.assertEqual(data["tunnels"], [{"id": "abc", "name": "home"}])
+        self.assertIsNone(data["tunnels_error"])
+        self.assertEqual(data["active_tunnel"], "home")
+
+    def test_a_stopped_daemon_still_reports_its_tunnels(self):
+        data, _ = self._status(running=False)
+        self.assertFalse(data["running"])
+        self.assertEqual(data["state"], "down")
+        self.assertEqual(len(data["tunnels"]), 1, "the tunnel list was lost")
+
+    def test_an_unreachable_cloudflare_becomes_an_error_field_not_a_500(self):
+        def boom():
+            raise RuntimeError("api.cloudflare.com unreachable")
+
+        data, _ = self._status(tunnels=boom)
+        self.assertEqual(data["tunnels"], [])
+        self.assertIn("unreachable", data["tunnels_error"])
+        self.assertTrue(data["ok"], "one failed probe took down the whole status call")
+        self.assertTrue(data["running"], "the liveness result was discarded with it")
+
+    def test_a_logged_out_account_is_not_queried(self):
+        from hub import cloudflared_svc
+
+        calls = []
+        import contextlib
+
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for name, value in {
+            "_ensure_dirs": lambda: None,
+            "_load_state": lambda: {},
+            "_is_running": lambda: False,
+            "_logged_in": lambda: False,
+            "list_tunnels": lambda: calls.append("queried") or [],
+            "_login_process_pending": lambda: False,
+            "_bin": lambda: "/opt/homebrew/bin/cloudflared",
+        }.items():
+            stack.enter_context(mock.patch.object(cloudflared_svc, name, value))
+        data = cloudflared_svc.status()
+        self.assertEqual(calls, [], "queried Cloudflare without a certificate")
+        self.assertEqual(data["tunnels"], [])
+        self.assertIsNone(data["tunnels_error"])

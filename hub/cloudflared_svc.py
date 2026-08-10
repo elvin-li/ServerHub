@@ -20,7 +20,7 @@ from fastapi import HTTPException
 
 from hub.paths import AGENTS_DIR, BREW
 from hub import secure_io
-from hub.util import sh
+from hub.util import fan_out, sh
 
 CF_BIN = "/opt/homebrew/bin/cloudflared"
 if not Path(CF_BIN).is_file():
@@ -517,14 +517,33 @@ def status() -> dict:
     """Panel snapshot for Cloudflared."""
     _ensure_dirs()
     st = _load_state()
-    running = _is_running()
-    tunnels = []
-    tunnels_err = None
-    if _logged_in():
+
+    def _tunnels() -> tuple[list, str | None]:
+        """The tunnel list, or the reason it could not be fetched.
+
+        Absorbs its own failure so it can share a wave with the liveness check.
+        """
+        if not _logged_in():
+            return [], None
         try:
-            tunnels = list_tunnels()
+            return list_tunnels(), None
         except Exception as e:
-            tunnels_err = str(e)
+            return [], str(e)
+
+    # The liveness check is local and the tunnel list is a round-trip to
+    # Cloudflare; neither reads the other's answer, and this endpoint is polled, so
+    # the page used to wait for a remote API call before it could say whether the
+    # daemon is even up. `_logged_in` is a file check, so gating the fetch costs
+    # nothing inside the worker.
+    #
+    # `_is_running` is left as it is: it short-circuits on `ps` before touching
+    # launchctl, and `_launchd_running` tries its second label only when the first
+    # misses. Fanning those out would add a spawn to the healthy path to save one on
+    # the broken path.
+    running, (tunnels, tunnels_err) = fan_out(
+        lambda probe: probe(), [_is_running, _tunnels], max_workers=2
+    )
+
     login_url = None
     if LOGIN_URL_FILE.is_file():
         try:
