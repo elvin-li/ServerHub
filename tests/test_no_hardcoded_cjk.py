@@ -126,14 +126,54 @@ class TestHardcodedCjkRatchet(unittest.TestCase):
         )
 
 
+def _import_every_code_registering_module() -> list[str]:
+    """Import each module that registers its own codes, so ``CODES`` is whole.
+
+    Codes are registered as an import side effect -- ``CODES.setdefault(...)`` at
+    module scope -- so that the code -> HTTP status mapping travels with the
+    module that raises it.  The consequence is that ``errors.CODES`` is only as
+    complete as the set of modules imported so far.
+
+    This used to be a hand-written ``__import__("hub.catalog")``, which is a
+    guard that quietly stops guarding: ``hub/backups.py`` and
+    ``hub/native_catalog.py`` each grew their own ``CODES.setdefault`` block and
+    nobody added the matching import, so five real codes sat outside the
+    contract.  Discover the registration sites instead of listing them.
+    """
+    names: list[str] = []
+    for path in sorted(HUB.rglob("*.py")):
+        if "CODES.setdefault" not in path.read_text(errors="replace"):
+            continue
+        names.append(".".join(path.relative_to(BASE).with_suffix("").parts))
+    for name in names:
+        __import__(name)
+    return names
+
+
 class TestErrorCodeContract(unittest.TestCase):
     """Every api_error() code must be registered, and every code translated."""
+
+    def test_the_registration_sites_are_still_discoverable(self):
+        """Fail loudly if discovery finds nothing, rather than passing vacuously.
+
+        Both tests below are only meaningful if the modules that register codes
+        were actually imported.  Were ``CODES.setdefault`` renamed, discovery
+        would return an empty list and the contract would silently hold for a
+        ``CODES`` containing nothing but the defaults in ``hub/errors.py``.
+        """
+        found = _import_every_code_registering_module()
+        self.assertNotEqual(
+            found,
+            [],
+            "no module matched 'CODES.setdefault': the discovery heuristic in "
+            "_import_every_code_registering_module() is stale, so the two "
+            "contract tests below are no longer checking anything",
+        )
 
     def test_every_raised_code_is_registered(self):
         from hub import errors
 
-        # Importing this module registers its local codes via CODES.setdefault.
-        __import__("hub.catalog")
+        _import_every_code_registering_module()
 
         raised: set[str] = set()
         pat = re.compile(r"""api_error\(\s*["']([a-z0-9_.]+)["']""")
@@ -146,7 +186,7 @@ class TestErrorCodeContract(unittest.TestCase):
         )
 
     def test_every_registered_code_has_english_and_zh_and_ja(self):
-        __import__("hub.catalog")
+        _import_every_code_registering_module()
         from hub import errors
 
         locales = {}
