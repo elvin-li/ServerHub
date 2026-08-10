@@ -27,6 +27,9 @@ from fastapi import HTTPException
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.errors import CODES, api_error
 from hub.host_address import host_ip
+from hub.launchd_cache import invalidate_launchd
+from hub.launchd_cache import running_labels as launchd_running_labels
+from hub.proc_cache import invalidate_processes, process_matches
 from hub.util import cached_snapshot, fan_out, sh
 
 SERVICES_ROOT = Path.home() / "Services"
@@ -621,8 +624,8 @@ def list_native_apps(force: bool = False) -> list[dict]:
     # Install and liveness probes are independent per app, and each can shell out
     # (`launchctl print`, `brew list`, a `ps` scan).  Resolve them concurrently, then
     # assemble the rows in catalog order below so the grid does not reshuffle by
-    # which probe answered first.  One `ps aux` is shared across the whole pass.
-    ps_snapshot = _PsSnapshot()
+    # which probe answered first.  The launchd listing and the process table are
+    # shared, and shared beyond this pass: see hub/launchd_cache.py.
     launchd_snapshot = _LaunchdSnapshot()
 
     def probe(app: dict) -> tuple[bool, bool | None]:
@@ -637,17 +640,17 @@ def list_native_apps(force: bool = False) -> list[dict]:
         if running is None and label:
             running = _launchd_or_process_running(
                 label, app.get("process_match") or app.get("id") or "",
-                ps_snapshot, launchd_snapshot,
+                launchd_snapshot,
             )
         if running is None and app.get("id") == "native-filebrowser":
             running = _launchd_or_process_running(
-                "local.filebrowser", "filebrowser", ps_snapshot, launchd_snapshot
+                "local.filebrowser", "filebrowser", launchd_snapshot
             )
         # CLI tools with process_match but no brew service / launchd:
         # True only when a matching process is up; otherwise leave None ("已安装")
         # so unused CLIs don't show as "已停止".
         if running is None and app.get("process_match") and not app.get("service") and not label:
-            if _process_running(str(app["process_match"]), ps_snapshot):
+            if _process_running(str(app["process_match"])):
                 running = True
         if running is None and app.get("open"):
             # cask apps: unknown process state unless we probe
@@ -685,91 +688,51 @@ def list_native_apps(force: bool = False) -> list[dict]:
     return items
 
 
-class _PsSnapshot:
-    """One `ps aux` shared by every app in a listing pass.
-
-    The process table is identical for all of them, but the probe used to be a
-    subprocess per app: a machine with many native CLI tools installed ran `ps aux`
-    once per catalog entry inside a single page load.  Reading it once and matching
-    in memory removes that multiplier.
-
-    Filled lazily, because the common case reaches no app that needs it at all --
-    and under a lock, because the probes now run concurrently and an unguarded memo
-    would let every thread that arrives first start its own `ps`.
-    """
-
-    def __init__(self) -> None:
-        self._lines: list[str] | None = None
-        self._lock = threading.Lock()
-
-    def lines(self) -> list[str]:
-        with self._lock:
-            if self._lines is None:
-                rc, out, _ = sh(["/bin/ps", "aux"], timeout=5)
-                self._lines = (out or "").splitlines() if rc == 0 else []
-            return self._lines
-
-
-def _process_running(process_substr: str, snapshot: _PsSnapshot | None = None) -> bool:
+def _process_running(process_substr: str) -> bool:
     """True if any process command line contains substr (best-effort).
 
-    ``snapshot`` lets a caller walking a collection reuse a single `ps aux`; one-off
-    callers pass nothing and get their own read.
+    The table comes from :mod:`hub.proc_cache`.  This used to take a pass-scoped
+    snapshot object, which was the right idea one scope too small: sharing one
+    `ps aux` across the catalog listing still left `/api/apps/managed` reading the
+    table twice, because cloudflared's liveness probe kept its own copy of this
+    same scan.  The cache is process-wide and short-lived, so a listing pass and
+    every other reader in the same request now share one spawn.
     """
-    if not process_substr:
-        return False
-    lines = snapshot.lines() if snapshot is not None else _PsSnapshot().lines()
-    needle = process_substr.lower()
-    for line in lines:
-        # skip the ps header and this grep-like self if any
-        low = line.lower()
-        if needle in low and "ps aux" not in low:
-            return True
-    return False
+    return process_matches(process_substr)
 
 
 class _LaunchdSnapshot:
-    """One `launchctl list` shared by every app in a listing pass.
+    """Marks a caller as walking a collection, rather than asking about one app.
 
-    Mirrors :class:`_PsSnapshot`, and for a sharper reason.  The probe used to be a
-    ``launchctl print`` per label -- thirty subprocesses in one Apps page load -- and
-    the comment on :data:`_PROBE_WORKERS` already recorded why widening the pool did
-    not help: launchd serialises these requests internally, so the concurrency queued
-    inside the daemon rather than in this process.  Overlapping work that the OS
-    serialises is not parallelism, it is thirty process spawns for one answer.
+    The listing itself lives in :mod:`hub.launchd_cache` and is shared with
+    ``health_svc``, ``autostart_svc`` and ``immich_svc``, which each used to run
+    their own.  What survives here is the *distinction*, because it decides whether
+    a spawn is worth paying for:
 
-    A single listing answers the question for every label at once.  ``launchctl list``
-    prints ``PID\\tStatus\\tLabel``, and a numeric pid in column one means the job is
-    running -- which is exactly what ``state = running`` reports.  The same
-    substitution is already made in ``health_svc._running_labels`` and
-    ``autostart_svc._loaded_labels``.
+    * Inside a listing, a label missing from the session is overwhelmingly a job
+      that is simply not loaded, and there are dozens of them.  Asking launchd
+      about each one individually is what made this thirty subprocesses per page --
+      and :data:`_PROBE_WORKERS` already records that widening the pool did not
+      help, because launchd serialises those requests internally.  Work the OS
+      serialises is not parallelised by fanning it out; it is just spawned.
+    * A single-app caller has exactly one label to ask about, so the per-label
+      ``launchctl print`` below costs one spawn and is kept: it is the stronger
+      probe, and one machine's worth of agreement between the two is not evidence
+      that the listing can never miss a job.
 
-    Filled lazily and under a lock, because the probes run concurrently and an
-    unguarded memo would let every thread that arrives first start its own listing.
+    ``launchctl list`` prints ``PID\\tStatus\\tLabel``, and a numeric pid in column
+    one means running -- which is exactly what ``state = running`` reports.
     """
 
-    def __init__(self) -> None:
-        self._running: set[str] | None = None
-        self._lock = threading.Lock()
+    __slots__ = ()
 
-    def running_labels(self) -> set[str]:
-        with self._lock:
-            if self._running is None:
-                rc, out, _ = sh(["/bin/launchctl", "list"], timeout=6)
-                labels: set[str] = set()
-                if rc == 0:
-                    for line in (out or "").splitlines():
-                        parts = line.split("\t")
-                        if len(parts) == 3 and parts[0] not in ("-", "", "PID"):
-                            labels.add(parts[2])
-                self._running = labels
-            return self._running
+    def running_labels(self) -> frozenset[str]:
+        return launchd_running_labels()
 
 
 def _launchd_or_process_running(
     label: str,
     process_substr: str,
-    snapshot: _PsSnapshot | None = None,
     launchd: _LaunchdSnapshot | None = None,
 ) -> bool:
     if label:
@@ -784,7 +747,7 @@ def _launchd_or_process_running(
             )
             if rc == 0 and "state = running" in (out or ""):
                 return True
-    return _process_running(process_substr, snapshot)
+    return _process_running(process_substr)
 
 
 def _resolve_url(hint: str, host: str, ports: list) -> str:
@@ -957,6 +920,17 @@ def _write_launchagent(label: str, program_args: list[str], *,
     return pl_path
 
 
+def _forget_host_state() -> None:
+    """Drop the shared launchd listing and process table after changing either.
+
+    Both are cached for a couple of seconds so that the readers inside one page load
+    share a spawn.  Every mutation here is immediately followed by a read that checks
+    whether the mutation worked, which is precisely the case a TTL gets wrong.
+    """
+    invalidate_launchd()
+    invalidate_processes()
+
+
 def _launchctl_is_loaded(label: str) -> bool:
     from hub.paths import UID
     rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{UID}/{label}"], timeout=5)
@@ -984,6 +958,11 @@ def _launchctl_load(label: str, plist: Path) -> dict:
     r2 = sh(["/bin/launchctl", "kickstart", "-k", target], timeout=20)
     # enable for login if available
     sh(["/bin/launchctl", "enable", f"gui/{UID}/{label}"], timeout=5)
+    # The launchd session and the process table both just changed, and the checks
+    # below read exactly what this call did.  Without dropping the shared snapshots
+    # first, the confirmation would be a listing taken before the bootstrap -- so a
+    # successful start could be reported as a failure.
+    _forget_host_state()
     ok = r2[0] == 0 or _launchctl_is_loaded(label)
     # process probe fallback
     if not ok:
@@ -1006,6 +985,9 @@ def _launchctl_unload(label: str) -> dict:
         pl = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
         if pl.exists():
             sh(["/bin/launchctl", "unload", str(pl)], timeout=10)
+    # Same reason as the load path: the confirmation below must not read a snapshot
+    # taken before the bootout.
+    _forget_host_state()
     ok = not _launchctl_is_loaded(label)
     return {
         "ok": ok or rc in (0, 3, 5) or "No such" in ((err or "") + (out or "")),

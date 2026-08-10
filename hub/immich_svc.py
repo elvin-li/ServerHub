@@ -31,6 +31,7 @@ import urllib.request
 from pathlib import Path
 
 from hub.docker_cli import engine_up
+from hub.launchd_cache import loaded_labels
 from hub.util import cached_snapshot, port_open, sh
 
 _TTL = 30.0
@@ -272,8 +273,14 @@ def run_checks(force: bool = False) -> dict:
     ))
 
     # --- keepalive agent ---
-    _, lc, _ = sh(["launchctl", "list"], timeout=5)
-    ka = any(line.endswith("local.immich-keepalive") for line in lc.splitlines())
+    # "Loaded", not "running": this is a KeepAlive watchdog agent, and launchd holds
+    # it with no pid between its 120s wakeups.  Asking whether it has a pid right now
+    # would report a perfectly healthy watchdog as absent.
+    #
+    # The listing is shared (hub/launchd_cache.py).  This ran its own, in the same
+    # fan-out wave as health_svc's -- both reading the same session listing, which is
+    # two of the three that /api/health/checks used to spawn.
+    ka = "local.immich-keepalive" in loaded_labels()
     checks.append(_check(
         "immich_keepalive", "worker 看护 LaunchAgent", "warn", ka,
         "已加载（每 120s 巡检）" if ka else "未加载，worker 崩溃后不会自动恢复",

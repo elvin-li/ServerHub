@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.errors import api_error
+from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, DATA_DIR, UID
 from hub.util import sh
 
@@ -123,6 +124,9 @@ def uninstall(label: str) -> dict[str, Any]:
     # bootout is best-effort: an agent that is already unloaded returns non-zero
     # but the uninstall should still complete and archive the plist.
     rc, out, err = sh(["/bin/launchctl", "bootout", f"gui/{UID}/{label}"], timeout=20)
+    # The services page refetches right after an uninstall and reads the shared
+    # listing (hub/launchd_cache.py); without this it would still show the agent.
+    invalidate_launchd()
     booted_out = rc == 0
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,8 @@ from fastapi import HTTPException
 
 from hub.paths import AGENTS_DIR, BREW
 from hub import secure_io
+from hub.launchd_cache import invalidate_launchd
+from hub.proc_cache import invalidate_processes, ps_lines
 from hub.util import fan_out, sh
 
 CF_BIN = "/opt/homebrew/bin/cloudflared"
@@ -263,10 +265,12 @@ def _terminate_login_process(*, term_timeout: float = 2.0,
 
 
 def _process_running() -> bool:
-    rc, out, _ = sh(["/bin/ps", "aux"], timeout=5)
-    if rc != 0 or not out:
-        return False
-    for line in out.splitlines():
+    # The shared table (hub/proc_cache.py), not this module's own `ps aux`: the Apps
+    # page walks the native catalog -- which scans the same table for every app that
+    # has no launchd label -- and then lands here for the tunnel, so one request read
+    # the process table twice.  The match below stays local because it is not a plain
+    # substring test; it distinguishes a real `tunnel run` from any stray cloudflared.
+    for line in ps_lines():
         low = line.lower()
         if "cloudflared" not in low:
             continue
@@ -469,6 +473,17 @@ def _write_launchagent_token() -> Path:
     return PLIST
 
 
+def _forget_host_state() -> None:
+    """Drop the shared launchd listing and process table after changing either.
+
+    Both are cached briefly so that concurrent page readers share one spawn.  Every
+    caller here mutates the state and then immediately reads it back to report what
+    happened, which is exactly the case a TTL answers wrongly.
+    """
+    invalidate_launchd()
+    invalidate_processes()
+
+
 def _launchctl_bootout() -> None:
     uid = os.getuid()
     sh(["/bin/launchctl", "bootout", f"gui/{uid}/{LABEL}"], timeout=15)
@@ -479,6 +494,7 @@ def _launchctl_bootout() -> None:
     # /opt/homebrew. With the literal the call just failed silently and the brew
     # agent kept competing with ours for the tunnel.
     sh([BREW, "services", "stop", "cloudflared"], timeout=30)
+    _forget_host_state()
 
 
 def _launchctl_bootstrap() -> dict:
@@ -494,12 +510,19 @@ def _launchctl_bootstrap() -> dict:
     # enable for future logins
     sh(["/bin/launchctl", "enable", f"gui/{uid}/{LABEL}"], timeout=10)
     sh(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"], timeout=15)
+    _forget_host_state()
     ok = rc == 0 or _is_running()
     msg = (out or "") + (err or "")
     running = False
     if ok:
         # wait briefly for process
         for _ in range(8):
+            # The point of this loop is to observe a change, so each pass needs its
+            # own reading.  The process table and the launchd listing are both cached
+            # for a few seconds to collapse concurrent page readers, and a cached
+            # answer here would mean polling the same pre-start snapshot eight times
+            # and reporting a successful start as "check the log".
+            _forget_host_state()
             running = _is_running()
             if running:
                 break

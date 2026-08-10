@@ -1312,6 +1312,9 @@ class LaunchdSnapshotTests(unittest.TestCase):
     problem, it is the wrong question: `launchctl list` prints every loaded job with
     its pid, and a numeric pid in column one means running -- the same substitution
     `health_svc._running_labels` and `autostart_svc._loaded_labels` already make.
+
+    The listing now lives in `hub.launchd_cache`, so these patch `sh` there; the
+    scope of the sharing is asserted separately in test_shared_host_snapshots.py.
     """
 
     LISTING = (
@@ -1321,8 +1324,17 @@ class LaunchdSnapshotTests(unittest.TestCase):
         "1337\t0\thomebrew.mxcl.redis\n"
     )
 
+    def setUp(self):
+        from hub import launchd_cache
+
+        # Process-wide and short-lived: without this a listing taken by an earlier
+        # test would answer this one, which is exactly the staleness these tests are
+        # here to catch.
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
+
     def test_one_listing_answers_every_label(self):
-        from hub import native_catalog
+        from hub import launchd_cache, native_catalog
 
         calls = []
         lock = threading.Lock()
@@ -1334,7 +1346,10 @@ class LaunchdSnapshotTests(unittest.TestCase):
             return (0, self.LISTING, "") if "list" in argv else (1, "", "")
 
         snapshot = native_catalog._LaunchdSnapshot()
-        with mock.patch.object(native_catalog, "sh", counting_sh):
+        with (
+            mock.patch.object(launchd_cache, "sh", counting_sh),
+            mock.patch.object(native_catalog, "sh", counting_sh),
+        ):
             for label in ("local.alpha", "homebrew.mxcl.redis", "local.stopped"):
                 snapshot.running_labels()
 
@@ -1347,11 +1362,11 @@ class LaunchdSnapshotTests(unittest.TestCase):
         )
 
     def test_a_pid_means_running_and_a_dash_does_not(self):
-        from hub import native_catalog
+        from hub import launchd_cache, native_catalog
 
         snapshot = native_catalog._LaunchdSnapshot()
         with mock.patch.object(
-            native_catalog, "sh", lambda *a, **k: (0, self.LISTING, "")
+            launchd_cache, "sh", lambda *a, **k: (0, self.LISTING, "")
         ):
             running = snapshot.running_labels()
 
@@ -1363,7 +1378,7 @@ class LaunchdSnapshotTests(unittest.TestCase):
         self.assertNotIn("Label", running, "the header row became a label")
 
     def test_concurrent_probes_share_one_listing(self):
-        from hub import native_catalog
+        from hub import launchd_cache, native_catalog
 
         calls = []
         lock = threading.Lock()
@@ -1375,7 +1390,7 @@ class LaunchdSnapshotTests(unittest.TestCase):
             return 0, self.LISTING, ""
 
         snapshot = native_catalog._LaunchdSnapshot()
-        with mock.patch.object(native_catalog, "sh", slow_sh):
+        with mock.patch.object(launchd_cache, "sh", slow_sh):
             threads = [threading.Thread(target=snapshot.running_labels) for _ in range(8)]
             for t in threads:
                 t.start()
@@ -1385,7 +1400,14 @@ class LaunchdSnapshotTests(unittest.TestCase):
         self.assertEqual(len(calls), 1, f"eight probes ran {len(calls)} listings")
 
     def test_a_caller_without_a_snapshot_still_probes_its_own_label(self):
-        """`_launchd_or_process_running` has single-app callers outside a listing."""
+        """`_launchd_or_process_running` has single-app callers outside a listing.
+
+        The per-label `launchctl print` is deliberately kept for them.  It is the
+        stronger probe, it costs one spawn when there is one label to ask about, and
+        one machine's worth of agreement between it and the listing is not evidence
+        that the listing can never miss a job.  Inside a listing the same fallback
+        would be dozens of spawns, which is why the distinction survives.
+        """
         from hub import native_catalog
 
         calls = []
@@ -1402,20 +1424,18 @@ class LaunchdSnapshotTests(unittest.TestCase):
 
     def test_the_snapshot_path_falls_back_to_the_process_scan(self):
         """A label absent from the listing is not the end of the question."""
-        from hub import native_catalog
+        from hub import launchd_cache, native_catalog
 
         snapshot = native_catalog._LaunchdSnapshot()
         with (
             mock.patch.object(
-                native_catalog, "sh", lambda *a, **k: (0, self.LISTING, "")
+                launchd_cache, "sh", lambda *a, **k: (0, self.LISTING, "")
             ),
-            mock.patch.object(
-                native_catalog, "_process_running", lambda substr, snap=None: True
-            ),
+            mock.patch.object(native_catalog, "_process_running", lambda substr: True),
         ):
             self.assertTrue(
                 native_catalog._launchd_or_process_running(
-                    "local.absent", "someproc", None, snapshot
+                    "local.absent", "someproc", snapshot
                 ),
                 "an unlisted label skipped the process scan",
             )

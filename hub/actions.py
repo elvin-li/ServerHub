@@ -10,8 +10,22 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub.config import cfg
+from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
 from hub.util import sh
+
+
+def _launchctl(args: list[str]):
+    """Run a state-changing `launchctl` subcommand and drop the shared listing.
+
+    Invalidated *after* the command rather than before it: clearing first leaves a
+    window in which a concurrent reader refills the cache from the pre-change
+    session, and that entry would then be served for the rest of its TTL.
+    """
+    try:
+        return sh(["launchctl", *args])
+    finally:
+        invalidate_launchd()
 
 
 def registry():
@@ -78,17 +92,21 @@ def run_action(target, action):
     kind, meta = reg[target]
     if kind == "launchd":
         label, dom = meta["label"], f"gui/{UID}"
+        # Each branch changes what `launchctl list` reports, and the panel refetches
+        # the services page straight after an action.  `_launchctl` drops the shared
+        # listing (hub/launchd_cache.py) once the command has actually run, so that
+        # refetch cannot be served a snapshot taken before it.
         if action == "restart":
-            return sh(["launchctl", "kickstart", "-k", f"{dom}/{label}"])
+            return _launchctl(["kickstart", "-k", f"{dom}/{label}"])
         if action == "run":
-            return sh(["launchctl", "kickstart", f"{dom}/{label}"])
+            return _launchctl(["kickstart", f"{dom}/{label}"])
         if action == "stop":
-            return sh(["launchctl", "bootout", f"{dom}/{label}"])
+            return _launchctl(["bootout", f"{dom}/{label}"])
         if action == "start":
-            rc, o, e = sh(["launchctl", "bootstrap", dom, meta["path"]])
+            rc, o, e = _launchctl(["bootstrap", dom, meta["path"]])
             if rc not in (0, 17) and "already" not in e.lower():
                 return rc, o, e
-            return sh(["launchctl", "kickstart", f"{dom}/{label}"])
+            return _launchctl(["kickstart", f"{dom}/{label}"])
     if kind == "container" and action in ("start", "stop", "restart", "pause", "unpause", "remove", "kill"):
         if action == "remove":
             return sh([DOCKER, "rm", "-f", target], timeout=90)

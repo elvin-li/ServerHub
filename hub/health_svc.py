@@ -7,6 +7,7 @@ import threading
 import time
 
 from hub.docker_cli import engine_up
+from hub.launchd_cache import running_labels as launchd_running_labels
 from hub.nginx_svc import overview as nginx_overview, test_config as nginx_test
 from hub.paths import SMARTCTL
 from hub.util import fan_out, port_open, sh
@@ -107,19 +108,24 @@ def _port_checks() -> list[dict]:
     ]
 
 
-def _running_labels() -> set[str]:
+def _running_labels() -> frozenset[str]:
     """Labels with a live PID, from one `launchctl list` for the whole function.
 
     This replaced per-service `launchctl` probes in the brew loop below: a label with
     a PID in column one is running, which is exactly what those probes asked.
+
+    The listing now comes from :mod:`hub.launchd_cache`, shared with the Immich
+    checks in the same fan-out and with nginx's own probe.  All three ran their own
+    -- two of them spelled ``launchctl`` and one ``/bin/launchctl``, which is why
+    grouping spawns by argv only ever showed one of the two duplicates -- so this
+    endpoint read the same session listing three times.
+
+    The local parse also had a bug worth recording: it accepted any first column
+    that was not ``-`` or empty, and the header row's first column is ``PID``, so
+    the literal string ``Label`` was reported as a running job.  Harmless only
+    because nothing is called that.
     """
-    _, lc, _ = sh(["launchctl", "list"], timeout=5)
-    labels = set()
-    for line in lc.splitlines():
-        p = line.split("\t")
-        if len(p) == 3 and p[0] not in ("-", ""):
-            labels.add(p[2])
-    return labels
+    return launchd_running_labels()
 
 
 def _brew_snapshot() -> list:

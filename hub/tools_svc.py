@@ -24,6 +24,7 @@ from hub import cli_args
 from hub.host_address import host_ip
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
+from hub.proc_cache import ps_lines
 from hub.util import fan_out, sh, ttl_memo
 
 
@@ -70,10 +71,9 @@ def top_processes(limit: int = 25) -> list:
         and now - _proc_cache["t"] < _PROC_TTL
     ):
         return _proc_cache["v"][:limit]
-    rc, out, _ = sh(["/bin/ps", "aux"], timeout=8)
-    if rc != 0:
-        return []
-    lines = out.splitlines()
+    # One shared `ps aux` (hub/proc_cache.py).  The row cache above stays: it holds
+    # the *parsed and sorted* rows, which the shared table deliberately does not.
+    lines = ps_lines()
     if len(lines) < 2:
         return []
     rows = []

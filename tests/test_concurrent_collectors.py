@@ -57,6 +57,7 @@ from hub import (  # noqa: E402
     autostart_svc,
     docker_info_svc,
     health_svc,
+    launchd_cache,
     smart_test_svc,
     snapshots_svc,
 )
@@ -136,9 +137,15 @@ class LaunchAgentInventoryTests(unittest.TestCase):
             label = str(argv[-1]).rsplit("/", 1)[-1]
             return tracker.run(argv, (0, f"state = running\n{label}", ""))
 
+        # The listing itself lives in hub.launchd_cache now, shared with health_svc
+        # and the native catalog; the per-label `launchctl print` fallback is still
+        # this module's own.  Both have to be intercepted to count them together.
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
         with (
             mock.patch.object(autostart_svc, "AGENTS_DIR", self.dir),
             mock.patch.object(autostart_svc, "sh", fake_sh),
+            mock.patch.object(launchd_cache, "sh", fake_sh),
         ):
             items = autostart_svc._launchd_items()
         return items, tracker
@@ -232,7 +239,12 @@ class AutostartOverviewTests(unittest.TestCase):
         launchd = [{"id": "launchd:local.alpha", "name": "alpha"}]
         script = {"id": "script:autostart", "name": "script"}
 
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
         with (
+            mock.patch.object(
+                launchd_cache, "sh", lambda cmd, *a, **kw: tracker.run(cmd, (0, "", ""))
+            ),
             mock.patch.object(
                 autostart_svc, "sh", lambda cmd, *a, **kw: tracker.run(cmd, (0, "", ""))
             ),
@@ -486,6 +498,10 @@ class HealthCheckTests(unittest.TestCase):
     def setUp(self):
         health_svc._cache.update(t=0.0, v=None)
         self.addCleanup(health_svc._cache.update, t=0.0, v=None)
+        # The listing is shared process-wide now, so a neighbouring test's copy would
+        # otherwise answer this one and the count below would be zero.
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
 
     def _run(self, *, nginx_overview=None, nginx_test=None, brew=None, immich=None):
         tracker = Concurrency()
@@ -509,6 +525,10 @@ class HealthCheckTests(unittest.TestCase):
             ),
             mock.patch.object(
                 health_svc, "sh",
+                lambda cmd, *a, **kw: tracker.run(cmd, (0, "1\t0\tlocal.alpha\n", "")),
+            ),
+            mock.patch.object(
+                launchd_cache, "sh",
                 lambda cmd, *a, **kw: tracker.run(cmd, (0, "1\t0\tlocal.alpha\n", "")),
             ),
             mock.patch.object(

@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import engine_up
+from hub.launchd_cache import invalidate_launchd, loaded_labels
 from hub.util import cached_snapshot, fan_out, sh
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 
@@ -60,19 +61,28 @@ def _write_plist(path: Path, data: dict) -> None:
         plistlib.dump(data, f)
 
 
-def _loaded_labels() -> str:
-    """One `launchctl list` covering every loaded job in this session.
+def _loaded_labels() -> frozenset[str]:
+    """Every loaded job in this session, from one `launchctl list`.
 
     This used to be called once *per label* from inside the plist loop, which is
     what made /api/apps/autostart cost 63 subprocesses on a 29-agent host:
     `launchctl list` already reports every job, so asking it again for each agent
     was N-1 invocations of one command answering one question.
+
+    The listing itself now lives in :mod:`hub.launchd_cache`, shared with the health
+    checks and the native catalog -- `/api/apps/managed` walks both this module and
+    that one, and so ran two listings per page.
+
+    A set of labels rather than the raw text it used to return, because the caller's
+    test was ``label in text``: a substring match, which answers yes for
+    ``local.foo`` when only ``local.foobar`` is loaded.  Exact matching can only
+    move an answer from a wrong yes to the per-label probe below, which is the one
+    that can actually tell.
     """
-    rc, out, _ = sh(["/bin/launchctl", "list"], timeout=8)
-    return out or "" if rc == 0 else ""
+    return loaded_labels()
 
 
-def _launchctl_loaded(label: str, loaded_snapshot: str | None = None) -> bool:
+def _launchctl_loaded(label: str, loaded_snapshot: frozenset[str] | None = None) -> bool:
     """Whether *label* is loaded, cheapest signal first.
 
     Both probes mean the same thing and the answer is their OR, so the order is
@@ -88,8 +98,7 @@ def _launchctl_loaded(label: str, loaded_snapshot: str | None = None) -> bool:
     if loaded_snapshot is not None:
         # Already checked above; re-running `list` would ask the same question twice.
         return False
-    rc2, out2, _ = sh(["/bin/launchctl", "list"], timeout=8)
-    return rc2 == 0 and label in (out2 or "")
+    return label in loaded_labels()
 
 
 # ─── Docker ──────────────────────────────────────────────────────────────────
@@ -205,7 +214,7 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
 
 # ─── LaunchAgents (user) ─────────────────────────────────────────────────────
 
-def _launchd_items(loaded_snapshot: str | None = None) -> list[dict]:
+def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
     items = []
     if not AGENTS_DIR.is_dir():
         return items
@@ -303,6 +312,11 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
         # disable for session
         sh(["/bin/launchctl", "disable", f"{dom}/{label}"], timeout=5)
 
+    # This label was just loaded or unloaded, and the overview the panel refetches
+    # right after reads the shared listing.  Without dropping it, the toggle would
+    # be answered from a listing taken before the change and read as a no-op.
+    invalidate_launchd()
+    overview.invalidate()
     return {
         "ok": True,
         "message": f"RunAtLoad={enabled} · " + " · ".join(logs)[:400],
@@ -313,7 +327,7 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
 
 # ─── Global login autostart script ───────────────────────────────────────────
 
-def _script_status(loaded_snapshot: str | None = None) -> dict:
+def _script_status(loaded_snapshot: frozenset[str] | None = None) -> dict:
     plist = AGENTS_DIR / "local.serverhub.autostart.plist"
     script = Path.home() / "Services" / "autostart.sh"
     pl = _read_plist(plist) if plist.exists() else {}

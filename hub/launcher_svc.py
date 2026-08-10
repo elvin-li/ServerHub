@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+from hub.launchd_cache import invalidate_launchd
 from hub.paths import BASE
 from hub.util import sh
 
@@ -208,6 +209,9 @@ def set_login_enabled(enabled: bool) -> dict:
         rc, out, err = sh(
             ["/bin/launchctl", "bootstrap", DOMAIN, str(LAUNCHER_PLIST)], timeout=10
         )
+        # The launcher agent is one of the jobs the autostart and services pages list
+        # out of the shared listing (hub/launchd_cache.py).
+        invalidate_launchd()
         ok = rc == 0 or _loaded(LAUNCHER_LABEL)
         message = (
             (out or "enabled")
@@ -220,6 +224,7 @@ def set_login_enabled(enabled: bool) -> dict:
         ["/bin/launchctl", "bootout", target], timeout=8
     )
     sh(["/bin/launchctl", "disable", target], timeout=5)
+    invalidate_launchd()
     try:
         LAUNCHER_PLIST.unlink()
     except FileNotFoundError:

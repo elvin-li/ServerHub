@@ -54,8 +54,10 @@ from hub import (  # noqa: E402
     disk_manage_svc,
     disk_power_svc,
     health_svc,
+    launchd_cache,
     native_catalog,
     network_svc,
+    proc_cache,
     raid_svc,
     shares_svc,
     storage_svc,
@@ -618,7 +620,15 @@ class NativeCatalogListingTests(unittest.TestCase):
                 return 0, "USER PID COMMAND\nme 1 alpha\nme 2 beta\nme 3 gamma\nme 4 delta\n", ""
             return 1, "", ""
 
-        with self._enter(self.PS_APPS, sh=fake_sh):
+        # The table lives in hub.proc_cache now, shared beyond this pass with
+        # cloudflared's liveness probe and the Tools process list.  Cleared first
+        # because a neighbouring test's table would otherwise answer this one.
+        proc_cache.invalidate_processes()
+        self.addCleanup(proc_cache.invalidate_processes)
+        with (
+            self._enter(self.PS_APPS, sh=fake_sh),
+            mock.patch.object(proc_cache, "sh", fake_sh),
+        ):
             items = native_catalog.list_native_apps(force=True)
 
         ps_calls = [c for c in calls if c[:2] == ["/bin/ps", "aux"]]
@@ -2075,6 +2085,8 @@ class HealthCheckSingleFlightTests(unittest.TestCase):
     def setUp(self):
         health_svc._cache.update(t=0.0, v=None)
         self.addCleanup(health_svc._cache.update, t=0.0, v=None)
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
         self.calls = collections.Counter()
         self._lock = threading.Lock()
 
@@ -2086,17 +2098,25 @@ class HealthCheckSingleFlightTests(unittest.TestCase):
         return 0, "", ""
 
     def test_the_collection_does_not_repeat_per_reader(self):
+        # `/bin/launchctl`, not a bare `launchctl`: the shared listing settled on the
+        # absolute path, because a bare name depends on the panel's PATH and a
+        # LaunchAgent does not necessarily set one.
+        listing = "/bin/launchctl list"
         for readers in (2, 4, 8):
             with self.subTest(readers=readers):
                 health_svc._cache.update(t=0.0, v=None)
+                launchd_cache.invalidate_launchd()
                 self.calls.clear()
-                with mock.patch.object(health_svc, "sh", self._sh):
+                with (
+                    mock.patch.object(health_svc, "sh", self._sh),
+                    mock.patch.object(launchd_cache, "sh", self._sh),
+                ):
                     with ThreadPoolExecutor(max_workers=readers) as ex:
                         list(ex.map(lambda _: health_svc.run_checks(), range(readers)))
                 self.assertEqual(
-                    self.calls["launchctl list"], 1,
+                    self.calls[listing], 1,
                     f"{readers} readers ran `launchctl list` "
-                    f"{self.calls['launchctl list']} times",
+                    f"{self.calls[listing]} times",
                 )
                 self.assertEqual(
                     self.calls["sudo -n"], 1,

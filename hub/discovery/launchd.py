@@ -14,18 +14,19 @@ from hub.adaptive import (
 )
 from hub.config import override
 from hub.host_address import resolve_template
+from hub.launchd_cache import listing as launchd_listing
 from hub.paths import AGENTS_DIR
-from hub.util import fan_out, port_open, sh
+from hub.util import fan_out, port_open
 
 
 def launchctl_table():
-    _, out, _ = sh(["launchctl", "list"], timeout=5)
-    t = {}
-    for line in out.splitlines():
-        p = line.split("\t")
-        if len(p) == 3:
-            t[p[2]] = (p[0], p[1])
-    return t
+    """label -> (pid, status), from the shared listing (hub/launchd_cache.py).
+
+    This module's own `launchctl list` was a fourth copy of the same read, and the
+    only one spelled without an absolute path -- so it depended on the panel's PATH,
+    which a LaunchAgent does not necessarily set.
+    """
+    return launchd_listing().jobs
 
 
 def _probe_port(port) -> bool | None:

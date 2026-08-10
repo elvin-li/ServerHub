@@ -7,8 +7,8 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub.adaptive import nginx_sites
+from hub.launchd_cache import invalidate_launchd, listing as launchd_listing
 from hub.status import invalidate_status
-from hub.util import sh
 
 NGINX_BIN = "/opt/homebrew/bin/nginx"
 NGINX_ROOT = Path.home() / "Services" / "nginx"
@@ -19,16 +19,15 @@ LABEL = "local.system-nginx"
 
 def overview() -> dict:
     sites = nginx_sites()
-    running = False
-    pid = None
-    rc, out, _ = sh(["/bin/launchctl", "list"], timeout=5)
-    for line in out.splitlines():
-        if LABEL in line:
-            parts = line.split("\t")
-            if parts and parts[0] not in ("-", ""):
-                running = True
-                pid = parts[0]
-            break
+    # The shared listing (hub/launchd_cache.py) rather than this module's own
+    # `launchctl list`: the health page calls this *and* two other readers of the
+    # same listing, so the bundle used to spawn three of them.
+    #
+    # Exact label match now, where this scanned for `LABEL in line` -- a substring
+    # test that would have matched a different job whose label merely contains
+    # `local.system-nginx`.
+    pid = launchd_listing().pid_for(LABEL)
+    running = pid is not None
     return {
         "label": LABEL,
         "conf": str(NGINX_CONF),
@@ -69,6 +68,9 @@ def reload_nginx() -> dict:
             ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"],
             capture_output=True, text=True, timeout=30,
         )
+        # A kickstart replaces the process, so the pid in the shared listing is now
+        # the previous one.
+        invalidate_launchd()
         invalidate_status()
         return {
             "ok": p2.returncode == 0,

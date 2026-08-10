@@ -20,7 +20,7 @@ from unittest.mock import patch
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from hub import health_svc  # noqa: E402
+from hub import health_svc, launchd_cache  # noqa: E402
 
 #: `launchctl list` output: PID, status, label.
 LAUNCHCTL_LIST = "\n".join([
@@ -31,12 +31,21 @@ LAUNCHCTL_LIST = "\n".join([
 ])
 
 
+#: The listing now comes from hub.launchd_cache, which settled on the absolute path:
+#: a bare `launchctl` depends on the panel's PATH, and a LaunchAgent need not set one.
+LISTING_ARGV = ["/bin/launchctl", "list"]
+
+
 class LaunchctlFanoutTests(unittest.TestCase):
     def setUp(self):
         # run_checks memoises for 45s, so without clearing this a test reads a
         # previous run's result and observes no subprocesses at all.
         health_svc._cache.update(t=0.0, v=None)
         self.addCleanup(lambda: health_svc._cache.update(t=0.0, v=None))
+        # Same hazard one level down: the listing is shared process-wide, so a
+        # neighbouring test's copy would answer this one and no argv would be seen.
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
 
     def _run(self, brew_states):
         """Run the checks with launchctl and brew stubbed; return (checks, argvs)."""
@@ -44,12 +53,13 @@ class LaunchctlFanoutTests(unittest.TestCase):
 
         def fake_sh(argv, **kwargs):
             argvs.append(list(argv))
-            if argv[:2] == ["launchctl", "list"]:
+            if list(argv[:2]) == LISTING_ARGV:
                 return (0, LAUNCHCTL_LIST, "")
             return (1, "", "")
 
         with (
             patch.object(health_svc, "sh", side_effect=fake_sh),
+            patch.object(launchd_cache, "sh", side_effect=fake_sh),
             patch.object(health_svc, "brew_services_list", return_value=brew_states),
         ):
             result = health_svc.run_checks(force=True)
@@ -60,7 +70,7 @@ class LaunchctlFanoutTests(unittest.TestCase):
         brew = [{"name": n, "status": "none"} for n in
                 ("postgresql@17", "postgresql@18", "mosquitto", "grafana")]
         _, argvs = self._run(brew)
-        listings = [a for a in argvs if a[:2] == ["launchctl", "list"]]
+        listings = [a for a in argvs if a[:2] == LISTING_ARGV]
         self.assertEqual(
             len(listings), 1,
             f"expected one full listing, got {len(listings)}: {listings}",
@@ -70,7 +80,7 @@ class LaunchctlFanoutTests(unittest.TestCase):
         brew = [{"name": n, "status": "none"} for n in
                 ("postgresql@17", "mosquitto", "grafana")]
         _, argvs = self._run(brew)
-        per_label = [a for a in argvs if a[:2] == ["launchctl", "list"] and len(a) > 2]
+        per_label = [a for a in argvs if a[:2] == LISTING_ARGV and len(a) > 2]
         self.assertEqual(
             per_label, [], f"per-service launchctl probes returned: {per_label}"
         )
