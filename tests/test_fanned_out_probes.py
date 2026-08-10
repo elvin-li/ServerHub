@@ -53,6 +53,7 @@ from hub import (  # noqa: E402
     containers_svc,
     disk_manage_svc,
     disk_power_svc,
+    health_svc,
     native_catalog,
     network_svc,
     raid_svc,
@@ -2060,6 +2061,84 @@ class SmartSnapshotTests(unittest.TestCase):
             self.assertIn(
                 "invalidate_smart", body, f"{anchor} does not drop the SMART snapshot"
             )
+
+
+class HealthCheckSingleFlightTests(unittest.TestCase):
+    """The health snapshot is a seven-way fan-out; it should run once per window.
+
+    The TTL alone did not achieve that. The health card, the dashboard and the
+    diagnostics bundle all read it, and the panel and menu-bar client both poll, so
+    readers land together on a cold cache and each used to run the whole collection --
+    including `sudo -n smartctl` and the Immich probe.
+    """
+
+    def setUp(self):
+        health_svc._cache.update(t=0.0, v=None)
+        self.addCleanup(health_svc._cache.update, t=0.0, v=None)
+        self.calls = collections.Counter()
+        self._lock = threading.Lock()
+
+    def _sh(self, cmd, *a, **kw):
+        key = " ".join(str(c) for c in (cmd[:2] if isinstance(cmd, (list, tuple)) else [cmd]))
+        with self._lock:
+            self.calls[key] += 1
+        time.sleep(PROBE_DELAY)
+        return 0, "", ""
+
+    def test_the_collection_does_not_repeat_per_reader(self):
+        for readers in (2, 4, 8):
+            with self.subTest(readers=readers):
+                health_svc._cache.update(t=0.0, v=None)
+                self.calls.clear()
+                with mock.patch.object(health_svc, "sh", self._sh):
+                    with ThreadPoolExecutor(max_workers=readers) as ex:
+                        list(ex.map(lambda _: health_svc.run_checks(), range(readers)))
+                self.assertEqual(
+                    self.calls["launchctl list"], 1,
+                    f"{readers} readers ran `launchctl list` "
+                    f"{self.calls['launchctl list']} times",
+                )
+                self.assertEqual(
+                    self.calls["sudo -n"], 1,
+                    f"{readers} readers ran `sudo -n smartctl` {self.calls['sudo -n']} times",
+                )
+
+    def test_every_reader_gets_the_one_collected_snapshot(self):
+        with mock.patch.object(health_svc, "sh", self._sh):
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                results = list(ex.map(lambda _: health_svc.run_checks(), range(4)))
+        # Object identity, not equality: `ts` is second-resolution, so four separate
+        # collections in the same second compare equal and would prove nothing. One
+        # shared object is what distinguishes joining a collection from repeating it.
+        self.assertEqual(
+            len({id(r) for r in results}), 1,
+            "each reader collected its own snapshot instead of joining the first",
+        )
+        self.assertEqual(len({len(r["checks"]) for r in results}), 1)
+
+    def test_a_warm_snapshot_costs_no_subprocess(self):
+        with mock.patch.object(health_svc, "sh", self._sh):
+            health_svc.run_checks()
+            self.calls.clear()
+            health_svc.run_checks()
+        self.assertEqual(sum(self.calls.values()), 0)
+
+    def test_force_still_bypasses_a_fresh_cache(self):
+        # The lock must not turn `force` into "wait, then return the cached copy".
+        with mock.patch.object(health_svc, "sh", self._sh):
+            health_svc.run_checks()
+            self.calls.clear()
+            health_svc.run_checks(force=True)
+        self.assertGreater(sum(self.calls.values()), 0, "force= must re-collect")
+
+    def test_the_snapshot_shape_is_unchanged(self):
+        with mock.patch.object(health_svc, "sh", self._sh):
+            out = health_svc.run_checks()
+        self.assertEqual(sorted(out.keys()), ["checks", "healthy", "summary", "ts"])
+        self.assertEqual(sorted(out["summary"].keys()), ["error", "ok", "total", "warn"])
+        self.assertEqual(
+            out["summary"]["total"], len(out["checks"]), "summary must count the checks"
+        )
 
 
 class DeliberatelySerialTests(unittest.TestCase):

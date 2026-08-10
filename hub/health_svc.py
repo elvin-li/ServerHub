@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import time
 
 from hub.docker_cli import engine_up
@@ -14,6 +15,9 @@ from pathlib import Path
 
 _cache = {"t": 0.0, "v": None}
 _TTL = 45.0
+#: One lock, not per-key: there is a single snapshot, so a reader arriving mid-collection
+#: should wait for that result rather than starting a second seven-way fan-out.
+_refresh_lock = threading.Lock()
 
 
 def _check(id_: str, name: str, level: str, ok: bool, detail: str, fix: str = "") -> dict:
@@ -172,8 +176,30 @@ def _immich_checks() -> list[dict]:
 
 
 def run_checks(force: bool = False) -> dict:
+    """Cached health snapshot, collected once however many readers ask at once.
+
+    The TTL alone was not enough.  This check reads the cache, and the collection
+    below is a seven-way fan-out that shells out to `sudo smartctl`, `launchctl`,
+    brew and the Immich stack -- so every reader that arrived during a cold window
+    ran the whole thing.  The health card, the dashboard and the diagnostics bundle
+    all want this, and the panel and menu-bar client both poll: measured with four
+    concurrent cold readers, four `launchctl list` and four `sudo -n smartctl` where
+    one of each would have served all of them.
+
+    Same double-checked shape as brew_cache and docker_cli, rather than `ttl_memo`,
+    because `_cache` is inspected directly by tests that predate this.
+    """
     if not force and _cache["v"] and time.time() - _cache["t"] < _TTL:
         return _cache["v"]
+    with _refresh_lock:
+        # Re-check under the lock: another reader may have finished the same
+        # collection while this one waited, which is what makes this single-flight.
+        if not force and _cache["v"] and time.time() - _cache["t"] < _TTL:
+            return _cache["v"]
+        return _collect_checks()
+
+
+def _collect_checks() -> dict:
     checks = []
 
     # Disk space root
