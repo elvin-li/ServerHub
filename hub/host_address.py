@@ -15,6 +15,11 @@ from hub.util import sh
 _AUTO_VALUES = {"", "auto", "automatic", "dhcp", "dynamic"}
 _VAR_RE = re.compile(r"\$?\{([A-Za-z][A-Za-z0-9_.-]{0,63})\}")
 _cache_lock = threading.Lock()
+#: Held across the detection itself, so concurrent callers that miss a cold cache
+#: wait for one answer instead of each running the probes.  Separate from
+#: `_cache_lock`, which is only ever held for the dict access: holding one lock for
+#: both would block every cache *read* for the duration of a refresh.
+_detect_refresh_lock = threading.Lock()
 _detect_cache: dict[str, Any] = {"t": 0.0, "value": None}
 _DETECT_TTL = 30.0
 
@@ -52,17 +57,44 @@ def default_interface() -> str:
     return match.group(1) if match else ""
 
 
-def detect_lan_ip(*, force: bool = False) -> str:
-    """Detect the active LAN address without embedding a network-specific IP."""
-    now = time.time()
+def _cached_detection(now: float) -> str:
     with _cache_lock:
-        if (
-            not force
-            and _detect_cache["value"]
-            and now - float(_detect_cache["t"]) < _DETECT_TTL
-        ):
-            return str(_detect_cache["value"])
+        value = _detect_cache["value"]
+        if value and now - float(_detect_cache["t"]) < _DETECT_TTL:
+            return str(value)
+    return ""
 
+
+def detect_lan_ip(*, force: bool = False) -> str:
+    """Detect the active LAN address without embedding a network-specific IP.
+
+    Single-flight, not merely cached.  The TTL check used to release ``_cache_lock``
+    before doing the work, which is correct only while callers arrive one at a time.
+    ``host_ip()`` has 39 call sites and several of them now sit inside the same
+    fan-out, so they reached a cold cache together, all missed, and each paid for
+    the two subprocesses -- one ``/api/apps/managed`` read ran
+    ``route -n get default`` and ``ipconfig getifaddr`` three times apiece for one
+    answer.  The refresh lock makes the losers wait for the winner's result instead.
+    """
+    now = time.time()
+    if not force:
+        hit = _cached_detection(now)
+        if hit:
+            return hit
+
+    with _detect_refresh_lock:
+        # Re-check inside the lock: the winner filled the cache while the others
+        # were queued behind it, and re-running the detection would defeat the
+        # point of waiting.
+        if not force:
+            hit = _cached_detection(time.time())
+            if hit:
+                return hit
+
+        return _detect_lan_ip_uncached(now)
+
+
+def _detect_lan_ip_uncached(now: float) -> str:
     candidates: list[str] = []
     interface = default_interface()
     if interface:

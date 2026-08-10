@@ -27,20 +27,19 @@ _services_refresh_lock = threading.Lock()
 _services_cache_generation = 0
 _services_refresh_serial = 0
 
-#: TTL for the two interface-table memos, matching the caches around them.
-_INTERFACE_CACHE_TTL = 6.0
-
-#: Memo for `networksetup -listnetworkserviceorder`.
+#: TTL for the reads that are pure dumps of system network configuration:
+#: `ifconfig -a`, `networksetup -listallhardwareports` and
+#: `networksetup -listnetworkserviceorder`.
 #:
-#: Four call sites read the service order, and because two of them sit inside
-#: per-interface loops a single /api/network request ran the command six times --
-#: six ~60ms subprocesses returning byte-identical output.  The read is a pure
-#: dump of system network configuration, so one call per request window is
-#: enough.  TTL matches the surrounding caches and _bust() clears it with them,
-#: so an interface change is not masked for longer than the page already allows.
-_order_cache: dict = {"t": 0.0, "v": None}
+#: Each of these is read by several call sites, some of them inside per-interface
+#: loops, so a single request ran each command repeatedly for byte-identical output
+#: -- six times for the service order before it was memoised at all, and three
+#: times after, because the first memo was not single-flight. One call per request
+#: window is enough. The TTL matches the caches around them and `_bust()` clears
+#: them together, so a configuration change is not masked for longer than the page
+#: already allows.
+_INTERFACE_CACHE_TTL = 6.0
 _ORDER_CACHE_TTL = 6.0
-_order_cache_lock = threading.Lock()
 
 NS = "/usr/sbin/networksetup"
 
@@ -147,8 +146,8 @@ def _interfaces_uncached() -> list:
 def interfaces() -> list:
     """Every interface and its addresses, from one ``ifconfig -a``.
 
-    Memoised for the reason :data:`_order_cache` documents, which turned out to
-    apply here just as much: five call sites read this, two of them
+    Memoised for the reason :data:`_INTERFACE_CACHE_TTL` documents, which turned out
+    to apply here just as much: five call sites read this, two of them
     (``interface_addresses`` and ``preferred_active_device``) on the same request,
     so ``/api/system/network/alias/auto`` ran ``ifconfig -a`` twice per read and
     ``/api/system/network`` more than that -- identical output each time.
@@ -195,21 +194,21 @@ def hardware_ports() -> list:
     return _hardware_ports_uncached()
 
 
+@ttl_memo(_ORDER_CACHE_TTL)
 def _network_service_order_entries() -> list[dict]:
     """Read service order without the expensive per-service detail calls.
 
-    Memoised: see :data:`_order_cache`.  Callers treat this as cheap and some of
-    them loop, so the cost has to live here rather than in each call site.
-    """
-    with _order_cache_lock:
-        hit = _order_cache["v"]
-        if hit is not None and time.time() - _order_cache["t"] < _ORDER_CACHE_TTL:
-            return hit
+    Callers treat this as cheap and some of them loop, so the cost has to live here
+    rather than in each call site.
 
-    entries = _network_service_order_uncached()
-    with _order_cache_lock:
-        _order_cache.update(t=time.time(), v=entries)
-    return entries
+    Single-flight, which the hand-rolled memo it replaces was not: that one released
+    its lock before running the command, so several fan-out workers reaching a cold
+    cache together all missed and all ran it.  ``/api/system/network`` still spawned
+    ``networksetup -listnetworkserviceorder`` three times with the old memo in
+    place -- better than the six it was written to fix, but the remaining three were
+    pure duplication.
+    """
+    return _network_service_order_uncached()
 
 
 def _network_service_order_uncached() -> list[dict]:
@@ -1662,11 +1661,11 @@ def _bust():
     with _services_cache_lock:
         _services_cache_generation += 1
         _services_cache.update(t=0.0, v=None)
-    with _order_cache_lock:
-        _order_cache.update(t=0.0, v=None)
     # Cleared with the rest: an added or removed IP alias changes `ifconfig`
-    # output, and `add_ip_alias`/`remove_ip_alias` reach here right after the
-    # command runs.
+    # output, a changed service configuration changes the service order, and
+    # `add_ip_alias`/`remove_ip_alias`/`set_service_*` all reach here right after
+    # their command runs.
+    _network_service_order_entries.invalidate()
     interfaces.invalidate()
     hardware_ports.invalidate()
 

@@ -917,3 +917,152 @@ class CloudflaredStatusTests(unittest.TestCase):
         self.assertEqual(calls, [], "queried Cloudflare without a certificate")
         self.assertEqual(data["tunnels"], [])
         self.assertIsNone(data["tunnels_error"])
+
+
+# ── single-flight, not merely cached ─────────────────────────────────────────
+
+class SingleFlightTests(unittest.TestCase):
+    """Two caches that were not single-flight, which under fan-out is barely a cache.
+
+    Both used the check-then-compute shape: take the lock, test the TTL, release it,
+    then do the work. That is correct only while callers arrive one at a time. Once
+    several branches of a fan-out reach the same read simultaneously they all miss
+    the cold cache, all run the command, and the cache never gets a chance to help.
+
+    Measured before the fix: one ``/api/apps/managed`` read ran
+    ``route -n get default`` and ``ipconfig getifaddr`` three times apiece for one
+    answer, and ``/api/system/network`` ran
+    ``networksetup -listnetworkserviceorder`` three times -- better than the six it
+    had before any memo, but the remaining three were pure duplication.
+    """
+
+    def test_concurrent_lan_ip_detection_probes_once(self):
+        from hub import host_address
+
+        host_address._detect_cache.update(t=0.0, value=None)
+        self.addCleanup(host_address._detect_cache.update, t=0.0, value=None)
+
+        calls = []
+        lock = threading.Lock()
+
+        def slow_sh(cmd, *a, **kw):
+            with lock:
+                calls.append([str(c) for c in cmd])
+            time.sleep(0.05)
+            if "route" in str(cmd[0]):
+                return 0, "   route to: default\n  interface: en0\n", ""
+            return 0, "192.168.1.9", ""
+
+        results = []
+        with mock.patch.object(host_address, "sh", slow_sh):
+            threads = [
+                threading.Thread(target=lambda: results.append(host_address.detect_lan_ip()))
+                for _ in range(6)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        routes = [c for c in calls if "route" in c[0]]
+        self.assertEqual(
+            len(routes), 1,
+            f"six concurrent callers ran `route -n get default` {len(routes)} times",
+        )
+        self.assertEqual(len(results), 6)
+        self.assertEqual(set(results), {"192.168.1.9"}, "callers disagreed")
+
+    def test_force_still_bypasses_the_cache(self):
+        """``force=True`` is the caller saying the previous answer is known stale."""
+        from hub import host_address
+
+        host_address._detect_cache.update(t=0.0, value=None)
+        self.addCleanup(host_address._detect_cache.update, t=0.0, value=None)
+
+        answers = iter(["192.168.1.9", "192.168.1.50"])
+        calls = []
+
+        def fake_sh(cmd, *a, **kw):
+            calls.append([str(c) for c in cmd])
+            if "route" in str(cmd[0]):
+                return 0, "  interface: en0\n", ""
+            return 0, next(answers), ""
+
+        with mock.patch.object(host_address, "sh", fake_sh):
+            first = host_address.detect_lan_ip()
+            cached = host_address.detect_lan_ip()
+            forced = host_address.detect_lan_ip(force=True)
+
+        self.assertEqual(first, "192.168.1.9")
+        self.assertEqual(cached, "192.168.1.9", "the second read should be cached")
+        self.assertEqual(forced, "192.168.1.50", "force did not re-detect")
+
+    def test_a_configured_host_never_reaches_the_detection(self):
+        """Only the subprocess half is cached; the config half stays live."""
+        from hub import host_address
+
+        calls = []
+        with (
+            mock.patch.object(host_address, "configured_host", lambda: "nas.local"),
+            mock.patch.object(host_address, "sh",
+                              lambda *a, **k: calls.append("probed") or (1, "", "")),
+        ):
+            self.assertEqual(host_address.host_ip(), "nas.local")
+        self.assertEqual(calls, [], "a fixed host still ran the LAN detection")
+
+    def test_concurrent_service_order_reads_run_the_command_once(self):
+        from hub import network_svc
+
+        network_svc._network_service_order_entries.invalidate()
+        self.addCleanup(network_svc._network_service_order_entries.invalidate)
+
+        calls = []
+        lock = threading.Lock()
+
+        def slow_sh(cmd, *a, **kw):
+            with lock:
+                calls.append([str(c) for c in cmd])
+            time.sleep(0.05)
+            return 0, "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n", ""
+
+        with mock.patch.object(network_svc, "sh", slow_sh):
+            threads = [
+                threading.Thread(target=network_svc._network_service_order_entries)
+                for _ in range(6)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        orders = [c for c in calls if "-listnetworkserviceorder" in c]
+        self.assertEqual(
+            len(orders), 1,
+            f"six concurrent readers ran the service order {len(orders)} times",
+        )
+
+    def test_busting_clears_the_service_order_too(self):
+        from hub import network_svc
+
+        network_svc._network_service_order_entries.invalidate()
+        self.addCleanup(network_svc._network_service_order_entries.invalidate)
+
+        first = "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n"
+        second = first + "(2) Ethernet\n(Hardware Port: Ethernet, Device: en1)\n"
+        state = {"out": first}
+
+        with mock.patch.object(
+            network_svc, "sh", lambda *a, **k: (0, state["out"], "")
+        ):
+            before = len(network_svc._network_service_order_entries())
+            state["out"] = second
+            self.assertEqual(
+                len(network_svc._network_service_order_entries()), before,
+                "the cache should still be serving the old order here",
+            )
+            network_svc._bust()
+            self.assertGreater(
+                len(network_svc._network_service_order_entries()), before,
+                "_bust() did not clear the service-order memo, so a reconfigured "
+                "network would keep reporting the previous order",
+            )
