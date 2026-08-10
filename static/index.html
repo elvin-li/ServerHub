@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="system" data-density="compact">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>ServerHub</title>
+    <meta name="description" content="macOS 家服控制面板" />
+    <meta name="theme-color" content="#1c1b1b" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ServerHub" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <script>
+      try {
+        var t = localStorage.getItem('serverhub.theme') || 'system';
+        var d = localStorage.getItem('serverhub.density') || 'compact';
+        var l = localStorage.getItem('serverhub.locale') || '';
+        document.documentElement.setAttribute('data-theme', t);
+        document.documentElement.setAttribute('data-density', d);
+        if (l) document.documentElement.setAttribute('lang', l === 'zh-CN' ? 'zh-CN' : l);
+        // Set color-scheme early to avoid flash of wrong form-control style
+        var dark = ['unraid-dark','nord','glass'].indexOf(t) >= 0;
+        var light = ['unraid','omv','docker','mono'].indexOf(t) >= 0;
+        if (dark) document.documentElement.setAttribute('data-color-mode', 'dark');
+        else if (light) document.documentElement.setAttribute('data-color-mode', 'light');
+        // Dynamic theme-color for browser chrome / status bar
+        var tc = {
+          'unraid': '#f5f0e8', 'unraid-dark': '#1c1b1b', 'omv': '#f5f5f5',
+          'docker': '#f0f6fc', 'nord': '#2e3440', 'glass': '#1a1a2e', 'mono': '#ffffff'
+        };
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta && tc[t]) meta.setAttribute('content', tc[t]);
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-BNkfyqXb.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-qnL6aF8z.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CIfxWQ-B.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

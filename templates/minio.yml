@@ -1,0 +1,36 @@
+---
+name: MinIO
+desc: S3 兼容对象存储
+category: data
+tags: [s3, storage]
+ports: ["9000", "9001"]
+url_template: "http://{{HOST_IP}}:{{CONSOLE_PORT}}"
+vars:
+  - name: API_PORT
+    label: S3 API 端口
+    default: "9000"
+  - name: CONSOLE_PORT
+    label: 控制台端口
+    default: "9001"
+  - name: MINIO_ROOT_USER
+    label: Access Key
+    default: "minioadmin"
+  - name: MINIO_ROOT_PASSWORD
+    label: Secret Key
+    default: "__RANDOM__"
+    secret: true
+---
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER={{MINIO_ROOT_USER}}
+      - MINIO_ROOT_PASSWORD={{MINIO_ROOT_PASSWORD}}
+    ports:
+      - "{{API_PORT}}:9000"
+      - "{{CONSOLE_PORT}}:9001"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

@@ -1,0 +1,24 @@
+---
+name: Nextcloud
+desc: 私有云盘 / 相册 / 办公套件
+category: files
+tags: [cloud, files]
+featured: true
+ports: ["8084"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: 首次打开完成安装向导。生产建议加 Postgres 与 HTTPS 反代。
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "8084"
+---
+services:
+  nextcloud:
+    image: nextcloud:latest
+    container_name: nextcloud
+    restart: unless-stopped
+    ports:
+      - "{{HOST_PORT}}:80"
+    volumes:
+      - ./html:/var/www/html
+      - ./data:/var/www/html/data

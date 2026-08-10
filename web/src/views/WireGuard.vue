@@ -1,0 +1,934 @@
+<template>
+  <div>
+    <div class="page-title">
+      <h1>{{ t('pages.wireguard') }}</h1>
+      <span class="meta">{{ t('pages.wireguard_meta') }} · {{ data?.ts || '…' }}</span>
+    </div>
+
+    <!-- Running status card -->
+    <div
+      v-if="data"
+      class="wg-status-bar"
+      :class="{ running: data.running, unknown: liveState === 'unknown' }"
+    >
+      <span class="wg-status-led"></span>
+      <span class="wg-status-text">{{ statusText }}</span>
+      <!-- When live state could not be read, say why here. The backend already
+           computes this diagnostic ("sudo: a password is required", "interface not
+           found", "could not tell which interface is ours") and it had exactly one
+           consumer: a readiness row the view filters out. So the page showed
+           "tunnel stopped" for a running tunnel and never mentioned the reason. -->
+      <span v-if="liveState === 'unknown'" class="wg-status-meta mono">{{ data.state_error }}</span>
+      <span v-else-if="data.running" class="wg-status-meta">
+        {{ data.interface }} · {{ t('wg.listen_port') }} {{ data.listen_port }} · {{ data.active_count }}/{{ data.peer_count }} {{ t('wg.peers_online') }}
+      </span>
+    </div>
+
+    <div class="toolbar">
+      <!-- Both buttons show while live state is unknown. They used to be an
+           if/else on `running`, so an unreadable state hid Stop completely: the
+           operator could not stop a tunnel the page wrongly called stopped, and
+           Start returned "already running" from wg-quick's own filesystem view
+           with a green toast while the page still said stopped. -->
+      <button
+        v-if="liveState !== 'running'"
+        class="primary wg-start"
+        @click="control('up')"
+        :disabled="busy"
+      >&#9654; {{ t('wg.start') }}</button>
+      <button
+        v-if="liveState !== 'stopped'"
+        class="danger wg-stop"
+        @click="control('down')"
+        :disabled="busy"
+      >&#9632; {{ t('wg.stop') }}</button>
+      <button @click="control('restart')" :disabled="busy" class="wg-restart">&#8635; {{ t('wg.restart') }}</button>
+      <span class="toolbar-sep"></span>
+      <!-- Enabled when the state is merely unknown: the tunnel may well be up, and
+           letting the attempt fail with a real error beats a control that is greyed
+           out for a reason the page does not explain. -->
+      <button @click="sync" :disabled="busy || liveState === 'stopped'">{{ t('wg.sync') }}</button>
+      <button @click="openConf" :disabled="busy">{{ t('wg.view_conf') }}</button>
+      <button @click="ping" :disabled="busy || liveState === 'stopped'">{{ t('wg.ping') }}</button>
+      <span class="toolbar-grow"></span>
+      <button class="primary subtle" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
+    </div>
+
+    <!-- Not installed: nothing else on this page can work, so say only that. -->
+    <div v-if="data && !data.installed" class="tile" style="border-left:3px solid var(--down)">
+      <h3>{{ t('wg.not_installed_title') }}</h3>
+      <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
+        {{ t('wg.not_installed_hint') }}
+      </p>
+      <pre class="mono" style="margin-top:8px;font-size:11px">brew install wireguard-tools wireguard-go</pre>
+    </div>
+
+    <template v-else>
+      <!-- Readiness: a running tunnel that carries no traffic is the normal
+           failure on macOS, so blocking gaps are stated before the status tiles. -->
+      <div
+        v-if="readiness && !readiness.ready"
+        class="tile"
+        style="margin-bottom:12px;border-left:3px solid var(--down)"
+      >
+        <h3>{{ t('wg.not_ready') }}</h3>
+        <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
+          {{ t('wg.not_ready_hint') }}
+        </p>
+        <table class="dense">
+          <tbody>
+            <tr v-for="c in blockingChecks" :key="c.id">
+              <td style="width:28px"><span class="led err"></span></td>
+              <td><strong>{{ checkLabel(c.id) }}</strong></td>
+              <td style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
+              <td class="mono" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
+              <td style="text-align:right">
+                <button
+                  v-if="c.id === 'forwarding'"
+                  class="tiny primary"
+                  @click="fixForwarding"
+                  :disabled="busy"
+                >{{ t('wg.enable') }}</button>
+                <!-- Same action for both: installing the NAT rule rewrites
+                     /etc/pf.conf in the order pf requires, which is exactly what
+                     repairs a file pf is currently refusing. -->
+                <button
+                  v-else-if="c.id === 'nat' || c.id === 'pf_conf'"
+                  class="tiny primary"
+                  @click="fixNat"
+                  :disabled="busy"
+                >{{ t('wg.install') }}</button>
+                <button
+                  v-else-if="c.id === 'endpoint'"
+                  class="tiny"
+                  @click="settingsOpen = true"
+                  :disabled="busy"
+                >{{ t('wg.configure') }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Non-blocking gaps. The traffic flows without these, so they must not
+           look like failures, but they were previously computed by the server and
+           then rendered nowhere at all: `boot` in particular reports whether the
+           tunnel comes back after a reboot, and the action that fixes it existed
+           in the API with nothing on the page able to call it. -->
+      <div
+        v-if="warningChecks.length"
+        class="tile"
+        style="margin-bottom:12px;border-left:3px solid var(--warn)"
+      >
+        <h3>{{ t('wg.warnings') }}</h3>
+        <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
+          {{ t('wg.warnings_hint') }}
+        </p>
+        <table class="dense">
+          <tbody>
+            <tr v-for="c in warningChecks" :key="c.id">
+              <td style="width:28px"><span class="led warn"></span></td>
+              <td><strong>{{ checkLabel(c.id) }}</strong></td>
+              <td style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
+              <td class="mono" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
+              <td style="text-align:right">
+                <button
+                  v-if="c.id === 'boot'"
+                  class="tiny primary wg-fix-boot"
+                  @click="fixDaemon"
+                  :disabled="busy"
+                >{{ t('wg.install') }}</button>
+                <!-- Installing the NAT rule ends with `pfctl -E`, which is what
+                     turns pf on, so this is the same action as for the NAT row. -->
+                <button
+                  v-else-if="c.id === 'pf'"
+                  class="tiny primary"
+                  @click="fixNat"
+                  :disabled="busy"
+                >{{ t('wg.enable') }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Peers copied from another server can never handshake here. This is a
+           config-shape problem, not a runtime one, so it gets its own callout. -->
+      <div
+        v-if="readiness?.peer_origin?.conflict"
+        class="tile"
+        style="margin-bottom:12px;border-left:3px solid var(--warn)"
+      >
+        <h3>{{ t('wg.foreign_peers_title') }}</h3>
+        <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
+          {{ t('wg.foreign_peers_hint', { n: readiness.peer_origin.foreign, total: readiness.peer_origin.total }) }}
+        </p>
+      </div>
+
+      <div class="dash-grid" style="margin-bottom:12px" v-if="data">
+        <div class="tile span-3">
+          <h3>{{ t('wg.listen_port') }}</h3>
+          <div class="v">{{ data.listen_port || '—' }}</div>
+          <div class="sub">{{ data.interface }}</div>
+        </div>
+        <div class="tile span-3">
+          <h3>{{ t('wg.subnet') }}</h3>
+          <div class="v" style="font-size:15px">{{ data.address || data.subnet }}</div>
+          <div class="sub">MTU {{ data.mtu }}</div>
+        </div>
+        <div class="tile span-3">
+          <h3>{{ t('wg.active_peers') }}</h3>
+          <div class="v">{{ data.active_count }}/{{ data.peer_count }}</div>
+          <div class="sub" v-if="data.stale_count">{{ t('wg.stale', { n: data.stale_count }) }}</div>
+        </div>
+        <div class="tile span-3">
+          <h3>{{ t('wg.keepalive_missing') }}</h3>
+          <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn)' : 'var(--ok)' }">
+            {{ data.keepalive_missing }}
+          </div>
+        </div>
+      </div>
+
+      <div class="tile" style="margin-bottom:12px" v-if="data">
+        <h3>{{ t('wg.server_key') }}</h3>
+        <div class="mono" style="font-size:11px;word-break:break-all">{{ data.public_key || '—' }}</div>
+        <div class="sub" style="margin-top:6px">
+          {{ t('wg.endpoint') }}:
+          <code>{{ data.endpoint || t('wg.endpoint_unset') }}</code>
+          <button class="tiny" style="margin-left:8px" @click="settingsOpen = true">{{ t('common.edit') }}</button>
+        </div>
+      </div>
+
+      <!-- Peers -->
+      <h2 class="section-title">{{ t('wg.peers') }} ({{ data?.peer_count || 0 }})</h2>
+      <div class="table-wrap">
+        <table class="dense">
+          <thead>
+            <tr>
+              <th style="width:28px"></th>
+              <th>{{ t('wg.peer_name') }}</th>
+              <th>{{ t('wg.address') }}</th>
+              <th>{{ t('wg.remote_endpoint') }}</th>
+              <th>{{ t('wg.handshake') }}</th>
+              <th>{{ t('wg.keepalive') }}</th>
+              <th>{{ t('wg.traffic') }}</th>
+              <th class="actions">{{ t('common.actions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in data?.peers || []" :key="p.pubkey">
+              <td><span class="led" :class="p.active ? 'on' : (p.stale ? 'warn' : 'off')"></span></td>
+              <td>
+                <strong>{{ p.name || t('wg.unnamed') }}</strong>
+                <span v-if="p.psk" class="badge ok" style="margin-left:4px">PSK</span>
+                <span v-if="!p.reissuable" class="badge" style="margin-left:4px" :title="t('wg.no_stored_key')">
+                  {{ t('wg.key_not_stored') }}
+                </span>
+                <div class="mono" style="font-size:9px;color:var(--sub)" :title="p.pubkey">
+                  {{ p.pubkey.slice(0, 16) }}…
+                </div>
+              </td>
+              <td class="mono">{{ p.allowed_ips }}</td>
+              <td class="mono" style="font-size:10px">{{ p.endpoint || '—' }}</td>
+              <td style="font-size:11px">
+                <span v-if="p.active" class="badge ok">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
+                <span v-else-if="p.stale" class="badge warn">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
+                <span v-else-if="p.last_handshake" class="badge">{{ relativeAge(p.handshake_age) }}</span>
+                <span v-else style="color:var(--sub)">{{ t('wg.never') }}</span>
+              </td>
+              <td>
+                <span class="badge" :class="p.keepalive && p.keepalive !== 'off' && p.keepalive !== '0' ? 'ok' : 'warn'">
+                  {{ p.keepalive || 'off' }}
+                </span>
+              </td>
+              <td class="mono" style="font-size:10px">↑{{ p.tx_human }} ↓{{ p.rx_human }}</td>
+              <td class="actions">
+                <button class="tiny primary" @click="showPeer(p)" :disabled="busy || !p.reissuable">
+                  {{ t('wg.config') }}
+                </button>
+                <button class="tiny" @click="togglePsk(p)" :disabled="busy">
+                  {{ p.psk ? t('wg.psk_remove') : t('wg.psk_add') }}
+                </button>
+                <button class="tiny danger" @click="removePeer(p)" :disabled="busy">{{ t('common.delete') }}</button>
+              </td>
+            </tr>
+            <tr v-if="!(data?.peers || []).length">
+              <td colspan="8" style="color:var(--sub)">{{ loading ? t('common.loading') : t('wg.no_peers') }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Add peer -->
+      <h2 class="section-title">{{ t('wg.add_peer') }}</h2>
+      <div class="tile">
+        <div class="form-row">
+          <label>
+            {{ t('wg.peer_name') }}
+            <input v-model="form.name" type="text" :placeholder="t('wg.peer_name_ph')" />
+          </label>
+          <label>
+            {{ t('wg.address') }}
+            <input v-model="form.ip" type="text" :placeholder="nextIp || t('wg.address_auto')" />
+          </label>
+        </div>
+        <div class="tabs" style="margin:8px 0">
+          <button :class="{ active: form.mode === 'split' }" :aria-pressed="form.mode === 'split'" @click="form.mode = 'split'">
+            {{ t('wg.mode_split') }}
+          </button>
+          <button :class="{ active: form.mode === 'full' }" :aria-pressed="form.mode === 'full'" @click="form.mode = 'full'">
+            {{ t('wg.mode_full') }}
+          </button>
+        </div>
+        <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:0 0 8px">
+          {{ form.mode === 'full' ? t('wg.mode_full_hint') : t('wg.mode_split_hint') }}
+        </p>
+        <label class="inline">
+          <input type="checkbox" v-model="form.psk" /> {{ t('wg.use_psk') }}
+        </label>
+        <label class="inline">
+          <input type="checkbox" v-model="form.keep_key" /> {{ t('wg.keep_key') }}
+        </label>
+        <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 8px">
+          {{ form.keep_key ? t('wg.keep_key_hint') : t('wg.keep_key_off_hint') }}
+        </p>
+        <button class="primary" @click="createPeer" :disabled="busy || !form.name">{{ t('wg.create') }}</button>
+      </div>
+
+      <!-- Batch + import -->
+      <div class="dash-grid" style="margin-top:12px">
+        <div class="tile span-6">
+          <h3>{{ t('wg.batch_add') }}</h3>
+          <div class="form-row">
+            <label>
+              {{ t('wg.batch_count') }}
+              <input v-model.number="batch.count" type="number" min="1" max="50" />
+            </label>
+            <label>
+              {{ t('wg.batch_prefix') }}
+              <input v-model="batch.prefix" type="text" placeholder="peer" />
+            </label>
+          </div>
+          <button style="margin-top:8px" @click="createBatch" :disabled="busy || !batch.count">
+            {{ t('wg.create') }}
+          </button>
+        </div>
+        <div class="tile span-6">
+          <h3>{{ t('wg.import_peer') }}</h3>
+          <div class="form-row">
+            <label>
+              {{ t('wg.public_key') }}
+              <input v-model="imp.pubkey" type="text" placeholder="base64=" />
+            </label>
+            <label>
+              {{ t('wg.address') }}
+              <input v-model="imp.ip" type="text" placeholder="10.10.0.9/32" />
+            </label>
+          </div>
+          <label>
+            {{ t('wg.peer_name') }}
+            <input v-model="imp.name" type="text" />
+          </label>
+          <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 8px">
+            {{ t('wg.import_hint') }}
+          </p>
+          <button style="margin-top:4px" @click="doImport" :disabled="busy || !imp.pubkey || !imp.ip">
+            {{ t('wg.import') }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="pingResult" class="tile" style="margin-top:12px">
+        <h3>{{ t('wg.ping_result', { ok: pingResult.reachable, total: pingResult.total }) }}</h3>
+        <table class="dense">
+          <tbody>
+            <tr v-for="r in pingResult.results" :key="r.pubkey">
+              <td style="width:28px"><span class="led" :class="r.reachable ? 'on' : 'err'"></span></td>
+              <td>{{ r.name || t('wg.unnamed') }}</td>
+              <td class="mono">{{ r.ip }}</td>
+              <td class="mono">{{ r.latency_ms != null ? r.latency_ms + ' ms' : '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+
+    <!-- Peer config dialog: formats + QR -->
+    <div v-if="peerDialog" class="modal-bg" @click.self="peerDialog = null">
+      <div class="modal" role="dialog" aria-labelledby="wg-peer-title" ref="peerPanel" tabindex="-1">
+        <h3 id="wg-peer-title">{{ t('wg.config_for', { name: peerDialog.name }) }}</h3>
+        <div class="tabs" style="margin:8px 0">
+          <button
+            v-for="f in formats"
+            :key="f"
+            :class="{ active: peerFormat === f }"
+            :aria-pressed="peerFormat === f"
+            @click="selectFormat(f)"
+          >{{ formatLabel(f) }}</button>
+        </div>
+        <p v-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn);line-height:1.5;margin:0 0 8px">
+          {{ t('wg.endpoint_missing_warn') }}
+        </p>
+        <pre class="mono" style="max-height:180px;overflow:auto;font-size:11px">{{ peerContent }}</pre>
+        <!-- The QR must never be the thing that gets clipped: give it its own
+             bounded, centred box with a white quiet zone so a phone camera can
+             actually resolve it against a dark theme. -->
+        <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>
+        <p v-else-if="qrTooLong" style="font-size:11px;color:var(--sub);margin-top:8px">
+          {{ t('wg.qr_too_long') }}
+        </p>
+        <div class="modal-actions">
+          <button @click="copyPeer">{{ t('common.copy') }}</button>
+          <a class="btn" :href="downloadUrl" :download="peerFilename">{{ t('common.download') }}</a>
+          <button class="primary" @click="peerDialog = null">{{ t('common.close') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Raw server config -->
+    <div v-if="confDialog" class="modal-bg" @click.self="confDialog = null">
+      <div class="modal" role="dialog" aria-labelledby="wg-conf-title" ref="confPanel" tabindex="-1">
+        <h3 id="wg-conf-title">{{ t('wg.view_conf') }}</h3>
+        <p style="font-size:11px;color:var(--sub);margin:4px 0 8px">
+          {{ confDialog.redacted ? t('wg.conf_redacted') : t('wg.conf_revealed') }}
+        </p>
+        <pre class="mono" style="max-height:340px;overflow:auto;font-size:11px">{{ confDialog.conf }}</pre>
+        <div class="modal-actions">
+          <button v-if="confDialog.redacted" class="danger" @click="openConf(true)">{{ t('wg.reveal_key') }}</button>
+          <button class="primary" @click="confDialog = null">{{ t('common.close') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div v-if="settingsOpen" class="modal-bg" @click.self="settingsOpen = false">
+      <div class="modal" role="dialog" aria-labelledby="wg-settings-title" ref="settingsPanel" tabindex="-1">
+        <h3 id="wg-settings-title">{{ t('wg.settings') }}</h3>
+        <!-- The fields below fall back to literal defaults, so saving without a
+             successful read would overwrite the live port/MTU. Say so and offer
+             a retry instead of presenting an editable form that cannot be saved
+             for no visible reason. -->
+        <div
+          v-if="!settingsLoaded"
+          class="tile"
+          style="margin-bottom:10px;border-left:3px solid var(--down)"
+        >
+          <div>{{ t('wg.settings_load_failed') }}</div>
+          <div v-if="settingsError" class="sub mono" style="margin-top:4px">{{ settingsError }}</div>
+          <button class="tiny" style="margin-top:6px" :disabled="busy" @click="loadSettings">
+            {{ t('common.retry') }}
+          </button>
+        </div>
+        <label>
+          {{ t('wg.endpoint') }}
+          <input v-model="cfgForm.endpoint" type="text" placeholder="vpn.example.com:51820" />
+        </label>
+        <p style="font-size:11px;color:var(--sub);line-height:1.5;margin:4px 0 8px">
+          {{ t('wg.endpoint_hint') }}
+        </p>
+        <div class="form-row">
+          <label>
+            {{ t('wg.subnet') }}
+            <input v-model="cfgForm.subnet" type="text" placeholder="10.10.0.0/24" />
+          </label>
+          <label>
+            {{ t('wg.listen_port') }}
+            <input v-model.number="cfgForm.listen_port" type="number" min="1" max="65535" />
+          </label>
+        </div>
+        <div class="form-row">
+          <label>
+            {{ t('wg.lan_cidr') }}
+            <input v-model="cfgForm.lan_cidr" type="text" placeholder="192.168.1.0/24" />
+          </label>
+          <label>
+            {{ t('wg.wan_interface') }}
+            <input v-model="cfgForm.wan_interface" type="text" :placeholder="readiness?.wan_interface || 'en0'" />
+          </label>
+        </div>
+        <div class="form-row">
+          <label>
+            DNS
+            <input v-model="cfgForm.dns" type="text" placeholder="1.1.1.1, 8.8.8.8" />
+          </label>
+          <label>
+            MTU
+            <input v-model.number="cfgForm.mtu" type="number" min="576" max="1500" />
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button @click="settingsOpen = false">{{ t('common.cancel') }}</button>
+          <button class="primary" @click="saveSettings" :disabled="busy || !settingsLoaded">{{ t('common.save') }}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import qrcode from 'qrcode-generator'
+import {
+  addWireguardPeer, batchAddWireguardPeers, controlWireguardInterface,
+  deleteWireguardPeer, getWireguard, getWireguardConf, getWireguardNextIp,
+  getWireguardPeerConfig, getWireguardReadiness, getWireguardSettings,
+  importWireguardPeer, pingWireguardPeers, putWireguardSettings,
+  remediateWireguard, setWireguardForwarding, setWireguardPsk, syncWireguard,
+  wireguardPeerDownloadUrl,
+} from '../api/client'
+import { useDismissable } from '../composables/useDismissable'
+import { injectI18n } from '../i18n'
+import { startVisibleInterval } from '../lib/poll'
+
+const toast = inject('toast')
+const { t } = injectI18n()
+
+const data = ref(null)
+const readiness = ref(null)
+const nextIp = ref('')
+const loading = ref(false)
+const busy = ref(false)
+const pingResult = ref(null)
+
+const peerDialog = ref(null)
+const peerFormat = ref('wg')
+const peerContent = ref('')
+const qrSvg = ref('')
+const qrTooLong = ref(false)
+const confDialog = ref(null)
+const settingsOpen = ref(false)
+
+const peerPanel = ref(null)
+const confPanel = ref(null)
+const settingsPanel = ref(null)
+
+useDismissable(() => !!peerDialog.value, () => { peerDialog.value = null }, peerPanel)
+useDismissable(() => !!confDialog.value, () => { confDialog.value = null }, confPanel)
+useDismissable(() => settingsOpen.value, () => { settingsOpen.value = false }, settingsPanel)
+
+// Clash-full and Shadowrocket are generated from the same peer, so the format
+// list is fixed rather than server-driven.
+const formats = ['wg', 'clash', 'clashfull', 'sr']
+
+// Readiness ids and export formats are looked up through explicit maps rather
+// than by concatenating an id onto a key prefix at the call site.  A concatenated
+// key is invisible to the i18n contract test, which scans for literal translation
+// arguments: it would treat the bare prefix as the key, fail to resolve it, and at
+// the same time never verify that the nine real keys exist in all three locales.
+const CHECK_LABELS = {
+  installed: 'wg.check_installed',
+  conf: 'wg.check_conf',
+  running: 'wg.check_running',
+  endpoint: 'wg.check_endpoint',
+  endpoint_resolves: 'wg.check_endpoint_resolves',
+  forwarding: 'wg.check_forwarding',
+  nat: 'wg.check_nat',
+  pf_conf: 'wg.check_pf_conf',
+  pf: 'wg.check_pf',
+  boot: 'wg.check_boot',
+  peer_origin: 'wg.check_peer_origin',
+  stale_runtime: 'wg.check_stale_runtime',
+}
+const CHECK_FIXES = {
+  installed: 'wg.fix_installed',
+  conf: 'wg.fix_conf',
+  running: 'wg.fix_running',
+  endpoint: 'wg.fix_endpoint',
+  endpoint_resolves: 'wg.fix_endpoint_resolves',
+  forwarding: 'wg.fix_forwarding',
+  nat: 'wg.fix_nat',
+  pf_conf: 'wg.fix_pf_conf',
+  pf: 'wg.fix_pf',
+  boot: 'wg.fix_boot',
+  peer_origin: 'wg.fix_peer_origin',
+  stale_runtime: 'wg.fix_stale_runtime',
+}
+const FORMAT_LABELS = {
+  wg: 'wg.fmt_wg',
+  clash: 'wg.fmt_clash',
+  clashfull: 'wg.fmt_clashfull',
+  sr: 'wg.fmt_sr',
+}
+
+const checkLabel = (id) => (CHECK_LABELS[id] ? t(CHECK_LABELS[id]) : id)
+const checkFix = (id) => (CHECK_FIXES[id] ? t(CHECK_FIXES[id]) : '')
+const formatLabel = (fmt) => (FORMAT_LABELS[fmt] ? t(FORMAT_LABELS[fmt]) : fmt)
+
+const form = ref({ name: '', ip: '', mode: 'split', psk: false, keep_key: true })
+const batch = ref({ count: 3, prefix: 'peer' })
+const imp = ref({ pubkey: '', ip: '', name: '' })
+const cfgForm = ref({
+  endpoint: '', subnet: '', listen_port: 51820, lan_cidr: '',
+  wan_interface: '', dns: '', mtu: 1280,
+})
+
+// Peers copied from another server get their own callout below, which explains
+// the situation properly and names the keys. Leaving the check in this table as
+// well put the same finding on screen twice, once with room to explain it and
+// once without.
+/** 'running' | 'unknown' | 'stopped'.
+ *
+ *  `running: false` from the API means two different things and this page used to
+ *  render both identically. Reading live state needs root (`wg show <utun> dump`),
+ *  so a pinned binary that is not installed, a browser tab with no cached admin
+ *  password, or an interface the backend cannot disambiguate all come back
+ *  `running: false` *with* a `state_error`. Calling that "stopped" is what produced
+ *  the "cannot start it and cannot stop it either" report: Stop was hidden, and
+ *  Start answered from wg-quick's filesystem view with `already_running: true` and
+ *  a success toast while the bar still read stopped.
+ */
+const liveState = computed(() => {
+  if (!data.value) return 'stopped'
+  if (data.value.running) return 'running'
+  return data.value.state_error ? 'unknown' : 'stopped'
+})
+const statusText = computed(
+  () => ({
+    running: t('wg.tunnel_running'),
+    unknown: t('wg.tunnel_unknown'),
+    stopped: t('wg.tunnel_stopped'),
+  })[liveState.value],
+)
+
+const SELF_EXPLAINING = new Set(['peer_origin'])
+const blockingChecks = computed(
+  () => (readiness.value?.checks || []).filter(
+    (c) => !c.ok && c.level === 'error' && !SELF_EXPLAINING.has(c.id),
+  ),
+)
+// `running` is already the status bar at the top of the page and the Start button
+// next to it, so repeating it as a warning row would be the third statement of the
+// same fact.
+const ALREADY_SHOWN = new Set([...SELF_EXPLAINING, 'running'])
+const warningChecks = computed(
+  () => (readiness.value?.checks || []).filter(
+    (c) => !c.ok && c.level === 'warn' && !ALREADY_SHOWN.has(c.id),
+  ),
+)
+const downloadUrl = computed(
+  () => (peerDialog.value ? wireguardPeerDownloadUrl(peerDialog.value.pubkey, peerFormat.value) : '#'),
+)
+const peerFilename = computed(() => {
+  const safe = String(peerDialog.value?.name || 'peer').replace(/[^A-Za-z0-9_-]/g, '-')
+  const ext = { wg: '.conf', clash: '-clash.yaml', clashfull: '-clash-full.yaml', sr: '-shadowrocket.txt' }
+  return safe + (ext[peerFormat.value] || '.conf')
+})
+
+function relativeAge(seconds) {
+  const s = Number(seconds || 0)
+  if (s < 60) return t('wg.age_seconds', { n: s })
+  if (s < 3600) return t('wg.age_minutes', { n: Math.floor(s / 60) })
+  if (s < 86400) return t('wg.age_hours', { n: Math.floor(s / 3600) })
+  return t('wg.age_days', { n: Math.floor(s / 86400) })
+}
+
+/** Render *text* as an inline QR SVG, or flag it as too long to encode.
+ *
+ *  Only the WireGuard config and the Shadowrocket URL are short enough to scan
+ *  reliably; a full Clash config is kilobytes and would produce a QR no camera
+ *  can resolve, so those formats deliberately get no code. */
+function renderQr(text, fmt) {
+  qrSvg.value = ''
+  qrTooLong.value = false
+  if (fmt !== 'wg' && fmt !== 'sr') return
+  try {
+    const qr = qrcode(0, 'M')
+    qr.addData(text)
+    qr.make()
+    // `scalable: true` emits an SVG with a viewBox and no width/height, so the
+    // browser gives it no intrinsic size: inside a flex/auto-height dialog it
+    // either collapsed to nothing or overflowed and got clipped, which is why the
+    // code rendered only partially. The wrapper below constrains it instead, so
+    // the whole symbol is always visible and stays square.
+    qrSvg.value = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true })
+  } catch {
+    // qrcode-generator throws once the payload exceeds the largest version.
+    qrTooLong.value = true
+  }
+}
+
+let poll = null
+// Guards against a slow response from a previous refresh landing after a newer
+// one and overwriting fresher state.
+let loadGeneration = 0
+
+async function load() {
+  const generation = ++loadGeneration
+  loading.value = true
+  try {
+    const [status, ready] = await Promise.all([
+      getWireguard(),
+      // Keep the previous readiness on failure instead of collapsing to null.
+      // The blocking-checks panel renders on `readiness && !readiness.ready`, so
+      // a failed probe hid it entirely -- and a tunnel that is up but carrying no
+      // traffic (the normal macOS failure) then looked perfectly healthy.
+      getWireguardReadiness().catch(() => readiness.value),
+    ])
+    if (generation !== loadGeneration) return
+    data.value = status
+    readiness.value = ready
+    if (status.installed) {
+      // Clear it on failure rather than leaving a stale suggestion: the address
+      // field uses this as its placeholder, and an IP that was free minutes ago
+      // may now be taken. An empty placeholder is honest; a wrong one is not.
+      getWireguardNextIp()
+        .then((r) => { if (generation === loadGeneration) nextIp.value = r.next_ip })
+        .catch(() => { if (generation === loadGeneration) nextIp.value = '' })
+    }
+  } catch (e) {
+    if (generation === loadGeneration) toast('❌ ' + e.message)
+  } finally {
+    if (generation === loadGeneration) loading.value = false
+  }
+}
+
+async function withBusy(fn, okKey) {
+  if (busy.value) return null
+  busy.value = true
+  try {
+    const result = await fn()
+    if (okKey) toast('✅ ' + t(okKey))
+    await load()
+    return result
+  } catch (e) {
+    toast('❌ ' + e.message)
+    return null
+  } finally {
+    busy.value = false
+  }
+}
+
+const sync = () => withBusy(syncWireguard, 'wg.synced')
+const ping = () => withBusy(async () => { pingResult.value = await pingWireguardPeers() })
+
+function control(action) {
+  const key = { up: 'wg.confirm_up', down: 'wg.confirm_down', restart: 'wg.confirm_restart' }[action]
+  if (key && !confirm(t(key))) return
+  return withBusy(() => controlWireguardInterface(action), 'wg.interface_done')
+}
+
+const fixForwarding = () => withBusy(() => setWireguardForwarding(true), 'wg.forwarding_enabled')
+const fixNat = () => withBusy(() => remediateWireguard('nat', true), 'wg.nat_installed')
+// Boot persistence. The service and the endpoint for this both existed; nothing on
+// the page called them, so an operator whose LaunchDaemon was missing (or was some
+// other build's) had no way to install the one the panel manages.
+const fixDaemon = () => withBusy(() => remediateWireguard('daemon', true), 'wg.boot_installed')
+
+async function createPeer() {
+  const created = await withBusy(
+    () => addWireguardPeer({ ...form.value, ip: form.value.ip || '' }),
+    'wg.peer_created',
+  )
+  if (!created) return
+  form.value = { name: '', ip: '', mode: form.value.mode, psk: false, keep_key: form.value.keep_key }
+  // Show the config immediately: with keep_key off this is the only time the
+  // private key is ever available.
+  peerDialog.value = {
+    pubkey: created.pub,
+    name: created.name,
+    endpoint_configured: created.endpoint_configured,
+  }
+  peerFormat.value = 'wg'
+  peerContent.value = created.client_conf
+  renderQr(created.client_conf, 'wg')
+}
+
+async function createBatch() {
+  const result = await withBusy(
+    () => batchAddWireguardPeers({ ...batch.value, mode: form.value.mode, keep_key: true }),
+    null,
+  )
+  if (result) toast('✅ ' + t('wg.batch_created', { n: result.created }))
+}
+
+async function doImport() {
+  const result = await withBusy(() => importWireguardPeer({ ...imp.value }), 'wg.peer_imported')
+  if (result) imp.value = { pubkey: '', ip: '', name: '' }
+}
+
+function removePeer(peer) {
+  if (!confirm(t('wg.confirm_delete', { name: peer.name || peer.pubkey.slice(0, 16) }))) return
+  return withBusy(() => deleteWireguardPeer(peer.pubkey), 'wg.peer_deleted')
+}
+
+function togglePsk(peer) {
+  const op = peer.psk ? 'remove' : 'add'
+  if (!confirm(t(op === 'add' ? 'wg.confirm_psk_add' : 'wg.confirm_psk_remove'))) return
+  return withBusy(() => setWireguardPsk(peer.pubkey, op), 'wg.psk_changed')
+}
+
+async function showPeer(peer) {
+  try {
+    const result = await getWireguardPeerConfig(peer.pubkey, 'wg')
+    peerDialog.value = {
+      pubkey: peer.pubkey,
+      name: result.name,
+      endpoint_configured: Boolean(data.value?.endpoint),
+    }
+    peerFormat.value = 'wg'
+    peerContent.value = result.content
+    renderQr(result.content, 'wg')
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+async function selectFormat(fmt) {
+  if (!peerDialog.value) return
+  peerFormat.value = fmt
+  try {
+    const result = await getWireguardPeerConfig(peerDialog.value.pubkey, fmt)
+    peerContent.value = result.content
+    renderQr(result.content, fmt)
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+async function copyPeer() {
+  try {
+    await navigator.clipboard.writeText(peerContent.value)
+    toast('✅ ' + t('common.copied'))
+  } catch {
+    toast('❌ ' + t('common.copy_failed'))
+  }
+}
+
+async function openConf(reveal = false) {
+  if (reveal && !confirm(t('wg.confirm_reveal'))) return
+  try {
+    confDialog.value = await getWireguardConf(reveal)
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+async function saveSettings() {
+  // Refuse to write when the current settings were never read back: the patch
+  // below would consist of this form's hardcoded defaults.
+  if (!settingsLoaded.value) {
+    toast('❌ ' + t('wg.settings_load_failed'))
+    return
+  }
+  const patch = {}
+  for (const [key, value] of Object.entries(cfgForm.value)) {
+    if (value !== '' && value != null) patch[key] = value
+  }
+  const result = await withBusy(() => putWireguardSettings(patch), 'wg.settings_saved')
+  if (result) settingsOpen.value = false
+}
+
+// Whether cfgForm reflects the server's real settings. Save is blocked until it
+// does: cfgForm is seeded with literal defaults (listen_port 51820, mtu 1280),
+// and saveSettings sends every non-empty field, so saving on top of a failed
+// load silently rewrote a working tunnel's port and MTU to those defaults --
+// with a success toast, and with the peers' configs left pointing at the old
+// port. The failure is latched rather than merely toasted because the toast is
+// gone by the time the user opens the dialog and presses Save.
+const settingsLoaded = ref(false)
+const settingsError = ref('')
+
+async function loadSettings() {
+  try {
+    const current = await getWireguardSettings()
+    cfgForm.value = { ...cfgForm.value, ...current.settings }
+    settingsLoaded.value = true
+    settingsError.value = ''
+  } catch (e) {
+    settingsLoaded.value = false
+    settingsError.value = e.message || String(e)
+  }
+}
+
+onMounted(async () => {
+  // Independent reads: load() fills the status/readiness/peers view, loadSettings()
+  // only seeds cfgForm. Awaiting them in sequence made the page wait for two
+  // round trips of privileged shell-outs before anything rendered, for no
+  // ordering reason. Both swallow their own errors, so neither can reject here.
+  await Promise.all([load(), loadSettings()])
+  // Peer handshake ages only matter at ~minute resolution; 20s keeps the table
+  // live without hammering `wg show` (which is a privileged call per poll).
+  poll = startVisibleInterval(load, 20000)
+})
+
+onUnmounted(() => {
+  if (typeof poll === 'function') poll()
+  poll = null
+  loadGeneration += 1
+})
+</script>
+
+<style scoped>
+/* ── Status bar ─────────────────────────────────────────────────────────── */
+.wg-status-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+  border: 1px solid var(--line); background: var(--card);
+}
+.wg-status-bar.running {
+  border-color: color-mix(in srgb, var(--ok) 25%, transparent);
+  background: color-mix(in srgb, var(--ok) 6%, var(--card));
+}
+.wg-status-bar:not(.running):not(.unknown) {
+  border-color: color-mix(in srgb, var(--down) 25%, transparent);
+  background: color-mix(in srgb, var(--down) 6%, var(--card));
+}
+/* Unknown is not down. Painting it red said "the tunnel is off" when the truth
+   was "this page could not find out", which is what sent the operator looking for
+   a fault in the tunnel instead of at the message next to it. */
+.wg-status-bar.unknown {
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  background: color-mix(in srgb, var(--warn) 7%, var(--card));
+}
+.wg-status-bar.unknown .wg-status-led {
+  background: var(--warn); box-shadow: 0 0 6px var(--warn);
+}
+.wg-status-led {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  background: var(--down); box-shadow: 0 0 6px var(--down);
+}
+.wg-status-bar.running .wg-status-led {
+  background: var(--ok); box-shadow: 0 0 6px var(--ok);
+}
+.wg-status-text { font-weight: 700; font-size: 14px; }
+.wg-status-meta { font-size: 11px; color: var(--sub); margin-left: auto; }
+
+/* ── Toolbar refinements ────────────────────────────────────────────────── */
+.toolbar-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+.toolbar-grow { flex: 1; }
+.wg-start { min-width: 80px; }
+.wg-stop { min-width: 80px; }
+.wg-stop.danger { background: color-mix(in srgb, var(--down) 85%, #000); border-color: var(--down); color: #fff; }
+.wg-stop.danger:hover { background: var(--down); }
+.wg-restart { min-width: 80px; }
+button.subtle { opacity: .65; }
+button.subtle:hover { opacity: 1; }
+
+/* A QR code is only useful if the whole symbol is visible and has a light quiet
+   zone. The generated SVG is scalable (viewBox, no width/height), so it needs an
+   explicitly sized box; without one it inherited no dimensions and was clipped. */
+.wg-qr {
+  margin: 12px auto 0;
+  width: 100%;
+  max-width: 300px;
+  padding: 12px;
+  background: #fff;
+  border-radius: 8px;
+  box-sizing: border-box;
+  /* The other half of the incomplete-QR report. Giving the scalable SVG an
+     explicitly sized box fixed its intrinsic sizing, but `.modal` is a flex column with
+     `overflow: hidden; max-height: 85vh`, so on a short viewport the QR was the
+     item that shrank -- and with nothing scrollable it was simply cut off. Refusing
+     to shrink makes the dialog scroll instead (see `.modal` in styles.css), which
+     keeps the whole symbol scannable. */
+  flex-shrink: 0;
+}
+.wg-qr :deep(svg) {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* Keep the modules crisp rather than smoothed when the box scales the symbol. */
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+}
+</style>

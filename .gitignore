@@ -1,0 +1,82 @@
+# ---- Python / Node build artifacts ----
+.venv/
+__pycache__/
+*.pyc
+web/node_modules/
+web/dist/
+.build/
+.perf-audit-dist/
+
+# ---- Secrets: session signing key, local client token, per-service
+#      credentials. Never commit. ----
+data/.session-secret
+data/.local-client-token
+data/.setup-token
+data/service-credentials.json
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ---- Live service inventory: holds host addresses and per-service secrets.
+#      services.yaml.example is the committed template. ----
+#
+# Matched by family, for the same reason the data/ rules below are: `.bak.*`
+# covered only one of the suffixes the panel actually writes.  The copy found in
+# this working tree was `services.yaml.bak-<timestamp>` -- a dash, not a dot --
+# so a verbatim copy of the live inventory was stageable while the `.bak.*` rule
+# and the test guarding it both looked correct.  Any suffix, not the suffixes
+# seen so far.
+services.yaml
+services.yaml.*
+!services.yaml.example
+
+# ---- Runtime data / telemetry ----
+data/metrics.jsonl
+data/alerts.jsonl
+data/alert_state.json
+data/audit_3h.jsonl
+data/audit_monitor.out
+data/terminal-audit.jsonl
+data/auth-audit.jsonl
+data/diagnostics-latest.json
+*.yaml.tmp
+*.log
+
+# Rotated/backup copies of the above, matched by family rather than by name.
+# Every single-name rule here has already been escaped once by a sibling the
+# code writes under a different suffix: the auth-audit rotator appends
+# .bak-<timestamp>, and a credential restore writes
+# services.yaml.precredrestore.<timestamp>, which `data/services.yaml.bak.*`
+# did not cover -- so a full copy of services.yaml became stageable. These
+# backups carry exactly what the live file carries (service addresses,
+# credentials, usernames, client addresses), so the pattern must cover any
+# suffix, not the suffixes seen so far.
+# Nothing under data/ is tracked, so the broad rules cost nothing.
+data/*.jsonl
+data/*.jsonl.*
+data/services.yaml.*
+data/pf.conf.*
+
+# Runtime lock files. `hub/config.py` holds data/.services.yaml.lock as a
+# mutex around inventory writes; it is always zero bytes, but it is per-machine
+# runtime state and a committed copy would be a permanent stale lock artifact
+# in every clone.
+data/*.lock
+
+# ---- WireGuard runtime state. The peer registry holds the client private
+#      keys this panel issued (0600 on disk); the pf staging files are copies
+#      of the machine's live ruleset and its real egress interface. ----
+data/wireguard-peers.json
+data/pf-anchor-wireguard
+data/pf.conf.staged
+data/wg*.sync.conf
+
+# ---- Stale editor/tool shadows ----
+*.orig
+
+# ---- OS / editor ----
+.DS_Store
+.claude/settings.local.json
+.claude/launch.json

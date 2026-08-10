@@ -1,0 +1,24 @@
+---
+name: Homepage
+desc: 现代化服务导航主页
+category: dashboard
+tags: [dashboard, startpage]
+ports: ["3002"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "3002"
+---
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    environment:
+      - HOMEPAGE_ALLOWED_HOSTS=*
+    ports:
+      - "{{HOST_PORT}}:3000"
+    volumes:
+      - ./config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped

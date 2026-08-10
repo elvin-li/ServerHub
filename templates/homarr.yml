@@ -1,0 +1,24 @@
+---
+name: Homarr
+desc: 漂亮的服务导航首页（可与 ServerHub 并存）
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "7575"
+category: dashboard
+featured: true
+tags: [dashboard]
+ports: ["7575"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+---
+services:
+  homarr:
+    image: ghcr.io/ajnart/homarr:latest
+    container_name: homarr
+    restart: unless-stopped
+    ports:
+      - "{{HOST_PORT}}:7575"
+    volumes:
+      - ./configs:/app/data/configs
+      - ./icons:/app/public/icons
+      - ./data:/data

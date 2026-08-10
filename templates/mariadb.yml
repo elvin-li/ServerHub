@@ -1,0 +1,39 @@
+---
+name: MariaDB
+desc: MySQL 兼容数据库
+category: data
+tags: [db, mysql]
+ports: ["3306"]
+vars:
+  - name: HOST_PORT
+    label: 端口
+    default: "3306"
+  - name: MYSQL_ROOT_PASSWORD
+    label: root 密码
+    default: "__RANDOM__"
+    secret: true
+  - name: MYSQL_DATABASE
+    label: 数据库
+    default: "app"
+  - name: MYSQL_USER
+    label: 用户
+    default: "app"
+  - name: MYSQL_PASSWORD
+    label: 用户密码
+    default: "__RANDOM__"
+    secret: true
+---
+services:
+  mariadb:
+    image: mariadb:11
+    container_name: mariadb
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD={{MYSQL_ROOT_PASSWORD}}
+      - MYSQL_DATABASE={{MYSQL_DATABASE}}
+      - MYSQL_USER={{MYSQL_USER}}
+      - MYSQL_PASSWORD={{MYSQL_PASSWORD}}
+    ports:
+      - "{{HOST_PORT}}:3306"
+    volumes:
+      - ./data:/var/lib/mysql

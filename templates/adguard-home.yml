@@ -1,0 +1,28 @@
+---
+name: AdGuard Home
+desc: 网络级广告拦截与 DNS
+vars:
+  - name: WEB_PORT
+    label: Web 端口
+    default: "3000"
+  - name: DNS_PORT
+    label: DNS 端口
+    default: "53"
+category: network
+featured: true
+tags: [dns, adblock]
+ports: ["3000", "53"]
+url_template: "http://{{HOST_IP}}:{{WEB_PORT}}"
+---
+services:
+  adguardhome:
+    image: adguard/adguardhome:latest
+    container_name: adguardhome
+    restart: unless-stopped
+    ports:
+      - "{{WEB_PORT}}:3000/tcp"
+      - "{{DNS_PORT}}:53/tcp"
+      - "{{DNS_PORT}}:53/udp"
+    volumes:
+      - ./work:/opt/adguardhome/work
+      - ./conf:/opt/adguardhome/conf

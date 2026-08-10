@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ServerHub">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#35322e"/><stop offset="1" stop-color="#141312"/>
+    </linearGradient>
+    <linearGradient id="acc" x1="16" y1="38" x2="48" y2="50" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffb35c"/><stop offset="1" stop-color="#ff7a1a"/>
+    </linearGradient>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#fcfaf7"/><stop offset="1" stop-color="#dbd5ca"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="15" fill="url(#tile)"/>
+  <rect x=".75" y=".75" width="62.5" height="62.5" rx="14.4" fill="none"
+        stroke="#fff" stroke-opacity=".10"/>
+
+  <!-- Three plates, optically centred: the stack spans y=14..50, so the 1px
+       heavier bottom weight of the accent plate balances the tile's corner
+       radius.  No blur filter: at 16px a Gaussian reads as smudge, not gloss. -->
+  <g>
+    <rect x="15" y="14" width="34" height="10" rx="3.4" fill="url(#plate)"/>
+    <rect x="15" y="27" width="34" height="10" rx="3.4" fill="url(#plate)"/>
+    <rect x="15" y="40" width="34" height="10" rx="3.4" fill="url(#acc)"/>
+  </g>
+
+  <!-- Status LEDs.  Deliberately omitted below ~48px by the export script:
+       at 16px a 1.7r dot is sub-pixel and only muddies the plate edge. -->
+  <g id="leds">
+    <circle cx="20.6" cy="19" r="1.7" fill="#1b1a18" fill-opacity=".5"/>
+    <circle cx="20.6" cy="32" r="1.7" fill="#1b1a18" fill-opacity=".5"/>
+    <circle cx="20.6" cy="45" r="1.8" fill="#fff" fill-opacity=".9"/>
+  </g>
+</svg>

@@ -1,0 +1,69 @@
+---
+name: Immich
+desc: 自托管相册（Google Photos 平替）· 官方 compose 精简版
+category: media
+tags: [photos, gallery]
+featured: true
+ports: ["2283"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: |
+  官方完整栈较重；此模板为常用精简组合（server + postgres + redis + machine-learning）。
+  首次拉取镜像体积大。上传路径在 ./library。
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "2283"
+  - name: DB_PASSWORD
+    label: 数据库密码
+    default: "__RANDOM__"
+    secret: true
+  - name: UPLOAD_PATH
+    label: 照片库路径
+    default: "{{SERVICES}}/immich/library"
+---
+name: immich
+services:
+  immich-server:
+    container_name: immich_server
+    image: ghcr.io/immich-app/immich-server:release
+    volumes:
+      - "{{UPLOAD_PATH}}:/usr/src/app/upload"
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - DB_HOSTNAME=immich-postgres
+      - DB_USERNAME=postgres
+      - DB_PASSWORD={{DB_PASSWORD}}
+      - DB_DATABASE_NAME=immich
+      - REDIS_HOSTNAME=immich-redis
+      - UPLOAD_LOCATION=/usr/src/app/upload
+    ports:
+      - "{{HOST_PORT}}:2283"
+    depends_on:
+      - redis
+      - database
+    restart: unless-stopped
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    image: ghcr.io/immich-app/immich-machine-learning:release
+    volumes:
+      - ./model-cache:/cache
+    environment:
+      - DB_HOSTNAME=immich-postgres
+      - DB_USERNAME=postgres
+      - DB_PASSWORD={{DB_PASSWORD}}
+      - DB_DATABASE_NAME=immich
+    restart: unless-stopped
+  redis:
+    container_name: immich-redis
+    image: redis:6.2-alpine
+    restart: unless-stopped
+  database:
+    container_name: immich-postgres
+    image: tensorchord/pgvecto-rs:pg14-v0.2.0
+    environment:
+      - POSTGRES_PASSWORD={{DB_PASSWORD}}
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=immich
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    restart: unless-stopped

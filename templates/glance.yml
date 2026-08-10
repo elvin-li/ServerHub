@@ -1,0 +1,21 @@
+---
+name: Glance
+desc: 轻量聚合仪表盘（RSS/天气/服务状态）— 开源优秀面板
+vars:
+  - name: HOST_PORT
+    label: Web 端口
+    default: "8087"
+category: dashboard
+tags: [dashboard]
+ports: ["8087"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+---
+services:
+  glance:
+    image: glanceapp/glance:latest
+    container_name: glance
+    restart: unless-stopped
+    ports:
+      - "{{HOST_PORT}}:8080"
+    volumes:
+      - ./config:/app/config

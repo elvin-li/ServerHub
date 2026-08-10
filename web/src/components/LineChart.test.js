@@ -1,0 +1,224 @@
+/**
+ * Axis math for the only chart in the panel.
+ *
+ * LineChart draws every metric graph on the dashboard, and all of its geometry
+ * comes from three pure-ish computed properties -- `scale`, `ticks` and `drawn`.
+ * None of them had a single test: `mountAll.test.js` proves the component does
+ * not throw, and `a11y.test.js` only reads its source, so a wrong tick step or an
+ * inverted y-axis would render a plausible-looking chart with wrong numbers on it.
+ * That is the failure mode worth guarding -- a crash is obvious, a silently
+ * mis-scaled CPU graph is not.
+ *
+ * The assertions read the rendered DOM rather than reaching into internals,
+ * because the y labels are HTML (deliberately, so SVG stretch cannot distort
+ * them) while the lines are SVG: the split between the two is itself part of the
+ * contract. Expected values are computed by hand from the component's stated
+ * coordinate space (W=400, H=100, PAD t/b=4) so a regression cannot quietly
+ * redefine what "correct" means.
+ */
+import { describe, expect, it, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+
+// The real dictionary is loaded asynchronously by initializeI18n(), which never
+// runs in a unit test; injectI18n() would fall back to a locale-dependent
+// lookup and make the reference-line label untestable. Substituting the key
+// keeps `refLabel` deterministic without weakening what it proves.
+vi.mock('../i18n', () => ({
+  injectI18n: () => ({
+    t: (key, params = {}) => Object.entries(params).reduce(
+      (text, [name, value]) => text.replace(`{${name}}`, value),
+      String(key),
+    ),
+    locale: { value: 'en' },
+    setLocale: vi.fn(),
+  }),
+}))
+
+const LineChart = (await import('./LineChart.vue')).default
+
+/** The plot's own coordinate space, restated so the expectations are readable. */
+const H = 100
+const PAD_T = 4
+const PAD_B = 4
+const PLOT_H = H - PAD_T - PAD_B // 92
+const Y_BOTTOM = PAD_T + PLOT_H // 96
+const Y_TOP = PAD_T // 4
+
+function chart(props) {
+  return mount(LineChart, { props })
+}
+
+/** Rendered y-axis labels, top-to-bottom source order. */
+function tickLabels(w) {
+  return w.findAll('.y-lbl').map((n) => n.text())
+}
+
+/** `points` of each data polyline, area fills excluded. */
+function lines(w) {
+  return w.findAll('polyline')
+    .filter((n) => n.attributes('fill') === 'none')
+    .map((n) => n.attributes('points'))
+}
+
+function pairs(points) {
+  return points.split(' ').map((p) => p.split(',').map(Number))
+}
+
+describe('LineChart percent scale', () => {
+  it('pins a percent axis to 0-100 in steps of 25 regardless of the data', () => {
+    // A CPU chart that peaked at 3% must still show a full 0-100 axis, or the
+    // idle machine looks busy.
+    const w = chart({ series: [{ name: 'cpu', values: [1, 3, 2] }], unit: '%' })
+    expect(tickLabels(w)).toEqual(['0', '25', '50', '75', '100'])
+  })
+
+  it('treats percent:true the same as unit:"%"', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [1, 3] }], percent: true })
+    expect(tickLabels(w)).toEqual(['0', '25', '50', '75', '100'])
+  })
+
+  it('grows past 100 in 25s when a percentage legitimately exceeds it', () => {
+    // Load average style percentages (multi-core) do exceed 100; clipping them
+    // would flatten the line against the top of the plot.
+    const w = chart({ series: [{ name: 'cpu', values: [40, 140] }], unit: '%' })
+    expect(tickLabels(w)).toEqual(['0', '50', '100', '150'])
+  })
+})
+
+describe('LineChart linear scale', () => {
+  it('chooses whole-number ticks for a small range', () => {
+    const w = chart({ series: [{ name: 'gb', values: [0, 3] }], unit: 'GB' })
+    expect(tickLabels(w)).toEqual(['0', '1', '2', '3', '4'])
+  })
+
+  it('anchors the axis at zero for non-negative data', () => {
+    // Starting a memory axis at its minimum exaggerates small fluctuations into
+    // dramatic swings.
+    const w = chart({ series: [{ name: 'gb', values: [50, 52] }], unit: 'GB' })
+    expect(tickLabels(w)[0]).toBe('0')
+  })
+
+  it('falls back to a unit axis when there is no data at all', () => {
+    const w = chart({ series: [], unit: 'GB' })
+    expect(tickLabels(w).length).toBeGreaterThan(0)
+    expect(tickLabels(w)[0]).toBe('0')
+    expect(tickLabels(w).at(-1)).toBe('1')
+  })
+
+  it('never emits a runaway number of gridlines', () => {
+    // `ticks` loops until it passes `hi`; a zero or NaN step there would spin.
+    const w = chart({ series: [{ name: 'x', values: [0, 987654] }], unit: '' })
+    const labels = tickLabels(w)
+    expect(labels.length).toBeGreaterThan(1)
+    expect(labels.length).toBeLessThanOrEqual(13)
+  })
+})
+
+describe('LineChart geometry', () => {
+  it('maps larger values to smaller y, and spans the full plot height', () => {
+    // SVG y grows downward: getting this backwards draws every chart upside down.
+    const w = chart({ series: [{ name: 'cpu', values: [0, 100] }], unit: '%' })
+    const [[, y0], [, y1]] = pairs(lines(w)[0])
+    expect(y0).toBe(Y_BOTTOM)
+    expect(y1).toBe(Y_TOP)
+    expect(y1).toBeLessThan(y0)
+  })
+
+  it('spreads points evenly across the full plot width', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [0, 50, 100] }], unit: '%' })
+    const xs = pairs(lines(w)[0]).map(([x]) => x)
+    expect(xs[0]).toBe(2) // PAD.l
+    expect(xs.at(-1)).toBe(398) // W - PAD.r
+    expect(xs[1] - xs[0]).toBeCloseTo(xs[2] - xs[1], 6)
+  })
+
+  it('clamps out-of-range values onto the axis instead of drawing off-plot', () => {
+    const w = chart({
+      series: [{ name: 'cpu', values: [150, 0] }],
+      unit: '%',
+      max: 100,
+    })
+    const ys = pairs(lines(w)[0]).map(([, y]) => y)
+    expect(ys).toEqual([Y_TOP, Y_BOTTOM])
+  })
+
+  it('draws nothing for a series with a single point', () => {
+    // Two points are needed for a polyline; one would render an invisible stub
+    // and an area fill anchored to nothing.
+    const w = chart({ series: [{ name: 'cpu', values: [42] }], unit: '%' })
+    expect(lines(w)).toEqual([''])
+  })
+
+  it('skips gaps without breaking the line', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [10, null, 30] }], unit: '%' })
+    expect(pairs(lines(w)[0])).toHaveLength(2)
+  })
+
+  it('discards NaN the same way it discards null', () => {
+    // A metric endpoint that returns NaN once must not poison the whole series.
+    const w = chart({ series: [{ name: 'cpu', values: [NaN, 10, 30] }], unit: '%' })
+    expect(pairs(lines(w)[0])).toHaveLength(2)
+  })
+
+  it('drops a series whose every sample is missing', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [null, null] }], unit: '%' })
+    expect(lines(w)).toEqual([])
+  })
+})
+
+describe('LineChart legend', () => {
+  it('reports the most recent non-null sample, not the last array slot', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [10, 30, null] }], unit: '%' })
+    expect(w.find('.leg b').text()).toBe('30%')
+  })
+
+  it('drops a trailing zero from a percent reading', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [1, 42.02] }], unit: '%' })
+    expect(w.find('.leg b').text()).toBe('42%')
+  })
+
+  it('keeps one decimal when a percent reading needs it', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [1, 42.4] }], unit: '%' })
+    expect(w.find('.leg b').text()).toBe('42.4%')
+  })
+
+  it('renders no legend when there is no series', () => {
+    expect(chart({ series: [] }).find('.lc-legend').exists()).toBe(false)
+  })
+})
+
+describe('LineChart reference line', () => {
+  it('is absent unless a reference is given', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [1, 2] }], unit: '%' })
+    expect(w.find('.ref-tag').exists()).toBe(false)
+  })
+
+  it('places the reference line at the reference value', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [0, 100] }], unit: '%', reference: 100 })
+    expect(w.find('.ref-tag').exists()).toBe(true)
+    const dashed = w.findAll('line').filter((n) => n.attributes('stroke-dasharray'))
+    expect(dashed).toHaveLength(1)
+    expect(Number(dashed[0].attributes('y1'))).toBeCloseTo(Y_TOP, 6)
+  })
+
+  it('widens the axis so the reference stays visible above the data', () => {
+    // The core-count reference on the load chart sits well above idle load; an
+    // axis fitted to the data alone would push it off the top of the plot.
+    const w = chart({ series: [{ name: 'load', values: [0.2, 0.4] }], unit: '', reference: 8 })
+    const y = Number(
+      w.findAll('line').filter((n) => n.attributes('stroke-dasharray'))[0].attributes('y1'),
+    )
+    expect(y).toBeGreaterThanOrEqual(Y_TOP)
+    expect(y).toBeLessThanOrEqual(Y_BOTTOM)
+  })
+
+  it('labels a whole-number reference as a core count', () => {
+    const w = chart({ series: [{ name: 'load', values: [1, 2] }], reference: 8 })
+    expect(w.find('.ref-tag').text()).toContain('cores_n')
+  })
+
+  it('labels a fractional reference with its value', () => {
+    const w = chart({ series: [{ name: 'load', values: [1, 2] }], reference: 4.5 })
+    expect(w.find('.ref-tag').text()).toBe('4.5')
+  })
+})

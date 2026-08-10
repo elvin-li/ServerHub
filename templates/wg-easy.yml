@@ -1,0 +1,57 @@
+---
+name: WireGuard (wg-easy)
+desc: 带 Web 管理界面的 WireGuard VPN · 手机/电脑一键扫码接入
+category: network
+tags: [vpn, wireguard, remote-access]
+featured: true
+ports: ["51820/udp", "51821"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: |
+  macOS/OrbStack 上 VPN 容器能力受限于虚拟网络，部分场景需额外配置。
+  部署后打开 Web UI 添加客户端、扫二维码。请把 WG_HOST 设为公网 IP 或域名（穿透后）。
+  UDP 51820 需在路由器端口转发到本机。
+vars:
+  - name: WG_HOST
+    label: 公网 IP / 域名
+    default: ""
+    required: true
+    help: 客户端连接用的主机名或公网 IP（必填）
+  - name: PASSWORD
+    label: Web 管理密码
+    default: "__RANDOM__"
+    secret: true
+    help: 登录 wg-easy 面板的密码
+  - name: HOST_PORT
+    label: Web 端口
+    default: "51821"
+  - name: WG_PORT
+    label: WireGuard UDP 端口
+    default: "51820"
+  - name: WG_DEFAULT_DNS
+    label: 客户端 DNS
+    default: "1.1.1.1"
+---
+services:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:latest
+    container_name: wg-easy
+    environment:
+      - LANG=en
+      - WG_HOST={{WG_HOST}}
+      - PASSWORD={{PASSWORD}}
+      - WG_PORT={{WG_PORT}}
+      - WG_DEFAULT_DNS={{WG_DEFAULT_DNS}}
+      - WG_ALLOWED_IPS=0.0.0.0/0, ::/0
+      - WG_PERSISTENT_KEEPALIVE=25
+    volumes:
+      - ./data:/etc/wireguard
+    ports:
+      - "{{WG_PORT}}:{{WG_PORT}}/udp"
+      - "{{HOST_PORT}}:51821/tcp"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
