@@ -390,7 +390,10 @@ def _diag_identity() -> dict:
 
 
 def _diag_datetime() -> dict:
-    return {"datetime": get_datetime_info()}
+    try:
+        return {"datetime": get_datetime_info()}
+    except Exception as e:
+        return {"datetime": {"error": str(e)}}
 
 
 def _diag_power() -> dict:
@@ -399,7 +402,10 @@ def _diag_power() -> dict:
     ``get_power_info()`` was called twice here -- once for the body and once for the
     assertion count -- which ran ``pmset`` twice to answer one question.
     """
-    info = get_power_info()
+    try:
+        info = get_power_info()
+    except Exception as e:
+        return {"power": {"error": str(e)}}
     return {"power": {
         **{k: v for k, v in info.items() if k != "assertions"},
         "assertions_count": len(info.get("assertions") or []),
@@ -407,11 +413,17 @@ def _diag_power() -> dict:
 
 
 def _diag_management() -> dict:
-    return {"management": get_management_access()}
+    try:
+        return {"management": get_management_access()}
+    except Exception as e:
+        return {"management": {"error": str(e)}}
 
 
 def _diag_other() -> dict:
-    return {"other": get_other_settings()}
+    try:
+        return {"other": get_other_settings()}
+    except Exception as e:
+        return {"other": {"error": str(e)}}
 
 
 def _diag_docker() -> dict:
@@ -500,15 +512,13 @@ def collect_diagnostics() -> dict:
     their own right (``health_svc.run_checks``, ``docker_info_svc.engine_info``),
     so the bundle cost roughly the sum of every page it summarises.
 
-    Seven of the eleven sections absorb their own failure and report it in place.
-    Four -- ``datetime``, ``power``, ``management``, ``other`` -- do not, and a raise
-    from any of them still fails the whole bundle, exactly as it did serially. That
-    is a pre-existing gap rather than something introduced here, and it is worth
-    closing: a diagnostics bundle that 500s because one subsystem is broken is
-    useless precisely when it is needed, and the page offers this as a download
-    button. Changing it is a behaviour change, so it is left for its own commit
-    and pinned as-is by
-    tests/test_read_path_concurrency.py::test_an_unwrapped_section_still_fails_the_bundle.
+    Every section absorbs its own failure and reports it as ``{"error": ...}`` in
+    its own slot.  Four of them -- ``datetime``, ``power``, ``management``,
+    ``other`` -- used not to, so a raise from any one of them failed the whole
+    request.  That is the opposite of what this endpoint is for: the page offers it
+    as a "download diagnostics" button, which is pressed exactly when a subsystem is
+    broken, and the section that fails is usually the one the operator needs to see.
+    The seven that already worked this way set the shape.
 
     ``fan_out`` returns results in submission order, so the saved JSON keeps its
     section order.

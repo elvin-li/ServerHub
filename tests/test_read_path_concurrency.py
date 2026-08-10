@@ -369,21 +369,41 @@ class DiagnosticsBundleTests(unittest.TestCase):
         for key in ("datetime", "power", "management", "other"):
             self.assertIn(key, bundle, "one failing section emptied the bundle")
 
-    def test_an_unwrapped_section_still_fails_the_bundle(self):
-        """A pre-existing gap, pinned so that closing it is a deliberate edit.
+    def test_no_single_section_can_fail_the_whole_bundle(self):
+        """``datetime``, ``power``, ``management`` and ``other`` used to be able to.
 
-        ``datetime``, ``power``, ``management`` and ``other`` have no try/except, so
-        a raise from any of them fails the whole request -- and the page offers this
-        as a "download diagnostics" button, which is pressed exactly when something
-        is broken. Parallelising did not change this: serially the exception also
-        left the function. Worth fixing, but as its own behaviour change rather than
-        buried in a performance commit.
+        A diagnostics download that 500s because one subsystem is broken is useless
+        precisely when it is needed, and the broken section is usually the one the
+        operator opened it to read.
         """
         def boom():
             raise RuntimeError("pmset is wedged")
 
-        with self.assertRaises(RuntimeError):
-            self._collect(get_management_access=boom)
+        for name in ("get_datetime_info", "get_power_info",
+                     "get_management_access", "get_other_settings"):
+            with self.subTest(section=name):
+                bundle, _ = self._collect(**{name: boom})
+                self.assertTrue(
+                    any(
+                        isinstance(v, dict) and v.get("error") == "pmset is wedged"
+                        for v in bundle.values()
+                    ),
+                    f"{name} failing did not surface as an error field",
+                )
+                # And the rest of the bundle is intact.
+                for key in ("datetime", "power", "management", "other", "identity"):
+                    self.assertIn(key, bundle, f"{name} failing emptied the bundle")
+
+    def test_a_failing_power_read_still_leaves_a_usable_slot(self):
+        """The shape has to stay a dict, since callers index into it."""
+        def boom():
+            raise RuntimeError("pmset gone")
+
+        bundle, _ = self._collect(get_power_info=boom)
+        self.assertEqual(bundle["power"], {"error": "pmset gone"})
+        self.assertNotIn(
+            "assertions", bundle["power"], "the raw assertion list leaked on failure"
+        )
 
     def test_a_failing_vm_read_leaves_the_key_out_entirely(self):
         """Not ``{"vms": None}``.
