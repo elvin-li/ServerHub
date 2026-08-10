@@ -9,7 +9,7 @@ import re
 import subprocess
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from typing import Any
 
 from fastapi import HTTPException
@@ -174,9 +174,8 @@ def _prefetch_disk_info(nodes: list[str]) -> None:
         return
     # _fetch_shared publishes into the cache itself and de-duplicates against any
     # other request already fetching the same node, so the results are simply
-    # drained here rather than written a second time.
-    with ThreadPoolExecutor(max_workers=min(_INFO_WORKERS, len(pending))) as ex:
-        list(ex.map(_fetch_shared, pending))
+    # discarded here rather than written a second time.
+    fan_out(_fetch_shared, pending, max_workers=min(_INFO_WORKERS, len(pending)))
 
 
 def _normalize_id(device: str) -> str:

@@ -28,6 +28,9 @@ _refresh_lock = threading.Lock()
 # Adaptive filesystem scans change rarely — cache longer.
 _adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
 _ADAPTIVE_TTL = 60.0
+#: Separate from `_refresh_lock`: the adaptive scans and the status build are
+#: independent refreshes, and sharing one lock would make each wait on the other.
+_adaptive_refresh_lock = threading.Lock()
 
 
 def invalidate_status():
@@ -78,16 +81,29 @@ def _adaptive_info() -> dict:
                 "compose_projects": _adaptive_cache["compose"],
                 "nginx_sites": _adaptive_cache["nginx"],
             }
-    # Two unrelated filesystem scans (compose project tree, nginx sites dir).
-    # Both are behind this 60s cache, but every miss paid for them in sequence.
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_compose = ex.submit(scan_new_compose_projects)
-        f_nginx = ex.submit(nginx_sites)
-        compose = f_compose.result()
-        nginx = f_nginx.result()
-    with _lock:
-        _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
-    return {"compose_projects": compose, "nginx_sites": nginx}
+    # Single-flight, matching `full_status` below.  /api/status is the most polled
+    # endpoint in the panel, so on a cold cache several requests arrive together, all
+    # miss, and each walks the compose tree and the nginx sites directory -- the two
+    # scans this cache exists to avoid.
+    with _adaptive_refresh_lock:
+        with _lock:
+            if (
+                _adaptive_cache["compose"] is not None
+                and time.time() - _adaptive_cache["t"] < _ADAPTIVE_TTL
+            ):
+                return {
+                    "compose_projects": _adaptive_cache["compose"],
+                    "nginx_sites": _adaptive_cache["nginx"],
+                }
+        # Two unrelated filesystem scans (compose project tree, nginx sites dir).
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_compose = ex.submit(scan_new_compose_projects)
+            f_nginx = ex.submit(nginx_sites)
+            compose = f_compose.result()
+            nginx = f_nginx.result()
+        with _lock:
+            _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
+        return {"compose_projects": compose, "nginx_sites": nginx}
 
 
 def _build_status() -> dict:

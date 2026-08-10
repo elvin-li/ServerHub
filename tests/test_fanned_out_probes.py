@@ -568,8 +568,8 @@ class NativeCatalogListingTests(unittest.TestCase):
     ]
 
     def setUp(self):
-        native_catalog._list_cache.update(t=0.0, v=None)
-        self.addCleanup(native_catalog._list_cache.update, t=0.0, v=None)
+        native_catalog.list_native_apps.invalidate()
+        self.addCleanup(native_catalog.list_native_apps.invalidate)
 
     def _enter(self, apps, **extra):
         """Push the shared patches onto an ExitStack and return it entered."""
@@ -1225,8 +1225,8 @@ class AppsInventoryTests(unittest.TestCase):
     VMS = [{"id": "vm:ubuntu", "kind": "vm", "name": "ubuntu", "state": "warn"}]
 
     def setUp(self):
-        apps_manage_svc._inv_cache.update(t=0.0, v=None)
-        self.addCleanup(apps_manage_svc._inv_cache.update, t=0.0, v=None)
+        apps_manage_svc.invalidate_inventory()
+        self.addCleanup(apps_manage_svc.invalidate_inventory)
 
     def _inventory(self, **overrides):
         """Run inventory() with every collector slowed and optionally broken."""

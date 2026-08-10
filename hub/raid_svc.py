@@ -21,7 +21,7 @@ import re
 import time
 
 from hub.macos_admin import run_admin
-from hub.util import fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh
 
 DISKUTIL = "/usr/sbin/diskutil"
 
@@ -34,7 +34,6 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$")
 LEVELS = ("mirror", "stripe", "concat")
 FILESYSTEMS = ("APFS", "JHFS+", "ExFAT")
 
-_cache: dict = {"t": 0.0, "v": None}
 _CACHE_TTL = 15.0
 
 #: Concurrent ``diskutil info`` reads.  Measured knee: throughput stops improving at
@@ -264,10 +263,8 @@ def candidate_devices() -> list[dict]:
     return out
 
 
+@cached_snapshot(_CACHE_TTL)
 def overview(force: bool = False) -> dict:
-    now = time.time()
-    if not force and _cache["v"] is not None and now - _cache["t"] < _CACHE_TTL:
-        return _cache["v"]
     sets = list_sets()
     data = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -279,12 +276,11 @@ def overview(force: bool = False) -> dict:
         "levels": list(LEVELS),
         "filesystems": list(FILESYSTEMS),
     }
-    _cache.update(t=now, v=data)
     return data
 
 
 def invalidate() -> None:
-    _cache.update(t=0.0, v=None)
+    overview.invalidate()
 
 
 # ── mutations ────────────────────────────────────────────────────────────────

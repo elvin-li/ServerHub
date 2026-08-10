@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from hub import vm_console
 from hub.config import override
 from hub.paths import ORBCTL, UTMCTL
-from hub.util import fan_out, port_open, sh
+from hub.util import cached_snapshot, fan_out, port_open, sh
 
 
 # Short TTL shared by status feed, bookmarks, and /api/vms (dedupe utmctl/orbctl).
@@ -21,18 +21,13 @@ from hub.util import fan_out, port_open, sh
 # ~390ms for utmctl+orbctl every single time.  Correctness after a VM
 # start/stop comes from invalidate_vm_lists(), not from the TTL lapsing.
 _LIST_TTL = 15.0
-_utm_cache: dict[str, Any] = {"t": 0.0, "v": None}
-_orb_cache: dict[str, Any] = {"t": 0.0, "v": None}
-_list_lock = threading.Lock()
+
 
 
 def invalidate_vm_lists():
     """Bust UTM/Orb list caches only (no status re-entry)."""
-    with _list_lock:
-        _utm_cache["t"] = 0
-        _utm_cache["v"] = None
-        _orb_cache["t"] = 0
-        _orb_cache["v"] = None
+    _utm_snapshot.invalidate()
+    _orb_snapshot.invalidate()
 
 
 def _invalidate():
@@ -143,19 +138,23 @@ def _list_utm_vms_uncached() -> list[dict]:
     return items
 
 
+@cached_snapshot(_LIST_TTL)
+def _utm_snapshot() -> list[dict]:
+    return _list_utm_vms_uncached()
+
+
 def list_utm_vms(force: bool = False) -> list[dict]:
-    now = time.time()
-    with _list_lock:
-        if (
-            not force
-            and _utm_cache["v"] is not None
-            and now - _utm_cache["t"] < _LIST_TTL
-        ):
-            return list(_utm_cache["v"])
-    items = _list_utm_vms_uncached()
-    with _list_lock:
-        _utm_cache.update(t=time.time(), v=items)
-    return list(items)
+    """UTM inventory, cached for _LIST_TTL with one in-flight refresh.
+
+    The copy is deliberate and predates the shared helper: callers concatenate and
+    sort these lists, and handing out the cached object would let one of them mutate
+    what every later reader sees.
+
+    The lock used to be released before `_list_utm_vms_uncached()` ran, so
+    overlapping callers all missed and each spawned its own `utmctl list` plus a port
+    probe per VM.
+    """
+    return list(_utm_snapshot(force))
 
 
 def _list_orb_machines_uncached() -> list[dict]:
@@ -204,19 +203,14 @@ def _list_orb_machines_uncached() -> list[dict]:
     return items
 
 
+@cached_snapshot(_LIST_TTL)
+def _orb_snapshot() -> list[dict]:
+    return _list_orb_machines_uncached()
+
+
 def list_orb_machines(force: bool = False) -> list[dict]:
-    now = time.time()
-    with _list_lock:
-        if (
-            not force
-            and _orb_cache["v"] is not None
-            and now - _orb_cache["t"] < _LIST_TTL
-        ):
-            return list(_orb_cache["v"])
-    items = _list_orb_machines_uncached()
-    with _list_lock:
-        _orb_cache.update(t=time.time(), v=items)
-    return list(items)
+    """OrbStack inventory. Copied and single-flight for the same reasons as above."""
+    return list(_orb_snapshot(force))
 
 
 def _orb_item(name: str, status: str, raw: dict) -> dict | None:

@@ -16,10 +16,9 @@ from fastapi import HTTPException
 from hub.docker_cli import docker, engine_up
 from hub.host_address import host_ip
 from hub.paths import DOCKER
-from hub.util import fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh
 
 SERVICES_ROOT = Path.home() / "Services"
-_inv_cache: dict = {"t": 0.0, "v": None}
 _INV_TTL = 8.0
 
 
@@ -31,10 +30,10 @@ def invalidate_inventory() -> None:
     used to reach in and assign ``_inv_cache["t"] = 0`` from native_catalog,
     wrapped in ``except Exception: pass`` -- so renaming this cache would have
     turned invalidation into a silent no-op and left an uninstalled app showing
-    as installed.
+    as installed.  The cache now lives inside the ``cached_snapshot`` decorator,
+    which is another reason to go through this function rather than the dict.
     """
-    _inv_cache["t"] = 0.0
-    _inv_cache["v"] = None
+    inventory.invalidate()
 
 
 def _host_ip() -> str:
@@ -838,10 +837,8 @@ def _collect(entry):
         return _COLLECTOR_FALLBACK[which]
 
 
+@cached_snapshot(_INV_TTL)
 def inventory(force: bool = False) -> dict:
-    now = time.time()
-    if not force and _inv_cache["v"] is not None and now - _inv_cache["t"] < _INV_TTL:
-        return _inv_cache["v"]
 
     # The three collectors are independent aggregations over different backends --
     # compose stacks, Homebrew/native installs, and VMs -- and each shells out
@@ -891,7 +888,6 @@ def inventory(force: bool = False) -> dict:
         "host_ip": host,
         "engine_up": engine,
     }
-    _inv_cache.update(t=time.time(), v=v)
     return v
 
 

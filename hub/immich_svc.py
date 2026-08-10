@@ -31,9 +31,8 @@ import urllib.request
 from pathlib import Path
 
 from hub.docker_cli import engine_up
-from hub.util import port_open, sh
+from hub.util import cached_snapshot, port_open, sh
 
-_cache: dict = {"t": 0.0, "v": None}
 _TTL = 30.0
 
 BASE = Path.home() / "Services" / "immich"
@@ -125,6 +124,52 @@ def _worker_uptime(pid: int) -> str:
     return out.strip() if rc == 0 else "?"
 
 
+#: One definition so the four worker states cannot drift apart in the UI.
+WORKER_LABEL = "原生 worker（转码/ML 队列）"
+
+
+def _worker_check(pid: int | None, quarantined: bool) -> dict:
+    """The worker's health check — four states, not two.
+
+    A stopped worker is only a fault when nobody meant to stop it.  While the
+    quarantine marker stands, the remedy is the opposite of "start it", so this
+    reports a *warning* naming the marker rather than an error whose fix column
+    resumes writes to a volume that failed write-barrier testing.  Reporting it at
+    error level was the whole problem: it made the panel look like it had an
+    ordinary failure that a restart would clear.
+
+    And a worker running *despite* the marker is the dangerous state rather than
+    the healthy one, so it is the loudest of the four -- that case previously came
+    back "ok" simply because a pid existed.
+
+    Detail and fix are error codes, not prose: the SPA resolves them through its
+    ``err.*`` keys, so hub/ does not grow hardcoded user-facing text.  Pure, so the
+    four branches are testable without probing the host.
+    """
+    if pid and not quarantined:
+        return _check(
+            "immich_worker", WORKER_LABEL, "error", True,
+            f"pid={pid} 运行 {_worker_uptime(pid)}",
+        )
+    if pid:
+        return _check(
+            "immich_worker", WORKER_LABEL, "error", False,
+            "immich.worker_running_while_quarantined",
+            "immich.worker_lift_quarantine",
+        )
+    if quarantined:
+        return _check(
+            "immich_worker", WORKER_LABEL, "warn", False,
+            "immich.worker_quarantined",
+            "immich.worker_lift_quarantine",
+        )
+    return _check(
+        "immich_worker", WORKER_LABEL, "error", False,
+        "immich.worker_down",
+        "~/Services/immich/start-worker-native.sh",
+    )
+
+
 def _container_state(name: str) -> tuple[bool, str]:
     from hub.paths import DOCKER
 
@@ -139,9 +184,8 @@ def _container_state(name: str) -> tuple[bool, str]:
     return state == "running" and "unhealthy" not in status, status or state
 
 
+@cached_snapshot(_TTL)
 def run_checks(force: bool = False) -> dict:
-    if not force and _cache["v"] and time.time() - _cache["t"] < _TTL:
-        return _cache["v"]
 
     checks: list[dict] = []
 
@@ -173,24 +217,7 @@ def run_checks(force: bool = False) -> dict:
     # Failure prose lives in errors.CODES + the SPA's err.* i18n keys (the
     # panel translates codes like api_error payloads); hub/ must not grow
     # hardcoded user-facing Chinese.
-    pid = worker_pid()
-    if pid:
-        w_detail = f"pid={pid} 运行 {_worker_uptime(pid)}"
-        w_fix = ""
-    elif QUARANTINE.is_file():
-        # Not a crash: keepalive deliberately keeps the worker stopped because
-        # the media volume had write faults.  Say so, otherwise the panel
-        # looks like it is reporting an ordinary failure that can simply be
-        # restarted away.
-        w_detail = "immich.worker_quarantined"
-        w_fix = "immich.worker_lift_quarantine"
-    else:
-        w_detail = "immich.worker_down"
-        w_fix = "~/Services/immich/start-worker-native.sh"
-    checks.append(_check(
-        "immich_worker", "原生 worker（转码/ML 队列）", "error", pid is not None,
-        w_detail, w_fix,
-    ))
+    checks.append(_worker_check(worker_pid(), QUARANTINE.is_file()))
 
     # --- native ML ---
     status, body = _http(f"http://127.0.0.1:{ML_PORT}/ping", timeout=3)
@@ -266,7 +293,6 @@ def run_checks(force: bool = False) -> dict:
         "checks": checks,
         "healthy": errors == 0,
     }
-    _cache.update(t=time.time(), v=v)
     return v
 
 

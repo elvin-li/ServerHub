@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from hub.macos_admin import run_admin, run_admin_sequence
-from hub.util import fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh
 
 TMUTIL = "/usr/bin/tmutil"
 DISKUTIL = "/usr/sbin/diskutil"
@@ -35,7 +35,6 @@ _SNAP_DATE = re.compile(r"(\d{4}-\d{2}-\d{2}-\d{6})")
 #: the UI should say so rather than offering an undifferentiated delete button.
 _SYSTEM_SNAPSHOT_PREFIXES = ("com.apple.os.update-", "com.apple.installer")
 
-_overview_cache: dict = {"t": 0.0, "v": None}
 _CACHE_TTL = 20.0
 
 
@@ -198,6 +197,7 @@ def time_machine_overview() -> dict:
     }
 
 
+@cached_snapshot(_CACHE_TTL)
 def overview(force: bool = False) -> dict:
     """Snapshot inventory across volumes plus Time Machine state.
 
@@ -205,9 +205,6 @@ def overview(force: bool = False) -> dict:
     the page polls, so an uncached read multiplies process spawns by the number
     of attached disks.
     """
-    now = time.time()
-    if not force and _overview_cache["v"] is not None and now - _overview_cache["t"] < _CACHE_TTL:
-        return _overview_cache["v"]
 
     mounts = snapshot_mounts()
     # One `diskutil apfs listSnapshots` per volume, plus the Time Machine read that
@@ -246,12 +243,11 @@ def overview(force: bool = False) -> dict:
         "total": total,
         "time_machine": time_machine,
     }
-    _overview_cache.update(t=now, v=data)
     return data
 
 
 def invalidate() -> None:
-    _overview_cache.update(t=0.0, v=None)
+    overview.invalidate()
 
 
 # ── mutations ────────────────────────────────────────────────────────────────

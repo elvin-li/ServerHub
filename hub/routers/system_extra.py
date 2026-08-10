@@ -16,7 +16,7 @@ from hub import auth, vm_console, vms_svc
 from hub.docker_cli import engine_up
 from hub.errors import api_error
 from hub.paths import DOCKER, ORB
-from hub.util import sh
+from hub.util import fan_out, sh
 
 router = APIRouter(tags=["system"])
 
@@ -96,18 +96,15 @@ def _iface_addresses(route_iface: str) -> list[dict]:
     caller overlaps this whole chain with the rest of the host probe.
     """
     candidates = [i for i in dict.fromkeys((route_iface, "en0", "en1", "bridge0", "utun0")) if i]
-    if not candidates:
-        return []
-    with ThreadPoolExecutor(max_workers=len(candidates)) as ex:
-        results = ex.map(
-            lambda iface: (iface, sh(["/usr/sbin/ipconfig", "getifaddr", iface], timeout=2)),
-            candidates,
-        )
-        return [
-            {"iface": iface, "ip": ip}
-            for iface, (r, ip, _) in results
-            if r == 0 and ip
-        ]
+    results = fan_out(
+        lambda iface: sh(["/usr/sbin/ipconfig", "getifaddr", iface], timeout=2),
+        candidates,
+    )
+    return [
+        {"iface": iface, "ip": ip}
+        for iface, (rc, ip, _) in zip(candidates, results)
+        if rc == 0 and ip
+    ]
 
 
 @router.get("/api/system/host")

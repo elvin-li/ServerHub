@@ -19,7 +19,7 @@ from hub import __version__
 from hub.config import cfg
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
-from hub.util import fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh
 DEFAULT_THRESHOLDS = {
     "enabled": True,
     "cpu_pct": 90,
@@ -27,7 +27,6 @@ DEFAULT_THRESHOLDS = {
     "disk_pct": 90,
     "cooldown_sec": 1800,
 }
-_bundle_cache: dict = {"t": 0.0, "v": None}
 _BUNDLE_TTL = 25.0  # settings page is interactive but not real-time
 
 
@@ -125,6 +124,15 @@ def _pmset_settings() -> dict:
     return settings
 
 
+#: Assertion lines handed to the page.  This was 12, which a plain desktop
+#: already reaches -- a remote screen-sharing session plus one `caffeinate`
+#: accounts for 9 -- and the truncation was silent, so the assertion an operator
+#: is hunting ("what is keeping this NAS awake?") could be the one dropped.  The
+#: panel renders these in a scrolling block, so a low cap bought nothing; keep a
+#: bound against a pathological `pmset` and report the real count beside it.
+MAX_ASSERTIONS = 40
+
+
 def _pmset_assertions() -> list[str]:
     sleep_prevented_by: list[str] = []
     rc, out, _ = sh(["/usr/bin/pmset", "-g", "assertions"], timeout=5)
@@ -155,7 +163,8 @@ def get_power_info() -> dict:
         "sleep": settings.get("sleep"),
         "womp": settings.get("womp"),
         "lowpowermode": settings.get("lowpowermode"),
-        "assertions": sleep_prevented_by[:12],
+        "assertions": sleep_prevented_by[:MAX_ASSERTIONS],
+        "assertion_count": len(sleep_prevented_by),
         "ups": ups,
         "hint": "磁盘休眠 disksleep=0 表示不休眠（家用 NAS 常用）。改 pmset 可能需 sudo。",
     }
@@ -183,8 +192,7 @@ def set_power_pref(key: str, value: int) -> dict:
     if rc != 0:
         msg = (msg or "失败") + f" · 可手动: sudo pmset -a {key} {value}"
     # bust settings bundle cache so UI sees new pmset values
-    _bundle_cache["t"] = 0
-    _bundle_cache["v"] = None
+    unraid_settings_bundle.invalidate()
     return {"ok": rc == 0, "key": key, "value": value, "message": msg or "已应用", "power": get_power_info()}
 
 
@@ -553,15 +561,9 @@ def _persist_diagnostics(bundle: dict) -> tuple[str | None, str | None]:
         return None, str(e)
 
 
+@cached_snapshot(_BUNDLE_TTL)
 def unraid_settings_bundle(force: bool = False) -> dict:
     """Aggregate for Settings page (Unraid parity). Cached ~25s to avoid shell storms."""
-    now = time.time()
-    if (
-        not force
-        and _bundle_cache["v"] is not None
-        and now - _bundle_cache["t"] < _BUNDLE_TTL
-    ):
-        return _bundle_cache["v"]
 
     from hub import identity_svc, network_svc
 
@@ -640,5 +642,4 @@ def unraid_settings_bundle(force: bool = False) -> dict:
         ],
         "cached_ttl": _BUNDLE_TTL,
     }
-    _bundle_cache.update(t=time.time(), v=v)
     return v

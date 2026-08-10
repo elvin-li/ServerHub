@@ -15,6 +15,7 @@ they do.
 """
 from __future__ import annotations
 
+import contextlib
 import sys
 import unittest
 from pathlib import Path
@@ -85,36 +86,67 @@ class InvalidationOnStoreActionsTests(unittest.TestCase):
         )
 
     def test_both_paths_also_drop_the_store_list_cache(self):
-        """The store's own list has to refresh too, not just the Apps page."""
+        """The store's own list has to refresh too, not just the Apps page.
+
+        Asserted against ``list_native_apps.invalidate`` rather than the cache dict:
+        the snapshot lives inside the ``cached_snapshot`` decorator now, and reaching
+        past a module's public surface to seed private state is exactly what made the
+        sibling invalidation a silent no-op once already.
+        """
         for fn in (native_catalog.install_native, native_catalog.uninstall_native):
-            native_catalog._list_cache.update(t=9e9, v=[{"id": "stale"}])
-            self._run_guarded(fn, APP_ID)
             with self.subTest(fn=fn.__name__):
-                self.assertIsNone(
-                    native_catalog._list_cache["v"],
-                    f"{fn.__name__} left the store list cache in place",
+                with mock.patch.object(
+                    native_catalog.list_native_apps, "invalidate"
+                ) as dropped:
+                    self._run_guarded(fn, APP_ID)
+                self.assertTrue(
+                    dropped.called,
+                    f"{fn.__name__} left the store list cache in place, so the store "
+                    "keeps showing pre-operation state for up to _LIST_TTL",
                 )
 
 
 class InvalidateInventoryTests(unittest.TestCase):
-    def test_it_clears_the_snapshot(self):
-        apps_manage_svc._inv_cache.update(t=9e9, v={"apps": ["stale"]})
-        apps_manage_svc.invalidate_inventory()
-        self.assertIsNone(apps_manage_svc._inv_cache["v"])
-        self.assertEqual(apps_manage_svc._inv_cache["t"], 0.0)
+    """Asserted through the public surface, because the cache has no public dict.
 
-    def test_the_next_read_is_not_served_from_the_dropped_snapshot(self):
-        apps_manage_svc._inv_cache.update(t=9e9, v={"apps": ["stale"]})
+    It now lives inside the ``cached_snapshot`` decorator. Seeding it by assignment
+    is exactly the cross-module reach-in that ``SourceShapeTests`` below forbids and
+    that made invalidation a silent no-op once before, so these drive it the way a
+    caller does: read, invalidate, read again, and count the rebuilds.
+    """
+
+    def setUp(self):
         apps_manage_svc.invalidate_inventory()
-        with mock.patch.object(
-            apps_manage_svc, "_docker_stacks", return_value=[]
-        ), mock.patch.object(
-            apps_manage_svc, "_native_apps", return_value=[]
-        ), mock.patch.object(apps_manage_svc, "_vms", return_value=[]):
-            result = apps_manage_svc.inventory()
-        self.assertNotIn(
-            "stale",
-            str(result),
+        self.addCleanup(apps_manage_svc.invalidate_inventory)
+
+    def _stubbed(self, counter):
+        return (
+            mock.patch.object(apps_manage_svc, "_docker_stacks",
+                              side_effect=lambda *a, **k: counter.append("docker") or []),
+            mock.patch.object(apps_manage_svc, "_native_apps", return_value=[]),
+            mock.patch.object(apps_manage_svc, "_vms", return_value=[]),
+        )
+
+    def test_a_second_read_is_served_from_the_snapshot(self):
+        """Guards the test below: without this, invalidation proves nothing."""
+        built = []
+        with contextlib.ExitStack() as stack:
+            for patch in self._stubbed(built):
+                stack.enter_context(patch)
+            apps_manage_svc.inventory()
+            apps_manage_svc.inventory()
+        self.assertEqual(len(built), 1, "the snapshot was not reused")
+
+    def test_the_next_read_after_invalidating_rebuilds(self):
+        built = []
+        with contextlib.ExitStack() as stack:
+            for patch in self._stubbed(built):
+                stack.enter_context(patch)
+            apps_manage_svc.inventory()
+            apps_manage_svc.invalidate_inventory()
+            apps_manage_svc.inventory()
+        self.assertEqual(
+            len(built), 2,
             "inventory() served the snapshot that had just been invalidated",
         )
 

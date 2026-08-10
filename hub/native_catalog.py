@@ -10,6 +10,8 @@ Methods:
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import shlex
 import shutil
@@ -23,14 +25,39 @@ from typing import Any
 from fastapi import HTTPException
 
 from hub.brew_cache import brew_services_list, invalidate_brew_services
+from hub.errors import CODES, api_error
 from hub.host_address import host_ip
-from hub.util import fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh
 
 SERVICES_ROOT = Path.home() / "Services"
 # One definition, in hub.paths: it tries `which brew` before the two standard
 # prefixes. The app store is the worst place to disagree about where brew is --
 # every install and uninstall goes through it.
 from hub.paths import BREW  # noqa: E402
+
+#: Install outcomes go to the panel's own log (~/Library/Logs/serverhub.err.log).
+#: An install that fails in a browser leaves no trace anywhere else: the response
+#: body is gone as soon as the operator closes the dialog, and "the app store
+#: cannot install anything" is unanswerable without knowing what brew said.
+log = logging.getLogger("serverhub.appstore")
+
+#: First line of a failed brew_multi message, and all the toast shows.  Named so
+#: the store and its tests cannot disagree about it.
+_MULTI_FAILED_PREFIX = "以下包安装失败："
+
+# Store-owned error codes, registered next to the module that raises them so the
+# code -> status mapping travels with it; api_error() degrades unknown codes to
+# HTTP 500.  Codes rather than prose because the SPA is localized and text
+# originating in Python cannot be translated by the frontend.
+CODES.setdefault(
+    "catalog.install_busy",
+    (409, "{app} is already being installed or uninstalled; wait for it to finish"),
+)
+CODES.setdefault("catalog.brew_missing", (503, "Homebrew was not found at {path}"))
+CODES.setdefault(
+    "catalog.entry_incomplete",
+    (500, "catalog entry {app} does not list the packages it installs"),
+)
 
 
 def _brew_env() -> dict:
@@ -558,7 +585,6 @@ def _is_installed(app: dict, brew_installed: set[str] | None = None) -> bool:
     return False
 
 
-_list_cache: dict = {"t": 0.0, "v": None}
 _LIST_TTL = 30.0
 
 #: Concurrent per-app liveness probes in a catalog listing.  Bounded well under the
@@ -567,10 +593,8 @@ _LIST_TTL = 30.0
 _PROBE_WORKERS = 8
 
 
+@cached_snapshot(_LIST_TTL)
 def list_native_apps(force: bool = False) -> list[dict]:
-    now = time.time()
-    if not force and _list_cache["v"] is not None and now - _list_cache["t"] < _LIST_TTL:
-        return _list_cache["v"]
 
     # Three independent reads.  `brew services list --json` costs ~1.3s and is the
     # dominant cost of this whole function, so the package list and the host address
@@ -656,7 +680,6 @@ def list_native_apps(force: bool = False) -> list[dict]:
             "prefer_native": True,
         })
     items.sort(key=lambda x: (0 if x.get("featured") else 1, x.get("name") or ""))
-    _list_cache.update(t=time.time(), v=items)
     return items
 
 
@@ -995,28 +1018,95 @@ def _enable_screen_sharing() -> dict:
     }
 
 
+def _stale_app_views() -> None:
+    """Drop every snapshot that describes what is installed or running.
+
+    Three separate caches answer "is this app installed?": the store list here,
+    the shared `brew services list --json` snapshot, and the Apps page inventory.
+    An install or uninstall invalidates the state all three summarise, so they go
+    together -- dropping one and not the others is how the store started showing
+    an app as installed while the Apps page still listed it as absent.
+
+    Called both before and after the operation.  Before, because an install can
+    take minutes and nothing should serve a snapshot taken across it; after,
+    because any read that arrived *during* those minutes refilled the caches with
+    pre-install state and gave it a fresh timestamp.
+    """
+    list_native_apps.invalidate()
+    invalidate_brew_services()
+    # The import is local because these two modules each read from the other;
+    # keeping both directions lazy is what stops that from becoming a cycle.
+    from hub import apps_manage_svc
+
+    apps_manage_svc.invalidate_inventory()
+
+
+_op_locks_guard = threading.Lock()
+_op_locks: dict[str, threading.Lock] = {}
+
+
+@contextlib.contextmanager
+def _single_flight(app_id: str):
+    """One install-or-uninstall at a time per app, and say so when refused.
+
+    Homebrew takes its own lock per formula and answers a concurrent run with
+    "Another active Homebrew process is already in progress", which surfaces in
+    the panel as an install that failed for no visible reason.  Two clicks on a
+    slow install, or two devices looking at the same panel, are enough to hit it.
+
+    Refusing with 409 up front is both faster and explainable.  Acquisition is
+    non-blocking on purpose: queueing the second request behind a 900 second cask
+    install would hold a request thread for the whole time and then do work the
+    operator has long stopped waiting for.
+    """
+    with _op_locks_guard:
+        lock = _op_locks.setdefault(app_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise api_error("catalog.install_busy", app=app_id)
+    _stale_app_views()
+    try:
+        yield
+    finally:
+        _stale_app_views()
+        lock.release()
+
+
+def _log_outcome(verb: str, app_id: str, app: dict, result: dict) -> None:
+    """Record what brew actually said, at a severity matching the outcome.
+
+    A failure logged at info would be invisible: the record has to outlive the
+    dialog the operator closes, and "the app store cannot install anything" is
+    unanswerable without it.  Newlines are folded so one attempt is one grep-able
+    line.
+    """
+    log.log(
+        logging.INFO if result.get("ok") else logging.WARNING,
+        "%s %s method=%s ok=%s: %s",
+        verb,
+        app_id,
+        app.get("method"),
+        result.get("ok"),
+        (result.get("message") or "").replace("\n", " | ")[:600],
+    )
+
+
 def install_native(app_id: str, variables: dict | None = None) -> dict:
     app = next((a for a in NATIVE_APPS if a["id"] == app_id), None)
     if not app:
         raise HTTPException(404, f"unknown native app: {app_id}")
     if not Path(BREW).is_file() and app.get("method", "").startswith("brew"):
-        raise HTTPException(503, "未找到 Homebrew（/opt/homebrew/bin/brew）")
+        # Name the path actually checked. BREW is resolved at import (`which brew`
+        # first, then the two standard prefixes), so quoting a fixed
+        # /opt/homebrew path sent operators to look in the wrong place.
+        raise api_error("catalog.brew_missing", path=BREW)
 
-    # bust list cache after install attempts.  The shared brew snapshot has to
-    # go too: installs run `brew services start`, and list_native_apps() reads
-    # service state through brew_cache, so leaving that snapshot in place shows
-    # the just-started service as stopped for up to its TTL.
-    _list_cache["t"] = 0
-    _list_cache["v"] = None
-    invalidate_brew_services()
-    # The Apps page reads its own inventory snapshot, so it has to be dropped
-    # too or the app it just installed keeps showing as absent.  The import is
-    # local because these two modules each read from the other; keeping both
-    # directions lazy is what stops that from becoming an import cycle.
-    from hub import apps_manage_svc
+    with _single_flight(app_id):
+        result = _install_native(app, app_id)
+    _log_outcome("install", app_id, app, result)
+    return result
 
-    apps_manage_svc.invalidate_inventory()
 
+def _install_native(app: dict, app_id: str) -> dict:
     method = app.get("method")
     logs: list[str] = []
 
@@ -1090,19 +1180,46 @@ def install_native(app_id: str, variables: dict | None = None) -> dict:
         }
 
     if method == "brew_multi":
-        ok = True
-        for pkg in app.get("packages") or []:
+        # `ok = ok and (_brew_install_ok(...) or True)` used to stand here, which
+        # is `ok = ok and True` -- so this branch reported success no matter what
+        # brew did, and the `ok = _is_installed(app) or ok` after it could not undo
+        # that, because `or` on an already-true value never looks at the left side.
+        # Every failed brew_multi install came back with a green tick and an app
+        # that was not there, native-wireguard included.
+        pkgs = [str(p) for p in (app.get("packages") or []) if p]
+        if not pkgs:
+            raise api_error("catalog.entry_incomplete", app=app_id)
+        failed: list[str] = []
+        password_required = False
+        for pkg in pkgs:
             r = _run_brew(["install", pkg], timeout=600)
             logs.append(f"[{pkg}] {r['message']}")
-            ok = ok and (_brew_install_ok(r["message"], r["rc"]) or True)
-        ok = _is_installed(app) or ok
-        return {
-            "ok": ok,
+            if r.get("error") == "password_required":
+                password_required = True
+            if not _brew_install_ok(r["message"], r["rc"]):
+                failed.append(pkg)
+        if failed:
+            # brew exits non-zero on states that leave the package present anyway
+            # (a failed post-install step, an already-linked keg).  Ask what is
+            # installed before calling it a failure -- but only here, so the
+            # success path does not pay for the extra `brew list`.
+            present = _brew_list_installed()
+            failed = [p for p in failed if p not in present]
+        out = {
+            "ok": not failed,
             "message": "\n".join(logs)[-2000:],
             "kind": "native",
             "notes": app.get("notes") or "",
             "stack_id": app_id,
         }
+        if failed:
+            # First line, because that is all the toast shows.
+            out["message"] = (
+                f"{_MULTI_FAILED_PREFIX}{', '.join(failed)}\n" + out["message"]
+            )[-2000:]
+            if password_required:
+                out["error"] = "password_required"
+        return out
 
     if method == "script":
         sid = app.get("script_id")
@@ -1336,17 +1453,13 @@ def uninstall_native(app_id: str, *, remove_data: bool = False) -> dict:
     if not app:
         raise HTTPException(404, f"unknown native app: {app_id}")
 
-    _list_cache["t"] = 0
-    _list_cache["v"] = None
-    # Uninstall runs `brew services stop`; drop the shared snapshot so the next
-    # read does not report the stopped service as still running.
-    invalidate_brew_services()
-    # Same for the Apps page inventory.  Only the install path used to do this,
-    # so an uninstalled app went on being listed as installed for up to _INV_TTL.
-    from hub import apps_manage_svc
+    with _single_flight(app_id):
+        result = _uninstall_native(app, app_id, remove_data=remove_data)
+    _log_outcome(f"uninstall(remove_data={remove_data})", app_id, app, result)
+    return result
 
-    apps_manage_svc.invalidate_inventory()
 
+def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> dict:
     method = app.get("method")
     logs: list[str] = []
 
@@ -1387,11 +1500,12 @@ def uninstall_native(app_id: str, *, remove_data: bool = False) -> dict:
         }
 
     if method == "brew_multi":
-        ok = True
+        # No running `ok` accumulator here: it was `ok and (r["ok"] or True)`,
+        # which is a no-op, and the return below ignored it anyway.  What the
+        # operator asked for is "this app is gone", so that is what gets checked.
         for pkg in reversed(app.get("packages") or []):
             r = _run([BREW, "uninstall", pkg], timeout=300)
             logs.append(f"[{pkg}] {r['message']}")
-            ok = ok and (r["ok"] or True)  # partial ok if already gone
         return {
             "ok": not _is_installed(app),
             "message": "\n".join(logs)[-2000:] or "已卸载",

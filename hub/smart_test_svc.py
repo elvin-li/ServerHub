@@ -29,7 +29,7 @@ from pathlib import Path
 from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
-from hub.util import fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh
 
 HISTORY_PATH = DATA_DIR / "smart-tests.json"
 
@@ -97,7 +97,6 @@ _history_lock = threading.Lock()
 _scheduler_stop: threading.Event | None = None
 _scheduler_thread: threading.Thread | None = None
 
-_cache: dict = {"t": 0.0, "v": None}
 _CACHE_TTL = 30.0
 
 
@@ -650,10 +649,8 @@ def _device_report(node: str) -> dict:
         }
 
 
-def overview(force: bool = False) -> dict:
-    now = time.time()
-    if not force and _cache["v"] is not None and now - _cache["t"] < _CACHE_TTL:
-        return _cache["v"]
+@cached_snapshot(_CACHE_TTL)
+def overview() -> dict:
 
     nodes = _device_nodes()
     # One disk's SMART reads tell you nothing about another's, but in series the page
@@ -687,9 +684,8 @@ def overview(force: bool = False) -> dict:
         "smartctl_installed": Path(SMARTCTL).exists(),
         "history": history(30),
     }
-    _cache.update(t=now, v=data)
     return data
 
 
 def invalidate() -> None:
-    _cache.update(t=0.0, v=None)
+    overview.invalidate()

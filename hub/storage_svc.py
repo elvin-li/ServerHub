@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hub.paths import SMARTCTL
-from hub.util import sh, ttl_memo
+from hub.util import fan_out, sh, ttl_memo
 
 #: SMART is slow to read and slow to change: each disk costs a `diskutil info` plus a
 #: `smartctl -a`, and wear and error counters move over weeks.
@@ -313,16 +313,13 @@ def smart_devices() -> list:
     if not disk_ids:
         disk_ids = ["disk0"]
 
-    if len(disk_ids) == 1:
-        devices = [_probe_disk(disk_ids[0])]
-    else:
-        # Bounded: a Mac with many external disks should not spawn one thread per
-        # device. 4 covers the realistic case while keeping the worst-case
-        # subprocess count in check.
-        with ThreadPoolExecutor(max_workers=min(4, len(disk_ids))) as ex:
-            devices = list(ex.map(_probe_disk, disk_ids))
-
-    return devices
+    # Bounded below the shared default: a Mac with many external disks should not
+    # spawn one thread per device, and each probe is two subprocesses. 4 covers the
+    # realistic case while keeping the worst-case subprocess count in check.
+    #
+    # `fan_out` supplies the single-item-inline and empty-list cases this hand-rolled
+    # for itself, and narrows the pool to the item count.
+    return fan_out(_probe_disk, disk_ids, max_workers=4)
 
 
 def invalidate_smart() -> None:

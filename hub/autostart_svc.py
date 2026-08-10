@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import engine_up
-from hub.util import fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 
 from hub.paths import AGENTS_DIR  # noqa: E402
@@ -27,7 +27,6 @@ from hub.paths import AGENTS_DIR  # noqa: E402
 # hub.paths.BREW worked fine.
 from hub.paths import BREW  # noqa: E402
 
-_cache: dict = {"t": 0.0, "v": None}
 _TTL = 12.0
 
 
@@ -361,10 +360,8 @@ def run_autostart_now() -> dict:
 
 # ─── Overview ────────────────────────────────────────────────────────────────
 
+@cached_snapshot(_TTL)
 def overview(force: bool = False) -> dict:
-    now = time.time()
-    if not force and _cache["v"] is not None and now - _cache["t"] < _TTL:
-        return _cache["v"]
 
     # Four independent inventories — docker inspect, the shared brew snapshot, the
     # LaunchAgents directory and the login script — plus one `launchctl list` that
@@ -399,14 +396,12 @@ def overview(force: bool = False) -> dict:
         "groups": ["登录脚本", "Homebrew 服务", "LaunchAgents", "Docker 容器"],
         "hint": "Docker 用 restart 策略；brew/LaunchAgent 用登录加载。关闭 brew 服务会取消登录自启。",
     }
-    _cache.update(t=time.time(), v=v)
     return v
 
 
 def set_autostart(item_id: str, enabled: bool, policy: str | None = None) -> dict:
     """Toggle autostart. id: docker-ctr:name | brew:name | launchd:label | script:..."""
-    _cache["t"] = 0
-    _cache["v"] = None
+    overview.invalidate()
     if ":" not in item_id:
         raise HTTPException(400, "id 格式: kind:name")
     kind, _, name = item_id.partition(":")
@@ -423,7 +418,6 @@ def set_autostart(item_id: str, enabled: bool, policy: str | None = None) -> dic
 
 
 def set_docker_policy(name: str, policy: str) -> dict:
-    _cache["t"] = 0
-    _cache["v"] = None
+    overview.invalidate()
     from hub import containers_svc
     return containers_svc.set_restart_policy(name, policy)

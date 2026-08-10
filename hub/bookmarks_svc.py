@@ -7,7 +7,6 @@ health:
 """
 from __future__ import annotations
 
-import concurrent.futures
 import ipaddress
 import ssl
 import time
@@ -17,8 +16,8 @@ import urllib.request
 
 from hub.config import cfg
 from hub.host_address import resolve_value
+from hub.util import cached_snapshot, fan_out
 
-_cache = {"t": 0.0, "v": None}
 _TTL = 45.0
 
 #: A probe is an HTTP reachability check, nothing else.  urlopen also speaks
@@ -299,10 +298,17 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
     }
 
 
-def list_bookmarks(force: bool = False) -> dict:
-    if not force and _cache["v"] and time.time() - _cache["t"] < _TTL:
-        return _cache["v"]
+@cached_snapshot(_TTL)
+def list_bookmarks() -> dict:
+    """Bookmark health, cached for _TTL with one in-flight refresh.
 
+    This cache had no lock at all before, which cost two things on a dashboard with
+    more than one tab open: the probe sweep ran once per concurrent request instead
+    of once -- up to eight HTTP probes each, the entire cost of this module -- and
+    the two-key publish could be observed half-applied, so a reader saw the new
+    timestamp beside the previous payload and served a stale answer as fresh for a
+    whole TTL.
+    """
     links = resolve_value(list(cfg().get("quick_links") or []))
     # also from overrides urls
     for sid, raw in (cfg().get("overrides") or {}).items():
@@ -338,18 +344,19 @@ def list_bookmarks(force: bool = False) -> dict:
         else:
             to_probe.append((i, link, backend))
 
-    probes: dict[int, dict] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {
-            ex.submit(_probe, link["url"]): (i, link, backend)
-            for i, link, backend in to_probe
-        }
-        for fut, (i, link, backend) in futs.items():
-            try:
-                probe = fut.result()
-            except Exception as e:
-                probe = {"ok": False, "status": None, "ms": 0, "error": str(e)}
-            probes[i] = _compose_result(link, probe, backend)
+    def probe(url: str) -> dict:
+        """Never raises: one unreachable bookmark must not drop the other rows."""
+        try:
+            return _probe(url)
+        except Exception as e:  # noqa: BLE001 -- surfaced in the row
+            return {"ok": False, "status": None, "ms": 0, "error": str(e)}
+
+    probes: dict[int, dict] = {
+        i: _compose_result(link, result, backend)
+        for (i, link, backend), result in zip(
+            to_probe, fan_out(probe, [link["url"] for _, link, _ in to_probe])
+        )
+    }
 
     ordered = []
     seen = set()
@@ -374,5 +381,4 @@ def list_bookmarks(force: bool = False) -> dict:
         "down": down,
         "checked_at": time.strftime("%H:%M:%S"),
     }
-    _cache.update(t=time.time(), v=v)
     return v

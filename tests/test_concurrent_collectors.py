@@ -222,8 +222,8 @@ class AutostartOverviewTests(unittest.TestCase):
     """The four inventories behind the page are independent of one another."""
 
     def setUp(self):
-        autostart_svc._cache.update(t=0.0, v=None)
-        self.addCleanup(autostart_svc._cache.update, t=0.0, v=None)
+        autostart_svc.overview.invalidate()
+        self.addCleanup(autostart_svc.overview.invalidate)
 
     def _overview(self):
         tracker = Concurrency(delay=0.08)
@@ -302,9 +302,9 @@ class SmartOverviewTests(unittest.TestCase):
     NODES = ["/dev/disk0", "/dev/disk2", "/dev/disk4", "/dev/disk6"]
 
     def setUp(self):
-        smart_test_svc._cache.update(t=0.0, v=None)
+        smart_test_svc.overview.invalidate()
         smart_test_svc._device_type_cache.clear()
-        self.addCleanup(smart_test_svc._cache.update, t=0.0, v=None)
+        self.addCleanup(smart_test_svc.overview.invalidate)
         self.addCleanup(smart_test_svc._device_type_cache.clear)
 
     def _overview(self, raw=None):
@@ -637,8 +637,8 @@ class SnapshotOverviewTests(unittest.TestCase):
     MOUNTS = ["/", "/Volumes/Data", "/Volumes/Media", "/Volumes/Archive"]
 
     def setUp(self):
-        snapshots_svc._overview_cache.update(t=0.0, v=None)
-        self.addCleanup(snapshots_svc._overview_cache.update, t=0.0, v=None)
+        snapshots_svc.overview.invalidate()
+        self.addCleanup(snapshots_svc.overview.invalidate)
 
     def _overview(self, snaps=None):
         tracker = Concurrency()

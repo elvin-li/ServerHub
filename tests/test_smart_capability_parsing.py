@@ -237,9 +237,9 @@ class ExtendedTestActuallyRunsTests(unittest.TestCase):
 
     def setUp(self):
         smart_test_svc._device_type_cache.clear()
-        smart_test_svc._cache.update(t=0.0, v=None)
+        smart_test_svc.overview.invalidate()
         self.addCleanup(smart_test_svc._device_type_cache.clear)
-        self.addCleanup(smart_test_svc._cache.update, t=0.0, v=None)
+        self.addCleanup(smart_test_svc.overview.invalidate)
         self.started: list[list[str]] = []
         self.journal: list[dict] = []
 

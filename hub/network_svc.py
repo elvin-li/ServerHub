@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import HTTPException
@@ -244,9 +245,7 @@ def _build_network_services() -> list:
 
     # service_info() spawns 3 networksetup calls each; fan out so the network
     # page cost is one slow call rather than N-services × 3 sequential calls.
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(parsed)))) as ex:
-        infos = list(ex.map(lambda p: service_info(p["name"]), parsed))
+    infos = fan_out(lambda p: service_info(p["name"]), parsed)
 
     for p, info in zip(parsed, infos):
         services.append({
@@ -1577,12 +1576,8 @@ def docker_networks_detail() -> list:
             "builtin": name in ("bridge", "host", "none"),
         }
 
-    if not rows:
-        return []
     # `docker network inspect` per network is the bottleneck — fan out.
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as ex:
-        return list(ex.map(_detail, rows))
+    return fan_out(_detail, rows)
 
 
 def docker_network_connect(network: str, container: str) -> dict:
@@ -1673,8 +1668,11 @@ def _bust():
 def _build_overview(force_services: bool = False) -> dict:
     # Every collector below is an independent subprocess-bound call; run them
     # concurrently so page latency ≈ the single slowest call, not their sum.
-    from concurrent.futures import ThreadPoolExecutor
-
+    #
+    # Named futures rather than `fan_out` deliberately: twelve heterogeneous results
+    # with per-collector fallbacks, where positional unpacking would silently pair a
+    # value with the wrong key. `fan_out` is the right tool for mapping one probe
+    # over many like items, which is what the rest of this module uses it for.
     def _safe(fn, default):
         try:
             return fn()

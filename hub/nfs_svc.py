@@ -26,7 +26,7 @@ from pathlib import Path
 from hub.macos_admin import run_admin_sequence
 from hub.paths import DATA_DIR
 from hub.secure_io import write_secret_text
-from hub.util import sh
+from hub.util import cached_snapshot, sh
 
 NFSD = "/sbin/nfsd"
 SHOWMOUNT = "/usr/bin/showmount"
@@ -53,7 +53,6 @@ _PROTECTED_ROOTS = (
     "/usr", "/dev", "/cores", "/Applications",
 )
 
-_status_cache: dict = {"t": 0.0, "v": None}
 _CACHE_TTL = 15.0
 
 
@@ -285,10 +284,8 @@ def check_exports() -> dict:
     return {"ok": rc == 0, "detail": text[:600]}
 
 
+@cached_snapshot(_CACHE_TTL)
 def overview(force: bool = False) -> dict:
-    now = time.time()
-    if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _CACHE_TTL:
-        return _status_cache["v"]
     entries = read_exports()
     status = _nfsd_status()
     data = {
@@ -301,12 +298,11 @@ def overview(force: bool = False) -> dict:
         "active": _active_exports() if status["running"] else [],
         "check": check_exports() if EXPORTS_PATH.exists() else {"ok": True, "detail": ""},
     }
-    _status_cache.update(t=now, v=data)
     return data
 
 
 def invalidate() -> None:
-    _status_cache.update(t=0.0, v=None)
+    overview.invalidate()
 
 
 # ── mutations ────────────────────────────────────────────────────────────────
