@@ -53,6 +53,7 @@ from hub import (  # noqa: E402
     containers_svc,
     disk_manage_svc,
     disk_power_svc,
+    disk_snapshot,
     health_svc,
     launchd_cache,
     native_catalog,
@@ -1140,10 +1141,15 @@ class DiskPowerListingTests(unittest.TestCase):
         )
         state = power_state or slow(lambda *a, **kw: "idle")
 
+        # The mount table and the root-disk reads live in hub.disk_snapshot now,
+        # shared with the volume list and the manage listing, so they are intercepted
+        # there as well as here -- the counter has to see them wherever they run.
         with (
             mock.patch.object(disk_power_svc, "_list_whole_disks", lambda: list(self.IDS)),
             mock.patch.object(disk_power_svc, "sh", fake_sh),
             mock.patch.object(disk_power_svc, "subprocess", FakeSubprocess),
+            mock.patch.object(disk_snapshot, "sh", fake_sh),
+            mock.patch.object(disk_snapshot, "subprocess", FakeSubprocess),
             mock.patch.object(disk_power_svc, "_diskutil_info", info),
             mock.patch.object(disk_power_svc, "_power_state", state),
         ):
@@ -1206,12 +1212,35 @@ class DiskPowerListingTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in rows], ["disk0", "disk2", "disk6"])
 
     def test_invalidation_drops_both_derived_reads(self):
-        self._run()
-        self.assertIsNotNone(disk_power_svc._df_cache)
-        self.assertIsNotNone(disk_power_svc._root_disks)
+        """Asserted through a re-read rather than through the module's globals.
+
+        Both reads moved into the snapshot shared with the volume list and the manage
+        listing, so `_df_cache` and `_root_disks` no longer exist here.  Counting the
+        subprocess is the durable form of the same question: after
+        `invalidate_power_disks()` the next listing must go back to the host.
+        """
+        _, _, first = self._run()
+        self.assertEqual(first["/bin/df -P -k"], 1)
+
+        # Without invalidating, a second listing reuses the shared table.
+        disk_power_svc.list_power_disks.invalidate()
+        _, _, second = self._run()
+        self.assertEqual(
+            second["/bin/df -P -k"], 0,
+            "the shared mount table should still have been warm",
+        )
+
+        disk_power_svc.list_power_disks.invalidate()
         disk_power_svc.invalidate_power_disks()
-        self.assertIsNone(disk_power_svc._df_cache)
-        self.assertIsNone(disk_power_svc._root_disks)
+        _, _, third = self._run()
+        self.assertEqual(
+            third["/bin/df -P -k"], 1,
+            "invalidate_power_disks() left the mount table cached",
+        )
+        self.assertLessEqual(
+            third["/usr/sbin/diskutil info /"], 1,
+            "the root-disk question should be asked once per listing at most",
+        )
 
 
 class AppsInventoryTests(unittest.TestCase):
@@ -2090,11 +2119,20 @@ class HealthCheckSingleFlightTests(unittest.TestCase):
         self.calls = collections.Counter()
         self._lock = threading.Lock()
 
+    #: A listing with a row in it.  An empty one would mean the read failed, and the
+    #: shared cache deliberately does not remember a failure -- so a blank fixture
+    #: would make every reader retry and this test would be measuring that instead of
+    #: single-flight.
+    LISTING = "PID\tStatus\tLabel\n4242\t0\tlocal.alpha\n"
+
     def _sh(self, cmd, *a, **kw):
-        key = " ".join(str(c) for c in (cmd[:2] if isinstance(cmd, (list, tuple)) else [cmd]))
+        argv = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
+        key = " ".join(str(c) for c in argv[:2])
         with self._lock:
             self.calls[key] += 1
         time.sleep(PROBE_DELAY)
+        if key == "/bin/launchctl list":
+            return 0, self.LISTING, ""
         return 0, "", ""
 
     def test_the_collection_does_not_repeat_per_reader(self):

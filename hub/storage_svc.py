@@ -6,6 +6,7 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from hub.disk_snapshot import df_lines
 from hub.paths import SMARTCTL
 from hub.util import fan_out, sh, ttl_memo
 
@@ -39,8 +40,15 @@ def _parent_disk_id(filesystem: str) -> str | None:
 
 def list_volumes() -> list:
     items = []
-    rc, out, _ = sh(["df", "-P", "-k"], timeout=8)
-    for line in out.splitlines()[1:]:
+    # The shared mount table (hub/disk_snapshot.py).  This module spelled the command
+    # `df` and disk_power_svc spelled it `/bin/df`, so `/api/storage` read the table
+    # twice and neither spawn looked like a duplicate of the other -- and the bare
+    # spelling also depended on the panel's inherited PATH.
+    #
+    # The old call ignored its exit status and indexed straight into the output, so a
+    # `df` timeout silently degraded this to "one volume, /" instead of reporting a
+    # failure.  The shared read checks rc and does not cache a failed table.
+    for line in df_lines()[1:]:
         parts = line.split()
         if len(parts) < 6:
             continue

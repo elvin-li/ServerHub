@@ -127,17 +127,40 @@ class BrewCacheInvalidationTests(unittest.TestCase):
         self.assertIsNone(self._cached())
 
     def test_native_install_and_uninstall_invalidate_the_snapshot(self):
-        # The native catalog installs formulae and starts their services, so it
-        # invalidates for the same reason -- verified at the source level
-        # because the real paths shell out to brew.
+        """Both paths must drop the shared brew snapshot.
+
+        Asserted through the helper rather than by counting raw
+        ``invalidate_brew_services()`` occurrences.  That count was 2 when install and
+        uninstall each inlined the call; they now share ``_stale_app_views()``, which
+        ``_single_flight()`` runs *both before and after* the operation -- so the
+        occurrence count is 1 while the guarantee is strictly stronger than it was.
+        Counting call sites made the refactor look like a regression.
+        """
         src = (BASE / "hub" / "native_catalog.py").read_text(encoding="utf-8")
         self.assertIn("invalidate_brew_services", src)
-        self.assertEqual(
-            src.count("invalidate_brew_services()"),
-            2,
-            "expected both install_native and uninstall_native to drop the "
-            "shared brew snapshot",
+
+        views = src.index("def _stale_app_views")
+        body = src[views: src.index("\ndef ", views + 10)]
+        self.assertIn(
+            "invalidate_brew_services()", body,
+            "_stale_app_views no longer drops the shared brew snapshot",
         )
+
+        flight = src.index("def _single_flight")
+        flight_body = src[flight: src.index("\ndef ", flight + 10)]
+        self.assertEqual(
+            flight_body.count("_stale_app_views()"), 2,
+            "an install can take minutes: the snapshot has to be dropped before it "
+            "as well as after, or a read arriving during it refills the cache with "
+            "pre-install state and gives it a fresh timestamp",
+        )
+
+        for entry in ("def install_native", "def uninstall_native"):
+            start = src.index(entry)
+            self.assertIn(
+                "_single_flight(app_id)", src[start: src.index("\ndef ", start + 10)],
+                f"{entry} does not go through the invalidating guard",
+            )
 
     def test_mutators_import_the_invalidator(self):
         # An invalidation call that is not imported is an ImportError at module

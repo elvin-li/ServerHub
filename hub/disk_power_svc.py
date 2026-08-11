@@ -13,15 +13,21 @@ from __future__ import annotations
 import plistlib
 import re
 import subprocess
-import threading
 import time
 from pathlib import Path
 
 from fastapi import HTTPException
 
 from hub.disk_manage_svc import invalidate_disk_info
+from hub.disk_snapshot import (
+    df_lines,
+    invalidate_disks,
+    physical_whole_disks,
+    root_devices,
+    root_info,
+)
 from hub.paths import SMARTCTL
-from hub.util import fan_out, sh, ttl_memo
+from hub.util import cached_snapshot, fan_out, sh, ttl_memo
 
 # Whole-disk identifiers only
 DISK_RE = re.compile(r"^disk\d+$")
@@ -48,48 +54,29 @@ def _diskutil_info(node: str) -> dict:
 
 
 def _list_whole_disks() -> list[str]:
-    p = subprocess.run(
-        ["/usr/sbin/diskutil", "list", "-plist", "physical"],
-        capture_output=True, timeout=_DISKUTIL_TIMEOUT,
-    )
-    if p.returncode != 0:
-        # fallback text
-        rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=_DISKUTIL_TIMEOUT)
-        ids = []
-        for m in re.finditer(r"/dev/(disk\d+)\s", out or ""):
-            if m.group(1) not in ids:
-                ids.append(m.group(1))
-        return ids
-    try:
-        pl = plistlib.loads(p.stdout)
-        return list(pl.get("WholeDisks") or [])
-    except Exception:
-        return []
+    """Physical whole disks, from the snapshot shared with disk_manage_svc.
+
+    `/api/storage` fans this module out alongside that one, so both reached the same
+    cold `diskutil list -plist physical` in the same millisecond.
+    """
+    return list(physical_whole_disks())
 
 
-#: The mount table, shared across one listing.  `df` reports every volume on the
-#: machine in a single call, but the per-disk helper below asked for the whole table
-#: and then threw away every row belonging to another disk -- so a listing ran one
-#: full `df` per disk to read one table.  Locked for the same reason as the root-disk
-#: memo: the per-disk work is concurrent now.
-_df_cache: list[str] | None = None
-_df_lock = threading.Lock()
-
-
-def _df_lines() -> list[str]:
-    """`df -P -k` output lines, read once per listing."""
-    global _df_cache
-    with _df_lock:
-        if _df_cache is None:
-            rc, out, _ = sh(["/bin/df", "-P", "-k"], timeout=8)
-            _df_cache = (out or "").splitlines() if rc == 0 else []
-        return _df_cache
+#: The mount table.  `df` reports every volume on the machine in a single call, but
+#: the per-disk helper below asked for the whole table and then threw away every row
+#: belonging to another disk -- so a listing ran one full `df` per disk to read one
+#: table.  That much was fixed by a per-listing memo; the table now lives in
+#: hub.disk_snapshot, which widens the sharing to `storage_svc`, the other module on
+#: this endpoint that reads it -- and which spelled the command `df` where this one
+#: spelled it `/bin/df`, so the duplicate did not show up when grouping spawns by
+#: argv.
+def _df_lines() -> tuple[str, ...]:
+    """`df -P -k` output lines, read once per request."""
+    return df_lines()
 
 
 def _invalidate_df() -> None:
-    global _df_cache
-    with _df_lock:
-        _df_cache = None
+    invalidate_disks()
 
 
 def _volumes_on_disk(disk_id: str) -> list[dict]:
@@ -126,69 +113,64 @@ def _volumes_on_disk(disk_id: str) -> list[dict]:
 #: to be re-read inside the per-disk loop: three subprocesses (`diskutil info /`,
 #: `df -P /`, `diskutil info -plist /`) times the number of disks, to answer a
 #: question with one answer.  Resolved once per listing instead.
-_root_disks: set[str] | None = None
-_root_disks_lock = threading.Lock()
+#: Matches hub.disk_snapshot's window: two of the three reads behind this reach the
+#: host through that module, so a longer life here would just hold their answers
+#: after they had expired.
+_ROOT_DISKS_TTL = 5.0
 
 
-def _root_whole_disks() -> set[str]:
+@cached_snapshot(_ROOT_DISKS_TTL)
+def _root_whole_disks() -> frozenset[str]:
     """Every whole-disk id that ``/`` resolves to, read once and cached.
 
-    The lock is not decoration: the per-disk loop is now concurrent, and an
-    unguarded memo let every thread that found it empty start its own copy of all
-    three reads -- turning one `df` into one per worker.
+    Single-flight is not decoration: the per-disk loop is concurrent, and the
+    unguarded memo this replaced let every thread that found it empty start its own
+    copy of all three reads -- turning one `df` into one per worker.
+
+    A TTL rather than a memo cleared at the start of each listing.  The clearing was
+    correct while all three reads were local to this module, but two of them are now
+    shared with `disk_manage_svc` and `storage_svc`, so dropping them per listing
+    threw away a read another section of the same request had already paid for --
+    which put a second `df -P -k` back into `/api/storage`.  Expiring on its own is
+    strictly fresher than the 15s listing cache in front of it, and every path that
+    changes disk presence still calls invalidate_power_disks().
     """
-    global _root_disks
-    with _root_disks_lock:
-        if _root_disks is not None:
-            return _root_disks
+    found: set[str] = set()
 
-        found: set[str] = set()
+    # Three independent reads, unioned rather than preferred in order, because this
+    # decides whether the panel will offer to spin down or eject a disk.  Narrowing
+    # the union is how that ends up offered for the boot disk, so the text scrape
+    # below stays even though the plist read overlaps it.
 
-        # The device `/` sits on, as diskutil spells it.
-        rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
-        if rc == 0:
-            found.update(re.findall(r"/dev/(disk\d+)", out or ""))
+    # The device `/` sits on, as diskutil spells it.  Kept local: this is the one of
+    # the three that no other module duplicates.
+    rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
+    if rc == 0:
+        found.update(re.findall(r"/dev/(disk\d+)", out or ""))
 
-        # The same question through df, which reports the mounted device directly.
-        rc, root_dev, _ = sh(["/bin/df", "-P", "/"], timeout=5)
-        if rc == 0:
-            for line in (root_dev or "").splitlines()[1:]:
-                parts = line.split()
-                if not parts:
-                    continue
-                m = re.search(r"/dev/(disk\d+)", parts[0])
-                if m:
-                    found.add(m.group(1))
+    # The same question through df, which reports the mounted device directly -- now
+    # filtered out of the shared mount table instead of running its own `df -P /`,
+    # which is that table with one row.
+    found.update(root_devices())
 
-        # APFS: root lives on a synthesised disk whose physical store is elsewhere,
-        # so neither read above names the disk an operator could spin down.
-        try:
-            p = subprocess.run(
-                ["/usr/sbin/diskutil", "info", "-plist", "/"],
-                capture_output=True, timeout=_DISKUTIL_TIMEOUT,
-            )
-            if p.returncode == 0:
-                rpl = plistlib.loads(p.stdout)
-                parent = rpl.get("ParentWholeDisk") or ""
-                if parent:
-                    found.add(str(parent))
-                for store in rpl.get("APFSPhysicalStores") or []:
-                    dev = store.get("APFSPhysicalStore") if isinstance(store, dict) else store
-                    if isinstance(dev, str):
-                        m = re.match(r"(disk\d+)", dev)
-                        if m:
-                            found.add(m.group(1))
-        except Exception:
-            pass
+    # APFS: root lives on a synthesised disk whose physical store is elsewhere, so
+    # neither read above names the disk an operator could spin down.
+    rpl = root_info()
+    parent = rpl.get("ParentWholeDisk") or ""
+    if parent:
+        found.add(str(parent))
+    for store in rpl.get("APFSPhysicalStores") or []:
+        dev = store.get("APFSPhysicalStore") if isinstance(store, dict) else store
+        if isinstance(dev, str):
+            m = re.match(r"(disk\d+)", dev)
+            if m:
+                found.add(m.group(1))
 
-        _root_disks = found
-        return _root_disks
+    return frozenset(found)
 
 
 def _invalidate_root_disks() -> None:
-    global _root_disks
-    with _root_disks_lock:
-        _root_disks = None
+    _root_whole_disks.invalidate()
 
 
 def _is_system_disk(info: dict, disk_id: str, volumes: list) -> bool:
@@ -271,11 +253,16 @@ def list_power_disks() -> list:
     if not ids:
         return []
 
-    # Both shared reads are resolved before fanning out, so the workers find the
-    # memos populated rather than racing to fill them.  A listing reflects the state
-    # at its own start, so they are dropped first.
-    _invalidate_df()
-    _invalidate_root_disks()
+    # Both shared reads are resolved before fanning out, so the workers find them
+    # populated rather than racing to fill them.
+    #
+    # They are no longer dropped first.  That was right while they were local to this
+    # module, but they now live in hub.disk_snapshot and are shared with the two other
+    # sections of /api/storage, which run concurrently with this one -- so clearing
+    # them here discarded a read one of those had already paid for and put a second
+    # `df -P -k` and a second `diskutil list -plist physical` back into the request.
+    # Both carry their own TTL, well inside this listing's own, and every path that
+    # changes disk presence calls invalidate_power_disks().
     _df_lines()
     _root_whole_disks()
 

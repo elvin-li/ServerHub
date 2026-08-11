@@ -102,20 +102,31 @@ def _parse(out: str) -> Listing:
 
 
 @cached_snapshot(_TTL)
-def listing() -> Listing:
+def _listing() -> Listing:
+    rc, out, _ = sh(["/bin/launchctl", "list"], timeout=_TIMEOUT)
+    return _parse(out) if rc == 0 else _EMPTY
+
+
+def listing(force: bool = False) -> Listing:
     """The launchd session listing, cached for :data:`_TTL` with one refresh.
 
     ``cached_snapshot`` rather than a sixth hand-written ``{"t": ..., "v": ...}``
     pair: it is the same TTL-plus-single-flight shape, already written once, and it
     publishes the timestamp and the payload under one lock.  The hand-written copies
     it replaced elsewhere in this tree each got one of those two details wrong.
+
+    A failed listing is returned empty, which degrades callers to the per-label
+    ``launchctl print`` rather than to a false negative -- but it is *not* kept.
+    ``cached_snapshot`` holds any value that is not ``None``, and an empty listing is
+    not ``None``, so without dropping it a single failed read would answer four
+    modules for the whole TTL.  Each of those modules used to fail independently and
+    retry on its own next call, and consolidating them must not turn that into a
+    shared sticky failure.
     """
-    rc, out, _ = sh(["/bin/launchctl", "list"], timeout=_TIMEOUT)
-    # A failed listing is cached as empty, matching what every hand-written copy did
-    # with a non-zero rc.  Callers treat "not in the listing" as "ask launchd about
-    # this one label", so a failure degrades to the per-label probe rather than to a
-    # false negative.
-    return _parse(out) if rc == 0 else _EMPTY
+    value = _listing(force=force)
+    if not value.loaded:
+        _listing.invalidate()  # type: ignore[attr-defined]
+    return value
 
 
 #: Named for what it means at the call sites -- ``invalidate_launchd()`` reads as a
@@ -123,7 +134,7 @@ def listing() -> Listing:
 #: because every path in hub/ that loads, unloads, kickstarts, enables or disables a
 #: job has to call it.  A mutation handler re-reads the state to report what it did,
 #: which is precisely the case a TTL answers with the world as it was.
-invalidate_launchd = listing.invalidate  # type: ignore[attr-defined]
+invalidate_launchd = _listing.invalidate  # type: ignore[attr-defined]
 
 
 def running_labels(force: bool = False) -> frozenset[str]:

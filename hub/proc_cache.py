@@ -38,7 +38,14 @@ _TIMEOUT = 8
 
 
 @cached_snapshot(_TTL)
-def ps_lines() -> tuple[str, ...]:
+def _ps_table() -> tuple[str, ...]:
+    rc, out, _ = sh(["/bin/ps", "aux"], timeout=_TIMEOUT)
+    # An empty tuple on failure, matching what every hand-written copy did with a
+    # non-zero rc: no rows, so no process is reported as running.
+    return tuple((out or "").splitlines()) if rc == 0 else ()
+
+
+def ps_lines(force: bool = False) -> tuple[str, ...]:
     """`ps aux` output lines including the header, cached for :data:`_TTL`.
 
     A tuple rather than a list so the cached object can be shared with concurrent
@@ -47,17 +54,22 @@ def ps_lines() -> tuple[str, ...]:
 
     ``cached_snapshot`` supplies the TTL, the single-flight refresh and the ``force``
     bypass, rather than this module hand-writing a seventh copy of that shape.
+
+    An empty table means the read failed -- `ps` prints a header on success -- and is
+    not kept: ``cached_snapshot`` holds any non-``None`` value, so one failure would
+    otherwise tell every liveness probe in the panel that nothing is running for the
+    whole TTL.
     """
-    rc, out, _ = sh(["/bin/ps", "aux"], timeout=_TIMEOUT)
-    # An empty tuple on failure, matching what every hand-written copy did with a
-    # non-zero rc: no rows, so no process is reported as running.
-    return tuple((out or "").splitlines()) if rc == 0 else ()
+    value = _ps_table(force=force)
+    if not value:
+        _ps_table.invalidate()  # type: ignore[attr-defined]
+    return value
 
 
 #: Exposed for the callers that just changed the table and must observe the change:
 #: cloudflared polls for its tunnel process to appear after a bootstrap, and the
 #: native app loader does the same after a kickstart.
-invalidate_processes = ps_lines.invalidate  # type: ignore[attr-defined]
+invalidate_processes = _ps_table.invalidate  # type: ignore[attr-defined]
 
 
 def process_matches(needle: str, *, force: bool = False) -> bool:

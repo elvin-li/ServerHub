@@ -154,7 +154,11 @@ class PrefetchCoverageTests(unittest.TestCase):
         extra = [n for n in h.info_calls if n not in EXPECTED_NODES]
         self.assertEqual(
             extra,
-            ["/"],
+            [],
+            "the batch should be the whole story. `/` used to appear here too, "
+            "because the root probe fetched it through this module's per-node cache; "
+            "it now comes from the snapshot shared with the power listing and the "
+            "volume list, so it is not this module's subprocess any more. "
             f"unexpected uncached fetches outside the batch: {extra}",
         )
 

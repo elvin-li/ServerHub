@@ -14,6 +14,12 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from hub.disk_snapshot import (
+    invalidate_disks,
+    physical_whole_disks,
+    root_devices,
+    root_info,
+)
 from hub.errors import api_error
 from hub.util import fan_out, sh
 
@@ -220,14 +226,12 @@ def _is_system_related(info: dict, device_id: str) -> bool:
                         # allow only if explicitly external volume name on /Volumes - handled above
                         if not mp.startswith("/Volumes/"):
                             return True
-    # Root device chain
-    rc, out, _ = sh(["/bin/df", "-P", "/"], timeout=5)
-    if rc == 0:
-        for line in out.splitlines()[1:]:
-            fs = line.split()[0]
-            m = re.search(r"/dev/(disk\d+)", fs)
-            if m and (device_id == m.group(1) or device_id.startswith(m.group(1) + "s")):
-                return True
+    # Root device chain.  From the shared mount table rather than this function's own
+    # `df -P /`: it is called once per node in the listing walk below, so it was one
+    # extra subprocess per volume to re-read a row the table already had.
+    for whole in root_devices():
+        if device_id == whole or device_id.startswith(whole + "s"):
+            return True
     return False
 
 
@@ -244,34 +248,29 @@ def list_managed_volumes() -> list[dict]:
         found = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=5)
         return found if isinstance(found, dict) else {}
 
+    # Three of the four now come from hub.disk_snapshot, shared with the power
+    # listing (that module name is deliberately not written here: an import guard in
+    # tests/test_disk_info_cache_invalidation.py greps this file for it, because the
+    # reverse import edge would be a cycle):
+    # /api/storage runs both modules concurrently, so each of these was reached cold
+    # by two callers in the same millisecond.
     def probe_physical() -> set[str]:
         # Real physical whole disks (disk0, external HDDs) vs synthetic APFS
         # containers (disk1/2/3…).
-        found = _plist(["/usr/sbin/diskutil", "list", "-plist", "physical"], timeout=5)
-        if not isinstance(found, dict):
-            return set()
-        return {str(x) for x in found.get("WholeDisks") or []}
+        return set(physical_whole_disks())
 
     def probe_root_df() -> set[str]:
-        found: set[str] = set()
-        rc, dfout, _ = sh(["/bin/df", "-P", "/"], timeout=5)
-        if rc == 0:
-            for line in dfout.splitlines()[1:]:
-                parts = line.split()
-                if not parts:
-                    continue
-                m = re.search(r"/dev/(disk\d+)", parts[0])
-                if m:
-                    found.add(m.group(1))
-        return found
+        return set(root_devices())
 
     def probe_root_info() -> dict:
         try:
-            return _diskutil_info("/")
+            return dict(root_info())
         except Exception:
             return {}
 
-    pl, physical_wholes, system_wholes, root_info = fan_out(
+    # `root_details`, not `root_info`: that name now belongs to the shared read this
+    # probe calls, and shadowing it here made the module look like it had two.
+    pl, physical_wholes, system_wholes, root_details = fan_out(
         lambda probe: probe(),
         [probe_tree, probe_physical, probe_root_df, probe_root_info],
         max_workers=4,
@@ -279,10 +278,10 @@ def list_managed_volumes() -> list[dict]:
     if not pl:
         return []
 
-    if root_info.get("ParentWholeDisk"):
-        system_wholes.add(root_info["ParentWholeDisk"])
+    if root_details.get("ParentWholeDisk"):
+        system_wholes.add(root_details["ParentWholeDisk"])
     # Physical store of APFS container
-    stores = root_info.get("APFSPhysicalStores") or []
+    stores = root_details.get("APFSPhysicalStores") or []
     if isinstance(stores, list):
         for s in stores:
             if isinstance(s, dict) and s.get("APFSPhysicalStore"):
@@ -488,6 +487,12 @@ def disk_action(
         # succeeded), and a whole-disk operation changes every child node, so
         # dropping the whole cache is the only correct scope.
         invalidate_disk_info()
+        # The whole-machine reads move for the same reasons and in the same cases: a
+        # mount or an erase changes the `df` table, and `mountDisk`/`eraseDisk` change
+        # what `/` resolves to on a machine booting from the affected disk.  Dropped
+        # here rather than only in the router so the service is correct when called
+        # directly.
+        invalidate_disks()
         return rc, out or "", err or ""
 
     # ---- non-destructive ----
