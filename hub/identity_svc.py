@@ -98,13 +98,13 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
         patch["host_ip"] = host_ip.strip()
     if patch:
         update_settings(patch)
-        msgs.append("已更新面板设置")
+        msgs.append("Panel settings updated")
     if computer_name:
         # Try without sudo first
         rc, out, err = sh(["/usr/sbin/scutil", "--set", "ComputerName", computer_name], timeout=5)
         if rc != 0:
-            msgs.append(f"ComputerName 需管理员权限: {err or out}")
+            msgs.append(f"Setting ComputerName needs administrator privileges: {err or out}")
         else:
-            msgs.append("已设置 ComputerName")
+            msgs.append("ComputerName set")
             sh(["/usr/sbin/scutil", "--set", "LocalHostName", computer_name.replace(" ", "-")[:63]], timeout=5)
-    return {"ok": True, "message": "; ".join(msgs) or "无变更", "identity": get_identity()}
+    return {"ok": True, "message": "; ".join(msgs) or "No changes", "identity": get_identity()}

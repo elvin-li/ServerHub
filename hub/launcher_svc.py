@@ -188,13 +188,32 @@ def set_login_enabled(enabled: bool) -> dict:
     if enabled and app is None:
         return {"ok": False, "message": "ServerHub.app is not installed in Applications"}
 
-    target = f"{DOMAIN}/{LAUNCHER_LABEL}"
+    # Write and unload the launcher this host actually installed, the same pair
+    # ``status()`` reports on.  Hard-coding the dotted label/plist here while
+    # ``status()`` used the resolved ones meant the toggle read one job and wrote
+    # another, and it failed in both directions on native and distribution
+    # installs:
+    #   * Off: bootout/disable named a label launchd does not have, unlink() hit
+    #     FileNotFoundError on the absent dotted plist, and success was judged by
+    #     that same absent path -- so the API answered ok/"disabled" while the
+    #     real ``com.elvin.serverhub-launcher`` stayed registered.  The status
+    #     poll that follows still saw ``login_enabled``, so the switch snapped
+    #     back to ON and login autostart could not be turned off at all.
+    #   * On: beside an already installed ``local.serverhub-launcher`` this added
+    #     a second, dotted plist, so login ran ``open -gj ServerHub.app`` twice.
+    # With none of the three spellings installed ``_resolve()`` returns the
+    # primary pair, which is the correct target for a fresh install: a new host
+    # should register under the canonical dotted name.
+    launcher_plist, launcher_label = resolve_launcher()
+    target = f"{DOMAIN}/{launcher_label}"
     if enabled:
         logs = Path.home() / "Library" / "Logs"
         try:
             logs.mkdir(parents=True, exist_ok=True)
-            _atomic_plist(LAUNCHER_PLIST, {
-                "Label": LAUNCHER_LABEL,
+            _atomic_plist(launcher_plist, {
+                # Must match the resolved label: launchd rejects a job whose
+                # Label disagrees with the plist it was bootstrapped from.
+                "Label": launcher_label,
                 "ProgramArguments": ["/usr/bin/open", "-gj", str(app)],
                 "RunAtLoad": True,
                 "ProcessType": "Interactive",
@@ -207,12 +226,12 @@ def set_login_enabled(enabled: bool) -> dict:
         sh(["/bin/launchctl", "bootout", target], timeout=8)
         sh(["/bin/launchctl", "enable", target], timeout=5)
         rc, out, err = sh(
-            ["/bin/launchctl", "bootstrap", DOMAIN, str(LAUNCHER_PLIST)], timeout=10
+            ["/bin/launchctl", "bootstrap", DOMAIN, str(launcher_plist)], timeout=10
         )
         # The launcher agent is one of the jobs the autostart and services pages list
         # out of the shared listing (hub/launchd_cache.py).
         invalidate_launchd()
-        ok = rc == 0 or _loaded(LAUNCHER_LABEL)
+        ok = rc == 0 or _loaded(launcher_label)
         message = (
             (out or "enabled")
             if ok
@@ -225,18 +244,23 @@ def set_login_enabled(enabled: bool) -> dict:
     )
     sh(["/bin/launchctl", "disable", target], timeout=5)
     invalidate_launchd()
+    # Remove, and judge success against, the resolved plist -- the one whose
+    # existence ``status()`` reports back as ``login_enabled``.  Deleting the
+    # dotted constant instead meant FileNotFoundError on a path that was never
+    # there, swallowed as "already gone", and then ``ok`` computed from that same
+    # absent path: a guaranteed ok/"disabled" no matter what launchd still had.
     try:
-        LAUNCHER_PLIST.unlink()
+        launcher_plist.unlink()
     except FileNotFoundError:
         pass
     except OSError as exc:
         return {"ok": False, "message": str(exc)}
-    if _loaded(LAUNCHER_LABEL):
+    if _loaded(launcher_label):
         message = bootout_out or bootout_err or (
             f"launchctl bootout failed with exit {bootout_rc}"
         )
         return {"ok": False, "message": message}
-    return {"ok": not LAUNCHER_PLIST.exists(), "message": "disabled"}
+    return {"ok": not launcher_plist.exists(), "message": "disabled"}
 
 
 def open_app() -> dict:

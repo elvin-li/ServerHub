@@ -126,7 +126,7 @@ def _worker_uptime(pid: int) -> str:
 
 
 #: One definition so the four worker states cannot drift apart in the UI.
-WORKER_LABEL = "原生 worker（转码/ML 队列）"
+WORKER_LABEL = "Native worker (transcode/ML queue)"
 
 
 def _worker_check(pid: int | None, quarantined: bool) -> dict:
@@ -150,7 +150,7 @@ def _worker_check(pid: int | None, quarantined: bool) -> dict:
     if pid and not quarantined:
         return _check(
             "immich_worker", WORKER_LABEL, "error", True,
-            f"pid={pid} 运行 {_worker_uptime(pid)}",
+            f"pid={pid} up {_worker_uptime(pid)}",
         )
     if pid:
         return _check(
@@ -180,7 +180,7 @@ def _container_state(name: str) -> tuple[bool, str]:
         timeout=8,
     )
     if rc != 0 or not out.strip():
-        return False, "未找到容器"
+        return False, "container not found"
     state, _, status = out.strip().partition("\t")
     return state == "running" and "unhealthy" not in status, status or state
 
@@ -192,8 +192,8 @@ def run_checks(force: bool = False) -> dict:
 
     # --- containers ---
     if engine_up():
-        for cname, label in (("immich_server", "Immich Server 容器"),
-                             ("immich_redis", "Immich Valkey 容器")):
+        for cname, label in (("immich_server", "Immich Server container"),
+                             ("immich_redis", "Immich Valkey container")):
             ok, detail = _container_state(cname)
             checks.append(_check(
                 f"immich_ct_{cname}", label, "error", ok, detail,
@@ -201,7 +201,7 @@ def run_checks(force: bool = False) -> dict:
             ))
     else:
         checks.append(_check(
-            "immich_engine", "容器引擎", "error", False, "OrbStack 未运行",
+            "immich_engine", "Container engine", "error", False, "OrbStack is not running",
             "open -a OrbStack",
         ))
 
@@ -210,7 +210,7 @@ def run_checks(force: bool = False) -> dict:
     pong = status == 200 and "pong" in body
     checks.append(_check(
         "immich_web", f"Immich Web/API :{WEB_PORT}", "error", pong,
-        "ping 正常" if pong else f"无响应（{status or body[:60]}）",
+        "ping ok" if pong else f"no response ({status or body[:60]})",
         "docker compose restart immich-server",
     ))
 
@@ -224,32 +224,32 @@ def run_checks(force: bool = False) -> dict:
     status, body = _http(f"http://127.0.0.1:{ML_PORT}/ping", timeout=3)
     ml_ok = status == 200
     checks.append(_check(
-        "immich_ml", f"原生 ML 服务 :{ML_PORT}（CLIP/人脸/OCR）", "error", ml_ok,
-        "ping 正常" if ml_ok else f"无响应（{status or body[:60]}）",
+        "immich_ml", f"Native ML service :{ML_PORT} (CLIP/faces/OCR)", "error", ml_ok,
+        "ping ok" if ml_ok else f"no response ({status or body[:60]})",
         "~/Services/immich/start-ml-native.sh",
     ))
 
     # --- valkey / queue broker ---
     redis_ok = bool(port_open(REDIS_PORT, "127.0.0.1"))
     checks.append(_check(
-        "immich_redis_port", f"队列 Valkey :{REDIS_PORT}", "error", redis_ok,
-        "端口可达" if redis_ok else "端口无响应，队列无法派发",
+        "immich_redis_port", f"Queue Valkey :{REDIS_PORT}", "error", redis_ok,
+        "port reachable" if redis_ok else "port unreachable — queue jobs cannot be dispatched",
         "docker compose restart redis",
     ))
 
     # --- PostgreSQL 18 (Immich cluster, distinct from PG17/TeslaMate) ---
     pg_ok = bool(port_open(PG_PORT, "127.0.0.1"))
     checks.append(_check(
-        "immich_pg18", f"PostgreSQL 18 :{PG_PORT}（Immich 库）", "error", pg_ok,
-        "端口可达" if pg_ok else "端口无响应",
+        "immich_pg18", f"PostgreSQL 18 :{PG_PORT} (Immich database)", "error", pg_ok,
+        "port reachable" if pg_ok else "port unreachable",
         "brew services start postgresql@18",
     ))
 
     # --- VideoToolbox ffmpeg shim ---
     shim_ok = FFMPEG_SHIM.is_file() and os.access(FFMPEG_SHIM, os.X_OK)
     checks.append(_check(
-        "immich_ffmpeg_shim", "VideoToolbox ffmpeg 包装器", "warn", shim_ok,
-        str(FFMPEG_SHIM) if shim_ok else "缺失或不可执行 —— 转码会退回 CPU 软编",
+        "immich_ffmpeg_shim", "VideoToolbox ffmpeg wrapper", "warn", shim_ok,
+        str(FFMPEG_SHIM) if shim_ok else "missing or not executable — transcoding falls back to CPU software encoding",
         "~/Services/immich/patch-ffmpeg-shim.sh",
     ))
 
@@ -266,10 +266,10 @@ def run_checks(force: bool = False) -> dict:
         pass
     guard_ok = shim_js.is_file() and wired
     checks.append(_check(
-        "immich_ml_url_shim", "ML 地址污染防护", "warn", guard_ok,
-        "已加载（保存设置不会打断 ML）" if guard_ok
-        else "未生效：保存任意设置后 ML 会静默失效",
-        "确认 hooks/ml_url_shim.js 存在且已在 start-worker-native.sh 中 --require",
+        "immich_ml_url_shim", "ML URL contamination guard", "warn", guard_ok,
+        "loaded (saving settings will not break ML)" if guard_ok
+        else "not active: ML fails silently after any settings save",
+        "verify hooks/ml_url_shim.js exists and is --require'd in start-worker-native.sh",
     ))
 
     # --- keepalive agent ---
@@ -282,8 +282,8 @@ def run_checks(force: bool = False) -> dict:
     # two of the three that /api/health/checks used to spawn.
     ka = "local.immich-keepalive" in loaded_labels()
     checks.append(_check(
-        "immich_keepalive", "worker 看护 LaunchAgent", "warn", ka,
-        "已加载（每 120s 巡检）" if ka else "未加载，worker 崩溃后不会自动恢复",
+        "immich_keepalive", "Worker keepalive LaunchAgent", "warn", ka,
+        "loaded (checks every 120s)" if ka else "not loaded — the worker will not recover automatically after a crash",
         "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.immich-keepalive.plist",
     ))
 

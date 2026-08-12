@@ -58,7 +58,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
             KeepAlive=True,
         )
         self.assertEqual(item["state"], "down")
-        self.assertEqual(item["detail"], "已加载未运行")
+        self.assertEqual(item["detail"], "Loaded but not running")
 
 
 if __name__ == "__main__":

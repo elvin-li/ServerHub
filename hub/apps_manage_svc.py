@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub.docker_cli import docker, engine_up
+from hub.errors import api_error
 from hub.host_address import host_ip
 from hub.paths import DOCKER
 from hub.util import cached_snapshot, fan_out, sh
@@ -93,7 +94,7 @@ def _docker_stacks() -> list[dict]:
             "kind": "docker",
             "name": s.get("name") or sid,
             "state": "ok" if running or st == "ok" else ("warn" if related else "down"),
-            "status_text": f"{running}/{len(related) or len(s.get('running_containers') or [])} 容器运行" if (related or s.get("running_containers")) else st,
+            "status_text": f"{running}/{len(related) or len(s.get('running_containers') or [])} containers running" if (related or s.get("running_containers")) else st,
             "path": path,
             "compose_file": s.get("compose_path") or (str(compose) if compose.exists() else None),
             "installed": True,
@@ -101,7 +102,7 @@ def _docker_stacks() -> list[dict]:
             "container_count": len(related) or len(s.get("running_containers") or []),
             "running_count": running,
             "autostart": auto_n > 0,
-            "autostart_detail": f"{auto_n}/{len(related)} 容器自启" if related else None,
+            "autostart_detail": f"{auto_n}/{len(related)} containers autostart" if related else None,
             "actions": acts,
             "category": "docker",
             "url": url,
@@ -120,7 +121,7 @@ def _docker_stacks() -> list[dict]:
                         "kind": "docker",
                         "name": d.name,
                         "state": "down",
-                        "status_text": "compose 目录（未登记）",
+                        "status_text": "compose directory (not registered)",
                         "path": str(d),
                         "compose_file": str(d / "docker-compose.yml") if (d / "docker-compose.yml").exists() else str(d / "compose.yml"),
                         "installed": True,
@@ -205,10 +206,10 @@ def _url_from_known_stack(sid: str) -> str | None:
 
 def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
     if not DOCKER or not Path(DOCKER).exists():
-        return {"ok": False, "message": "docker 不可用"}
+        return {"ok": False, "message": "docker is not available"}
     p = Path(compose_path)
     if not p.exists():
-        return {"ok": False, "message": f"compose 不存在: {compose_path}"}
+        return {"ok": False, "message": f"compose file not found: {compose_path}"}
     import subprocess
     try:
         r = subprocess.run(
@@ -420,7 +421,7 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
         f"===== {name} =====\n{body}"
         for name, body in zip(matching, fan_out(_container_log(lines), matching))
     ]
-    return {"ok": bool(chunks), "log": "\n\n".join(chunks) or "无日志", "source": "docker logs"}
+    return {"ok": bool(chunks), "log": "\n\n".join(chunks) or "no logs", "source": "docker logs"}
 
 
 # ─── Native ──────────────────────────────────────────────────────────────────
@@ -558,7 +559,7 @@ def _native_apps(force: bool = False) -> list[dict]:
             # already filtered to installed; state from running (None → ok)
             "state": state,
             "status_text": (
-                "运行中" if running else ("已停止" if running is False or state == "down" else "已安装")
+                "running" if running else ("stopped" if running is False or state == "down" else "installed")
             ),
             "path": None,
             "package": a.get("package"),
@@ -576,9 +577,9 @@ def _native_apps(force: bool = False) -> list[dict]:
             item["cloudflared"] = cf_extra
             if cf_extra.get("active_tunnel"):
                 item["status_text"] = (
-                    f"运行中 · {cf_extra['active_tunnel']}"
+                    f"running · {cf_extra['active_tunnel']}"
                     if running
-                    else f"已停止 · {cf_extra['active_tunnel']}"
+                    else f"stopped · {cf_extra['active_tunnel']}"
                 )
         items.append(item)
     return items
@@ -667,9 +668,9 @@ def _native_detail(source_id: str) -> dict:
             out["notes"] = (out.get("notes") or "") + " · " + (cf.get("notes") or "")
             if cf.get("active_tunnel"):
                 out["status_text"] = (
-                    f"运行中 · {cf['active_tunnel']}"
+                    f"running · {cf['active_tunnel']}"
                     if cf.get("running")
-                    else f"已停止 · {cf['active_tunnel']}"
+                    else f"stopped · {cf['active_tunnel']}"
                 )
         except Exception as e:
             out["cloudflared"] = {"ok": False, "message": str(e)}
@@ -712,7 +713,7 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
         if out or err:
             chunks.append(f"===== launchctl =====\n{(out or err or '')[-3000:]}")
     if not chunks:
-        chunks.append("未找到专用日志文件。可在「工具 → 系统日志」查看系统级日志。")
+        chunks.append("No dedicated log file found. System-level logs are available under Tools → System Logs.")
     return {"ok": True, "log": "\n\n".join(chunks), "source": "native"}
 
 
@@ -789,7 +790,7 @@ def _vm_detail(source_id: str) -> dict:
         "databases": [],
         "actions": _vm_actions(v),
         "host_ip": _host_ip(),
-        "notes": "UTM 磁盘镜像在 UTM 库目录；Orb 机器数据在 OrbStack 管理。",
+        "notes": "UTM disk images live in the UTM library directory; OrbStack machine data is managed by OrbStack.",
     }
 
 
@@ -898,7 +899,7 @@ def detail(app_id: str) -> dict:
         if app_id.startswith("native-"):
             kind, source_id = "native", app_id
         else:
-            raise HTTPException(400, "id 格式应为 kind:source 如 docker:plex / native:native-redis / vm:uuid")
+            raise api_error("apps.bad_id")
     if kind == "docker":
         return _docker_detail(source_id)
     if kind == "native":
@@ -963,7 +964,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 from hub import cloudflared_svc
                 if enabled:
                     if not cloudflared_svc.TOKEN_FILE.is_file():
-                        raise HTTPException(400, "请先选择隧道或粘贴 Token 并启动一次，再开自启")
+                        raise api_error("apps.cloudflared_token_required")
                     cloudflared_svc._write_launchagent_token()
                     return cloudflared_svc._launchctl_bootstrap()
                 return cloudflared_svc.stop()
@@ -974,10 +975,10 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 label = label or "local.filebrowser"
             if label:
                 return autostart_svc.set_launchd_autostart(label, enabled)
-            raise HTTPException(400, "该原生应用不支持切换开机自启（或需改系统设置）")
+            raise api_error("apps.autostart_unsupported")
         if kind == "vm":
-            raise HTTPException(400, "虚拟机自启请在 UTM / OrbStack 中设置")
-        raise HTTPException(400, f"不支持的 autostart kind: {kind}")
+            raise api_error("apps.vm_autostart_external")
+        raise api_error("apps.bad_autostart_kind", kind=kind)
 
     if kind == "docker":
         path = SERVICES_ROOT / source_id
@@ -1004,7 +1005,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 remove_data=bool(kwargs.get("remove_data", True)),
                 confirm=True,
             )
-        raise HTTPException(400, f"docker 不支持动作: {action_name}")
+        raise api_error("apps.docker_action_unsupported", action=action_name)
 
     if kind == "native":
         from hub import native_catalog
@@ -1036,7 +1037,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             if action_name == "restart":
                 if plist.exists():
                     return _launchctl_load(label, plist)
-                return {"ok": False, "message": f"未找到 {plist}"}
+                return {"ok": False, "message": f"{plist} not found"}
 
         # Screen Sharing / VNC — open activates macOS Screen Sharing client
         if source_id == "native-screen-sharing" and action_name == "open":
@@ -1046,12 +1047,12 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             targets = [f"vnc://{host}"]
             if host not in ("127.0.0.1", "localhost"):
                 targets.append("vnc://localhost")
-            last = {"ok": False, "message": "无法打开屏幕共享"}
+            last = {"ok": False, "message": "could not open Screen Sharing"}
             for uri in targets:
                 # open URL scheme → launches /System/Library/CoreServices/RemoteManagement/Screensharing.app
                 r = _run(["/usr/bin/open", uri], timeout=15)
                 if r.get("ok"):
-                    return {"ok": True, "message": f"已唤起屏幕共享客户端 · {uri}", "url": uri}
+                    return {"ok": True, "message": f"Screen Sharing client launched · {uri}", "url": uri}
                 last = r
             # Fallback: open Screen Sharing app directly
             r2 = _run(
@@ -1061,7 +1062,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             if r2.get("ok"):
                 return {
                     "ok": True,
-                    "message": f"已打开 Screen Sharing · vnc://{host}",
+                    "message": f"Screen Sharing opened · vnc://{host}",
                     "url": f"vnc://{host}",
                 }
             return last
@@ -1080,8 +1081,8 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 return {
                     "ok": False,
                     "message": (
-                        "请先在详情里选择隧道并启动，或粘贴 Zero Trust Token。"
-                        "（面板 → Cloudflared 详情 → 隧道维护）"
+                        "Select a tunnel in the detail page and start it first, or paste a Zero Trust token. "
+                        "(Panel → Cloudflared detail → Tunnel maintenance)"
                     ),
                 }
             if action_name == "stop":
@@ -1109,7 +1110,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                     return _run([BREW, "services", "restart", pkg], timeout=120)
             if action_name == "open" and app.get("open"):
                 return _run(["/usr/bin/open", "-a", app["open"]], timeout=15)
-        raise HTTPException(400, f"native 不支持动作: {action_name}")
+        raise api_error("apps.native_action_unsupported", action=action_name)
 
     if kind == "vm":
         from hub import vms_svc

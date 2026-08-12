@@ -96,18 +96,18 @@ def api_maintenance_run(tid: str):
     if not task:
         raise HTTPException(404, "unknown task")
     jobs.start_job(task)
-    return {"ok": True, "message": "任务已开始"}
+    return {"ok": True, "message": "Task started"}
 
 
 @router.get("/api/maintenance/{tid}/log")
 def api_maintenance_log(tid: str):
     j = jobs.get_job(tid)
     if not j:
-        return {"running": False, "rc": None, "log": "（尚未运行）"}
+        return {"running": False, "rc": None, "log": "(not run yet)"}
     return {
         "running": j["running"],
         "rc": j["rc"],
         "started": j["started"],
         "finished": j["finished"],
-        "log": "\n".join(j["log"]) or "（等待输出…）",
+        "log": "\n".join(j["log"]) or "(waiting for output…)",
     }

@@ -212,10 +212,10 @@ def _smartctl_failure(sout: str, serr: str) -> str:
     detail = " ".join(lines)[:120]
     lowered = detail.lower()
     if "not supported by device" in lowered or "unsupported" in lowered:
-        return "外置 USB/雷雳硬盘：macOS 不提供 SMART 直通，无法读取（非磁盘故障）"
+        return "External USB/Thunderbolt drive: macOS offers no SMART passthrough, so it cannot be read (not a disk fault)"
     if any(x in lowered for x in ("permission", "operation not permitted", "access denied")):
-        return "读取 SMART 需要授权：请运行 deploy/install-sudoers.sh"
-    return detail or "smartctl 不可用或需 sudo"
+        return "Reading SMART requires authorization: run deploy/install-sudoers.sh"
+    return detail or "smartctl unavailable or needs sudo"
 
 
 def _probe_disk(d: str) -> dict:
@@ -257,16 +257,37 @@ def _probe_disk(d: str) -> dict:
         rc, sout, serr = sh(["sudo", "-n", SMARTCTL, "-a", dev], timeout=10)
     if rc in (0, 4) and sout:
         sm = {}
+        attrs = []  # all raw SMART attributes for detail view
+        in_smart_section = False
+        in_ata_table = False
+        nvme_attr_idx = 0
         for line in sout.splitlines():
+            # --- summary fields (backward compat) ---
             if "Data Units Written" in line and "[" in line:
                 sm["written"] = line.split("[")[1].rstrip("]")
             elif "Percentage Used" in line:
                 sm["wear"] = line.split(":")[1].strip()
+            elif "Wear_Leveling_Count" in line:
+                parts = line.split()
+                if len(parts) >= 10:
+                    sm.setdefault("wear", f"{parts[9]}%")
             elif line.strip().startswith("Temperature:"):
                 sm["temp"] = line.split(":")[1].strip()
+            elif "Temperature_Celsius" in line:
+                parts = line.split()
+                if len(parts) >= 10:
+                    sm.setdefault("temp", f"{parts[9]} Celsius")
+            elif "Airflow_Temperature" in line:
+                parts = line.split()
+                if len(parts) >= 10:
+                    sm.setdefault("temp", f"{parts[9]} Celsius")
             elif "Power On Hours" in line or "Power_On_Hours" in line:
                 if ":" in line:
                     sm["power_on"] = line.split(":")[-1].strip()
+                else:
+                    parts = line.split()
+                    if len(parts) >= 10:
+                        sm["power_on"] = parts[9]
             elif "Serial Number:" in line:
                 sm["serial"] = line.split(":")[1].strip()
             elif "Model Number:" in line or "Device Model:" in line:
@@ -288,9 +309,63 @@ def _probe_disk(d: str) -> dict:
                 sm["pending"] = line.split()[-1]
             elif "Offline_Uncorrectable" in line:
                 sm["uncorrectable"] = line.split()[-1]
+            # --- collect ALL NVMe SMART key-value pairs ---
+            if "SMART/Health Information" in line:
+                in_smart_section = True
+                in_ata_table = False
+                continue
+            if in_smart_section and not in_ata_table:
+                stripped = line.strip()
+                if (not stripped
+                        or stripped.startswith("===")
+                        or stripped.startswith("SMART")
+                        or stripped.startswith("Read ")
+                        or stripped.startswith("Error Information")):
+                    in_smart_section = False
+                elif ":" in stripped:
+                    key, _, val = stripped.partition(":")
+                    key = key.strip()
+                    val = val.strip()
+                    if key and val and key not in (
+                        "SMART overall-health self-assessment test result",
+                    ):
+                        nvme_attr_idx += 1
+                        attrs.append({
+                            "id": nvme_attr_idx,
+                            "name": key,
+                            "value": val,
+                        })
+            # --- collect ALL ATA SMART attribute table rows ---
+            if line.startswith("ID# ATTRIBUTE_NAME"):
+                in_ata_table = True
+                continue
+            if in_ata_table:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("SMART"):
+                    in_ata_table = False
+                    in_smart_section = False
+                    continue
+                parts = stripped.split()
+                if len(parts) >= 10 and parts[0].isdigit():
+                    # If parts[8] is "-", raw is parts[9:]; else raw is parts[8:]
+                    if parts[8] == "-":
+                        raw_val = " ".join(parts[9:]) if len(parts) > 9 else "-"
+                    else:
+                        raw_val = " ".join(parts[8:])
+                    attrs.append({
+                        "id": int(parts[0]),
+                        "name": parts[1],
+                        "value": parts[3],
+                        "worst": parts[4],
+                        "thresh": parts[5],
+                        "type": parts[6],
+                        "raw": raw_val,
+                    })
         if "health" not in sm:
             critical = str(sm.get("critical_warning") or "0").lower()
             sm["health"] = "PASSED" if critical in ("0", "0x00") else "WARNING"
+        if attrs:
+            sm["attrs"] = attrs
         info["smart"] = sm
     else:
         info["error"] = _smartctl_failure(sout, serr)
@@ -398,7 +473,7 @@ def storage_overview() -> dict:
             "free_gb": cap_array["free_gb"],
             "capacity_groups": cap_array["groups"],
             "status": "started",
-            "note": "同磁盘/APFS 容器多挂载点只计一次容量",
+            "note": "Multiple mount points on the same disk/APFS container are counted only once",
         },
         "totals": {
             "volume_count": len(vols),

@@ -171,9 +171,9 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     Never force-removes running containers. Requires confirm=True.
     """
     if not confirm:
-        return {"ok": False, "message": "需要 confirm=true"}
+        return {"ok": False, "message": "confirm=true is required"}
     if not engine_up():
-        return {"ok": False, "message": "Docker 引擎未运行"}
+        return {"ok": False, "message": "the Docker engine is not running"}
     what = (what or "dangling").strip().lower()
     cmds = {
         "dangling": ["image", "prune", "-f"],
@@ -184,7 +184,7 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     if what not in cmds:
         return {
             "ok": False,
-            "message": f"未知类型: {what}",
+            "message": f"unknown prune type: {what}",
             "allowed": list(cmds.keys()),
         }
     rc, out, err = docker(*cmds[what], timeout=180)
@@ -194,7 +194,7 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     return {
         "ok": rc == 0,
         "what": what,
-        "message": (out or err or "").strip()[:2000] or ("完成" if rc == 0 else "失败"),
+        "message": (out or err or "").strip()[:2000] or ("done" if rc == 0 else "failed"),
         "df": docker_disk_usage() if rc == 0 else None,
     }
 
@@ -413,7 +413,7 @@ def _syslog_tail_uncached(minutes: int, limit: int, level: str) -> dict:
         "count": len(lines),
         "lines": lines,
         "message": (err or "")[:300] if rc != 0 else "",
-        "hint": "macOS 统一日志",
+        "hint": "macOS unified log",
     }
 
 
@@ -532,7 +532,7 @@ def _hardware_profile_uncached() -> dict:
         "sections": sections,
         "disks": disks,
         "ts": time.strftime("%H:%M:%S"),
-        "hint": "硬件信息缓存 5 分钟",
+        "hint": "Hardware info is cached for 5 minutes",
         "cached": True,
     }
     _hw_cache.update(t=time.time(), v=v)
@@ -675,7 +675,7 @@ def _check_updates_uncached() -> dict:
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "brew": brew_result,
         "macos": macos_result,
-        "hint": "仅检查不安装 · 安装请到「维护」页 · 结果缓存 10 分钟",
+        "hint": "Check only, nothing is installed · install from the Maintenance page · results cached for 10 minutes",
         "cached_ttl": _UPDATES_TTL,
     }
     _updates_cache.update(t=time.time(), v=result)
@@ -688,7 +688,7 @@ def net_ping(host: str, count: int = 3) -> dict:
     # The old blocklist enumerated shell metacharacters and never considered a
     # leading hyphen, so `-f` / `--flood` landed in ping's option position.
     if not cli_args.is_safe_hostname(host):
-        return {"ok": False, "message": "主机名含非法字符"}
+        return {"ok": False, "message": "hostname contains invalid characters"}
     host = host.strip()
     count = max(1, min(int(count or 3), 10))
     rc, out, err = sh(
@@ -705,12 +705,12 @@ def net_ping(host: str, count: int = 3) -> dict:
 
 def net_dns_lookup(name: str) -> dict:
     if not (name or "").strip():
-        return {"ok": False, "message": "空域名"}
+        return {"ok": False, "message": "domain name is empty"}
     # `dig -f /etc/passwd` treats the file as a query list, and this endpoint
     # returns command output -- an arbitrary-file-read primitive from one
     # unanchored blocklist.  Require an alphanumeric first character instead.
     if not cli_args.is_safe_hostname(name):
-        return {"ok": False, "message": "非法字符"}
+        return {"ok": False, "message": "invalid characters"}
     name = name.strip()
     results = []
     try:
@@ -819,7 +819,7 @@ def flush_dns() -> dict:
         ok_any = rc == 0
     return {
         "ok": ok_any,
-        "message": "DNS 缓存已刷新" if ok_any else "部分失败（可能需要管理员权限）",
+        "message": "DNS cache flushed" if ok_any else "partially failed (may need administrator privileges)",
         "detail": msgs,
     }
 
@@ -885,7 +885,7 @@ def launchd_agents_summary() -> dict:
         "count": len(items),
         "agents": items,
         "dir": str(agents_dir),
-        "hint": "用户级 LaunchAgents · 定时见调度页",
+        "hint": "User-level LaunchAgents · see the Scheduler page for timers",
     }
 
 

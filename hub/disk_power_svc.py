@@ -19,6 +19,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub.disk_manage_svc import invalidate_disk_info
+from hub.errors import api_error
 from hub.disk_snapshot import (
     df_lines,
     invalidate_disks,
@@ -208,15 +209,27 @@ def list_power_disks() -> list:
         return []
 
     # Both shared reads are resolved before fanning out, so the workers find them
-    # populated rather than racing to fill them.
+    # populated rather than racing to fill them -- and they are resolved *together*,
+    # because neither reads the other and in series they were two more levels on the
+    # critical path of every page that lists disks.
     #
-    # They are no longer dropped first.  That was right while they were local to this
-    # module, but they now live in hub.disk_snapshot and are shared with the two other
-    # sections of /api/storage, which run concurrently with this one -- so clearing
-    # them here discarded a read one of those had already paid for and put a second
-    # `df -P -k` and a second `diskutil list -plist physical` back into the request.
-    # Both carry their own TTL, well inside this listing's own, and every path that
-    # changes disk presence calls invalidate_power_disks().
+    # `_root_whole_disks` reaches the mount table itself, through one of its three
+    # union members.  That is not a double read: both go through the same
+    # single-flight cache, so whichever arrives second waits for the first rather
+    # than spawning again.  Keeping the explicit `_df_lines` here anyway, because the
+    # per-disk workers below need the table and depending on another function's
+    # internals to warm it would be a trap for the next edit.
+    #
+    # The whole-disk list stays ahead of them: its result decides whether there is
+    # any work at all, and the early return above is worth more than one level.
+    #
+    # These are no longer dropped first.  That was right while they were local to
+    # this module, but they now live in hub.disk_snapshot and are shared with the two
+    # other sections of /api/storage, which run concurrently with this one -- so
+    # clearing them here discarded a read one of those had already paid for and put a
+    # second `df -P -k` and a second `diskutil list -plist physical` back into the
+    # request.  Both carry their own TTL, well inside this listing's own, and every
+    # path that changes disk presence calls invalidate_power_disks().
     fan_out(lambda probe: probe(), [_df_lines, _root_whole_disks], max_workers=2)
 
     # One `diskutil info` per disk, plus a smartctl probe per sleeping candidate --
@@ -237,11 +250,6 @@ def _describe_disk(disk_id: str) -> dict | None:
             # try without path
             info = _diskutil_info(disk_id)
         volumes = _volumes_on_disk(disk_id)
-        ssd = info.get("SolidState")
-        # SolidState can be missing
-        if ssd is None:
-            media = (info.get("MediaName") or "") + " " + (info.get("IORegistryEntryName") or "")
-            ssd = "SSD" in media.upper() or "NVME" in media.upper()
         protocol = info.get("BusProtocol") or info.get("Protocol") or ""
         name = (
             info.get("IORegistryEntryName")
@@ -255,6 +263,34 @@ def _describe_disk(disk_id: str) -> dict | None:
         ejectable = bool(info.get("Ejectable"))
         removable = bool(info.get("Removable") or info.get("RemovableMedia"))
         internal = bool(info.get("Internal"))
+        ssd = info.get("SolidState")
+        # SolidState can be missing (USB bridges, sleeping disks, diskutil timeout).
+        # Cascade of fallbacks: each only upgrades None → True, never downgrades
+        # to False, so the next fallback in the chain still fires.
+        if ssd is None:
+            media = (info.get("MediaName") or "") + " " + (info.get("IORegistryEntryName") or "")
+            media_upper = media.upper()
+            if "SSD" in media_upper or "NVME" in media_upper:
+                ssd = True
+        if ssd is None:
+            proto_lower = protocol.lower()
+            if "fabric" in proto_lower or "nvme" in proto_lower or "pci" in proto_lower:
+                ssd = True
+        # Last-resort: ask smartctl (only for external non-system disks, avoids
+        # the cost for internal disks where diskutil always answers).
+        if ssd is None and not system and not internal:
+            rc_s, out_s, _ = sh([SMARTCTL, "-a", node], timeout=8)
+            if rc_s in (0, 4) and out_s:
+                for sline in out_s.splitlines():
+                    if "Rotation Rate" in sline and "Solid State" in sline:
+                        ssd = True
+                        break
+                    if sline.strip().startswith("Namespace 1") or "NVMe" in sline:
+                        ssd = True
+                        break
+        # Default to False only after all fallbacks exhausted
+        if ssd is None:
+            ssd = False
         rotational = (ssd is False) or (
             not ssd and protocol.lower() in ("sata", "usb", "sas", "scsi", "secure digital")
             and not system
@@ -282,11 +318,11 @@ def _describe_disk(disk_id: str) -> dict | None:
         actions = []
         if can_sleep:
             if state in ("active", "idle"):
-                actions.append("sleep")  # 休眠/停转
+                actions.append("sleep")  # spin down / standby
                 if ejectable or removable:
                     actions.append("eject")
             if state in ("spun_down", "idle", "offline"):
-                actions.append("wake")  # 唤醒/挂载
+                actions.append("wake")  # wake / mount
             if state != "active" and (ejectable or removable or not volumes):
                 if "wake" not in actions:
                     actions.append("wake")
@@ -349,15 +385,17 @@ def invalidate_power_disks() -> None:
 
 def _hint(system, ssd, can_sleep, state) -> str:
     if system:
-        return "系统盘，禁止休眠"
+        return "System disk; sleep is not allowed"
     if ssd and not can_sleep:
-        return "内置 SSD，无需/不可休眠"
+        return "Internal SSD; sleep is unnecessary/unsupported"
     if state == "spun_down":
-        return "已休眠，需要时点「唤醒」"
+        return "Asleep; click Wake when you need it"
     if state == "offline":
-        return "已推出或不在线，插入后点「唤醒/挂载」"
+        return "Ejected or offline; plug it in and click Wake/Mount"
     if can_sleep:
-        return "可休眠：停转后再访问前请先唤醒（减少机械盘频繁启停）"
+        if ssd:
+            return "Can sleep: wake it before accessing again"
+        return "Can sleep: wake it before accessing again (avoids frequent HDD spin-up/down cycles)"
     return ""
 
 
@@ -370,7 +408,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     if not d:
         raise HTTPException(404, f"disk not found: {disk_id}")
     if d["system"] or not d["can_sleep"]:
-        raise HTTPException(403, "系统盘或不可休眠磁盘")
+        raise api_error("disk_power.protected")
     node = d["device"]
     log = []
 
@@ -390,7 +428,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
             "ok": False,
             "action": mode,
             "disk": disk_id,
-            "message": err or out or "卸载失败（可能有进程占用）",
+            "message": err or out or "unmount failed (a process may be using the volume)",
             "log": log,
         }
 
@@ -409,8 +447,8 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
             "action": "eject",
             "disk": disk_id,
             "message": (
-                "已推出。USB 机械盘一般会停转；再次使用请重新插入或点唤醒。"
-                if ok else (err2 or out2 or "推出失败")
+                "Ejected. USB HDDs usually spin down; re-plug the disk or click Wake to use it again."
+                if ok else (err2 or out2 or "eject failed")
             ),
             "log": log,
         }
@@ -426,7 +464,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
             "ok": True,
             "action": "sleep",
             "disk": disk_id,
-            "message": "已卸载并发送 standby，机械盘应已停转。需要时点「唤醒」。",
+            "message": "Unmounted and standby sent; the HDD should have spun down. Click Wake when you need it.",
             "log": log,
         }
 
@@ -436,9 +474,9 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
         "action": "sleep",
         "disk": disk_id,
         "message": (
-            "已卸载卷（设备仍保留，可点唤醒重新挂载）。"
-            "该设备不支持 smartctl standby；"
-            "外接 USB 机械盘若要彻底停转请用「推出」。"
+            "Volumes unmounted (the device node remains; click Wake to remount). "
+            "This device does not support smartctl standby; "
+            "to fully spin down an external USB HDD, use Eject."
         ),
         "log": log,
     }
@@ -459,7 +497,7 @@ def wake_disk(disk_id: str) -> dict:
                 "ok": False,
                 "action": "wake",
                 "disk": disk_id,
-                "message": f"{node} 不存在。若已推出 USB/SD，请重新插入后再唤醒。",
+                "message": f"{node} does not exist. If the USB/SD device was ejected, re-plug it before waking.",
                 "log": log,
             }
 
@@ -490,7 +528,7 @@ def wake_disk(disk_id: str) -> dict:
         "ok": ok,
         "action": "wake",
         "disk": disk_id,
-        "message": (out2 or "已挂载/唤醒") if ok else (err2 or out2 or "挂载失败"),
+        "message": (out2 or "mounted/awake") if ok else (err2 or out2 or "mount failed"),
         "log": log,
     }
 

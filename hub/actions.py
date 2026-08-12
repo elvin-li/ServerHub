@@ -72,7 +72,7 @@ def vm_restart_async(name):
             time.sleep(3)
         subprocess.run([UTMCTL, "start", name], timeout=60)
     threading.Thread(target=job, daemon=True).start()
-    return 0, "重启已开始（约 1-2 分钟）", ""
+    return 0, "Restart started (takes about 1-2 minutes)", ""
 
 
 def run_action(target, action):
@@ -151,12 +151,12 @@ def run_action(target, action):
         if action == "start":
             rc, o, e = sh([ORB, "start"], timeout=60)
             if rc == 0:
-                return rc, o or "OrbStack 已启动", e
+                return rc, o or "OrbStack started", e
             return sh(["open", "-ga", "OrbStack"])
         if action == "stop":
             rc, o, e = sh([ORB, "stop"], timeout=60)
             if rc == 0:
-                return rc, o or "OrbStack 已停止", e
+                return rc, o or "OrbStack stopped", e
             return sh(["osascript", "-e", 'quit app "OrbStack"'], timeout=20)
     if kind == "script":
         if action in ("stop", "restart") and meta.get("stop"):

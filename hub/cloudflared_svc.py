@@ -16,8 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import HTTPException
-
+from hub.errors import api_error
 from hub.paths import AGENTS_DIR, BREW
 from hub import secure_io
 from hub.launchd_cache import invalidate_launchd
@@ -140,7 +139,7 @@ def _bin() -> str:
     w = sh(["/usr/bin/which", "cloudflared"], timeout=5)[1].strip()
     if w and Path(w).is_file():
         return w
-    raise HTTPException(503, "未找到 cloudflared（请先在应用商店安装「Cloudflared（原生）」）")
+    raise api_error("cloudflared.not_installed")
 
 
 def _load_state() -> dict:
@@ -395,16 +394,16 @@ def fetch_token(tunnel: str) -> str:
     """Fetch run token for named tunnel (requires cert.pem)."""
     tunnel = (tunnel or "").strip()
     if not tunnel:
-        raise HTTPException(400, "请指定隧道名称或 UUID")
+        raise api_error("cloudflared.tunnel_required")
     if not _logged_in():
-        raise HTTPException(400, "尚未登录 Cloudflare（缺少 cert.pem），请先完成登录")
+        raise api_error("cloudflared.not_logged_in")
     rc, out, err = sh([_bin(), "tunnel", "token", tunnel], timeout=45)
     token = (out or "").strip().splitlines()
     token = (token[-1] if token else "").strip()
     if rc != 0 or not token or len(token) < 40:
-        raise HTTPException(
-            400,
-            f"无法获取隧道 token：{(err or out or 'unknown')[-500:]}",
+        raise api_error(
+            "cloudflared.token_fetch_failed",
+            error=(err or out or "unknown")[-500:],
         )
     return token
 
@@ -413,7 +412,7 @@ def _write_token(token: str) -> Path:
     _ensure_dirs()
     token = (token or "").strip()
     if len(token) < 40:
-        raise HTTPException(400, "Token 无效（过短）")
+        raise api_error("cloudflared.invalid_token")
     # The tunnel token grants ingress to this LAN, so it must never exist with
     # default permissions, not even for the moment before a chmod.
     secure_io.write_secret_text(TOKEN_FILE, token + "\n")
@@ -424,7 +423,7 @@ def _write_launchagent_token() -> Path:
     """LaunchAgent: cloudflared tunnel run --token-file ..."""
     _ensure_dirs()
     if not TOKEN_FILE.is_file():
-        raise HTTPException(400, "尚未保存 tunnel token")
+        raise api_error("cloudflared.no_token")
     bin_path = _bin()
     # Rendered one <string> per argv element, so the workaround flags land as
     # real separate arguments (launchd does no word splitting).
@@ -502,7 +501,7 @@ def _launchctl_bootstrap() -> dict:
     _launchctl_bootout()
     time.sleep(0.4)
     if not PLIST.is_file():
-        return {"ok": False, "message": f"缺少 {PLIST}"}
+        return {"ok": False, "message": f"Missing {PLIST}"}
     rc, out, err = sh(
         ["/bin/launchctl", "bootstrap", f"gui/{uid}", str(PLIST)],
         timeout=20,
@@ -532,7 +531,7 @@ def _launchctl_bootstrap() -> dict:
     # and report ok=True alongside "start command issued, check the log".
     return {
         "ok": ok or running,
-        "message": msg.strip() or ("已启动" if running else "启动命令已执行，请查看日志"),
+        "message": msg.strip() or ("Started" if running else "Start command issued; check the log"),
     }
 
 
@@ -589,7 +588,7 @@ def status() -> dict:
         "cert_path": str(CERT) if CERT.is_file() else None,
         "running": running,
         "state": "ok" if running else "down",
-        "status_text": "运行中" if running else "已停止",
+        "status_text": "Running" if running else "Stopped",
         "active_tunnel": st.get("tunnel_name") or st.get("tunnel_id"),
         "mode": st.get("mode") or ("token" if TOKEN_FILE.is_file() else None),
         "has_token": TOKEN_FILE.is_file(),
@@ -601,9 +600,9 @@ def status() -> dict:
         "log_path": str(LOG_FILE),
         "config_path": str(CONFIG_YML) if CONFIG_YML.is_file() else None,
         "notes": (
-            "用面板选择已有隧道或粘贴 Zero Trust Token 即可启停。"
-            "路由/子域名请在 Cloudflare Zero Trust 控制台配置（推荐），"
-            "无需打开远程桌面。"
+            "Pick an existing tunnel or paste a Zero Trust token to start/stop. "
+            "Configure routes/subdomains in the Cloudflare Zero Trust dashboard "
+            "(recommended); no Remote Desktop needed."
         ),
     }
 
@@ -614,7 +613,7 @@ def login_start() -> dict:
         return {
             "ok": True,
             "already": True,
-            "message": f"已登录（{CERT}）",
+            "message": f"Already logged in ({CERT})",
             "logged_in": True,
         }
     _ensure_dirs()
@@ -622,7 +621,7 @@ def login_start() -> dict:
     if not _terminate_login_process():
         return {
             "ok": False,
-            "message": "无法停止上一登录进程，请稍后重试",
+            "message": "Could not stop the previous login process; try again later",
             "logged_in": False,
             "login_pending": True,
         }
@@ -667,14 +666,14 @@ def login_start() -> dict:
         if proc.poll() is None:
             return {
                 "ok": False,
-                "message": "已启动登录进程，但未解析到 URL，请查看登录日志或在本机浏览器执行 cloudflared tunnel login",
+                "message": "Login process started but no URL was found; check the login log or run cloudflared tunnel login in a local browser session",
                 "login_pending": True,
                 "log": buf[-1500:],
             }
-        return {"ok": False, "message": "登录失败\n" + buf[-1500:]}
+        return {"ok": False, "message": "Login failed\n" + buf[-1500:]}
     return {
         "ok": True,
-        "message": "请在浏览器打开下方链接，用 Cloudflare 账号授权（可在手机/其它电脑打开）",
+        "message": "Open the link below in a browser and authorize with your Cloudflare account (a phone or another computer works too)",
         "login_url": url,
         "login_pending": True,
         "logged_in": False,
@@ -691,7 +690,7 @@ def login_poll() -> dict:
         return {
             "ok": stopped,
             "logged_in": True,
-            "message": "登录成功" if stopped else "登录成功，但登录进程清理失败，请稍后重试",
+            "message": "Login successful" if stopped else "Login successful, but cleaning up the login process failed; try again later",
         }
     url = LOGIN_URL_FILE.read_text().strip() if LOGIN_URL_FILE.is_file() else None
     return {
@@ -699,16 +698,16 @@ def login_poll() -> dict:
         "logged_in": False,
         "login_pending": _login_process_pending(),
         "login_url": url,
-        "message": "等待浏览器完成授权…",
+        "message": "Waiting for the browser to finish authorization…",
     }
 
 
 def create_tunnel(name: str) -> dict:
     name = re.sub(r"[^a-zA-Z0-9._-]", "", (name or "").strip())
     if not name:
-        raise HTTPException(400, "隧道名无效（仅字母数字 ._-）")
+        raise api_error("cloudflared.invalid_name")
     if not _logged_in():
-        raise HTTPException(400, "请先登录 Cloudflare")
+        raise api_error("cloudflared.login_required")
     rc, out, err = sh([_bin(), "tunnel", "create", name], timeout=60)
     # The account list just changed; do not let the page show the old one.
     invalidate_tunnels()
@@ -730,7 +729,7 @@ def start_with_tunnel(tunnel: str) -> dict:
     _save_state(st)
     return {
         "ok": r.get("ok") or _is_running(),
-        "message": f"隧道「{tunnel}」已配置并启动\n" + (r.get("message") or ""),
+        "message": f"Tunnel \"{tunnel}\" configured and started\n" + (r.get("message") or ""),
         "running": _is_running(),
         "active_tunnel": tunnel,
     }
@@ -750,7 +749,7 @@ def start_with_token(token: str, label: str | None = None) -> dict:
     _save_state(st)
     return {
         "ok": r.get("ok") or _is_running(),
-        "message": "已用 Token 启动隧道\n" + (r.get("message") or ""),
+        "message": "Tunnel started with the token\n" + (r.get("message") or ""),
         "running": _is_running(),
     }
 
@@ -771,7 +770,7 @@ def stop() -> dict:
     time.sleep(0.5)
     return {
         "ok": not _is_running(),
-        "message": "已停止" if not _is_running() else "已发送停止，进程可能仍在退出",
+        "message": "Stopped" if not _is_running() else "Stop signal sent; the process may still be exiting",
         "running": _is_running(),
     }
 
@@ -784,13 +783,13 @@ def restart() -> dict:
         r = _launchctl_bootstrap()
         return {
             "ok": r.get("ok") or _is_running(),
-            "message": "已重启\n" + (r.get("message") or ""),
+            "message": "Restarted\n" + (r.get("message") or ""),
             "running": _is_running(),
             "active_tunnel": name,
         }
     if name and _logged_in():
         return start_with_tunnel(name)
-    return {"ok": False, "message": "没有可重启的配置：请先选择隧道或粘贴 Token 并启动"}
+    return {"ok": False, "message": "Nothing to restart: pick a tunnel or paste a token and start it first"}
 
 
 def route_dns(tunnel: str, hostname: str) -> dict:
@@ -798,9 +797,9 @@ def route_dns(tunnel: str, hostname: str) -> dict:
     tunnel = (tunnel or "").strip()
     hostname = (hostname or "").strip().lower()
     if not tunnel or not hostname:
-        raise HTTPException(400, "需要 tunnel 与 hostname")
+        raise api_error("cloudflared.route_args_required")
     if not _logged_in():
-        raise HTTPException(400, "请先登录")
+        raise api_error("cloudflared.login_required")
     rc, out, err = sh(
         [_bin(), "tunnel", "route", "dns", tunnel, hostname],
         timeout=60,
@@ -821,7 +820,7 @@ def logs(lines: int = 120) -> dict:
             except Exception as e:
                 chunks.append(f"===== {p} =====\n(read error: {e})")
     if not chunks:
-        return {"ok": True, "log": "暂无日志（启动隧道后会写入 ~/Services/cloudflared/tunnel.log）"}
+        return {"ok": True, "log": "No logs yet (the tunnel writes to ~/Services/cloudflared/tunnel.log once started)"}
     return {"ok": True, "log": "\n\n".join(chunks), "source": "cloudflared"}
 
 
@@ -841,7 +840,7 @@ def uninstall_service() -> dict:
     st.pop("tunnel_name", None)
     st.pop("mode", None)
     _save_state(st)
-    message = "已停止并移除面板托管的隧道服务\n" + "\n".join(removed)
+    message = "Stopped and removed the panel-managed tunnel service\n" + "\n".join(removed)
     if not login_stopped:
-        message += "\n登录进程清理失败，已保留 PID 记录供稍后重试"
+        message += "\nLogin process cleanup failed; the PID record was kept for a later retry"
     return {"ok": login_stopped, "message": message}

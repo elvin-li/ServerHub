@@ -1,9 +1,9 @@
 """Bookmark / quick_link health checks — green / gray / red.
 
 health:
-  ok      — 可达（绿）
-  stopped — 关联服务/VM 主动停止（灰）
-  error   — 预期在线但探测失败 / 意外异常（红）
+  ok      — reachable (green)
+  stopped — the linked service/VM is deliberately stopped (gray)
+  error   — expected online but the probe failed / unexpected exception (red)
 """
 from __future__ import annotations
 

@@ -116,7 +116,7 @@ class NetworkResilienceTests(unittest.TestCase):
             result = network_svc.switch_profile("ethernet")
 
         self.assertFalse(result["ok"])
-        self.assertIn("未发现可用的有线", result["message"])
+        self.assertIn("No usable wired network service", result["message"])
         set_enabled.assert_not_called()
         set_order.assert_not_called()
 

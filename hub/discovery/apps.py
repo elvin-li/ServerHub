@@ -61,16 +61,16 @@ def collect_apps(engine_up):
         if plan["kind"] == "engine":
             items.append({"id": a["id"], "kind": "app-engine", "name": a.get("name", "OrbStack"),
                           "state": "ok" if engine_up else "down",
-                          "detail": "OrbStack 引擎运行中" if engine_up else "OrbStack 引擎未运行",
-                          "url": a.get("url"), "group": a.get("group", "应用"),
+                          "detail": "OrbStack engine running" if engine_up else "OrbStack engine not running",
+                          "url": a.get("url"), "group": a.get("group", "Apps"),
                           "actions": ["stop"] if engine_up else ["start"]})
             continue
         running, p = plan["result"]
         state = "ok" if running and p in (None, True) else ("warn" if running else "down")
-        detail = (f"运行中 · :{a['port']}" if p else "运行中") if running else "已停止"
+        detail = (f"Running · :{a['port']}" if p else "Running") if running else "Stopped"
         items.append({"id": a["id"], "kind": "app", "name": a.get("name", a["id"]),
                       "state": state, "detail": detail, "url": a.get("url"),
-                      "group": a.get("group", "应用"),
+                      "group": a.get("group", "Apps"),
                       "actions": ["restart", "stop"] if running else ["start"]})
     return items
 
@@ -103,15 +103,15 @@ def collect_scripts():
         live = reachable.get(index, set())
         up = [p for p in ports if p in live]
         if len(up) == len(ports) and ports:
-            state, detail = "ok", "运行中 · " + " ".join(f":{p}" for p in ports)
+            state, detail = "ok", "Running · " + " ".join(f":{p}" for p in ports)
         elif up:
             state = "warn"
             downp = [p for p in ports if p not in up]
-            detail = f"部分运行 · 缺 {' '.join(':'+str(p) for p in downp)}"
+            detail = f"Partially running · missing {' '.join(':'+str(p) for p in downp)}"
         else:
-            state, detail = "down", "已停止"
+            state, detail = "down", "Stopped"
         items.append({"id": s["id"], "kind": "script", "name": s.get("name", s["id"]),
                       "state": state, "detail": detail, "url": s.get("url"),
-                      "group": s.get("group", "自定义"), "links": s.get("links"),
+                      "group": s.get("group", "Custom"), "links": s.get("links"),
                       "actions": ["restart", "stop"] if up else ["start"]})
     return items

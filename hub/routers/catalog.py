@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from hub import apps_manage_svc, auth, autostart_svc, catalog, service_credentials
+
+from ..errors import api_error
 
 router = APIRouter(tags=["catalog"])
 
@@ -14,7 +16,7 @@ def _require_browser_session(request: Request) -> None:
     # Credential APIs are intentionally stricter than the local menu-bar
     # exemption used by the rest of the protected API.
     if not auth.browser_authenticated(request):
-        raise HTTPException(401, "请先在浏览器登录后管理服务凭据")
+        raise api_error("catalog.browser_session_required")
 
 
 @router.get("/api/catalog")
@@ -86,7 +88,7 @@ def save_app_credential(body: CredentialSaveBody, request: Request):
     _require_browser_session(request)
     adapter = service_credentials.adapter_for(body.service_id)
     applied = False
-    message = "凭据已安全保存到 macOS 钥匙串"
+    message = "Credential saved securely to the macOS Keychain"
     if body.apply_to_service:
         result = service_credentials.apply(body.service_id, body.username, body.password)
         applied = bool(result.get("ok"))

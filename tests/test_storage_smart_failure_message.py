@@ -37,7 +37,7 @@ class SmartFailureMessageTests(unittest.TestCase):
         """
         out = BANNER + "Smartctl open device: /dev/disk4 failed: Operation not supported by device"
         message = _smartctl_failure(out, "")
-        self.assertIn("非磁盘故障", message)
+        self.assertIn("not a disk fault", message)
         self.assertNotIn("Copyright", message)
 
     def test_permission_failure_points_at_the_installer(self):
@@ -64,7 +64,7 @@ class SmartFailureMessageTests(unittest.TestCase):
             BANNER + "Smartctl open device: /dev/disk4 failed: Operation not supported by device",
             BANNER,
         )
-        self.assertIn("非磁盘故障", message)
+        self.assertIn("not a disk fault", message)
 
 
 if __name__ == "__main__":

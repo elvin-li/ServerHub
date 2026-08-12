@@ -36,7 +36,7 @@ def overview() -> dict:
         "pid": pid,
         "sites": sites,
         "site_count": len(sites),
-        "hint": "新站点：把 *.conf 放进 conf.d/ 后点「重载」",
+        "hint": "New site: drop a *.conf into conf.d/ and click \"Reload\"",
     }
 
 
@@ -54,7 +54,7 @@ def test_config() -> dict:
 def reload_nginx() -> dict:
     t = test_config()
     if not t["ok"]:
-        return {"ok": False, "message": "配置无效，未重载\n" + t["message"]}
+        return {"ok": False, "message": "Invalid configuration; not reloaded\n" + t["message"]}
     # Prefer signal via nginx -s reload with same conf
     p = subprocess.run(
         [NGINX_BIN, "-c", str(NGINX_CONF), "-s", "reload"],
@@ -77,4 +77,4 @@ def reload_nginx() -> dict:
             "message": (p2.stderr or p2.stdout or t["message"] or "kickstart").strip(),
         }
     invalidate_status()
-    return {"ok": True, "message": "已重载\n" + t["message"]}
+    return {"ok": True, "message": "Reloaded\n" + t["message"]}

@@ -15,7 +15,7 @@ def log_sources() -> list:
         # defaults
         home = Path.home()
         sources = [
-            {"id": "autostart", "name": "开机自启", "path": str(home / "Library/Logs/server-autostart.log")},
+            {"id": "autostart", "name": "Autostart", "path": str(home / "Library/Logs/server-autostart.log")},
             {"id": "serverhub", "name": "ServerHub", "path": str(home / "Library/Logs/serverhub.err.log")},
             {"id": "ha", "name": "Home Assistant", "path": str(home / "Services/homeassistant/config/home-assistant.log")},
         ]
@@ -40,7 +40,7 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
     p = Path(meta["path"])
     if not p.is_file():
         return {"id": source_id, "name": meta["name"], "path": meta["path"],
-                "exists": False, "log": "（文件不存在）", "lines": 0}
+                "exists": False, "log": "(file does not exist)", "lines": 0}
     lines = max(10, min(int(lines), 2000))
     # efficient tail
     try:

@@ -571,5 +571,5 @@ def overview() -> dict:
         "volumes": vols,
         "count": len(vols),
         "fs_types": sorted(set(FS_TYPES.keys())),
-        "hint": "格式化/抹掉会清空数据；系统盘已锁定。操作调用 /usr/sbin/diskutil。",
+        "hint": "Format/erase destroys all data; system disks are locked. Operations use /usr/sbin/diskutil.",
     }

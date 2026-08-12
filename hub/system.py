@@ -62,6 +62,14 @@ def collect_system():
                         smart["wear"] = line.split(":")[1].strip()
                     elif line.strip().startswith("Temperature:"):
                         smart.setdefault("temp", line.split(":")[1].strip())
+                    elif "Temperature_Celsius" in line:
+                        parts = line.split()
+                        if len(parts) >= 10:
+                            smart.setdefault("temp", f"{parts[9]} Celsius")
+                    elif "Airflow_Temperature" in line:
+                        parts = line.split()
+                        if len(parts) >= 10:
+                            smart.setdefault("temp", f"{parts[9]} Celsius")
                 _smart_cache.update(t=time.time(), v=smart)
     n = ncpu_i or 1
     load_pct = round(min(200.0, load1 / n * 100), 1)
@@ -79,9 +87,9 @@ def collect_system():
         "disk_free_gb": round(du.free / 2**30),
         "disk_pct": round(du.used / du.total * 100),
         "uptime": (
-            f"{int(uptime_h//24)} 天 {int(uptime_h%24)} 小时"
+            f"{int(uptime_h//24)} days {int(uptime_h%24)} hours"
             if uptime_h >= 24
-            else f"{uptime_h:.1f} 小时"
+            else f"{uptime_h:.1f} hours"
         ),
         "uptime_hours": round(uptime_h, 2),
         "smart": smart,

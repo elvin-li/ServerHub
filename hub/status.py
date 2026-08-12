@@ -146,14 +146,14 @@ def _build_status() -> dict:
     # Defensive counts: always include core keys; unknown states get their own bucket.
     groups, counts = {}, {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
     for s in services:
-        groups.setdefault(s.get("group") or "其他", []).append(s)
+        groups.setdefault(s.get("group") or "Other", []).append(s)
         st = s.get("state") or "unknown"
         if st not in counts:
             counts[st] = 0
         counts[st] += 1
     order = list(cfg().get("groups_order") or [])
     # ensure adaptive groups appear near end unless ordered
-    for extra in ("网关", "自动发现", "Homebrew 服务"):
+    for extra in ("Gateway", "Auto-discovered", "Homebrew Services"):
         if extra not in order:
             order.append(extra)
     ordered = [{"group": g, "services": groups.pop(g)} for g in order if g in groups]

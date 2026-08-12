@@ -63,7 +63,7 @@ def engine_info() -> dict:
             "engine_up": False,
             "docker_cli": DOCKER,
             "orb_cli": ORB,
-            "message": "引擎未运行",
+            "message": "engine is not running",
         }
 
     # `docker info`, `docker version` and `orb version` ask three unrelated questions

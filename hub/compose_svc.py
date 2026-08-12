@@ -68,7 +68,7 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
         )
     secure_io.replace_secret_text(p, content)
     inv()
-    return {"ok": True, "path": str(p), "message": "已保存", "backup": str(bak)}
+    return {"ok": True, "path": str(p), "message": "Saved", "backup": str(bak)}
 
 
 def validate_compose_text(content: str, cwd: str | None = None) -> dict:

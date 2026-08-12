@@ -127,8 +127,8 @@ def discover_launchd():
         if interval:
             state = "ok" if loaded and last in ("0", None) else ("down" if not loaded else "warn")
             detail = (
-                ("已加载 · 定时任务" + (f" · 上次退出码 {last}" if last not in (None, "0") else ""))
-                if loaded else "未加载"
+                ("Loaded · scheduled task" + (f" · last exit code {last}" if last not in (None, "0") else ""))
+                if loaded else "Not loaded"
             )
             actions = ["run", "logs"] + (["stop"] if loaded else ["start"])
         elif launchservices_open and loaded:
@@ -141,12 +141,12 @@ def discover_launchd():
             actions = ["run", "logs", "stop"]
         elif running and (p is None or p):
             state = "ok"
-            detail = f"运行中 · pid {pid}" + (f" · :{port}" if port else "")
+            detail = f"Running · pid {pid}" + (f" · :{port}" if port else "")
             actions = ["restart", "stop", "logs"]
         elif running:
-            state, detail, actions = "warn", f"进程在但端口 :{port} 未响应", ["restart", "stop", "logs"]
+            state, detail, actions = "warn", f"Process alive but port :{port} not responding", ["restart", "stop", "logs"]
         else:
-            state, detail, actions = "down", ("已加载未运行" if loaded else "未加载"), ["start", "logs"]
+            state, detail, actions = "down", ("Loaded but not running" if loaded else "Not loaded"), ["start", "logs"]
         if url and "open" not in actions:
             actions = list(actions) + ["open"]
 

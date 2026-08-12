@@ -8,10 +8,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import HTTPException
-
 from hub import cli_args
 from hub.docker_cli import docker, engine_up
+from hub.errors import api_error
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
 from hub.util import fan_out, sh, ttl_memo
@@ -354,15 +353,15 @@ def set_service_dhcp(service: str) -> dict:
     service = _validate_service(service)
     rc, out, err = sh([NS, "-setdhcp", service], timeout=15)
     _bust()
-    return {"ok": rc == 0, "message": out or err or ("已切换为 DHCP" if rc == 0 else f"exit {rc}")}
+    return {"ok": rc == 0, "message": out or err or ("Switched to DHCP" if rc == 0 else f"exit {rc}")}
 
 
 def set_service_manual(service: str, ip: str, subnet: str, router: str = "") -> dict:
     service = _validate_service(service)
     if not _valid_ip(ip) or not _valid_ip(subnet):
-        raise HTTPException(400, "IP / 子网掩码格式无效")
+        raise api_error("network.invalid_ip")
     if router and not _valid_ip(router):
-        raise HTTPException(400, "网关格式无效")
+        raise api_error("network.invalid_router")
     args = [NS, "-setmanual", service, ip, subnet]
     if router:
         args.append(router)
@@ -371,7 +370,7 @@ def set_service_manual(service: str, ip: str, subnet: str, router: str = "") -> 
         args.append(router or "0.0.0.0")
     rc, out, err = sh(args, timeout=15)
     _bust()
-    return {"ok": rc == 0, "message": out or err or ("已设置静态 IP" if rc == 0 else f"exit {rc}")}
+    return {"ok": rc == 0, "message": out or err or ("Static IP configured" if rc == 0 else f"exit {rc}")}
 
 
 def _valid_dns_server(value: str) -> bool:
@@ -392,10 +391,10 @@ def set_service_dns(service: str, servers: list[str] | None = None) -> dict:
     else:
         for s in servers:
             if not _valid_dns_server(s):
-                raise HTTPException(400, f"非法 DNS: {s}")
+                raise api_error("network.invalid_dns", server=s)
         rc, out, err = sh([NS, "-setdnsservers", service, *servers], timeout=10)
     _bust()
-    return {"ok": rc == 0, "message": out or err or ("DNS 已更新" if rc == 0 else f"exit {rc}")}
+    return {"ok": rc == 0, "message": out or err or ("DNS updated" if rc == 0 else f"exit {rc}")}
 
 
 def _wifi_devices() -> list[str]:
@@ -411,7 +410,7 @@ def _wifi_devices() -> list[str]:
 def wifi_power_status() -> dict:
     devices = _wifi_devices()
     if not devices:
-        return {"ok": False, "on": None, "device": None, "message": "未发现 Wi-Fi 网卡"}
+        return {"ok": False, "on": None, "device": None, "message": "No Wi-Fi adapter found"}
     device = devices[0]
     rc, out, err = sh([NS, "-getairportpower", device], timeout=8)
     if rc != 0:
@@ -430,7 +429,7 @@ def set_wifi_power(on: bool) -> dict:
     arg = "on" if on else "off"
     devices = _wifi_devices()
     if not devices:
-        return {"ok": False, "on": None, "device": None, "message": "未发现 Wi-Fi 网卡"}
+        return {"ok": False, "on": None, "device": None, "message": "No Wi-Fi adapter found"}
     device = devices[0]
     rc, out, err = sh([NS, "-setairportpower", device, arg], timeout=10)
     if rc != 0:
@@ -456,14 +455,14 @@ def set_service_enabled(service: str, enabled: bool) -> dict:
     _bust()
     return {
         "ok": rc == 0,
-        "message": out or err or (f"{'已启用' if enabled else '已禁用'} {service}"),
+        "message": out or err or (f"{'Enabled' if enabled else 'Disabled'} {service}"),
     }
 
 
 def set_service_order(services: list[str]) -> dict:
     """Reorder network services (first = preferred path for outbound)."""
     if not services or len(services) < 1:
-        raise HTTPException(400, "需要完整的服务顺序列表")
+        raise api_error("network.order_required")
     # validate all names
     current = network_services()
     names = [s["name"] for s in current]
@@ -473,7 +472,7 @@ def set_service_order(services: list[str]) -> dict:
         if not s:
             continue
         if s not in names:
-            raise HTTPException(400, f"未知服务: {s}")
+            raise api_error("network.unknown_service", service=s)
         if s not in cleaned:
             cleaned.append(s)
     # append any missing so ordernetworkservices has full set
@@ -485,7 +484,7 @@ def set_service_order(services: list[str]) -> dict:
     return {
         "ok": rc == 0,
         "order": cleaned,
-        "message": out or err or ("服务顺序已更新" if rc == 0 else f"exit {rc}"),
+        "message": out or err or ("Service order updated" if rc == 0 else f"exit {rc}"),
     }
 
 
@@ -494,7 +493,7 @@ def switch_profile(profile: str) -> dict:
     profile = (profile or "").strip().lower()
     svcs = network_services()
     if not svcs:
-        raise HTTPException(500, "无法读取网络服务")
+        raise api_error("network.services_unreadable")
 
     def is_wifi(s: dict) -> bool:
         n = (s.get("name") or "") + " " + (s.get("hardware_port") or "")
@@ -537,7 +536,7 @@ def switch_profile(profile: str) -> dict:
 
     missing_kind = None
     if profile in ("ethernet", "wired", "lan", "ethernet_only", "wired_only") and not eth:
-        missing_kind = chr(0x6709) + chr(0x7EBF)
+        missing_kind = "wired"
     elif profile in ("wifi", "wireless", "wifi_only") and not wifi:
         missing_kind = "Wi-Fi"
     if missing_kind:
@@ -549,7 +548,7 @@ def switch_profile(profile: str) -> dict:
             "wifi_services": [s["name"] for s in wifi],
             "steps": [],
             "alias_rebind": None,
-            "message": f"未发现可用的{missing_kind}网络服务，未更改网络配置",
+            "message": f"No usable {missing_kind} network service found; network configuration unchanged",
         }
 
     if profile in ("ethernet", "wired", "lan"):
@@ -576,7 +575,7 @@ def switch_profile(profile: str) -> dict:
             record(f"disable {s['name']}", set_service_enabled(s["name"], False))
         record("enable Wi-Fi radio", set_wifi_power(True), critical=False)
     else:
-        raise HTTPException(400, "profile 可选: wifi | ethernet | wifi_only | ethernet_only")
+        raise api_error("network.bad_profile")
 
     ord_r = set_service_order(order_names)
     record("set service order", ord_r)
@@ -603,7 +602,7 @@ def switch_profile(profile: str) -> dict:
         "steps": steps,
         "alias_rebind": alias_r,
         "message": "; ".join(x for x in logs if x),
-        "hint": "有线优先时请插入网线；若网卡未识别可先 networksetup -detectnewhardware",
+        "hint": "Plug in the Ethernet cable when preferring wired; if the adapter is not detected, run networksetup -detectnewhardware first",
     }
 
 
@@ -651,9 +650,9 @@ def add_ip_alias(device: str, ip: str, netmask: str = "255.255.255.255") -> dict
     """Add secondary IPv4 on interface (ifconfig alias). Good for binding .204 on en0."""
     device = _validate_device(device)
     if not _valid_ip(ip):
-        raise HTTPException(400, "非法 IP")
+        raise api_error("network.invalid_ip")
     if not _valid_ip(netmask):
-        raise HTTPException(400, "非法掩码")
+        raise api_error("network.invalid_netmask")
     # try without sudo first
     rc, out, err = sh(["/sbin/ifconfig", device, "alias", ip, "netmask", netmask], timeout=10)
     if rc != 0:
@@ -664,23 +663,23 @@ def add_ip_alias(device: str, ip: str, netmask: str = "255.255.255.255") -> dict
     _bust()
     msg = out or err
     if rc != 0 and ("password" in (msg or "").lower() or "sudo" in (msg or "").lower()):
-        msg = (msg or "") + " · 需要配置 sudo 免密 ifconfig，或在终端手动: sudo ifconfig " \
+        msg = (msg or "") + " · requires passwordless sudo for ifconfig; or run manually in a terminal: sudo ifconfig " \
             f"{device} alias {ip} netmask {netmask}"
-    return {"ok": rc == 0, "device": device, "ip": ip, "netmask": netmask, "message": msg or ("已添加别名" if rc == 0 else f"exit {rc}")}
+    return {"ok": rc == 0, "device": device, "ip": ip, "netmask": netmask, "message": msg or ("Alias added" if rc == 0 else f"exit {rc}")}
 
 
 def remove_ip_alias(device: str, ip: str) -> dict:
     device = _validate_device(device)
     if not _valid_ip(ip):
-        raise HTTPException(400, "非法 IP")
+        raise api_error("network.invalid_ip")
     rc, out, err = sh(["/sbin/ifconfig", device, "-alias", ip], timeout=10)
     if rc != 0:
         rc, out, err = sh(["sudo", "-n", "/sbin/ifconfig", device, "-alias", ip], timeout=10)
     _bust()
     msg = out or err
     if rc != 0:
-        msg = (msg or "") + f" · 可手动: sudo ifconfig {device} -alias {ip}"
-    return {"ok": rc == 0, "device": device, "ip": ip, "message": msg or ("已删除别名" if rc == 0 else f"exit {rc}")}
+        msg = (msg or "") + f" · run manually: sudo ifconfig {device} -alias {ip}"
+    return {"ok": rc == 0, "device": device, "ip": ip, "message": msg or ("Alias removed" if rc == 0 else f"exit {rc}")}
 
 
 # ---------- Auto-bind managed IP aliases to preferred active NIC ----------
@@ -893,14 +892,14 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
     }
     if not conf["auto_bind"] and not force:
         result["skipped"] = True
-        result["message"] = "自动绑定已关闭"
+        result["message"] = "Auto-bind is disabled"
         return result
     if not conf["ips"]:
-        result["message"] = "未配置 managed ips（settings.ip_aliases.ips）"
+        result["message"] = "No managed IPs configured (settings.ip_aliases.ips)"
         return result
     if not preferred:
         result["ok"] = False
-        result["message"] = "没有可用的优先网络（请检查网线/Wi‑Fi）"
+        result["message"] = "No usable preferred network (check the Ethernet cable / Wi-Fi)"
         return result
 
     target = preferred["device"]
@@ -917,10 +916,10 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
             removed = remove_ip_alias(target, ip)
             if not removed.get("ok"):
                 result["ok"] = False
-                result["errors"].append(removed.get("message") or f"重建 {ip} 前删除失败")
+                result["errors"].append(removed.get("message") or f"failed to remove {ip} before recreating it")
                 result["actions"].append({
                     "ip": ip, "status": "error", "device": target,
-                    "message": removed.get("message") or "删除异常 alias 失败",
+                    "message": removed.get("message") or "failed to remove the broken alias",
                 })
                 continue
             added = add_ip_alias(target, ip, netmask)
@@ -931,18 +930,18 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
                 "status": "repaired" if repaired else "error",
                 "device": target,
                 "local_route": repaired_route,
-                "message": "已重建本地路由" if repaired else (added.get("message") or "本地路由仍异常"),
+                "message": "Local route rebuilt" if repaired else (added.get("message") or "local route still broken"),
             })
             if not repaired:
                 result["ok"] = False
-                result["errors"].append(added.get("message") or f"{ip} 本地路由修复失败")
+                result["errors"].append(added.get("message") or f"{ip}: local route repair failed")
             continue
         # already only on target
         if on_target and not on_others:
             result["actions"].append({
                 "ip": ip, "status": "ok", "device": target,
                 "local_route": route_state,
-                "message": f"已在优先网卡 {target}，本地路由正常",
+                "message": f"Already on preferred interface {target}; local route OK",
             })
             continue
         # add on target if missing
@@ -955,19 +954,19 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
             })
             if not r.get("ok") or not added_route.get("ok"):
                 result["ok"] = False
-                result["errors"].append(r.get("message") or f"添加 {ip}@{target} 或建立本地路由失败")
+                result["errors"].append(r.get("message") or f"failed to add {ip}@{target} or establish its local route")
                 continue
         else:
             result["actions"].append({
                 "ip": ip, "status": "present", "device": target,
-                "message": f"优先网卡 {target} 已有",
+                "message": f"Already present on preferred interface {target}",
             })
         # remove from other devices (aliases only)
         for L in on_others:
             if not L.get("alias"):
                 result["actions"].append({
                     "ip": ip, "status": "keep_primary", "device": L["device"],
-                    "message": f"{L['device']} 上是主地址，不删除",
+                    "message": f"primary address on {L['device']}; not removed",
                 })
                 continue
             r = remove_ip_alias(L["device"], ip)
@@ -976,11 +975,11 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
                 "status": "moved" if r.get("ok") else "error",
                 "from": L["device"],
                 "to": target,
-                "message": r.get("message") or f"从 {L['device']} 移除",
+                "message": r.get("message") or f"removed from {L['device']}",
             })
             if not r.get("ok"):
                 result["ok"] = False
-                result["errors"].append(r.get("message") or f"从 {L['device']} 删除失败")
+                result["errors"].append(r.get("message") or f"failed to remove from {L['device']}")
         # Removing the old interface's copy can also remove macOS's shared
         # LOCAL route.  Verify once more after a move and repair in place.
         if on_others:
@@ -995,15 +994,15 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
                     "status": "route_repaired" if repaired else "error",
                     "device": target,
                     "local_route": final_route,
-                    "message": "迁移后已重建本地路由" if repaired else "迁移后本地路由修复失败",
+                    "message": "Local route rebuilt after move" if repaired else "local route repair failed after move",
                 })
                 if not repaired:
                     result["ok"] = False
-                    result["errors"].append(f"{ip} 迁移后本地路由修复失败")
+                    result["errors"].append(f"{ip}: local route repair failed after move")
 
     result["message"] = (
-        f"优先网卡 {target}（{preferred.get('service')}）· "
-        + ("完成" if result["ok"] else "部分失败")
+        f"Preferred interface {target} ({preferred.get('service')}) · "
+        + ("done" if result["ok"] else "partially failed")
     )
     _bust()
     return result
@@ -1099,7 +1098,7 @@ def _service_gateway_for_device(device: str) -> dict:
 def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None) -> dict:
     ip = _primary_ipv4_for_device(device, iface=iface)
     if not ip:
-        return {"ok": False, "device": device, "ip": None, "gateway": None, "reason": "链路或 IPv4 未就绪"}
+        return {"ok": False, "device": device, "ip": None, "gateway": None, "reason": "link or IPv4 not ready"}
     service = _service_gateway_for_device(device)
     gateway = service.get("gateway")
     if not gateway:
@@ -1109,7 +1108,7 @@ def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None)
             "ip": ip,
             "gateway": None,
             "service": service.get("service"),
-            "reason": "有线服务没有有效网关",
+            "reason": "the wired service has no valid gateway",
         }
     rc, out, err = sh(
         [
@@ -1124,7 +1123,7 @@ def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None)
         "ip": ip,
         "gateway": gateway,
         "service": service.get("service"),
-        "reason": "网关可达" if rc == 0 else (err or out or "网关不可达").strip(),
+        "reason": "gateway reachable" if rc == 0 else (err or out or "gateway unreachable").strip(),
     }
 
 
@@ -1306,18 +1305,18 @@ def stop_alias_autobind(timeout: float = 3.0) -> None:
 def _validate_device(device: str) -> str:
     device = (device or "").strip()
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9]*\d*$", device):
-        raise HTTPException(400, f"非法网卡名: {device}")
+        raise api_error("network.invalid_device", device=device)
     # must exist in ifconfig
     names = {i["name"] for i in interfaces()}
     if device not in names:
-        raise HTTPException(404, f"网卡不存在: {device}")
+        raise api_error("network.device_not_found", device=device)
     return device
 
 
 def _validate_service(service: str) -> str:
     service = (service or "").strip()
     if not service or len(service) > 80:
-        raise HTTPException(400, "无效的网络服务名")
+        raise api_error("network.invalid_service_name")
     # must exist
     names = {s["name"] for s in network_services()}
     if service not in names:
@@ -1325,7 +1324,7 @@ def _validate_service(service: str) -> str:
         rc, out, _ = sh([NS, "-listallnetworkservices"], timeout=8)
         listed = {ln.strip().lstrip("* ").strip() for ln in (out or "").splitlines()[1:] if ln.strip()}
         if service not in listed:
-            raise HTTPException(404, f"找不到网络服务: {service}")
+            raise api_error("network.service_not_found", service=service)
     return service
 
 
@@ -1433,7 +1432,7 @@ def _valid_lookup_target(host: str) -> bool:
 def dns_resolve(host: str) -> dict:
     host = (host or "").strip()
     if not _valid_lookup_target(host):
-        raise HTTPException(400, "非法主机名")
+        raise api_error("network.invalid_hostname")
     rc, out, err = sh(["/usr/bin/dscacheutil", "-q", "host", "-a", "name", host], timeout=8)
     if rc != 0 or not out.strip():
         rc2, out2, err2 = sh(["/usr/bin/dig", "+short", host], timeout=8)
@@ -1575,9 +1574,9 @@ def docker_networks_detail() -> list:
 
 def docker_network_connect(network: str, container: str) -> dict:
     if not network or not container:
-        raise HTTPException(400, "需要 network 与 container")
+        raise api_error("network.docker_args_required")
     if network in ("host", "none"):
-        raise HTTPException(400, "不能 connect 到 host/none")
+        raise api_error("network.builtin_network_connect")
     rc, out, err = docker("network", "connect", network, container, timeout=30)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
@@ -1595,14 +1594,14 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
     """Recreate container with new -p mappings (best-effort from inspect)."""
     from hub import containers_svc
     if not engine_up():
-        raise HTTPException(503, "引擎未运行")
+        raise api_error("container.engine_down")
     rc, out, err = docker("inspect", container, timeout=15)
     if rc != 0:
-        raise HTTPException(404, err or "容器不存在")
+        raise api_error("network.container_not_found", name=container)
     data = json.loads(out)[0]
     image = ((data.get("Config") or {}).get("Image")) or ""
     if not image:
-        raise HTTPException(400, "无法解析镜像")
+        raise api_error("network.image_unresolvable")
     host = data.get("HostConfig") or {}
     cfg_ = data.get("Config") or {}
     # build run body
@@ -1722,10 +1721,10 @@ def _build_overview(force_services: bool = False) -> dict:
         "network_failover": f_failover.result(),
         "ts": time.strftime("%H:%M:%S"),
         "profiles": [
-            {"id": "wifi", "label": "优先 Wi‑Fi（有线作备选）"},
-            {"id": "ethernet", "label": "优先有线（Wi‑Fi 作备选）"},
-            {"id": "wifi_only", "label": "仅 Wi‑Fi"},
-            {"id": "ethernet_only", "label": "仅有线"},
+            {"id": "wifi", "label": "Prefer Wi-Fi (wired as fallback)"},
+            {"id": "ethernet", "label": "Prefer wired (Wi-Fi as fallback)"},
+            {"id": "wifi_only", "label": "Wi-Fi only"},
+            {"id": "ethernet_only", "label": "Wired only"},
         ],
     }
     return v

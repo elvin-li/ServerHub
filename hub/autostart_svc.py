@@ -16,9 +16,17 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import engine_up
+from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd, loaded_labels
 from hub.util import cached_snapshot, fan_out, sh
 from hub.brew_cache import brew_services_list, invalidate_brew_services
+
+# Imported for the panel/launcher label spellings rather than restating them here:
+# this module has to recognise the very jobs launcher_svc installs, and a second
+# copy of those names would drift the moment either side gains a spelling. Safe at
+# import time in this direction only -- launcher_svc reaches for hub.launchd_cache,
+# hub.paths and hub.util, none of which import this module, so there is no cycle.
+from hub import launcher_svc  # noqa: E402
 
 from hub.paths import AGENTS_DIR  # noqa: E402
 # Imported rather than redefined: hub.paths tries `which brew` before the two
@@ -29,6 +37,47 @@ from hub.paths import AGENTS_DIR  # noqa: E402
 from hub.paths import BREW  # noqa: E402
 
 _TTL = 12.0
+
+#: Labels this page must never switch *off*.  These are the panel itself and the
+#: login launcher that starts it, and disabling either from here was a one-click,
+#: hard-to-undo foot-gun: ``set_launchd_autostart(label, False)`` writes
+#: ``RunAtLoad=False`` *and* runs ``launchctl disable gui/<uid>/<label>``, which is
+#: recorded in launchd's per-user database and survives reboots -- after that even
+#: restoring ``RunAtLoad=true`` in the plist will not load the job, so ServerHub
+#: simply stops coming back at login and the operator has no button left to fix it
+#: with.  ``PROTECTED_LABELS`` in hub/services_uninstall_svc.py only guards the
+#: "uninstall service" path and never saw these calls.
+#: The spellings come from hub.launcher_svc so the two modules cannot disagree
+#: about what the panel is called; all three naming schemes (source, native app,
+#: distribution) point at the same supervised job, so all of them are refused.
+#: Compared lowercased, like the uninstall guard: LaunchAgents lives on a
+#: case-insensitive volume by default, so ``Com.Elvin.Serverhub`` resolves to the
+#: real panel plist and an exact match would let it through.
+SELF_PROTECTED_LABELS = frozenset(
+    label.lower()
+    for label in (
+        launcher_svc.PANEL_LABEL,
+        *launcher_svc.PANEL_LABEL_ALTERNATES,
+        launcher_svc.LAUNCHER_LABEL,
+        *launcher_svc.LAUNCHER_LABEL_ALTERNATES,
+    )
+)
+
+#: The login autostart agent has shipped under several labels: source installs use
+#: the dotted ``local.serverhub.autostart``, distribution installs write
+#: ``com.elvin.server-autostart``.  Only the first spelling was hard-coded below,
+#: so on this host -- where the installed agent is ``com.elvin.server-autostart``,
+#: loaded, RunAtLoad=true and demonstrably running at boot -- the "登录脚本" row
+#: reported autostart=False/running=False with no actions, while
+#: ``set_script_autostart()`` could only ever raise 404 "plist not found".
+#: Order is priority: a source install keeps its dotted label even if a
+#: distribution plist is also lying around.
+SCRIPT_LABEL_CANDIDATES = (
+    "local.serverhub.autostart",
+    "com.elvin.server-autostart",
+    "local.server-autostart",
+    "com.elvin.serverhub.autostart",
+)
 
 
 def _brew_env() -> dict:
@@ -127,7 +176,7 @@ def _docker_autostart_items() -> list[dict]:
             "detail": f"restart={policy}",
             "project": c.get("project"),
             "actions": ["enable", "disable", "set_policy"],
-            "group": "Docker 容器",
+            "group": "Docker containers",
         })
     return items
 
@@ -180,7 +229,7 @@ def _brew_service_items() -> list[dict]:
             "keep_alive": bool(pl.get("KeepAlive")) if pl else None,
             "detail": f"brew services · {status or '—'}",
             "actions": ["enable", "disable"],
-            "group": "Homebrew 服务",
+            "group": "Homebrew services",
         })
     return items
 
@@ -219,6 +268,18 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
     if not AGENTS_DIR.is_dir():
         return items
 
+    # The login script agent gets its own "登录脚本" row from ``_script_status()``.
+    # Listing it here as well put the same job on the page twice, and because the
+    # two rows computed autostart differently they disagreed: the script row said
+    # "未启用" (it was resolving a label that does not exist here) while this one
+    # correctly said autostart=True.  Resolving once and skipping it keeps one row
+    # per job whichever spelling is installed.  Cannot raise -- ``overview()`` calls
+    # this through ``fan_out``.
+    try:
+        script_plist, script_label = _resolve_script_agent()
+    except Exception:
+        script_plist, script_label = None, None
+
     # Parse and filter the plists first — pure filesystem work — so the subprocess
     # probes below are paid only for agents that survive the filter.
     parsed = []
@@ -228,6 +289,10 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
         # skip brew-managed (shown under brew) to reduce dupes — still include non-mxcl
         if label.startswith("homebrew.mxcl."):
             continue  # covered by brew list
+        # Compared by both label and path: the resolver may have matched on the
+        # plist's internal Label, in which case the filename alone would not.
+        if script_label is not None and (label == script_label or path == script_plist):
+            continue  # owned by the login-script group above
         parsed.append((path, pl, label))
     if not parsed:
         return items
@@ -263,7 +328,18 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
             "plist": str(path),
             "detail": f"RunAtLoad={run_at} KeepAlive={bool(keep)} loaded={loaded}",
             "program": " ".join(pl.get("ProgramArguments") or [])[:100],
-            "actions": ["enable", "disable"],
+            # No "disable" for the panel and its login launcher: offering the button
+            # invited a click that stops ServerHub from ever starting at login, and
+            # the ``launchctl disable`` behind it outlives a reboot (see
+            # SELF_PROTECTED_LABELS).  "enable" stays so this row can repair a host
+            # that was disabled before the guard existed.  ``set_launchd_autostart``
+            # refuses it too -- this only removes the temptation from the UI, the
+            # rule itself lives at the sink where the API can also be called direct.
+            "actions": (
+                ["enable"]
+                if label.lower() in SELF_PROTECTED_LABELS
+                else ["enable", "disable"]
+            ),
             "group": "LaunchAgents",
         })
     return items
@@ -277,6 +353,12 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
     # launchd label does not start with a hyphen in the first place.
     if not re.match(r"^[\w.@+-]+$", label or "") or label.startswith("-"):
         raise HTTPException(400, "invalid label")
+    # Refused before anything is written or unloaded.  Only the off direction is
+    # blocked: enabling has to stay reachable so a host that was already disabled --
+    # by this endpoint before the guard existed, or by hand -- can be repaired from
+    # the page instead of needing a shell.
+    if not enabled and label.lower() in SELF_PROTECTED_LABELS:
+        raise api_error("autostart.self_protected", label=label)
     path = AGENTS_DIR / f"{label}.plist"
     # find by Label field if filename differs
     if not path.exists():
@@ -327,31 +409,78 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
 
 # ─── Global login autostart script ───────────────────────────────────────────
 
+def _resolve_script_agent() -> tuple[Path, str]:
+    """Return the (plist, label) pair for the login script agent installed here.
+
+    Same shape as ``launcher_svc._resolve()``: the highest-priority candidate whose
+    plist exists wins, and with none installed the first candidate is still returned
+    so the row has a stable label to display and a correct target to write.
+
+    Matching also has to consider the plist's internal ``Label``, not just the
+    filename -- ``set_launchd_autostart`` already falls back to that, and a hand-
+    written agent whose file was renamed would otherwise resolve to nothing while
+    launchd knows it perfectly well.  That scan is only paid when no filename
+    matched, and it never raises: this runs inside ``fan_out`` via ``overview()``,
+    where one exception costs the whole batch rather than one row.
+    """
+    default = (AGENTS_DIR / f"{SCRIPT_LABEL_CANDIDATES[0]}.plist", SCRIPT_LABEL_CANDIDATES[0])
+    for label in SCRIPT_LABEL_CANDIDATES:
+        candidate = AGENTS_DIR / f"{label}.plist"
+        try:
+            if candidate.is_file():
+                return candidate, label
+        except OSError:
+            continue
+    by_label: dict[str, Path] = {}
+    try:
+        for path in sorted(AGENTS_DIR.glob("*.plist")):
+            declared = _read_plist(path).get("Label")
+            # First file wins per label, so the answer does not depend on
+            # directory order when two plists declare the same job.
+            if isinstance(declared, str) and declared not in by_label:
+                by_label[declared] = path
+    except OSError:
+        return default
+    for label in SCRIPT_LABEL_CANDIDATES:
+        hit = by_label.get(label)
+        if hit is not None:
+            return hit, label
+    return default
+
+
 def _script_status(loaded_snapshot: frozenset[str] | None = None) -> dict:
-    plist = AGENTS_DIR / "local.serverhub.autostart.plist"
+    # Resolved, never hard-coded: see SCRIPT_LABEL_CANDIDATES for what the fixed
+    # ``local.serverhub.autostart`` spelling did to this row on a distribution
+    # install.  The resolved label also feeds the skip in ``_launchd_items()``, so
+    # the same agent stops being listed twice with contradictory states -- it used
+    # to appear here as "未启用" and again under "LaunchAgents" as autostart=True.
+    plist, label = _resolve_script_agent()
     script = Path.home() / "Services" / "autostart.sh"
-    pl = _read_plist(plist) if plist.exists() else {}
+    installed = plist.exists()
+    pl = _read_plist(plist) if installed else {}
     return {
-        "id": "script:local.serverhub.autostart",
+        # Keeps the "script:" prefix: set_autostart() dispatches on kind:name and
+        # this row has to keep landing in the `kind == "script"` branch.
+        "id": f"script:{label}",
         "kind": "script",
-        "name": "登录自启脚本 (autostart.sh)",
-        "label": "local.serverhub.autostart",
-        "autostart": bool(pl.get("RunAtLoad")) and plist.exists(),
-        "running": (
-            _launchctl_loaded("local.serverhub.autostart", loaded_snapshot)
-            if plist.exists()
-            else False
-        ),
-        "plist": str(plist) if plist.exists() else None,
+        "name": "Login autostart script (autostart.sh)",
+        "label": label,
+        "autostart": bool(pl.get("RunAtLoad")) and installed,
+        "running": _launchctl_loaded(label, loaded_snapshot) if installed else False,
+        "plist": str(plist) if installed else None,
         "script": str(script) if script.exists() else None,
-        "detail": "登录后启动已配置的本地服务",
-        "actions": ["enable", "disable", "run_now"] if plist.exists() else [],
-        "group": "登录脚本",
+        "detail": "starts the configured local services after login",
+        "actions": ["enable", "disable", "run_now"] if installed else [],
+        "group": "Login script",
     }
 
 
 def set_script_autostart(enabled: bool) -> dict:
-    return set_launchd_autostart("local.serverhub.autostart", enabled)
+    # Must target the same label the row reports.  Hard-coding the dotted spelling
+    # meant the toggle read one job and wrote another: on any install that is not a
+    # source install it raised 404 "plist not found" for a job that was right there.
+    _, label = _resolve_script_agent()
+    return set_launchd_autostart(label, enabled)
 
 
 def run_autostart_now() -> dict:
@@ -367,7 +496,7 @@ def run_autostart_now() -> dict:
             start_new_session=True,
             env=_brew_env(),
         )
-        return {"ok": True, "message": f"已后台执行 autostart.sh (pid {p.pid})"}
+        return {"ok": True, "message": f"autostart.sh started in the background (pid {p.pid})"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 
@@ -407,8 +536,8 @@ def overview(force: bool = False) -> dict:
         "ts": time.strftime("%H:%M:%S"),
         "items": items,
         "counts": counts,
-        "groups": ["登录脚本", "Homebrew 服务", "LaunchAgents", "Docker 容器"],
-        "hint": "Docker 用 restart 策略；brew/LaunchAgent 用登录加载。关闭 brew 服务会取消登录自启。",
+        "groups": ["Login script", "Homebrew services", "LaunchAgents", "Docker containers"],
+        "hint": "Docker uses restart policies; brew/LaunchAgents load at login. Stopping a brew service also cancels its login autostart.",
     }
     return v
 
@@ -417,7 +546,7 @@ def set_autostart(item_id: str, enabled: bool, policy: str | None = None) -> dic
     """Toggle autostart. id: docker-ctr:name | brew:name | launchd:label | script:..."""
     overview.invalidate()
     if ":" not in item_id:
-        raise HTTPException(400, "id 格式: kind:name")
+        raise api_error("autostart.bad_id")
     kind, _, name = item_id.partition(":")
     if kind == "docker-ctr" or kind == "docker":
         # allow docker:name alias

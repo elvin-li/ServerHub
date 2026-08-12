@@ -26,6 +26,23 @@ DEFAULT_THRESHOLDS = {
     "mem_pct": 90,
     "disk_pct": 90,
     "cooldown_sec": 1800,
+    # SMART disk health gets its own switch instead of riding on `enabled` above.
+    # `enabled` is the mute button for the CPU/mem/disk-usage alerts, which trip on
+    # ordinary load spikes and are the ones an operator switches off during a big
+    # build or a backup run.  A disk reporting FAILED, or growing reallocated
+    # sectors, is not that kind of noise -- it is data being lost right now -- and
+    # must not disappear with the same click.
+    "smart_enabled": True,
+    # Consumer NVMe/SATA drives are rated to roughly 70C and throttle before it, so
+    # 60C reads as "this enclosure has no airflow", not "this disk is busy".
+    "smart_temp_c": 60,
+    # NVMe "Percentage Used": 100% means the rated write endurance is spent, so 90%
+    # is the last comfortable moment to plan a replacement rather than react to one.
+    "smart_wear_pct": 90,
+    # NVMe "Available Spare" counts *down* from 100% as the over-provisioning pool
+    # is consumed, so this threshold trips when the value falls to or below it --
+    # the opposite direction from every other number in this dict.
+    "smart_spare_pct": 10,
 }
 _BUNDLE_TTL = 25.0  # settings page is interactive but not real-time
 
@@ -66,7 +83,7 @@ def get_datetime_info() -> dict:
         "ntp_enabled": ntp_on,
         "ntp_server": ntp_server,
         "unix": int(time.time()),
-        "hint": "修改系统时区/NTP 通常需要管理员权限（系统设置 → 通用 → 日期与时间）",
+        "hint": "Changing the system time zone / NTP usually requires administrator rights (System Settings → General → Date & Time)",
     }
 
 
@@ -98,7 +115,7 @@ def get_ups_info() -> dict:
         "charging": charging,
         "battery_present": present,
         "raw": raw,
-        "hint": "Mac 无外接 UPS 时显示内置电池/市电；有 APC UPS 时可另装 apcupsd。",
+        "hint": "Without an external UPS a Mac reports its internal battery / AC power; with an APC UPS you can install apcupsd.",
     }
 
 
@@ -175,7 +192,7 @@ def get_power_info() -> dict:
         "assertions": sleep_prevented_by[:MAX_ASSERTIONS],
         "assertion_count": len(sleep_prevented_by),
         "ups": ups,
-        "hint": "磁盘休眠 disksleep=0 表示不休眠（家用 NAS 常用）。改 pmset 可能需 sudo。",
+        "hint": "disksleep=0 means disks never sleep (common for a home NAS). Changing pmset may require sudo.",
     }
 
 
@@ -187,25 +204,25 @@ def set_power_pref(key: str, value: int) -> dict:
         "networkoversleep", "ttyskeepawake", "lowpowermode",
     }
     if key not in allowed:
-        return {"ok": False, "message": f"不允许的键: {key}"}
+        return {"ok": False, "message": f"key not allowed: {key}"}
     try:
         value = int(value)
     except (TypeError, ValueError):
-        return {"ok": False, "message": "value 必须是整数"}
+        return {"ok": False, "message": "value must be an integer"}
     if value < 0 or value > 180:
-        return {"ok": False, "message": "value 超出范围 0–180"}
+        return {"ok": False, "message": "value is out of range 0–180"}
     rc, out, err = sh(["/usr/bin/pmset", "-a", key, str(value)], timeout=8)
     if rc != 0:
         rc, out, err = sh(["sudo", "-n", "/usr/bin/pmset", "-a", key, str(value)], timeout=8)
     msg = out or err or ""
     if rc != 0:
-        msg = (msg or "失败") + f" · 可手动: sudo pmset -a {key} {value}"
+        msg = (msg or "failed") + f" · run manually: sudo pmset -a {key} {value}"
     # Bust the caches so the UI sees the new pmset values. Order matters: the return
     # value below re-reads get_power_info(), and without dropping its memo first that
     # read would report the setting as it was before this call changed it.
     get_power_info.invalidate()
     unraid_settings_bundle.invalidate()
-    return {"ok": rc == 0, "key": key, "value": value, "message": msg or "已应用", "power": get_power_info()}
+    return {"ok": rc == 0, "key": key, "value": value, "message": msg or "applied", "power": get_power_info()}
 
 
 def _storage_snapshot() -> tuple[dict, list]:
@@ -252,7 +269,7 @@ def get_disk_settings() -> dict:
             }
             for d in (power_disks or [])[:20]
         ],
-        "hint": "HDD 休眠/唤醒请到「存储阵列」页操作；此处调整系统 disksleep 策略。",
+        "hint": "Sleep / wake HDDs from the Storage Array page; this adjusts the system disksleep policy.",
     }
 
 
@@ -290,7 +307,7 @@ def get_share_globals() -> dict:
     return {
         "smb_running": smb_running,
         "share_count": share_count,
-        "hint": "详细共享请到「共享」页；系统「文件共享」在系统设置 → 通用 → 共享。",
+        "hint": "Manage shares on the Shares page; macOS File Sharing lives in System Settings → General → Sharing.",
     }
 
 
@@ -321,9 +338,9 @@ def get_other_settings() -> dict:
             "metrics_batch": True,
             "alert_write_if_changed": True,
             "yaml_bak_keep": 5,
-            "hint": "指标批量落盘、告警状态仅变更时写盘，减轻 SSD 磨损",
+            "hint": "Metrics are flushed in batches and alert state is written only on change, reducing SSD wear",
         },
-        "hint": "高级开关：自适应发现、别名、资源阈值、采集间隔",
+        "hint": "Advanced toggles: adaptive discovery, IP aliases, resource thresholds, sampling intervals",
     }
 
 
@@ -344,7 +361,7 @@ def get_scheduler_summary() -> dict:
     return {
         "timers": slim,
         "count": len(timers),
-        "hint": "LaunchAgents 定时任务",
+        "hint": "LaunchAgents scheduled tasks",
     }
 
 
@@ -368,7 +385,7 @@ def get_vm_settings() -> dict:
                     {"id": v.get("id"), "name": v.get("name"), "state": v.get("state"), "backend": v.get("backend")}
                     for v in items[:20]
                 ],
-                "hint": "详细管理请到「虚拟机」页",
+                "hint": "Manage VMs on the Virtual Machines page",
             }
         items = []
         for v in utm:
@@ -395,7 +412,7 @@ def get_vm_settings() -> dict:
             "total": len(items),
             "running": running,
             "items": items[:20],
-            "hint": "UTM + OrbStack 虚拟机",
+            "hint": "UTM + OrbStack virtual machines",
         }
     except Exception as e:
         return {"error": str(e), "total": 0, "running": 0, "items": []}
@@ -654,21 +671,21 @@ def unraid_settings_bundle(force: bool = False) -> dict:
         "vms": vms,
         "thresholds": f_thresholds.result(),
         "sections": [
-            {"id": "appearance", "label": "显示设置", "unraid": "Display Settings"},
-            {"id": "identity", "label": "标识", "unraid": "Identification"},
-            {"id": "datetime", "label": "日期时间", "unraid": "Date & Time"},
-            {"id": "network", "label": "网络 / 别名", "unraid": "Network Settings"},
-            {"id": "disk", "label": "磁盘", "unraid": "Disk Settings"},
-            {"id": "power", "label": "电源 / UPS", "unraid": "UPS / Power"},
+            {"id": "appearance", "label": "Display", "unraid": "Display Settings"},
+            {"id": "identity", "label": "Identification", "unraid": "Identification"},
+            {"id": "datetime", "label": "Date & Time", "unraid": "Date & Time"},
+            {"id": "network", "label": "Network / Aliases", "unraid": "Network Settings"},
+            {"id": "disk", "label": "Disks", "unraid": "Disk Settings"},
+            {"id": "power", "label": "Power / UPS", "unraid": "UPS / Power"},
             {"id": "docker", "label": "Docker", "unraid": "Docker"},
-            {"id": "vms", "label": "虚拟机", "unraid": "VM Manager"},
-            {"id": "notify", "label": "通知", "unraid": "Notifications"},
-            {"id": "shares", "label": "共享", "unraid": "SMB / Shares"},
-            {"id": "scheduler", "label": "调度", "unraid": "Scheduler"},
-            {"id": "access", "label": "管理访问", "unraid": "Management Access"},
-            {"id": "advanced", "label": "高级", "unraid": "Other Settings"},
-            {"id": "diagnostics", "label": "诊断", "unraid": "Diagnostics"},
-            {"id": "panel", "label": "面板", "unraid": "User Preferences"},
+            {"id": "vms", "label": "Virtual Machines", "unraid": "VM Manager"},
+            {"id": "notify", "label": "Notifications", "unraid": "Notifications"},
+            {"id": "shares", "label": "Shares", "unraid": "SMB / Shares"},
+            {"id": "scheduler", "label": "Scheduler", "unraid": "Scheduler"},
+            {"id": "access", "label": "Management Access", "unraid": "Management Access"},
+            {"id": "advanced", "label": "Advanced", "unraid": "Other Settings"},
+            {"id": "diagnostics", "label": "Diagnostics", "unraid": "Diagnostics"},
+            {"id": "panel", "label": "Panel", "unraid": "User Preferences"},
         ],
         "cached_ttl": _BUNDLE_TTL,
     }

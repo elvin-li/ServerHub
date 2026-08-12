@@ -465,7 +465,7 @@ class ContainerLogTests(unittest.TestCase):
     def test_no_matching_containers_keeps_the_placeholder(self):
         result, _ = self._logs(self._slow_docker, source_id="nothing-matches")
         self.assertFalse(result["ok"])
-        self.assertEqual(result["log"], "无日志")
+        self.assertEqual(result["log"], "no logs")
 
 
 class RaidCandidateTests(unittest.TestCase):

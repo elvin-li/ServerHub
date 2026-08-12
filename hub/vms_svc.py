@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from hub import vm_console
 from hub.config import override
+from hub.errors import api_error
 from hub.paths import ORBCTL, UTMCTL
 from hub.util import cached_snapshot, fan_out, port_open, sh
 
@@ -289,7 +290,7 @@ def discover_vms() -> list:
             "state": v["state"],  # ok | warn | stopped | down
             "detail": v["detail"],
             "url": v.get("url"),
-            "group": v.get("group") or "虚拟机",
+            "group": v.get("group") or "Virtual Machines",
             "actions": actions,
             "backend": v.get("backend"),
         })
@@ -302,7 +303,7 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
 
     new_name = (new_name or "").strip()
     if not new_name:
-        raise HTTPException(400, "需要新名称")
+        raise api_error("vms.name_required")
     backend, name = _parse_id(vm_id)
     # key used by list_* for overrides
     if backend == "orb":
@@ -319,7 +320,7 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
         key = name
     set_override(key, {"name": new_name})
     _invalidate()
-    return {"ok": True, "action": "rename", "id": vm_id, "name": new_name, "message": f"显示名已改为 {new_name}"}
+    return {"ok": True, "action": "rename", "id": vm_id, "name": new_name, "message": f"Display name changed to {new_name}"}
 
 
 def _parse_id(vm_id: str) -> tuple[str, str]:
@@ -349,7 +350,7 @@ def vm_action(vm_id: str, action: str, **kwargs) -> dict[str, Any]:
 
 def _utm_action(name: str, action: str, **kwargs) -> dict:
     if not _utm_available():
-        raise HTTPException(503, "utmctl 不可用，请安装 UTM")
+        raise api_error("vms.utm_unavailable")
     if action == "start":
         rc, out, err = sh([UTMCTL, "start", name], timeout=90)
     elif action == "stop":
@@ -390,7 +391,7 @@ def _utm_action(name: str, action: str, **kwargs) -> dict:
         st = _utm_status(name)
         return {"ok": True, "action": action, "id": name, "status": st}
     else:
-        raise HTTPException(400, f"UTM 不支持操作: {action}")
+        raise api_error("vms.utm_unsupported_action", action=action)
     _invalidate()
     return {"ok": rc == 0, "action": action, "id": name, "message": out if rc == 0 else (err or out)}
 
@@ -429,12 +430,12 @@ def _utm_restart_async(name: str) -> dict:
         _invalidate()
 
     threading.Thread(target=job, daemon=True).start()
-    return {"ok": True, "action": "restart", "id": name, "message": "重启已开始（约 1–2 分钟）"}
+    return {"ok": True, "action": "restart", "id": name, "message": "Restart started (takes about 1–2 minutes)"}
 
 
 def _orb_action(name: str, action: str, **kwargs) -> dict:
     if not _orb_available():
-        raise HTTPException(503, "orbctl 不可用")
+        raise api_error("vms.orb_unavailable")
     if action == "start":
         rc, out, err = sh([ORBCTL, "start", name], timeout=120)
     elif action == "stop":
@@ -456,7 +457,7 @@ def _orb_action(name: str, action: str, **kwargs) -> dict:
             "ok": True,
             "action": "shell",
             "id": name,
-            "message": out or f"在终端运行: orb -m {name}",
+            "message": out or f"Run in a terminal: orb -m {name}",
             "command": f"orb -m {name}",
         }
     elif action == "info":
@@ -465,7 +466,7 @@ def _orb_action(name: str, action: str, **kwargs) -> dict:
     elif action == "rename":
         return rename_vm_display(f"orb:{name}", kwargs.get("name") or "")
     else:
-        raise HTTPException(400, f"Orb 不支持操作: {action}")
+        raise api_error("vms.orb_unsupported_action", action=action)
     _invalidate()
     return {"ok": rc == 0, "action": action, "id": name, "message": out if rc == 0 else (err or out)}
 
@@ -473,18 +474,18 @@ def _orb_action(name: str, action: str, **kwargs) -> dict:
 def create_orb_machine(distro: str, name: str | None = None, arch: str | None = None) -> dict:
     """orbctl create DISTRO[:VERSION] [NAME]"""
     if not _orb_available():
-        raise HTTPException(503, "orbctl 不可用")
+        raise api_error("vms.orb_unavailable")
     distro = (distro or "").strip()
     if not distro:
-        raise HTTPException(400, "需要 distro，例如 ubuntu 或 ubuntu:24.04")
+        raise api_error("vms.distro_required")
     # sanitize
     if not re.match(r"^[a-zA-Z0-9._:-]+$", distro):
-        raise HTTPException(400, "非法 distro")
+        raise api_error("vms.bad_distro")
     args = [ORBCTL, "create", distro]
     if name:
         name = name.strip()
         if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", name):
-            raise HTTPException(400, "非法机器名")
+            raise api_error("vms.bad_machine_name")
         args.append(name)
     if arch in ("arm64", "amd64"):
         args += ["--arch", arch]

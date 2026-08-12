@@ -377,20 +377,20 @@ def friendly_name(label: str) -> str:
 
 def guess_group(label: str, pl: dict, interval: bool) -> str:
     if interval:
-        return "定时任务"
+        return "Scheduled Tasks"
     low = label.lower()
     path = " ".join(str(a) for a in (pl.get("ProgramArguments") or [])).lower()
     if "nginx" in low or "nginx" in path:
-        return "网关"
+        return "Gateway"
     if "homeassistant" in low or "home-assistant" in path:
         return "Home Assistant"
     if "homebrew" in low or "mxcl" in low:
-        return "Homebrew 服务"
+        return "Homebrew Services"
     if "docker" in low or "orb" in low:
-        return "应用"
+        return "Apps"
     if any(x in path for x in ("/services/", "services/")):
-        return "原生服务"
-    return "原生服务"
+        return "Native Services"
+    return "Native Services"
 
 
 def enrich_service(item: dict, *, pl: dict | None = None, pid: str | None = None) -> dict:
@@ -421,7 +421,9 @@ def enrich_service(item: dict, *, pl: dict | None = None, pid: str | None = None
             item["url"] = url
     # improve detail with ports if missing
     if primary and item.get("detail") and f":{primary}" not in item["detail"]:
-        if item.get("state") == "ok" and "运行中" in item["detail"]:
+        # "运行中" kept alongside "Running": the detail text is produced by
+        # hub/discovery/*, which is migrating from Chinese to English prose.
+        if item.get("state") == "ok" and ("Running" in item["detail"] or "运行中" in item["detail"]):
             item["detail"] = item["detail"] + f" · :{primary}"
     # mark adaptive
     if item.get("auto"):
@@ -482,9 +484,9 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
             "kind": "auto",
             "name": f"{info['proc']} :{port}",
             "state": "ok",
-            "detail": f"自动发现 · pid {info['pid']} · {info['bind']}",
+            "detail": f"Auto-discovered · pid {info['pid']} · {info['bind']}",
             "url": url,
-            "group": "自动发现",
+            "group": "Auto-discovered",
             "actions": [],
             "auto": True,
             "meta": {"port": port, "pid": info["pid"], "process": info["proc"]},

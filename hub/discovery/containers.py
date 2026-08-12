@@ -109,7 +109,7 @@ def _refresh():
                     "state": state,
                     "detail": status,
                     "url": ov.get("url"),
-                    "group": ov.get("group", f"容器 · {project or '其他'}"),
+                    "group": ov.get("group", f"Containers · {project or 'other'}"),
                     "actions": acts,
                     "compose_project": project or None,
                 }

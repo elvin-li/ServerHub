@@ -55,7 +55,7 @@ def api_scheduler():
     return {
         "timers": timers,
         "count": len(timers),
-        "hint": "来自 LaunchAgents 的 StartInterval / Calendar",
+        "hint": "From StartInterval / Calendar entries in LaunchAgents",
     }
 
 

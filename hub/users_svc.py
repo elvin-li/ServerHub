@@ -68,5 +68,5 @@ def overview() -> dict:
         "users": users,
         "count": len(users),
         "admins": sum(1 for u in users if u["admin"]),
-        "hint": "macOS 用户只读列表；增删请用「系统设置 → 用户与群组」",
+        "hint": "Read-only list of macOS users; add or remove them in System Settings → Users & Groups",
     }

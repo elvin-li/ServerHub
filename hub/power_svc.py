@@ -22,8 +22,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import HTTPException
-
+from hub.errors import api_error
 from hub.host_address import default_interface, host_ip
 from hub.util import port_open, sh
 
@@ -75,11 +74,11 @@ def set_wol(enabled: bool) -> dict:
     ok = rc == 0
     msg = (out or err or "").strip()
     if not ok:
-        msg = (msg or "失败") + f" · 可手动: sudo pmset -a womp {val}"
+        msg = (msg or "failed") + f" · run manually: sudo pmset -a womp {val}"
     return {
         "ok": ok,
         "enabled": enabled if ok else _womp_enabled(),
-        "message": msg or ("网络唤醒已" + ("开启" if enabled else "关闭")),
+        "message": msg or ("Wake-on-LAN " + ("enabled" if enabled else "disabled")),
     }
 
 
@@ -98,9 +97,10 @@ def screensharing_status() -> dict:
         "host": host,
         "vnc_url": f"vnc://{host}:{VNC_PORT}",
         "hint": (
-            "已开启：点「远程连接」用系统「屏幕共享」App 连入"
+            "Enabled: click \u201cRemote Connect\u201d to connect with the built-in Screen Sharing app"
             if running
-            else "未开启：点「启用屏幕共享」，或到 系统设置 › 通用 › 共享 › 屏幕共享 手动开启"
+            else "Disabled: click \u201cEnable Screen Sharing\u201d, or turn it on manually in "
+                 "System Settings › General › Sharing › Screen Sharing"
         ),
     }
 
@@ -130,9 +130,9 @@ def _do_power(action: str) -> None:
 def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> dict:
     action = (action or "").strip().lower()
     if action not in _ACTIONS:
-        raise HTTPException(400, f"未知电源操作: {action}（可选 {', '.join(_ACTIONS)}）")
+        raise api_error("power.unknown_action", action=action, choices=", ".join(_ACTIONS))
     if not confirm:
-        raise HTTPException(400, "需要 confirm=true")
+        raise api_error("power.confirm_required")
 
     _last_power.update(action=action, at=time.time())
 
@@ -144,12 +144,12 @@ def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> 
             pass
 
     threading.Thread(target=job, daemon=True, name=f"power-{action}").start()
-    label = {"shutdown": "关机", "restart": "重启", "sleep": "睡眠"}[action]
+    label = {"shutdown": "Shutdown", "restart": "Restart", "sleep": "Sleep"}[action]
     return {
         "ok": True,
         "action": action,
         "scheduled_in_sec": round(delay_sec, 1),
-        "message": f"{label}指令已下发，约 {delay_sec:.0f} 秒后执行",
+        "message": f"{label} command sent; it will run in about {delay_sec:.0f} seconds",
     }
 
 
@@ -180,16 +180,22 @@ def power_overview() -> dict:
             "enabled": womp,
             "iface": dev,
             "mac": mac,
-            "hint": "网络唤醒仅能唤醒「睡眠中」的机器，且需局域网内其他设备发送唤醒包；无法从关机状态开机。",
+            "hint": "Wake-on-LAN can only wake a sleeping machine, and the magic packet "
+                    "must come from another device on the LAN; it cannot power on a Mac "
+                    "that is fully shut down.",
         },
         "screen_sharing": screen_sharing,
         # Already resolved inside screensharing_status(); host_ip() is cached, so
         # this is a dict read rather than another lookup.
         "host_ip": screen_sharing.get("host") or _host_ip(),
         "perf_tips": [
-            "客户端「屏幕共享」App 菜单 › 显示 › 选「自适应质量」，弱网下更跟手。",
-            "被控端降低分辨率/关闭动态壁纸与透明效果，可显著提升 VNC 流畅度。",
-            "同为 Mac 时优先用系统「屏幕共享」而非第三方 VNC，走 Apple 优化的编码。",
-            "远程时保持机器不睡眠：电源管理里把 displaysleep 调大或用咖啡因类工具。",
+            "In the client's Screen Sharing app, choose View › Adaptive Quality for a "
+            "more responsive session on weak networks.",
+            "On the controlled Mac, lowering the resolution and disabling dynamic "
+            "wallpaper/transparency noticeably improves VNC smoothness.",
+            "Between two Macs, prefer the built-in Screen Sharing over third-party VNC "
+            "clients — it uses Apple-optimized encoding.",
+            "Keep the machine awake while remoting: raise displaysleep in power "
+            "management or use a caffeinate-style tool.",
         ],
     }
