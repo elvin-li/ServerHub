@@ -1,66 +1,66 @@
 # ServerHub v3.9.1
 
-macOS 家庭服务器管理面板 — 对标 **Unraid** 信息架构，并吸收 **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew** 等开源优秀能力。
+A home-server management panel for macOS — modelled on **Unraid**'s information architecture, with ideas borrowed from **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew**.
 
-**面板：** 默认仅本机 `http://localhost:8086`；远程访问请通过启用 TLS 与身份策略的 Cloudflare Tunnel/反向代理，勿直接暴露 8086。
+**Panel:** binds `0.0.0.0:8086` by default, so it is reachable from any device on your local network — sign-in is mandatory once setup completes, so LAN clients get the login page rather than an open API. Set `SERVERHUB_HOST=127.0.0.1` to restrict it to loopback. Either way, do not expose port 8086 to the internet directly: put it behind a Cloudflare Tunnel or a reverse proxy that terminates TLS and enforces an identity policy.
 
-## 界面展示
+## Screenshots
 
-> 以下图片使用完全虚构的演示数据，不包含真实账号、用户名、IP 地址、主机名、令牌或服务配置。
+> The images below use entirely fictional demo data. They contain no real accounts, usernames, IP addresses, hostnames, tokens or service configuration.
 
-### 系统概览
+### System overview
 
-![ServerHub 系统概览（虚构演示数据）](docs/screenshots/dashboard-demo.png)
+![ServerHub system overview (fictional demo data)](docs/screenshots/dashboard-demo.png)
 
-### 应用进程
+### Apps and processes
 
-![ServerHub 应用进程（虚构演示数据）](docs/screenshots/apps-demo.png)
+![ServerHub apps and processes (fictional demo data)](docs/screenshots/apps-demo.png)
 
-## 模块地图（`/modules`）
+## Module map (`/modules`)
 
-| 类别 | 模块 | 灵感 |
+| Category | Modules | Inspiration |
 |------|------|------|
-| 系统 | 仪表盘、服务、**Brew**、传感器 | Unraid / Glances / Homebrew |
-| 容器 | Docker 表、**Compose 编辑器**、应用目录 | dockerMan / **Dockge** / Portainer / CA |
-| 存储 | 存储阵列、共享 | Unraid Main / OMV |
-| 网络 | 接口 / 端口 / 路由 | Unraid Network |
-| 应用 | **书签健康探测** | **Heimdall / Homarr / Glance** |
-| 运维 | 日志、告警、备份、工具、维护 | Unraid Tools + Notifications |
+| System | Dashboard, Services, **Brew**, Sensors | Unraid / Glances / Homebrew |
+| Containers | Docker table, **Compose editor**, App catalog | dockerMan / **Dockge** / Portainer / CA |
+| Storage | Storage array, Shares | Unraid Main / OMV |
+| Network | Interfaces / Ports / Routes | Unraid Network |
+| Apps | **Bookmark health probes** | **Heimdall / Homarr / Glance** |
+| Operations | Logs, Alerts, Backups, Tools, Maintenance | Unraid Tools + Notifications |
 
-## 本版亮点
+## Highlights
 
-### Compose（Dockge 风）
-- 栈列表 + **YAML 在线编辑**
-- `docker compose config` **校验**
-- 保存自动 `.bak`
-- 新建栈写入 `~/Services/<id>/`
-- Up / Down / 更新任务日志
+### Compose (Dockge-style)
+- Stack list with **in-browser YAML editing**
+- **Validation** via `docker compose config`
+- Automatic `.bak` on save
+- New stacks are written to `~/Services/<id>/`
+- Up / Down / update task logs
 
-### Homebrew（macOS 特色）
+### Homebrew (macOS-specific)
 - `brew services list --json`
-- 启动 / 停止 / 重启 grafana、postgres、mosquitto 等
+- Start / stop / restart grafana, postgres, mosquitto and friends
 
-### 书签探测（Homarr 风）
-- 对 `quick_links` + overrides URL 做 HTTP 探测
-- 延迟 ms、401/403 视为在线、自签 HTTPS 兼容
-- 仪表盘磁贴 + `/bookmarks` 页
+### Bookmark probes (Homarr-style)
+- HTTP probes against `quick_links` plus override URLs
+- Latency in ms, 401/403 counted as online, self-signed HTTPS tolerated
+- Dashboard tiles plus the `/bookmarks` page
 
-### 传感器（Glances 风）
-- CPU user/sys/idle、负载、内存、根盘
+### Sensors (Glances-style)
+- CPU user/sys/idle, load, memory, root volume
 - `/api/system/sensors`
 
-### 模块注册表
-- `/api/modules` 可发现所有能力与灵感来源
+### Module registry
+- `/api/modules` makes every capability and its inspiration discoverable
 
-## 技术
+## Stack
 
-- FastAPI 包 `hub/` + Vue 3 (`web/` → `static/`)
-- 容器引擎：**OrbStack**
-- 菜单栏：原生 `macos/ServerHubLauncher.swift`；`menubar.py` 为旧版实现
+- FastAPI package `hub/` + Vue 3 (`web/` → `static/`)
+- Container engine: **OrbStack**
+- Menu bar: native `macos/ServerHubLauncher.swift`; `menubar.py` is the legacy implementation
 
-## 快速开始
+## Quick start
 
-需要 macOS 13+、Python 3.10+；若需从源码重建前端，还需 Node.js 18、20 或 22+ 与 npm。
+Requires macOS 13+ and Python 3.10+. Rebuilding the frontend from source additionally needs Node.js 18, 20 or 22+ with npm.
 
 ```bash
 git clone https://github.com/elvin-li/ServerHub.git
@@ -69,11 +69,11 @@ cd ServerHub
 open http://localhost:8086
 ```
 
-安装脚本会创建本地虚拟环境、保留已有 `services.yaml`，并生成仅存于本机且已被 Git 忽略的认证令牌。首次打开时请使用 `data/.setup-token` 完成管理员设置。卸载时运行 `./uninstall.sh`；使用 `--purge` 会额外删除本地配置和运行数据。
+The install script creates a local virtual environment, preserves an existing `services.yaml`, and generates authentication tokens that stay on this machine and are gitignored. On first launch, use `data/.setup-token` to complete administrator setup. To uninstall, run `./uninstall.sh`; adding `--purge` also removes local configuration and runtime data.
 
-## 原生 macOS 菜单栏
+## Native macOS menu bar
 
-原生菜单栏 App 可安装到系统或当前用户的 Applications 目录。用户目录安装不需要覆盖 `/Applications`：
+The native menu-bar app can be installed system-wide or into the current user's Applications directory. A per-user install does not need write access to `/Applications`:
 
 ```bash
 mkdir -p "$HOME/Applications"
@@ -81,31 +81,31 @@ mkdir -p "$HOME/Applications"
 open "$HOME/Applications/ServerHub.app"
 ```
 
-App 跟随 macOS 首选语言：中文语言环境显示简体中文菜单，其他语言环境显示英文。开发和快照测试可通过 `SERVERHUB_LANGUAGE=zh-Hans` 或 `SERVERHUB_LANGUAGE=en` 显式覆盖；空值会回退到系统语言。
+The app follows the macOS preferred language: Chinese locales get a Simplified Chinese menu, everything else gets English. For development and snapshot testing you can override this explicitly with `SERVERHUB_LANGUAGE=zh-Hans` or `SERVERHUB_LANGUAGE=en`; an empty value falls back to the system language.
 
-面板的“设置 → 面板”页可查看 App、菜单栏进程、后台面板与登录自启状态，并可打开 App、切换登录自启、重启或停止面板。停止面板后，重新打开 `ServerHub.app` 即可恢复；状态读取失败时可使用卡片中的刷新按钮重试。
+The panel's **Settings → Panel** page reports the state of the app, the menu-bar process, the background panel and login autostart, and can open the app, toggle login autostart, or restart and stop the panel. After stopping the panel, reopening `ServerHub.app` brings it back; if a status read fails, use the refresh button on the card to retry.
 
-## 开发
+## Development
 
-以下命令均从仓库根目录 `~/Services/serverhub` 执行：
+Run these from the repository root (`~/Services/serverhub`):
 
 ```bash
-# 后端行为测试
+# Backend behaviour tests
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 
-# 前端测试、死代码检查和生产构建
+# Frontend tests, dead-code check and production build
 npm --prefix web test
 npm --prefix web run check:dead-code
 npm --prefix web run build
 
-# Python 未使用代码检查
+# Python unused-code checks
 .venv/bin/python -m pyflakes hub tests app.py menubar.py
 .venv/bin/python -m vulture hub tests app.py menubar.py --min-confidence 100
 ```
 
-生产构建输出到 `static/`。Vite 构建会校验首屏入口 JavaScript 不超过 150 KiB，超出直接构建失败；该预算只应下调，需要上调时应当改为把路由或依赖拆出入口。所有页面（含 `/` 与 `/login`）都是按需加载的 chunk，`main.js` 启动时会并行预热当前 URL 对应的那一个，因此懒加载不会给首屏多加一次串行往返。英语词典作为同步回退，中、日文词典按当前语言异步加载。修改词典时须保持三种语言的键和占位符一致，`npm --prefix web test` 会验证该契约。
+Production builds are written to `static/`. The Vite build asserts that the first-paint entry JavaScript stays under 150 KiB and fails outright when it does not; that budget should only ever be lowered — if you need more room, split a route or a dependency out of the entry instead. Every page (including `/` and `/login`) is a lazily loaded chunk, and `main.js` prefetches the one matching the current URL in parallel at startup, so lazy loading does not add a serial round trip to first paint. The English dictionary is bundled as a synchronous fallback; Chinese and Japanese load asynchronously for the active language. When editing dictionaries, keep the keys and placeholders identical across all three languages — `npm --prefix web test` enforces that contract.
 
-构建确认无误后，如需重启本机 LaunchAgent，可自动匹配当前实际安装的标签。面板任务历史上使用过三种命名：`install.sh` 写入 `local.serverhub.panel`，原生 ServerHub.app 写入 `local.serverhub`，早期发行安装为 `com.elvin.serverhub`。下面的片段依次探测，命中即重启：
+Once a build looks good, this snippet restarts whichever LaunchAgent label is actually installed. The panel task has used three names over time: `install.sh` writes `local.serverhub.panel`, the native ServerHub.app writes `local.serverhub`, and early releases installed `com.elvin.serverhub`. The loop probes each in turn and restarts the first one it finds:
 
 ```bash
 DOMAIN="gui/$(id -u)"
@@ -118,6 +118,37 @@ for label in local.serverhub.panel local.serverhub com.elvin.serverhub; do
 done
 ```
 
-## 模板目录 `templates/`
+## Panel watchdog
+
+`install.sh` also loads `local.serverhub.watchdog`, a one-line probe that runs once a minute.
+
+The panel's own LaunchAgent uses `KeepAlive`, which covers the ordinary failure: the process exits, launchd starts a replacement. It does not cover a hang. A replacement can wedge in `xpcproxy` — spinning on CPU, never exec'ing Python, never listening, and never exiting — and because it still holds the job's pid, launchd reports the job as running and `KeepAlive` never fires. That is the "panel never came back after a reboot" symptom.
+
+The watchdog restarts the panel only after three consecutive unreachable probes (about three minutes), and only for a label that is currently loaded, so a deliberate `launchctl bootout` is left alone. Any HTTP status counts as healthy, including the 401 you get when signed out. It writes to `~/Library/Logs/serverhub-watchdog.log`, which stays quiet unless something actually happens.
+
+```bash
+# Watch it work
+tail -f ~/Library/Logs/serverhub-watchdog.log
+
+# Turn it off
+launchctl bootout "gui/$(id -u)/local.serverhub.watchdog"
+```
+
+## Template catalog `templates/`
+
+Templates must not hardcode anything specific to the machine they were authored on. The server fills these placeholders in automatically, so a template adapts to whoever installs it; they never appear as fields in the install form.
+
+| Placeholder | Resolves to |
+|------|------|
+| `{{HOME}}` | the user's home directory |
+| `{{SERVICES}}` | the services root, normally `~/Services` |
+| `{{HOST_IP}}` | the detected LAN address |
+| `{{TZ}}` | the host's IANA timezone, read from `/etc/localtime` (falls back to `UTC`) |
+| `{{OCR_LANG}}` | Tesseract language list for the host's preferred languages, e.g. `eng+chi_sim` |
+| `{{UI_LANGS}}` | Stirling PDF locale list, e.g. `en_GB,zh_CN` |
+
+Both language lists come from the macOS preferred-language order and always keep English available. One caveat when writing templates: quote any default that starts with a placeholder — `default: "{{HOME}}/Music"`. Unquoted, YAML reads `{{` as a flow mapping, the front matter fails to parse, and the catalog silently discards the entire listing in favour of a generated placeholder card. `tests/test_template_metadata.py` fails the build if that happens.
+
+
 
 uptime-kuma · portainer · navidrome · adguard-home · cloudflared · homarr · glance · dockge · filebrowser

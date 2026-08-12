@@ -319,6 +319,11 @@ export const connectContainerNetwork = (mode, network, container, force = false)
 
 // Settings / diagnostics
 export const getSystemSettings = () => json('/api/settings/system')
+// Alert thresholds, defaults merged in server-side. The storage page reads these
+// so its SMART notice grades a disk with the same limits the alert sweep uses --
+// a page that said "temperature fine" while the alert log said otherwise would be
+// a bug the operator cannot diagnose.
+export const getThresholds = () => json('/api/settings/thresholds')
 export const setPowerSetting = (key, value) =>
   json('/api/settings/power', jsonBody('POST', { key, value: Number(value) }))
 export const generateDiagnostics = () => json('/api/diagnostics')
@@ -506,6 +511,12 @@ export const createCompose = (id, name, content) =>
   }, COMPOSE_OPERATION_TIMEOUT)
 
 export const getStorage = (light = false) => json(`/api/storage${light ? '?light=true' : ''}`)
+
+export const getSmartOverview = () => json('/api/smart')
+export const startSmartTest = (device, kind = 'short') =>
+  json('/api/smart/test', jsonBody('POST', { device, kind }))
+export const abortSmartTest = (device) =>
+  json('/api/smart/abort', jsonBody('POST', { device }))
 
 /* Storage pool (JBOD union, deliberately not RAID).
  *

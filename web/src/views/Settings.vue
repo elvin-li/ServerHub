@@ -280,6 +280,27 @@
           <input v-model.number="form.thresholds.cooldown_sec" type="number" min="60" max="86400" :aria-label="t('settings.th_cooldown')" />
         </div>
         <p class="hint">{{ t('settings.th_cooldown_hint') }}</p>
+
+        <!-- Own switch, not gated on th_enable: usage alerts and "this disk is
+             dying" have very different signal-to-noise, and an operator who muted
+             the chatty one must not lose the one that matters.  min/max mirror the
+             server's ThresholdsPatch, which rejects anything outside them. -->
+        <h2 class="section-title">{{ t('settings.th_smart') }}</h2>
+        <p class="hint" style="margin-top:0">{{ t('settings.th_smart_hint') }}</p>
+        <div class="form-grid">
+          <label>{{ t('settings.th_smart_enable') }}</label>
+          <input type="checkbox" v-model="form.thresholds.smart_enabled" :aria-label="t('settings.th_smart_enable')" />
+          <label>{{ t('settings.th_smart_temp') }}</label>
+          <input v-model.number="form.thresholds.smart_temp_c" type="number" min="30" max="95" :aria-label="t('settings.th_smart_temp')" />
+          <label>{{ t('settings.th_smart_wear') }}</label>
+          <input v-model.number="form.thresholds.smart_wear_pct" type="number" min="50" max="100" :aria-label="t('settings.th_smart_wear')" />
+          <label>{{ t('settings.th_smart_spare') }}</label>
+          <input v-model.number="form.thresholds.smart_spare_pct" type="number" min="1" max="50" :aria-label="t('settings.th_smart_spare')" />
+        </div>
+        <!-- Available Spare counts down, so this one is a floor.  Without saying so
+             the field reads like every other limit on this page and gets set to 90,
+             which alerts on every healthy disk. -->
+        <p class="hint">{{ t('settings.th_smart_spare_hint') }}</p>
       </div>
     </div>
 
@@ -1041,6 +1062,12 @@ async function load() {
         mem_pct: s.thresholds?.mem_pct ?? 90,
         disk_pct: s.thresholds?.disk_pct ?? 90,
         cooldown_sec: s.thresholds?.cooldown_sec ?? 1800,
+        // Defaults match _public_settings(); `!== false` so a server that omits the
+        // key cannot read as "SMART alerts off".
+        smart_enabled: s.thresholds?.smart_enabled !== false,
+        smart_temp_c: s.thresholds?.smart_temp_c ?? 60,
+        smart_wear_pct: s.thresholds?.smart_wear_pct ?? 90,
+        smart_spare_pct: s.thresholds?.smart_spare_pct ?? 10,
       },
       adaptive: s.adaptive !== false,
       ip_aliases: {
@@ -1090,6 +1117,10 @@ async function save() {
         mem_pct: form.value.thresholds.mem_pct,
         disk_pct: form.value.thresholds.disk_pct,
         cooldown_sec: form.value.thresholds.cooldown_sec,
+        smart_enabled: form.value.thresholds.smart_enabled,
+        smart_temp_c: form.value.thresholds.smart_temp_c,
+        smart_wear_pct: form.value.thresholds.smart_wear_pct,
+        smart_spare_pct: form.value.thresholds.smart_spare_pct,
       },
       ui: {
         locale: locale.value,

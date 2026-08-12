@@ -6,6 +6,7 @@
     </div>
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
+      <button @click="openSmart" :disabled="smartLoading">{{ t('main.smart_btn') }}</button>
       <span class="meta" style="color:var(--sub)">
         {{ t('main_extra.summary_counts', { disks: (data?.power_disks || []).length, vols: data?.volumes?.length || 0 }) }}
       </span>
@@ -222,6 +223,48 @@
     <pre v-if="lastMsg" style="margin:8px 0 12px;font-size:11px;white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:4px;max-height:120px;overflow:auto" role="status" aria-live="polite">{{ lastMsg }}</pre>
 
     <h2 class="section-title">{{ t('main.smart') }}</h2>
+
+    <!-- SMART health notice.  Three tiers, and the split between them is the whole
+         point.  Red is reserved for what the drive itself calls a failure: overall
+         health not PASSED, unreadable-now sectors, or a Pre-fail attribute that has
+         crossed the vendor's own threshold.  A raw counter that is merely non-zero
+         while the drive still answers PASSED is amber -- this host's external SSD
+         reports 55 reallocated sectors against a normalised 100 with a threshold of
+         10, and painting that "about to fail" on day one is how an operator learns
+         to ignore disk alerts.  Unreadable SMART is grey: macOS has no ATA/SCSI
+         passthrough over USB or Thunderbolt bridges, so unknown is not broken.
+         Grading lives in smartGrade(), which mirrors hub/alerts.py _smart_reasons()
+         so this page and the alert list can never disagree about the same disk. -->
+    <div v-if="smartNotice.down.length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--down)">
+      <h3 style="margin:0 0 6px">
+        <span class="led err" style="margin-right:6px"></span>{{ t('main_extra.smart_bad_title', { n: smartNotice.down.length }) }}
+      </h3>
+      <div v-for="d in smartNotice.down" :key="d.id" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ d.label }}</strong>
+        <span style="color:var(--sub)"> · {{ d.reasons }}</span>
+      </div>
+    </div>
+    <div v-if="smartNotice.warn.length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--warn)">
+      <h3 style="margin:0 0 6px">
+        <span class="led warn" style="margin-right:6px"></span>{{ t('main_extra.smart_watch_title', { n: smartNotice.warn.length }) }}
+      </h3>
+      <div v-for="d in smartNotice.warn" :key="d.id" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ d.label }}</strong>
+        <span style="color:var(--sub)"> · {{ d.reasons }}</span>
+      </div>
+      <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_watch_hint') }}</p>
+    </div>
+    <div v-if="smartNotice.unknown.length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--line)">
+      <h3 style="margin:0 0 6px;color:var(--sub)">
+        <span class="led off" style="margin-right:6px"></span>{{ t('main_extra.smart_unknown_title', { n: smartNotice.unknown.length }) }}
+      </h3>
+      <div v-for="d in smartNotice.unknown" :key="d.id" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ d.label }}</strong>
+        <span style="color:var(--sub)"> · {{ d.reasons }}</span>
+      </div>
+      <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_unknown_hint') }}</p>
+    </div>
+
     <div class="table-wrap">
       <table class="dense">
         <thead>
@@ -240,7 +283,11 @@
         </thead>
         <tbody>
           <tr v-for="d in data?.disks || []" :key="d.id">
-            <td><span class="led" :class="d.smart?.health === 'PASSED' || d.smart ? 'on' : (d.error ? 'err' : 'off')"></span></td>
+            <!-- Was `d.smart ? 'on' : (d.error ? 'err' : 'off')`, which lit green for
+                 a drive reporting FAILED (it has a smart dict) and red for a healthy
+                 external disk macOS cannot read (it has an error) -- both backwards.
+                 The LED now follows the same grade as the notice above. -->
+            <td><span class="led" :class="smartLed(d)" :title="smartGrade(d)"></span></td>
             <td class="mono">{{ d.device || d.id }}</td>
             <td>
               <strong>{{ d.name || d.id }}</strong>
@@ -249,7 +296,7 @@
             <td>{{ d.protocol || '—' }}{{ d.ssd ? ' · SSD' : '' }}</td>
             <td>{{ d.smart?.temp || '—' }}</td>
             <td>
-              <span class="badge" :class="d.smart?.health === 'PASSED' ? 'ok' : ''">
+              <span class="badge" :class="smartBadge(d)">
                 {{ d.smart?.health || (d.error ? 'N/A' : '—') }}
               </span>
             </td>
@@ -409,12 +456,154 @@
         </div>
       </div>
     </div>
+
+    <!-- SMART modal -->
+    <div ref="smartPanel" v-if="smartModal" class="modal-bg" @click.self="smartModal=false" role="presentation">
+      <div class="modal" style="max-width:920px" role="dialog" aria-modal="true" aria-labelledby="smart-modal-title">
+        <div class="row" style="margin-bottom:10px">
+          <span id="smart-modal-title" class="name">{{ t('main_extra.smart_title') }}</span>
+          <button class="tiny" @click="smartModal=false">{{ t('common.close') }}</button>
+        </div>
+        <div class="sub" style="margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;font-size:11px">
+          <span v-if="smartData?.ts">{{ smartData.ts }}</span>
+          <span :style="{ color: smartData?.passwordless_sudo ? 'var(--ok)' : 'var(--warn)' }">
+            {{ smartData?.passwordless_sudo ? t('main_extra.smart_sudo_ok') : t('main_extra.smart_sudo_no') }}
+          </span>
+          <span :style="{ color: smartData?.smartctl_installed ? 'var(--ok)' : 'var(--down)' }">
+            {{ smartData?.smartctl_installed ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
+          </span>
+        </div>
+        <div v-if="smartLoading" style="text-align:center;padding:20px;color:var(--sub)">{{ t('main_extra.scanning') }}</div>
+        <div v-else>
+          <div v-if="!smartMerged.length" style="color:var(--sub)">{{ t('main_extra.smart_no_devices') }}</div>
+          <div v-else class="table-wrap" style="max-height:400px;overflow:auto">
+            <table class="dense">
+              <thead>
+                <tr>
+                  <th>{{ t('main_extra.device') }}</th>
+                  <th>{{ t('main_extra.model') }}</th>
+                  <th>{{ t('main_extra.protocol') }}</th>
+                  <th>{{ t('main_extra.temp') }}</th>
+                  <th>{{ t('main_extra.health') }}</th>
+                  <th>{{ t('main_extra.wear') }}</th>
+                  <th>{{ t('main_extra.power_on') }}</th>
+                  <th>{{ t('main_extra.smart_caps') }}</th>
+                  <th>{{ t('common.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template v-for="m in smartMerged" :key="m.id">
+                <tr>
+                  <td class="mono">
+                    <strong>{{ m.id }}</strong>
+                    <div v-if="m.error" class="sub" style="font-size:10px;color:var(--warn)">{{ m.error }}</div>
+                  </td>
+                  <td>
+                    <strong>{{ m.smart?.model || m.smart?.serial || '—' }}</strong>
+                    <div class="sub mono" style="font-size:10px">{{ m.size || '—' }}</div>
+                  </td>
+                  <td style="font-size:11px">{{ m.protocol || '—' }}{{ m.ssd ? ' · SSD' : '' }}</td>
+                  <td>{{ m.smart?.temp || '—' }}</td>
+                  <td>
+                    <span class="badge" :class="m.smart?.health === 'PASSED' ? 'ok' : (m.smart?.health ? 'warn' : '')">
+                      {{ m.smart?.health || '—' }}
+                    </span>
+                  </td>
+                  <td>{{ m.smart?.wear || '—' }}</td>
+                  <td class="mono">{{ m.smart?.power_on || '—' }}</td>
+                  <td style="font-size:11px">
+                    <span v-if="m.caps?.supported?.length">{{ m.caps.supported.join(', ') }}</span>
+                    <span v-else style="color:var(--sub)">{{ t('main_extra.smart_unsupported') }}</span>
+                    <div v-if="m.caps?.reason" class="sub" style="font-size:10px;color:var(--warn)">{{ m.caps.reason }}</div>
+                    <div v-if="m.progress?.running" class="sub" style="font-size:10px;color:var(--ok)">{{ t('main_extra.smart_running', { pct: m.progress.percent_remaining || '?' }) }}</div>
+                    <div v-if="m.lastResult" class="sub" style="font-size:10px">{{ m.lastResult }} · {{ m.logCount || 0 }} {{ t('main_extra.smart_logs') }}</div>
+                  </td>
+                  <td class="ops">
+                    <button v-if="m.smart?.attrs?.length" class="tiny" @click="toggleSmartDetail(m.id)">
+                      {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ m.smart.attrs.length }}
+                    </button>
+                    <template v-if="m.caps?.supported?.length">
+                      <button
+                        v-for="k in m.caps.supported.filter(x => x !== 'offline')" :key="k"
+                        class="tiny primary"
+                        :disabled="busy || smartTestBusy"
+                        @click="runSmartTest(m, k)"
+                      >{{ smartTestLabel(k) }}</button>
+                    </template>
+                  </td>
+                </tr>
+                <tr v-if="smartExpanded.has(m.id) && m.smart?.attrs?.length">
+                  <td :colspan="9" style="padding:0;background:var(--bg2,#f6f6f6)">
+                    <div style="padding:6px 10px;max-height:300px;overflow:auto">
+                      <table class="dense" style="width:100%">
+                        <thead>
+                          <tr>
+                            <th style="font-size:10px;width:40px">ID</th>
+                            <th style="font-size:10px">{{ t('common.name') }}</th>
+                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.raw !== undefined">{{ t('main_extra.smart_value') }}</th>
+                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
+                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
+                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
+                            <th style="font-size:10px">{{ m.smart.attrs[0]?.raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="a in m.smart.attrs" :key="a.id">
+                            <td class="mono" style="font-size:10px">{{ a.id }}</td>
+                            <td style="font-size:11px">{{ a.name }}</td>
+                            <td v-if="a.raw !== undefined" class="mono" style="font-size:10px">{{ a.value }}</td>
+                            <td v-if="a.worst !== undefined" class="mono" style="font-size:10px">{{ a.worst }}</td>
+                            <td v-if="a.thresh !== undefined" class="mono" style="font-size:10px">{{ a.thresh }}</td>
+                            <td v-if="a.type !== undefined" style="font-size:10px">
+                              <span class="badge" :class="a.type === 'Pre-fail' ? 'warn' : ''" style="font-size:9px">{{ a.type }}</span>
+                            </td>
+                            <td class="mono" style="font-size:10px">{{ a.raw !== undefined ? a.raw : a.value }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="smartData?.history?.length" style="margin-top:12px">
+            <h4 style="font-size:12px;margin-bottom:6px">{{ t('main_extra.smart_history') }}</h4>
+            <div class="table-wrap" style="max-height:160px;overflow:auto">
+              <table class="dense">
+                <thead>
+                  <tr>
+                    <th style="font-size:10px">{{ t('common.time') }}</th>
+                    <th style="font-size:10px">{{ t('main_extra.device') }}</th>
+                    <th style="font-size:10px">{{ t('main_extra.th_type') }}</th>
+                    <th style="font-size:10px">{{ t('common.status') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(h, i) in smartData.history.slice(0, 15)" :key="i">
+                    <td class="mono" style="font-size:10px">{{ h.ts ? new Date(h.ts * 1000).toLocaleString() : '—' }}</td>
+                    <td class="mono" style="font-size:10px">{{ h.device || '—' }}</td>
+                    <td style="font-size:10px">{{ h.kind || '—' }}</td>
+                    <td>
+                      <span class="badge" :class="h.ok ? 'ok' : 'warn'" style="font-size:10px">
+                        {{ h.ok ? 'OK' : (h.error || h.message || 'Error') }}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { getStorage, manageStorageDevice, setDiskPower } from '../api/client'
+import { getStorage, getThresholds, manageStorageDevice, setDiskPower, getSmartOverview, startSmartTest } from '../api/client'
 import { injectI18n } from '../i18n'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
@@ -439,6 +628,18 @@ const formatWhole = ref(false)
 const formatFs = ref('ExFAT')
 const formatName = ref('')
 const formatConfirm = ref('')
+const smartModal = ref(false)
+const smartPanel = ref(null)
+const smartData = ref(null)
+const smartLoading = ref(false)
+const smartTestBusy = ref(false)
+const smartExpanded = ref(new Set())
+//: Same defaults as system_settings_svc.DEFAULT_THRESHOLDS.  Kept so the soft
+//: checks still grade correctly before /api/settings/thresholds answers, and if it
+//: never answers: a page that silently stopped warning about a 70°C disk because
+//: one auxiliary request failed would be worse than one using the shipped limits.
+const SMART_THRESHOLD_DEFAULTS = { smart_temp_c: 60, smart_wear_pct: 90, smart_spare_pct: 10 }
+const smartThresholds = ref({ ...SMART_THRESHOLD_DEFAULTS })
 let timer = null
 const refreshTimers = new Set()
 // Progressive first paint: the light overview (capacity + SMART) renders in
@@ -487,6 +688,199 @@ const unassigned = computed(() => {
     if (d.power_state === 'spun_down' || d.power_state === 'offline' || d.power_state === 'idle') return true
     return false
   })
+})
+
+// Merge self-test capabilities (/api/smart) with SMART attributes (/api/storage disks)
+const smartMerged = computed(() => {
+  const testDevices = smartData.value?.devices || []
+  const storageDisks = data.value?.disks || []
+  const storageMap = new Map()
+  for (const d of storageDisks) storageMap.set(d.id, d)
+  const merged = testDevices.map(td => {
+    const sd = storageMap.get(td.id)
+    return {
+      id: td.id, device: td.device,
+      smart: sd?.smart || null, error: sd?.error || null,
+      protocol: sd?.protocol, ssd: sd?.ssd, size: sd?.size,
+      caps: td.capabilities, lastResult: td.last_result,
+      logCount: td.log_count, failures: td.failures, progress: td.progress,
+    }
+  })
+  const testIds = new Set(testDevices.map(d => d.id))
+  for (const sd of storageDisks) {
+    if (!testIds.has(sd.id)) {
+      merged.push({
+        id: sd.id, device: sd.device,
+        smart: sd.smart || null, error: sd.error || null,
+        protocol: sd.protocol, ssd: sd.ssd, size: sd.size,
+        caps: null, lastResult: '', logCount: 0, failures: 0, progress: null,
+      })
+    }
+  }
+  return merged
+})
+
+/* SMART grading -- a port of hub/alerts.py `_smart_reasons`.
+ *
+ * Duplicated rather than derived from the alert list on purpose: the alerts
+ * endpoint only reports disks whose level *changed* (edge-triggered, plus a
+ * cooldown re-announce), so a disk that has been warning quietly for a week is not
+ * in it, and this page has to be able to state the current condition of every disk
+ * it lists.  The cost of the copy is that the two must stay in step; the reason
+ * table below is ordered exactly like the Python one to make a drift visible.
+ */
+
+/** The number inside a smartctl field, or null when there isn't one.
+ *
+ * Nothing in the payload is a number: temperature arrives as "37 Celsius", wear
+ * and spare as "0%" / "100%", the NVMe critical-warning bitmap as "0x00".  null
+ * rather than 0 when nothing parses, because here "unreadable" and "zero" mean
+ * opposite things -- 0 media errors is a healthy disk, an unparseable media-error
+ * field is a disk we know nothing about, and only the first may read as fine.
+ */
+function smartNum(raw) {
+  if (raw == null || typeof raw === 'boolean') return null
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
+  const s = String(raw).trim()
+  if (!s) return null
+  // The critical-warning bitmap is printed in hex; a decimal scan would read
+  // "0x02" (spare below threshold) as 0 and drop the warning silently.
+  if (s.toLowerCase().startsWith('0x')) {
+    const hex = Number.parseInt(s, 16)
+    return Number.isNaN(hex) ? null : hex
+  }
+  const m = s.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/)
+  if (!m) return null
+  const v = Number.parseFloat(m[0])
+  return Number.isNaN(v) ? null : v
+}
+
+/** Split the tripped checks for one disk into [fatal, worth-watching]. */
+function smartReasons(smart) {
+  const th = smartThresholds.value
+  const down = []
+  const warn = []
+
+  // The drive's own overall verdict, and the most authoritative signal there is:
+  // the firmware has already weighed its attributes against the vendor's failure
+  // thresholds.  Anything that is not PASSED/OK is fatal, "WARNING" included --
+  // smartctl uses that word for a crossed vendor threshold, which is a different
+  // thing from our own soft warn level below.
+  const health = String(smart.health || '').trim()
+  if (health && !['PASSED', 'OK'].includes(health.toUpperCase().replace(/!+$/, ''))) {
+    down.push(t('main_extra.smart_r_health', { v: health }))
+  }
+
+  // Media errors are already data loss; a pending sector is one the drive tried to
+  // read, could not, and has not remapped -- unreadable *now*.  Hence `> 0`.
+  for (const field of ['media_errors', 'pending']) {
+    const v = smartNum(smart[field])
+    if (v != null && v > 0) down.push(t(`main_extra.smart_r_${field}`, { v: Math.round(v) }))
+  }
+
+  // The vendor's own pre-fail verdict from the attribute table.  This is what
+  // separates red from amber: the raw counters alone are a bad severity signal, so
+  // "crossed the threshold the vendor set" is the fatal test, and a non-zero raw
+  // count is only the warn below.
+  for (const attr of smart.attrs || []) {
+    if (!attr || typeof attr !== 'object' || String(attr.type || '') !== 'Pre-fail') continue
+    const value = smartNum(attr.value)
+    // A threshold of 0 means the vendor declared no failure point for this
+    // attribute, so there is nothing to be below.
+    const thresh = smartNum(attr.thresh)
+    if (value == null || thresh == null || thresh <= 0) continue
+    if (value <= thresh) {
+      down.push(t('main_extra.smart_r_prefail', {
+        name: String(attr.name || attr.id || '?'),
+        v: Math.round(value),
+        lim: Math.round(thresh),
+      }))
+    }
+  }
+
+  // Reallocated sectors: real information, not an emergency by itself.  The drive
+  // has already moved the data, and on an SSD with a large over-provisioning pool a
+  // few dozen is unremarkable.  What matters is growth.  Stated as a bare count
+  // because this same string is reused inside a red notice, where a reassuring
+  // clause would contradict the headline.
+  const realloc = smartNum(smart.reallocated)
+  if (realloc != null && realloc > 0) {
+    warn.push(t('main_extra.smart_r_reallocated', { v: Math.round(realloc) }))
+  }
+
+  // NVMe critical warning bitmap: any bit set is the controller reporting a fault
+  // (spare exhausted, degraded reliability, read-only, over temperature).
+  const crit = String(smart.critical_warning || '').trim()
+  const critNum = smartNum(crit)
+  if (critNum != null && critNum > 0) {
+    down.push(t('main_extra.smart_r_critical_warning', { v: crit }))
+  }
+
+  // The soft checks, read from the configured thresholds.  `spare` gets `<=`:
+  // Available Spare is the share of the over-provisioning pool still unused, so it
+  // counts *down*, and comparing it like the others would make a disk with 2% spare
+  // left look healthier than a brand-new one.
+  for (const [leaf, source, limitKey, hotterIsWorse] of [
+    ['temp', 'temp', 'smart_temp_c', true],
+    ['wear', 'wear', 'smart_wear_pct', true],
+    ['spare', 'available_spare', 'smart_spare_pct', false],
+  ]) {
+    const v = smartNum(smart[source])
+    const lim = smartNum(th[limitKey])
+    if (v == null || lim == null) continue
+    if (hotterIsWorse ? v >= lim : v <= lim) {
+      warn.push(t(`main_extra.smart_r_${leaf}`, { v: Math.round(v), lim: Math.round(lim) }))
+    }
+  }
+  return [down, warn]
+}
+
+/** 'down' | 'warn' | 'ok' | 'unknown' for one disk from /api/storage or /api/smart. */
+function smartGrade(d) {
+  const smart = d?.smart
+  // Unknown, not broken, and never red: macOS gives userspace no ATA/SCSI
+  // passthrough over USB or Thunderbolt bridges, so smartctl answers "not
+  // supported by device" for a perfectly healthy external disk.  The alert sweep
+  // skips these entirely for the same reason.
+  if (!smart || typeof smart !== 'object' || d.error) return 'unknown'
+  const [down, warn] = smartReasons(smart)
+  if (down.length) return 'down'
+  if (warn.length) return 'warn'
+  return 'ok'
+}
+
+function smartLed(d) {
+  return { down: 'err', warn: 'warn', ok: 'on' }[smartGrade(d)] || 'off'
+}
+
+function smartBadge(d) {
+  return { down: 'down', warn: 'warn', ok: 'ok' }[smartGrade(d)] || ''
+}
+
+//: The three tiers the notice renders, each disk listed once at the worst level it
+//: earned -- a failing disk usually trips several checks at once, and five separate
+//: lines for one disk would bury the other disks.
+const smartNotice = computed(() => {
+  const out = { down: [], warn: [], unknown: [] }
+  for (const d of smartMerged.value) {
+    const label = [d.smart?.model || d.name || d.id, d.device].filter(Boolean).join(' ')
+    const grade = smartGrade(d)
+    if (grade === 'unknown') {
+      // Only when the read actually failed.  A /api/smart device with no matching
+      // storage entry has neither SMART nor an error, and inventing a row for it
+      // would report a problem nobody has.
+      if (d.error) out.unknown.push({ id: d.id, label, reasons: d.error })
+      continue
+    }
+    if (grade === 'ok') continue
+    const [down, warn] = smartReasons(d.smart)
+    out[grade].push({
+      id: d.id,
+      label,
+      reasons: (grade === 'down' ? [...down, ...warn] : warn).join(' · '),
+    })
+  }
+  return out
 })
 
 function powerLed(d) {
@@ -563,6 +957,24 @@ async function loadInitial() {
     }
   } finally {
     if (mySeq === loadSeq) pendingFull.value = false
+  }
+}
+
+// Auxiliary and deliberately fire-and-forget.  These only retune the three soft
+// checks, so a failure falls back to the shipped defaults instead of taking the
+// storage page's failure banner with it -- and it is read once per visit rather
+// than on the 45s poll, because an operator editing a threshold is reloading the
+// settings page, not staring at this one.
+async function loadSmartThresholds() {
+  try {
+    const th = await getThresholds()
+    smartThresholds.value = {
+      smart_temp_c: smartNum(th?.smart_temp_c) ?? SMART_THRESHOLD_DEFAULTS.smart_temp_c,
+      smart_wear_pct: smartNum(th?.smart_wear_pct) ?? SMART_THRESHOLD_DEFAULTS.smart_wear_pct,
+      smart_spare_pct: smartNum(th?.smart_spare_pct) ?? SMART_THRESHOLD_DEFAULTS.smart_spare_pct,
+    }
+  } catch {
+    // Defaults already in place; nothing to report to the operator.
   }
 }
 
@@ -674,6 +1086,7 @@ async function doFormat() {
 
 onMounted(() => {
   void loadInitial()
+  void loadSmartThresholds()
   timer = startVisibleInterval(refresh, 45000)
 })
 onUnmounted(() => {
@@ -687,6 +1100,49 @@ onUnmounted(() => {
 // cannot wander to the page behind the overlay.
 useDismissable(renameTarget, () => { renameTarget.value = null }, renamePanel)
 useDismissable(formatTarget, () => { formatTarget.value = null }, formatPanel)
+useDismissable(smartModal, () => { smartModal.value = false }, smartPanel)
+
+async function openSmart() {
+  smartModal.value = true
+  smartLoading.value = true
+  try {
+    smartData.value = await getSmartOverview()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    smartLoading.value = false
+  }
+}
+
+async function runSmartTest(dev, kind) {
+  if (!confirm(`${t('main_extra.smart_start')} ${kind} → ${dev.id}?`)) return
+  smartTestBusy.value = true
+  try {
+    const j = await startSmartTest(dev.device, kind)
+    toast(j.ok ? `✅ ${t('main_extra.smart_started')}` : `❌ ${j.message || j.error}`)
+    if (j.ok) {
+      setTimeout(async () => {
+        try { smartData.value = await getSmartOverview() } catch {}
+      }, 3000)
+    }
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    smartTestBusy.value = false
+  }
+}
+
+function toggleSmartDetail(diskId) {
+  const s = new Set(smartExpanded.value)
+  if (s.has(diskId)) s.delete(diskId)
+  else s.add(diskId)
+  smartExpanded.value = s
+}
+
+function smartTestLabel(kind) {
+  const map = { short: t('main_extra.smart_short'), long: t('main_extra.smart_long'), extended: t('main_extra.smart_long'), conveyance: t('main_extra.smart_conveyance') }
+  return `${t('main_extra.smart_start')} ${map[kind] || kind}`
+}
 </script>
 
 <style scoped>

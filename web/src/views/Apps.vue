@@ -1808,7 +1808,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .app-head {
   /* Stack title over badges so the name always gets the full card width.
      (Side-by-side let a 3–4 chip badge cluster squeeze long names into an
-      ellipsis, e.g. "FileBrows er（原生…".) */
+      ellipsis, e.g. "FileBrows er (nat…".) */
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -1835,7 +1835,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   overflow: hidden;
 }
 
-/* Uniform chips — same height/padding/radius for 原生/推荐/已装 */
+/* Uniform chips — same height/padding/radius for native/recommended/installed */
 .app-badges {
   display: flex;
   flex-wrap: wrap;

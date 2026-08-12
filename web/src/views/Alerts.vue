@@ -21,8 +21,15 @@
         <tbody>
           <tr v-for="(a,i) in alerts" :key="i">
             <td class="mono">{{ fmt(a.t) }}</td>
+            <!-- Keyed on `level` alone, deliberately: a disk that is dying has to
+                 read as urgently as a service that is down, so `smart` + `down`
+                 lands on the same red .badge.down as a service down. The kind tag
+                 below says what broke without competing with that. -->
             <td><span class="badge" :class="a.level === 'ok' ? 'ok' : a.level">{{ a.level }}</span></td>
-            <td><strong>{{ a.name }}</strong></td>
+            <td>
+              <span v-if="kindLabel(a)" class="badge" style="margin-right:4px">{{ kindLabel(a) }}</span>
+              <strong>{{ a.name }}</strong>
+            </td>
             <td>{{ a.event }}</td>
             <td style="max-width:320px;font-size:11px">{{ a.message }}</td>
           </tr>
@@ -50,6 +57,18 @@ const loadError = ref('')
 
 function fmt(t) {
   return t ? new Date(t * 1000).toLocaleString() : ''
+}
+
+//: Alert `kind` -> the i18n leaf naming what the row is about.  The list mixes
+//: sources -- services, resource usage and SMART disk health all land in the same
+//: table -- and `name` alone does not separate them, so a disk problem read as
+//: just another service going down.  Unlisted kinds render no tag rather than a
+//: raw backend token.
+const KIND_LABELS = { service: 'kind_service', resource: 'kind_resource', smart: 'kind_smart' }
+
+function kindLabel(a) {
+  const leaf = KIND_LABELS[a?.kind]
+  return leaf ? t(`alerts.${leaf}`) : ''
 }
 
 async function refresh() {

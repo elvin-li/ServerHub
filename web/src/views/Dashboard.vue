@@ -652,7 +652,7 @@ const attention = computed(() => {
   const list = []
   for (const g of status.value.groups || []) {
     for (const s of g.services || []) {
-      // 主动停止(stopped)不算需要关注；仅 warn/down
+      // A deliberate stop is not actionable; only warn/down need attention
       if (s.state && s.state !== 'ok' && s.state !== 'stopped') list.push(s)
     }
   }
