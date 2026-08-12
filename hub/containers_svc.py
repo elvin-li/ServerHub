@@ -290,7 +290,7 @@ def _build_container_list() -> tuple[bool, list]:
             "service": service or None,
             "size": size,
             "url": ov.get("url"),
-            "group": ov.get("group") or (f"容器 · {project}" if project else "容器 · 其他"),
+            "group": ov.get("group") or (f"Containers · {project}" if project else "Containers · other"),
             "network": None,
             "ip": None,
             "restart_policy": None,
@@ -395,7 +395,7 @@ def list_containers(with_stats: bool = True) -> dict:
     projects = {}
     for it in items:
         key = it.get("project") or "_ungrouped"
-        projects.setdefault(key, {"name": key if key != "_ungrouped" else "其他", "count": 0, "running": 0})
+        projects.setdefault(key, {"name": key if key != "_ungrouped" else "other", "count": 0, "running": 0})
         projects[key]["count"] += 1
         if it["raw_state"] == "running":
             projects[key]["running"] += 1
@@ -461,7 +461,7 @@ def action_all(action: str) -> dict:
         elif action == "restart" and rs in ("running", "paused"):
             names.append(c["id"])
     if not names:
-        return {"ok": True, "done": 0, "total": 0, "message": "无需操作", "results": []}
+        return {"ok": True, "done": 0, "total": 0, "message": "nothing to do", "results": []}
     return batch_action(names, action)
 
 
@@ -518,7 +518,7 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
         j = j0
         status = _load_update_status()
         try:
-            j["log"].append(f"检查 {len(images)} 个镜像更新…")
+            j["log"].append(f"Checking {len(images)} images for updates…")
             for img in images:
                 j["log"].append(f"→ {img}")
                 try:
@@ -529,7 +529,7 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
                         "local": r.get("local"),
                         "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                     }
-                    flag = "有更新" if r["update"] else ("最新" if r["status"] == "false" else "未知")
+                    flag = "update available" if r["update"] else ("up to date" if r["status"] == "false" else "unknown")
                     j["log"].append(f"  {flag}")
                 except Exception as e:
                     j["log"].append(f"  !! {e}")
@@ -537,7 +537,7 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
             status["_checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             _save_update_status(status)
             j["rc"] = 0
-            j["log"].append("== 检查完成 ==")
+            j["log"].append("== check complete ==")
         except Exception as e:
             j["log"].append(f"!! {e}")
             j["rc"] = -1
@@ -547,7 +547,7 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
             invalidate_status()
 
     threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "job_id": tid, "message": f"开始检查 {len(images)} 个镜像", "images": images}
+    return {"ok": True, "job_id": tid, "message": f"Checking {len(images)} images", "images": images}
 
 
 def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
@@ -697,7 +697,7 @@ def start_update_container_job(name: str) -> dict:
                     else:
                         # pull alone does not switch running container; try force recreate
                         # via stop/rm/create using docker's --force recreate if available
-                        j["log"].append("镜像已拉取。无 compose 元数据，执行 stop→rm→create 重建…")
+                        j["log"].append("Image pulled. No compose metadata; recreating via stop→rm→create…")
                         ok_re = _recreate_simple(name, image, j, env)
                         j["rc"] = 0 if ok_re else 1
             # mark image current
@@ -709,7 +709,7 @@ def start_update_container_job(name: str) -> dict:
             _save_update_status(st)
             if j.get("rc") is None:
                 j["rc"] = 0
-            j["log"].append("== 完成 ==")
+            j["log"].append("== done ==")
         except Exception as e:
             j["log"].append(f"!! {e}")
             j["rc"] = -1
@@ -719,13 +719,17 @@ def start_update_container_job(name: str) -> dict:
             invalidate_status()
 
     threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "job_id": tid, "message": f"开始更新 {name}"}
+    return {"ok": True, "job_id": tid, "message": f"Updating {name}"}
 
 
 def exec_in_container(name: str, command: str, shell: str = "/bin/sh") -> dict:
     """One-shot exec (Unraid console simplified)."""
     if not command or not command.strip():
         raise HTTPException(400, "empty command")
+    # A bare positional: an option-shaped container name (`-e…`, `--privileged`)
+    # would otherwise be read by docker as a flag, not a container. Same guard
+    # the action/restart paths already apply.
+    name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker(
         "exec", name, shell, "-c", command,
         timeout=60,
@@ -1101,11 +1105,11 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
                 rc = _stream_job_command(cmd, j, cwd=workdir, env=env)
                 if rc != 0:
                     j["rc"] = rc
-                    j["log"].append(f"!! 失败 exit {rc}")
+                    j["log"].append(f"!! failed exit {rc}")
                     break
             else:
                 j["rc"] = 0
-                j["log"].append("== 完成 ==")
+                j["log"].append("== done ==")
         except Exception as e:
             j["log"].append(f"!! {e}")
             j["rc"] = -1
@@ -1115,7 +1119,7 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
             invalidate_status()
 
     threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "job_id": tid, "message": "任务已开始"}
+    return {"ok": True, "job_id": tid, "message": "job started"}
 
 
 def stack_job_log(job_id: str) -> dict:
@@ -1128,9 +1132,9 @@ def stack_job_log(job_id: str) -> dict:
                 job_id = k
                 break
     if not j:
-        return {"running": False, "rc": None, "log": "（尚未运行）", "job_id": job_id}
+        return {"running": False, "rc": None, "log": "(not started yet)", "job_id": job_id}
     return {"running": j["running"], "rc": j["rc"], "started": j.get("started"),
-            "finished": j.get("finished"), "log": "\n".join(j["log"]) or "（等待输出…）",
+            "finished": j.get("finished"), "log": "\n".join(j["log"]) or "(waiting for output…)",
             "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action")}
 
 

@@ -16,8 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import HTTPException
-
+from hub.errors import api_error
 from hub.paths import DATA_DIR
 from hub.host_address import normalize_local_url
 from hub import secure_io
@@ -36,7 +35,7 @@ _HTTP_USER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
 def _valid_id(service_id: str) -> str:
     value = (service_id or "").strip()
     if not _ID_RE.fullmatch(value) or ".." in value:
-        raise HTTPException(400, "非法服务 ID")
+        raise api_error("credentials.bad_service_id")
     return value
 
 
@@ -115,9 +114,9 @@ def store(
     service_id = _valid_id(service_id)
     username = (username or "").strip()
     if not username:
-        raise HTTPException(400, "用户名不能为空")
+        raise api_error("credentials.username_required")
     if len(password or "") < 8:
-        raise HTTPException(400, "服务密码至少需要 8 个字符")
+        raise api_error("credentials.password_too_short", min=8)
 
     keychain_service = _keychain_service(service_id)
     with _lock:
@@ -135,7 +134,7 @@ def store(
             "-w",
         ], password_input=password)
         if rc != 0:
-            raise HTTPException(503, f"无法写入 macOS 钥匙串：{message[:160]}")
+            raise api_error("credentials.keychain_write_failed", error=message[:160])
         item = {
             "service_id": service_id,
             "display_name": (display_name or service_id).strip()[:120],
@@ -151,7 +150,7 @@ def store(
             _save(items)
         except OSError as exc:
             _delete_keychain(keychain_service, username)
-            raise HTTPException(500, f"无法保存凭据索引：{exc}")
+            raise api_error("credentials.index_save_failed", error=str(exc))
         if old_user and old_user != username:
             _delete_keychain(keychain_service, old_user)
         return public_item(item)
@@ -230,15 +229,25 @@ def apply_filebrowser(username: str, password: str) -> dict:
     # unrepresentable; it simply had not been applied here.
     username = (username or "").strip()
     if not _HTTP_USER_RE.fullmatch(username):
-        raise HTTPException(400, "用户名只能包含字母、数字与 . _ @ + -，且需以字母或数字开头")
+        raise api_error("credentials.bad_username")
     if not files_svc.FB_BIN.exists() or not files_svc.FB_DB.exists():
-        raise HTTPException(404, "未安装 File Browser 或数据库不存在")
+        raise api_error("credentials.filebrowser_missing")
     was_running = bool(files_svc.filebrowser_status().get("running"))
     if was_running:
         stopped = files_svc.stop_filebrowser()
         if stopped.get("running"):
-            raise HTTPException(503, "无法暂停 File Browser，未修改密码")
+            raise api_error("credentials.filebrowser_stop_failed")
     try:
+        # The password goes on argv, where `ps` exposes it to other local users
+        # for the lifetime of the call.  That is a known residual, not an
+        # oversight: FileBrowser's `users update` accepts the secret no other
+        # way.  Verified against the shipped binary -- there is no stdin form,
+        # and its subcommand flags are not bound to FB_* environment variables
+        # (FB_LOCALE=fr leaves the locale untouched while --locale de applies,
+        # so FB_PASSWORD would silently no-op and report success while leaving
+        # the old password in place).  A silent failure to rotate a password is
+        # strictly worse than a brief local disclosure on a single-user host,
+        # so the flag stays until upstream offers stdin.
         rc, out, err = sh([
             str(files_svc.FB_BIN),
             "users", "update", username,
@@ -246,9 +255,9 @@ def apply_filebrowser(username: str, password: str) -> dict:
             "-d", str(files_svc.FB_DB),
         ], timeout=30)
         if rc != 0:
-            message = (err or out or "File Browser 拒绝修改密码").strip().replace(password, "***")
-            raise HTTPException(400, message[:300])
-        return {"ok": True, "message": "File Browser 登录密码已更新"}
+            message = (err or out or "").strip().replace(password, "***")
+            raise api_error("credentials.filebrowser_update_failed", error=message[:300])
+        return {"ok": True, "message": "File Browser login password updated"}
     finally:
         if was_running:
             files_svc.ensure_filebrowser()
@@ -257,9 +266,9 @@ def apply_filebrowser(username: str, password: str) -> dict:
 def apply_teslamate(username: str, password: str) -> dict:
     """Replace TeslaMate's Nginx Basic Auth user without exposing the secret."""
     if not _HTTP_USER_RE.fullmatch((username or "").strip()):
-        raise HTTPException(400, "TeslaMate 用户名仅支持字母、数字及 . _ @ + -")
+        raise api_error("credentials.bad_username")
     if not TESLAMATE_NGINX_SITE.is_file():
-        raise HTTPException(409, "TeslaMate 密码网关尚未安装")
+        raise api_error("credentials.teslamate_gateway_missing")
 
     result = subprocess.run(
         # Nginx on macOS cannot validate Apache's $2y$ bcrypt records because
@@ -273,8 +282,8 @@ def apply_teslamate(username: str, password: str) -> dict:
     )
     entry = (result.stdout or "").strip()
     if result.returncode != 0 or not entry.startswith(username + ":"):
-        message = (result.stderr or "无法生成 TeslaMate 密码摘要").strip()
-        raise HTTPException(503, message[:200])
+        message = (result.stderr or "").strip()
+        raise api_error("credentials.htpasswd_failed", error=message[:200])
 
     with _lock:
         old = TESLAMATE_HTPASSWD.read_bytes() if TESLAMATE_HTPASSWD.exists() else None
@@ -289,7 +298,7 @@ def apply_teslamate(username: str, password: str) -> dict:
             from hub import nginx_svc
             reloaded = nginx_svc.reload_nginx()
             if not reloaded.get("ok"):
-                raise RuntimeError(str(reloaded.get("message") or "Nginx 重载失败"))
+                raise RuntimeError(str(reloaded.get("message") or "Nginx reload failed"))
         except Exception as exc:
             tmp.unlink(missing_ok=True)
             if old is None:
@@ -297,9 +306,9 @@ def apply_teslamate(username: str, password: str) -> dict:
             else:
                 TESLAMATE_HTPASSWD.write_bytes(old)
                 os.chmod(TESLAMATE_HTPASSWD, 0o600)
-            raise HTTPException(503, f"TeslaMate 密码未生效，已回滚：{str(exc)[:180]}")
+            raise api_error("credentials.teslamate_apply_failed", error=str(exc)[:180])
 
-    return {"ok": True, "message": "TeslaMate 4000 端口访问密码已更新"}
+    return {"ok": True, "message": "TeslaMate port 4000 access password updated"}
 
 
 def apply(service_id: str, username: str, password: str) -> dict:
@@ -308,4 +317,4 @@ def apply(service_id: str, username: str, password: str) -> dict:
         return apply_filebrowser(username, password)
     if adapter == "teslamate-basic-auth":
         return apply_teslamate(username, password)
-    raise HTTPException(400, "该插件暂不支持自动改密，可仅保存凭据")
+    raise api_error("credentials.adapter_unsupported")

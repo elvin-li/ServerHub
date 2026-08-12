@@ -400,9 +400,23 @@ def set_password(password: str, username: str = "admin", *, enable: bool = True)
     config_mutate(apply)
 
 
+#: (path, mtime_ns, value) — verify_session runs 2-3 times per request, and each
+#: run open()+read() the same 32 bytes from disk.  The stat-validated cache cuts
+#: that to one stat per call while still noticing a replaced file (tests point
+#: SECRET_FILE at throwaway dirs; nothing in production ever rewrites it).
+_secret_cache: tuple[str, int, bytes] | None = None
+
+
 def _secret() -> bytes:
+    global _secret_cache
     try:
-        return SECRET_FILE.read_bytes()
+        st = os.stat(SECRET_FILE)
+        cached = _secret_cache
+        if cached and cached[0] == str(SECRET_FILE) and cached[1] == st.st_mtime_ns:
+            return cached[2]
+        value = SECRET_FILE.read_bytes()
+        _secret_cache = (str(SECRET_FILE), st.st_mtime_ns, value)
+        return value
     except FileNotFoundError:
         SECRET_FILE.parent.mkdir(exist_ok=True)
         value = secrets.token_bytes(32)
@@ -410,9 +424,43 @@ def _secret() -> bytes:
             fd = os.open(SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(value)
-            return value
         except FileExistsError:
             return SECRET_FILE.read_bytes()
+        _secret_cache = (str(SECRET_FILE), os.stat(SECRET_FILE).st_mtime_ns, value)
+        return value
+
+
+def _session_epoch(username: str) -> int:
+    """Per-account logout counter.  Bumping it invalidates that account's
+    outstanding tokens without a server-side session store."""
+    epochs = _auth_cfg().get("session_epochs") or {}
+    try:
+        return int(epochs.get(username) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def bump_session_epoch(username: str) -> None:
+    """Revoke every existing session for *username* (logout-everywhere).
+
+    A stateless HMAC token cannot be individually revoked, so "logout" used to
+    only drop the cookie — a captured token stayed valid for its full 7-day
+    TTL.  Folding this counter into the signed version means one increment
+    invalidates all of the account's tokens at once, which is what logout now
+    does.
+    """
+    def apply(data: dict) -> None:
+        settings = data.setdefault("settings", {})
+        auth = dict(settings.get("auth") or {})
+        epochs = dict(auth.get("session_epochs") or {})
+        try:
+            epochs[username] = int(epochs.get(username) or 0) + 1
+        except (TypeError, ValueError):
+            epochs[username] = 1
+        auth["session_epochs"] = epochs
+        settings["auth"] = auth
+
+    config_mutate(apply)
 
 
 def account_session_version(username: str) -> str:
@@ -423,9 +471,15 @@ def account_session_version(username: str) -> str:
     could not invalidate their sessions.  For the admin this is still derived
     from ``password_hash``, so cookies issued before multi-account support keep
     verifying and nobody is logged out by the upgrade.
+
+    The logout epoch is appended only once it is non-zero, so cookies issued
+    before the first logout on an upgraded install keep verifying unchanged.
     """
     acct = accounts().get(username) or {}
     basis = str(acct.get("password_hash") or "legacy")
+    epoch = _session_epoch(username)
+    if epoch:
+        basis = f"{basis}|{epoch}"
     return hashlib.sha256(basis.encode()).hexdigest()[:16]
 
 

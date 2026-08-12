@@ -46,6 +46,16 @@ class ThresholdsPatch(BaseModel):
     mem_pct: Optional[int] = Field(None, ge=50, le=100)
     disk_pct: Optional[int] = Field(None, ge=50, le=100)
     cooldown_sec: Optional[int] = Field(None, ge=60, le=86400)
+    # SMART disk health.  These must be declared even though the merge below is
+    # generic: it goes through `model_dump()`, which only ever yields declared
+    # fields, so an undeclared threshold is accepted by the request and then
+    # dropped on the way to services.yaml -- the user changes the value, gets a
+    # 200, and the setting never moves.
+    smart_enabled: Optional[bool] = None
+    smart_temp_c: Optional[int] = Field(None, ge=30, le=95)
+    smart_wear_pct: Optional[int] = Field(None, ge=50, le=100)
+    #: Available Spare counts down, so this is a floor rather than a ceiling.
+    smart_spare_pct: Optional[int] = Field(None, ge=1, le=50)
 
 
 class IpAliasesPatch(BaseModel):
@@ -129,6 +139,13 @@ def _public_settings() -> dict:
             "mem_pct": (s.get("thresholds") or {}).get("mem_pct", 90),
             "disk_pct": (s.get("thresholds") or {}).get("disk_pct", 90),
             "cooldown_sec": (s.get("thresholds") or {}).get("cooldown_sec", 1800),
+            # Enumerated, not spread, so the read side has to be extended with the
+            # write side: without these four the settings page can PUT a SMART
+            # threshold but never reads back what it saved.
+            "smart_enabled": (s.get("thresholds") or {}).get("smart_enabled", True),
+            "smart_temp_c": (s.get("thresholds") or {}).get("smart_temp_c", 60),
+            "smart_wear_pct": (s.get("thresholds") or {}).get("smart_wear_pct", 90),
+            "smart_spare_pct": (s.get("thresholds") or {}).get("smart_spare_pct", 10),
         },
         "ip_aliases": s.get("ip_aliases") or {},
         # Host terminal is RCE on this machine, so it ships off and the UI needs
@@ -241,15 +258,46 @@ def force_check():
     return {"emitted": alerts.check_once()}
 
 
+#: Keys whose plaintext value is a live secret.  The settings API already hides
+#: these behind has_* booleans; the raw export used to hand them out in full as a
+#: cached-to-disk attachment.  Redacted on export so a backup file is not a
+#: secret store — they must be re-entered after a restore.
+_EXPORT_REDACT_KEYS = frozenset({
+    "ha_token", "webhook_url", "ha_webhook_url", "password_hash", "psk", "private_key",
+})
+
+
+def _redact_export(node):
+    if isinstance(node, dict):
+        return {
+            k: ("***redacted***" if k in _EXPORT_REDACT_KEYS and v else _redact_export(v))
+            for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [_redact_export(v) for v in node]
+    return node
+
+
 @router.get("/api/export/services-yaml")
 def export_services_yaml():
-    """Download current services.yaml for backup/edit."""
+    """Download current services.yaml for backup/edit, with secrets redacted."""
+    import yaml
     from fastapi.responses import PlainTextResponse
     from hub.paths import CONFIG_FILE
+
+    try:
+        data = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+        text = yaml.safe_dump(_redact_export(data), allow_unicode=True, sort_keys=False)
+    except yaml.YAMLError:
+        # Unparseable config: better to refuse than to stream raw secrets.
+        raise api_error("system_settings.export_failed")
     return PlainTextResponse(
-        CONFIG_FILE.read_text(encoding="utf-8"),
+        text,
         media_type="text/yaml; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=services.yaml"},
+        headers={
+            "Content-Disposition": "attachment; filename=services.yaml",
+            "Cache-Control": "no-store",
+        },
     )
 
 

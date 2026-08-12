@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from hub import cli_args
 from hub import containers_svc as svc
 from hub.errors import api_error
 from hub.paths import DOCKER
@@ -212,10 +213,15 @@ def inspect(name: str):
 
 @router.get("/api/containers/{name}/logs")
 async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: bool = True):
+    # Reject an option-shaped container name before it reaches the docker argv,
+    # where `--since=…`/`-f` would be read as flags rather than a container.
+    name = cli_args.require_positional(name, label="container name")
+
     async def gen():
         cmd = [DOCKER, "logs", "--tail", str(tail), "--timestamps"]
         if follow:
             cmd.append("-f")
+        cmd.append("--")
         cmd.append(name)
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -224,7 +230,7 @@ async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: boo
                 stderr=asyncio.subprocess.STDOUT,
             )
         except Exception as e:
-            yield f"data: !! 无法启动日志: {e}\n\n"
+            yield f"data: !! could not start log stream: {e}\n\n"
             return
         try:
             assert proc.stdout

@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub.config import cfg, override, set_override
+from hub.errors import api_error
 from hub.host_address import host_ip, normalize_local_url, resolve_value
 from hub.paths import AGENTS_DIR, DOCKER, UID
 from hub.status import full_status, invalidate_status
@@ -58,7 +59,7 @@ def _load_plist(label: str) -> dict:
 def _tail_file(path: str | Path, lines: int = 150) -> str:
     p = Path(os.path.expanduser(str(path)))
     if not p.is_file():
-        return f"（日志文件不存在: {p}）"
+        return f"(log file does not exist: {p})"
     lines = max(10, min(int(lines), 2000))
     try:
         with open(p, "rb") as f:
@@ -74,7 +75,7 @@ def _tail_file(path: str | Path, lines: int = 150) -> str:
             text = data.decode("utf-8", errors="replace")
             return "\n".join(text.splitlines()[-lines:])
     except Exception as e:
-        return f"（读取失败: {e}）"
+        return f"(read failed: {e})"
 
 
 def _docker_inspect(name: str) -> dict:
@@ -95,7 +96,7 @@ def _docker_ports_summary(insp: dict) -> list[str]:
     net = (insp.get("NetworkSettings") or {}).get("Ports") or {}
     for cont_port, binds in net.items():
         if not binds:
-            out.append(f"{cont_port} (未发布)")
+            out.append(f"{cont_port} (not published)")
             continue
         for b in binds:
             host = b.get("HostIp") or "0.0.0.0"
@@ -219,12 +220,20 @@ def service_detail(sid: str) -> dict:
                 })
             detail["mounts"] = mounts[:30]
             env = cfg_c.get("Env") or []
-            # redact secrets
+            # Redact by key AND by value.  This detail is reachable by member
+            # accounts for services on their list, and a key-name allowlist
+            # leaks secrets carried under innocuous names: DATABASE_URL=
+            # postgres://user:pass@host, DSNs, connection strings.  So also
+            # redact any value that embeds credentials in a URL (scheme://…@…)
+            # or is a long opaque token.
             redacted = []
             for e in env[:40]:
                 if "=" in e:
                     k, v = e.split("=", 1)
-                    if any(x in k.upper() for x in ("PASS", "SECRET", "TOKEN", "KEY", "PWD")):
+                    if any(x in k.upper() for x in ("PASS", "SECRET", "TOKEN", "KEY", "PWD", "CRED", "AUTH")):
+                        redacted.append(f"{k}=***")
+                    elif "://" in v and "@" in v.split("://", 1)[1].split("/", 1)[0]:
+                        # credentials embedded in a URL authority
                         redacted.append(f"{k}=***")
                     else:
                         redacted.append(e if len(e) < 120 else e[:117] + "…")
@@ -273,7 +282,7 @@ def service_detail(sid: str) -> dict:
                 break
 
     elif kind == "auto":
-        detail["notes"] = "自适应发现的监听端口；可编辑显示名/URL，或隐藏。"
+        detail["notes"] = "Auto-discovered listening port; you can edit the display name/URL, or hide it."
         detail["can_logs"] = False
 
     # resolve final open url
@@ -294,9 +303,9 @@ def service_logs(sid: str, lines: int = 150) -> dict:
 
     if kind == "container" or (not kind and _docker_inspect(sid)):
         if not DOCKER:
-            raise HTTPException(400, "docker 不可用")
+            raise api_error("services.docker_unavailable")
         rc, out, err = sh([DOCKER, "logs", "--tail", str(lines), sid], timeout=30)
-        log = (out or err or "").strip() or f"（无输出 · exit {rc}）"
+        log = (out or err or "").strip() or f"(no output · exit {rc})"
         source = f"docker logs {sid}"
         kind = kind or "container"
 
@@ -321,7 +330,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
         if not chunks:
             # launchctl print as fallback diagnostic
             rc, out, err = sh(["/bin/launchctl", "print", f"gui/{UID}/{sid}"], timeout=6)
-            chunks.append(out or err or "（无 StandardErrorPath / 日志文件）")
+            chunks.append(out or err or "(no StandardErrorPath / log file)")
             source = "launchctl print"
         else:
             source = "plist log paths"
@@ -345,14 +354,14 @@ def service_logs(sid: str, lines: int = 150) -> dict:
                 log = r.get("log") or ""
                 source = hit.get("path") or hit["id"]
             else:
-                log = "（未配置脚本日志源，可在 settings / log_sources 添加）"
+                log = "(no script log source configured; add one under settings / log_sources)"
                 source = "none"
         except Exception as e:
             log = str(e)
             source = "error"
 
     elif kind in ("app", "app-engine"):
-        log = "（桌面 App 无统一日志；请查看 Console.app 或应用自身日志）"
+        log = "(desktop apps have no unified log; check Console.app or the app's own logs)"
         source = "n/a"
 
     else:
@@ -376,7 +385,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
                     chunks.append(f"===== {pl[key]} =====\n{_tail_file(pl[key], lines)}")
             if not chunks:
                 rc, out, err = sh(["/bin/launchctl", "print", f"gui/{UID}/{sid}"], timeout=6)
-                chunks.append(out or err or "（无日志路径）")
+                chunks.append(out or err or "(no log paths)")
                 source = "launchctl print"
             else:
                 source = "plist log paths"

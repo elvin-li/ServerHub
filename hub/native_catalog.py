@@ -46,7 +46,7 @@ log = logging.getLogger("serverhub.appstore")
 
 #: First line of a failed brew_multi message, and all the toast shows.  Named so
 #: the store and its tests cannot disagree about it.
-_MULTI_FAILED_PREFIX = "以下包安装失败："
+_MULTI_FAILED_PREFIX = "The following packages failed to install: "
 
 # Store-owned error codes, registered next to the module that raises them so the
 # code -> status mapping travels with it; api_error() degrades unknown codes to
@@ -131,8 +131,8 @@ def _screen_sharing_on() -> bool:
 NATIVE_APPS: list[dict[str, Any]] = [
     {
         "id": "native-wireguard",
-        "name": "WireGuard（原生工具链）",
-        "desc": "wg / wg-quick + 用户态实现 · 面板「WireGuard」页依赖它",
+        "name": "WireGuard (native toolchain)",
+        "desc": "wg / wg-quick with userspace implementation · required by the panel's WireGuard page",
         "category": "network",
         "tags": ["vpn", "wireguard", "native"],
         "featured": True,
@@ -149,8 +149,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
         # reporting it installed if the binary is shadowed.
         "check": ["bin:wg", "brew:wireguard-tools"],
         "notes": (
-            "装好后到「WireGuard」页生成服务端与客户端配置。"
-            "macOS 没有内核态 WireGuard，隧道运行在 wireguard-go 的 utun 设备上。"
+            "After installing, open the WireGuard page to generate server and client configs. "
+            "macOS has no kernel-mode WireGuard; the tunnel runs on wireguard-go's utun device."
         ),
     },
     {
@@ -204,8 +204,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-rustdesk",
-        "name": "RustDesk（原生客户端）",
-        "desc": "开源远程桌面客户端 · 可连自建中继",
+        "name": "RustDesk (native client)",
+        "desc": "Open-source remote desktop client · works with self-hosted relays",
         "category": "remote",
         "tags": ["remote", "rustdesk", "native"],
         "featured": True,
@@ -216,8 +216,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-syncthing",
-        "name": "Syncthing（原生服务）",
-        "desc": "P2P 文件同步 · brew 服务常驻",
+        "name": "Syncthing (native service)",
+        "desc": "P2P file sync · runs as a persistent brew service",
         "category": "files",
         "tags": ["sync", "native"],
         "featured": True,
@@ -227,12 +227,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "service": True,
         "ports": ["8384"],
         "url_hint": "http://{{HOST}}:8384",
-        "notes": "安装并 brew services start syncthing。Web UI 默认 8384。",
+        "notes": "Installs and runs brew services start syncthing. Web UI defaults to port 8384.",
     },
     {
         "id": "native-rclone",
-        "name": "rclone（原生）",
-        "desc": "网盘 / S3 / 对象存储同步 CLI",
+        "name": "rclone (native)",
+        "desc": "CLI for syncing cloud drives / S3 / object storage",
         "category": "files",
         "tags": ["sync", "cloud", "native"],
         "featured": False,
@@ -242,8 +242,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-filebrowser",
-        "name": "FileBrowser（原生二进制）",
-        "desc": "轻量 Web 文件管理 · 无 Docker",
+        "name": "FileBrowser (native binary)",
+        "desc": "Lightweight web file manager · no Docker",
         "category": "files",
         "tags": ["files", "native"],
         "featured": True,
@@ -257,12 +257,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "url_hint": "http://{{HOST}}:8125",
         "launchd_label": "local.filebrowser",
         "process_match": "filebrowser",
-        "notes": "一键安装 brew filebrowser + LaunchAgent · 端口 8125 · 根目录 ~/Services/media。",
+        "notes": "One-click install of brew filebrowser + LaunchAgent · port 8125 · root directory ~/Services/media.",
     },
     {
         "id": "native-mosquitto",
-        "name": "Mosquitto MQTT（brew）",
-        "desc": "MQTT Broker 原生服务 · HA/IoT 推荐",
+        "name": "Mosquitto MQTT (brew)",
+        "desc": "Native MQTT broker service · recommended for HA/IoT",
         "category": "iot",
         "tags": ["mqtt", "native"],
         "featured": True,
@@ -271,12 +271,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "check": "bin:mosquitto",
         "service": True,
         "ports": ["1883"],
-        "notes": "brew services start mosquitto。比 Docker 更省资源。",
+        "notes": "brew services start mosquitto. Lighter on resources than Docker.",
     },
     {
         "id": "native-redis",
-        "name": "Redis（brew）",
-        "desc": "内存数据库 · 原生服务",
+        "name": "Redis (brew)",
+        "desc": "In-memory database · native service",
         "category": "data",
         "tags": ["cache", "native"],
         "featured": True,
@@ -288,8 +288,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-postgresql",
-        "name": "PostgreSQL 17（brew）",
-        "desc": "关系型数据库 · 本机已在用可直接启动服务",
+        "name": "PostgreSQL 17 (brew)",
+        "desc": "Relational database · if already in use on this host, just start the service",
         "category": "data",
         "tags": ["db", "native"],
         "featured": True,
@@ -298,12 +298,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "check": "bin:psql",
         "service": True,
         "ports": ["5432"],
-        "notes": "formula 名为 postgresql@17。服务：brew services start postgresql@17",
+        "notes": "The formula is named postgresql@17. Service: brew services start postgresql@17",
     },
     {
         "id": "native-nginx",
-        "name": "Nginx（brew）",
-        "desc": "反向代理 / 静态站 · 建议用自有 conf",
+        "name": "Nginx (brew)",
+        "desc": "Reverse proxy / static sites · bring your own conf",
         "category": "network",
         "tags": ["proxy", "native"],
         "featured": False,
@@ -311,18 +311,18 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "package": "nginx",
         "check": "bin:nginx",
         "service": False,
-        "notes": "本机可能已用自定义 LaunchAgent 跑 nginx；安装 formula 后请用你的 conf，避免端口冲突。",
+        "notes": "This host may already run nginx via a custom LaunchAgent; after installing the formula, use your own conf to avoid port conflicts.",
     },
     {
         "id": "native-grafana",
-        "name": "Grafana（brew）",
-        "desc": "监控可视化 · 原生服务",
+        "name": "Grafana (brew)",
+        "desc": "Monitoring dashboards · native service",
         "category": "monitor",
         "tags": ["monitor", "native"],
         "featured": True,
         "method": "brew_formula",
         "package": "grafana",
-        # Homebrew 新版二进制为 grafana（旧版 grafana-server）
+        # Newer Homebrew builds ship the binary as grafana (older: grafana-server)
         "check": ["bin:grafana", "bin:grafana-server", "brew:grafana"],
         "service": True,
         "ports": ["3000"],
@@ -330,8 +330,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-prometheus",
-        "name": "Prometheus（brew）",
-        "desc": "指标采集 · 可与 Grafana 搭配",
+        "name": "Prometheus (brew)",
+        "desc": "Metrics collection · pairs well with Grafana",
         "category": "monitor",
         "tags": ["monitor", "native"],
         "featured": False,
@@ -344,8 +344,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-node-exporter",
-        "name": "node_exporter（brew）",
-        "desc": "主机指标导出 · Prometheus 抓取",
+        "name": "node_exporter (brew)",
+        "desc": "Host metrics exporter · scraped by Prometheus",
         "category": "monitor",
         "tags": ["monitor", "native"],
         "featured": False,
@@ -357,8 +357,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-jellyfin",
-        "name": "Jellyfin（原生 App）",
-        "desc": "媒体服务器 cask · 比 Docker 更贴合 macOS",
+        "name": "Jellyfin (native app)",
+        "desc": "Media server cask · fits macOS better than Docker",
         "category": "media",
         "tags": ["media", "native"],
         "featured": True,
@@ -371,8 +371,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-plex",
-        "name": "Plex Media Server（原生）",
-        "desc": "Plex 媒体服务器 · macOS 原生 App（你当前家服已在用）",
+        "name": "Plex Media Server (native)",
+        "desc": "Plex media server · native macOS app",
         "category": "media",
         "tags": ["media", "plex", "native"],
         "featured": True,
@@ -382,12 +382,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "open": "Plex Media Server",
         "ports": ["32400"],
         "url_hint": "http://{{HOST}}:32400/web",
-        "notes": "也可从 plex.tv 官网安装。卸载会 brew uninstall --cask plex-media-server。",
+        "notes": "Can also be installed from plex.tv. Uninstalling runs brew uninstall --cask plex-media-server.",
     },
     {
         "id": "native-navidrome",
-        "name": "Navidrome（brew）",
-        "desc": "音乐库 / Subsonic 兼容 · 原生",
+        "name": "Navidrome (brew)",
+        "desc": "Music library / Subsonic-compatible · native",
         "category": "media",
         "tags": ["music", "native"],
         "featured": True,
@@ -397,12 +397,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "service": True,
         "ports": ["4533"],
         "url_hint": "http://{{HOST}}:4533",
-        "notes": "需自行配置音乐目录（config 或环境变量）。",
+        "notes": "Configure your music directory yourself (config file or environment variables).",
     },
     {
         "id": "native-qbittorrent",
-        "name": "qBittorrent（原生 App）",
-        "desc": "BT 下载客户端 · macOS App",
+        "name": "qBittorrent (native app)",
+        "desc": "BitTorrent download client · macOS app",
         "category": "download",
         "tags": ["bt", "native"],
         "featured": True,
@@ -413,8 +413,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-utools-iterm",
-        "name": "iTerm2（原生）",
-        "desc": "增强终端 · 家服排障常用",
+        "name": "iTerm2 (native)",
+        "desc": "Enhanced terminal · handy for home-server troubleshooting",
         "category": "ops",
         "tags": ["terminal", "native"],
         "featured": False,
@@ -425,8 +425,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-stats",
-        "name": "Stats（菜单栏监控）",
-        "desc": "CPU/内存/网速菜单栏小组件",
+        "name": "Stats (menu bar monitor)",
+        "desc": "CPU / memory / network speed menu bar widget",
         "category": "monitor",
         "tags": ["monitor", "native"],
         "featured": False,
@@ -437,8 +437,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-htop",
-        "name": "htop / btop（CLI）",
-        "desc": "终端进程监视 · btop 更漂亮",
+        "name": "htop / btop (CLI)",
+        "desc": "Terminal process monitor · btop looks nicer",
         "category": "ops",
         "tags": ["cli", "native"],
         "featured": False,
@@ -449,8 +449,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-git",
-        "name": "Git + gh（CLI）",
-        "desc": "开发基础工具链",
+        "name": "Git + gh (CLI)",
+        "desc": "Core development toolchain",
         "category": "dev",
         "tags": ["git", "native"],
         "featured": False,
@@ -460,8 +460,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-gitea",
-        "name": "Gitea（brew）",
-        "desc": "轻量 Git 服务 · 原生进程",
+        "name": "Gitea (brew)",
+        "desc": "Lightweight Git service · native process",
         "category": "dev",
         "tags": ["git", "native"],
         "featured": True,
@@ -471,12 +471,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "service": True,
         "ports": ["3000"],
         "url_hint": "http://{{HOST}}:3000",
-        "notes": "首次需配置 ~/Services/gitea 或 brew 默认路径。",
+        "notes": "First run requires configuring ~/Services/gitea or the brew default path.",
     },
     {
         "id": "native-minio",
-        "name": "MinIO（brew）",
-        "desc": "S3 兼容对象存储 CLI/服务",
+        "name": "MinIO (brew)",
+        "desc": "S3-compatible object storage CLI/server",
         "category": "data",
         "tags": ["s3", "native"],
         "featured": False,
@@ -484,12 +484,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "package": "minio",
         "check": "bin:minio",
         "service": False,
-        "notes": "安装后可用 minio server ~/data 启动；或自行写 LaunchAgent。",
+        "notes": "After installing, start with minio server ~/data, or write your own LaunchAgent.",
     },
     {
         "id": "native-ntfy",
-        "name": "ntfy（brew）",
-        "desc": "自托管推送 · 原生二进制",
+        "name": "ntfy (brew)",
+        "desc": "Self-hosted push notifications · native binary",
         "category": "notify",
         "tags": ["notify", "native"],
         "featured": True,
@@ -497,12 +497,12 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "package": "ntfy",
         "check": "bin:ntfy",
         "service": False,
-        "notes": "可 ntfy serve；需要常驻请自建 LaunchAgent 或用维护脚本。",
+        "notes": "Run ntfy serve; for an always-on service, create your own LaunchAgent or use a maintenance script.",
     },
     {
         "id": "native-duplicacy",
-        "name": "Duplicacy（CLI）",
-        "desc": "高效加密备份 CLI",
+        "name": "Duplicacy (CLI)",
+        "desc": "Efficient encrypted backup CLI",
         "category": "backup",
         "tags": ["backup", "native"],
         "featured": False,
@@ -519,7 +519,7 @@ NATIVE_APPS: list[dict[str, Any]] = [
     {
         "id": "native-smartmontools",
         "name": "smartmontools",
-        "desc": "磁盘 SMART 检测 · 存储阵列页依赖",
+        "desc": "Disk SMART checks · required by the Storage Array page",
         "category": "ops",
         "tags": ["disk", "native"],
         "featured": True,
@@ -530,8 +530,8 @@ NATIVE_APPS: list[dict[str, Any]] = [
     },
     {
         "id": "native-homeassistant",
-        "name": "Home Assistant Core（原生）",
-        "desc": "本机 venv + LaunchAgent · 推荐（非 Docker/HAOS）",
+        "name": "Home Assistant Core (native)",
+        "desc": "Local venv + LaunchAgent · recommended (not Docker/HAOS)",
         "category": "iot",
         "tags": ["ha", "homeassistant", "native", "iot"],
         "featured": True,
@@ -546,8 +546,9 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "launchd_label": "com.homeassistant.core",
         "process_match": "homeassistant/venv/bin/hass",
         "notes": (
-            "安装到 ~/Services/homeassistant（venv + config + LaunchAgent）。"
-            "已存在的原生部署会自动识别并可启停。Web UI 默认 :8123。"
+            "Installs to ~/Services/homeassistant (venv + config + LaunchAgent). "
+            "An existing native deployment is detected automatically and can be started/stopped. "
+            "Web UI defaults to :8123."
         ),
     },
 ]
@@ -659,8 +660,8 @@ def list_native_apps(force: bool = False) -> list[dict]:
                 "local.filebrowser", "filebrowser", launchd_snapshot
             )
         # CLI tools with process_match but no brew service / launchd:
-        # True only when a matching process is up; otherwise leave None ("已安装")
-        # so unused CLIs don't show as "已停止".
+        # True only when a matching process is up; otherwise leave None ("installed")
+        # so unused CLIs don't show as "stopped".
         if running is None and app.get("process_match") and not app.get("service") and not label:
             if _process_running(str(app["process_match"])):
                 running = True
@@ -807,7 +808,7 @@ def _run(cmd: list[str], timeout: int = 600, shell: bool = False) -> dict:
         msg = ((p.stdout or "") + (p.stderr or "")).strip()
         return {"ok": p.returncode == 0, "message": msg or f"exit {p.returncode}", "rc": p.returncode}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "message": "命令超时", "rc": -1}
+        return {"ok": False, "message": "command timed out", "rc": -1}
     except Exception as e:
         return {"ok": False, "message": str(e), "rc": -1}
 
@@ -868,19 +869,20 @@ def _run_brew(
         # Should be unreachable: the panel does not run as root. Worth saying
         # plainly rather than passing Homebrew's warning through as-is.
         r["message"] = (
-            "Homebrew 拒绝以 root 运行，面板不应以 root 启动。\n"
-            "请以普通用户运行面板后重试。\n\n" + (r.get("message") or "")
+            "Homebrew refuses to run as root; the panel should not be started as root.\n"
+            "Run the panel as a regular user and try again.\n\n" + (r.get("message") or "")
         )[-4000:]
         return r
 
     if _needs_admin_retry(r.get("message") or ""):
         r["error"] = "password_required"
         r["message"] = (
-            "这个包需要 root 权限运行 macOS 安装器（pkg 类 cask），"
-            "而 brew 本身不能以 root 运行，所以面板无法代为授权。\n"
-            "请在这台 Mac 上打开终端执行：\n"
+            "This package needs root to run the macOS installer (pkg-based cask), "
+            "and brew itself cannot run as root, so the panel cannot authorize it for you.\n"
+            "Open Terminal on this Mac and run:\n"
             f"  {' '.join(shlex.quote(c) for c in cmd)}\n\n"
-            "不需要 root 的包（所有 formula，以及 .app 类 cask）可以直接在面板安装。\n\n"
+            "Packages that do not need root (all formulae, and .app-based casks) "
+            "can be installed directly from the panel.\n\n"
             + (r.get("message") or "")
         )[-4000:]
     return r
@@ -955,7 +957,7 @@ def _launchctl_load(label: str, plist: Path) -> dict:
     dom = f"gui/{UID}"
     target = f"{dom}/{label}"
     if not plist.exists():
-        return {"ok": False, "message": f"plist 不存在: {plist}"}
+        return {"ok": False, "message": f"plist not found: {plist}"}
 
     # If already loaded, prefer kickstart -k (restart in place)
     if _launchctl_is_loaded(label):
@@ -1046,14 +1048,15 @@ def _enable_screen_sharing() -> dict:
         if r["ok"] or _screen_sharing_on():
             return {
                 "ok": True,
-                "message": "屏幕共享已启用（或已在运行）\n" + "\n".join(logs)[-1500:],
+                "message": "Screen Sharing enabled (or already running)\n" + "\n".join(logs)[-1500:],
                 "url": None,
             }
     # last resort message
     return {
         "ok": _screen_sharing_on(),
         "message": (
-            "未能自动启用（可能需要管理员权限）。请到：系统设置 → 通用 → 共享 → 屏幕共享。\n"
+            "Could not enable automatically (administrator privileges may be required). "
+            "Go to: System Settings → General → Sharing → Screen Sharing.\n"
             + "\n".join(logs)[-1200:]
         ),
         "url": None,
@@ -1165,12 +1168,12 @@ def _install_native(app: dict, app_id: str) -> dict:
         pkg = app["package"]
         # already installed?
         if _is_installed(app):
-            logs.append(f"{pkg} 已安装")
+            logs.append(f"{pkg} is already installed")
             if app.get("open"):
                 _run(["/usr/bin/open", "-a", app["open"]], timeout=15)
             return {
                 "ok": True,
-                "message": "\n".join(logs)[-2000:] or "已安装",
+                "message": "\n".join(logs)[-2000:] or "already installed",
                 "path": f"/Applications/{app.get('open') or pkg}.app",
                 "kind": "native",
                 "url": _app_url(app),
@@ -1200,7 +1203,7 @@ def _install_native(app: dict, app_id: str) -> dict:
             logs.append(r["message"])
             ok = _brew_install_ok(r["message"], r["rc"]) or _is_installed(app)
         else:
-            logs.append(f"{pkg} 已安装")
+            logs.append(f"{pkg} is already installed")
             ok = True
         if ok and app.get("service"):
             r2 = _run([BREW, "services", "start", pkg], timeout=120)
@@ -1293,15 +1296,15 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
                 if bin_path.exists() or bin_path.is_symlink():
                     bin_path.unlink()
                 bin_path.symlink_to(brew_bin)
-                logs.append(f"链接 {bin_path} → {brew_bin}")
+                logs.append(f"linked {bin_path} → {brew_bin}")
             except OSError:
                 shutil.copy2(brew_bin, bin_path)
                 bin_path.chmod(0o755)
-                logs.append(f"复制 {brew_bin} → {bin_path}")
+                logs.append(f"copied {brew_bin} → {bin_path}")
         elif not _brew_install_ok(r["message"], r["rc"]):
             return {
                 "ok": False,
-                "message": "FileBrowser 安装失败。\n" + "\n".join(logs)[-1200:],
+                "message": "FileBrowser installation failed.\n" + "\n".join(logs)[-1200:],
                 "kind": "native",
                 "stack_id": app_id,
                 "notes": app.get("notes") or "",
@@ -1310,7 +1313,7 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
     if not bin_path.exists():
         return {
             "ok": False,
-            "message": "未找到 filebrowser 二进制。\n" + "\n".join(logs)[-800:],
+            "message": "filebrowser binary not found.\n" + "\n".join(logs)[-800:],
             "kind": "native",
             "stack_id": app_id,
         }
@@ -1341,7 +1344,7 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
     url = _app_url(app) or f"http://{_host_for_url()}:8125"
     return {
         "ok": bin_path.exists(),
-        "message": "FileBrowser 已就绪\n" + "\n".join(logs)[-1800:],
+        "message": "FileBrowser is ready\n" + "\n".join(logs)[-1800:],
         "path": str(dest),
         "kind": "native",
         "url": url,
@@ -1364,10 +1367,10 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
     config.mkdir(parents=True, exist_ok=True)
 
     if hass.is_file():
-        logs.append(f"已存在 {hass}")
+        logs.append(f"{hass} already exists")
     else:
         py = _pick_python()
-        logs.append(f"使用 Python: {py}")
+        logs.append(f"using Python: {py}")
         # ensure brew python if missing
         if not Path(py).is_file() or py == "python3":
             r0 = _run([BREW, "install", "python@3.14"], timeout=900)
@@ -1378,7 +1381,7 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
         if not (venv / "bin" / "pip").exists():
             return {
                 "ok": False,
-                "message": "创建 venv 失败\n" + "\n".join(logs)[-1500:],
+                "message": "Failed to create venv\n" + "\n".join(logs)[-1500:],
                 "kind": "native",
                 "stack_id": app_id,
             }
@@ -1392,14 +1395,14 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
             if not r["ok"] and "homeassistant" in " ".join(args):
                 return {
                     "ok": False,
-                    "message": "pip install homeassistant 失败\n" + "\n".join(logs)[-2000:],
+                    "message": "pip install homeassistant failed\n" + "\n".join(logs)[-2000:],
                     "kind": "native",
                     "stack_id": app_id,
                 }
         if not hass.is_file():
             return {
                 "ok": False,
-                "message": "安装后未找到 hass 可执行文件\n" + "\n".join(logs)[-1500:],
+                "message": "hass executable not found after install\n" + "\n".join(logs)[-1500:],
                 "kind": "native",
                 "stack_id": app_id,
             }
@@ -1427,7 +1430,7 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
         lr = _launchctl_load(label, plist)
         logs.append(lr["message"])
     else:
-        logs.append("Home Assistant 已在运行")
+        logs.append("Home Assistant is already running")
 
     # Write the update script only if it is not there, so an operator who has
     # customised it keeps their version.  Created with "x" rather than after an
@@ -1452,7 +1455,7 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
     url = _app_url(app) or f"http://{_host_for_url()}:8123"
     return {
         "ok": hass.is_file(),
-        "message": "Home Assistant Core 已就绪\n" + "\n".join(logs)[-2000:],
+        "message": "Home Assistant Core is ready\n" + "\n".join(logs)[-2000:],
         "path": str(ha_dir),
         "kind": "native",
         "url": url,
@@ -1478,12 +1481,13 @@ def _disable_screen_sharing() -> dict:
         if not _screen_sharing_on():
             return {
                 "ok": True,
-                "message": "屏幕共享已关闭\n" + "\n".join(logs)[-1200:],
+                "message": "Screen Sharing disabled\n" + "\n".join(logs)[-1200:],
             }
     return {
         "ok": not _screen_sharing_on(),
         "message": (
-            "未能自动关闭（可能需要管理员权限）。请到：系统设置 → 通用 → 共享 → 屏幕共享。\n"
+            "Could not disable automatically (administrator privileges may be required). "
+            "Go to: System Settings → General → Sharing → Screen Sharing.\n"
             + "\n".join(logs)[-1000:]
         ),
     }
@@ -1511,9 +1515,17 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
 
     if method == "brew_cask":
         pkg = app["package"]
-        # quit app first if possible
+        # quit app first if possible.  The app name is passed as an argv
+        # parameter (`on run argv`) rather than interpolated into the script
+        # source, so a name containing a double quote cannot break out of the
+        # string literal — harmless with today's shipped catalog, injection the
+        # moment catalog entries become user-editable.
         if app.get("open"):
-            _run(["/usr/bin/osascript", "-e", f'quit app "{app["open"]}"'], timeout=15)
+            _run([
+                "/usr/bin/osascript", "-e",
+                'on run argv\nquit app (item 1 of argv)\nend run',
+                str(app["open"]),
+            ], timeout=15)
         r = _run_brew(["uninstall", "--cask", pkg], timeout=300)
         logs.append(r["message"])
         # also try zap if requested
@@ -1522,7 +1534,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
             logs.append(r2["message"])
         return {
             "ok": r["ok"] or not _is_installed(app),
-            "message": "\n".join(logs)[-2000:] or "已卸载",
+            "message": "\n".join(logs)[-2000:] or "uninstalled",
             "kind": "native",
             "stack_id": app_id,
         }
@@ -1536,7 +1548,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
         logs.append(r["message"])
         return {
             "ok": r["ok"] or not _is_installed(app),
-            "message": "\n".join(logs)[-2000:] or "已卸载",
+            "message": "\n".join(logs)[-2000:] or "uninstalled",
             "kind": "native",
             "stack_id": app_id,
         }
@@ -1550,7 +1562,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
             logs.append(f"[{pkg}] {r['message']}")
         return {
             "ok": not _is_installed(app),
-            "message": "\n".join(logs)[-2000:] or "已卸载",
+            "message": "\n".join(logs)[-2000:] or "uninstalled",
             "kind": "native",
             "stack_id": app_id,
         }
@@ -1559,13 +1571,13 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
         _launchctl_unload("local.filebrowser")
         dest = SERVICES_ROOT / "filebrowser"
         if not dest.exists():
-            return {"ok": True, "message": "未找到 ~/Services/filebrowser", "kind": "native", "stack_id": app_id}
+            return {"ok": True, "message": "~/Services/filebrowser not found", "kind": "native", "stack_id": app_id}
         if remove_data:
             try:
                 shutil.rmtree(dest)
                 return {
                     "ok": True,
-                    "message": f"已删除 {dest}",
+                    "message": f"deleted {dest}",
                     "kind": "native",
                     "stack_id": app_id,
                 }
@@ -1573,7 +1585,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
                 return {"ok": False, "message": str(e), "kind": "native", "stack_id": app_id}
         return {
             "ok": True,
-            "message": "已停止 FileBrowser。保留 ~/Services/filebrowser（删除数据请勾选「同时删除数据」）。",
+            "message": 'FileBrowser stopped. ~/Services/filebrowser was kept (check "Also delete data" to remove it).',
             "kind": "native",
             "stack_id": app_id,
         }
@@ -1599,13 +1611,13 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
                     pass
             return {
                 "ok": True,
-                "message": "已停止并删除 Home Assistant 数据目录\n" + "\n".join(logs),
+                "message": "Stopped Home Assistant and deleted its data directory\n" + "\n".join(logs),
                 "kind": "native",
                 "stack_id": app_id,
             }
         return {
             "ok": True,
-            "message": "已停止 Home Assistant（配置保留在 ~/Services/homeassistant）。删除数据请勾选「同时删除数据」。",
+            "message": 'Home Assistant stopped (config kept in ~/Services/homeassistant). Check "Also delete data" to remove it.',
             "kind": "native",
             "stack_id": app_id,
         }

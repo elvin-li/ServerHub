@@ -276,11 +276,21 @@ def auth_logout(request: Request, response: Response):
     # Name the session being ended, when there is a valid one.  request_username
     # verifies the cookie first, so an unauthenticated caller cannot write an
     # arbitrary name into the trail.
+    username = auth.request_username(request) or None
     audit.record(
         audit.LOGOUT,
-        username=auth.request_username(request) or None,
+        username=username,
         client=_client(request),
         outcome="success",
     )
+    # Revoke the token server-side, not just in this browser: a stateless
+    # cookie that was captured or copied stays valid for its full TTL unless
+    # the signed version changes.  Bumping the account's logout epoch does that
+    # for every one of its outstanding sessions.
+    if username:
+        try:
+            auth.bump_session_epoch(username)
+        except Exception:
+            pass
     response.delete_cookie(auth.COOKIE_NAME, path="/", samesite="strict")
     return {"ok": True}
