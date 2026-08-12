@@ -23,11 +23,10 @@ from hub.disk_snapshot import (
     df_lines,
     invalidate_disks,
     physical_whole_disks,
-    root_devices,
-    root_info,
+    root_whole_disks,
 )
 from hub.paths import SMARTCTL
-from hub.util import cached_snapshot, fan_out, sh, ttl_memo
+from hub.util import fan_out, sh, ttl_memo
 
 # Whole-disk identifiers only
 DISK_RE = re.compile(r"^disk\d+$")
@@ -113,64 +112,19 @@ def _volumes_on_disk(disk_id: str) -> list[dict]:
 #: to be re-read inside the per-disk loop: three subprocesses (`diskutil info /`,
 #: `df -P /`, `diskutil info -plist /`) times the number of disks, to answer a
 #: question with one answer.  Resolved once per listing instead.
-#: Matches hub.disk_snapshot's window: two of the three reads behind this reach the
-#: host through that module, so a longer life here would just hold their answers
-#: after they had expired.
-_ROOT_DISKS_TTL = 5.0
-
-
-@cached_snapshot(_ROOT_DISKS_TTL)
 def _root_whole_disks() -> frozenset[str]:
-    """Every whole-disk id that ``/`` resolves to, read once and cached.
+    """Every whole-disk id that ``/`` resolves to.
 
-    Single-flight is not decoration: the per-disk loop is concurrent, and the
-    unguarded memo this replaced let every thread that found it empty start its own
-    copy of all three reads -- turning one `df` into one per worker.
-
-    A TTL rather than a memo cleared at the start of each listing.  The clearing was
-    correct while all three reads were local to this module, but two of them are now
-    shared with `disk_manage_svc` and `storage_svc`, so dropping them per listing
-    threw away a read another section of the same request had already paid for --
-    which put a second `df -P -k` back into `/api/storage`.  Expiring on its own is
-    strictly fresher than the 15s listing cache in front of it, and every path that
-    changes disk presence still calls invalidate_power_disks().
+    One definition, in hub.disk_snapshot, because all three reads behind it are
+    whole-machine questions that the volume list and the manage listing ask too.  It
+    is a union of three independent probes and they run concurrently there; here they
+    ran one after another, which was three of the seven waves on /api/storage/disks.
     """
-    found: set[str] = set()
-
-    # Three independent reads, unioned rather than preferred in order, because this
-    # decides whether the panel will offer to spin down or eject a disk.  Narrowing
-    # the union is how that ends up offered for the boot disk, so the text scrape
-    # below stays even though the plist read overlaps it.
-
-    # The device `/` sits on, as diskutil spells it.  Kept local: this is the one of
-    # the three that no other module duplicates.
-    rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
-    if rc == 0:
-        found.update(re.findall(r"/dev/(disk\d+)", out or ""))
-
-    # The same question through df, which reports the mounted device directly -- now
-    # filtered out of the shared mount table instead of running its own `df -P /`,
-    # which is that table with one row.
-    found.update(root_devices())
-
-    # APFS: root lives on a synthesised disk whose physical store is elsewhere, so
-    # neither read above names the disk an operator could spin down.
-    rpl = root_info()
-    parent = rpl.get("ParentWholeDisk") or ""
-    if parent:
-        found.add(str(parent))
-    for store in rpl.get("APFSPhysicalStores") or []:
-        dev = store.get("APFSPhysicalStore") if isinstance(store, dict) else store
-        if isinstance(dev, str):
-            m = re.match(r"(disk\d+)", dev)
-            if m:
-                found.add(m.group(1))
-
-    return frozenset(found)
+    return root_whole_disks()
 
 
 def _invalidate_root_disks() -> None:
-    _root_whole_disks.invalidate()
+    invalidate_disks()
 
 
 def _is_system_disk(info: dict, disk_id: str, volumes: list) -> bool:
@@ -263,8 +217,7 @@ def list_power_disks() -> list:
     # `df -P -k` and a second `diskutil list -plist physical` back into the request.
     # Both carry their own TTL, well inside this listing's own, and every path that
     # changes disk presence calls invalidate_power_disks().
-    _df_lines()
-    _root_whole_disks()
+    fan_out(lambda probe: probe(), [_df_lines, _root_whole_disks], max_workers=2)
 
     # One `diskutil info` per disk, plus a smartctl probe per sleeping candidate --
     # and a probe against an external disk that is asleep costs the whole subprocess

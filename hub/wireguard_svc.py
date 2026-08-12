@@ -925,10 +925,18 @@ def status(force: bool = False) -> dict:
 
     parsed = read_conf()
     address = str(parsed["interface"].get("Address") or "").strip()
-    try:
-        conf_public = public_from_private(str(parsed["interface"].get("PrivateKey") or ""))
-    except WireGuardError:
-        conf_public = ""
+    # Only derive the key from the config when the running interface did not report
+    # one.  `public_key` below is `server_public or conf_public`, so on a healthy
+    # tunnel this value was computed and then discarded -- and computing it runs
+    # `wg pubkey`, a subprocess, on every status poll.  The fallback still exists for
+    # the case it was written for: the tunnel is down, so the dump has no interface
+    # row, and the page should still show which key the config would serve.
+    conf_public = ""
+    if not server_public:
+        try:
+            conf_public = public_from_private(str(parsed["interface"].get("PrivateKey") or ""))
+        except WireGuardError:
+            conf_public = ""
 
     return {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),

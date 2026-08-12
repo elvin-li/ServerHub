@@ -36,7 +36,7 @@ import subprocess
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from hub.util import cached_snapshot, sh
+from hub.util import cached_snapshot, fan_out, sh
 
 #: Short, and for the usual reason: these are dependency reads whose consumers
 #: already sit behind their own caches (the power-disk listing, the SMART snapshot).
@@ -167,6 +167,59 @@ def root_info(force: bool = False) -> Mapping[str, Any]:
     return _forget_if_empty(_root_info, _root_info(force=force))
 
 
+@cached_snapshot(_TTL)
+def root_whole_disks() -> frozenset[str]:
+    """Every whole-disk id that ``/`` resolves to, from three reads at once.
+
+    This is the set the panel refuses to spin down or eject, and it is a *union* --
+    three reads that answer the same question in different ways, none of which reads
+    another's output:
+
+    * ``diskutil info /`` in its text form, scraped for any ``/dev/diskN``.
+    * the mount table's ``/`` row, which names the mounted device directly.
+    * ``diskutil info -plist /``, the only one that reaches through a synthesised
+      APFS container to the physical store underneath -- on this machine ``/`` is on
+      disk3 and the disk an operator could actually spin down is disk0, so dropping
+      this read would remove the boot disk's protection entirely.
+
+    Being a union is exactly what makes the three safe to overlap: the result does
+    not depend on the order they answer in, and each contributes independently.  They
+    used to run one after another, which showed up as three of the seven waves on
+    /api/storage/disks and three of the eight on /api/tools/hardware.
+
+    Each probe returns the empty set the serial version would have produced rather
+    than raising, which is what ``fan_out`` requires -- and here it is also what keeps
+    one failed read from emptying the whole union.
+    """
+    def from_text() -> set[str]:
+        rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
+        return set(_DISK_RE.findall(out or "")) if rc == 0 else set()
+
+    def from_mount_table() -> set[str]:
+        return set(root_devices())
+
+    def from_plist() -> set[str]:
+        found: set[str] = set()
+        info = root_info()
+        parent = info.get("ParentWholeDisk") or ""
+        if parent:
+            found.add(str(parent))
+        for store in info.get("APFSPhysicalStores") or []:
+            device = store.get("APFSPhysicalStore") if isinstance(store, dict) else store
+            if isinstance(device, str):
+                match = re.match(r"(disk\d+)", device)
+                if match:
+                    found.add(match.group(1))
+        return found
+
+    found: set[str] = set()
+    for part in fan_out(
+        lambda probe: probe(), [from_text, from_mount_table, from_plist], max_workers=3
+    ):
+        found |= part
+    return frozenset(found)
+
+
 def invalidate_disks() -> None:
     """Forget all three reads after something changed mount or presence state.
 
@@ -178,3 +231,4 @@ def invalidate_disks() -> None:
     _df_table.invalidate()             # type: ignore[attr-defined]
     _physical_whole_disks.invalidate()  # type: ignore[attr-defined]
     _root_info.invalidate()            # type: ignore[attr-defined]
+    root_whole_disks.invalidate()      # type: ignore[attr-defined]

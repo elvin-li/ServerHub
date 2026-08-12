@@ -34,6 +34,7 @@ from pathlib import Path
 
 from hub import wireguard_svc
 from hub.host_address import default_interface
+from hub.launchd_cache import loaded_labels
 from hub.macos_admin import run_admin_sequence, sudo_capture
 from hub.paths import DATA_DIR
 from hub.secure_io import write_secret_text
@@ -255,9 +256,15 @@ def daemon_state() -> dict:
         rc, out, _ = sudo_capture([LAUNCHCTL, "print", f"system/{label}"], timeout=6)
     loaded = rc == 0
     if not loaded:
-        # `launchctl print` on a system domain needs root; fall back to the list.
-        rc2, out2, _ = sh([LAUNCHCTL, "list"], timeout=6)
-        loaded = rc2 == 0 and label in out2
+        # `launchctl print` on a system domain needs root; fall back to the listing.
+        #
+        # Exact label match through the shared snapshot, where this was
+        # `label in out2` -- a substring test against the raw listing, which answers
+        # yes for `com.wireguard.wg0` when only `com.wireguard.wg01` is loaded.  That
+        # is the same defect hub/launchd_cache.py was written to remove from three
+        # other modules, and this was the fourth.  `loaded_labels()` reaches only
+        # `sh`, so it is safe on the request thread alongside the sudo probes above.
+        loaded = label in loaded_labels()
     del out
     # An installed job that respawns `wg-quick up` in a loop is worse than no job
     # at all, so whether the file on disk is the one this panel would write is

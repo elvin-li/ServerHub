@@ -18,10 +18,16 @@ Three kinds of fix appear here and they are not interchangeable:
   for the body and once for the assertion count, running ``pmset`` twice to answer
   one question. ``shares_overview`` called ``file_services()`` twice because the
   response carries the same list under two keys for compatibility.
-  ``wireguard_svc.installation`` is both a route guard on every
-  ``/api/wireguard/*`` request and a probe inside ``readiness``, so its two
-  version probes ran twice per readiness read. These are asserted by counting
-  calls, not by timing, because they hold regardless of threading.
+  These are asserted by counting calls, not by timing, because they hold
+  regardless of threading.
+
+  ``wireguard_svc.installation`` still runs twice per readiness read. The second
+  caller is ``wireguard_svc.status``, not a route guard -- there is no guard on
+  ``/api/wireguard/readiness`` -- and the tests below cannot see the duplicate
+  because they mock ``status``, which is that caller. It is left in place
+  deliberately: ``_binary_version`` must not be memoised, because ``installation``
+  derives ``probe_failed`` from it and caching a transient timeout would have the
+  panel insist for a whole TTL that the tools are degraded.
 * **Overlap**, asserted with a peak-concurrency counter rather than elapsed time.
   A loaded machine serialises threads that an idle one overlaps, so timing bounds
   pass alone and fail under full-suite load.

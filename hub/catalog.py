@@ -24,6 +24,7 @@ from fastapi import HTTPException
 from hub.errors import CODES, api_error
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER
+from hub.util import fan_out
 
 TEMPLATES = BASE / "templates"
 SERVICES_ROOT = Path.home() / "Services"
@@ -343,13 +344,28 @@ def list_templates(force: bool = False) -> list:
 
 
 def catalog_overview() -> dict:
-    docker = list_templates()
-    try:
-        from hub import native_catalog
-        # Always re-check brew/bin for store badges (install just finished)
-        native = native_catalog.list_native_apps(force=True)
-    except Exception:
-        native = []
+    # Two independent halves of the store: the Docker templates, and the native
+    # catalog's brew/launchd probes.  Neither reads the other -- the cross-reference
+    # below works on both finished lists -- but the templates ran first, and they
+    # resolve the host address on the way, so the brew listings queued behind a route
+    # lookup and an `ipconfig`.
+    #
+    # Both halves reach `host_ip()`, which is single-flight: the second arrival waits
+    # for the first rather than paying for its own two spawns.
+    def docker_templates() -> list:
+        return list_templates()
+
+    def native_apps() -> list:
+        try:
+            from hub import native_catalog
+            # Always re-check brew/bin for store badges (install just finished)
+            return native_catalog.list_native_apps(force=True)
+        except Exception:
+            return []
+
+    docker, native = fan_out(
+        lambda collect: collect(), [docker_templates, native_apps], max_workers=2
+    )
     # Prefer native: if Cloudflared brew is installed, steer away from Docker twin
     native_ids_installed = {a["id"] for a in native if a.get("installed")}
     for d in docker:

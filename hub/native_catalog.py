@@ -90,12 +90,24 @@ def _app_exists(name: str) -> bool:
 
 
 def _brew_list_installed() -> set[str]:
+    """Formulae and casks installed, as one set.
+
+    The two listings answer different halves of the same question and their results
+    are only ever unioned, so nothing about the answer depends on the order they
+    arrive in -- yet they ran one after another, each with a 30s timeout, on the
+    critical path of the app store.
+
+    Each half returns the empty set on a non-zero exit, exactly as the serial
+    version did, so a missing cask listing still leaves the formulae usable.
+    """
     if not Path(BREW).is_file():
         return set()
-    rc, out, _ = sh([BREW, "list", "--formula", "-1"], timeout=30)
-    formulas = set(out.split()) if rc == 0 else set()
-    rc2, out2, _ = sh([BREW, "list", "--cask", "-1"], timeout=30)
-    casks = set(out2.split()) if rc2 == 0 else set()
+
+    def listing(flag: str) -> set[str]:
+        rc, out, _ = sh([BREW, "list", flag, "-1"], timeout=30)
+        return set(out.split()) if rc == 0 else set()
+
+    formulas, casks = fan_out(listing, ["--formula", "--cask"], max_workers=2)
     return formulas | casks
 
 

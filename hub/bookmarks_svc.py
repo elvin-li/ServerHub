@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 from hub.config import cfg
 from hub.host_address import resolve_value
@@ -138,9 +139,49 @@ def _backend_index() -> dict:
         if s.startswith("orb:"):
             idx[s[4:]] = info
 
+    # Three unrelated inventories -- UTM, OrbStack and the container engine -- and
+    # none of them reads another's answer, yet this waited out their sum: measured at
+    # six spawns in six waves, `utmctl list` then `orbctl list -f json` then
+    # `orbctl list` then `docker ps -a`, one after another.
+    #
+    # Order is restored below rather than taken from completion, and that matters
+    # here beyond cosmetics: `put()` lets a later entry overwrite an earlier one on
+    # the same key, so which backend wins a name collision is decided by this
+    # sequence.  `fan_out` returns results in submission order, so the winner is the
+    # same one as when this ran top to bottom.
+    #
+    # Each collector absorbs its own failure, where a single try/except used to span
+    # UTM and Orb together -- so an unavailable UTM also cost the Orb machines their
+    # state, and every bookmark pointing at a stopped Orb machine got probed over the
+    # network instead of being reported as stopped.
+    def utm_vms() -> list:
+        try:
+            from hub import vms_svc
+            return list(vms_svc.list_utm_vms() or [])
+        except Exception:
+            return []
+
+    def orb_machines() -> list:
+        try:
+            from hub import vms_svc
+            return list(vms_svc.list_orb_machines() or [])
+        except Exception:
+            return []
+
+    def containers() -> list:
+        try:
+            from hub.discovery.containers import discover_containers
+            items, _ = discover_containers()
+            return list(items or [])
+        except Exception:
+            return []
+
+    vm_rows, orb_rows, container_rows = fan_out(
+        lambda collect: collect(), [utm_vms, orb_machines, containers], max_workers=3
+    )
+
     try:
-        from hub import vms_svc
-        for v in (vms_svc.list_utm_vms() or []) + (vms_svc.list_orb_machines() or []):
+        for v in vm_rows + orb_rows:
             info = {
                 "state": v.get("state") or "down",
                 "status": v.get("status"),
@@ -159,9 +200,7 @@ def _backend_index() -> dict:
         pass
 
     try:
-        from hub.discovery.containers import discover_containers
-        items, _ = discover_containers()
-        for c in items or []:
+        for c in container_rows:
             info = {
                 "state": c.get("state") or "down",
                 "status": c.get("detail") or c.get("status"),
@@ -309,21 +348,32 @@ def list_bookmarks() -> dict:
     timestamp beside the previous payload and served a stale answer as fresh for a
     whole TTL.
     """
-    links = resolve_value(list(cfg().get("quick_links") or []))
-    # also from overrides urls
-    for sid, raw in (cfg().get("overrides") or {}).items():
-        ov = resolve_value(raw)
-        if ov.get("url") and ov.get("hide") is not True:
-            name = ov.get("name") or sid
-            if not any(l.get("url") == ov["url"] for l in links):
-                links.append({
-                    "name": name,
-                    "url": ov["url"],
-                    "id": sid,
-                    "service": sid,
-                })
+    # The backend inventory does not read the link list, and resolving the links
+    # reaches the host address -- a route lookup followed by an `ipconfig`, two
+    # spawns deep -- so the two overlap instead of queueing.  Together with the
+    # fan-out inside `_backend_index`, this took the endpoint from six spawns in six
+    # waves to the same six in two.
+    #
+    # `_backend_index` is the one that can be slow (three CLIs), so it is submitted
+    # first; the link resolution is then this thread's own work rather than a wait.
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        f_idx = ex.submit(_backend_index)
 
-    idx = _backend_index()
+        links = resolve_value(list(cfg().get("quick_links") or []))
+        # also from overrides urls
+        for sid, raw in (cfg().get("overrides") or {}).items():
+            ov = resolve_value(raw)
+            if ov.get("url") and ov.get("hide") is not True:
+                name = ov.get("name") or sid
+                if not any(l.get("url") == ov["url"] for l in links):
+                    links.append({
+                        "name": name,
+                        "url": ov["url"],
+                        "id": sid,
+                        "service": sid,
+                    })
+
+        idx = f_idx.result()
 
     # decide which need probe
     to_probe = []

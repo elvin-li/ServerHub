@@ -244,17 +244,43 @@ def diagnostics() -> dict:
         except Exception:
             return False, {}
 
+    def probe_platform() -> str:
+        # identity_svc's memo, not a bare platform.platform(): on macOS that shells
+        # out twice (`uname -p`, then `file -b` on the interpreter via
+        # architecture()), and the settings bundle and the diagnostics header want
+        # the same string.  Same substitution _diag_host already makes.
+        try:
+            from hub.identity_svc import platform_string
+            return platform_string()
+        except Exception:
+            return platform.platform()
+
+    def probe_host_ip() -> str:
+        try:
+            return host_ip()
+        except Exception:
+            return ""
+
     load1, load5, load15 = os.getloadavg()
-    hostname, model, ncpu, mem_gb, uptime_s, (eng, df) = fan_out(
+    # The last two used to be inlined in the return dict below, so they ran *after*
+    # this wave rather than in it -- `platform.platform()` two spawns deep and
+    # `host_ip()` another two, four spawns of pure tail on an endpoint whose whole
+    # point is to answer quickly when something is wrong.  Neither reads anything
+    # else here, and neither is read by anything here.
+    (
+        hostname, model, ncpu, mem_gb, uptime_s, (eng, df), plat, ip,
+    ) = fan_out(
         lambda probe: probe(),
-        [probe_hostname, probe_cpu, probe_ncpu, probe_mem_gb, probe_uptime, probe_docker],
-        max_workers=6,
+        [
+            probe_hostname, probe_cpu, probe_ncpu, probe_mem_gb, probe_uptime,
+            probe_docker, probe_platform, probe_host_ip,
+        ],
     )
 
     du = shutil.disk_usage("/")
     return {
         "hostname": hostname,
-        "platform": platform.platform(),
+        "platform": plat,
         "arch": platform.machine(),
         "cpu": model,
         "ncpu": ncpu,
@@ -268,7 +294,7 @@ def diagnostics() -> dict:
         "docker_cli": DOCKER,
         "orb_cli": ORB,
         "python": platform.python_version(),
-        "host_ip": host_ip(),
+        "host_ip": ip,
         "docker_df": df,
         "metrics_points": len(metrics.history(60)),
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -466,26 +492,42 @@ def _hardware_profile_uncached() -> dict:
     # after another -- so the hardware page's latency was their sum even though no
     # report depends on another.  `fan_out` keeps them in the declared order,
     # which is the order the sections are rendered in.
-    for (key, dt), (rc, text) in zip(types, fan_out(_profiler_report, types)):
-        sections[key] = {
-            "ok": rc == 0,
-            "data_type": dt,
-            "text": text,
-        }
-    disks = []
-    try:
-        from hub import disk_power_svc
-        for d in disk_power_svc.list_power_disks()[:12]:
-            disks.append({
-                "id": d.get("id"),
-                "name": d.get("name"),
-                "size_gb": d.get("size_gb"),
-                "ssd": d.get("ssd"),
-                "power_state": d.get("power_state"),
-                "system": d.get("system"),
-            })
-    except Exception:
-        pass
+    def profiler_sections() -> dict:
+        out: dict = {}
+        for (key, dt), (rc, text) in zip(types, fan_out(_profiler_report, types)):
+            out[key] = {
+                "ok": rc == 0,
+                "data_type": dt,
+                "text": text,
+            }
+        return out
+
+    def power_disks() -> list:
+        try:
+            from hub import disk_power_svc
+            return [
+                {
+                    "id": d.get("id"),
+                    "name": d.get("name"),
+                    "size_gb": d.get("size_gb"),
+                    "ssd": d.get("ssd"),
+                    "power_state": d.get("power_state"),
+                    "system": d.get("system"),
+                }
+                for d in disk_power_svc.list_power_disks()[:12]
+            ]
+        except Exception:
+            return []
+
+    # The disk listing is its own multi-level chain (which disks exist, what `/` sits
+    # on, then one `diskutil info` per disk), and it waited for all four profiler
+    # reports first even though neither half reads the other.  Nested rather than
+    # flattened: the inner batch keeps the section order the page renders, and both
+    # levels are bounded, so this cannot outgrow the per-call pools.
+    section_rows, disks = fan_out(
+        lambda collect: collect(), [profiler_sections, power_disks], max_workers=2
+    )
+    sections.update(section_rows)
     v = {
         "sections": sections,
         "disks": disks,
@@ -850,12 +892,29 @@ def launchd_agents_summary() -> dict:
 # ─── About ───────────────────────────────────────────────────────────────────
 
 def about_info() -> dict:
+    # The same tail as `diagnostics()` had, for the same two reads: `host_ip()` is a
+    # route lookup then an `ipconfig`, and `platform.platform()` shells out twice more
+    # on macOS.  Four spawns, three deep, to fill two fields of a static page.
+    def probe_host_ip() -> str:
+        try:
+            return host_ip()
+        except Exception:
+            return ""
+
+    def probe_platform() -> str:
+        try:
+            from hub.identity_svc import platform_string
+            return platform_string()
+        except Exception:
+            return platform.platform()
+
+    ip, plat = fan_out(lambda probe: probe(), [probe_host_ip, probe_platform])
     return {
         "name": "ServerHub",
         "version": __version__,
         "tagline_key": "tools.about_tagline",
-        "host_ip": host_ip(),
-        "platform": platform.platform(),
+        "host_ip": ip,
+        "platform": plat,
         "python": platform.python_version(),
         "base": str(BASE),
         "credit_keys": [
