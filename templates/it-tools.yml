@@ -1,6 +1,6 @@
 ---
 name: IT-Tools
-desc: 运维小工具合集（编码/哈希/JWT/端口等）
+desc: A collection of handy IT utilities (encoding, hashing, JWT, ports and more)
 category: productivity
 tags: [tools, utils]
 featured: true
@@ -8,7 +8,7 @@ ports: ["8083"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "8083"
 ---
 services:

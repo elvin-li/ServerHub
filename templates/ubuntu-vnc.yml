@@ -1,29 +1,29 @@
 ---
-name: Ubuntu VNC 桌面
-desc: 经典 noVNC + VNC 远程桌面（轻量 LXDE）
+name: Ubuntu VNC desktop
+desc: Classic noVNC + VNC remote desktop (lightweight LXDE)
 category: remote
 tags: [vnc, novnc, desktop]
 featured: true
 ports: ["6080", "5901"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 notes: |
-  浏览器访问 noVNC 端口；也可用 VNC 客户端连 :5901（容器内为 5900，
-  宿主默认改到 5901 以避开 macOS 自带的「屏幕共享」）。
-  默认分辨率可在容器内调整。
+  Open the noVNC port in a browser, or point a VNC client at port 5901 (the container listens
+  on 5900; the host port defaults to 5901 to stay clear of the built-in macOS Screen Sharing).
+  The default resolution can be adjusted inside the container.
 vars:
   - name: HOST_PORT
-    label: noVNC Web 端口
+    label: noVNC web port
     default: "6080"
   - name: VNC_PORT
-    label: VNC 端口
+    label: VNC port
     default: "5901"
   - name: VNC_PASSWORD
-    label: VNC 密码
+    label: VNC password
     default: "__RANDOM__"
     secret: true
-    help: 最长 8 字符更兼容部分客户端
+    help: Keep it to 8 characters or fewer for best client compatibility
   - name: RESOLUTION
-    label: 分辨率
+    label: Resolution
     default: "1280x800"
 ---
 services:

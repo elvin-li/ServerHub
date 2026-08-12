@@ -1,15 +1,15 @@
 ---
 name: Nextcloud
-desc: 私有云盘 / 相册 / 办公套件
+desc: Private cloud drive / photos / office suite
 category: files
 tags: [cloud, files]
 featured: true
 ports: ["8084"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
-notes: 首次打开完成安装向导。生产建议加 Postgres 与 HTTPS 反代。
+notes: Open it for the first time to complete the setup wizard. For production, add Postgres and an HTTPS reverse proxy.
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "8084"
 ---
 services:

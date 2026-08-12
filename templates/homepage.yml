@@ -1,13 +1,13 @@
 ---
 name: Homepage
-desc: 现代化服务导航主页
+desc: Modern service start page
 category: dashboard
 tags: [dashboard, startpage]
 ports: ["3002"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "3002"
 ---
 services:

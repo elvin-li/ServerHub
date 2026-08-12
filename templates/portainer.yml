@@ -1,9 +1,9 @@
 ---
 name: Portainer CE
-desc: 可选的 Docker GUI（ServerHub 已覆盖核心能力）
+desc: Optional Docker GUI (ServerHub already covers the core features)
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "9002"
 category: ops
 tags: [docker]

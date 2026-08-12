@@ -1,34 +1,34 @@
 ---
 name: WireGuard (wg-easy)
-desc: 带 Web 管理界面的 WireGuard VPN · 手机/电脑一键扫码接入
+desc: WireGuard VPN with a web admin UI · scan a QR code to connect a phone or laptop
 category: network
 tags: [vpn, wireguard, remote-access]
 featured: true
 ports: ["51820/udp", "51821"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 notes: |
-  macOS/OrbStack 上 VPN 容器能力受限于虚拟网络，部分场景需额外配置。
-  部署后打开 Web UI 添加客户端、扫二维码。请把 WG_HOST 设为公网 IP 或域名（穿透后）。
-  UDP 51820 需在路由器端口转发到本机。
+  On macOS/OrbStack, VPN containers are limited by the virtual network, so some setups need extra configuration.
+  After deployment, open the web UI to add clients and scan their QR codes. Set WG_HOST to your public IP or domain (or your tunnel hostname).
+  Forward UDP 51820 on your router to this machine.
 vars:
   - name: WG_HOST
-    label: 公网 IP / 域名
+    label: Public IP / domain
     default: ""
     required: true
-    help: 客户端连接用的主机名或公网 IP（必填）
+    help: Hostname or public IP that clients connect to (required)
   - name: PASSWORD
-    label: Web 管理密码
+    label: Web admin password
     default: "__RANDOM__"
     secret: true
-    help: 登录 wg-easy 面板的密码
+    help: Password for signing in to the wg-easy panel
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "51821"
   - name: WG_PORT
-    label: WireGuard UDP 端口
+    label: WireGuard UDP port
     default: "51820"
   - name: WG_DEFAULT_DNS
-    label: 客户端 DNS
+    label: Client DNS
     default: "1.1.1.1"
 ---
 services:

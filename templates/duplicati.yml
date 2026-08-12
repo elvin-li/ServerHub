@@ -1,17 +1,17 @@
 ---
 name: Duplicati
-desc: 加密备份到云盘/S3/本地
+desc: Encrypted backups to cloud storage, S3 or local disks
 category: backup
 tags: [backup]
 ports: ["8201"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
-notes: 端口默认 8201（容器内仍是 8200），若与其他服务冲突请改 HOST_PORT。
+notes: The port defaults to 8201 (still 8200 inside the container); change HOST_PORT if it clashes with another service.
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "8201"
   - name: BACKUP_SOURCE
-    label: 要备份的主机目录
+    label: Host directory to back up
     default: "{{SERVICES}}"
 ---
 services:
@@ -21,7 +21,7 @@ services:
     environment:
       - PUID=1000
       - PGID=1000
-      - TZ=Asia/Shanghai
+      - TZ={{TZ}}
     volumes:
       - ./config:/config
       - ./backups:/backups

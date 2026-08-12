@@ -1,15 +1,15 @@
 ---
 name: Watchtower
-desc: 自动更新 Docker 容器镜像（谨慎开启）
+desc: Automatically update Docker container images (enable with care)
 category: ops
 tags: [update, docker]
 ports: []
-notes: 默认每天检查。生产环境建议先用 monitor-only 或排除关键容器。
+notes: Checks for updates daily by default. In production, start with monitor-only mode or exclude critical containers.
 vars:
   - name: SCHEDULE
-    label: Cron 计划
+    label: Cron schedule
     default: "0 4 * * *"
-    help: 默认每天凌晨 4 点
+    help: Defaults to 4 AM every day
 ---
 services:
   watchtower:

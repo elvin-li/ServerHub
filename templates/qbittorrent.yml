@@ -1,22 +1,22 @@
 ---
 name: qBittorrent
-desc: BT/PT 下载客户端 · Web UI
+desc: BitTorrent / PT download client · web UI
 category: download
 tags: [bt, download]
 featured: true
 ports: ["8081", "6881"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
-notes: 默认用户 admin，首次启动看日志里的临时密码（较新版本）。
+notes: The default user is admin. On recent versions, check the startup logs for the temporary password.
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "8081"
   - name: DOWNLOADS
-    label: 下载目录
+    label: Downloads folder
     default: "{{SERVICES}}/qbittorrent/downloads"
   - name: TZ
-    label: 时区
-    default: "Asia/Shanghai"
+    label: Time zone
+    default: "{{TZ}}"
 ---
 services:
   qbittorrent:

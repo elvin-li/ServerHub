@@ -1,9 +1,9 @@
 ---
 name: Glance
-desc: 轻量聚合仪表盘（RSS/天气/服务状态）— 开源优秀面板
+desc: Lightweight aggregated dashboard (RSS, weather, service status) — a polished open-source panel
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "8087"
 category: dashboard
 tags: [dashboard]

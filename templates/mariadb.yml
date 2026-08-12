@@ -1,25 +1,25 @@
 ---
 name: MariaDB
-desc: MySQL 兼容数据库
+desc: MySQL-compatible database
 category: data
 tags: [db, mysql]
 ports: ["3306"]
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "3306"
   - name: MYSQL_ROOT_PASSWORD
-    label: root 密码
+    label: Root password
     default: "__RANDOM__"
     secret: true
   - name: MYSQL_DATABASE
-    label: 数据库
+    label: Database
     default: "app"
   - name: MYSQL_USER
-    label: 用户
+    label: User
     default: "app"
   - name: MYSQL_PASSWORD
-    label: 用户密码
+    label: User password
     default: "__RANDOM__"
     secret: true
 ---

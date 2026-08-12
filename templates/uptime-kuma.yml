@@ -1,11 +1,11 @@
 ---
 name: Uptime Kuma
-desc: 漂亮的自托管监控面板
+desc: A polished self-hosted uptime monitoring dashboard
 vars:
   - name: HOST_PORT
-    label: 主机端口
+    label: Host port
     default: "3001"
-    help: 浏览器访问端口
+    help: Port used to reach the web interface
 category: monitor
 featured: true
 tags: [monitor]

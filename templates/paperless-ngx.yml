@@ -1,20 +1,20 @@
 ---
 name: Paperless-ngx
-desc: 文档扫描归档 OCR · 电子票据管理
+desc: Document scanning, archiving and OCR · digital receipt management
 category: productivity
 tags: [docs, ocr]
 ports: ["8010"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
-notes: 首次启动较慢。默认用户在日志中生成或通过环境变量设置。
+notes: The first start is slow. The default user is generated in the logs or set through environment variables.
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "8010"
   - name: PAPERLESS_ADMIN_USER
-    label: 管理员用户
+    label: Admin user
     default: "admin"
   - name: PAPERLESS_ADMIN_PASSWORD
-    label: 管理员密码
+    label: Admin password
     default: "__RANDOM__"
     secret: true
 ---
@@ -42,5 +42,5 @@ services:
       - PAPERLESS_REDIS=redis://broker:6379
       - PAPERLESS_ADMIN_USER={{PAPERLESS_ADMIN_USER}}
       - PAPERLESS_ADMIN_PASSWORD={{PAPERLESS_ADMIN_PASSWORD}}
-      - PAPERLESS_OCR_LANGUAGE=chi_sim+eng
-      - PAPERLESS_TIME_ZONE=Asia/Shanghai
+      - PAPERLESS_OCR_LANGUAGE={{OCR_LANG}}
+      - PAPERLESS_TIME_ZONE={{TZ}}

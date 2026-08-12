@@ -1,6 +1,6 @@
 ---
 name: Gitea
-desc: 轻量自托管 Git 服务
+desc: Lightweight self-hosted Git service
 category: dev
 tags: [git, forge]
 featured: true
@@ -8,10 +8,10 @@ ports: ["3030", "2222"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "3030"
   - name: SSH_PORT
-    label: SSH 端口
+    label: SSH port
     default: "2222"
 ---
 services:

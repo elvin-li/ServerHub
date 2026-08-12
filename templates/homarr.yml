@@ -1,9 +1,9 @@
 ---
 name: Homarr
-desc: 漂亮的服务导航首页（可与 ServerHub 并存）
+desc: Good-looking service start page (can run alongside ServerHub)
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "7575"
 category: dashboard
 featured: true

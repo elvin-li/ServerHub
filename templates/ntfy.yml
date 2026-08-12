@@ -1,6 +1,6 @@
 ---
 name: ntfy
-desc: 自托管推送通知 · ServerHub / 脚本告警可对接
+desc: Self-hosted push notifications · works with ServerHub and script alerts
 category: notify
 tags: [notify, push]
 featured: true
@@ -8,7 +8,7 @@ ports: ["2586"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "2586"
 ---
 services:
@@ -18,7 +18,7 @@ services:
     command:
       - serve
     environment:
-      - TZ=Asia/Shanghai
+      - TZ={{TZ}}
     volumes:
       - ./data:/var/cache/ntfy
       - ./config:/etc/ntfy

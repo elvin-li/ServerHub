@@ -1,12 +1,12 @@
 ---
 name: AdGuard Home
-desc: 网络级广告拦截与 DNS
+desc: Network-wide ad blocking and DNS
 vars:
   - name: WEB_PORT
-    label: Web 端口
+    label: Web port
     default: "3000"
   - name: DNS_PORT
-    label: DNS 端口
+    label: DNS port
     default: "53"
 category: network
 featured: true

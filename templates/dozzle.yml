@@ -1,6 +1,6 @@
 ---
 name: Dozzle
-desc: 实时查看 Docker 容器日志（轻量）
+desc: Live Docker container logs (lightweight)
 category: monitor
 tags: [logs, docker]
 featured: true
@@ -8,7 +8,7 @@ ports: ["8888"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "8888"
 ---
 services:

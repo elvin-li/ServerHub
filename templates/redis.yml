@@ -1,15 +1,15 @@
 ---
 name: Redis
-desc: 内存数据库 / 缓存
+desc: In-memory database / cache
 category: data
 tags: [cache, db]
 ports: ["6379"]
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "6379"
   - name: PASSWORD
-    label: 密码（可空）
+    label: Password (optional)
     default: ""
     required: false
     secret: true

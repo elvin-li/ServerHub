@@ -1,6 +1,6 @@
 ---
 name: Stirling PDF
-desc: 浏览器 PDF 工具箱（合并/拆分/OCR/转换）
+desc: Browser-based PDF toolkit (merge / split / OCR / convert)
 category: productivity
 tags: [pdf, tools]
 featured: true
@@ -8,7 +8,7 @@ ports: ["8082"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "8082"
 ---
 services:
@@ -17,7 +17,7 @@ services:
     container_name: stirling-pdf
     environment:
       - DOCKER_ENABLE_SECURITY=false
-      - LANGS=en_GB,zh_CN
+      - LANGS={{UI_LANGS}}
     ports:
       - "{{HOST_PORT}}:8080"
     volumes:

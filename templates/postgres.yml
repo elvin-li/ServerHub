@@ -1,22 +1,22 @@
 ---
 name: PostgreSQL
-desc: 关系型数据库
+desc: Relational database
 category: data
 tags: [db, sql]
 ports: ["5432"]
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "5432"
   - name: POSTGRES_USER
-    label: 用户
+    label: User
     default: "app"
   - name: POSTGRES_PASSWORD
-    label: 密码
+    label: Password
     default: "__RANDOM__"
     secret: true
   - name: POSTGRES_DB
-    label: 数据库名
+    label: Database name
     default: "app"
 ---
 services:

@@ -1,14 +1,14 @@
 ---
 name: Navidrome
-desc: 轻量音乐服务器（Subsonic 兼容）
+desc: Lightweight music server (Subsonic compatible)
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "4533"
   - name: MUSIC_PATH
-    label: 音乐库路径
-    default: {{HOME}}/Music
-    help: 宿主机音乐目录绝对路径
+    label: Music library path
+    default: "{{HOME}}/Music"
+    help: Absolute path to the music directory on the host
 category: media
 tags: [music]
 ports: ["4533"]

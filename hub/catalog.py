@@ -9,6 +9,7 @@ import copy
 import errno
 import json
 import os
+import plistlib
 import re
 import secrets
 import shutil
@@ -34,6 +35,7 @@ SERVICES_ROOT = Path.home() / "Services"
 # raises it; api_error() would otherwise degrade these to HTTP 500.
 CODES.setdefault("catalog.unknown_template", (404, "unknown template: {id}"))
 CODES.setdefault("catalog.missing_var", (400, "missing required variable {name}"))
+CODES.setdefault("catalog.bad_var_value", (400, "{name} may not contain line breaks"))
 CODES.setdefault(
     "catalog.missing_token",
     (400, "{name} is required and cannot be blank: paste the real token "
@@ -50,6 +52,10 @@ CODES.setdefault(
     "catalog.port_claimed",
     (409, "host port {port} is already claimed by the installed stack {stack}"),
 )
+CODES.setdefault(
+    "catalog.browser_session_required",
+    (401, "sign in from a browser to manage service credentials"),
+)
 
 FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.S)
 VAR_RE = re.compile(r"\{\{\s*([A-Z0-9_]+)\s*\}\}")
@@ -58,7 +64,7 @@ VAR_RE = re.compile(r"\{\{\s*([A-Z0-9_]+)\s*\}\}")
 #: blank required fields in the install form, and templates must use them
 #: instead of absolute paths so the catalog is not tied to one developer's home
 #: directory.
-AUTO_VARS = ("HOST_IP", "HOME", "SERVICES")
+AUTO_VARS = ("HOST_IP", "HOME", "SERVICES", "TZ", "OCR_LANG", "UI_LANGS")
 
 # Fallback categories by template id prefix / name
 CATEGORY_HINTS = {
@@ -112,26 +118,26 @@ CATEGORY_HINTS = {
 }
 
 CATEGORIES = [
-    {"id": "all", "label": "全部"},
-    {"id": "featured", "label": "推荐"},
-    {"id": "native", "label": "原生优先"},
+    {"id": "all", "label": "All"},
+    {"id": "featured", "label": "Featured"},
+    {"id": "native", "label": "Native first"},
     {"id": "docker", "label": "Docker"},
-    {"id": "network", "label": "网络 / VPN"},
-    {"id": "remote", "label": "远程桌面"},
-    {"id": "media", "label": "影音"},
-    {"id": "download", "label": "下载"},
-    {"id": "files", "label": "文件 / 同步"},
-    {"id": "security", "label": "安全"},
-    {"id": "dashboard", "label": "面板"},
-    {"id": "monitor", "label": "监控"},
-    {"id": "ops", "label": "运维"},
-    {"id": "dev", "label": "开发"},
-    {"id": "data", "label": "数据库 / 存储"},
-    {"id": "iot", "label": "智能家居"},
-    {"id": "productivity", "label": "效率"},
-    {"id": "notify", "label": "通知"},
-    {"id": "backup", "label": "备份"},
-    {"id": "other", "label": "其他"},
+    {"id": "network", "label": "Network / VPN"},
+    {"id": "remote", "label": "Remote Desktop"},
+    {"id": "media", "label": "Media"},
+    {"id": "download", "label": "Downloads"},
+    {"id": "files", "label": "Files / Sync"},
+    {"id": "security", "label": "Security"},
+    {"id": "dashboard", "label": "Dashboards"},
+    {"id": "monitor", "label": "Monitoring"},
+    {"id": "ops", "label": "Ops"},
+    {"id": "dev", "label": "Development"},
+    {"id": "data", "label": "Database / Storage"},
+    {"id": "iot", "label": "Smart Home"},
+    {"id": "productivity", "label": "Productivity"},
+    {"id": "notify", "label": "Notifications"},
+    {"id": "backup", "label": "Backup"},
+    {"id": "other", "label": "Other"},
 ]
 
 
@@ -150,12 +156,126 @@ def _rand_password(n: int = 16) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
+def host_timezone() -> str:
+    """The host's IANA timezone, e.g. ``Europe/Berlin``.
+
+    Containers do not inherit the host clock's zone; without an explicit TZ they
+    run on UTC and every timestamp a user sees in Jellyfin, Paperless or
+    qBittorrent is offset from the machine those apps run on.  Templates used to
+    hardcode the author's own zone, which is wrong for everyone else, so they
+    ask for this instead and each install picks up whatever the host is set to.
+    """
+    try:
+        target = os.readlink("/etc/localtime")
+    except OSError:
+        return "UTC"
+    # /etc/localtime points into the zoneinfo tree; the zone is the tail after
+    # the database directory, which is a two-part name for most regions
+    # (Asia/Shanghai) but a single part for a few (UTC, GMT, Zulu).
+    _, sep, zone = target.partition("zoneinfo/")
+    zone = zone.strip("/") if sep else ""
+    return zone or "UTC"
+
+
+# macOS keeps the user's ordered language preference here.  Reading the plist
+# directly avoids a `defaults read` subprocess on a path that runs for every
+# variable of every template on every catalog listing.
+_GLOBAL_PREFS = Path.home() / "Library/Preferences/.GlobalPreferences.plist"
+
+#: BCP-47 primary subtag -> (tesseract OCR code, Stirling PDF locale).  Only
+#: languages both projects actually ship models/translations for; anything else
+#: falls through to English rather than requesting a pack that does not exist.
+_LANG_CODES = {
+    "en": ("eng", "en_GB"),
+    "zh-hans": ("chi_sim", "zh_CN"),
+    "zh-hant": ("chi_tra", "zh_TW"),
+    "ja": ("jpn", "ja_JP"),
+    "ko": ("kor", "ko_KR"),
+    "de": ("deu", "de_DE"),
+    "fr": ("fra", "fr_FR"),
+    "es": ("spa", "es_ES"),
+    "it": ("ita", "it_IT"),
+    "pt": ("por", "pt_BR"),
+    "ru": ("rus", "ru_RU"),
+}
+
+_lang_cache: tuple[int, tuple[str, ...]] | None = None
+
+
+def _normalise_lang(tag: str) -> str:
+    """Map an AppleLanguages tag onto a key of _LANG_CODES.
+
+    Tags carry a region and sometimes a script: ``en-CN``, ``zh-Hans-CN``,
+    ``pt-BR``.  Chinese is the one language where the script matters, because
+    Simplified and Traditional need different OCR models.
+    """
+    parts = (tag or "").lower().replace("_", "-").split("-")
+    if not parts or not parts[0]:
+        return ""
+    base = parts[0]
+    if base == "zh":
+        if "hant" in parts or any(p in ("tw", "hk", "mo") for p in parts):
+            return "zh-hant"
+        return "zh-hans"
+    return base
+
+
+def host_languages() -> tuple[str, ...]:
+    """The user's preferred languages, most preferred first."""
+    global _lang_cache
+    try:
+        mtime = _GLOBAL_PREFS.stat().st_mtime_ns
+    except OSError:
+        return ("en",)
+    cached = _lang_cache
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        prefs = plistlib.loads(_GLOBAL_PREFS.read_bytes())
+        raw = prefs.get("AppleLanguages") or []
+    except Exception:
+        raw = []
+    seen: list[str] = []
+    for tag in raw:
+        key = _normalise_lang(str(tag))
+        if key in _LANG_CODES and key not in seen:
+            seen.append(key)
+    value = tuple(seen) or ("en",)
+    _lang_cache = (mtime, value)
+    return value
+
+
+def _host_lang_list(index: int, separator: str) -> str:
+    """Render the host's languages using column *index* of _LANG_CODES."""
+    codes = [_LANG_CODES[key][index] for key in host_languages()]
+    english = _LANG_CODES["en"][index]
+    # Always keep English available: it is the fallback UI language, and OCR
+    # accuracy on the latin text that appears in almost every document drops
+    # sharply without the English model.
+    if english not in codes:
+        codes.append(english)
+    return separator.join(codes)
+
+
+def host_ocr_languages() -> str:
+    """Tesseract language list for the host, e.g. ``eng+chi_sim``."""
+    return _host_lang_list(0, "+")
+
+
+def host_ui_languages() -> str:
+    """Stirling PDF locale list for the host, e.g. ``en_GB,zh_CN``."""
+    return _host_lang_list(1, ",")
+
+
 def auto_var_values() -> dict[str, str]:
     """Values for the placeholders the server fills in on its own."""
     return {
         "HOST_IP": host_ip(),
         "HOME": str(Path.home()),
         "SERVICES": str(SERVICES_ROOT),
+        "TZ": host_timezone(),
+        "OCR_LANG": host_ocr_languages(),
+        "UI_LANGS": host_ui_languages(),
     }
 
 
@@ -221,7 +341,7 @@ def _parse_template(path: Path) -> tuple[dict, str]:
             if line.startswith("#"):
                 meta["desc"] = line.lstrip("# ").strip()
                 break
-        meta.setdefault("desc", f"Compose 模板 {path.name}")
+        meta.setdefault("desc", f"Compose template {path.name}")
     meta["images"] = re.findall(r"image:\s*(\S+)", body)
     meta["category"] = _guess_category(path.stem, meta)
     meta.setdefault("tags", [])
@@ -373,8 +493,9 @@ def catalog_overview() -> dict:
             d["notes"] = (
                 (d.get("notes") or "")
                 + (" · " if d.get("notes") else "")
-                + "本机已装原生 cloudflared CLI，一般无需再装此 Docker 版；"
-                "Docker 版仅在有 Zero Trust Token 且要容器化时使用。"
+                + "The native cloudflared CLI is already installed on this machine, "
+                "so the Docker version is usually unnecessary; use it only when you "
+                "have a Zero Trust token and want it containerized."
             ).strip(" ·")
     # Prefer native: sort native featured first, then docker
     templates = native + docker
@@ -399,7 +520,7 @@ def catalog_overview() -> dict:
         "native_count": len(native),
         "docker_count": len(docker),
         "installed": sum(1 for t in templates if t.get("installed")),
-        "hint": "优先原生（brew / 系统）· Docker 作为补充",
+        "hint": "Native first (brew / system) · Docker as a complement",
     }
 
 
@@ -408,7 +529,17 @@ def render_template(body: str, values: dict[str, str]) -> str:
         key = m.group(1)
         if key not in values:
             raise api_error("catalog.missing_var", name=key)
-        return str(values[key])
+        value = str(values[key])
+        # Templates place variables as bare YAML scalars (e.g. `- FOO={{FOO}}`).
+        # A value carrying a newline plus matching indentation would close its
+        # scalar and inject sibling compose keys (privileged: true, extra
+        # volumes, devices...) into the rendered docker-compose.yml.  No install
+        # variable — password, path, port, username — legitimately contains a
+        # line break, so refusing them closes the escape without constraining
+        # any real value.
+        if "\n" in value or "\r" in value:
+            raise api_error("catalog.bad_var_value", name=key)
+        return value
 
     return VAR_RE.sub(repl, body)
 
@@ -722,6 +853,9 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         values["HOST_IP"] = host_ip()
     values.setdefault("HOME", str(Path.home()))
     values.setdefault("SERVICES", str(SERVICES_ROOT))
+    values.setdefault("TZ", host_timezone())
+    values.setdefault("OCR_LANG", host_ocr_languages())
+    values.setdefault("UI_LANGS", host_ui_languages())
 
     rendered = render_template(body, values) if VAR_RE.search(body) else body
 
@@ -780,9 +914,9 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "",
         ]
         if url:
-            readme += [f"访问: {url}", ""]
+            readme += [f"URL: {url}", ""]
         if notes:
-            readme += ["## 说明", notes, ""]
+            readme += ["## Notes", notes, ""]
         secret_names = {
             str(v.get("name"))
             for v in (meta.get("vars") or [])
@@ -792,7 +926,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             k: ("***" if k in secret_names or any(x in k.upper() for x in ("PASSWORD", "TOKEN", "SECRET")) else v)
             for k, v in values.items()
         }
-        readme += ["## 变量（敏感值已隐藏）", "```json", json.dumps(redacted, ensure_ascii=False, indent=2), "```"]
+        readme += ["## Variables (secrets redacted)", "```json", json.dumps(redacted, ensure_ascii=False, indent=2), "```"]
         (dest_dir / "README.serverhub.md").write_text("\n".join(readme))
 
         _register_stack(template_id, meta.get("name") or template_id, dest_dir)
@@ -805,8 +939,8 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
                 "ok": False,
                 "path": str(dest_dir),
                 "message": (
-                    f"已写入 {dest}，但未找到 docker CLI（OrbStack 是否在运行？）。\n"
-                    f"可手动: docker compose -f {dest} up -d"
+                    f"Wrote {dest}, but the docker CLI was not found (is OrbStack running?).\n"
+                    f"Run manually: docker compose -f {dest} up -d"
                 ),
                 "variables": values,
                 "url": url,
@@ -937,12 +1071,12 @@ def uninstall_template(
         try:
             _shutil.rmtree(dest_dir)
             removed_path = True
-            logs.append(f"已删除目录 {dest_dir}")
+            logs.append(f"Removed directory {dest_dir}")
         except Exception as e:
-            logs.append(f"删除目录失败: {e}")
+            logs.append(f"Failed to remove directory: {e}")
     else:
         # keep files; user can re-up later
-        logs.append(f"已保留目录 {dest_dir}（未勾选删除数据）")
+        logs.append(f"Kept directory {dest_dir} (remove data was not selected)")
 
     _unregister_stack(template_id, dest_dir)
     _list_cache["t"] = 0

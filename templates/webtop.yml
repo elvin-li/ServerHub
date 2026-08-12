@@ -1,26 +1,26 @@
 ---
-name: Webtop 远程桌面
-desc: 浏览器里的完整 Linux 桌面（VNC/noVNC）· 远程办公应急
+name: Webtop remote desktop
+desc: A full Linux desktop in your browser (VNC/noVNC) · handy backup for remote work
 category: remote
 tags: [vnc, desktop, remote]
 featured: true
 ports: ["3020"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 notes: |
-  基于 linuxserver/webtop，浏览器直接访问，无需单独 VNC 客户端。
-  首次启动较慢（拉镜像）。建议设置密码。不适合 7×24 高负载游戏。
+  Built on linuxserver/webtop and reachable straight from a browser, with no separate VNC client.
+  The first start is slow while the image downloads. Setting a password is recommended. Not suited to 24/7 high-load gaming.
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "3020"
   - name: PASSWORD
-    label: 登录密码
+    label: Sign-in password
     default: "__RANDOM__"
     secret: true
-    help: 浏览器打开后的访问密码
+    help: Password requested when you open the desktop in a browser
   - name: TZ
-    label: 时区
-    default: "Asia/Shanghai"
+    label: Time zone
+    default: "{{TZ}}"
 ---
 services:
   webtop:

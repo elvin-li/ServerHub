@@ -1,18 +1,18 @@
 ---
 name: Vaultwarden
-desc: Bitwarden 兼容密码库（轻量）
+desc: Lightweight Bitwarden-compatible password vault
 category: security
 tags: [password, vault]
 featured: true
 ports: ["8222"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
-notes: 建议仅内网或经反向代理 + HTTPS 暴露。ADMIN_TOKEN 用于管理页。
+notes: Expose this on your LAN only, or through a reverse proxy with HTTPS. ADMIN_TOKEN unlocks the admin page.
 vars:
   - name: HOST_PORT
-    label: 端口
+    label: Port
     default: "8222"
   - name: ADMIN_TOKEN
-    label: 管理 Token
+    label: Admin token
     default: "__RANDOM__"
     secret: true
 ---

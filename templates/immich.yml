@@ -1,24 +1,24 @@
 ---
 name: Immich
-desc: 自托管相册（Google Photos 平替）· 官方 compose 精简版
+desc: Self-hosted photo library (a Google Photos alternative) · trimmed-down official compose
 category: media
 tags: [photos, gallery]
 featured: true
 ports: ["2283"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 notes: |
-  官方完整栈较重；此模板为常用精简组合（server + postgres + redis + machine-learning）。
-  首次拉取镜像体积大。上传路径在 ./library。
+  The full official stack is heavy; this template ships the common trimmed-down set (server + postgres + redis + machine-learning).
+  The first image pull is large. Uploads are stored in ./library.
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "2283"
   - name: DB_PASSWORD
-    label: 数据库密码
+    label: Database password
     default: "__RANDOM__"
     secret: true
   - name: UPLOAD_PATH
-    label: 照片库路径
+    label: Photo library path
     default: "{{SERVICES}}/immich/library"
 ---
 name: immich

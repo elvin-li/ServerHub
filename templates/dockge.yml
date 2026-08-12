@@ -1,13 +1,13 @@
 ---
 name: Dockge
-desc: Compose 栈管理 UI（与 ServerHub 互补，可对照学习）
+desc: Compose stack management UI (complements ServerHub and is handy for comparison)
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "5001"
   - name: STACKS_DIR
-    label: Stacks 目录
-    default: {{SERVICES}}
+    label: Stacks directory
+    default: "{{SERVICES}}"
 category: ops
 tags: [compose]
 ports: ["5001"]

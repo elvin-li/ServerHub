@@ -1,24 +1,24 @@
 ---
 name: Nginx Proxy Manager
-desc: 可视化反向代理 / SSL 证书 · 给内网服务套域名
+desc: Visual reverse proxy / SSL certificates · put domains in front of LAN services
 category: network
 tags: [proxy, ssl, npm]
 featured: true
 ports: ["81", "8080", "4443"]
 url_template: "http://{{HOST_IP}}:{{ADMIN_PORT}}"
 notes: |
-  默认管理员 admin@example.com / changeme（首次登录强制改密）。
-  宿主端口默认 8080(HTTP) / 4443(HTTPS) / 81(管理)，容器内仍是 80/443/81。
-  若要直接用 80/443 对外，请确认本机 nginx 已停且以特权端口运行。
+  Default administrator is admin@example.com / changeme; you must change the password at first login.
+  Host ports default to 8080 (HTTP) / 4443 (HTTPS) / 81 (admin); inside the container they stay 80/443/81.
+  To serve 80/443 directly, make sure the local nginx is stopped and the container may bind privileged ports.
 vars:
   - name: ADMIN_PORT
-    label: 管理端口
+    label: Admin port
     default: "81"
   - name: HTTP_PORT
-    label: HTTP 端口
+    label: HTTP port
     default: "8080"
   - name: HTTPS_PORT
-    label: HTTPS 端口
+    label: HTTPS port
     default: "4443"
 ---
 services:

@@ -1,20 +1,20 @@
 ---
-name: Cloudflare Tunnel（Docker）
-desc: 用容器跑 cloudflared（必须填 Zero Trust Token）· 本机优先装「Cloudflared（原生）」
+name: Cloudflare Tunnel (Docker)
+desc: Run cloudflared in a container (a Zero Trust token is required) · on this Mac, prefer "Cloudflared (native)"
 vars:
   - name: TUNNEL_TOKEN
     label: Tunnel Token
     default: ""
     required: true
     secret: true
-    help: Cloudflare Zero Trust → Networks → Tunnels → 安装时复制 token。留空无法启动。
+    help: Cloudflare Zero Trust → Networks → Tunnels → copy the token shown during setup. The container will not start if this is blank.
 category: network
 tags: [tunnel, cloudflare]
 featured: false
 notes: |
-  推荐优先安装应用商店里的「Cloudflared（原生）」（brew CLI，更轻）。
-  本 Docker 模板适合：已有 Cloudflare Tunnel Token、希望用 compose 托管。
-  无 Token 点安装会失败（必填）。
+  We recommend the "Cloudflared (native)" app in the store first (brew CLI, much lighter).
+  This Docker template is for you if you already have a Cloudflare Tunnel token and want to run it through compose.
+  Installing without a token will fail, as the token is required.
 ---
 services:
   cloudflared:

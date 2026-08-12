@@ -1,6 +1,6 @@
 ---
 name: Syncthing
-desc: P2P 文件同步 · 多设备文件夹同步
+desc: Peer-to-peer file sync · keep folders in sync across devices
 category: files
 tags: [sync, backup]
 featured: true
@@ -8,10 +8,10 @@ ports: ["8384", "22000", "21027"]
 url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 vars:
   - name: HOST_PORT
-    label: Web 端口
+    label: Web port
     default: "8384"
   - name: SYNC_PATH
-    label: 默认同步目录
+    label: Default sync folder
     default: "{{SERVICES}}/syncthing/data"
 ---
 services:
