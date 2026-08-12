@@ -190,7 +190,7 @@ import pathlib, sys
 sys.path.insert(0, ".")
 from hub import wireguard_net_svc as n
 pathlib.Path(sys.argv[1]).write_text(n._daemon_plist_body())
-print("    generated a one-shot RunAtLoad job (no KeepAlive respawn loop)")
+print("    generated RunAtLoad + KeepAlive job (sleep wrapper prevents respawn loop)")
 PYEOF
 TARGET=/Library/LaunchDaemons/com.wireguard.wg0.plist
 if [ -f "$TARGET" ]; then

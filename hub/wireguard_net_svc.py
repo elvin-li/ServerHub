@@ -28,6 +28,7 @@ is reversible.
 from __future__ import annotations
 
 import ipaddress
+import plistlib
 import re
 import socket
 from pathlib import Path
@@ -191,15 +192,48 @@ def render_daemon_plist(label: str, conf: str, bash: str, wg_quick: str) -> str:
     ``` `wg0' already exists as `utun8' ```, and that repeats forever.  On the host
     this was found on, ``/var/log/wireguard-wg0.log`` was a wall of that message.
 
-    A one-shot ``RunAtLoad`` job with no ``KeepAlive`` is what this actually is:
-    run once at boot, succeed, exit.  Nothing supervises wireguard-go afterwards,
-    which is honest -- ``KeepAlive`` on ``wg-quick up`` never supervised it either,
-    it only restarted the setup script.
+    The fix: wrap ``wg-quick up`` in ``bash -c '... && exec sleep 864000000'`` so
+    the process stays alive after setup.  ``KeepAlive`` then supervises the long-
+    running sleep: if the tunnel ever drops (crash, network change, manual down),
+    launchd restarts the whole job.
+
+    The ``wg-quick down`` in front of it is what makes that restart survivable, and
+    it replaces a comment here that claimed ``wg-quick up`` "detects an existing
+    interface and exits cleanly".  It does not: wg-quick answers an interface that
+    already exists by calling ``die`` (wg-quick line 454), and ``die`` exits 1.
+    So ``up`` on a tunnel that is already running fails, ``&&`` skips the
+    sleep, bash exits non-zero, and ``KeepAlive`` restarts it -- the very respawn
+    loop this wrapper exists to avoid.  That is not hypothetical: it is what
+    installing this job from the panel would do on any host whose tunnel is
+    currently up, which is exactly when an operator reaches for that button.
+
+    The teardown is guarded on the claim file rather than run unconditionally, so a
+    clean boot -- nothing to remove -- does not log a "not a WireGuard interface"
+    error every time and leave the operator wondering what failed.  The guard also
+    clears a *stale* claim left by a run that died mid-setup, which would otherwise
+    block ``up`` on every boot with a message pointing at the wrong problem.
+
+    ``sysctl -w net.inet.ip.forwarding=1`` leads the command because that setting is
+    runtime-only and returns to 0 on every boot, and nothing else puts it back:
+    ``wg0.conf`` carries no ``PostUp``, and :func:`set_forwarding` says so itself --
+    it declines to write ``/etc/sysctl.conf`` and points here instead, claiming this
+    job "re-applies this".  It did not.  The result was a tunnel that came up, let
+    clients handshake, and then routed nothing at all, once per reboot, for the most
+    misleading reason available: every status the panel showed was green, because the
+    tunnel genuinely was up.  Running as root inside the daemon, no sudo is needed
+    and no NOPASSWD rule has to cover it.
+
+    macOS ``sleep`` does not accept ``infinity`` (GNU coreutils does); use a very
+    large integer instead (864000000 s = ~27 years).
 
     wg-quick is launched through a modern bash by absolute path for the same reason
     the panel does: its ``#!/usr/bin/env bash`` shebang finds Apple's bash 3.2
     under a scrubbed PATH and refuses to run.
     """
+    # Derived from the label rather than taken as an argument, matching what the log
+    # path below has always done, so callers (and the tests) keep the 4-arg signature.
+    interface = label.rsplit(".", 1)[-1]
+    claim = f"{wireguard_svc.WG_RUN_DIR}/{interface}.name"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -209,11 +243,12 @@ def render_daemon_plist(label: str, conf: str, bash: str, wg_quick: str) -> str:
     <key>ProgramArguments</key>
     <array>
         <string>{bash}</string>
-        <string>{wg_quick}</string>
-        <string>up</string>
-        <string>{conf}</string>
+        <string>-c</string>
+        <string>{SYSCTL} -w net.inet.ip.forwarding=1; [ -e {claim} ] &amp;&amp; {wg_quick} down {conf}; {wg_quick} up {conf} &amp;&amp; exec sleep 864000000</string>
     </array>
     <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
     <true/>
     <key>UserName</key>
     <string>root</string>
@@ -241,6 +276,93 @@ def _daemon_plist_body() -> str:
         wireguard_svc.BASH,
         wireguard_svc.WG_QUICK,
     )
+
+
+#: The sleep wrapper's argument, so its *value* can be judged and not merely its
+#: presence.  ``\S+`` rather than ``\d+`` on purpose: the whole point is to catch
+#: an argument that is not a number.
+_SLEEP_ARG_RE = re.compile(r"\bsleep\s+(\S+)")
+
+
+def _daemon_defects(text: str) -> list[str]:
+    """Why an installed boot job will not keep the tunnel up.  Worst first.
+
+    "A job is installed" and "the tunnel comes back after a reboot" are different
+    claims, and the gap between them is where this feature was actually broken on
+    the host this was written for.  Its plist ran
+
+        bash -c 'wg-quick up wg0.conf && exec sleep infinity'
+
+    with no ``KeepAlive``.  Both halves are wrong, and neither was detected:
+
+    * macOS ``sleep`` is BSD ``sleep``, which takes a number.  ``infinity`` is a
+      GNU coreutils extension, so the wrapper printed ``usage: sleep number[unit]``
+      and exited non-zero the instant ``wg-quick up`` finished.  launchd then tore
+      down the job's process group, which took the backgrounded ``wireguard-go``
+      with it -- so every boot configured the interface and then immediately killed
+      it.  ``/var/log/wireguard-wg0.log`` recorded the pattern once per boot.
+    * without ``KeepAlive`` nothing retried, and nothing restores the tunnel if it
+      later drops.
+
+    The previous detection was ``"KeepAlive" in text and "sleep" not in text``,
+    which is a substring test against the raw XML looking for exactly one defect.
+    This plist contained ``sleep`` and no ``KeepAlive``, so it scored clean, and
+    :func:`readiness` reported boot persistence as satisfied while the tunnel was
+    dead -- the panel actively told the operator to look elsewhere.  Parsing the
+    plist and judging the sleep *argument* is what closes that gap.
+
+    ``managed`` is deliberately not a defect: a job this panel did not write can
+    still be perfectly good, and saying otherwise would nag on every host that
+    installed the daemon by hand.  Only behaviour that demonstrably fails is listed.
+    """
+    if not text:
+        return []
+    try:
+        payload = plistlib.loads(text.encode("utf-8", "replace"))
+    except Exception:
+        # launchd will not load what plistlib cannot read, so this is a real fault
+        # rather than a parsing inconvenience -- but fall back to the old substring
+        # test first, so a plist that is merely unusual is not mislabelled.
+        if "KeepAlive" in text and "sleep" not in text:
+            return ["respawn_loop"]
+        return ["unreadable"]
+    if not isinstance(payload, dict):
+        return ["unreadable"]
+
+    command = " ".join(str(a) for a in (payload.get("ProgramArguments") or []))
+    keep_alive = bool(payload.get("KeepAlive"))
+    defects: list[str] = []
+
+    if not payload.get("RunAtLoad"):
+        # Loaded but inert: nothing runs it when the system comes up, which is the
+        # entire job of this plist.
+        defects.append("no_run_at_load")
+
+    sleep_arg = _SLEEP_ARG_RE.search(command)
+    if sleep_arg is None:
+        # `wg-quick up` configures the interface and exits, so a job that runs it
+        # bare does not stay alive to hold the tunnel's process group open.
+        defects.append("respawn_loop" if keep_alive else "exits_after_setup")
+    elif not sleep_arg.group(1).isdigit():
+        defects.append("bad_sleep")
+
+    if not keep_alive:
+        defects.append("unsupervised")
+    return defects
+
+
+def _defects_of(daemon: dict) -> list[str]:
+    """*daemon*'s defect list, tolerating a state dict from before they existed.
+
+    Callers pass :func:`daemon_state` output, but tests and older callers build the
+    dict by hand with only the legacy ``respawn_loop`` flag.  Deriving the list from
+    that flag when the key is missing keeps both shapes meaningful, instead of
+    silently reading a hand-built dict as defect-free.
+    """
+    defects = daemon.get("defects")
+    if defects is None:
+        return ["respawn_loop"] if daemon.get("respawn_loop") else []
+    return list(defects)
 
 
 def daemon_state() -> dict:
@@ -275,15 +397,23 @@ def daemon_state() -> dict:
             current = target.read_text(errors="replace")
         except OSError:
             current = ""
+    defects = _daemon_defects(current)
     return {
         "label": label,
         "plist_path": str(target),
         "installed": installed,
         "loaded": loaded,
         "managed": bool(current) and current == _daemon_plist_body(),
+        # Every way this job can be installed and still not survive a reboot; see
+        # :func:`_daemon_defects` for why presence alone was not enough to check.
+        "defects": defects,
+        # "The tunnel will actually be there after a reboot", which is the question
+        # the readiness page is really asking.
+        "healthy": installed and not defects,
         # `KeepAlive` with `wg-quick up` is the specific defect worth naming: it
         # restarts the setup script forever instead of supervising the tunnel.
-        "respawn_loop": "KeepAlive" in current and "sleep" not in current,
+        # Kept as its own key because it predates `defects` and callers read it.
+        "respawn_loop": "respawn_loop" in defects,
     }
 
 
@@ -487,11 +617,25 @@ def _daemon_detail(daemon: dict) -> str:
     """
     if not daemon["installed"]:
         return daemon["plist_path"]
-    if daemon["respawn_loop"]:
-        return f"{daemon['plist_path']} restarts wg-quick in a loop"
+    path = daemon["plist_path"]
+    # Ordered by what the operator should fix first, not by how the state dict is
+    # laid out.  A defect is always more actionable than "someone else wrote this",
+    # so every one of them outranks the managed notice.
+    for defect, reason in (
+        ("respawn_loop", "restarts wg-quick in a loop"),
+        ("bad_sleep", "keeps itself alive with a sleep macOS rejects, so the "
+                      "tunnel dies right after boot configures it"),
+        ("exits_after_setup", "exits as soon as wg-quick finishes, which tears "
+                              "down the tunnel it just created"),
+        ("no_run_at_load", "has RunAtLoad off, so nothing starts it at boot"),
+        ("unsupervised", "has no KeepAlive, so a dropped tunnel is never restored"),
+        ("unreadable", "is not a plist launchd can load"),
+    ):
+        if defect in _defects_of(daemon):
+            return f"{path} {reason}"
     if not daemon["managed"]:
-        return f"{daemon['plist_path']} (not the job this panel manages)"
-    return daemon["plist_path"]
+        return f"{path} (not the job this panel manages)"
+    return path
 
 
 def _resolution_detail(resolution: dict) -> str:
@@ -661,11 +805,13 @@ def readiness() -> dict:
             "superseded_by": "pf_conf",
         },
         {
-            # An installed job that respawns `wg-quick up` forever does not count
-            # as boot persistence; it counts as a log-filling loop that has to be
-            # replaced, so it must not show up here as satisfied.
+            # An installed job that cannot hold the tunnel up does not count as
+            # boot persistence, so it must not show up here as satisfied. This used
+            # to test only for the respawn loop, which let the defect actually
+            # present on the host -- a sleep argument macOS rejects, and no
+            # KeepAlive -- read as green while WireGuard was dead after every boot.
             "id": "boot",
-            "ok": bool(daemon["installed"]) and not daemon["respawn_loop"],
+            "ok": bool(daemon["installed"]) and not _defects_of(daemon),
             "level": "warn",
             "detail": _daemon_detail(daemon),
         },
@@ -744,7 +890,12 @@ def set_forwarding(enabled: bool) -> dict:
     Deliberately runtime-only.  Persisting it means writing ``/etc/sysctl.conf``,
     which affects the whole machine's networking beyond WireGuard; the boot
     LaunchDaemon action is the supported way to make the tunnel survive a reboot,
-    and it re-applies this.
+    and it re-applies this -- see :func:`render_daemon_plist`, which now actually
+    does.  It did not when this sentence was first written, and the gap was costly:
+    the setting resets to 0 on every boot, ``wg0.conf`` has no ``PostUp`` to restore
+    it, so the tunnel came back up, clients handshook, and not one packet could
+    leave the host.  Toggling it here therefore fixes the running system only; the
+    boot job is what keeps it fixed.
     """
     value = "1" if enabled else "0"
     rc, _, _ = sh(["sudo", "-n", SYSCTL, "-w", f"net.inet.ip.forwarding={value}"], timeout=10)

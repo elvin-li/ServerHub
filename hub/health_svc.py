@@ -42,9 +42,9 @@ def _probe_port(port) -> bool | None:
 
 #: Ports whose reachability is reported, in the order the page renders them.
 _KEY_PORTS = (
-    (8086, "ServerHub 面板 :8086", "launchctl kickstart local.serverhub.panel"),
-    (8123, "Home Assistant :8123", "检查 com.homeassistant.core"),
-    (8281, "Nginx HTTPS :8281", "检查系统 Nginx / 证书"),
+    (8086, "ServerHub panel :8086", "launchctl kickstart local.serverhub.panel"),
+    (8123, "Home Assistant :8123", "Check com.homeassistant.core"),
+    (8281, "Nginx HTTPS :8281", "Check system Nginx / certificates"),
 )
 
 
@@ -60,7 +60,7 @@ def _nginx_pair() -> list[dict]:
 
     One try/except spanning both calls is deliberate rather than sloppy: when nginx
     is not installed at all, `nginx_overview()` raises and the page shows one
-    "系统 Nginx" error instead of that plus a second, redundant config-syntax
+    "System Nginx" error instead of that plus a second, redundant config-syntax
     failure. Returning the checks as a list preserves that all-or-one behaviour now
     that the pair runs inside a worker, where an escaping exception would cost the
     entire batch.
@@ -69,23 +69,23 @@ def _nginx_pair() -> list[dict]:
         ngx = nginx_overview()
         ok = bool(ngx.get("running"))
         pair = [_check(
-            "nginx", "系统 Nginx 网关",
+            "nginx", "System Nginx gateway",
             "error", ok,
-            f"运行中 pid={ngx.get('pid')} · 站点 {ngx.get('site_count')}" if ok else "未运行",
+            f"running pid={ngx.get('pid')} · sites {ngx.get('site_count')}" if ok else "not running",
             "launchctl kickstart -k gui/$(id -u)/local.system-nginx" if not ok else "",
         )]
         t = nginx_test()
         pair.append(_check(
-            "nginx_conf", "Nginx 配置语法",
+            "nginx_conf", "Nginx config syntax",
             "error", t.get("ok"),
             (t.get("message") or "")[:160],
-            "检查 ~/Services/nginx/conf.d/" if not t.get("ok") else "",
+            "Check ~/Services/nginx/conf.d/" if not t.get("ok") else "",
         ))
         return pair
     except Exception as e:
         return [_check(
-            "nginx", "系统 Nginx", "error", False, str(e),
-            "检查 LaunchAgent local.system-nginx",
+            "nginx", "System Nginx", "error", False, str(e),
+            "Check LaunchAgent local.system-nginx",
         )]
 
 
@@ -99,7 +99,7 @@ def _port_checks() -> list[dict]:
         _check(
             f"port_{port}", name,
             "warn", up,
-            "端口可达" if up else "端口无响应",
+            "port reachable" if up else "port not responding",
             fix if not up else "",
         )
         for (port, name, fix), up in zip(
@@ -154,10 +154,10 @@ def _smart_checks() -> list[dict]:
     if rc in (0, 4) and out:
         ok = "PASSED" in out.upper() or "OK" in out.upper()
         return [_check(
-            "smart_disk0", "系统盘 SMART",
+            "smart_disk0", "System disk SMART",
             "error", ok,
             out.strip().splitlines()[-1][:120] if out.strip() else "unknown",
-            "备份数据并检查磁盘" if not ok else "",
+            "Back up your data and check the disk" if not ok else "",
         )]
     return []
 
@@ -176,8 +176,59 @@ def _immich_checks() -> list[dict]:
         return list(immich_svc.run_checks().get("checks") or [])
     except Exception as e:
         return [_check(
-            "immich", "Immich 混合栈检测", "warn", False, f"检测失败: {e}"[:160],
-            "查看 hub/immich_svc.py",
+            "immich", "Immich hybrid stack check", "warn", False, f"check failed: {e}"[:160],
+            "See hub/immich_svc.py",
+        )]
+
+
+def _wireguard_checks() -> list[dict]:
+    """WireGuard tunnel liveness + boot daemon integrity.
+
+    wg-quick is not a daemon: once it has configured the interface, nothing is
+    left running, so a wireguard-go crash (or a reboot with a defective boot
+    job) kills the tunnel silently.  That exact failure went unnoticed here for
+    two days because no check watched it — remote clients just stopped
+    connecting while every other light stayed green.
+
+    Both probes are passwordless: `wg show` goes through the pinned sudoers
+    rule, and daemon_state() only reads the plist and `launchctl print`.
+    """
+    try:
+        from hub import wireguard_net_svc, wireguard_svc
+
+        if not wireguard_svc.installation().get("installed"):
+            return []  # wireguard-tools absent — feature unused on this host
+        interface = wireguard_svc.settings().get("interface") or "wg0"
+        if not wireguard_svc.conf_path(interface).exists():
+            return []  # no tunnel configured — nothing to watch
+        checks = []
+
+        device, _rows, error = wireguard_svc.live_interface(interface)
+        up = bool(device) and not error
+        checks.append(_check(
+            "wg_tunnel", "WireGuard tunnel",
+            "error", up,
+            f"running on {device}" if up else (error or "not running"),
+            "Start it from the WireGuard page — and fix the boot daemon below "
+            "or it will die again" if not up else "",
+        ))
+
+        daemon = wireguard_net_svc.daemon_state()
+        healthy = bool(daemon.get("healthy"))
+        defects = ", ".join(daemon.get("defects") or [])
+        checks.append(_check(
+            "wg_daemon", "WireGuard boot daemon",
+            "warn", healthy,
+            "supervised (KeepAlive) and managed" if healthy
+            else (f"defective: {defects}" if defects else "not installed"),
+            "Use the fix action on the WireGuard page (admin password), or run "
+            "deploy/repair-wireguard.sh" if not healthy else "",
+        ))
+        return checks
+    except Exception as e:
+        return [_check(
+            "wg_check", "WireGuard check", "warn", False,
+            f"check failed: {e}"[:160], "See hub/wireguard_net_svc.py",
         )]
 
 
@@ -212,11 +263,11 @@ def _collect_checks() -> dict:
     du = shutil.disk_usage("/")
     pct = du.used / du.total * 100
     checks.append(_check(
-        "disk_root", "系统盘空间",
+        "disk_root", "System disk space",
         "error" if pct >= 95 else "warn",
         pct < 90,
-        f"已用 {pct:.0f}%（{du.used//2**30}/{du.total//2**30} GB）",
-        "清理大文件/Docker 镜像，或扩容" if pct >= 90 else "",
+        f"used {pct:.0f}% ({du.used//2**30}/{du.total//2**30} GB)",
+        "Clean up large files / Docker images, or expand storage" if pct >= 90 else "",
     ))
 
     # Every remaining probe in one wave.
@@ -230,7 +281,7 @@ def _collect_checks() -> dict:
     # Order is restored below, not taken from completion: `fan_out` returns results in
     # submission order, and each probe returns its checks already assembled, so the
     # rendered sequence is identical to when this ran top to bottom.
-    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich = fan_out(
+    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich, wg = fan_out(
         lambda probe: probe(),
         [
             _engine_up,
@@ -240,16 +291,17 @@ def _collect_checks() -> dict:
             _brew_snapshot,
             _smart_checks,
             _immich_checks,
+            _wireguard_checks,
         ],
-        max_workers=7,
+        max_workers=8,
     )
 
     # OrbStack / docker
     checks.append(_check(
-        "orbstack", "OrbStack / Docker 引擎",
+        "orbstack", "OrbStack / Docker engine",
         "error", eng,
-        "引擎运行中" if eng else "引擎未运行",
-        "在面板服务页启动 OrbStack，或 open -a OrbStack" if not eng else "",
+        "engine running" if eng else "engine not running",
+        "Start OrbStack from the Services page, or open -a OrbStack" if not eng else "",
     ))
 
     # nginx system
@@ -304,9 +356,9 @@ def _collect_checks() -> dict:
         ok = label in running_labels
         if not ok:
             checks.append(_check(
-                f"la_{label}", f"KeepAlive 未运行: {label}",
+                f"la_{label}", f"KeepAlive not running: {label}",
                 "warn", False,
-                "LaunchAgent 已配置 KeepAlive 但未在运行",
+                "LaunchAgent has KeepAlive configured but is not running",
                 f"launchctl kickstart -k gui/$(id -u)/{label}",
             ))
 
@@ -321,14 +373,17 @@ def _collect_checks() -> dict:
     except Exception:
         ok = False
     checks.append(_check(
-        "backup_dir", "备份目录可写",
+        "backup_dir", "Backup directory writable",
         "warn", ok,
         str(bdir),
-        "检查 ~/Services/backups 权限" if not ok else "",
+        "Check ~/Services/backups permissions" if not ok else "",
     ))
 
     # Immich hybrid stack — probed in the wave above.
     checks.extend(immich)
+
+    # WireGuard tunnel + boot daemon — probed in the wave above.
+    checks.extend(wg)
 
     errors = sum(1 for c in checks if not c["ok"] and c["level"] == "error")
     warns = sum(1 for c in checks if not c["ok"] and c["level"] == "warn")

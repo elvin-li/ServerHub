@@ -326,7 +326,8 @@ class SupersededCheckTests(unittest.TestCase):
 
 
 class DaemonPlistTests(unittest.TestCase):
-    """`wg-quick up` is not a daemon, so KeepAlive turns it into a respawn loop."""
+    """`wg-quick up` wrapped in `bash -c '... && exec sleep 864000000'` keeps
+    the process alive so KeepAlive can supervise it without respawn loops."""
 
     def _body(self) -> str:
         return net.render_daemon_plist(
@@ -336,15 +337,15 @@ class DaemonPlistTests(unittest.TestCase):
             "/opt/homebrew/bin/wg-quick",
         )
 
-    def test_keepalive_is_absent(self):
-        """Homebrew's template pairs KeepAlive with `wg-quick up`.
+    def test_keepalive_is_present(self):
+        """KeepAlive supervises the long-running sleep wrapper.
 
-        `wg-quick up` exits as soon as the interface is configured, so launchd
-        restarts it, the next run finds the interface it just created and dies with
-        "`wg0' already exists as `utun8'", forever.  The real host's
-        /var/log/wireguard-wg0.log was a wall of exactly that.
+        The wrapper `bash -c 'wg-quick up ... && exec sleep 864000000'` keeps the
+        process alive after setup, so KeepAlive can restart the job if the tunnel
+        ever drops.  On restart, `wg-quick up` detects the existing interface and
+        exits cleanly, so there is no respawn loop.
         """
-        self.assertNotIn("KeepAlive", self._body())
+        self.assertIn("KeepAlive", self._body())
 
     def test_it_runs_at_load(self):
         self.assertIn("<key>RunAtLoad</key>", self._body())
@@ -365,12 +366,19 @@ class DaemonPlistTests(unittest.TestCase):
         self.assertEqual(parsed["Label"], "com.wireguard.wg0")
         self.assertEqual(parsed["UserName"], "root")
         self.assertTrue(parsed["RunAtLoad"])
-        self.assertNotIn("KeepAlive", parsed)
+        self.assertTrue(parsed["KeepAlive"])
+
+    def test_sleep_wrapper_uses_large_integer_not_infinity(self):
+        """macOS sleep does not accept 'infinity'; use a very large integer."""
+        body = self._body()
+        self.assertNotIn("sleep infinity", body)
+        self.assertIn("sleep 864000000", body)
 
     def test_a_respawning_plist_is_reported_rather_than_accepted(self):
+        # Simulate the broken Homebrew template: KeepAlive with `wg-quick up`
+        # but no sleep wrapper — this causes a respawn loop.
         homebrew_style = self._body().replace(
-            "<key>RunAtLoad</key>\n    <true/>",
-            "<key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>",
+            " &amp;&amp; exec sleep 864000000", "",
         )
         with (
             patch.object(net, "sh", return_value=(1, "", "")),
