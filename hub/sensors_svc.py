@@ -89,8 +89,11 @@ def _cpu_from_ticks() -> dict | None:
 
 
 _cache = {"t": 0.0, "v": None}
-# Dashboard polls sensors often; top(1) is expensive — keep modest TTL
-_TTL = 8.0
+# Above the Dashboard's 12s light poll on purpose: at 8s the cache had always
+# expired by the next tick, so every poll re-ran the full 7-subprocess
+# collection (top, memory_pressure, netstat, ps, sysctl, pmset) and the cache
+# absorbed nothing.  At 15s alternate ticks are served from memory.
+_TTL = 15.0
 _refresh_lock = threading.Lock()
 _net_prev = {"t": 0.0, "rx": 0, "tx": 0}
 # hw.ncpu / memsize / pagesize almost never change at runtime
@@ -546,7 +549,7 @@ def _collect_sensors_uncached() -> dict:
             "pressure_free_pct": pressure_free_pct,
             "pressure_used_pct": pressure_used_pct,
             "physmem_raw": top.get("physmem_raw"),
-            "hint": "占用率按 memory_pressure（压力），不含文件缓存；PhysMem used 含缓存会虚高",
+            "hint": "Usage follows memory_pressure and excludes file cache; PhysMem 'used' includes cache and reads high",
         },
         "disk": disk,
         "network": net,

@@ -5,6 +5,7 @@ built-in browser works without it and uses no extra process memory when idle.
 """
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import os
 import shutil
@@ -368,40 +369,53 @@ def download(path: str, root_id: str | None = None) -> FileResponse:
 
 
 async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dict:
-    parent = _resolve_safe(path, root_id)
-    if not parent.is_dir():
-        raise api_error("files.dest_not_a_dir")
-    name = Path(file.filename or "upload.bin").name
-    if not name or name in (".", ".."):
-        raise api_error("files.bad_filename")
-    dest = (parent / name).resolve()
-    _resolve_safe(str(dest), root_id)
-    # Refuse to clobber an existing file.  rename() already guards this way, and
-    # the error code was defined for upload from the start but never raised, so an
-    # upload silently overwrote whatever was there.  Combined with a deny-list
-    # bypass that turns a read hole into arbitrary code execution: overwrite any
-    # .py under the install dir and the next restart runs it.
-    if dest.exists():
-        raise api_error("files.upload_would_overwrite", name=name)
-    # stream write
+    # Every filesystem touch below runs in a worker thread.  This is the only
+    # async route that hits the disk, and upload targets include external
+    # drives under power management: a stat() or open() against a spun-down
+    # HDD blocks for the whole spin-up, and inline on the event loop that
+    # freezes every other request in the process for 5-15 seconds.
+    def _prepare() -> tuple[Path, str]:
+        parent = _resolve_safe(path, root_id)
+        if not parent.is_dir():
+            raise api_error("files.dest_not_a_dir")
+        name = Path(file.filename or "upload.bin").name
+        if not name or name in (".", ".."):
+            raise api_error("files.bad_filename")
+        dest = (parent / name).resolve()
+        _resolve_safe(str(dest), root_id)
+        # Refuse to clobber an existing file.  rename() already guards this
+        # way, and the error code was defined for upload from the start but
+        # never raised, so an upload silently overwrote whatever was there.
+        # Combined with a deny-list bypass that turns a read hole into
+        # arbitrary code execution: overwrite any .py under the install dir
+        # and the next restart runs it.
+        if dest.exists():
+            raise api_error("files.upload_would_overwrite", name=name)
+        return dest, name
+
+    dest, name = await asyncio.to_thread(_prepare)
     max_mb = int(_settings().get("max_upload_mb") or 512)
     max_bytes = max_mb * 1024 * 1024
     written = 0
     try:
-        with open(dest, "wb") as f:
+        f = await asyncio.to_thread(open, dest, "wb")
+        try:
             while True:
                 chunk = await file.read(1024 * 1024)
                 if not chunk:
                     break
                 written += len(chunk)
                 if written > max_bytes:
-                    f.close()
-                    try:
-                        dest.unlink()
-                    except OSError:
-                        pass
                     raise api_error("files.upload_too_large", max_mb=max_mb)
-                f.write(chunk)
+                await asyncio.to_thread(f.write, chunk)
+        except BaseException:
+            await asyncio.to_thread(f.close)
+            try:
+                await asyncio.to_thread(dest.unlink)
+            except OSError:
+                pass
+            raise
+        await asyncio.to_thread(f.close)
     finally:
         await file.close()
     return {"ok": True, "path": str(dest), "size": written, "name": name}
@@ -461,7 +475,7 @@ def ensure_filebrowser() -> dict:
     global _started_by_hub
     st = filebrowser_status()
     if st["running"]:
-        return {"ok": True, "message": "FileBrowser 已在运行", **st, "started": False}
+        return {"ok": True, "message": "FileBrowser is already running", **st, "started": False}
     if not FB_BIN.exists() and not FB_PLIST.exists():
         raise api_error("files.fb_not_installed")
 
@@ -507,11 +521,11 @@ def ensure_filebrowser() -> dict:
         st2 = filebrowser_status()
         if st2["running"]:
             _started_by_hub = True
-            return {"ok": True, "message": "FileBrowser 已按需启动", **st2, "started": True}
+            return {"ok": True, "message": "FileBrowser started on demand", **st2, "started": True}
     st3 = filebrowser_status()
     return {
         "ok": st3["running"],
-        "message": "已发送启动命令" if st3["running"] else "启动超时，请检查日志",
+        "message": "Start command sent" if st3["running"] else "Start timed out; check the logs",
         **st3,
         "started": st3["running"],
     }
@@ -530,7 +544,7 @@ def stop_filebrowser() -> dict:
     st = filebrowser_status()
     return {
         "ok": not st["running"],
-        "message": "已停止 FileBrowser，内存已释放" if not st["running"] else "仍有进程在运行",
+        "message": "FileBrowser stopped, memory released" if not st["running"] else "A process is still running",
         **st,
     }
 
@@ -560,7 +574,7 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     return {
         "ok": True,
         "ondemand": enabled,
-        "message": "已设为按需启动（开机不驻留）" if enabled else "已设为常驻（开机自启）",
+        "message": "Set to on-demand (not resident at boot)" if enabled else "Set to resident (starts at boot)",
         "plist": str(FB_PLIST),
     }
 
@@ -570,5 +584,5 @@ def overview() -> dict:
         "roots": default_roots(),
         "filebrowser": filebrowser_status(),
         "builtin": True,
-        "hint": "内置文件管理仅在打开本页并请求时占用资源；完整 FileBrowser 可按需启停。",
+        "hint": "The built-in file manager only uses resources while this page is open; the full FileBrowser can be started and stopped on demand.",
     }

@@ -399,7 +399,10 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
 
     # Re-checked after the ticket is burned: a VM that stopped, or an allowlist
     # entry revoked, between issuing and connecting must not still open.
-    if not vms_svc.utm_vm_running(target.vm_uuid):
+    # In a worker thread: this runs `utmctl` twice (up to 10s each) and this
+    # handler is on the event loop — inline it would freeze every request in
+    # the process for the duration.
+    if not await asyncio.to_thread(vms_svc.utm_vm_running, target.vm_uuid):
         await reject_websocket(websocket, 4404, "vm_console.unavailable")
         return
 

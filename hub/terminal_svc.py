@@ -173,6 +173,13 @@ def _default_shell() -> str:
     return shell if Path(shell).exists() else "/bin/sh"
 
 
+#: Rotation bounds for the audit trail.  Append-only with no trim, the log grew
+#: without limit (every alerts/metrics file here is bounded; this one was not),
+#: and recent_audit() reads the whole file per history request.
+_AUDIT_MAX_BYTES = 512 * 1024
+_AUDIT_KEEP_LINES = 1000
+
+
 def _audit(entry: dict[str, Any]) -> None:
     """Append one line to the audit log; never let logging break the request."""
     try:
@@ -186,6 +193,11 @@ def _audit(entry: dict[str, Any]) -> None:
         with AUDIT_PATH.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
         os.chmod(AUDIT_PATH, 0o600)
+        if AUDIT_PATH.stat().st_size > _AUDIT_MAX_BYTES:
+            lines = AUDIT_PATH.read_text(errors="replace").splitlines(keepends=True)
+            secure_io.write_secret_text(
+                AUDIT_PATH, "".join(lines[-_AUDIT_KEEP_LINES:])
+            )
     except OSError:
         pass
 

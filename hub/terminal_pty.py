@@ -93,6 +93,24 @@ def _argv(target: str, container: str, shell: str) -> tuple[list[str], str | Non
     raise ValueError("terminal.bad_target")
 
 
+async def _write_all(fd: int, data: bytes) -> None:
+    """Write to the non-blocking PTY fd without dying on a full buffer.
+
+    A large paste fills the kernel PTY buffer faster than the shell drains it;
+    a bare ``os.write`` then raises ``BlockingIOError``, which the generic
+    handler used to turn into an ``io_error`` close — the paste killed the
+    session.  Retrying after a short yield lets the shell catch up.
+    """
+    view = memoryview(data)
+    while view:
+        try:
+            written = os.write(fd, view)
+        except BlockingIOError:
+            await asyncio.sleep(0.01)
+            continue
+        view = view[written:]
+
+
 def _set_size(fd: int, cols: int, rows: int) -> None:
     packed = struct.pack("HHHH", rows, cols, 0, 0)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
@@ -184,20 +202,29 @@ async def terminal_websocket(websocket: WebSocket) -> None:
 
         async def output_loop() -> None:
             nonlocal close_reason
+            # Adaptive idle backoff: a fixed 15ms sleep woke the loop ~66
+            # times a second per idle terminal, continuously, for sessions
+            # that live up to an hour.  Backing off toward 200ms while idle
+            # cuts that to ~5/s with no perceptible echo latency, and one
+            # keystroke's output resets it to 15ms instantly.
+            idle_sleep = 0.015
             while proc is not None and proc.poll() is None:
                 try:
                     chunk = os.read(master_fd, READ_SIZE)
                 except BlockingIOError:
-                    await asyncio.sleep(0.015)
+                    await asyncio.sleep(idle_sleep)
+                    idle_sleep = min(idle_sleep * 1.5, 0.2)
                     continue
                 except OSError as exc:
                     if exc.errno == errno.EIO:  # normal PTY EOF on macOS/Linux
                         break
                     raise
                 if chunk:
+                    idle_sleep = 0.015
                     await websocket.send_bytes(chunk)
                 else:
-                    await asyncio.sleep(0.015)
+                    await asyncio.sleep(idle_sleep)
+                    idle_sleep = min(idle_sleep * 1.5, 0.2)
             # Drain the final bytes emitted while the process exited.
             for _ in range(8):
                 try:
@@ -223,7 +250,7 @@ async def terminal_websocket(websocket: WebSocket) -> None:
                     if len(data) > MAX_MESSAGE_BYTES or input_bytes > MAX_INPUT_BYTES:
                         close_reason = "input_limit"
                         return
-                    os.write(master_fd, data)
+                    await _write_all(master_fd, data)
                     last_input = time.monotonic()
                     continue
                 if text is None or len(text.encode("utf-8")) > MAX_MESSAGE_BYTES:
@@ -240,7 +267,7 @@ async def terminal_websocket(websocket: WebSocket) -> None:
                     if input_bytes > MAX_INPUT_BYTES:
                         close_reason = "input_limit"
                         return
-                    os.write(master_fd, data)
+                    await _write_all(master_fd, data)
                     last_input = time.monotonic()
                 elif kind == "resize":
                     new_cols = _bounded_int(payload.get("cols"), cols, 20, MAX_COLS)
