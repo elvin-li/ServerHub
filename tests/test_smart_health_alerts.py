@@ -114,6 +114,16 @@ class SmartAlertCase(unittest.TestCase):
             mock.patch.object(alerts, "ALERTS_FILE", tmp / "alerts.jsonl"),
             mock.patch.object(alerts, "STATE_FILE", tmp / "alert_state.json"),
             mock.patch.object(alerts, "_resource_thresholds", lambda: dict(THRESHOLDS)),
+            # check_once() also runs the CPU/memory/disk sweep, and that one
+            # reads the real host.  This suite runs on the machine ServerHub
+            # is serving, so a busy machine injected a genuine "CPU 100% ≥ 90%"
+            # warning into assertions that enumerate every emitted alert --
+            # green on an idle laptop, red under load, for no reason connected
+            # to SMART.  Nothing in this file asserts resource alerts.
+            mock.patch.object(
+                alerts, "_check_resource_thresholds",
+                lambda prev, new_state, now: [],
+            ),
             mock.patch.object(alerts, "notify_settings", lambda: {"enabled": False}),
             mock.patch.object(
                 alerts, "send_ha_notify",
