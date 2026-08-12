@@ -63,6 +63,13 @@ class WatchdogScript(unittest.TestCase):
         # /api/health answers 401 when signed out.  Treating that as "down"
         # would restart a perfectly healthy panel every three minutes.
         self.assertIn("curl -sS -o /dev/null", self.text)
+        self.assertNotIn("curl -fsS", self.text)
+
+    def test_prefers_elvin_label_and_skips_kickstart_if_port_listens(self):
+        elvin = self.text.index("com.elvin.serverhub")
+        local = self.text.index("local.serverhub.panel")
+        self.assertLess(elvin, local, "must prefer com.elvin.serverhub")
+        self.assertIn('lsof -nP -iTCP:"$PORT" -sTCP:LISTEN', self.text)
 
     def test_clears_a_wedged_xpcproxy_before_kickstart(self):
         # The failure this exists for: xpcproxy holds the job's pid, so launchd
@@ -78,6 +85,44 @@ class WatchdogScript(unittest.TestCase):
 
     def test_log_is_rotated(self):
         self.assertIn("tail -n 500", self.text)
+
+
+class PanelProcessType(unittest.TestCase):
+    """The panel must not be classified as a background job.
+
+    launchd throttles ProcessType=Background on CPU *and* disk I/O.  The panel
+    serves the HTTP UI, so on a busy host that throttle turned an 8.5s start
+    into 35-110s and the SPA reported the restart as failed.  Measured on a
+    host at load ~40: 35s as Background, 0.8-11s as Interactive.
+    """
+
+    def test_installer_classifies_the_panel_with_the_apps(self):
+        body = (BASE / "install.sh").read_text()
+        self.assertIn("<key>ProcessType</key><string>Interactive</string>", body)
+        self.assertNotIn(
+            "<key>ProcessType</key><string>Background</string>",
+            body,
+            "the installer only writes the panel and menu-bar agents",
+        )
+
+    def test_native_launcher_classifies_the_panel_with_the_apps(self):
+        swift = (BASE / "macos" / "ServerHubLauncher.swift").read_text()
+        # The launcher writes two plists: the panel and its own login item.
+        # Neither should be Background.
+        self.assertNotIn(
+            "<key>ProcessType</key><string>Background</string>",
+            swift,
+            "the panel plist was written as a throttled background job",
+        )
+        self.assertGreaterEqual(
+            swift.count("<key>ProcessType</key><string>Interactive</string>"), 2
+        )
+
+    def test_the_watchdog_itself_stays_background(self):
+        # Opposite reasoning: a once-a-minute probe should be throttled, and it
+        # must not compete with the panel it is there to protect.
+        data = plistlib.loads(PLIST.read_bytes())
+        self.assertEqual(data.get("ProcessType"), "Background")
 
 
 class WatchdogPlist(unittest.TestCase):

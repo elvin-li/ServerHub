@@ -465,7 +465,14 @@ private final class ServiceManager: @unchecked Sendable {
           <key>EnvironmentVariables</key><dict>\(environmentXML)</dict>
           <key>RunAtLoad</key><true/>
           <key>KeepAlive</key><true/>
-          <key>ProcessType</key><string>Background</string>
+          <!-- Interactive, not Background: launchd throttles Background jobs on
+               both CPU and disk I/O, and this one serves the HTTP panel a user
+               is sitting in front of.  Under a loaded machine the throttle
+               turned an 8.5s start into well over a minute, which reads as
+               "the panel did not come back".  The menu-bar helper below has
+               always been Interactive; the service it fronts should not be
+               starved harder than its own launcher. -->
+          <key>ProcessType</key><string>Interactive</string>
           <key>StandardOutPath</key><string>\(xmlEscaped(logsURL.appendingPathComponent("serverhub.out.log").path))</string>
           <key>StandardErrorPath</key><string>\(xmlEscaped(logsURL.appendingPathComponent("serverhub.err.log").path))</string>
         </dict></plist>
@@ -482,11 +489,31 @@ private final class ServiceManager: @unchecked Sendable {
         )
     }
 
+    /// Labels this host has used for the Python panel, preferred first.
+    private var panelLabelCandidates: [String] {
+        ["com.elvin.serverhub", Labels.panel, "local.serverhub.panel"]
+    }
+
+    func loadedPanelLabel() -> String? {
+        for label in panelLabelCandidates {
+            if run("/bin/launchctl", ["print", "\(domain)/\(label)"]).status == 0 {
+                return label
+            }
+        }
+        return nil
+    }
+
     func isPanelJobLoaded() -> Bool {
-        run("/bin/launchctl", ["print", "\(domain)/\(Labels.panel)"]).status == 0
+        loadedPanelLabel() != nil
     }
 
     func startPanel() -> CommandResult {
+        if let existing = loadedPanelLabel(), existing != Labels.panel {
+            // Another lineage already owns :8086. Writing local.serverhub on
+            // top of com.elvin.serverhub is what produced EADDRINUSE loops
+            // and the settings.auth wipe.
+            return CommandResult(status: 0, output: "using existing \(existing)")
+        }
         do { try ensurePanelDefinition() } catch { return CommandResult(status: 1, output: error.localizedDescription) }
         _ = run("/bin/launchctl", ["enable", "\(domain)/\(Labels.panel)"])
         if !isPanelJobLoaded() {
@@ -497,12 +524,18 @@ private final class ServiceManager: @unchecked Sendable {
     }
 
     func stopPanel() -> CommandResult {
-        let result = run("/bin/launchctl", ["bootout", "\(domain)/\(Labels.panel)"])
+        guard let label = loadedPanelLabel() else {
+            return CommandResult(status: 0, output: "")
+        }
+        let result = run("/bin/launchctl", ["bootout", "\(domain)/\(label)"])
         if result.status == 0 || !isPanelJobLoaded() { return CommandResult(status: 0, output: result.output) }
         return result
     }
 
     func restartPanel() -> CommandResult {
+        if let existing = loadedPanelLabel(), existing != Labels.panel {
+            return run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(existing)"])
+        }
         do { try ensurePanelDefinition() } catch { return CommandResult(status: 1, output: error.localizedDescription) }
         if !isPanelJobLoaded() { return startPanel() }
         return run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(Labels.panel)"])

@@ -216,6 +216,9 @@ write_plist() {   # write_plist <label> <script> <logfile> [extra-env-key extra-
 	</dict>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
+	<!-- launchd throttles Background jobs on CPU and disk I/O.  The panel
+	     serves a UI someone is waiting on, so it is classified with the apps. -->
+	<key>ProcessType</key><string>Interactive</string>
 	<key>StandardOutPath</key><string>$LOGS/$log.out.log</string>
 	<key>StandardErrorPath</key><string>$LOGS/$log.err.log</string>
 </dict>
