@@ -230,6 +230,8 @@ export default {
     launcher_restart: '重启面板',
     launcher_stop: '停止面板',
     launcher_restart_confirm: '现在重启 ServerHub 面板吗？',
+    launcher_restart_done: '面板已重启并恢复响应',
+    launcher_restart_slow: '面板恢复得比平时慢。如果持续无法访问，看门狗会自动重启它。',
     launcher_stop_confirm: '停止 ServerHub 面板吗？重新打开 ServerHub.app 即可启动。',
     launcher_unavailable: '暂时无法获取启动器状态，请重试刷新。',
     identity: '系统标识',

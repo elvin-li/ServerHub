@@ -229,6 +229,8 @@ export default {
     launcher_restart: 'パネルを再起動',
     launcher_stop: 'パネルを停止',
     launcher_restart_confirm: 'ServerHub パネルを今すぐ再起動しますか？',
+    launcher_restart_done: 'パネルが再起動し、応答を再開しました',
+    launcher_restart_slow: 'パネルの復帰に通常より時間がかかっています。応答しない状態が続く場合はウォッチドッグが再起動します。',
     launcher_stop_confirm: 'ServerHub パネルを停止しますか？ ServerHub.app を開くと再起動できます。',
     launcher_unavailable: 'ランチャーの状態を取得できません。もう一度更新してください。',
     identity: 'システム識別',

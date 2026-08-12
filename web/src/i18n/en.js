@@ -229,6 +229,8 @@ export default {
     launcher_restart: 'Restart panel',
     launcher_stop: 'Stop panel',
     launcher_restart_confirm: 'Restart the ServerHub panel now?',
+    launcher_restart_done: 'Panel restarted and answering again',
+    launcher_restart_slow: 'The panel is taking longer than usual to come back. The watchdog will restart it if it stays unreachable.',
     launcher_stop_confirm: 'Stop the ServerHub panel? Reopen ServerHub.app to start it again.',
     launcher_unavailable: 'Launcher status is unavailable. Try refreshing again.',
     identity: 'System identity',

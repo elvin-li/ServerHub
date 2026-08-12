@@ -998,6 +998,34 @@ async function loadLauncher() {
   }
 }
 
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+/** Wait for the panel to answer again after it restarts itself.
+ *
+ * A cold start measured 8.5s on an idle host and can pass a minute when the
+ * machine is loaded, so the fixed 1.4s wait this replaces always read the
+ * status of a socket that was not listening yet: the restart succeeded and the
+ * UI reported it as a failure every single time.
+ */
+async function waitForPanelRestart() {
+  // The API deliberately keeps answering for ~0.6s so its response reaches the
+  // browser before launchd replaces the job, and the old worker drains its
+  // connections after that.  Polling before it has actually gone would read
+  // the process being torn down and call the restart finished.
+  await sleep(3000)
+  const deadline = Date.now() + 150000
+  while (Date.now() < deadline) {
+    try {
+      const status = await getLauncherStatus()
+      if (status?.panel_running) return status
+    } catch {
+      // Expected for as long as nothing is listening.
+    }
+    await sleep(1500)
+  }
+  return null
+}
+
 async function runLauncher(action) {
   if (['restart', 'stop'].includes(action) && !confirm(t(`settings.launcher_${action}_confirm`))) return
   launcherBusy.value = true
@@ -1016,8 +1044,24 @@ async function runLauncher(action) {
         panel_running: false,
         panel_job_state: 'stopping',
       }
+    } else if (action === 'restart') {
+      launcher.value = {
+        ...launcher.value,
+        panel_running: false,
+        panel_job_state: 'restarting',
+      }
+      const status = await waitForPanelRestart()
+      if (status) {
+        launcher.value = status
+        toast('✅ ' + t('settings.launcher_restart_done'))
+      } else {
+        // Still not answering. The panel watchdog restarts a job that stays
+        // unreachable, so say that rather than reporting a hard failure.
+        toast('⚠️ ' + t('settings.launcher_restart_slow'))
+        await loadLauncher()
+      }
     } else {
-      await new Promise(resolve => setTimeout(resolve, action === 'restart' ? 1400 : 300))
+      await sleep(300)
       await loadLauncher()
     }
   } catch (e) {
