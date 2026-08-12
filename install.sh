@@ -19,6 +19,7 @@ PYTHON_MIN="3.10"
 
 LABEL_PANEL="local.serverhub.panel"
 LABEL_MENUBAR="local.serverhub.menubar"
+LABEL_WATCHDOG="local.serverhub.watchdog"
 AGENTS="$HOME/Library/LaunchAgents"
 LOGS="$HOME/Library/Logs"
 VENV="$BASE/.venv"
@@ -223,10 +224,29 @@ PLIST
 }
 
 reload_agent() {  # reload_agent <label>
-  local label="$1" target="gui/$(id -u)/$1"
+  local label="$1" uid domain target out rc=0
+  uid="$(id -u)"
+  domain="gui/$uid"
+  target="$domain/$label"
   launchctl bootout "$target" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$AGENTS/$label.plist"
+  # `launchctl disable` writes to launchd's per-user database and survives
+  # reboots, so a label the panel's autostart page once disabled makes
+  # `bootstrap` fail with "Service is disabled".  Clear that record *before*
+  # bootstrapping — the same order hub/launcher_svc.py:set_login_enabled() and
+  # macos/ServerHubLauncher.swift:setLoginEnabled() use.
   launchctl enable "$target" 2>/dev/null || true
+  out="$(launchctl bootstrap "$domain" "$AGENTS/$label.plist" 2>&1)" || rc=$?
+  # bootstrap sometimes reports a failure for a job that did load; trust the
+  # job state over the exit code (launcher_svc.py's "rc == 0 or _loaded(...)").
+  if [[ "$rc" -ne 0 ]] && ! launchctl print "$target" >/dev/null 2>&1; then
+    warn "launchctl bootstrap $label failed (exit $rc): ${out:-no output}"
+    warn "  a persistent disable record blocks bootstrap; look for the label in:"
+    warn "      launchctl print-disabled $domain"
+    warn "  clear it with:"
+    warn "      launchctl enable $target"
+    warn "  panel log: tail -n 40 $LOGS/serverhub.err.log"
+    die "could not load launch agent $label — it will not start at login."
+  fi
 }
 
 say "Installing launch agent: $LABEL_PANEL"
@@ -239,6 +259,19 @@ if [[ "$WITH_MENUBAR" == "1" ]]; then
   reload_agent "$LABEL_MENUBAR"
 fi
 
+# KeepAlive restarts the panel when it exits, but not when it hangs without
+# exiting -- a replacement can wedge in xpcproxy holding the job's pid, so
+# launchd still reports the job as running while nothing answers on the port.
+# This probe restarts the panel after ~3 minutes of an unreachable port; see
+# deploy/panel-watchdog.sh for why it is deliberately slow to act.
+say "Installing launch agent: $LABEL_WATCHDOG"
+sed -e "s|__WATCHDOG__|$BASE/deploy/panel-watchdog.sh|" \
+    -e "s|__LOG__|$LOGS/serverhub-watchdog.err.log|" \
+    -e "s|__PORT__|$PORT|" \
+    "$BASE/deploy/local.serverhub.watchdog.plist" > "$AGENTS/$LABEL_WATCHDOG.plist"
+chmod +x "$BASE/deploy/panel-watchdog.sh" 2>/dev/null || true
+reload_agent "$LABEL_WATCHDOG"
+
 # ── WireGuard system integration ────────────────────────────────────────────
 if command -v wg-quick >/dev/null 2>&1; then
   say "Setting up WireGuard system integration"
@@ -246,21 +279,65 @@ if command -v wg-quick >/dev/null 2>&1; then
   # Install / update the WireGuard LaunchDaemon (runs wg-quick on boot).
   # Uses exec-sleep wrapper so wg-quick's exit after setup does not trigger
   # endless respawns that pile up duplicate processes.
-  WG_PLIST_SRC="/opt/homebrew/etc/wireguard/com.wireguard.wg0.plist"
-  WG_PLIST_DST="/Library/LaunchDaemons/com.wireguard.wg0.plist"
-  if [[ -f "$WG_PLIST_SRC" ]]; then
+  # The leading sysctl restores IP forwarding, which is runtime-only and resets to
+  # 0 on every boot -- wg0.conf has no PostUp, so without this the tunnel comes up,
+  # clients handshake, and nothing routes anywhere. Every panel status stays green,
+  # which makes it the hardest version of this failure to diagnose.
+  # The guarded `wg-quick down` in front matters when this runs against a tunnel
+  # that is already up: wg-quick answers an existing interface with `die` (exit 1),
+  # so a bare `up` would fail, skip the sleep, and let KeepAlive respawn forever.
+  # Guarded on the claim file so a clean boot logs no spurious teardown error --
+  # and so a stale claim from a dirty shutdown gets cleared instead of blocking up.
+  # Keep this wrapper identical to hub/wireguard_net_svc.py:render_daemon_plist(),
+  # which is what the panel writes; a difference between them shows up as the
+  # daemon reading "not the job this panel manages".
+  # macOS sleep does not accept "infinity"; use a very large value instead.
+  # Whether this host wants a boot job is decided by wg0.conf, not by
+  # Homebrew's own plist template — that template is never read, the daemon
+  # below is written from scratch.  Homebrew's prefix differs between Apple
+  # silicon and Intel, so probe both (hub/wireguard_svc.py:_CONF_DIRS).
+  WG_LABEL="com.wireguard.wg0"
+  WG_PLIST_DST="/Library/LaunchDaemons/$WG_LABEL.plist"
+  WG_CONF=""
+  for candidate in /opt/homebrew/etc/wireguard/wg0.conf /usr/local/etc/wireguard/wg0.conf; do
+    [[ -f "$candidate" ]] || continue
+    WG_CONF="$candidate"
+    break
+  done
+  # wg-quick's `#!/usr/bin/env bash` shebang finds Apple's bash 3.2 under the
+  # scrubbed daemon PATH and refuses to run, so both are pinned by absolute
+  # path with the same Homebrew-prefix fallback.
+  WG_BASH="/bin/bash"
+  for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [[ -x "$candidate" ]] || continue
+    WG_BASH="$candidate"
+    break
+  done
+  WG_QUICK_BIN=""
+  for candidate in /opt/homebrew/bin/wg-quick /usr/local/bin/wg-quick; do
+    [[ -x "$candidate" ]] || continue
+    WG_QUICK_BIN="$candidate"
+    break
+  done
+  [[ -n "$WG_QUICK_BIN" ]] || WG_QUICK_BIN="$(command -v wg-quick)"
+
+  if [[ -n "$WG_CONF" ]]; then
     TMP_PLIST="$(mktemp -t wg-launchd)"
-    cat > "$TMP_PLIST" <<'WGPLIST'
+    # Unquoted heredoc delimiter so the probed paths expand.  The only other
+    # shell metacharacter in this XML is none: `&amp;&amp;` is literal text and
+    # must reach the plist verbatim (it is the escaped `&&` launchd needs).
+    cat > "$TMP_PLIST" <<WGPLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>Label</key><string>com.wireguard.wg0</string>
+    <key>Label</key><string>$WG_LABEL</string>
     <key>ProgramArguments</key><array>
-        <string>/opt/homebrew/bin/bash</string>
+        <string>$WG_BASH</string>
         <string>-c</string>
-        <string>/opt/homebrew/bin/wg-quick up /opt/homebrew/etc/wireguard/wg0.conf && exec sleep infinity</string>
+        <string>/usr/sbin/sysctl -w net.inet.ip.forwarding=1; [ -e /var/run/wireguard/wg0.name ] &amp;&amp; $WG_QUICK_BIN down $WG_CONF; $WG_QUICK_BIN up $WG_CONF &amp;&amp; exec sleep 864000000</string>
     </array>
     <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
     <key>UserName</key><string>root</string>
     <key>GroupName</key><string>wheel</string>
     <key>EnvironmentVariables</key><dict>
@@ -273,11 +350,22 @@ WGPLIST
     sudo cp "$TMP_PLIST" "$WG_PLIST_DST" && rm -f "$TMP_PLIST"
     sudo chown root:wheel "$WG_PLIST_DST" 2>/dev/null || true
     sudo chmod 644 "$WG_PLIST_DST" 2>/dev/null || true
-    sudo launchctl unload "$WG_PLIST_DST" 2>/dev/null || true
-    sudo launchctl load "$WG_PLIST_DST" 2>/dev/null || true
-    say "WireGuard LaunchDaemon installed"
+    # launchctl load/unload are deprecated and report nothing useful.  bootout
+    # may legitimately fail when the daemon was never loaded, but bootstrap's
+    # result is the one that decides whether the tunnel comes up at boot.
+    sudo launchctl bootout "system/$WG_LABEL" 2>/dev/null || true
+    wg_boot_rc=0
+    wg_boot_out="$(sudo launchctl bootstrap system "$WG_PLIST_DST" 2>&1)" || wg_boot_rc=$?
+    if [[ "$wg_boot_rc" -eq 0 ]]; then
+      say "WireGuard LaunchDaemon installed"
+    else
+      # WireGuard is optional, so a failure here must be loud but not fatal.
+      warn "WireGuard LaunchDaemon failed to load (launchctl bootstrap exit $wg_boot_rc):"
+      warn "  ${wg_boot_out:-launchctl printed nothing}"
+      warn "  daemon log: sudo tail -n 40 /var/log/wireguard-wg0.log"
+    fi
   else
-    warn "WireGuard config not found at $WG_PLIST_SRC; skipping LaunchDaemon"
+    warn "wg0.conf not found in /opt/homebrew/etc/wireguard or /usr/local/etc/wireguard; skipping WireGuard LaunchDaemon"
   fi
 
   # Set up PF NAT so WireGuard peers can reach the internet

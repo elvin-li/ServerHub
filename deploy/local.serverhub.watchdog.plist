@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>local.serverhub.watchdog</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__WATCHDOG__</string>
+	</array>
+	<!-- Every 60s.  The script needs three consecutive misses before it acts,
+	     so the panel gets a ~3 minute grace window before any restart. -->
+	<key>StartInterval</key><integer>60</integer>
+	<key>RunAtLoad</key><true/>
+	<key>ProcessType</key><string>Background</string>
+	<!-- Emphatically NOT KeepAlive: this is a periodic one-shot probe that
+	     exits immediately.  KeepAlive would respawn it in a tight loop. -->
+	<key>StandardOutPath</key><string>/dev/null</string>
+	<key>StandardErrorPath</key><string>__LOG__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>SERVERHUB_PORT</key><string>__PORT__</string>
+	</dict>
+</dict>
+</plist>

@@ -32,6 +32,7 @@ warn() { printf '\033[1;33m warn\033[0m %s\n' "$*"; }
 # that are not present simply do not match and cost one launchctl probe.
 for label in \
   local.serverhub.panel local.serverhub.menubar local.serverhub.launcher \
+  local.serverhub.watchdog \
   local.serverhub local.serverhub-launcher local.serverhub-menubar \
   com.elvin.serverhub com.elvin.serverhub-launcher com.elvin.serverhub-menubar; do
   plist="$AGENTS/$label.plist"

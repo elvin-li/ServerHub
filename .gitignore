@@ -69,6 +69,8 @@ data/*.lock
 #      keys this panel issued (0600 on disk); the pf staging files are copies
 #      of the machine's live ruleset and its real egress interface. ----
 data/wireguard-peers.json
+# Generated at runtime by the panel when it installs the boot daemon.
+data/com.wireguard.*.plist
 data/pf-anchor-wireguard
 data/pf.conf.staged
 data/wg*.sync.conf
