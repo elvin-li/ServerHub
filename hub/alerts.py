@@ -328,6 +328,23 @@ def _smart_reason(kind: str, **kw) -> tuple[str, str]:
     return detail.format(**kw), sentence.format(**kw)
 
 
+_SMART_TEMP_READING = re.compile(r"^temp=\d+C")
+
+
+def _stable_smart_token(token: str) -> str:
+    """The dedup form of one reason token: strip readings that wobble.
+
+    The temperature clause embeds the live reading (``temp=69C≥60C``), and a
+    disk hovering at its threshold re-renders it 69→70→69 on every 10-minute
+    SMART refresh.  Comparing the rendered string treated each degree as
+    "growth", so the repeat suppression re-fired on every refresh — the
+    2026-08-13 22:26–23:26 alert storm in alerts.jsonl is seven copies of the
+    same warn differing only in that number.  Counters (reallocated / pending /
+    media errors / wear / spare) keep their value: growth there *is* the news.
+    """
+    return _SMART_TEMP_READING.sub("temp", token)
+
+
 def _smart_num(raw) -> float | None:
     """The number inside a smartctl field, or None when there isn't one.
 
@@ -583,10 +600,19 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
             # (growth).  ``down`` still uses the cooldown so a dying disk
             # does not go quiet after the first ping.
             detail = " · ".join(d for d, _ in reasons)
-            new_details[key] = detail
+            # Compared in stable form: the operator sees the live temperature,
+            # the dedup must not (see _stable_smart_token).  And "grew" means a
+            # token appeared or changed — a reason *disappearing* (temperature
+            # dropping back under its threshold) is an improvement and must not
+            # re-fire either.
+            stable_tokens = [_stable_smart_token(d) for d, _ in reasons]
+            new_details[key] = " · ".join(stable_tokens)
+            prev_tokens = set(str(last_details.get(key) or "").split(" · "))
             # Missing stamp is not growth: first-seen fires via `old != level`,
             # and a freshly upgraded state file must not re-siren a known warn.
-            grew = key in last_details and last_details[key] != detail
+            grew = key in last_details and any(
+                t not in prev_tokens for t in stable_tokens
+            )
             fatal = level == "down"
             if old != level or grew or (fatal and (now - last_t) >= cooldown):
                 title, template = _SMART_ALERT_TEXT[level]
