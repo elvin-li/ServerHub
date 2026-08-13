@@ -348,6 +348,7 @@ class ConfigArchivePaths(unittest.TestCase):
 
         with mock.patch.object(backups, "BACKUP_ROOT", backup_root), \
              mock.patch.object(backups, "CONFIG_FILE", config_file), \
+             mock.patch.object(backups, "DATA_DIR", root / "empty-data"), \
              mock.patch.object(backups, "cfg", lambda: raw), \
              mock.patch.object(backups.subprocess, "run", fake_run):
             result = backups._backup_configs()
@@ -372,11 +373,155 @@ class ConfigArchivePaths(unittest.TestCase):
         ran = mock.Mock()
         with mock.patch.object(backups, "BACKUP_ROOT", root / "backups"), \
              mock.patch.object(backups, "CONFIG_FILE", root / "no-such.yaml"), \
+             mock.patch.object(backups, "DATA_DIR", root / "empty-data"), \
              mock.patch.object(backups, "cfg", lambda: raw), \
              mock.patch.object(backups.subprocess, "run", ran):
             result = backups._backup_configs()
         self.assertFalse(result["ok"])
         ran.assert_not_called()
+
+
+class ConfigArchiveDataState(unittest.TestCase):
+    """The data/ credential and state files ride in the config archive.
+
+    Losing data/ is an admin lockout (twofa.json holds the TOTP secrets) plus
+    every integration token gone -- services.yaml alone does not bring a
+    panel back.  Selection is a rule, not an allowlist: small regular files
+    directly under data/, minus the bulk/derived/harmful-to-restore classes.
+    These tests pin both directions of the rule, the untouched
+    no-services.yaml refusal, and -- with one real tar run -- that the 0600
+    modes survive the round trip.
+    """
+
+    def setUp(self):
+        root = Path(tempfile.mkdtemp(prefix="serverhub-cfgdata-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.root = root
+        self.data = root / "data"
+        self.data.mkdir()
+        self.backup_root = root / "backups"
+        self.backup_root.mkdir()
+        self.config_file = root / "services.yaml"
+        self.config_file.write_text("settings: {}\n")
+        for name, value in (
+            ("BACKUP_ROOT", self.backup_root),
+            ("CONFIG_FILE", self.config_file),
+            ("DATA_DIR", self.data),
+        ):
+            patch = mock.patch.object(backups, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        cfg_patch = mock.patch.object(backups, "cfg", lambda: {})
+        cfg_patch.start()
+        self.addCleanup(cfg_patch.stop)
+        # Keep the real ~/Library/LaunchAgents out of these archives: the
+        # agent manifest has its own tests, and this class is about data/.
+        agents_patch = mock.patch.object(backups, "_wanted_agent",
+                                         lambda *_a, **_k: False)
+        agents_patch.start()
+        self.addCleanup(agents_patch.stop)
+
+    SECRETS = (
+        "twofa.json",
+        "api-keys.json",
+        "notify-credentials.json",
+        "backup-credentials.json",
+        "service-credentials.json",
+        ".session-secret",
+        ".local-client-token",
+        "wireguard-peers.json",
+        "alert_state.json",
+    )
+
+    def test_every_lockout_class_file_is_selected(self):
+        for name in self.SECRETS:
+            (self.data / name).write_text("s")
+        self.assertEqual(
+            backups.data_state_paths(),
+            sorted(self.data / name for name in self.SECRETS),
+        )
+
+    def test_bulk_derived_and_transient_files_stay_out(self):
+        (self.data / "twofa.json").write_text("keep")
+        rejects = (
+            "alerts.jsonl",                          # alert history
+            "metrics-5m.jsonl",                      # metrics bulk
+            "auth-audit.jsonl.bak-20260805-112015",  # rotated audit log
+            "services.yaml.bak.1786507185",          # pre-image of a live member
+            ".services.yaml.lock",                   # flock target
+            "wireguard.lock",
+            "audit_monitor.out",                     # stray process log
+            "stack-backup-inflight-immich",          # crash marker
+        )
+        for name in rejects:
+            (self.data / name).write_text("x")
+        (self.data / "huge.blob").write_bytes(b"\0" * (backups._DATA_FILE_MAX + 1))
+        (self.data / "a-link.json").symlink_to(self.data / "twofa.json")
+        (self.data / "nested").mkdir()
+        (self.data / "nested" / "deep.json").write_text("x")
+        self.assertEqual(backups.data_state_paths(), [self.data / "twofa.json"])
+
+    def test_archive_members_are_config_then_data_then_extras(self):
+        for name in ("twofa.json", "api-keys.json"):
+            (self.data / name).write_text("s")
+        extra = self.root / "compose.yml"
+        extra.write_text("services: {}\n")
+        cfg = {"backups": {"config_archive": {"extra_paths": [str(extra)]}}}
+        calls: list[list[str]] = []
+
+        def fake_run(argv, capture_output, text, timeout):
+            calls.append(list(argv))
+            Path(argv[2]).write_bytes(b"x" * 2048)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(backups, "cfg", lambda: cfg), \
+             mock.patch.object(backups.subprocess, "run", fake_run):
+            result = backups._backup_configs()
+        self.assertTrue(result["ok"], result)
+        (argv,) = calls
+        self.assertEqual(argv[3:], [
+            str(self.config_file),
+            str(self.data / "api-keys.json"),
+            str(self.data / "twofa.json"),
+            str(extra),
+        ])
+
+    def test_data_files_alone_never_satisfy_the_config_guard(self):
+        """No services.yaml still means refusal, however rich data/ is: a
+        config archive without the config stays a failure, not a partial
+        success."""
+        (self.data / "twofa.json").write_text("s")
+        ran = mock.Mock()
+        with mock.patch.object(backups, "CONFIG_FILE", self.root / "gone.yaml"), \
+             mock.patch.object(backups.subprocess, "run", ran):
+            result = backups._backup_configs()
+        self.assertFalse(result["ok"])
+        ran.assert_not_called()
+
+    def test_owner_only_modes_survive_a_real_tar(self):
+        """One real tar run: the 0600 secrets must be recorded 0600 in the
+        archive (tar restores recorded modes), and the archive itself must be
+        0600 -- it now carries the TOTP secrets and every integration token."""
+        import tarfile
+
+        secret = self.data / "twofa.json"
+        secret.write_text('{"admin": "totp"}')
+        secret.chmod(0o600)
+        helper = self.data / "pf-anchor-keepalive.sh"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+
+        result = backups._backup_configs()
+        self.assertTrue(result["ok"], result)
+        archive = Path(result["path"])
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+        modes = {}
+        with tarfile.open(archive) as tf:
+            for member in tf.getmembers():
+                modes[Path(member.name).name] = member.mode & 0o777
+        self.assertEqual(modes.get("twofa.json"), 0o600)
+        self.assertEqual(modes.get("pf-anchor-keepalive.sh"), 0o755)
+        self.assertIn("services.yaml", modes)
 
 
 if __name__ == "__main__":

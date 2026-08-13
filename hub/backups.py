@@ -563,7 +563,9 @@ def _wanted_agent(name: str, keywords: tuple[str, ...] | None = None) -> bool:
 
 
 def backup_configs() -> dict:
-    """Tar key configs into Services/backups."""
+    """Tar key configs -- services.yaml, the data/ credential and state
+    files, selected LaunchAgent plists, configured extras -- into
+    Services/backups."""
     with _only_one("configs"):
         return _backup_configs()
 
@@ -900,9 +902,75 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
     return result
 
 
+# ── data/ state & secret files in the config archive ─────────────────────────
+#
+# services.yaml alone does not bring a panel back.  What stands between a
+# restored install and an admin lockout lives under data/: twofa.json (TOTP
+# secrets -- without it every 2FA-enrolled account is locked out),
+# api-keys.json, notify-credentials.json, backup-credentials.json,
+# service-credentials.json, .session-secret, .local-client-token,
+# wireguard-peers.json, and whatever secret store ships next.  Losing data/
+# used to mean lockout plus every integration token gone, because the config
+# archive carried none of it.
+#
+# Selection is a rule rather than a filename allowlist, for the reason
+# DEFAULT_AGENT_KEYWORDS documents: an under-matching manifest is a blind
+# spot nobody notices until the restore fails.  A secret store added next
+# month must land in the archive without anyone remembering to extend a list
+# here.  The rule -- every small regular file directly under data/ -- minus
+# the classes that are bulk, derived, or harmful to restore:
+#
+#   * anything with .jsonl in the name: alert/audit/metrics history, the
+#     multi-megabyte bulk this archive must not carry;
+#   * services.yaml.bak.*: up to BACKUP_RETENTION pre-images of a file the
+#     archive already contains live;
+#   * *.lock: flock targets, contentless by design;
+#   * *.out: stray process logs (audit_monitor.out);
+#   * stack-backup-inflight-*: crash markers -- restoring one makes the next
+#     panel boot "recover" a stack that was never stopped (a compose start
+#     plus a spurious alert);
+#   * anything over _DATA_FILE_MAX: no state file is anywhere near that
+#     size, so a runaway file must not quietly bloat every nightly archive;
+#   * symlinks: every writer under data/ creates regular files; a link is
+#     not panel state, and tar would archive the link rather than the state.
+_DATA_EXCLUDE_PREFIXES: tuple[str, ...] = ("services.yaml.bak.", _INFLIGHT_PREFIX)
+_DATA_EXCLUDE_SUFFIXES: tuple[str, ...] = (".lock", ".out")
+_DATA_FILE_MAX = 1024 * 1024
+
+
+def data_state_paths() -> list[Path]:
+    """The data/ files a config archive carries, sorted for determinism."""
+    out: list[Path] = []
+    try:
+        entries = sorted(DATA_DIR.iterdir())
+    except OSError:
+        return out
+    for p in entries:
+        name = p.name
+        if ".jsonl" in name:
+            continue
+        if name.endswith(_DATA_EXCLUDE_SUFFIXES):
+            continue
+        if name.startswith(_DATA_EXCLUDE_PREFIXES):
+            continue
+        try:
+            if p.is_symlink() or not p.is_file():
+                continue
+            if p.stat().st_size > _DATA_FILE_MAX:
+                continue
+        except OSError:
+            continue
+        out.append(p)
+    return out
+
+
 def _backup_configs() -> dict:
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    paths = [CONFIG_FILE, *config_archive_extra_paths()]
+    # services.yaml first (the member a restorer looks for), then the data/
+    # credential and state files, then the install's own extras.  tar records
+    # each member's mode, so the 0600 files come back 0600 -- the archive
+    # itself is 0600 in a 0700 directory via _private_dest, same as before.
+    paths = [CONFIG_FILE, *data_state_paths(), *config_archive_extra_paths()]
     # include launchagents selectively
     agents = Path.home() / "Library" / "LaunchAgents"
     if agents.is_dir():

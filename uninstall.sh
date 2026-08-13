@@ -46,6 +46,13 @@ for label in \
   fi
 done
 
+# The watchdog keeps a per-port failure counter under $TMPDIR (plus the
+# pre-scoping shared file on old installs).  A count left behind here would
+# be inherited by a future reinstall's first ticks and could shorten its
+# three-miss grace window.
+rm -f "${TMPDIR:-/tmp}/serverhub-watchdog.state" \
+      "${TMPDIR:-/tmp}"/serverhub-watchdog.*.state
+
 # The optional FileBrowser helper is installed by the Files page, not by
 # install.sh, but a full uninstall should not leave it running either.
 if launchctl print "gui/$UID_NUM/local.filebrowser" >/dev/null 2>&1; then

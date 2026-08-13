@@ -20,6 +20,14 @@ class WatchdogScript(unittest.TestCase):
     def setUp(self):
         self.text = SCRIPT.read_text()
 
+    def _code(self) -> str:
+        """The script with comment lines dropped, for position assertions
+        that must not match the prose explaining the code."""
+        return "\n".join(
+            line for line in self.text.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+
     def test_script_is_valid_bash(self):
         proc = subprocess.run(
             ["bash", "-n", str(SCRIPT)], capture_output=True, text=True
@@ -91,6 +99,64 @@ class WatchdogScript(unittest.TestCase):
 
     def test_log_is_rotated(self):
         self.assertIn("tail -n 500", self.text)
+
+    def test_fail_counter_is_scoped_to_the_probed_port(self):
+        # One shared counter let a manual SERVERHUB_PORT=59999 test run feed
+        # its misses into the production 8086 probe's arithmetic (2026-08-13
+        # 03:49: a healthy panel was kickstarted twice).  The state file must
+        # embed the port, and the pre-scoping shared path must be cleaned up
+        # rather than left behind as a stale input.
+        self.assertIn(
+            'STATE_FILE="${TMPDIR:-/tmp}/serverhub-watchdog.${PORT}.state"',
+            self.text,
+        )
+        self.assertIn(
+            'rm -f "${TMPDIR:-/tmp}/serverhub-watchdog.state"', self.text
+        )
+
+    def test_a_non_numeric_port_probes_nothing(self):
+        # SERVERHUB_PORT is interpolated into a URL, an lsof filter and now a
+        # filename.  A garbage value cannot be probed, only miscounted -- three
+        # ticks of failing to probe nonsense must not restart the real panel.
+        code = self._code()
+        guard = code.index("case \"$PORT\" in ''|*[!0-9]*)")
+        for landmark in ('mkdir "$LOCK_DIR"', "launchctl print", "curl -sS"):
+            self.assertLess(
+                guard, code.index(landmark),
+                f"the port guard must run before {landmark!r}",
+            )
+
+    def test_only_the_port_the_label_serves_is_acted_on(self):
+        # Label discovery is port-blind, so a 59999 test run still resolved
+        # com.elvin.serverhub and kickstarted the production panel on its own
+        # third miss.  The script must read the label's SERVERHUB_PORT and
+        # stand down on a mismatch -- before any counting, so a mismatched
+        # probe can neither restart the panel nor advance a counter.
+        self.assertIn("SERVERHUB_PORT => ", self.text)
+        code = self._code()
+        self.assertLess(
+            code.index('[ "$label_port" != "$PORT" ]'),
+            code.index('printf \'%s\' "$fails"'),
+            "the ownership check must come before the counter is written",
+        )
+
+    def test_panel_logs_get_a_size_backstop(self):
+        # launchd appends to StandardOut/ErrorPath forever and macOS rotates
+        # neither; installs without the host's daily logrotate agent need the
+        # watchdog to cap them.  Compress before truncating (the tail that
+        # explains a crash must survive), truncate in place (launchd holds the
+        # files open O_APPEND, so mv would strand its descriptor), and stay
+        # out of the .1.gz..5.gz namespace the daily job rotates through.
+        self.assertIn("serverhub.out.log", self.text)
+        self.assertIn("serverhub.err.log", self.text)
+        code = self._code()
+        self.assertLess(
+            code.index('gzip -c "$panel_log"'),
+            code.index(': > "$panel_log"'),
+            "must compress a copy before truncating",
+        )
+        self.assertNotIn('"$panel_log.1.gz"', self.text)
+        self.assertNotIn('mv "$panel_log"', self.text)
 
 
 class PanelProcessType(unittest.TestCase):

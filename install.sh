@@ -85,6 +85,28 @@ if ! "$PY" -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= tuple(i
   die "python3 >= $PYTHON_MIN required (found $("$PY" -V 2>&1))."
 fi
 
+# The panel has shipped under three launchd labels: this script manages
+# $LABEL_PANEL, the native ServerHub.app writes local.serverhub, and early
+# releases installed com.elvin.serverhub (the same lineage the watchdog
+# probes).  If one of the *other* labels is loaded, this host is an existing
+# install this script does not manage; writing $LABEL_PANEL beside it would
+# leave two KeepAlive'd panels racing for one port and one services.yaml.
+# The old advice here ("re-run with --port") was exactly that trap.  Refuse,
+# and say what an in-place upgrade actually looks like.
+for legacy_label in com.elvin.serverhub local.serverhub; do
+  if launchctl print "gui/$(id -u)/$legacy_label" >/dev/null 2>&1; then
+    warn "an existing ServerHub panel is loaded under launchd label '$legacy_label',"
+    warn "which install.sh does not manage. Installing '$LABEL_PANEL' beside it"
+    warn "would run two panels against the same port and services.yaml."
+    warn "Upgrade that install in place instead (see docs/upgrade.md):"
+    warn "    git pull"
+    warn "    .venv/bin/python -m pip install -r requirements.txt"
+    warn "    launchctl kickstart -k gui/$(id -u)/$legacy_label"
+    warn "or remove it first with ./uninstall.sh and re-run this script."
+    die "refusing to install a second panel beside '$legacy_label'."
+  fi
+done
+
 if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   # Our own running instance is fine — we restart it at the end.
   if ! launchctl print "gui/$(id -u)/$LABEL_PANEL" >/dev/null 2>&1; then

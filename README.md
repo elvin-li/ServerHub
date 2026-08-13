@@ -45,6 +45,7 @@ self-service Account page for password and 2FA).
 - [Authentication](docs/authentication.md) — setup, multi-user, 2FA, API keys, share ACLs
 - [Metrics](docs/metrics.md) — tiered long-term history and the query API
 - [App catalog](docs/app-catalog.md) — templates, placeholders, the remote-source trust model
+- [Upgrading](docs/upgrade.md) — the supported upgrade procedure per install flavour, and rollback via git
 
 ## Stack
 

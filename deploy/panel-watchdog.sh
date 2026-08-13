@@ -23,8 +23,26 @@
 set -u
 
 PORT="${SERVERHUB_PORT:-8086}"
+# A port that is not a number cannot be probed, only miscounted: curl fails on
+# the garbage URL, lsof matches nothing, and three ticks later the real panel
+# gets kickstarted over an env typo.  Refuse to run instead (stderr lands in
+# serverhub-watchdog.err.log, so the misconfiguration is visible).
+case "$PORT" in ''|*[!0-9]*)
+  printf 'panel-watchdog: SERVERHUB_PORT=%s is not a port; nothing probed\n' "$PORT" >&2
+  exit 0 ;;
+esac
 FAIL_THRESHOLD="${SERVERHUB_WATCHDOG_THRESHOLD:-3}"
-STATE_FILE="${TMPDIR:-/tmp}/serverhub-watchdog.state"
+# The failure counter is scoped to the probed port.  It used to be one shared
+# file, and on 2026-08-13 03:49 a manual test run with SERVERHUB_PORT=59999
+# fed its misses into the same counter the production 8086 probe reads: the
+# production 8086 tick jumped straight to 3/3 on counts it never took and
+# kickstarted a healthy panel.  Per-port state keeps a test's arithmetic out
+# of production's.
+STATE_FILE="${TMPDIR:-/tmp}/serverhub-watchdog.${PORT}.state"
+# One-shot migration: a counter left at the pre-scoping path would otherwise
+# sit in /tmp unread forever, and a stale shared count is exactly what this
+# change removes.
+rm -f "${TMPDIR:-/tmp}/serverhub-watchdog.state"
 LOG="$HOME/Library/Logs/serverhub-watchdog.log"
 DOMAIN="gui/$(id -u)"
 
@@ -53,6 +71,33 @@ if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; 
   rm -f "$tmp"
 fi
 
+# Backstop rotation for the panel's launchd logs.  launchd appends to
+# StandardOut/ErrorPath forever and macOS rotates neither; on this host a
+# daily agent (local.services-logrotate) truncates them at 1-8 MiB, but that
+# automation is host infrastructure, not part of ServerHub -- an install
+# without it grows these files without bound.  10 MiB sits above the daily
+# job's thresholds, so wherever that job exists it acts first and this never
+# fires.  Copy-then-truncate, never rename: launchd holds the files open with
+# O_APPEND, so a rename would leave it writing to the unlinked inode until
+# the next panel restart.  gzip first and truncate only on its success, so
+# the tail that explains a crash always survives, in <log>.0.gz -- a name the
+# logrotate agent's .1.gz..5.gz chain never touches.
+PANEL_LOG_MAX=$((10 * 1024 * 1024))
+for panel_log in "$HOME/Library/Logs/serverhub.out.log" \
+                 "$HOME/Library/Logs/serverhub.err.log" \
+                 "$HOME/Library/Logs/serverhub-watchdog.err.log"; do
+  [ -f "$panel_log" ] || continue
+  [ "$(stat -f%z "$panel_log" 2>/dev/null || echo 0)" -gt "$PANEL_LOG_MAX" ] || continue
+  if gzip -c "$panel_log" > "$panel_log.0.gz" 2>/dev/null; then
+    : > "$panel_log"
+    log "rotated $(basename "$panel_log") past $PANEL_LOG_MAX bytes into $(basename "$panel_log").0.gz"
+  else
+    # Failed compress (full disk, most likely): keep the original intact and
+    # drop the partial archive rather than truncating data away.
+    rm -f "$panel_log.0.gz"
+  fi
+done
+
 # Prefer the lineage that actually owns this host (com.elvin.serverhub).
 # The app still knows how to bootstrap local.serverhub; if that label is
 # listed first, a kickstart restarts the loser of the bind race.
@@ -67,6 +112,23 @@ done
 if [ -z "$LABEL" ]; then
   # Nothing loaded: the panel was intentionally removed or booted out.
   rm -f "$STATE_FILE"
+  exit 0
+fi
+
+# Which port that label serves is recorded in its plist environment --
+# install.sh, the native launcher and the legacy install all set
+# SERVERHUB_PORT there.  A watchdog probing any *other* port has found a
+# label, not its panel: the 2026-08-13 test run above also kickstarted the
+# live panel on its own third miss, because three misses on 59999 said
+# nothing about the panel serving 8086.  When no port can be read from the
+# label, assume it matches (the pre-guard behaviour): keep covering an
+# oddly-registered panel rather than letting this guard fail closed and
+# never restart anything.
+label_port="$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null \
+  | sed -n 's/.*SERVERHUB_PORT => *//p' | head -n 1)"
+case "$label_port" in ''|*[!0-9]*) label_port="$PORT" ;; esac
+if [ "$label_port" != "$PORT" ]; then
+  log "label $LABEL serves port $label_port, not $PORT; leaving it alone"
   exit 0
 fi
 
