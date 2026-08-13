@@ -1,0 +1,502 @@
+"""Tiered long-term metrics history: 5-minute and 1-hour rollups.
+
+The raw layer (hub/metrics.py, data/metrics.jsonl) keeps ~48-72h of 90s
+samples.  This module derives two aggregate layers from it so the dashboard
+can chart a year of history without the raw file growing:
+
+    data/metrics-5m.jsonl   5-minute windows, retained ~30 days  (~8640 rows)
+    data/metrics-1h.jsonl   1-hour windows,   retained ~400 days (~9600 rows)
+
+Row shape is isomorphic with the raw rows: the same field name carries the
+window *average*, and every numeric field additionally gets a ``<field>_max``
+peak.  Peaks matter for gauges (CPU / memory pressure / disk %): a 30-second
+spike would otherwise be averaged away in a 1-hour window.  ``t`` is the
+window *start*, wall-clock aligned (t % 300 == 0 for 5m rows, t % 3600 == 0
+for 1h rows, epoch/UTC alignment), and ``n`` counts the raw samples behind
+the row.
+
+Semantics that are deliberate (and pinned by tests/test_metrics_rollup.py):
+
+* Rollup work rides on the existing sampler thread (metrics._loop calls
+  maybe_rollup() each tick).  No thread of its own: each tick pays only an
+  integer comparison unless a wall-clock window boundary has been crossed.
+* Sampling holes (machine asleep, panel down) stay holes.  A window with no
+  source samples produces *no* row -- nothing is interpolated.
+* Watermarks (exclusive end of the last aggregated window, per tier) are
+  persisted to data/metrics-rollup-state.json so a panel restart neither
+  re-aggregates nor skips a segment.  Recovery also consults the last row of
+  each aggregate file, so a crash between "append rows" and "save state"
+  cannot double-aggregate a window.
+* A clock step backwards (NTP correction) never moves a watermark back: when
+  now's current window starts before the watermark the pass is a no-op, and
+  raw rows stamped earlier than the watermark are ignored rather than
+  re-counted.
+* Aggregation reads only the source file's tail: a backwards chunked read
+  that grows until it demonstrably covers the watermark.  Byte offsets are
+  never remembered across passes because the raw file is periodically
+  rewritten in place by its ring-buffer trim.
+* Aggregate files are trimmed with the same pattern as metrics.py: an
+  in-memory time gate (_TRIM_INTERVAL) so the check itself is rare, a cheap
+  first-line age probe so nothing is read in full unless needed, a slack
+  window so the rewrite happens ~daily/~weekly rather than on every pass,
+  and an atomic tmp+rename rewrite.
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+
+from hub.paths import DATA_DIR
+
+FILE_5M = DATA_DIR / "metrics-5m.jsonl"
+FILE_1H = DATA_DIR / "metrics-1h.jsonl"
+STATE_FILE = DATA_DIR / "metrics-rollup-state.json"
+
+WIN_5M = 300
+WIN_1H = 3600
+RETAIN_5M = 30 * 86400   # ~8640 rows at one per 5 minutes
+RETAIN_1H = 400 * 86400  # ~9600 rows at one per hour
+
+# Spans this far past retention accumulate before a trim rewrite is worth the
+# IO: ~1 day of extra 5m rows (288) / ~1 week of extra 1h rows (168).  Same
+# idea as metrics._TRIM_SLACK, expressed in time because these layers retain
+# by age, not by row count.
+_TRIM_SLACK = {"5m": 86400, "1h": 7 * 86400}
+_RETAIN = {"5m": RETAIN_5M, "1h": RETAIN_1H}
+# Check for trimming at most hourly per tier (mirrors metrics._TRIM_INTERVAL).
+# The check is a first-line read, the rewrite inside it is further gated by
+# the slack above.
+_TRIM_INTERVAL = 3600.0
+_last_trim = {"5m": 0.0, "1h": 0.0}
+
+# Exclusive end of the last aggregated window per tier == start of the next
+# window to aggregate.  0 means "never rolled up" and is clamped to the
+# oldest available source row on the first pass.
+_state: dict[str, int] = {"w5": 0, "w1h": 0}
+_state_loaded = False
+_lock = threading.Lock()
+
+# Query-side caps.  1500 points is plenty for a dashboard-width chart and
+# keeps a 1-year response ~300KB instead of several MB.
+MAX_QUERY_POINTS = 1500
+# Spans up to this long are served from the raw layer (when it reaches back
+# far enough -- see _pick_tier).
+RAW_QUERY_SPAN = 48 * 3600
+
+
+# --------------------------------------------------------------------------
+# small file helpers
+
+def _first_row_ts(path) -> int | None:
+    """Timestamp of the first parseable row, reading only the file head."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8192)
+    except OSError:
+        return None
+    for ln in head.decode(errors="replace").splitlines():
+        try:
+            t = json.loads(ln).get("t")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(t, (int, float)):
+            return int(t)
+    return None
+
+
+def _last_row_ts(path) -> int | None:
+    """Timestamp of the last parseable row, reading only the file tail."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read()
+    except OSError:
+        return None
+    for ln in reversed(tail.decode(errors="replace").splitlines()):
+        try:
+            t = json.loads(ln).get("t")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(t, (int, float)):
+            return int(t)
+    return None
+
+
+def _rows_since(path, since_ts: int) -> list[dict]:
+    """Rows with t >= since_ts, reading only as much of the tail as needed.
+
+    Starts with a 64KB tail chunk and grows it geometrically until the chunk
+    provably covers since_ts (its first parsed row is already older) or spans
+    the whole file.  Timestamps, not byte offsets, decide coverage, so a
+    ring-buffer rewrite of the source file between passes cannot corrupt the
+    read.  Rows are append-ordered by the sampler; a small NTP step inside
+    one chunk is harmless because every row is still filtered by ``t``.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    chunk = 64 * 1024
+    while True:
+        offset = max(0, size - chunk)
+        try:
+            with open(path, "rb") as f:
+                f.seek(offset)
+                data = f.read()
+        except OSError:
+            return []
+        lines = data.decode(errors="replace").splitlines()
+        if offset > 0 and lines:
+            lines = lines[1:]  # first line of a mid-file chunk may be partial
+        rows: list[dict] = []
+        covered = offset == 0
+        for ln in lines:
+            try:
+                o = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            t = o.get("t") if isinstance(o, dict) else None
+            if not isinstance(t, (int, float)):
+                continue
+            if t < since_ts:
+                covered = True
+                continue
+            rows.append(o)
+        if covered:
+            return rows
+        chunk *= 4
+
+
+def _atomic_write(path, payload: str) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(payload)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+# --------------------------------------------------------------------------
+# aggregation
+
+def _round(v: float):
+    """Compact on-disk numbers: 2 decimals normally, integers once the value
+    is large enough (network bps) that decimals are noise."""
+    if abs(v) >= 1000:
+        return int(round(v))
+    return round(float(v), 2)
+
+
+def _aggregate_window(rows: list[dict], window_start: int) -> dict:
+    """Fold *rows* into one aggregate row for the window starting at
+    *window_start*.
+
+    Works for both directions: raw rows count with weight 1 and their own
+    value as the peak; aggregate rows (they carry ``n`` and ``<f>_max``)
+    contribute their average weighted by ``n`` and their stored peak, so
+    5m -> 1h keeps exact means instead of averaging averages.
+    Fields absent (or null) in every source row are simply absent from the
+    output -- a per-field hole, never a fabricated zero.
+    """
+    sums: dict[str, float] = {}
+    weights: dict[str, float] = {}
+    maxes: dict[str, float] = {}
+    total_n = 0
+    for row in rows:
+        w = row.get("n", 1)
+        w = int(w) if isinstance(w, (int, float)) and w > 0 else 1
+        total_n += w
+        for key, val in row.items():
+            if key in ("t", "n") or key.endswith("_max"):
+                continue
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                continue
+            sums[key] = sums.get(key, 0.0) + float(val) * w
+            weights[key] = weights.get(key, 0.0) + w
+            peak = row.get(f"{key}_max", val)
+            if isinstance(peak, bool) or not isinstance(peak, (int, float)):
+                peak = val
+            if key not in maxes or peak > maxes[key]:
+                maxes[key] = float(peak)
+    out: dict = {"t": int(window_start), "n": total_n}
+    for key in sums:
+        out[key] = _round(sums[key] / weights[key])
+        out[f"{key}_max"] = _round(maxes[key])
+    return out
+
+
+# --------------------------------------------------------------------------
+# rollup passes
+
+def _load_state_locked() -> None:
+    global _state_loaded
+    if _state_loaded:
+        return
+    saved: dict = {}
+    try:
+        loaded = json.loads(STATE_FILE.read_text())
+        if isinstance(loaded, dict):
+            saved = loaded
+    except (OSError, json.JSONDecodeError, ValueError):
+        saved = {}
+    for key, path, win in (("w5", FILE_5M, WIN_5M), ("w1h", FILE_1H, WIN_1H)):
+        from_state = saved.get(key)
+        from_state = int(from_state) if isinstance(from_state, (int, float)) else 0
+        # A row for window t means everything through t+win is aggregated.
+        # Taking the max of both sources makes the watermark survive a lost
+        # state file (no re-aggregation) and a state file written just before
+        # a crash that lost the append (no skipped window: state is only
+        # saved *after* a successful append).
+        last = _last_row_ts(path)
+        from_file = last + win if last is not None else 0
+        _state[key] = max(_state[key], from_state, from_file)
+    _state_loaded = True
+
+
+def _save_state_locked() -> None:
+    try:
+        STATE_FILE.parent.mkdir(exist_ok=True)
+        _atomic_write(STATE_FILE, json.dumps(_state))
+    except OSError:
+        # Non-fatal: the last-row recovery in _load_state_locked keeps a stale
+        # state file from causing duplicates.
+        pass
+
+
+def _rollup_tier_locked(src_path, dst_path, win: int, key: str, target: int) -> int:
+    """Aggregate every complete *win*-second window in [_state[key], target).
+
+    Returns how many windows produced a row.  The watermark advances to
+    *target* even when no rows were produced (those windows are holes), but
+    only after the destination append succeeded, so an IO failure is retried
+    on the next boundary instead of losing the segment.
+    """
+    start = _state[key]
+    oldest = _first_row_ts(src_path)
+    if oldest is None:
+        # No source data at all: everything before target is a hole.
+        _state[key] = max(start, target)
+        return 0
+    # Never aggregate below what the source can still prove; windows before
+    # its oldest row are unrecoverable holes (first run, or source trimmed
+    # past the watermark after long downtime).
+    start = max(start, (oldest // win) * win)
+    if start >= target:
+        _state[key] = max(_state[key], target)
+        return 0
+    buckets: dict[int, list[dict]] = {}
+    for row in _rows_since(src_path, start):
+        t = row.get("t")
+        if not isinstance(t, (int, float)):
+            continue
+        t = int(t)
+        # Upper bound excludes the still-open window; lower bound drops rows
+        # stamped before the watermark (already aggregated, or re-stamped by
+        # a clock step backwards -- counting them again would double them).
+        if t < start or t >= target:
+            continue
+        buckets.setdefault((t // win) * win, []).append(row)
+    if buckets:
+        lines = "".join(
+            json.dumps(_aggregate_window(rows, wt), ensure_ascii=False) + "\n"
+            for wt, rows in sorted(buckets.items())
+        )
+        dst_path.parent.mkdir(exist_ok=True)
+        with open(dst_path, "a") as f:
+            f.write(lines)
+    _state[key] = target
+    return len(buckets)
+
+
+def _maybe_trim_locked(tier: str, path, now: float) -> bool:
+    """Age-based trim with the metrics.py time-gate pattern.
+
+    Hourly gate -> 8KB first-line probe -> full rewrite only once the file
+    holds more than retention+slack of history.  Rewrites keep rows newer
+    than the retention cutoff and are atomic (tmp + rename), so a reader
+    never sees a half-written file.
+    """
+    if now - _last_trim[tier] < _TRIM_INTERVAL:
+        return False
+    _last_trim[tier] = now
+    oldest = _first_row_ts(path)
+    if oldest is None or oldest >= now - _RETAIN[tier] - _TRIM_SLACK[tier]:
+        return False
+    cutoff = now - _RETAIN[tier]
+    try:
+        kept = []
+        for ln in path.read_text().splitlines():
+            try:
+                t = json.loads(ln).get("t")
+            except (json.JSONDecodeError, AttributeError):
+                continue  # corrupt line: dropped with the trim
+            if isinstance(t, (int, float)) and t >= cutoff:
+                kept.append(ln)
+        _atomic_write(path, "\n".join(kept) + "\n" if kept else "")
+        return True
+    except OSError:
+        return False
+
+
+def maybe_rollup(now: float | None = None) -> dict:
+    """One rollup opportunity; called from the sampler thread every tick.
+
+    Cheap unless a wall-clock boundary was crossed: the 5m tier runs when a
+    new 5-minute window has completed since the watermark, the 1h tier when a
+    new hour has completed *and* the 5m tier has caught up to it (the hour is
+    aggregated from 5m rows, so running ahead of them would under-count).
+    Returns {"w5": n, "w1h": m} window counts, mostly for tests.
+    """
+    from hub import metrics  # late import: metrics imports us lazily too
+
+    now = time.time() if now is None else now
+    done = {"w5": 0, "w1h": 0}
+    with _lock:
+        _load_state_locked()
+        dirty = False
+
+        cur5 = int(now // WIN_5M) * WIN_5M
+        if cur5 > _state["w5"]:
+            # Samples for the just-completed window may still sit in the
+            # write buffer (flush cadence is up to 5 minutes); put them on
+            # disk before reading the tail.  No forced trim: that stays on
+            # metrics.py's own hourly gate.
+            try:
+                metrics.flush_pending()
+            except Exception:
+                pass
+            try:
+                done["w5"] = _rollup_tier_locked(
+                    metrics.METRICS_FILE, FILE_5M, WIN_5M, "w5", cur5
+                )
+                dirty = True
+            except OSError:
+                pass
+            _maybe_trim_locked("5m", FILE_5M, now)
+
+        # Clamped to the 5m watermark: if the 5m pass failed above, the hour
+        # target shrinks with it and the segment is retried later rather than
+        # aggregated from incomplete 5m data.
+        cur1h = min(int(now // WIN_1H), _state["w5"] // WIN_1H) * WIN_1H
+        if cur1h > _state["w1h"]:
+            try:
+                done["w1h"] = _rollup_tier_locked(
+                    FILE_5M, FILE_1H, WIN_1H, "w1h", cur1h
+                )
+                dirty = True
+            except OSError:
+                pass
+            _maybe_trim_locked("1h", FILE_1H, now)
+
+        if dirty:
+            _save_state_locked()
+    return done
+
+
+# --------------------------------------------------------------------------
+# query side (/api/metrics?range=...)
+
+def parse_range(text: str) -> int:
+    """'48h' / '30d' / '1y' -> seconds.  Raises ValueError on anything else."""
+    s = (text or "").strip().lower()
+    if len(s) < 2 or not s[:-1].isdigit():
+        raise ValueError(f"invalid range: {text!r}")
+    n, unit = int(s[:-1]), s[-1]
+    mult = {"h": 3600, "d": 86400, "w": 7 * 86400, "y": 365 * 86400}.get(unit)
+    if mult is None or n <= 0:
+        raise ValueError(f"invalid range: {text!r}")
+    # Nothing outlives the 1h layer's retention; clamping keeps the window
+    # math bounded for absurd inputs like 99y.
+    return min(n * mult, RETAIN_1H)
+
+
+def _covers(path, since: int) -> bool:
+    oldest = _first_row_ts(path)
+    return oldest is not None and oldest <= since
+
+
+def _reaches_further(path_a, path_b) -> bool:
+    """True when *path_a*'s history starts strictly earlier than *path_b*'s."""
+    oa = _first_row_ts(path_a)
+    if oa is None:
+        return False
+    ob = _first_row_ts(path_b)
+    return ob is None or oa < ob
+
+
+def _pick_tier(since: int, until: int) -> str:
+    """Span decides the tier; coverage breaks the tie.
+
+    Short spans want the raw layer's 90s resolution, but the raw layer's
+    reach depends on the configured sample interval (MAX_POINTS is fixed, the
+    interval is not), so when raw demonstrably does not reach back to *since*
+    and the aggregate layer does, the aggregate layer wins.  Same rule one
+    level down for 5m vs 1h.
+    """
+    from hub import metrics
+
+    span = until - since
+    if span <= RAW_QUERY_SPAN:
+        if not _covers(metrics.METRICS_FILE, since) and _reaches_further(
+            FILE_5M, metrics.METRICS_FILE
+        ):
+            return "5m"
+        return "raw"
+    if span <= RETAIN_5M + 86400:
+        if not _covers(FILE_5M, since) and _reaches_further(FILE_1H, FILE_5M):
+            return "1h"
+        return "5m"
+    return "1h"
+
+
+def _decimate(rows: list[dict], since: int, until: int, max_points: int) -> list[dict]:
+    """Re-bucket *rows* onto a coarser grid so len(result) <= max_points.
+
+    Buckets are keyed by time, not by index: an empty bucket produces no
+    output row, so sampling holes survive decimation instead of being
+    bridged by their neighbours.
+    """
+    if len(rows) <= max_points:
+        return rows
+    span = max(1, until - since)
+    bucket_sec = -(-span // max_points)  # ceil
+    buckets: dict[int, list[dict]] = {}
+    for row in rows:
+        idx = (int(row["t"]) - since) // bucket_sec
+        buckets.setdefault(idx, []).append(row)
+    return [
+        _aggregate_window(group, since + idx * bucket_sec)
+        for idx, group in sorted(buckets.items())
+    ]
+
+
+def query_range(since: int, until: int, max_points: int = MAX_QUERY_POINTS) -> dict:
+    """Points for [since, until], tier picked automatically, count capped.
+
+    Raw-tier responses below the cap pass through untouched (plain raw rows);
+    anything decimated -- and every aggregate-tier row -- carries avg under
+    the plain field name plus ``<field>_max`` peaks.
+    """
+    from hub import metrics
+
+    since, until = int(since), int(until)
+    max_points = max(1, min(int(max_points), MAX_QUERY_POINTS))
+    tier = _pick_tier(since, until)
+    if tier == "raw":
+        # history() merges the on-disk file with the not-yet-flushed buffer;
+        # minutes is measured back from *now*, so stretch it to reach since.
+        minutes = max(1, int((time.time() - since) // 60) + 2)
+        rows = [o for o in metrics.history(minutes) if since <= o.get("t", 0) <= until]
+    else:
+        path = FILE_5M if tier == "5m" else FILE_1H
+        rows = [o for o in _rows_since(path, since) if o.get("t", 0) <= until]
+    rows.sort(key=lambda o: o.get("t", 0))
+    return {"points": _decimate(rows, since, until, max_points), "tier": tier}

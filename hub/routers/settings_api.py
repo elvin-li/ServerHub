@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from hub import __version__, alerts, backups, metrics
+from hub import __version__, alerts, backups, metrics, metrics_rollup
 from hub.auth import auth_enabled
 from hub.config import cfg, update_settings
 from hub.errors import api_error
@@ -237,10 +238,51 @@ def put_settings(body: SettingsPatch):
 
 
 @router.get("/api/metrics")
-def get_metrics(minutes: int = 60):
-    minutes = max(5, min(minutes, 48 * 60))
-    pts = metrics.history(minutes)
-    return {"points": pts, "latest": pts[-1] if pts else None}
+def get_metrics(
+    minutes: int = 60,
+    range_: Optional[str] = Query(None, alias="range"),
+    since: Optional[int] = None,
+    until: Optional[int] = None,
+    points: int = 1500,
+):
+    """Metrics history.
+
+    Without ``range``/``since`` the legacy contract is untouched (same params,
+    same response shape, raw points only) -- external pollers such as the
+    menubar keep working.  With ``range`` (48h/30d/1y style) or an explicit
+    ``since``[/``until``] epoch window, the tiered store picks the layer
+    (raw 90s / 5m / 1h aggregates, see hub/metrics_rollup.py) and caps the
+    response at ``points`` samples, decimating on the selected layer if
+    needed.  Aggregated points keep the raw field names for the window
+    average and add ``<field>_max`` peaks.
+    """
+    if range_ is None and since is None:
+        minutes = max(5, min(minutes, 48 * 60))
+        pts = metrics.history(minutes)
+        return {"points": pts, "latest": pts[-1] if pts else None}
+    now = int(time.time())
+    if since is not None:
+        start = int(since)
+        end = int(until) if until is not None else now
+        if end <= start:
+            raise HTTPException(400, "until must be greater than since")
+    else:
+        try:
+            span = metrics_rollup.parse_range(range_)
+        except ValueError:
+            raise HTTPException(400, "invalid range (expected e.g. 48h, 30d, 1y)")
+        end = now
+        start = end - span
+    cap = max(50, min(points, metrics_rollup.MAX_QUERY_POINTS))
+    result = metrics_rollup.query_range(start, end, max_points=cap)
+    pts = result["points"]
+    return {
+        "points": pts,
+        "latest": pts[-1] if pts else None,
+        "tier": result["tier"],
+        "since": start,
+        "until": end,
+    }
 
 
 @router.get("/api/alerts")

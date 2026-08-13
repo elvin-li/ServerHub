@@ -95,13 +95,22 @@
           <span style="display:inline-flex;align-items:center;gap:6px;margin-left:auto">
             <span class="badge" :class="cpuBadge">{{ cpuUsed }}%</span>
             <span class="range-btns">
-              <button class="tiny" :class="metricMins===60?'primary':''" @click="setMetricMins(60)">1h</button>
-              <button class="tiny" :class="metricMins===360?'primary':''" @click="setMetricMins(360)">6h</button>
-              <button class="tiny" :class="metricMins===1440?'primary':''" @click="setMetricMins(1440)">24h</button>
-              <button class="tiny" :class="metricMins===2880?'primary':''" @click="setMetricMins(2880)">48h</button>
+              <button
+                v-for="r in METRIC_RANGES"
+                :key="r"
+                class="tiny"
+                :class="metricRange===r?'primary':''"
+                @click="setMetricRange(r)"
+              >{{ r }}</button>
             </span>
           </span>
         </h3>
+        <!-- Aggregate tiers only start filling from the day this feature is
+             enabled; charts render whatever exists and this line says why the
+             window looks short instead of leaving it blank. -->
+        <div v-if="metricsSwitching || historyHint" class="sub" style="margin:-2px 0 4px">
+          {{ metricsSwitching ? t('common.loading') : historyHint }}
+        </div>
         <div class="res-head cpu-head">
           <div class="big">{{ cpuUsed }}<small>%</small></div>
         </div>
@@ -488,8 +497,8 @@ import LineChart from '../components/LineChart.vue'
 import StackBar from '../components/StackBar.vue'
 import {
   doAction, getAlerts, getBookmarks, getContainers, getHealthChecks, getHost,
-  getListeningPorts, getMetrics, getPower, getSensors, getStatus, getStorage,
-  getUps, powerAction, setSystemSharing,
+  getListeningPorts, getMetricsRange, getPower, getSensors, getStatus,
+  getStorage, getUps, powerAction, setSystemSharing,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 
@@ -540,7 +549,22 @@ const powerData = ref({})
 // Gates the Screen Sharing toggle so an unreadable state is never rendered as
 // "off" with an Enable button next to it.
 const powerLoaded = ref(false)
-const metricMins = ref(60)
+// Chart time ranges. Up to 48h the backend serves the raw 90s layer; 30d/1y
+// come from the 5m/1h rollup tiers (data/metrics-5m.jsonl, metrics-1h.jsonl).
+const METRIC_RANGES = ['1h', '6h', '24h', '48h', '30d', '1y']
+const METRIC_RANGE_KEY = 'serverhub.metricsRange'
+function savedMetricRange() {
+  try {
+    const v = localStorage.getItem(METRIC_RANGE_KEY)
+    return METRIC_RANGES.includes(v) ? v : '1h'
+  } catch { return '1h' }
+}
+const metricRange = ref(savedMetricRange())
+// { since, until } of the last range response; null on the legacy shape.
+const metricsMeta = ref(null)
+// True only while an operator-initiated range switch is in flight; the 90s
+// background refresh must not flash a loading line under stable charts.
+const metricsSwitching = ref(false)
 let timer = null
 let heavyTimer = null
 let actionRefreshTimer = null
@@ -721,11 +745,21 @@ function bmLabel(b) {
   return t('dashboard.bm_down')
 }
 
+// The `*_max` peak series only exist on aggregated points (5m/1h tiers and
+// decimated raw): averaging a whole window would hide short spikes, so the
+// stored per-window peak is drawn as a faint companion line. On raw
+// pass-through points the fields are absent, the values are all null, and
+// LineChart drops the series without rendering an empty legend entry.
 const cpuChartSeries = computed(() => [
   {
     name: t('dashboard.chart_cpu'),
     values: (metrics.value || []).map(p => p.cpu_used_pct ?? null),
     color: 'var(--accent)',
+  },
+  {
+    name: `${t('dashboard.chart_cpu')} ${t('dashboard.chart_peak')}`,
+    values: (metrics.value || []).map(p => p.cpu_used_pct_max ?? null),
+    color: 'color-mix(in srgb, var(--accent) 38%, transparent)',
   },
   {
     name: t('dashboard.chart_load_cap'),
@@ -749,6 +783,13 @@ const memChartSeries = computed(() => [
     }),
     color: 'var(--ok)',
   },
+  {
+    // No mem_free_pct fallback here: 100 - max(free) would be the window's
+    // *minimum* pressure, not its peak.
+    name: `${t('dashboard.chart_mem_pressure')} ${t('dashboard.chart_peak')}`,
+    values: (metrics.value || []).map(p => p.mem_used_pct_max ?? null),
+    color: 'color-mix(in srgb, var(--ok) 38%, transparent)',
+  },
 ])
 
 const diskChartSeries = computed(() => [
@@ -757,12 +798,38 @@ const diskChartSeries = computed(() => [
     values: (metrics.value || []).map(p => p.disk_pct ?? null),
     color: 'var(--warn)',
   },
+  {
+    name: `${t('dashboard.chart_disk')} ${t('dashboard.chart_peak')}`,
+    values: (metrics.value || []).map(p => p.disk_pct_max ?? null),
+    color: 'color-mix(in srgb, var(--warn) 38%, transparent)',
+  },
 ])
 
-function setMetricMins(m) {
-  metricMins.value = m
-  loadMetrics()
+function setMetricRange(r) {
+  if (!METRIC_RANGES.includes(r)) return
+  metricRange.value = r
+  try { localStorage.setItem(METRIC_RANGE_KEY, r) } catch {}
+  metricsSwitching.value = true
+  loadMetrics().finally(() => { metricsSwitching.value = false })
 }
+
+// "History accumulating" hint: the rollup tiers only contain data from the
+// day they were enabled (and the panel only samples while awake), so a 30d/1y
+// selection may cover a fraction of the window. Charts still draw what
+// exists; this explains the short span. 10% slack keeps the hint quiet for
+// ordinary holes (nightly sleep, brief restarts).
+const historyHint = computed(() => {
+  const meta = metricsMeta.value
+  if (!meta || meta.since == null || meta.until == null) return ''
+  const span = meta.until - meta.since
+  if (span <= 0) return ''
+  const pts = metrics.value || []
+  if (!pts.length) return t('dashboard.chart_accumulating')
+  const first = pts[0]?.t
+  if (first == null || first - meta.since <= span * 0.1) return ''
+  const d = new Date(first * 1000).toLocaleDateString()
+  return `${t('dashboard.chart_accumulating')} · ${t('dashboard.chart_earliest', { d })}`
+})
 async function loadPower() {
   try {
     powerData.value = await getPower()
@@ -885,8 +952,11 @@ async function loadSensors(force = false) {
 }
 async function loadMetrics() {
   try {
-    const m = await getMetrics(metricMins.value)
+    const m = await getMetricsRange(metricRange.value)
     metrics.value = m.points || []
+    metricsMeta.value = m.since != null && m.until != null
+      ? { since: m.since, until: m.until }
+      : null
   } catch {}
 }
 async function refreshHeavy(forceSensors = false, withDockerStats = false) {

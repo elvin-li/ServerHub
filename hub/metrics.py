@@ -158,6 +158,18 @@ def flush_metrics() -> None:
         _flush_buf_locked(force_trim=True)
 
 
+def flush_pending() -> None:
+    """Flush buffered samples to disk without forcing a trim pass.
+
+    Used by the rollup (hub/metrics_rollup.py) right before it reads the file
+    tail, so a just-completed 5-minute window is fully on disk.  Deliberately
+    not flush_metrics(): forcing the trim would re-read the whole file every
+    5 minutes, defeating the hourly _TRIM_INTERVAL gate above.
+    """
+    with _lock:
+        _flush_buf_locked()
+
+
 def record_sample(sample: dict | None = None, *, immediate: bool = False) -> dict:
     """Record one sample. Batched to disk unless immediate=True."""
     global _last_sample
@@ -247,6 +259,15 @@ def _loop(interval: int = 90):
             # keeps a data point on disk promptly without the startup path
             # waiting for it.
             record_sample(immediate=(tick == 1))
+            # Long-term history rides on this thread rather than owning one:
+            # maybe_rollup() is an integer comparison per tick and only does
+            # file IO when a wall-clock 5-minute/1-hour window has completed
+            # since its persisted watermark (see hub/metrics_rollup.py).
+            try:
+                from hub import metrics_rollup
+                metrics_rollup.maybe_rollup()
+            except Exception:
+                pass
         except Exception:
             pass
         _stop.wait(interval)
