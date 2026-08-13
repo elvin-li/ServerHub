@@ -636,13 +636,16 @@ class ContentSecurityPolicyTests(unittest.TestCase):
 
         qrcode-generator's createSvgTag emits <svg>/<rect>/<path> from encoded
         modules and never interpolates the payload as markup, so a hostile
-        input cannot become elements.  Exactly two sinks hold that argument:
+        input cannot become elements.  Exactly three sinks hold that argument:
 
         * WireGuard.vue — the peer-config QR (``qrSvg``); a hostile peer
           config stays pixels.
         * Settings.vue — the TOTP enrollment QR (``twofaEnroll.qrSvg``); the
           otpauth:// URI is built server-side from a server-generated secret
           and the account name, and either way ends up as modules, not markup.
+        * Account.vue — the same TOTP enrollment QR on the per-account
+          self-service page (``enrollment.qrSvg``); identical pipeline, same
+          qrcode-generator call, just reachable by member sessions.
 
         Any *other* v-html would not have that property; adding one means
         extending this list with its own justification, not raising a number.
@@ -658,6 +661,7 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         self.assertEqual(
             sorted(sinks),
             [
+                'views/Account.vue: <div class="twofa-qr" v-html="enrollment.qrSvg"></div>',
                 'views/Settings.vue: <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>',
                 'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>',
             ],

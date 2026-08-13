@@ -259,6 +259,7 @@ def status() -> dict:
 
     state = _load_state()
     versions = remote_versions()
+    warnings = remote_warnings()
     overrides = []
     for p in remote_template_files():
         tid = p.stem
@@ -266,9 +267,12 @@ def status() -> dict:
             (catalog.TEMPLATES / f"{tid}{suffix}").exists()
             for suffix in (".yml", ".yaml")
         )
-        overrides.append(
-            {"id": tid, "version": versions.get(tid, ""), "builtin_available": builtin}
-        )
+        overrides.append({
+            "id": tid,
+            "version": versions.get(tid, ""),
+            "builtin_available": builtin,
+            "warnings": warnings.get(tid, []),
+        })
     return {
         "url": source_url(),
         "configured": bool(source_url()),
@@ -338,6 +342,74 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
     if not isinstance(doc, dict) or not isinstance(doc.get("services"), dict) or not doc["services"]:
         return "compose body has no services mapping"
     return ""
+
+
+#: Compose directives worth flagging on an ingested template.  Stable machine
+#: codes; the SPA translates them (catalog_remote.warn_<code>).
+WARN_PRIVILEGED = "privileged"
+WARN_CAP_ADD = "cap_add"
+WARN_DOCKER_SOCKET = "docker_socket"
+WARN_HOST_NETWORK = "host_network"
+WARN_DEVICES = "devices"
+
+
+def scan_compose_directives(text: str) -> list[str]:
+    """Elevated-access compose directives used by template *text*, sorted.
+
+    Defence in depth, not a gate: the administrator's choice of source URL is
+    the root of trust (module docstring), and plenty of legitimate templates
+    need e.g. a device or the Docker socket.  But a remote override installs
+    exactly like the built-in it shadows, with only a small badge to tell them
+    apart — so anything that would widen a container's blast radius is
+    recorded at ingest and shown prominently in the install dialog instead of
+    being silently accepted.  Returns machine codes, never rejects.
+    """
+    from hub import catalog
+
+    m = catalog.FM_RE.match(text)
+    body = m.group(2) if m else text
+    try:
+        doc = yaml.safe_load(catalog.VAR_RE.sub("1", body))
+    except Exception:  # noqa: BLE001 - unparseable bodies are rejected elsewhere
+        return []
+    services = doc.get("services") if isinstance(doc, dict) else None
+    if not isinstance(services, dict):
+        return []
+    hits: set[str] = set()
+    for service in services.values():
+        if not isinstance(service, dict):
+            continue
+        if service.get("privileged"):
+            hits.add(WARN_PRIVILEGED)
+        if service.get("cap_add"):
+            hits.add(WARN_CAP_ADD)
+        if service.get("devices"):
+            hits.add(WARN_DEVICES)
+        if str(service.get("network_mode") or "").strip().lower() == "host":
+            hits.add(WARN_HOST_NETWORK)
+        for volume in service.get("volumes") or []:
+            # Both list forms: "sock:/sock" strings and {source: ...} maps.
+            source = volume.get("source") if isinstance(volume, dict) else volume
+            if "docker.sock" in str(source or ""):
+                hits.add(WARN_DOCKER_SOCKET)
+    return sorted(hits)
+
+
+def remote_warnings() -> dict[str, list[str]]:
+    """id -> elevated-access directive codes for every synced override.
+
+    Populated at ingest by check_updates(); an override synced before this
+    field existed simply reports no warnings until its next sync.
+    """
+    templates = _load_state().get("templates")
+    if not isinstance(templates, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for tid, info in templates.items():
+        if isinstance(info, dict):
+            warnings = info.get("warnings")
+            out[str(tid)] = [str(w) for w in warnings] if isinstance(warnings, list) else []
+    return out
 
 
 def _validate_entry(entry: Any) -> str:
@@ -482,7 +554,14 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
             staged.chmod(0o600)
             os.replace(staged, final)
             (updated if current else added).append(tid)
-            known[tid] = {"version": version, "sha256": sha, "synced": _now()}
+            known[tid] = {
+                "version": version,
+                "sha256": sha,
+                "synced": _now(),
+                # Elevated-access directives are accepted but remembered, so
+                # the install dialog can warn before anything runs.
+                "warnings": scan_compose_directives(text),
+            }
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

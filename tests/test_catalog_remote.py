@@ -386,6 +386,96 @@ class Atomicity(RemoteCatalogCase):
         self.assertEqual(catalog_remote.remote_versions()["app-one"], "1.3.0")
 
 
+DANGEROUS_TEMPLATE = """---
+name: Remote Danger
+desc: A demo using every elevated-access compose directive at once
+category: other
+---
+services:
+  danger:
+    image: example/danger:1.0.0
+    privileged: true
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+"""
+
+
+class ElevatedAccessScan(RemoteCatalogCase):
+    """Dangerous compose directives are recorded at ingest, never rejected.
+
+    Defence in depth for the "remote override looks exactly like the built-in"
+    problem: the admin's source choice stays the trust root, but privileged /
+    cap_add / docker.sock / host networking / devices are surfaced as template
+    metadata so the install dialog can warn before anything runs.
+    """
+
+    def test_scanner_reports_each_directive_once(self):
+        self.assertEqual(
+            catalog_remote.scan_compose_directives(DANGEROUS_TEMPLATE),
+            ["cap_add", "devices", "docker_socket", "host_network", "privileged"],
+        )
+
+    def test_scanner_reports_nothing_for_a_clean_template(self):
+        self.assertEqual(catalog_remote.scan_compose_directives(VALID_TEMPLATE), [])
+
+    def test_scanner_sees_long_form_volume_mounts(self):
+        text = (
+            "---\nname: X\ndesc: Y\n---\n"
+            "services:\n  x:\n    image: a:1\n    volumes:\n"
+            "      - type: bind\n        source: /var/run/docker.sock\n"
+            "        target: /var/run/docker.sock\n"
+        )
+        self.assertEqual(
+            catalog_remote.scan_compose_directives(text), ["docker_socket"]
+        )
+
+    def test_dangerous_template_is_accepted_and_its_hits_are_recorded(self):
+        self.serve_manifest([entry("app-danger", DANGEROUS_TEMPLATE)])
+        self.serve_template("app-danger", DANGEROUS_TEMPLATE)
+        result = self.sync()
+        self.assertEqual(result["added"], ["app-danger"])
+        self.assertEqual(result["rejected"], [])
+        self.assertEqual(
+            catalog_remote.remote_warnings()["app-danger"],
+            ["cap_add", "devices", "docker_socket", "host_network", "privileged"],
+        )
+        with patch.object(catalog_remote, "source_url", lambda: INDEX_URL):
+            status = catalog_remote.status()
+        self.assertEqual(
+            status["overrides"][0]["warnings"],
+            ["cap_add", "devices", "docker_socket", "host_network", "privileged"],
+        )
+
+    def test_clean_sync_records_an_empty_warning_list(self):
+        self.serve_manifest([entry("app-one", VALID_TEMPLATE)])
+        self.serve_template("app-one", VALID_TEMPLATE)
+        self.sync()
+        self.assertEqual(catalog_remote.remote_warnings()["app-one"], [])
+
+    def test_listing_carries_compose_warnings_for_remote_overrides(self):
+        dangerous_demo = DANGEROUS_TEMPLATE.replace(
+            "name: Remote Danger", "name: Remote Demo"
+        )
+        self.serve_manifest([entry("demo", dangerous_demo, version="6.6.6")])
+        self.serve_template("demo", dangerous_demo)
+        self.sync()
+        items = {t["id"]: t for t in catalog.list_templates(force=True)}
+        self.assertEqual(
+            items["demo"]["compose_warnings"],
+            ["cap_add", "devices", "docker_socket", "host_network", "privileged"],
+        )
+        # Built-in templates never carry sync-time warnings.
+        for tid, item in items.items():
+            if item["source"] == "builtin":
+                self.assertEqual(item["compose_warnings"], [], tid)
+
+
 class MergeAndRestore(RemoteCatalogCase):
     def install_override(self, tid: str = "demo", text: str | None = None) -> None:
         body = text if text is not None else VALID_TEMPLATE

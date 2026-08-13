@@ -20,12 +20,15 @@ own "who may call this", the audit trail lives with the callers.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 
 from hub import secure_io, totp
 from hub.paths import DATA_DIR
@@ -34,6 +37,34 @@ from hub.paths import DATA_DIR
 #: notify_channels.SECRETS_FILE.
 STORE_FILE = DATA_DIR / "twofa.json"
 _lock = threading.Lock()
+
+
+@contextmanager
+def _file_lock():
+    """Exclusive cross-process lock around every read-modify-write of the store.
+
+    The in-process ``_lock`` is not sufficient on its own: a packaged
+    ServerHub.app and the LaunchAgent panel can share one ``data/`` directory
+    (the same deployment hub/config.py grew its services.yaml flock for), and
+    two interpreters that each read the store, verify the same TOTP or
+    recovery code and write back independently would *both* accept it — the
+    single-use guarantee (last_counter / consumed recovery digests) only holds
+    if read→compare→write is atomic across processes.  Same pattern as
+    ``config._file_lock``: a separate ``.lock`` file rather than the store
+    itself, because ``secure_io.replace_secret_text`` swaps in a new inode and
+    a lock on the old one would silently stop excluding anybody.
+    """
+    lock_path = STORE_FILE.with_name(STORE_FILE.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 #: Recovery code shape: two groups of five from an alphabet without the
 #: look-alikes (0/O, 1/I/L), ~50 bits — plenty for a code that is single-use,
@@ -97,7 +128,7 @@ def begin_enrollment(username: str) -> dict:
     """
     username = str(username)
     secret = totp.generate_secret()
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         entry = dict(data.get(username) or {})
         if entry.get("enabled"):
@@ -119,7 +150,7 @@ def confirm_enrollment(username: str, code: str, *, timestamp: float | None = No
     plaintext exists) or None when the code does not verify.
     """
     username = str(username)
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         entry = dict(data.get(username) or {})
         pending = str(entry.get("pending_secret") or "")
@@ -143,7 +174,7 @@ def confirm_enrollment(username: str, code: str, *, timestamp: float | None = No
 def verify_totp_code(username: str, code: str, *, timestamp: float | None = None) -> bool:
     """One TOTP verification with drift tolerance and replay rejection."""
     username = str(username)
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         entry = dict(data.get(username) or {})
         if not entry.get("enabled") or not entry.get("secret"):
@@ -168,7 +199,7 @@ def use_recovery_code(username: str, code: str) -> bool:
     """Spend one recovery code.  Consumed immediately on success."""
     username = str(username)
     supplied = _hash_recovery(code)
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         entry = dict(data.get(username) or {})
         if not entry.get("enabled"):
@@ -206,7 +237,7 @@ def regenerate_recovery(username: str) -> list[str]:
     """Replace every outstanding recovery code.  Caller must re-verify first."""
     username = str(username)
     codes = _new_recovery_codes()
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         entry = dict(data.get(username) or {})
         if not entry.get("enabled"):
@@ -225,7 +256,7 @@ def disable(username: str) -> bool:
     -out family member) belongs to the route, not here.
     """
     username = str(username)
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         entry = data.get(username) or {}
         was_enabled = bool(entry.get("enabled"))

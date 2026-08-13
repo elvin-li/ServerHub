@@ -12,6 +12,26 @@ import './styles.css'
 // running a shell whose assets the server has already replaced.
 installChunkRecovery()
 
+/**
+ * Reveal the hardcoded bilingual failure notice shipped in index.html.
+ *
+ * Reached only when *no* dictionary loaded (initializeI18n() returned false):
+ * with MESSAGES entirely empty, t() returns every key verbatim and the whole
+ * UI would render as raw key paths.  The notice deliberately lives in the
+ * shell rather than here so it cannot depend on any dictionary, and the
+ * reload button is wired up here because the CSP forbids inline handlers.
+ */
+function showI18nFailure() {
+  const panel = document.getElementById('i18n-failure')
+  if (!panel) {
+    // A shell so old it predates the notice: plain-text last resort.
+    document.body.textContent = 'ServerHub could not load its language packs. Please refresh.'
+    return
+  }
+  panel.hidden = false
+  panel.querySelector('button')?.addEventListener('click', () => location.reload())
+}
+
 async function bootstrap() {
   // Kick off the landing page's chunk before awaiting anything, so it downloads
   // alongside the dictionary fetch below and the router's auth-status probe
@@ -23,7 +43,16 @@ async function bootstrap() {
   // fallback are resident (all three locales are code-split; see i18n/index.js),
   // so the page never flashes raw key paths and t()'s synchronous English
   // fallback keeps working from the first paint on.
-  await initializeI18n()
+  //
+  // When not even one dictionary made it (offline mid-deploy, storage failure),
+  // do not mount at all: an app whose every label is a raw key path is worse
+  // than a one-line notice with a refresh button. A stale-chunk failure after
+  // a redeploy is already handled by lib/chunkRecovery.js with one reload; this
+  // covers the case where the reload did not help either.
+  if (!await initializeI18n()) {
+    showI18nFailure()
+    return
+  }
 
   const app = createApp(App)
   provideI18n(app)

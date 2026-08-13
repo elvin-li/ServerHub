@@ -10,6 +10,8 @@ notes: |
   Default administrator is admin@example.com / changeme; you must change the password at first login.
   Host ports default to 8080 (HTTP) / 4443 (HTTPS) / 81 (admin); inside the container they stay 80/443/81.
   To serve 80/443 directly, make sure the local nginx is stopped and the container may bind privileged ports.
+# Upstream image ships this fixed first-run login; it cannot be preset via env.
+first_run_credentials: "admin@example.com / changeme"
 vars:
   - name: ADMIN_PORT
     label: Admin port

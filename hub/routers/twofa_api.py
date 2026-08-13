@@ -33,7 +33,10 @@ router = APIRouter(tags=["auth-totp"])
 
 
 def _client(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    # Same loopback-aware identity as the password login (auth.request_client),
+    # so both sign-in steps share one per-visitor failure budget behind the
+    # local reverse proxy instead of one global 127.0.0.1 bucket.
+    return auth.request_client(request)
 
 
 def _require_session_user(request: Request) -> str:

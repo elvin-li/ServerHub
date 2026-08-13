@@ -350,6 +350,10 @@ def _parse_template(path: Path) -> tuple[dict, str]:
     meta.setdefault("featured", False)
     meta.setdefault("notes", "")
     meta.setdefault("url_template", "")
+    # Fixed first-run login the upstream image ships when it cannot be preset
+    # through env vars (e.g. "admin / admin123").  Shown prominently on the
+    # install success panel with a change-it-now reminder.
+    meta["first_run_credentials"] = str(meta.get("first_run_credentials") or "").strip()
     return meta, body
 
 
@@ -429,6 +433,7 @@ def list_templates(force: bool = False) -> list:
     for p in catalog_remote.remote_template_files():
         by_id[p.stem] = p
     remote_versions = catalog_remote.remote_versions()
+    remote_warnings = catalog_remote.remote_warnings()
     files = [by_id[k] for k in sorted(by_id)]
     for p in files:
         meta, _ = _parse_template(p)
@@ -475,6 +480,7 @@ def list_templates(force: bool = False) -> list:
             "ports": meta.get("ports") or [],
             "featured": bool(meta.get("featured")),
             "notes": meta.get("notes") or "",
+            "first_run_credentials": meta.get("first_run_credentials") or "",
             "url_template": meta.get("url_template") or "",
             "url_hint": url_hint,
             "installed": installed,
@@ -484,6 +490,9 @@ def list_templates(force: bool = False) -> list:
             "source": "remote" if is_remote else "builtin",
             "remote_version": remote_versions.get(p.stem, "") if is_remote else "",
             "builtin_available": (p.stem in builtin_ids) if is_remote else True,
+            # Elevated-access compose directives found at sync time; the
+            # install dialog lists them in red for remote templates.
+            "compose_warnings": remote_warnings.get(p.stem, []) if is_remote else [],
         })
     items.sort(key=lambda x: (0 if x.get("featured") else 1, x.get("name") or ""))
     return _cache_store(now, sig, items)
@@ -981,6 +990,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
                 "variables": values,
                 "url": url,
                 "notes": notes,
+                "first_run_credentials": meta.get("first_run_credentials") or "",
                 "stack_id": template_id,
             }
         env = dict(os.environ)
@@ -1008,6 +1018,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "variables": values,
             "url": url,
             "notes": notes,
+            "first_run_credentials": meta.get("first_run_credentials") or "",
             "stack_id": template_id,
             "remapped_ports": remapped,
         }

@@ -21,12 +21,15 @@ stays fresh for the management listing either way.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 
 from hub import secure_io
 from hub.paths import DATA_DIR
@@ -34,6 +37,32 @@ from hub.paths import DATA_DIR
 #: Module-level so tests can point it at a scratch directory.
 STORE_FILE = DATA_DIR / "api-keys.json"
 _lock = threading.Lock()
+
+
+@contextmanager
+def _file_lock():
+    """Exclusive cross-process lock around every read-modify-write of the store.
+
+    ``_lock`` only serialises writers inside one interpreter, and this file can
+    be shared by two ServerHub processes (packaged .app + LaunchAgent panel,
+    the deployment hub/config.py documents).  Without a kernel-arbitrated lock,
+    ``verify``'s throttled last_used write-back can race a concurrent
+    ``revoke``/``create`` in the other process and rewrite the store from its
+    stale snapshot — silently resurrecting a key that was just revoked.  Same
+    pattern as ``config._file_lock``: a separate ``.lock`` file, because the
+    atomic replace in secure_io swaps the store's inode.
+    """
+    lock_path = STORE_FILE.with_name(STORE_FILE.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 PREFIX = "shk_"
 #: Roles a key may carry; values must stay equal to hub.auth.ROLES.  A literal
@@ -127,7 +156,7 @@ def create(name: str, role: str, *, expires_days: int | None = None) -> tuple[di
         "expires": expires,
         "last_used": None,
     }
-    with _lock:
+    with _lock, _file_lock():
         keys = _load()
         if len(keys) >= MAX_KEYS:
             raise ValueError("too_many")
@@ -138,7 +167,7 @@ def create(name: str, role: str, *, expires_days: int | None = None) -> tuple[di
 
 def revoke(key_id: str) -> dict | None:
     """Remove one key; returns its public view, or None when unknown."""
-    with _lock:
+    with _lock, _file_lock():
         keys = _load()
         for index, record in enumerate(keys):
             if str(record.get("id")) == str(key_id):
@@ -161,7 +190,10 @@ def verify(token: str | None) -> dict | None:
         return None
     supplied = _digest(str(token))
     now = int(time.time())
-    with _lock:
+    # The file lock covers the read too, not just the throttled write: a
+    # verify() that reads before a concurrent revoke in another process and
+    # writes after it would resurrect the revoked key.
+    with _lock, _file_lock():
         keys = _load()
         hit: dict | None = None
         for record in keys:

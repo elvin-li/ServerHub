@@ -8,6 +8,8 @@ url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
 notes: |
   Default sign-in is admin / admin123 - change it immediately.
   The books folder must contain (or will hold) a Calibre metadata.db library; on first login point the database location at /books.
+# Upstream image ships this fixed first-run login; it cannot be preset via env.
+first_run_credentials: "admin / admin123"
 vars:
   - name: HOST_PORT
     label: Web port

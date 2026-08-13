@@ -597,6 +597,16 @@
         </div>
         <p class="modal-desc">{{ installTpl.desc }}</p>
         <p v-if="installTpl.notes" class="notes">{{ installTpl.notes }}</p>
+        <!-- Elevated-access compose directives found when the remote template
+             was synced: accepted (the admin's source choice is the trust
+             root), but never silently. -->
+        <div v-if="(installTpl.compose_warnings || []).length" class="tpl-danger" role="alert">
+          <strong>{{ t('catalog_remote.warn_title') }}</strong>
+          {{ (installTpl.compose_warnings || []).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
+        </div>
+        <p v-if="installTpl.source === 'remote' && installTpl.builtin_available" class="tpl-danger" role="alert">
+          {{ t('catalog_remote.overrides_builtin_note') }}
+        </p>
         <p v-if="installTpl.kind === 'native'" class="path-line mono">
           → {{ t('apps.native_install') }} · {{ installTpl.method || 'system' }}{{ installTpl.package ? ` · ${installTpl.package}` : '' }}
         </p>
@@ -622,6 +632,14 @@
           <button type="button" @click="installTpl = null">{{ t('common.cancel') }}</button>
         </div>
         <pre v-if="installLog" class="install-log" role="log" aria-live="polite">{{ installLog }}</pre>
+        <!-- Fixed upstream first-run login (cannot be preset via env): shown on
+             the success panel so nobody has to dig it out of the notes, with a
+             change-it-now reminder. -->
+        <div v-if="installCreds" class="tpl-danger first-run-creds" role="alert">
+          <strong>{{ t('apps.first_run_creds_title') }}</strong>
+          <span class="mono">{{ installCreds }}</span>
+          <span>{{ t('apps.first_run_creds_hint') }}</span>
+        </div>
         <a
           v-if="installUrl"
           class="btn primary open-url"
@@ -788,6 +806,8 @@ const installPanel = ref(null)
 const installVars = ref({})
 const installLog = ref('')
 const installUrl = ref('')
+//: Upstream first-run credentials of the just-installed template, if any.
+const installCreds = ref('')
 const credential = ref(null)
 const credentialBusy = ref(false)
 const credentialForm = ref({ username: '', password: '', confirm: '', url: '', notes: '' })
@@ -1618,6 +1638,7 @@ function openInstall(tpl) {
   installTpl.value = tpl
   installLog.value = ''
   installUrl.value = ''
+  installCreds.value = ''
   const vars = {}
   for (const v of tpl.vars || []) vars[v.name] = v.default || ''
   installVars.value = vars
@@ -1716,11 +1737,18 @@ async function doInstall() {
   busy.value = true
   installLog.value = isNative ? t('apps.deploying_native') : t('apps.deploying')
   installUrl.value = ''
+  installCreds.value = ''
   try {
     const r = await installCatalog(installTpl.value.id, installVars.value)
     installLog.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '') + (r.path ? `\n→ ${r.path}` : '')
     if (r.notes) installLog.value += `\n\n${r.notes}`
     if (r.url || r.url_hint) installUrl.value = r.url || r.url_hint
+    // Surface the upstream default login only once something actually
+    // deployed; the field also rides the listing, so fall back to it for
+    // installs whose backend predates the response field.
+    if (r.ok) {
+      installCreds.value = r.first_run_credentials || installTpl.value.first_run_credentials || ''
+    }
     // First line only in the toast. A failure message can be several lines --
     // a pkg-based cask, for instance, explains that brew cannot be elevated and
     // prints the command to run on the Mac instead. The full text is right there
@@ -2234,6 +2262,36 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   white-space: pre-wrap;
   line-height: 1.5;
   word-break: break-word;
+}
+
+/* Red, not amber: elevated-access directives in a remote template deserve a
+   louder tone than ordinary install notes. */
+.tpl-danger {
+  font-size: 12px;
+  color: var(--down);
+  background: color-mix(in srgb, var(--down) 10%, var(--card));
+  border-left: 3px solid var(--down);
+  padding: 8px 10px;
+  margin: 0 0 10px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.tpl-danger strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.first-run-creds {
+  margin-top: 10px;
+}
+
+.first-run-creds .mono {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  margin: 2px 0;
+  user-select: all;
 }
 
 .install-log {

@@ -126,6 +126,57 @@ class TemplateListing(unittest.TestCase):
         self.assertEqual(leaked, [], "unexpanded placeholder reached the install form")
 
 
+class FirstRunCredentials(unittest.TestCase):
+    """Templates with a fixed upstream first-run login must declare it.
+
+    Some images ship a hardcoded default login that cannot be preset through
+    env vars (Calibre-Web's admin/admin123, Mealie's changeme@example.com,
+    NPM's admin@example.com/changeme).  The ``first_run_credentials`` front
+    matter field feeds the install success panel, which shows the pair with a
+    change-it-now reminder instead of leaving it buried in the notes.
+    """
+
+    KNOWN = {
+        "calibre-web": "admin / admin123",
+        "mealie": "changeme@example.com / MyPassword",
+        "nginx-proxy-manager": "admin@example.com / changeme",
+    }
+
+    def test_known_fixed_default_logins_are_declared(self):
+        for tid, expected in self.KNOWN.items():
+            with self.subTest(template=tid):
+                meta, _ = catalog._parse_template(TEMPLATE_DIR / f"{tid}.yml")
+                self.assertEqual(meta["first_run_credentials"], expected)
+
+    def test_notes_documenting_a_fixed_default_login_declare_the_field(self):
+        # Ratchet against the next template shipping with the warning hidden in
+        # prose only.  Random per-install passwords (qBittorrent's temporary
+        # password in the logs) are upstream mitigations, not fixed defaults,
+        # and deliberately do not match this wording.
+        documented = re.compile(r"default (sign-in|administrator|login) is", re.I)
+        offenders = []
+        for path in _template_files():
+            meta, _ = catalog._parse_template(path)
+            if documented.search(str(meta.get("notes") or "")) and not meta["first_run_credentials"]:
+                offenders.append(path.name)
+        self.assertEqual(
+            offenders,
+            [],
+            "these templates document a fixed default login in their notes but "
+            "do not declare first_run_credentials for the install success panel",
+        )
+
+    def test_the_field_reaches_the_listing_for_every_template(self):
+        for item in catalog.list_templates(force=True):
+            with self.subTest(template=item.get("id")):
+                self.assertIn("first_run_credentials", item)
+                self.assertIsInstance(item["first_run_credentials"], str)
+
+    def test_undeclared_templates_default_to_an_empty_string(self):
+        meta, _ = catalog._parse_template(TEMPLATE_DIR / "jellyfin.yml")
+        self.assertEqual(meta["first_run_credentials"], "")
+
+
 class HostTimezone(unittest.TestCase):
     def test_returns_an_iana_zone_or_utc(self):
         zone = catalog.host_timezone()
