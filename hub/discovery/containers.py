@@ -17,11 +17,25 @@ _lock = threading.Lock()
 #: containers page routinely land in the same tick.
 _refresh_lock = threading.Lock()
 
+#: How many *consecutive* probe timeouts may re-serve the last real observation
+#: before the engine is reported down anyway.  A stopped engine is not affected:
+#: `docker ps` against a dead daemon fails fast ("Cannot connect to the Docker
+#: daemon"), it does not time out.  A timeout means the host was too loaded to
+#: answer inside the budget -- one overnight load storm turned that into fifteen
+#: "OrbStack engine not running" alerts while the engine had two days of uptime.
+#: The cap keeps a genuinely wedged daemon visible: when every probe times out,
+#: the tolerance runs out and the report flips to down.
+_TIMEOUT_TOLERANCE = 3
+#: Consecutive timeout count.  Only touched under `_refresh_lock`.
+_timeouts = 0
+
 
 def invalidate_containers():
+    global _timeouts
     with _lock:
         _cache["t"] = 0
         _cache["v"] = None
+    _timeouts = 0
 
 
 def _cached(force: bool):
@@ -57,7 +71,8 @@ def discover_containers(force: bool = False):
 
 
 def _refresh():
-    rc, out, _ = sh(
+    global _timeouts
+    rc, out, err = sh(
         [
             DOCKER,
             "ps",
@@ -67,6 +82,20 @@ def _refresh():
         ],
         timeout=8,
     )
+    if rc == -1 and err == "timeout":
+        # No evidence either way -- do not turn "the probe was slow" into
+        # "the engine is down" (and every container gone) while a previous
+        # real observation exists and the tolerance is not exhausted.
+        _timeouts += 1
+        if _timeouts < _TIMEOUT_TOLERANCE:
+            with _lock:
+                prev = _cache["v"]
+                if prev is not None:
+                    _cache["t"] = time.time()
+                    prev_items, prev_engine_up = prev
+                    return list(prev_items), prev_engine_up
+    else:
+        _timeouts = 0
     items, engine_up = [], rc == 0
     if rc == 0:
         for line in out.splitlines():

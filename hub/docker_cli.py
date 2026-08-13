@@ -59,6 +59,16 @@ _engine_cache: dict = {"t": 0.0, "v": None}
 #: arriving mid-probe should wait for that answer instead of launching its own.
 _engine_lock = threading.Lock()
 
+#: How many *consecutive* probe timeouts may re-serve the last real observation
+#: before the engine is reported down anyway.  A stopped engine fails fast
+#: ("Cannot connect to the Docker daemon"), it does not time out; a timeout
+#: means the host was too loaded to answer inside the budget, and reporting
+#: that as "engine down" flapped every Docker indicator during load storms.
+#: The cap keeps a genuinely wedged daemon visible.
+_TIMEOUT_TOLERANCE = 3
+#: Consecutive timeout count.  Only touched under `_engine_lock`.
+_engine_timeouts = 0
+
 
 def invalidate_engine_state() -> None:
     """Force the next :func:`engine_up` to re-probe.
@@ -66,8 +76,10 @@ def invalidate_engine_state() -> None:
     For callers that just started or stopped the engine and must not report the
     previous state for the rest of the TTL.
     """
+    global _engine_timeouts
     with _engine_lock:
         _engine_cache.update(t=0.0, v=None)
+        _engine_timeouts = 0
 
 
 def engine_up(force: bool = False) -> bool:
@@ -76,13 +88,23 @@ def engine_up(force: bool = False) -> bool:
         if cached is not None and time.time() - _engine_cache["t"] < _ENGINE_TTL:
             return cached
 
+    global _engine_timeouts
     with _engine_lock:
         # Re-check under the lock: another caller may have finished the same probe
         # while this one waited, which is what makes this single-flight.
         cached = _engine_cache["v"]
         if not force and cached is not None and time.time() - _engine_cache["t"] < _ENGINE_TTL:
             return cached
-        rc, _, _ = docker("info", timeout=8)
+        rc, _, err = docker("info", timeout=8)
+        if rc == -1 and err == "timeout":
+            # No evidence either way: keep the last real observation alive for
+            # a bounded number of slow probes instead of flipping to "down".
+            _engine_timeouts += 1
+            if _engine_timeouts < _TIMEOUT_TOLERANCE and cached is not None:
+                _engine_cache.update(t=time.time(), v=cached)
+                return cached
+        else:
+            _engine_timeouts = 0
         up = rc == 0
         _engine_cache.update(t=time.time(), v=up)
         return up
