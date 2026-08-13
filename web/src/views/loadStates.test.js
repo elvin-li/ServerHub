@@ -181,7 +181,7 @@ describe('a failed first load explains itself', () => {
     { name: 'VMs', load: () => import('./VMs.vue'), api: ['getVms'], empty: 'vms.empty' },
     { name: 'MainArray', load: () => import('./MainArray.vue'), api: ['getStorage'], empty: 'main_extra.empty_disks' },
     { name: 'Pool', load: () => import('./Pool.vue'), api: ['getStoragePool'], empty: 'pool.empty_members' },
-    { name: 'Services', load: () => import('./Services.vue'), api: ['getServices', 'getStatus'], empty: 'services.empty' },
+    { name: 'Services', load: () => import('./Services.vue'), api: ['getServices'], empty: 'services.empty' },
     { name: 'Apps', load: () => import('./Apps.vue'), api: ['getManagedApps'], empty: 'apps.managed_empty' },
   ]
 
@@ -208,39 +208,6 @@ describe('a failed first load explains itself', () => {
     const html = wrapper.html()
     expect(html, 'no failure banner').toContain('load-failure')
     expect(html, 'blamed the engine for an API failure').not.toContain('docker.engine_off')
-    release(wrapper)
-  })
-
-  it('Services treats the old-server 404 fallback as a success', async () => {
-    // /api/services is missing on older installs and the view falls back to
-    // /api/status. Latching that 404 would put a permanent error banner on every
-    // old install, so only a failure of *both* counts.
-    vi.doMock('../api/client', async () => {
-      const actual = await vi.importActual('../api/client')
-      return Object.fromEntries(
-        Object.keys(actual).map((name) => [
-          name,
-          typeof actual[name] === 'function'
-            ? vi.fn(async () => {
-                if (name === 'getServices') {
-                  const err = new Error('not found')
-                  err.status = 404
-                  throw err
-                }
-                return { groups: [] }
-              })
-            : actual[name],
-        ]),
-      )
-    })
-    vi.resetModules()
-    const module = await import('./Services.vue')
-    const wrapper = mount(module.default, {
-      global: { provide: { toast: vi.fn() }, stubs: { RouterLink: true } },
-    })
-    await flushPromises()
-    expect(wrapper.html(), 'the 404 fallback path raised an error banner')
-      .not.toContain('load-failure')
     release(wrapper)
   })
 })
