@@ -1,0 +1,24 @@
+---
+name: Seerr
+desc: Media request and discovery portal for Jellyfin, Plex and Emby (formerly Jellyseerr)
+category: media
+tags: [requests, media, arr]
+ports: ["5055"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: Family members browse and request titles here; requests are forwarded to Radarr / Sonarr. Sign in with your Jellyfin, Plex or Emby account on first launch.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "5055"
+---
+services:
+  seerr:
+    image: seerr/seerr:v3.4.1
+    container_name: seerr
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:5055"
+    volumes:
+      - ./config:/app/config

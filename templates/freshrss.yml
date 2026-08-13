@@ -1,0 +1,27 @@
+---
+name: FreshRSS
+desc: Self-hosted RSS / Atom feed aggregator · fast, lightweight, multi-user
+category: productivity
+tags: [rss, news, reader]
+ports: ["8350"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: The first visit runs a short setup wizard (choose SQLite for a single-user install). Feeds refresh automatically twice per hour.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "8350"
+---
+services:
+  freshrss:
+    image: freshrss/freshrss:1.29.1
+    container_name: freshrss
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+      # Built-in cron refreshes feeds at minute 13 and 43 of every hour.
+      - CRON_MIN=13,43
+    ports:
+      - "{{HOST_PORT}}:80"
+    volumes:
+      - ./data:/var/www/FreshRSS/data
+      - ./extensions:/var/www/FreshRSS/extensions

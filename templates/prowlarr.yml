@@ -1,0 +1,26 @@
+---
+name: Prowlarr
+desc: Indexer manager for the arr family · configure trackers once, sync to Radarr and Sonarr
+category: download
+tags: [indexer, automation, arr]
+ports: ["9696"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: Add your indexers here, then connect Radarr and Sonarr under Settings - Apps so they stay in sync automatically.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "9696"
+---
+services:
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:2.5.2.5491-ls156
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:9696"
+    volumes:
+      - ./config:/config

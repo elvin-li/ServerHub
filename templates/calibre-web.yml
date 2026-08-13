@@ -1,0 +1,33 @@
+---
+name: Calibre-Web
+desc: Clean web UI for browsing and reading a Calibre e-book library
+category: media
+tags: [ebooks, books, reader]
+ports: ["8183"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: |
+  Default sign-in is admin / admin123 - change it immediately.
+  The books folder must contain (or will hold) a Calibre metadata.db library; on first login point the database location at /books.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "8183"
+    help: Host port 8083 is used by the IT-Tools template, so this maps 8183 instead
+  - name: BOOKS_PATH
+    label: Calibre library folder (host)
+    default: "{{SERVICES}}/media/books"
+---
+services:
+  calibre-web:
+    image: lscr.io/linuxserver/calibre-web:0.6.27-ls395
+    container_name: calibre-web
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:8083"
+    volumes:
+      - ./config:/config
+      - "{{BOOKS_PATH}}:/books"

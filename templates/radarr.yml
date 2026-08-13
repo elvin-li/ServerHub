@@ -1,0 +1,35 @@
+---
+name: Radarr
+desc: Movie collection manager that automates searching, downloading and renaming
+category: download
+tags: [movies, automation, arr]
+ports: ["7878"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: Pair with Prowlarr (indexers) and qBittorrent (downloads). The downloads folder below should match your download client's folder so imports work.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "7878"
+  - name: MOVIES_PATH
+    label: Movies folder (host)
+    default: "{{SERVICES}}/media/movies"
+  - name: DOWNLOADS_PATH
+    label: Downloads folder (host)
+    default: "{{SERVICES}}/qbittorrent/downloads"
+    help: Point this at the same folder your download client saves into
+---
+services:
+  radarr:
+    image: lscr.io/linuxserver/radarr:6.3.0.10514-ls313
+    container_name: radarr
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:7878"
+    volumes:
+      - ./config:/config
+      - "{{MOVIES_PATH}}:/movies"
+      - "{{DOWNLOADS_PATH}}:/downloads"

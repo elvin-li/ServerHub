@@ -1,0 +1,28 @@
+---
+name: Home Assistant
+desc: Open-source smart home hub with thousands of device integrations
+category: iot
+tags: [smart-home, automation, iot]
+featured: true
+ports: ["8123"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: |
+  On macOS Docker the container cannot use host networking, so mDNS auto-discovery
+  (HomeKit pairing, some Cast/Sonos discovery) is limited; add such devices by IP address instead.
+  Cloud-polling and most network integrations work normally through the mapped port.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "8123"
+---
+services:
+  homeassistant:
+    image: homeassistant/home-assistant:2026.8.1
+    container_name: homeassistant
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:8123"
+    volumes:
+      - ./config:/config

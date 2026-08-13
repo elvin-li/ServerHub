@@ -5,7 +5,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from hub import apps_manage_svc, auth, autostart_svc, catalog, service_credentials
+from hub import apps_manage_svc, auth, autostart_svc, catalog, catalog_remote, service_credentials
 
 from ..errors import api_error
 
@@ -19,6 +19,17 @@ def _require_browser_session(request: Request) -> None:
         raise api_error("catalog.browser_session_required")
 
 
+def _require_admin_browser(request: Request) -> str:
+    """Changing the catalog source decides what software the panel offers to
+    install, so it is admin + browser-session only (same bar as shares)."""
+    if not auth.browser_authenticated(request):
+        raise api_error("catalog_remote.browser_session_required")
+    username = auth.request_username(request)
+    if not auth.is_admin(username):
+        raise api_error("catalog_remote.admin_required")
+    return username
+
+
 @router.get("/api/catalog")
 def list_catalog():
     """App store overview: templates + categories."""
@@ -28,6 +39,39 @@ def list_catalog():
 @router.get("/api/catalog/templates")
 def list_templates_only():
     return {"templates": catalog.list_templates()}
+
+
+# ── remote catalog source (fixed paths registered before /{template_id}/…) ───
+
+class RemoteSourceBody(BaseModel):
+    url: str = Field(default="", max_length=500)
+
+
+class RemoteRestoreBody(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+
+
+@router.get("/api/catalog/remote")
+def catalog_remote_status():
+    return catalog_remote.status()
+
+
+@router.put("/api/catalog/remote")
+def catalog_remote_configure(body: RemoteSourceBody, request: Request):
+    username = _require_admin_browser(request)
+    return catalog_remote.set_source_url(body.url, operator=username)
+
+
+@router.post("/api/catalog/remote/check")
+def catalog_remote_check(request: Request):
+    username = _require_admin_browser(request)
+    return catalog_remote.check_updates(operator=username)
+
+
+@router.post("/api/catalog/remote/restore")
+def catalog_remote_restore(body: RemoteRestoreBody, request: Request):
+    username = _require_admin_browser(request)
+    return catalog_remote.restore_builtin(body.id, operator=username)
 
 
 class InstallBody(BaseModel):

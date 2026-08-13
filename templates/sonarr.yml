@@ -1,0 +1,35 @@
+---
+name: Sonarr
+desc: TV series collection manager that automates searching, downloading and renaming
+category: download
+tags: [tv, automation, arr]
+ports: ["8989"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: Pair with Prowlarr (indexers) and qBittorrent (downloads). The downloads folder below should match your download client's folder so imports work.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "8989"
+  - name: TV_PATH
+    label: TV shows folder (host)
+    default: "{{SERVICES}}/media/tv"
+  - name: DOWNLOADS_PATH
+    label: Downloads folder (host)
+    default: "{{SERVICES}}/qbittorrent/downloads"
+    help: Point this at the same folder your download client saves into
+---
+services:
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:4.0.19.2979-ls321
+    container_name: sonarr
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:8989"
+    volumes:
+      - ./config:/config
+      - "{{TV_PATH}}:/tv"
+      - "{{DOWNLOADS_PATH}}:/downloads"

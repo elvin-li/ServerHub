@@ -90,3 +90,6 @@ data/stack-backup-inflight-*
 # pf-anchor runtime artifacts: timestamped backups and helper scripts the
 # anchor writer drops next to the live file.
 data/pf-anchor-*
+# Templates downloaded from the remote catalog source (runtime state; the
+# shipped catalog lives in templates/).
+data/catalog-remote/

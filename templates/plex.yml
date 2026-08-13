@@ -1,0 +1,40 @@
+---
+name: Plex Media Server
+desc: Popular media server with polished apps on every device (official image)
+category: media
+tags: [media, video, streaming]
+ports: ["32400"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}/web"
+notes: |
+  Optional; paste a claim token from https://plex.tv/claim (valid 4 minutes) to link the server
+  to your Plex account on first start. Hardware transcoding is not available in Docker on macOS.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "32400"
+  - name: MEDIA_PATH
+    label: Media directory (host)
+    default: "{{SERVICES}}/media"
+    help: Movies and TV folders inside this directory become Plex libraries
+  - name: PLEX_CLAIM
+    label: Plex claim token
+    default: ""
+    required: false
+    secret: true
+    help: From https://plex.tv/claim - leave blank to set up locally without an account
+---
+services:
+  plex:
+    image: plexinc/pms-docker:1.43.3.10861-07dfddaeb
+    container_name: plex
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+      - PLEX_CLAIM={{PLEX_CLAIM}}
+      - ADVERTISE_IP=http://{{HOST_IP}}:{{HOST_PORT}}/
+    ports:
+      - "{{HOST_PORT}}:32400"
+    volumes:
+      - ./config:/config
+      - ./transcode:/transcode
+      - "{{MEDIA_PATH}}:/data"

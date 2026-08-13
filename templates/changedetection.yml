@@ -1,0 +1,26 @@
+---
+name: changedetection.io
+desc: Website change detection and notification · watch prices, stock and page content
+category: monitor
+tags: [monitor, notifications, scraping]
+ports: ["5010"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: Watches are checked on a schedule you set per watch; notifications support ntfy, email, Telegram and many more via Apprise URLs.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "5010"
+    help: Host port 5000 is avoided because macOS AirPlay Receiver listens there
+---
+services:
+  changedetection:
+    image: ghcr.io/dgtlmoon/changedetection.io:0.55.8
+    container_name: changedetection
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+      - BASE_URL=http://{{HOST_IP}}:{{HOST_PORT}}
+    ports:
+      - "{{HOST_PORT}}:5000"
+    volumes:
+      - ./data:/datastore

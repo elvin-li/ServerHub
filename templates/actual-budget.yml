@@ -1,0 +1,24 @@
+---
+name: Actual Budget
+desc: Private, local-first envelope budgeting with bank sync and end-to-end encryption
+category: productivity
+tags: [finance, budget]
+ports: ["5006"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: You set the server password on the first visit; budget files can additionally be end-to-end encrypted with their own key.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "5006"
+---
+services:
+  actual:
+    image: actualbudget/actual-server:26.8.1
+    container_name: actual-budget
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:5006"
+    volumes:
+      - ./data:/data

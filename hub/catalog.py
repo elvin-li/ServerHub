@@ -22,6 +22,7 @@ from typing import Any
 import yaml
 from fastapi import HTTPException
 
+from hub import catalog_remote
 from hub.errors import CODES, api_error
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER
@@ -357,7 +358,7 @@ _LIST_TTL = 20.0
 
 
 def _templates_sig() -> str:
-    """Cheap change detector for template dir + install dirs."""
+    """Cheap change detector for template dir + remote overrides + install dirs."""
     if not TEMPLATES.is_dir():
         return "empty"
     parts = []
@@ -368,6 +369,15 @@ def _templates_sig() -> str:
                 parts.append(f"{p.name}:{int(st.st_mtime)}:{st.st_size}")
     except OSError:
         return "err"
+    # Remote overrides change the merged listing without touching templates/,
+    # so they must be part of the signature or a sync would not show up for
+    # up to _LIST_TTL seconds.
+    try:
+        for p in catalog_remote.remote_template_files():
+            st = p.stat()
+            parts.append(f"r:{p.name}:{int(st.st_mtime)}:{st.st_size}")
+    except OSError:
+        pass
     # installed flags change when ~/Services/<id>/docker-compose.yml appears
     try:
         for p in SERVICES_ROOT.iterdir():
@@ -407,10 +417,23 @@ def list_templates(force: bool = False) -> list:
     items = []
     if not TEMPLATES.is_dir():
         return _cache_store(now, sig, items)
-    files = sorted(set(list(TEMPLATES.glob("*.yml")) + list(TEMPLATES.glob("*.yaml"))))
+    builtin_ids = {
+        p.stem
+        for p in set(TEMPLATES.glob("*.yml")) | set(TEMPLATES.glob("*.yaml"))
+    }
+    # Remote overrides shadow the built-in template with the same id; the
+    # built-in file stays on disk untouched so "restore built-in" is a delete.
+    by_id: dict[str, Path] = {}
+    for p in sorted(set(TEMPLATES.glob("*.yml")) | set(TEMPLATES.glob("*.yaml"))):
+        by_id[p.stem] = p
+    for p in catalog_remote.remote_template_files():
+        by_id[p.stem] = p
+    remote_versions = catalog_remote.remote_versions()
+    files = [by_id[k] for k in sorted(by_id)]
     for p in files:
         meta, _ = _parse_template(p)
         tid = meta.get("id") or p.stem
+        is_remote = p.parent != TEMPLATES
         dest = SERVICES_ROOT / tid
         installed = (dest / "docker-compose.yml").exists()
         # UI defaults: show empty for __RANDOM__ so install mints once
@@ -458,6 +481,9 @@ def list_templates(force: bool = False) -> list:
             "path": str(dest) if dest.exists() else None,
             "kind": "docker",
             "prefer_native": False,
+            "source": "remote" if is_remote else "builtin",
+            "remote_version": remote_versions.get(p.stem, "") if is_remote else "",
+            "builtin_available": (p.stem in builtin_ids) if is_remote else True,
         })
     items.sort(key=lambda x: (0 if x.get("featured") else 1, x.get("name") or ""))
     return _cache_store(now, sig, items)
@@ -762,16 +788,26 @@ def _rollback_install(
     return "; ".join(notes)
 
 
+def template_file(template_id: str) -> Path | None:
+    """The file backing *template_id*: remote override first, then built-in."""
+    remote = catalog_remote.remote_template_path(template_id)
+    if remote is not None:
+        return remote
+    for suffix in (".yml", ".yaml"):
+        p = TEMPLATES / f"{template_id}{suffix}"
+        if p.exists():
+            return p
+    return None
+
+
 def install_template(template_id: str, variables: dict | None = None) -> dict:
     # Native apps (brew / system / script)
     if str(template_id).startswith("native-"):
         from hub import native_catalog
         return native_catalog.install_native(template_id, variables)
 
-    src = TEMPLATES / f"{template_id}.yml"
-    if not src.exists():
-        src = TEMPLATES / f"{template_id}.yaml"
-    if not src.exists():
+    src = template_file(template_id)
+    if src is None:
         raise api_error("catalog.unknown_template", id=str(template_id))
     meta, body = _parse_template(src)
     values: dict[str, str] = {}

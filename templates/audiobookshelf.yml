@@ -1,0 +1,34 @@
+---
+name: Audiobookshelf
+desc: Self-hosted audiobook and podcast server with progress sync and mobile apps
+category: media
+tags: [audiobooks, podcasts, media]
+featured: true
+ports: ["13378"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: You create the root user on first launch. Put audiobooks and podcasts into the two library folders, then add them as libraries in the UI.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "13378"
+  - name: AUDIOBOOKS_PATH
+    label: Audiobooks folder (host)
+    default: "{{SERVICES}}/media/audiobooks"
+  - name: PODCASTS_PATH
+    label: Podcasts folder (host)
+    default: "{{SERVICES}}/media/podcasts"
+---
+services:
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:2.36.0
+    container_name: audiobookshelf
+    restart: unless-stopped
+    environment:
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:80"
+    volumes:
+      - ./config:/config
+      - ./metadata:/metadata
+      - "{{AUDIOBOOKS_PATH}}:/audiobooks"
+      - "{{PODCASTS_PATH}}:/podcasts"

@@ -1,0 +1,34 @@
+---
+name: n8n
+desc: Workflow automation platform (a self-hosted Zapier alternative) with 500+ integrations
+category: productivity
+tags: [automation, workflow, integrations]
+ports: ["5678"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: |
+  You create the owner account on first launch. Webhook URLs are advertised as http://<host>:<port>/,
+  so external services can only call them if they can reach this machine.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "5678"
+---
+services:
+  n8n:
+    image: n8nio/n8n:2.34.5
+    container_name: n8n
+    restart: unless-stopped
+    environment:
+      - N8N_HOST={{HOST_IP}}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      # Plain-HTTP access from other LAN devices needs this off, or sign-in
+      # is refused outside localhost.
+      - N8N_SECURE_COOKIE=false
+      - WEBHOOK_URL=http://{{HOST_IP}}:{{HOST_PORT}}/
+      - GENERIC_TIMEZONE={{TZ}}
+      - TZ={{TZ}}
+    ports:
+      - "{{HOST_PORT}}:5678"
+    volumes:
+      - ./data:/home/node/.n8n

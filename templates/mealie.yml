@@ -1,0 +1,28 @@
+---
+name: Mealie
+desc: Recipe manager and meal planner · import recipes from any URL
+category: productivity
+tags: [recipes, cooking, planner]
+ports: ["9925"]
+url_template: "http://{{HOST_IP}}:{{HOST_PORT}}"
+notes: Default sign-in is changeme@example.com / MyPassword - change it immediately under your profile. Public sign-up is disabled in this template.
+vars:
+  - name: HOST_PORT
+    label: Web port
+    default: "9925"
+---
+services:
+  mealie:
+    image: ghcr.io/mealie-recipes/mealie:v3.22.0
+    container_name: mealie
+    restart: unless-stopped
+    environment:
+      - ALLOW_SIGNUP=false
+      - PUID=1000
+      - PGID=1000
+      - TZ={{TZ}}
+      - BASE_URL=http://{{HOST_IP}}:{{HOST_PORT}}
+    ports:
+      - "{{HOST_PORT}}:9000"
+    volumes:
+      - ./data:/app/data

@@ -26,6 +26,10 @@
         <label class="chk"><input type="checkbox" v-model="onlyFeatured" /> {{ t('apps.featured_only') }}</label>
         <label class="chk"><input type="checkbox" v-model="hideInstalled" /> {{ t('apps.hide_installed') }}</label>
         <button type="button" @click="loadCatalog">{{ t('common.refresh') }}</button>
+        <button type="button" @click="openRemoteModal">{{ t('catalog_remote.title') }}</button>
+        <button type="button" :disabled="remoteBusy" @click="checkRemoteUpdates">
+          {{ remoteBusy ? t('catalog_remote.checking') : t('catalog_remote.check_updates') }}
+        </button>
         <router-link class="btn" to="/compose">{{ t('apps.compose_editor') }}</router-link>
         <router-link class="btn" to="/containers">{{ t('nav.docker') }}</router-link>
       </div>
@@ -58,6 +62,11 @@
               <span class="chip" :class="tpl.kind === 'native' ? 'chip-native' : 'chip-docker'">
                 {{ tpl.kind === 'native' ? t('apps.kind_native') : t('apps.kind_docker') }}
               </span>
+              <span
+                v-if="tpl.source === 'remote'"
+                class="chip chip-remote"
+                :title="t('catalog_remote.badge_title')"
+              >{{ t('catalog_remote.badge') }}{{ tpl.remote_version ? ` ${tpl.remote_version}` : '' }}</span>
               <span v-if="tpl.featured" class="chip chip-feat">{{ t('apps.featured') }}</span>
               <span v-if="tpl.installed" class="chip chip-ok">{{ t('apps.installed') }}</span>
               <span v-if="tpl.running" class="chip chip-ok">{{ t('common.running') }}</span>
@@ -116,6 +125,12 @@
                 @click="launchOpen(tpl)"
               >{{ t('apps.open_url') }}</button>
             </template>
+            <button
+              v-if="tpl.source === 'remote'"
+              type="button"
+              :disabled="busy || remoteBusy"
+              @click="restoreBuiltin(tpl)"
+            >{{ t('catalog_remote.restore_builtin') }}</button>
           </footer>
         </article>
       </div>
@@ -617,6 +632,71 @@
       </div>
     </div>
 
+    <!-- remote catalog source config + update check -->
+    <div v-if="remoteModal" class="modal-bg" @click.self="remoteModal = false" role="presentation">
+      <div ref="remotePanel" class="modal install-modal" role="dialog" aria-modal="true" aria-labelledby="apps-remote-title">
+        <div class="modal-head">
+          <h3 id="apps-remote-title" class="modal-title">{{ t('catalog_remote.title') }}</h3>
+          <button type="button" @click="remoteModal = false">{{ t('common.close') }}</button>
+        </div>
+        <p class="modal-desc">{{ t('catalog_remote.source_help') }}</p>
+        <div class="form-grid">
+          <label class="form-label">{{ t('catalog_remote.source_url') }}</label>
+          <div class="form-field" style="display:flex;gap:8px">
+            <input
+              v-model.trim="remoteUrl"
+              type="text"
+              :placeholder="t('catalog_remote.source_ph')"
+              style="flex:1"
+              :aria-label="t('catalog_remote.source_url')"
+            />
+            <button type="button" :disabled="remoteBusy" @click="saveRemoteSource">{{ t('catalog_remote.save') }}</button>
+          </div>
+        </div>
+        <p class="sub-line" style="margin-top:8px">{{ t('catalog_remote.security_note') }}</p>
+        <div class="app-actions" style="margin:10px 0">
+          <button type="button" class="primary" :disabled="remoteBusy" @click="checkRemoteUpdates">
+            {{ remoteBusy ? t('catalog_remote.checking') : t('catalog_remote.check_updates') }}
+          </button>
+        </div>
+        <p v-if="remoteInfo && !remoteInfo.configured && !remoteUrl" class="sub-line">
+          {{ t('catalog_remote.not_configured') }}
+        </p>
+        <p v-if="remoteInfo?.last_check" class="sub-line">
+          {{ t('catalog_remote.last_check') }}: {{ remoteInfo.last_check }}
+          <template v-if="remoteInfo.last_result">
+            · {{ summaryLine(remoteInfo.last_result) }}
+          </template>
+        </p>
+        <div v-if="remoteResult" class="notes" role="status" style="margin-bottom:10px">
+          {{ summaryLine(remoteResult) }}
+          <ul v-if="(remoteResult.rejected || []).length" class="plain-list mono" style="margin-top:6px">
+            <li v-for="r in remoteResult.rejected" :key="r.id">
+              {{ r.id }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
+            </li>
+          </ul>
+        </div>
+        <section v-if="(remoteInfo?.overrides || []).length">
+          <h4 class="modal-title" style="font-size:14px;margin:8px 0">{{ t('catalog_remote.overrides_title') }}</h4>
+          <table class="mini-table">
+            <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th></th></tr></thead>
+            <tbody>
+              <tr v-for="o in remoteInfo.overrides" :key="o.id">
+                <td class="mono">{{ o.id }}</td>
+                <td class="mono">{{ o.version || '—' }}</td>
+                <td>
+                  <button type="button" class="act-btn" :disabled="remoteBusy" @click="restoreBuiltin(o)">
+                    {{ t('catalog_remote.restore_builtin') }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+        <p v-else-if="remoteInfo" class="sub-line">{{ t('catalog_remote.no_overrides') }}</p>
+      </div>
+    </div>
+
     <!-- closeJobLog, not `logOpen = false`: the job log polls every 1.5s and the
          interval was only cleared when a poll happened to observe running:false,
          so closing the modal left it running against the server indefinitely. -->
@@ -636,11 +716,13 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
+  checkCatalogRemoteUpdates,
   createCloudflareTunnel,
   deleteAppCredential,
   getAppCredential,
   getAutostartApps,
   getCatalog,
+  getCatalogRemote,
   getCloudflareStatus,
   getManagedAppDetail,
   getManagedAppLogs,
@@ -651,11 +733,13 @@ import {
   manageApp,
   pollCloudflareLogin,
   restartCloudflare,
+  restoreCatalogBuiltin,
   routeCloudflareDns,
   runAppAutostartNow,
   runStack,
   saveAppCredential,
   setAppAutostart,
+  setCatalogRemoteSource,
   setDockerAutostartPolicy,
   startCloudflareLogin,
   startCloudflareToken,
@@ -715,6 +799,13 @@ const q = ref('')
 const cat = ref('all')
 const onlyFeatured = ref(false)
 const hideInstalled = ref(false)
+// Remote template catalog source (admin: configure URL, pull updates, restore)
+const remoteModal = ref(false)
+const remotePanel = ref(null)
+const remoteInfo = ref(null)
+const remoteUrl = ref('')
+const remoteBusy = ref(false)
+const remoteResult = ref(null)
 // Cloudflare Tunnel panel state
 const cfStatus = ref({ logged_in: false, running: false, tunnels: [] })
 const cfSelectedTunnel = ref('')
@@ -1532,6 +1623,80 @@ function openInstall(tpl) {
   installVars.value = vars
 }
 
+// ── remote catalog source ────────────────────────────────────────────────────
+
+function summaryLine(r) {
+  return t('catalog_remote.result_summary', {
+    added: Array.isArray(r.added) ? r.added.length : (r.added ?? 0),
+    updated: Array.isArray(r.updated) ? r.updated.length : (r.updated ?? 0),
+    unchanged: r.unchanged ?? 0,
+    rejected: Array.isArray(r.rejected) ? r.rejected.length : (r.rejected ?? 0),
+  })
+}
+
+async function loadRemote() {
+  try {
+    remoteInfo.value = await getCatalogRemote()
+    remoteUrl.value = remoteInfo.value?.url || ''
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+function openRemoteModal() {
+  remoteModal.value = true
+  loadRemote()
+}
+
+async function saveRemoteSource() {
+  remoteBusy.value = true
+  try {
+    await setCatalogRemoteSource(remoteUrl.value.trim())
+    toast('✅ ' + t('catalog_remote.saved'))
+    await loadRemote()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    remoteBusy.value = false
+  }
+}
+
+async function checkRemoteUpdates() {
+  // Nothing configured yet: open the config dialog instead of a guaranteed 400.
+  if (!remoteInfo.value) await loadRemote()
+  if (!remoteInfo.value?.configured) {
+    openRemoteModal()
+    return
+  }
+  remoteBusy.value = true
+  try {
+    const result = await checkCatalogRemoteUpdates()
+    remoteResult.value = result
+    toast('✅ ' + summaryLine(result))
+    // The listing changed server-side; both the store grid and the override
+    // table must reflect it.
+    await Promise.all([loadCatalog(), loadRemote()])
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    remoteBusy.value = false
+  }
+}
+
+async function restoreBuiltin(item) {
+  if (!confirm(t('catalog_remote.restore_confirm', { id: item.id }))) return
+  remoteBusy.value = true
+  try {
+    await restoreCatalogBuiltin(item.id)
+    toast('✅ ' + t('catalog_remote.restored'))
+    await Promise.all([loadCatalog(), loadRemote()])
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    remoteBusy.value = false
+  }
+}
+
 // "Open stack" sends the operator to the Compose page, which is this app's
 // dedicated stack view. It used to set tab.value = 'stacks', but the template
 // only branches on catalog / managed / autostart, so the button rendered a blank
@@ -1681,6 +1846,7 @@ onUnmounted(() => {
 // cannot wander to the page behind the overlay.
 useDismissable(installTpl, () => { installTpl.value = null }, installPanel)
 useDismissable(logOpen, () => { logOpen.value = false }, logPanel)
+useDismissable(remoteModal, () => { remoteModal.value = false }, remotePanel)
 
 useDismissable(detail, () => { closeDetail() }, detailPanel)
 </script>
@@ -1879,6 +2045,12 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   background: color-mix(in srgb, var(--accent) 14%, var(--card));
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
   color: var(--accent-hover, var(--accent));
+}
+
+.chip-remote {
+  background: color-mix(in srgb, #8b5cf6 14%, var(--card));
+  border-color: color-mix(in srgb, #8b5cf6 40%, var(--line));
+  color: #7c4fe0;
 }
 
 .chip-ok {
