@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import Depends, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from hub import api_keys
 from hub.config import cfg
 from hub.config import mutate as config_mutate
 from hub.errors import api_error
@@ -548,6 +549,64 @@ def browser_authenticated(request: Request) -> bool:
     return verify_session(request.cookies.get(COOKIE_NAME))
 
 
+#: Lifetime of the half-signed-in state between "password accepted" and "TOTP
+#: code accepted".  Short on purpose: it exists only to bridge the two form
+#: steps, and everything it can do is present one more code attempt.
+PENDING_TOTP_TTL = 300
+#: Marker keeping pending tokens and session tokens in disjoint namespaces.
+#: A session payload starts with an account name, and account names are the
+#: config operator's choice — the fixed prefix (with its separator) is what a
+#: name would have to *contain* to collide, so the two verifiers can never
+#: accept each other's tokens by accident.
+_PENDING_TOTP_MARK = "totp-pending"
+
+
+def create_pending_totp_token(username: str) -> str:
+    """Signed proof that *username* just passed the password check.
+
+    Handed to the browser instead of a session cookie when the account has
+    TOTP enabled.  It is not a session: no route accepts it except the
+    second-step verifier.  The account's session version is baked in, so a
+    password rotation or logout-everywhere invalidates outstanding pending
+    tokens exactly like it invalidates sessions.
+    """
+    exp = int(time.time()) + PENDING_TOTP_TTL
+    payload = "|".join(
+        (_PENDING_TOTP_MARK, username, str(exp), account_session_version(username))
+    ).encode()
+    sig = hmac.new(_secret(), payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(payload + b"." + sig).decode().rstrip("=")
+
+
+def pending_totp_username(token: str | None) -> str:
+    """Account named by a valid, unexpired pending-TOTP token, or ""."""
+    if not token:
+        return ""
+    try:
+        split = _split_signed(_b64decode(token))
+        if split is None:
+            return ""
+        payload, sig = split
+        if not hmac.compare_digest(sig, hmac.new(_secret(), payload, hashlib.sha256).digest()):
+            return ""
+        text = payload.decode()
+        mark, _, rest = text.partition("|")
+        if mark != _PENDING_TOTP_MARK or not rest:
+            return ""
+        # Right-split, same reasoning as _parse_session_payload: exp and
+        # version never contain "|", a username theoretically may.
+        username, exp_s, version = rest.rsplit("|", 2)
+        if username not in accounts():
+            return ""
+        if int(exp_s) <= time.time():
+            return ""
+        if not hmac.compare_digest(version, account_session_version(username)):
+            return ""
+        return username
+    except (ValueError, UnicodeDecodeError):
+        return ""
+
+
 def session_username(token: str | None) -> str:
     """Username carried by *token*, or "" when it is not a valid session.
 
@@ -569,8 +628,26 @@ def session_username(token: str | None) -> str:
 
 
 def request_username(request: Request) -> str:
-    """Best-effort identity of the caller, for audit logs."""
-    return session_username(request.cookies.get(COOKIE_NAME))
+    """Best-effort identity of the caller, for audit logs and member filtering.
+
+    Browser sessions carry the account name.  A request authenticated by a
+    *member* API key reports the synthetic identity ``key:<name>``: it is not
+    an account, so every account lookup on it fails closed to "member with no
+    resources" — which is exactly the key's authority — and the routes that
+    filter listings for member sessions therefore filter member keys the same
+    way instead of mistaking the empty username for an administrator.
+
+    An *admin* API key deliberately stays "", mirroring how basic-auth admin
+    requests have always looked to this function: unrestricted role, no
+    per-account state.
+    """
+    username = session_username(request.cookies.get(COOKIE_NAME))
+    if username:
+        return username
+    record = getattr(request.state, "serverhub_api_key", None)
+    if isinstance(record, dict) and record.get("role") != ROLE_ADMIN:
+        return f"key:{record.get('name') or record.get('id') or 'unknown'}"
+    return ""
 
 
 def login_allowed(client: str) -> tuple[bool, int]:
@@ -591,6 +668,15 @@ def record_login_failure(client: str) -> None:
 def clear_login_failures(client: str) -> None:
     with _login_lock:
         _login_attempts.pop(client, None)
+
+
+def _bearer_token(request: Request) -> str:
+    """The value of an ``Authorization: Bearer …`` header, or ""."""
+    header = request.headers.get("authorization") or ""
+    scheme, _, value = header.partition(" ")
+    if scheme.strip().lower() != "bearer":
+        return ""
+    return value.strip()
 
 
 def _route_has_own_admin_guard(request: Request) -> bool:
@@ -620,6 +706,35 @@ def require_auth(
         # Members fail closed: only a small read-only surface is reachable, and
         # service-bearing responses filter again by the account resource list.
         if member_request_authorized(request, username):
+            return True
+        raise api_error("auth.admin_required")
+    # API keys (Authorization: Bearer shk_..., see hub/api_keys.py) for scripts
+    # and monitoring.  Handled entirely here and *only* here: routes that demand
+    # a browser session — require_admin_browser and the per-router
+    # _require_admin_browser guards, plus the terminal/VM-console WebSockets —
+    # verify the session cookie itself, and a bearer header can never produce
+    # one.  That boundary is deliberate and load-bearing: an API key must not
+    # reach the browser-only high-risk surfaces (interactive terminals, shares/
+    # launcher mutations, key management), no matter its role.  The local-client
+    # and setup tokens above/below are separate mechanisms and stay untouched.
+    supplied_bearer = _bearer_token(request)
+    if api_keys.looks_like_key(supplied_bearer):
+        record = api_keys.verify(supplied_bearer)
+        if record is None:
+            # Shaped like one of our keys but unknown, revoked or expired: say
+            # so instead of the generic login_required, which reads like "add a
+            # cookie" to the script author debugging it.
+            raise api_error("auth.bad_api_key")
+        request.state.serverhub_api_key = record
+        if str(record.get("role")) == ROLE_ADMIN:
+            request.state.serverhub_auth_kind = "api-key-admin"
+            return True
+        # Member keys reuse the member-session authorisation verbatim.  The
+        # synthetic identity has no account record, so the resource list is
+        # empty and every resource-gated route fails closed, exactly like a
+        # member account that has been granted nothing.
+        if member_request_authorized(request, request_username(request)):
+            request.state.serverhub_auth_kind = "api-key-member"
             return True
         raise api_error("auth.admin_required")
     # Loopback is transport, not identity. The native menu-bar client must prove

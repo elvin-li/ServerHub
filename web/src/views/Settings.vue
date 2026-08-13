@@ -229,6 +229,142 @@
       </div>
 
       <div class="card">
+        <h2 class="section-title" style="margin-top:0">{{ t('twofa.title') }}</h2>
+        <p class="hint" style="margin-top:0">{{ t('twofa.hint') }}</p>
+        <div v-if="!twofa" class="hint">{{ t('common.loading') }}</div>
+        <template v-else>
+          <div class="form-grid">
+            <label>{{ t('common.status') }}</label>
+            <div>
+              <span class="badge" :class="twofa.enabled ? 'ok' : 'warn'">
+                {{ twofa.enabled ? t('common.on') : t('common.off') }}
+              </span>
+              <span v-if="twofa.enabled" class="hint" style="margin-left:8px">
+                {{ t('twofa.recovery_remaining', { n: twofa.recovery_remaining }) }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Recovery codes: rendered exactly once, straight from the response
+               that minted them. Navigating away discards them forever. -->
+          <div v-if="recoveryCodes.length" class="twofa-recovery">
+            <strong>{{ t('twofa.recovery_title') }}</strong>
+            <p class="hint" style="margin-top:4px">{{ t('twofa.recovery_hint') }}</p>
+            <div class="twofa-recovery-grid">
+              <code v-for="code in recoveryCodes" :key="code" class="mono">{{ code }}</code>
+            </div>
+            <div class="btns" style="margin-top:10px">
+              <button @click="copyRecoveryCodes">{{ copiedRecovery ? t('common.copied') : t('twofa.recovery_copy') }}</button>
+              <button class="primary" @click="recoveryCodes = []">{{ t('twofa.recovery_done') }}</button>
+            </div>
+          </div>
+
+          <template v-if="!twofa.enabled">
+            <div v-if="!twofaEnroll" class="btns" style="margin-top:10px">
+              <button class="primary" :disabled="twofaBusy" @click="startTwofaEnroll">{{ t('twofa.enable') }}</button>
+            </div>
+            <div v-else>
+              <p class="hint">{{ t('twofa.enroll_hint') }}</p>
+              <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>
+              <div class="form-grid" style="margin-top:8px">
+                <label>{{ t('twofa.manual_secret') }}</label>
+                <code class="mono" style="user-select:all;word-break:break-all">{{ twofaEnroll.manual_entry }}</code>
+                <label>{{ t('twofa.code_label') }}</label>
+                <input v-model.trim="twofaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10" :aria-label="t('twofa.code_label')" />
+              </div>
+              <div class="btns" style="margin-top:10px">
+                <button class="primary" :disabled="twofaBusy || !twofaCode" @click="confirmTwofaEnroll">{{ t('twofa.confirm') }}</button>
+                <button :disabled="twofaBusy" @click="cancelTwofaEnroll">{{ t('common.cancel') }}</button>
+              </div>
+            </div>
+          </template>
+          <template v-else>
+            <p class="hint">{{ t('twofa.enabled_hint') }}</p>
+            <div class="form-grid">
+              <label>{{ t('twofa.code_for_action') }}</label>
+              <input v-model.trim="twofaActionCode" autocomplete="one-time-code" maxlength="16" :aria-label="t('twofa.code_for_action')" />
+            </div>
+            <div class="btns" style="margin-top:10px">
+              <button :disabled="twofaBusy || !twofaActionCode" @click="regenTwofaRecovery">{{ t('twofa.regen') }}</button>
+              <button class="danger" :disabled="twofaBusy || !twofaActionCode" @click="disableTwofa">{{ t('twofa.disable') }}</button>
+            </div>
+          </template>
+
+          <h2 class="section-title">{{ t('twofa.admin_reset') }}</h2>
+          <p class="hint" style="margin-top:0">{{ t('twofa.admin_reset_hint') }}</p>
+          <div class="form-grid">
+            <label>{{ t('settings.username') }}</label>
+            <input v-model.trim="twofaResetUser" maxlength="64" :aria-label="t('twofa.admin_reset')" />
+          </div>
+          <div class="btns" style="margin-top:10px">
+            <button class="danger" :disabled="twofaBusy || !twofaResetUser" @click="adminResetTwofa">{{ t('twofa.admin_reset_button') }}</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="card">
+        <h2 class="section-title" style="margin-top:0">{{ t('apikeys.title') }}</h2>
+        <p class="hint" style="margin-top:0">{{ t('apikeys.hint') }}</p>
+
+        <!-- The plaintext key exists only in this response; it is shown once
+             with a copy button and never listed again. -->
+        <div v-if="createdKey" class="apikey-created">
+          <strong>{{ t('apikeys.created_title') }}</strong>
+          <p class="hint" style="margin-top:4px">{{ t('apikeys.created_hint') }}</p>
+          <div class="apikey-value-row">
+            <code class="mono" style="user-select:all;word-break:break-all">{{ createdKey.key }}</code>
+            <button @click="copyCreatedKey">{{ copiedKey ? t('common.copied') : t('common.copy') }}</button>
+          </div>
+          <div class="btns" style="margin-top:10px">
+            <button class="primary" @click="createdKey = null">{{ t('common.close') }}</button>
+          </div>
+        </div>
+
+        <table class="dense" v-if="(apiKeys || []).length" style="margin-bottom:12px">
+          <thead>
+            <tr>
+              <th>{{ t('common.name') }}</th>
+              <th>{{ t('apikeys.role') }}</th>
+              <th>{{ t('apikeys.created') }}</th>
+              <th>{{ t('apikeys.last_used') }}</th>
+              <th>{{ t('apikeys.expires') }}</th>
+              <th class="ops"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="key in apiKeys" :key="key.id">
+              <td>{{ key.name }}</td>
+              <td><span class="badge" :class="key.role === 'admin' ? 'warn' : 'ok'">{{ key.role === 'admin' ? t('apikeys.role_admin') : t('apikeys.role_member') }}</span></td>
+              <td class="mono">{{ fmtEpoch(key.created) }}</td>
+              <td class="mono">{{ key.last_used ? fmtEpoch(key.last_used) : t('apikeys.never_used') }}</td>
+              <td class="mono">{{ key.expires ? fmtEpoch(key.expires) : t('apikeys.no_expiry') }}</td>
+              <td class="ops">
+                <button class="danger" :disabled="apiKeyBusy" @click="revokeKey(key)">{{ t('apikeys.revoke') }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else-if="apiKeys" class="hint">{{ t('apikeys.empty') }}</p>
+        <p v-else class="hint">{{ t('common.loading') }}</p>
+
+        <div class="form-grid">
+          <label>{{ t('common.name') }}</label>
+          <input v-model.trim="newKey.name" maxlength="64" :placeholder="t('apikeys.name_ph')" :aria-label="t('common.name')" />
+          <label>{{ t('apikeys.role') }}</label>
+          <select v-model="newKey.role" :aria-label="t('apikeys.role')">
+            <option value="member">{{ t('apikeys.role_member') }}</option>
+            <option value="admin">{{ t('apikeys.role_admin') }}</option>
+          </select>
+          <label>{{ t('apikeys.expires_days') }}</label>
+          <input v-model.number="newKey.expiresDays" type="number" min="1" max="3650" :placeholder="t('apikeys.no_expiry')" :aria-label="t('apikeys.expires_days')" />
+        </div>
+        <p class="hint" v-if="newKey.role === 'admin'">{{ t('apikeys.admin_warning') }}</p>
+        <div class="btns" style="margin-top:10px">
+          <button class="primary" :disabled="apiKeyBusy || !newKey.name" @click="createKey">{{ t('apikeys.create') }}</button>
+        </div>
+      </div>
+
+      <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.intervals') }}</h2>
         <div class="form-grid">
           <label>{{ t('settings.metrics_interval') }}</label>
@@ -761,12 +897,17 @@
 
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
+import qrcode from 'qrcode-generator'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
   getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, getUps,
   openLauncherApp, putIdentity, putSettings, putUpsSettings, runAliasAutoBind,
   setLauncherLogin, setPowerSetting,
   testNotify as apiTest,
+} from '../api/client'
+import {
+  adminDisableTotp, confirmTotp, createApiKey, disableTotp, enrollTotp,
+  getTotpStatus, listApiKeys, regenerateTotpRecovery, revokeApiKey,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
@@ -815,6 +956,23 @@ const accountForm = ref({ username: '', currentPassword: '', newPassword: '', co
 const upsInfo = ref(null)
 const upsForm = ref({ alerts_enabled: true, low_battery_pct: 20 })
 
+// ── two-factor (TOTP) card state ─────────────────────────────────────────────
+const twofa = ref(null)          // status from the server, null while unknown
+const twofaBusy = ref(false)
+const twofaEnroll = ref(null)    // {secret, otpauth_uri, manual_entry, qrSvg}
+const twofaCode = ref('')        // pairing confirmation input
+const twofaActionCode = ref('')  // disable / regenerate input
+const twofaResetUser = ref('')   // admin rescue target
+const recoveryCodes = ref([])    // plaintext codes, shown exactly once
+const copiedRecovery = ref(false)
+
+// ── API keys card state ──────────────────────────────────────────────────────
+const apiKeys = ref(null)        // list from the server, null while unknown
+const apiKeyBusy = ref(false)
+const newKey = ref({ name: '', role: 'member', expiresDays: null })
+const createdKey = ref(null)     // {key, record}: plaintext lives only here
+const copiedKey = ref(false)
+
 const tabs = [
   { id: 'appearance', labelKey: 'settings.tab_appearance' },
   { id: 'identity', labelKey: 'settings.tab_identity' },
@@ -842,7 +1000,11 @@ function switchTab(id) {
   if (id === tab.value) return
   tab.value = id
   if (id === 'docker') loadDockerInfo()
-  if (id === 'panel') loadLauncher()
+  if (id === 'panel') {
+    loadLauncher()
+    loadTwofa()
+    loadApiKeys()
+  }
   if (id === 'notify') loadUps()
   if (['datetime', 'power', 'disk', 'network', 'shares', 'access', 'vms', 'scheduler', 'advanced', 'diagnostics'].includes(id)) {
     loadSysBundle()
@@ -1261,6 +1423,173 @@ async function savePassword() {
   savingPassword.value = false
 }
 
+// ── two-factor (TOTP) ────────────────────────────────────────────────────────
+
+async function loadTwofa() {
+  // Silent: the card shows its loading hint until a status arrives, and a
+  // backend that predates 2FA simply leaves it there.
+  try {
+    twofa.value = await getTotpStatus()
+  } catch {
+    twofa.value = null
+  }
+}
+
+/** Same rendering path as the WireGuard peer QR: qrcode-generator builds the
+ *  SVG from encoded modules only (never interpolating the payload as markup),
+ *  and the wrapper constrains it so the whole symbol stays visible. */
+function totpQrSvg(text) {
+  try {
+    const qr = qrcode(0, 'M')
+    qr.addData(text)
+    qr.make()
+    return qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true })
+  } catch {
+    return ''
+  }
+}
+
+async function startTwofaEnroll() {
+  twofaBusy.value = true
+  try {
+    const r = await enrollTotp()
+    twofaEnroll.value = { ...r, qrSvg: totpQrSvg(r.otpauth_uri) }
+    twofaCode.value = ''
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  twofaBusy.value = false
+}
+
+function cancelTwofaEnroll() {
+  twofaEnroll.value = null
+  twofaCode.value = ''
+}
+
+async function confirmTwofaEnroll() {
+  twofaBusy.value = true
+  try {
+    const r = await confirmTotp(twofaCode.value)
+    recoveryCodes.value = r.recovery_codes || []
+    copiedRecovery.value = false
+    twofaEnroll.value = null
+    twofaCode.value = ''
+    toast('✅ ' + t('twofa.enabled_toast'))
+    await loadTwofa()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  twofaBusy.value = false
+}
+
+async function disableTwofa() {
+  if (!confirm(t('twofa.disable_confirm'))) return
+  twofaBusy.value = true
+  try {
+    await disableTotp(twofaActionCode.value)
+    twofaActionCode.value = ''
+    recoveryCodes.value = []
+    toast('✅ ' + t('twofa.disabled_toast'))
+    await loadTwofa()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  twofaBusy.value = false
+}
+
+async function regenTwofaRecovery() {
+  if (!confirm(t('twofa.regen_confirm'))) return
+  twofaBusy.value = true
+  try {
+    const r = await regenerateTotpRecovery(twofaActionCode.value)
+    recoveryCodes.value = r.recovery_codes || []
+    copiedRecovery.value = false
+    twofaActionCode.value = ''
+    await loadTwofa()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  twofaBusy.value = false
+}
+
+async function adminResetTwofa() {
+  if (!confirm(t('twofa.admin_reset_confirm', { name: twofaResetUser.value }))) return
+  twofaBusy.value = true
+  try {
+    await adminDisableTotp(twofaResetUser.value)
+    toast('✅ ' + t('twofa.admin_reset_toast', { name: twofaResetUser.value }))
+    twofaResetUser.value = ''
+    await loadTwofa()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  twofaBusy.value = false
+}
+
+function copyRecoveryCodes() {
+  navigator.clipboard.writeText(recoveryCodes.value.join('\n')).then(() => {
+    copiedRecovery.value = true
+    setTimeout(() => { copiedRecovery.value = false }, 2000)
+  }).catch(() => toast('❌ ' + t('common.copy_failed')))
+}
+
+// ── API keys ─────────────────────────────────────────────────────────────────
+
+async function loadApiKeys() {
+  try {
+    apiKeys.value = (await listApiKeys()).keys || []
+  } catch {
+    apiKeys.value = null
+  }
+}
+
+function fmtEpoch(value) {
+  if (!value) return '—'
+  try {
+    return new Date(value * 1000).toLocaleString()
+  } catch {
+    return '—'
+  }
+}
+
+async function createKey() {
+  apiKeyBusy.value = true
+  try {
+    const r = await createApiKey({
+      name: newKey.value.name,
+      role: newKey.value.role,
+      expiresDays: newKey.value.expiresDays || null,
+    })
+    createdKey.value = r
+    copiedKey.value = false
+    newKey.value = { name: '', role: 'member', expiresDays: null }
+    await loadApiKeys()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  apiKeyBusy.value = false
+}
+
+function copyCreatedKey() {
+  navigator.clipboard.writeText(createdKey.value?.key || '').then(() => {
+    copiedKey.value = true
+    setTimeout(() => { copiedKey.value = false }, 2000)
+  }).catch(() => toast('❌ ' + t('common.copy_failed')))
+}
+
+async function revokeKey(key) {
+  if (!confirm(t('apikeys.revoke_confirm', { name: key.name }))) return
+  apiKeyBusy.value = true
+  try {
+    await revokeApiKey(key.id)
+    toast('✅ ' + t('apikeys.revoked_toast', { name: key.name }))
+    await loadApiKeys()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  apiKeyBusy.value = false
+}
+
 async function saveAdvanced() {
   saving.value = true
   try {
@@ -1488,6 +1817,25 @@ onMounted(() => {
 .password-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .password-state { margin: 0; }
 .password-state.bad { color: var(--down); }
+/* Same constraint story as WireGuard's .wg-qr: the scalable SVG has no
+   intrinsic size, so the wrapper fixes one and keeps a light quiet zone. */
+.twofa-qr {
+  width: 190px; max-width: 100%; aspect-ratio: 1; margin: 10px 0;
+  padding: 8px; background: #fff; border-radius: 8px; border: 1px solid var(--line);
+}
+.twofa-qr :deep(svg) { display: block; width: 100%; height: 100%; }
+.twofa-recovery, .apikey-created {
+  margin: 12px 0; padding: 12px; border-radius: 8px;
+  background: color-mix(in srgb, var(--up) 8%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--up) 25%, transparent);
+}
+.twofa-recovery-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px; margin-top: 8px;
+}
+.twofa-recovery-grid code { padding: 4px 8px; background: var(--card); border-radius: 5px; border: 1px solid var(--line); user-select: all; }
+.apikey-value-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.apikey-value-row code { flex: 1; padding: 6px 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--line); }
 .tabs {
   display: flex;
   flex-wrap: wrap;

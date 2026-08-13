@@ -7,6 +7,40 @@
       </div>
 
       <div v-if="loading" class="login-loading">{{ t('common.loading') }}</div>
+
+      <!-- Second sign-in step: the password was accepted but the account
+           requires a TOTP code. No session cookie exists yet — only the
+           short-lived pending token held in memory here. -->
+      <form v-else-if="totpStep" @submit.prevent="submitTotp">
+        <div class="setup-note">
+          <strong>{{ t('auth.totp_title') }}</strong>
+          <span>{{ t('auth.totp_hint') }}</span>
+        </div>
+        <label>
+          <span>{{ t('auth.totp_code') }}</span>
+          <input
+            v-model.trim="totpCode"
+            class="totp-input"
+            autocomplete="one-time-code"
+            inputmode="numeric"
+            maxlength="64"
+            required
+            autofocus
+            :placeholder="t('auth.totp_placeholder')"
+          />
+          <small>{{ t('auth.totp_recovery_hint') }}</small>
+        </label>
+        <div class="login-error-live" role="alert" aria-live="assertive">
+          <p v-if="error" class="login-error">{{ error }}</p>
+        </div>
+        <button class="primary login-submit" :disabled="busy || !totpCode">
+          {{ busy ? t('auth.processing') : t('auth.totp_submit') }}
+        </button>
+        <button type="button" class="totp-back" @click="leaveTotpStep">
+          {{ t('auth.totp_back') }}
+        </button>
+      </form>
+
       <form v-else @submit.prevent="submit">
         <div v-if="setupMode" class="setup-note">
           <strong>{{ t('auth.secure_panel') }}</strong>
@@ -71,7 +105,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getAuthStatus, getSetupToken, loginAuth, resetAuthLost, setupAuth } from '../api/client'
+import { getAuthStatus, getSetupToken, loginAuth, resetAuthLost, setupAuth, verifyTotpLogin } from '../api/client'
 import { injectI18n } from '../i18n'
 
 const { t, locale, locales, setLocale } = injectI18n()
@@ -92,6 +126,12 @@ const tokenError = ref(false)
 // token field and make the form look easier than it is.
 const tokenNeeded = ref(true)
 const error = ref('')
+// Second-factor step state. `totpPending` is the signed short-lived token from
+// the login response; it lives only in this component and is sent back exactly
+// once per verification attempt.
+const totpStep = ref(false)
+const totpPending = ref('')
+const totpCode = ref('')
 
 onMounted(async () => {
   try {
@@ -124,6 +164,16 @@ function copyToken() {
   }).catch(() => {})
 }
 
+async function finishLogin() {
+  // Re-arm the session-lost redirect for the new session.
+  resetAuthLost()
+  // Only same-origin relative paths, so ?next= cannot be used to bounce a
+  // freshly authenticated user to another site.
+  const raw = typeof route.query.next === 'string' ? route.query.next : ''
+  const next = raw.startsWith('/') && !raw.startsWith('//') ? raw : '/'
+  await router.replace(next)
+}
+
 async function submit() {
   error.value = ''
   if (setupMode.value && password.value !== confirmPassword.value) {
@@ -136,19 +186,51 @@ async function submit() {
   }
   busy.value = true
   try {
-    if (setupMode.value) await setupAuth(username.value, password.value, setupToken.value)
-    else await loginAuth(username.value, password.value)
-    // Re-arm the session-lost redirect for the new session.
-    resetAuthLost()
-    // Only same-origin relative paths, so ?next= cannot be used to bounce a
-    // freshly authenticated user to another site.
-    const raw = typeof route.query.next === 'string' ? route.query.next : ''
-    const next = raw.startsWith('/') && !raw.startsWith('//') ? raw : '/'
-    await router.replace(next)
+    if (setupMode.value) {
+      await setupAuth(username.value, password.value, setupToken.value)
+    } else {
+      const result = await loginAuth(username.value, password.value)
+      if (result && result.totp_required) {
+        // Password accepted; the account demands a code before any session
+        // exists. Keep the pending token in memory and swap the form.
+        totpPending.value = result.pending || ''
+        totpCode.value = ''
+        totpStep.value = true
+        busy.value = false
+        return
+      }
+    }
+    await finishLogin()
   } catch (e) {
     error.value = e.message
   }
   busy.value = false
+}
+
+async function submitTotp() {
+  error.value = ''
+  busy.value = true
+  try {
+    await verifyTotpLogin(totpPending.value, totpCode.value)
+    await finishLogin()
+  } catch (e) {
+    error.value = e.message
+    // An expired pending window can only be fixed by re-entering the
+    // password; bounce back so the retry starts at the right step.
+    if (e.code === 'auth.totp_pending_invalid') {
+      totpStep.value = false
+      totpPending.value = ''
+      totpCode.value = ''
+    }
+  }
+  busy.value = false
+}
+
+function leaveTotpStep() {
+  totpStep.value = false
+  totpPending.value = ''
+  totpCode.value = ''
+  error.value = ''
 }
 </script>
 
@@ -201,6 +283,12 @@ label input { width: 100%; min-height: 44px; font-size: 16px; border-radius: 8px
   25% { transform: translateX(-4px); }
   75% { transform: translateX(4px); }
 }
+.totp-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; }
+.totp-back {
+  min-height: 40px; font-size: 13px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card); color: var(--sub); cursor: pointer;
+}
+.totp-back:hover { background: var(--hover); }
 .login-foot { color: var(--sub); font-size: 11px; text-align: center; margin-top: 18px; }
 .login-loading { color: var(--sub); text-align: center; padding: 35px 0; }
 .token-card { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, var(--up) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--up) 20%, transparent); }

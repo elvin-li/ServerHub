@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
-from hub import audit, auth
+from hub import audit, auth, twofa_svc
 from hub.errors import api_error
 
 router = APIRouter(tags=["auth"])
@@ -166,6 +166,19 @@ def auth_login(body: LoginBody, request: Request, response: Response):
             outcome="failure",
         )
         raise api_error("auth.bad_credentials")
+    if twofa_svc.enabled(username):
+        # Password accepted, but the account demands a second factor: hand out
+        # a short-lived signed pending token instead of a session cookie.  No
+        # cookie is set on this path — the session only exists once
+        # /api/auth/totp/verify accepts a code.  The failure counter is
+        # deliberately *not* cleared here: clearing it on every correct
+        # password would let an attacker who has the password reset their code
+        # -guessing budget with one login call per attempt.
+        return {
+            "ok": False,
+            "totp_required": True,
+            "pending": auth.create_pending_totp_token(username),
+        }
     auth.clear_login_failures(client)
     _set_session(response, request, username)
     audit.record(

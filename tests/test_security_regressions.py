@@ -631,13 +631,21 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             "is no longer true, revisit whether the CSP is still load-bearing",
         )
 
-    def test_the_only_v_html_is_a_locally_generated_qr_code(self):
+    def test_every_v_html_is_a_locally_generated_qr_code(self):
         """v-html is safe here only because the value is machine-generated.
 
         qrcode-generator's createSvgTag emits <svg>/<rect>/<path> from encoded
-        modules and never interpolates the payload as markup, so a hostile peer
-        config cannot become elements.  Any *other* v-html would not have that
-        property.
+        modules and never interpolates the payload as markup, so a hostile
+        input cannot become elements.  Exactly two sinks hold that argument:
+
+        * WireGuard.vue — the peer-config QR (``qrSvg``); a hostile peer
+          config stays pixels.
+        * Settings.vue — the TOTP enrollment QR (``twofaEnroll.qrSvg``); the
+          otpauth:// URI is built server-side from a server-generated secret
+          and the account name, and either way ends up as modules, not markup.
+
+        Any *other* v-html would not have that property; adding one means
+        extending this list with its own justification, not raising a number.
         """
         web = BASE / "web" / "src"
         if not web.is_dir():
@@ -648,12 +656,14 @@ class ContentSecurityPolicyTests(unittest.TestCase):
                 if "v-html" in line:
                     sinks.append(f"{vue.relative_to(web)}: {line.strip()}")
         self.assertEqual(
-            len(sinks),
-            1,
-            "a new v-html appeared; each one needs its own argument for why the "
-            "value cannot contain markup:\n" + "\n".join(sinks),
+            sorted(sinks),
+            [
+                'views/Settings.vue: <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>',
+                'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>',
+            ],
+            "the v-html sinks changed; each one needs its own argument for why "
+            "the value cannot contain markup:\n" + "\n".join(sinks),
         )
-        self.assertIn("qrSvg", sinks[0], sinks[0])
 
 
 class DiscoveryHostileInputTests(unittest.TestCase):
