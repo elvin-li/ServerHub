@@ -2363,6 +2363,7 @@ export default {
     timeout: '请求超时，请检查网络连接',
     offline: '无法连接服务器，请检查网络',
     session_expired: '会话已过期，请重新登录',
+    page_error: '页面出现错误，详情见浏览器控制台',
     auth: {
       password_reused: '新密码不能与当前密码相同',
       already_setup: '管理员密码已设置',

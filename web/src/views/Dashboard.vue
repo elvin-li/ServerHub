@@ -323,6 +323,7 @@
           {{ t('dashboard.array') }}
           <router-link class="btn tiny" to="/main">{{ t('common.open') }}</router-link>
         </h3>
+        <div class="table-wrap">
         <table class="dense">
           <thead>
             <tr>
@@ -350,6 +351,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- ===== Docker ===== -->
@@ -362,6 +364,7 @@
           </span>
           <router-link class="btn tiny" to="/containers">{{ t('common.manage') }}</router-link>
         </h3>
+        <div class="table-wrap">
         <table class="dense">
           <thead>
             <tr><th></th><th>{{ t('dashboard.col_name') }}</th><th>{{ t('dashboard.col_status') }}</th><th>{{ t('dashboard.col_cpu') }}</th><th>{{ t('dashboard.col_mem') }}</th><th></th></tr>
@@ -390,6 +393,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- ===== Attention ===== -->
@@ -472,6 +476,7 @@
           {{ t('dashboard.ports') }}
           <router-link class="btn tiny" to="/network">{{ t('nav.network') }}</router-link>
         </h3>
+        <div class="table-wrap">
         <table class="dense">
           <thead><tr><th>{{ t('dashboard.col_process') }}</th><th>{{ t('dashboard.col_port') }}</th><th>{{ t('dashboard.col_addr') }}</th></tr></thead>
           <tbody>
@@ -483,6 +488,7 @@
             <tr v-if="!ports.length"><td colspan="3" style="color:var(--sub)">—</td></tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- ===== Health + Bookmarks ===== -->
@@ -988,12 +994,15 @@ function formatBps(bps) {
   return `${(bps / 1024 ** 3).toFixed(2)} GB/s`
 }
 
+// Both return `false` on failure so the 12s tick below can report it to
+// lib/poll.js, whose backoff then slows a dead server's polling down.
 async function refresh() {
   try {
     status.value = await getStatus()
     loadError.value = ''
   } catch (e) {
     loadError.value = e.message || String(e)
+    return false
   }
 }
 async function loadSensors(force = false) {
@@ -1003,6 +1012,7 @@ async function loadSensors(force = false) {
     loadError.value = ''
   } catch (e) {
     loadError.value = e.message || String(e)
+    return false
   }
 }
 async function loadMetrics() {
@@ -1016,6 +1026,12 @@ async function loadMetrics() {
 }
 async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   loading.value = true
+  // Secondary tiles keep their previous snapshot on failure (their catches stay
+  // deliberately silent), so they cannot decide whether this tick "failed". The
+  // host read is the canonical liveness probe — it already drives the failure
+  // banner — so it alone reports the tick failed and lets the 90s heavy poll
+  // back off through lib/poll.js while the server is unreachable.
+  let hostOk = true
   // stats=false avoids ~2s docker stats on every heavy tick; cache on server is 15s when true
   await Promise.all([
     loadMetrics(),
@@ -1023,7 +1039,10 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     getStorage(true).then(s => { storage.value = s }).catch(() => {}),
     // host drives the skeleton gate, so its failure has to be visible rather
     // than leaving the page on placeholders.
-    getHost().then(h => { host.value = h }).catch(e => { loadError.value = e.message || String(e) }),
+    getHost().then(h => { host.value = h }).catch(e => {
+      loadError.value = e.message || String(e)
+      hostOk = false
+    }),
     getAlerts(12).then(a => { alerts.value = a.alerts || [] }).catch(() => {}),
     getContainers(withDockerStats).then(c => {
       containers.value = c.containers || []
@@ -1048,6 +1067,7 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     loadPower(),
   ])
   loading.value = false
+  if (!hostOk) return false
 }
 async function refreshAll() {
   await Promise.all([refresh(), refreshHeavy(true, true)])
@@ -1078,8 +1098,9 @@ onMounted(() => {
     // Members only have /api/status; every heavy loader below reads admin
     // endpoints and would produce nothing but 401s for this session.
     timer = startVisibleInterval(async () => {
-      await refresh()
+      const ok = await refresh()
       clock.value = Date.now()
+      return ok
     }, 12000)
     return
   }
@@ -1087,8 +1108,10 @@ onMounted(() => {
   void refreshHeavy(true, true)
   // light: status + sensors from cache; pause when tab hidden
   timer = startVisibleInterval(async () => {
-    await Promise.all([refresh(), loadSensors(false)])
+    const results = await Promise.all([refresh(), loadSensors(false)])
     clock.value = Date.now()
+    // Either sub-read failing marks the tick failed, engaging poll.js backoff.
+    if (results.includes(false)) return false
   }, 12000)
   // heavy: no docker stats; manual refresh still pulls stats
   heavyTimer = startVisibleInterval(() => refreshHeavy(false, false), 90000)

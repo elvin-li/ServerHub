@@ -133,6 +133,7 @@ import {
 import { authState } from './lib/authState'
 import { startVisibleInterval } from './lib/poll'
 import { clearAdminPassword } from './lib/adminPassword'
+import { APP_ERROR_EVENT } from './lib/appError'
 import AdminPasswordDialog from './components/AdminPasswordDialog.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AUTH_LOST_EVENT, getStatus, logoutAuth, putSettings } from './api/client'
@@ -339,8 +340,18 @@ function onAuthLost() {
   router.replace(next ? { path: '/login', query: { next } } : '/login')
 }
 
+// Uncaught render errors and unhandled rejections, reported by the global
+// handlers main.js installs (lib/appError.js). The leading ⚠ marks the toast
+// as an error so the screen reader announces it assertively.
+function onAppError() {
+  showToast('⚠ ' + t('err.page_error'))
+}
+
 async function refresh() {
-  try { status.value = await getStatus() } catch {}
+  // `false` opts the sidebar poll into lib/poll.js's failure backoff: with the
+  // panel down, the badge refresh slows from every 15s toward 90s instead of
+  // hammering a host that is not answering.
+  try { status.value = await getStatus() } catch { return false }
 }
 
 // The sidebar poll is torn down on session loss and restarted once the user is
@@ -398,6 +409,8 @@ onMounted(() => {
   // Session died server-side: redirect instead of leaving pages frozen on stale
   // data (client.js dispatches this on any non-auth 401).
   window.addEventListener(AUTH_LOST_EVENT, onAuthLost)
+  // Errors nothing else caught (Vue errorHandler / unhandledrejection).
+  window.addEventListener(APP_ERROR_EVENT, onAppError)
 })
 onUnmounted(() => {
   stopPoll()
@@ -409,6 +422,7 @@ onUnmounted(() => {
   window.removeEventListener('scroll', onScroll)
   window.removeEventListener('keydown', onCmdKey)
   window.removeEventListener(AUTH_LOST_EVENT, onAuthLost)
+  window.removeEventListener(APP_ERROR_EVENT, onAppError)
 })
 
 function onScroll() {

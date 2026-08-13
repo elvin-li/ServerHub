@@ -552,6 +552,8 @@ async function refresh() {
     // "engine is not running" — blaming Docker for what was an API failure.
     listError.value = e.message || String(e)
     toast('❌ ' + e.message)
+    // Failed tick → lib/poll.js backoff while the server stays unreachable.
+    return false
   }
 }
 

@@ -57,6 +57,7 @@
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
           {{ t('wg.not_ready_hint') }}
         </p>
+        <div class="table-wrap">
         <table class="dense">
           <tbody>
             <tr v-for="c in blockingChecks" :key="c.id">
@@ -90,6 +91,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- Non-blocking gaps. The traffic flows without these, so they must not
@@ -106,6 +108,7 @@
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
           {{ t('wg.warnings_hint') }}
         </p>
+        <div class="table-wrap">
         <table class="dense">
           <tbody>
             <tr v-for="c in warningChecks" :key="c.id">
@@ -132,6 +135,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- Peers copied from another server can never handshake here. This is a
@@ -322,6 +326,7 @@
 
       <div v-if="pingResult" class="tile" style="margin-top:12px">
         <h3>{{ t('wg.ping_result', { ok: pingResult.reachable, total: pingResult.total }) }}</h3>
+        <div class="table-wrap">
         <table class="dense">
           <tbody>
             <tr v-for="r in pingResult.results" :key="r.pubkey">
@@ -332,6 +337,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
     </template>
 
@@ -634,7 +640,12 @@ async function load() {
         .catch(() => { if (generation === loadGeneration) nextIp.value = '' })
     }
   } catch (e) {
-    if (generation === loadGeneration) toast('❌ ' + e.message)
+    if (generation !== loadGeneration) return
+    toast('❌ ' + e.message)
+    // Failed tick → lib/poll.js backoff while the server stays unreachable.
+    // A superseded request (generation moved on) stays neutral: the newer
+    // request will report its own outcome.
+    return false
   } finally {
     if (generation === loadGeneration) loading.value = false
   }

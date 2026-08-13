@@ -262,6 +262,7 @@
       </div>
       <div class="card" style="margin-top:12px" v-if="(hw?.disks||[]).length">
         <h2 class="section-title" style="margin-top:0">{{ t('tools.disks') }}</h2>
+        <div class="table-wrap">
         <table class="dense">
           <thead><tr><th>ID</th><th>{{ t('common.name') }}</th><th>{{ t('common.size') }}</th><th>SSD</th><th>{{ t('common.status') }}</th></tr></thead>
           <tbody>
@@ -274,6 +275,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
       <!-- This branch used to be the only thing a failed hardware read produced,
            so the tab sat on "Loading…" forever. -->
@@ -336,6 +338,7 @@
           <router-link class="btn" to="/network">{{ t('nav.network') }}</router-link>
           <span class="meta">{{ ports.count ?? 0 }}</span>
         </div>
+        <div class="table-wrap">
         <table class="dense">
           <thead>
             <tr>
@@ -354,6 +357,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
     </template>
 

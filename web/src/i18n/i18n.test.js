@@ -146,14 +146,17 @@ describe('t() lookup', () => {
 describe('views', () => {
   /**
    * Ratchet, not a clean-zero assertion. The remaining hits are Chinese inside
-   * *logic*, not UI copy: CSS comments, a macOS service name matched by
+   * *logic*, not UI copy: a macOS service name matched by
    * `name.includes('屏幕共享')`, and two regexes matching localized NIC names
    * (`无线` / `有线`). Extracting those into the dictionaries would break the
    * matching they exist to do.
    *
+   * (Was 5 while main.js's global errorHandler carried a hardcoded zh-CN toast
+   * string; that copy now lives in the dictionaries as err.page_error.)
+   *
    * This number may only go down.
    */
-  const CJK_BUDGET = 5
+  const CJK_BUDGET = 3
   const CJK = /[一-鿿]/
 
   it('keep hardcoded CJK at or below the ratchet', () => {

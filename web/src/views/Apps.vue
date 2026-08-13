@@ -1099,6 +1099,9 @@ async function loadManaged(force = false) {
   } catch (e) {
     managedError.value = e.message || String(e)
     toast('❌ ' + e.message)
+    // The 15s tick returns this promise, so a dead server engages the
+    // lib/poll.js failure backoff instead of being polled at full rate.
+    return false
   } finally {
     loading.value = false
     managedLoaded.value = true

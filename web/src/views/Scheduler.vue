@@ -261,16 +261,27 @@ async function loadJobs() {
 // and last-run status update themselves; the timer stops as soon as nothing
 // is running, so an idle page polls nothing.
 let pollTimer = null
+// Unmount alone cannot stop this loop: it only clears the *armed* timer, but a
+// loadJobs() that was already in flight lands afterwards and re-arms — with a
+// job still running, the unmounted page then polls the API every 7s forever.
+// Same in-flight problem lib/poll.js solves with its generation counter; this
+// loop cannot use that helper because its interval is conditional.
+let pollStopped = false
 function schedulePoll() {
-  if (pollTimer) return
+  if (pollStopped || pollTimer) return
   if (!jobs.value.some(j => j.running)) return
   pollTimer = setTimeout(() => {
     pollTimer = null
-    loadJobs()
+    // Skip the fetch while the tab is hidden but keep the loop armed, so the
+    // badge catches up shortly after the operator returns instead of a hidden
+    // tab asking the host for job status all night.
+    if (typeof document !== 'undefined' && document.hidden) schedulePoll()
+    else loadJobs()
   }, 7000)
 }
 
 onBeforeUnmount(() => {
+  pollStopped = true
   if (pollTimer) clearTimeout(pollTimer)
   pollTimer = null
 })

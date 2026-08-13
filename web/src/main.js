@@ -5,6 +5,7 @@ import { initializeI18n, provideI18n } from './i18n'
 import { provideTheme } from './theme'
 import { registerServiceWorker } from './serviceWorker'
 import { installChunkRecovery } from './lib/chunkRecovery'
+import { installGlobalErrorHandlers } from './lib/appError'
 import './styles.css'
 
 // Vite reports a failed chunk preload before the router sees it, so this is
@@ -59,17 +60,10 @@ async function bootstrap() {
   provideTheme(app)
   app.use(router)
 
-  // Global error boundary — catch component errors and show a toast
-  app.config.errorHandler = (err, instance, info) => {
-    console.error('[ServerHub]', info, err)
-    // Show user-friendly toast via DOM (avoid circular dep with App)
-    const el = document.querySelector('.toast')
-    if (el) {
-      el.textContent = '⚠ 页面出现错误，请刷新重试'
-      el.classList.add('show')
-      setTimeout(() => el.classList.remove('show'), 4000)
-    }
-  }
+  // Global error boundary: render-time exceptions and unhandled rejections
+  // surface as the shell's localized toast (App.vue listens for the event)
+  // instead of dying silently in a tab nobody is watching.
+  installGlobalErrorHandlers(app)
 
   app.mount('#app')
 }

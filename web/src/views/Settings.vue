@@ -320,7 +320,8 @@
           </div>
         </div>
 
-        <table class="dense" v-if="(apiKeys || []).length" style="margin-bottom:12px">
+        <div class="table-wrap" v-if="(apiKeys || []).length" style="margin-bottom:12px">
+        <table class="dense">
           <thead>
             <tr>
               <th>{{ t('common.name') }}</th>
@@ -344,6 +345,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
         <p v-else-if="apiKeys" class="hint">{{ t('apikeys.empty') }}</p>
         <p v-else class="hint">{{ t('common.loading') }}</p>
 
@@ -636,7 +638,8 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_list') }}</h2>
-        <table class="dense" v-if="(sysBundle?.vms?.items||[]).length">
+        <div class="table-wrap" v-if="(sysBundle?.vms?.items||[]).length">
+        <table class="dense">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th>Backend</th></tr></thead>
           <tbody>
             <tr v-for="v in sysBundle.vms.items" :key="v.id">
@@ -646,6 +649,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
         <div v-else class="sub">{{ t('settings.vm_empty') }}</div>
       </div>
     </div>
@@ -774,7 +778,8 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk_power') }}</h2>
-        <table class="dense" v-if="(sysBundle?.disk?.power_disks||[]).length">
+        <div class="table-wrap" v-if="(sysBundle?.disk?.power_disks||[]).length">
+        <table class="dense">
           <thead><tr><th>{{ t('settings.disk') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
             <tr v-for="d in sysBundle.disk.power_disks" :key="d.id">
@@ -784,6 +789,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
         <div v-else class="sub">{{ t('settings.disk_power_empty') }}</div>
       </div>
     </div>
@@ -859,7 +865,8 @@
           <label>{{ t('settings.timer_count') }}</label>
           <div>{{ sysBundle.scheduler.count ?? 0 }}</div>
         </div>
-        <table class="dense" style="margin-top:10px" v-if="(sysBundle?.scheduler?.timers||[]).length">
+        <div class="table-wrap" style="margin-top:10px" v-if="(sysBundle?.scheduler?.timers||[]).length">
+        <table class="dense">
           <thead><tr><th>{{ t('common.name') }}</th><th>Interval</th></tr></thead>
           <tbody>
             <tr v-for="(tm, i) in sysBundle.scheduler.timers.slice(0, 15)" :key="i">
@@ -868,6 +875,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
         <div class="btns" style="margin-top:12px">
           <router-link class="btn primary" to="/scheduler">{{ t('nav.scheduler') }}</router-link>
           <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>

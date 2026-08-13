@@ -592,7 +592,9 @@ async function refresh(force = false) {
     if (e.status !== 404) {
       loadError.value = e.message || String(e)
       toast(`❌ ${e.message || e}`)
-      return
+      // Tell the 15s poller the tick failed so lib/poll.js backs off while the
+      // server stays unreachable (and the toast above stops firing every 15s).
+      return false
     }
     try {
       // Older servers expose only the classic status endpoint. The client does
@@ -605,6 +607,7 @@ async function refresh(force = false) {
     } catch (fallbackError) {
       loadError.value = fallbackError.message || String(fallbackError)
       toast(`❌ ${fallbackError.message || fallbackError}`)
+      return false
     }
   } finally {
     loading.value = false

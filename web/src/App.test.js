@@ -20,6 +20,7 @@ import App from './App.vue'
 import { provideI18n, setLocale } from './i18n/index.js'
 import { provideTheme } from './theme/index.js'
 import { AUTH_LOST_EVENT } from './api/client.js'
+import { APP_ERROR_EVENT } from './lib/appError.js'
 
 const Blank = defineComponent({ render: () => h('div') })
 
@@ -234,5 +235,93 @@ describe('App shell session loss', () => {
     const after = fetchMock.mock.calls.length
     await vi.advanceTimersByTimeAsync(POLL_MS * 4)
     expect(fetchMock.mock.calls.length).toBe(after)
+  })
+
+  it('backs the sidebar poll off while the server is unreachable', async () => {
+    // refresh() reports failure to lib/poll.js by returning false, so a dead
+    // panel is polled on a widening interval instead of at full rate. The
+    // observable difference: after one failed tick the next fires 1.5x out.
+    wrapper = mountShell(router)
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Server goes away. client.js retries GETs twice (800ms, 1600ms) before
+    // giving up, so the failing tick spans ~2.4s before it reports false.
+    fetchMock.mockRejectedValue(Object.assign(new Error('Failed to fetch'), {
+      name: 'TypeError',
+    }))
+
+    await vi.advanceTimersByTimeAsync(POLL_MS) // tick fires…
+    await vi.advanceTimersByTimeAsync(5000) // …and finishes its retries
+    const afterFirstFailure = statusCalls(fetchMock)
+
+    // On the un-backed-off schedule the next tick would land 15s after the
+    // failed one completed; at 1.5x it must not have fired yet.
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    expect(statusCalls(fetchMock)).toBe(afterFirstFailure)
+
+    // …but it does fire once the backed-off interval elapses.
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    expect(statusCalls(fetchMock)).toBeGreaterThan(afterFirstFailure)
+  })
+})
+
+describe('App shell global error toast', () => {
+  // The other half of lib/appError.js: main.js reports uncaught errors via a
+  // window event, and the mounted shell must answer with its normal localized
+  // toast — the assertive kind, so a screen reader hears it.
+  let router
+  let wrapper
+
+  beforeEach(async () => {
+    await setLocale('en')
+    vi.useFakeTimers()
+    vi.stubGlobal('scrollTo', vi.fn())
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ services: [] }),
+    }))
+    router = makeRouter()
+    await router.replace('/')
+    await router.isReady()
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = undefined
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('shows a localized error toast when an app-error is reported', async () => {
+    wrapper = mountShell(router)
+    await vi.advanceTimersByTimeAsync(0)
+
+    window.dispatchEvent(new CustomEvent(APP_ERROR_EVENT, {
+      detail: { error: new Error('boom'), context: 'render' },
+    }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    const toast = wrapper.find('.toast')
+    expect(toast.classes()).toContain('show')
+    expect(toast.text()).toContain('Something went wrong on this page')
+    // Failures interrupt the screen reader; the ⚠ prefix is what flips the
+    // toast to role=alert (see toastIsError in App.vue).
+    expect(toast.attributes('role')).toBe('alert')
+  })
+
+  it('stops reacting to app-errors after the shell unmounts', async () => {
+    wrapper = mountShell(router)
+    await vi.advanceTimersByTimeAsync(0)
+    wrapper.unmount()
+    wrapper = undefined
+
+    // A leaked listener would throw on the dead component's refs.
+    expect(() => {
+      window.dispatchEvent(new CustomEvent(APP_ERROR_EVENT, {
+        detail: { error: new Error('late'), context: 'render' },
+      }))
+    }).not.toThrow()
   })
 })

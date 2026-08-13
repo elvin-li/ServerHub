@@ -2362,6 +2362,7 @@ export default {
     timeout: 'Request timed out — check the network connection',
     offline: 'Cannot reach the server — check the network',
     session_expired: 'Session expired — please sign in again',
+    page_error: 'Something went wrong on this page — details are in the browser console',
     auth: {
       password_reused: 'The new password must differ from the current one',
       already_setup: 'Administrator password is already set',

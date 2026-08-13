@@ -921,6 +921,8 @@ async function refresh() {
   } catch (e) {
     loadError.value = e.message || String(e)
     toast('❌ ' + e.message)
+    // Failed tick → lib/poll.js backoff while the server stays unreachable.
+    return false
   } finally {
     loading.value = false
     loaded.value = true

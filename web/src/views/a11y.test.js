@@ -189,6 +189,46 @@ describe('dialog keyboard contract', () => {
   }
 })
 
+describe('mobile table overflow', () => {
+  /**
+   * Every `<table class="dense">` must sit inside a `.table-wrap`, the shared
+   * horizontal-overflow container (styles.css). Without it a table wider than
+   * its card does not scroll on a 390px phone — it stretches the whole page,
+   * and every dialog and toolbar rendered at viewport width stretches with it.
+   * This regressed piecemeal: the pattern was applied to whichever table
+   * someone had just seen overflow (Backups, then the Dashboard top-CPU tile)
+   * while ten siblings shipped bare.
+   *
+   * Scope is deliberately the shared .dense class. Apps.vue's .managed-table /
+   * .mini-table own a different strategy (a dedicated wrap div, and
+   * word-break inside the detail drawer respectively), and a nested sub-table
+   * scrolls with the wrapped parent it lives in.
+   */
+  const NESTED_INSIDE_WRAPPED_PARENT = { 'views/MainArray.vue': 1 }
+
+  it('keeps every dense table inside a .table-wrap', () => {
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      let bare = 0
+      for (const m of src.matchAll(/<table class="dense"/g)) {
+        // House pattern puts the wrap opener on the line right above the
+        // table, so a short lookback is enough — and stays short so one
+        // table's wrapper cannot vouch for the next table down the file.
+        const before = src.slice(Math.max(0, m.index - 260), m.index)
+        if (!before.includes('table-wrap')) bare++
+      }
+      const allowed = NESTED_INSIDE_WRAPPED_PARENT[name] || 0
+      if (bare > allowed) {
+        offenders.push(`${name}: ${bare - allowed} dense table(s) outside .table-wrap`)
+      }
+    }
+    expect(
+      offenders,
+      'tables without .table-wrap overflow the page on a 390px phone',
+    ).toEqual([])
+  })
+})
+
 describe('tab selection state', () => {
   it('exposes the selected tab to assistive technology', () => {
     const offenders = []
