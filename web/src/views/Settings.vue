@@ -241,8 +241,10 @@
     </div>
 
     <div v-else-if="tab==='notify' && form" class="two-col">
+      <NotifyChannels />
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.notify') }}</h2>
+        <p class="hint" style="margin-top:0">{{ t('settings.notify_legacy_hint') }}</p>
         <div class="form-grid">
           <label>{{ t('settings.notify_enable') }}</label>
           <input type="checkbox" v-model="form.notify.enabled" />
@@ -301,6 +303,31 @@
              the field reads like every other limit on this page and gets set to 90,
              which alerts on every healthy disk. -->
         <p class="hint">{{ t('settings.th_smart_spare_hint') }}</p>
+      </div>
+
+      <div class="card">
+        <h2 class="section-title" style="margin-top:0">{{ t('settings.ups_alerts') }}</h2>
+        <p class="hint" style="margin-top:0">{{ t('settings.ups_alerts_hint') }}</p>
+        <div class="form-grid" v-if="upsInfo">
+          <label>{{ t('settings.power_source') }}</label>
+          <div>
+            <span v-if="upsInfo.present" class="badge" :class="upsInfo.on_battery ? 'warn' : 'ok'">
+              {{ upsInfo.on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac') }}
+            </span>
+            <span v-else class="sub">{{ t('settings.ups_none') }}</span>
+            <span v-if="upsInfo.battery_percent != null" class="mono" style="margin-left:8px">
+              {{ upsInfo.battery_percent }}%
+            </span>
+          </div>
+          <label>{{ t('settings.ups_alerts_enable') }}</label>
+          <input type="checkbox" v-model="upsForm.alerts_enabled" :aria-label="t('settings.ups_alerts_enable')" />
+          <label>{{ t('settings.ups_low_pct') }}</label>
+          <input v-model.number="upsForm.low_battery_pct" type="number" min="5" max="95" :aria-label="t('settings.ups_low_pct')" />
+        </div>
+        <div v-else class="sub">{{ t('common.loading') }}</div>
+        <div class="btns" style="margin-top:10px">
+          <button class="primary" :disabled="saving || !upsInfo" @click="saveUps">{{ t('common.save') }}</button>
+        </div>
       </div>
     </div>
 
@@ -736,13 +763,15 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
-  getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, openLauncherApp,
-  putIdentity, putSettings, runAliasAutoBind, setLauncherLogin, setPowerSetting,
+  getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, getUps,
+  openLauncherApp, putIdentity, putSettings, putUpsSettings, runAliasAutoBind,
+  setLauncherLogin, setPowerSetting,
   testNotify as apiTest,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
 import LoadFailure from '../components/LoadFailure.vue'
+import NotifyChannels from '../components/NotifyChannels.vue'
 
 const toast = inject('toast')
 const { t, locale, locales, setLocale } = injectI18n()
@@ -783,6 +812,8 @@ const diagMsg = ref('')
 const diagPreview = ref('')
 const savingPassword = ref(false)
 const accountForm = ref({ username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
+const upsInfo = ref(null)
+const upsForm = ref({ alerts_enabled: true, low_battery_pct: 20 })
 
 const tabs = [
   { id: 'appearance', labelKey: 'settings.tab_appearance' },
@@ -812,6 +843,7 @@ function switchTab(id) {
   tab.value = id
   if (id === 'docker') loadDockerInfo()
   if (id === 'panel') loadLauncher()
+  if (id === 'notify') loadUps()
   if (['datetime', 'power', 'disk', 'network', 'shares', 'access', 'vms', 'scheduler', 'advanced', 'diagnostics'].includes(id)) {
     loadSysBundle()
   }
@@ -1269,6 +1301,34 @@ async function saveTerminal() {
     })
     toast('✅ ' + t('common.save'))
     await load()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  saving.value = false
+}
+
+async function loadUps() {
+  try {
+    upsInfo.value = await getUps()
+    upsForm.value = {
+      alerts_enabled: upsInfo.value.settings?.alerts_enabled !== false,
+      low_battery_pct: upsInfo.value.settings?.low_battery_pct ?? 20,
+    }
+  } catch (e) {
+    // The card stays on its loading placeholder; the toast says why.
+    toast('❌ ' + e.message)
+  }
+}
+
+async function saveUps() {
+  saving.value = true
+  try {
+    const r = await putUpsSettings({
+      alerts_enabled: upsForm.value.alerts_enabled,
+      low_battery_pct: upsForm.value.low_battery_pct,
+    })
+    if (r.ups) upsInfo.value = r.ups
+    toast('✅ ' + t('common.save'))
   } catch (e) {
     toast('❌ ' + e.message)
   }

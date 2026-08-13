@@ -381,6 +381,34 @@
         </div>
       </div>
 
+      <!-- ===== UPS (rendered only when a UPS / battery is attached) ===== -->
+      <div class="tile span-4" v-if="ups?.present">
+        <h3>
+          {{ t('dashboard.ups_title') }}
+          <span class="badge" :class="ups.on_battery ? 'down' : 'ok'">
+            {{ ups.on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac') }}
+          </span>
+        </h3>
+        <div class="sub" style="margin-bottom:6px">{{ ups.name || '—' }}</div>
+        <template v-if="ups.battery_percent != null">
+          <div style="display:flex;justify-content:space-between;font-size:12px;align-items:baseline">
+            <span class="sub">{{ t('dashboard.ups_battery') }}</span>
+            <b class="mono">
+              {{ ups.battery_percent }}%<template v-if="ups.charging"> · {{ t('dashboard.ups_charging') }}</template>
+            </b>
+          </div>
+          <div class="pct-bar thick" :class="upsBarClass">
+            <i :style="{ width: ups.battery_percent + '%' }"></i>
+          </div>
+        </template>
+        <div class="sub" style="margin-top:6px" v-if="ups.time_remaining_min != null">
+          {{ t('dashboard.ups_remaining', { m: ups.time_remaining_min }) }}
+        </div>
+        <div class="sub" style="margin-top:4px">
+          {{ t('dashboard.ups_threshold', { pct: ups.settings?.low_battery_pct ?? 20 }) }}
+        </div>
+      </div>
+
       <!-- ===== Ports ===== -->
       <div class="tile span-4">
         <h3>
@@ -461,7 +489,7 @@ import StackBar from '../components/StackBar.vue'
 import {
   doAction, getAlerts, getBookmarks, getContainers, getHealthChecks, getHost,
   getListeningPorts, getMetrics, getPower, getSensors, getStatus, getStorage,
-  powerAction, setSystemSharing,
+  getUps, powerAction, setSystemSharing,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 
@@ -489,6 +517,9 @@ const cstatsStale = computed(
   () => cstatsAt.value > 0 && clock.value - cstatsAt.value > 180000
 )
 const ports = ref([])
+// UPS / battery snapshot; the tile renders only when `present` is true, so a
+// desktop with no UPS never shows an empty card.
+const ups = ref(null)
 const sensors = ref(null)
 const bookmarks = ref([])
 const health = ref(null)
@@ -636,6 +667,14 @@ const diskPct = computed(() => {
 const uptimeText = computed(() =>
   sensors.value?.uptime?.uptime_text || sys.value.uptime || '—'
 )
+
+const upsBarClass = computed(() => {
+  const u = ups.value
+  if (!u || u.battery_percent == null) return ''
+  if (u.battery_percent <= (u.settings?.low_battery_pct ?? 20)) return 'danger'
+  if (u.on_battery) return 'warn'
+  return ''
+})
 
 const healthOk = computed(() => health.value?.healthy !== false && !(health.value?.summary?.error > 0))
 const healthSummary = computed(() => {
@@ -878,6 +917,9 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     getListeningPorts(40).then(p => { ports.value = p.ports || [] }).catch(() => {}),
     getBookmarks().then(b => { bookmarks.value = b.bookmarks || [] }).catch(() => {}),
     getHealthChecks().then(h => { health.value = h }).catch(() => {}),
+    // Secondary tile: a failed probe keeps the previous snapshot rather than
+    // hiding a UPS that was there a minute ago.
+    getUps().then(u => { ups.value = u }).catch(() => {}),
     loadPower(),
   ])
   loading.value = false

@@ -63,6 +63,21 @@ RAID_CHANGED = "raid.changed"
 SNAPSHOT_CHANGED = "snapshots.changed"
 SMART_TEST_STARTED = "smart.test.started"
 SPOTLIGHT_CHANGED = "spotlight.changed"
+#: Scheduled jobs run arbitrary shell commands and move data around, so every
+#: definition change and manual trigger names the operator.  The command text
+#: of a shell job is part of the record: "what exactly did the panel run at
+#: 03:30" must be answerable from this trail alone.
+SCHEDULE_JOB_CREATED = "scheduler.job.created"
+SCHEDULE_JOB_UPDATED = "scheduler.job.updated"
+SCHEDULE_JOB_DELETED = "scheduler.job.deleted"
+SCHEDULE_JOB_RUN = "scheduler.job.run_now"
+#: A notification channel is an outbound data path carrying alert content and
+#: credentials, so its lifecycle names the operator.  Secret values never
+#: enter these records (redaction drops token-shaped fields regardless).
+NOTIFY_CHANNEL_CREATED = "notify.channel.created"
+NOTIFY_CHANNEL_UPDATED = "notify.channel.updated"
+NOTIFY_CHANNEL_DELETED = "notify.channel.deleted"
+NOTIFY_CHANNEL_TESTED = "notify.channel.tested"
 #: A WireGuard peer is a credential granting network access, so issuing and
 #: revoking one is recorded with the operator who did it.
 WIREGUARD_PEER_ADDED = "wireguard.peer.added"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -33,8 +34,25 @@ def _load_state() -> dict:
 
 
 def _save_state(st: dict):
+    """Atomically publish alert state.
+
+    A crash mid-``write_text`` used to leave an empty/partial file. The next
+    sweep then saw ``prev={}``, lost cooldown maps, and re-announced every
+    still-bad SMART/resource condition — exactly the SSD thrash + alert spam
+    the write-if-changed path exists to prevent.
+    """
     STATE_FILE.parent.mkdir(exist_ok=True)
-    STATE_FILE.write_text(json.dumps(st, ensure_ascii=False, indent=2))
+    payload = json.dumps(st, ensure_ascii=False, indent=2)
+    tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(payload)
+        os.replace(tmp, STATE_FILE)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _append_alert(alert: dict):
@@ -50,7 +68,18 @@ def _append_alert(alert: dict):
         try:
             lines = ALERTS_FILE.read_text().splitlines()
             if len(lines) > MAX_ALERTS:
-                ALERTS_FILE.write_text("\n".join(lines[-MAX_ALERTS:]) + "\n")
+                # Atomic trim: a crash mid-write_text used to empty the trail.
+                payload = "\n".join(lines[-MAX_ALERTS:]) + "\n"
+                tmp = ALERTS_FILE.with_name(f"{ALERTS_FILE.name}.{os.getpid()}.tmp")
+                try:
+                    tmp.write_text(payload)
+                    os.replace(tmp, ALERTS_FILE)
+                except Exception:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
         except OSError:
             pass
 
@@ -73,7 +102,20 @@ def list_alerts(limit: int = 50) -> list:
 
 
 def notify_settings() -> dict:
-    return ((cfg().get("settings") or {}).get("notify") or {})
+    """Effective notify settings for the alert call sites below.
+
+    The raw ``settings.notify`` dict, with the global enabled/include_warn/
+    notify_resolve flags widened when explicit notify channels exist — those
+    gates now mean "does any channel want this"; the per-channel routing
+    happens inside notify_channels.dispatch().  Pure-legacy configs pass
+    through unchanged.
+    """
+    raw = ((cfg().get("settings") or {}).get("notify") or {})
+    try:
+        from hub import notify_channels
+        return notify_channels.effective_settings(raw)
+    except Exception:
+        return raw
 
 
 def _http_url_ok(url: str) -> bool:
@@ -87,57 +129,53 @@ def _http_url_ok(url: str) -> bool:
     return scheme in ("http", "https")
 
 
-def send_ha_notify(title: str, message: str) -> dict:
+def send_ha_notify(title: str, message: str, *, level: str | None = None,
+                   event: str | None = None) -> dict:
+    """Send a notification through every configured channel.
+
+    Historically this spoke only to Home Assistant; it now delegates to
+    hub.notify_channels, which treats the legacy ``settings.notify`` HA
+    config as an implicit channel — old installs keep working unchanged —
+    and additionally routes to the explicit multi-channel list by level.
+    Name and (title, message) signature are kept so the call sites in this
+    module and existing tests stay untouched; ``level``/``event`` are
+    optional routing hints the channels use for min_level filtering.
+    """
+    from hub import notify_channels
+    return notify_channels.dispatch(title, message, level=level, event=event)
+
+
+def emit_alert(*, kind: str, level: str, alert_id: str, message: str,
+               title: str = "ServerHub scheduled task") -> dict:
+    """Record one alert and notify through the configured channels.
+
+    Public entry for modules outside the sweep loop (the scheduler engine's
+    consecutive-failure alerts).  Mirrors what the checks above do per event:
+    append to alerts.jsonl, then hand the text to send_ha_notify, whose
+    per-channel min_level routing decides who actually hears about it.  The
+    global enabled/include_warn gates are honoured the same way the resource
+    alerts honour them.
+    """
+    alert = {
+        "t": int(time.time()),
+        "level": level,
+        "kind": kind,
+        "id": alert_id,
+        # Same shape as the sweep-loop alerts above: the Alerts page renders
+        # a.name and a.event, and records missing them drew blank cells.
+        "name": title or alert_id,
+        "event": "problem",
+        "message": message,
+    }
+    _append_alert(alert)
     n = notify_settings()
-    if not n.get("enabled"):
-        return {"ok": False, "message": "notify disabled"}
-    url = n.get("ha_webhook_url") or n.get("webhook_url")
-    if url and not _http_url_ok(url):
-        return {"ok": False, "message": "webhook URL must be http(s)"}
-    if not url:
-        base = (n.get("ha_url") or "http://localhost:8123").rstrip("/")
-        token = n.get("ha_token")
-        service = n.get("ha_service") or "notify.notify"
-        if not token:
-            return {"ok": False, "message": "no webhook or token configured"}
-        parts = service.split(".", 1)
-        domain = parts[0] if len(parts) == 2 else "notify"
-        svc = parts[1] if len(parts) == 2 else parts[0]
-        url = f"{base}/api/services/{domain}/{svc}"
-        body = json.dumps({"title": title, "message": message}).encode()
-        req = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-        )
-    else:
-        body = json.dumps({
-            "title": title,
-            "message": message,
-            "text": f"{title}: {message}",
-        }).encode()
-        req = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return {
-                "ok": True,
-                "status": r.status,
-                "body": r.read()[:200].decode(errors="replace"),
-            }
-    except urllib.error.HTTPError as e:
-        detail = e.read()[:200].decode(errors="replace")
-        return {"ok": False, "message": f"HTTP {e.code}: {detail}"}
-    except Exception as e:
-        return {"ok": False, "message": str(e)}
+    if n.get("enabled") and (level == "down" or n.get("include_warn", True)):
+        try:
+            send_ha_notify(title, message, level=level)
+        except Exception:
+            # Notification failure must not propagate into the caller's thread.
+            pass
+    return alert
 
 
 def _resource_thresholds() -> dict:
@@ -205,7 +243,7 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             emitted.append(alert)
             new_last[rid] = now
             if n.get("enabled") and n.get("include_warn", True):
-                send_ha_notify("ServerHub resource alert", alert["message"])
+                send_ha_notify("ServerHub resource alert", alert["message"], level="warn")
         elif old == "warn" and not over:
             alert = {
                 "t": now,
@@ -221,7 +259,8 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             _append_alert(alert)
             emitted.append(alert)
             if n.get("enabled") and n.get("notify_resolve", True):
-                send_ha_notify("ServerHub resource recovered", alert["message"])
+                send_ha_notify("ServerHub resource recovered", alert["message"],
+                               level="ok", event="resolved")
     new_state["_resource_last"] = new_last
     return emitted
 
@@ -564,7 +603,7 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
                 # installs; a disk that is failing is not chatter, so `down` follows
                 # `enabled` only, exactly like the service down alerts above.
                 if n.get("enabled") and (level == "down" or n.get("include_warn")):
-                    send_ha_notify(title, message)
+                    send_ha_notify(title, message, level=level)
         elif old in ("down", "warn"):
             title, template = _SMART_ALERT_TEXT["ok"]
             alert = {
@@ -585,10 +624,113 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
             new_last.pop(key, None)
             new_details.pop(key, None)
             if n.get("enabled") and n.get("notify_resolve", True):
-                send_ha_notify(title, alert["message"])
+                send_ha_notify(title, alert["message"], level="ok", event="resolved")
 
     new_state["_smart_last"] = new_last
     new_state["_smart_detail"] = new_details
+    return emitted
+
+
+# --- UPS / battery power -------------------------------------------------------
+
+def _check_ups(prev: dict, new_state: dict, now: int) -> list:
+    """Power-loss / low-battery / power-restored alerts, pmset-backed.
+
+    Same state-machine shape as _check_smart_health: edge-triggered on the
+    stored state, resolve clears it.  Two independent keys — ``ups:power``
+    (on battery at all, always ``down``: a NAS on battery is on a countdown)
+    and ``ups:battery`` (charge at or below the configured floor while on
+    battery).  Low battery clears silently when power returns; the restored
+    alert already tells that story, and a second "resolved" ping for the
+    same recovery would be noise.
+
+    First sight counts: like a failing disk and unlike a service, a machine
+    that boots on battery must alert even with a fresh state file.
+    Reads the 30s-cached snapshot, so most sweeps cost nothing; no UPS (or
+    a probe failure) tracks nothing rather than alerting on the unknown.
+    """
+    try:
+        from hub import ups_svc
+        st = ups_svc.ups_status()
+    except Exception:
+        return []
+    if not st.get("present"):
+        return []
+    settings = st.get("settings") or {}
+    if not settings.get("alerts_enabled", True):
+        return []
+
+    emitted: list = []
+    n = notify_settings()
+    name = str(st.get("name") or "UPS")
+    pct = st.get("battery_percent")
+    pct_text = f"{pct}%" if pct is not None else "unknown charge"
+    on_battery = bool(st.get("on_battery"))
+
+    key = "ups:power"
+    level = "down" if on_battery else "ok"
+    new_state[key] = level
+    old = prev.get(key)
+    if level == "down" and old != "down":
+        alert = {
+            "t": now,
+            "id": key,
+            "name": f"UPS · {name}",
+            "kind": "ups",
+            "group": "power",
+            "level": "down",
+            "event": "problem",
+            "detail": f"on battery · {pct_text}",
+            "message": f"Power lost: {name} is running on battery ({pct_text})",
+        }
+        _append_alert(alert)
+        emitted.append(alert)
+        if n.get("enabled"):
+            send_ha_notify("ServerHub UPS alert", alert["message"], level="down")
+    elif level == "ok" and old == "down":
+        alert = {
+            "t": now,
+            "id": key,
+            "name": f"UPS · {name}",
+            "kind": "ups",
+            "group": "power",
+            "level": "ok",
+            "event": "resolved",
+            "detail": f"on AC · {pct_text}",
+            "message": f"Power restored: {name} is back on AC ({pct_text})",
+        }
+        _append_alert(alert)
+        emitted.append(alert)
+        if n.get("enabled") and n.get("notify_resolve", True):
+            send_ha_notify("ServerHub UPS recovered", alert["message"],
+                           level="ok", event="resolved")
+
+    try:
+        floor = float(settings.get("low_battery_pct") or 20)
+    except (TypeError, ValueError):
+        floor = 20.0
+    low = on_battery and pct is not None and float(pct) <= floor
+    key2 = "ups:battery"
+    new_state[key2] = "down" if low else "ok"
+    if low and prev.get(key2) != "down":
+        alert = {
+            "t": now,
+            "id": key2,
+            "name": f"UPS · {name}",
+            "kind": "ups",
+            "group": "power",
+            "level": "down",
+            "event": "problem",
+            "detail": f"battery {pct_text} ≤ {floor:.0f}%",
+            "message": (
+                f"UPS battery low: {name} at {pct_text} "
+                f"(threshold {floor:.0f}%) — shut down or restore power soon"
+            ),
+        }
+        _append_alert(alert)
+        emitted.append(alert)
+        if n.get("enabled"):
+            send_ha_notify("ServerHub UPS alert", alert["message"], level="down")
     return emitted
 
 
@@ -640,7 +782,7 @@ def check_once(force_status: bool = False) -> list:
             emitted.append(alert)
             n = notify_settings()
             if n.get("enabled") and (state == "down" or n.get("include_warn")):
-                send_ha_notify("ServerHub alert", alert["message"])
+                send_ha_notify("ServerHub alert", alert["message"], level=state)
         elif old in ("down", "warn") and state == "ok":
             alert = {
                 "t": now,
@@ -657,7 +799,8 @@ def check_once(force_status: bool = False) -> list:
             emitted.append(alert)
             n = notify_settings()
             if n.get("enabled") and n.get("notify_resolve", True):
-                send_ha_notify("ServerHub recovered", alert["message"])
+                send_ha_notify("ServerHub recovered", alert["message"],
+                               level="ok", event="resolved")
     try:
         emitted.extend(_check_resource_thresholds(prev, new_state, now))
     except Exception:
@@ -668,6 +811,10 @@ def check_once(force_status: bool = False) -> list:
     # worst possible failure mode for an alerting system.
     try:
         emitted.extend(_check_smart_health(prev, new_state, now))
+    except Exception:
+        pass
+    try:
+        emitted.extend(_check_ups(prev, new_state, now))
     except Exception:
         pass
     # Only rewrite state file when map actually changed (huge SSD win)
@@ -723,4 +870,8 @@ def stop_alerter(timeout: float = 3.0) -> None:
 
 
 def test_notify() -> dict:
-    return send_ha_notify("ServerHub test", f"Notification channel test {time.strftime('%H:%M:%S')}")
+    return send_ha_notify(
+        "ServerHub test",
+        f"Notification channel test {time.strftime('%H:%M:%S')}",
+        event="test",
+    )

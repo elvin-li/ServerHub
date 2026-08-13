@@ -1,0 +1,301 @@
+<template>
+  <div class="card notify-channels">
+    <h2 class="section-title" style="margin-top:0">{{ t('notifych.title') }}</h2>
+    <p class="hint" style="margin-top:0">{{ t('notifych.hint') }}</p>
+
+    <div class="table-wrap" v-if="channels.length">
+    <table class="dense">
+      <thead>
+        <tr>
+          <th>{{ t('common.name') }}</th>
+          <th>{{ t('common.type') }}</th>
+          <th>{{ t('notifych.min_level') }}</th>
+          <th>{{ t('common.status') }}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="c in channels" :key="c.id">
+          <td>
+            <strong>{{ c.name }}</strong>
+            <div class="mono sub-line">{{ c.id }}</div>
+          </td>
+          <td>{{ typeLabel(c.type) }}</td>
+          <td>
+            <span class="badge" :class="levelBadge(c.min_level)">{{ t(`notifych.level_${c.min_level}`) }}</span>
+            <span v-if="c.notify_resolve" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
+          </td>
+          <td>
+            <span class="badge" :class="c.enabled ? 'ok' : 'warn'">
+              {{ c.enabled ? t('common.enabled') : t('common.disabled') }}
+            </span>
+          </td>
+          <td class="row-btns">
+            <button class="tiny" :disabled="busy" @click="startEdit(c)">{{ t('common.edit') }}</button>
+            <button class="tiny" :disabled="busy" @click="testChannel(c)">{{ t('common.test') }}</button>
+            <button class="tiny danger" :disabled="busy" @click="removeChannel(c)">{{ t('common.delete') }}</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <div v-else-if="loaded" class="sub">{{ t('notifych.empty') }}</div>
+    <div v-else class="sub">{{ t('common.loading') }}</div>
+
+    <div class="btns" style="margin-top:10px" v-if="!editing">
+      <button class="primary" :disabled="!loaded" @click="startAdd">{{ t('notifych.add') }}</button>
+      <button :disabled="busy" @click="load">{{ t('common.refresh') }}</button>
+    </div>
+
+    <div v-if="editing" class="editor">
+      <h2 class="section-title">{{ editing.existing ? t('notifych.edit_title', { name: editing.name || editing.id }) : t('notifych.add') }}</h2>
+      <div class="form-grid">
+        <label>{{ t('common.type') }}</label>
+        <select v-model="editing.type" :disabled="editing.existing" :aria-label="t('common.type')">
+          <option v-for="ty in typeIds" :key="ty" :value="ty">{{ typeLabel(ty) }}</option>
+        </select>
+        <label>{{ t('common.name') }}</label>
+        <input v-model="editing.name" type="text" maxlength="80" :aria-label="t('common.name')" />
+        <label>{{ t('notifych.enabled') }}</label>
+        <input type="checkbox" v-model="editing.enabled" :aria-label="t('notifych.enabled')" />
+        <label>{{ t('notifych.min_level') }}</label>
+        <select v-model="editing.min_level" :aria-label="t('notifych.min_level')">
+          <option value="info">{{ t('notifych.level_info') }}</option>
+          <option value="warn">{{ t('notifych.level_warn') }}</option>
+          <option value="down">{{ t('notifych.level_down') }}</option>
+        </select>
+        <label>{{ t('notifych.notify_resolve') }}</label>
+        <input type="checkbox" v-model="editing.notify_resolve" :aria-label="t('notifych.notify_resolve')" />
+
+        <template v-for="f in fieldsFor(editing.type)" :key="'f-' + f">
+          <label>{{ fieldLabel(f) }}</label>
+          <select v-if="f === 'tls'" v-model="editing.config.tls" :aria-label="fieldLabel(f)">
+            <option value="starttls">STARTTLS</option>
+            <option value="ssl">SSL/TLS</option>
+            <option value="none">{{ t('notifych.tls_none') }}</option>
+          </select>
+          <input
+            v-else
+            v-model="editing.config[f]"
+            type="text"
+            :placeholder="fieldPlaceholder(f)"
+            :aria-label="fieldLabel(f)"
+          />
+        </template>
+
+        <template v-for="s in secretsFor(editing.type)" :key="'s-' + s">
+          <label>{{ fieldLabel(s) }}</label>
+          <input
+            v-model="editing.secrets[s]"
+            type="password"
+            autocomplete="new-password"
+            :placeholder="editing.has && editing.has[s] ? t('notifych.secret_keep') : fieldPlaceholder(s)"
+            :aria-label="fieldLabel(s)"
+          />
+        </template>
+      </div>
+      <p class="hint">{{ t('notifych.level_hint') }}</p>
+      <div class="btns" style="margin-top:8px">
+        <button class="primary" :disabled="busy" @click="save">{{ t('common.save') }}</button>
+        <button :disabled="busy" @click="editing = null">{{ t('common.cancel') }}</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { inject, onMounted, ref } from 'vue'
+import {
+  createNotifyChannel, deleteNotifyChannel, getNotifyChannels,
+  testNotifyChannel, updateNotifyChannel,
+} from '../api/client'
+import { injectI18n } from '../i18n'
+
+const toast = inject('toast')
+const { t } = injectI18n()
+
+const channels = ref([])
+// Field/secret lists per type, served by the backend so the form can never
+// drift from what the API actually validates.
+const types = ref({})
+const typeIds = ref([])
+const loaded = ref(false)
+const busy = ref(false)
+const editing = ref(null)
+
+function typeLabel(ty) {
+  const key = `notifych.type_${ty}`
+  const label = t(key)
+  return label === key ? ty : label
+}
+
+function fieldLabel(f) {
+  const key = `notifych.f_${f}`
+  const label = t(key)
+  return label === key ? f : label
+}
+
+// Placeholders are format examples (URLs, ports, addresses), deliberately the
+// same across locales, so they live here rather than in the dictionaries.
+const PLACEHOLDERS = {
+  host: 'smtp.example.com',
+  port: '587',
+  username: 'user@example.com',
+  from_addr: 'serverhub@example.com',
+  to: 'you@example.com, family@example.com',
+  server: 'https://ntfy.sh',
+  topic: 'serverhub-alerts',
+  chat_id: '-1001234567890',
+  webhook_url: 'https://…/webhooks/…',
+  url: 'https://example.com/hook',
+  ha_url: 'http://homeassistant.local:8123',
+  ha_service: 'notify.notify',
+}
+
+function fieldPlaceholder(f) {
+  return PLACEHOLDERS[f] || ''
+}
+
+function levelBadge(level) {
+  if (level === 'down') return 'down'
+  if (level === 'warn') return 'warn'
+  return 'ok'
+}
+
+function fieldsFor(ty) {
+  return types.value[ty]?.fields || []
+}
+
+function secretsFor(ty) {
+  return types.value[ty]?.secrets || []
+}
+
+async function load() {
+  try {
+    const r = await getNotifyChannels()
+    channels.value = r.channels || []
+    types.value = r.types || {}
+    typeIds.value = Object.keys(types.value)
+    loaded.value = true
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+function startAdd() {
+  editing.value = {
+    existing: false,
+    id: null,
+    type: 'email',
+    name: '',
+    enabled: true,
+    min_level: 'warn',
+    notify_resolve: true,
+    config: {},
+    secrets: {},
+    has: {},
+  }
+}
+
+function startEdit(c) {
+  editing.value = {
+    existing: true,
+    id: c.id,
+    type: c.type,
+    name: c.name,
+    enabled: c.enabled,
+    min_level: c.min_level,
+    notify_resolve: c.notify_resolve,
+    config: { ...(c.config || {}) },
+    secrets: {},
+    has: { ...(c.has || {}) },
+  }
+}
+
+async function save() {
+  const e = editing.value
+  if (!e) return
+  busy.value = true
+  try {
+    // An untouched (empty) secret input means "keep the stored value"; the
+    // API treats an empty string as "clear", so those are dropped here.
+    const secrets = {}
+    for (const [k, v] of Object.entries(e.secrets)) {
+      if (v) secrets[k] = v
+    }
+    const body = {
+      type: e.type,
+      name: e.name || undefined,
+      enabled: e.enabled,
+      min_level: e.min_level,
+      notify_resolve: e.notify_resolve,
+      config: e.config,
+      secrets,
+    }
+    if (e.existing) await updateNotifyChannel(e.id, body)
+    else await createNotifyChannel(body)
+    toast('✅ ' + t('common.save'))
+    editing.value = null
+    await load()
+  } catch (err) {
+    toast('❌ ' + err.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function testChannel(c) {
+  busy.value = true
+  try {
+    const r = await testNotifyChannel(c.id)
+    toast(r.ok ? '✅ ' + t('notifych.test_sent') : '❌ ' + (r.message || t('common.fail')))
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function removeChannel(c) {
+  if (!confirm(t('notifych.delete_confirm', { name: c.name }))) return
+  busy.value = true
+  try {
+    await deleteNotifyChannel(c.id)
+    toast('✅ ' + t('common.delete'))
+    if (editing.value?.id === c.id) editing.value = null
+    await load()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+onMounted(load)
+</script>
+
+<style scoped>
+.notify-channels { grid-column: 1 / -1; }
+.sub-line { color: var(--sub); font-size: 10px; }
+.row-btns { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+.editor {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 10px 14px;
+  align-items: center;
+  font-size: 13px;
+}
+.form-grid label { color: var(--sub); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
+.form-grid input[type=text],
+.form-grid input[type=password],
+.form-grid select { width: 100%; max-width: 420px; }
+@media (max-width: 640px) {
+  .form-grid { grid-template-columns: 1fr; gap: 5px; }
+  .row-btns { justify-content: flex-start; }
+}
+</style>
