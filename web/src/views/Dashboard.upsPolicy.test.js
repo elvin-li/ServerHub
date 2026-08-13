@@ -1,10 +1,11 @@
 /**
- * Dashboard UPS tile: the protection-policy line.
+ * Dashboard UPS indicator: the compact chip next to the hostname.
  *
- * The tile is the at-a-glance answer to "is the box protected against an
- * outage", so it must state the policy switch — and, mid-outage, the live
- * phase matters more than the switch: an engaged policy shows "engaged"
- * rather than a green "on".
+ * The old full-width tile is gone; the host-strip chip is now the at-a-glance
+ * answer to "is the box protected against an outage". The policy switch lives
+ * in the chip tooltip — and, mid-outage, the live phase matters more than the
+ * switch: an engaged policy is promoted to visible chip text rather than a
+ * green "on" hidden behind a hover.
  */
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -64,36 +65,51 @@ beforeEach(() => {
   getUps.mockClear()
 })
 
-describe('UPS tile protection-policy line', () => {
-  it('says off when the policy is disabled', async () => {
+describe('UPS host-strip indicator', () => {
+  it('lives in the host strip, not the tile grid', async () => {
+    getUps.mockResolvedValue(ups({ enabled: true }))
+    const wrapper = await render()
+    expect(wrapper.find('.host-strip [data-test="ups-indicator"]').exists()).toBe(true)
+    expect(wrapper.find('.dash-grid [data-test="ups-indicator"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="ups-policy"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps the disabled policy switch in the tooltip', async () => {
     getUps.mockResolvedValue(ups({ enabled: false }))
     const wrapper = await render()
-    expect(wrapper.find('[data-test="ups-policy"]').text())
+    expect(wrapper.find('[data-test="ups-indicator"]').attributes('title'))
       .toContain('dashboard.ups_policy_off')
     wrapper.unmount()
   })
 
-  it('says on when enabled and idle', async () => {
+  it('stays a quiet percent chip when enabled and idle on AC', async () => {
     getUps.mockResolvedValue(ups({ enabled: true }))
     const wrapper = await render()
-    expect(wrapper.find('[data-test="ups-policy"]').text())
-      .toContain('dashboard.ups_policy_on')
+    const chip = wrapper.find('[data-test="ups-indicator"]')
+    expect(chip.attributes('title')).toContain('dashboard.ups_policy_on')
+    expect(chip.text()).toContain('80%')
+    // No state word and no alarm colour while the box sits on wall power.
+    expect(chip.text()).not.toContain('dashboard.ups_policy_on')
+    expect(chip.classes()).not.toContain('warn')
+    expect(chip.classes()).not.toContain('danger')
     wrapper.unmount()
   })
 
-  it('shows the live phase over the switch while engaged', async () => {
+  it('promotes the live phase to visible text while engaged', async () => {
     getUps.mockResolvedValue(ups({ enabled: true, phase: 'engaged' }))
     const wrapper = await render()
-    const line = wrapper.find('[data-test="ups-policy"]').text()
-    expect(line).toContain('dashboard.ups_policy_engaged')
-    expect(line).not.toContain('dashboard.ups_policy_on')
+    const chip = wrapper.find('[data-test="ups-indicator"]')
+    expect(chip.text()).toContain('dashboard.ups_policy_engaged')
+    expect(chip.classes()).toContain('danger')
+    expect(chip.attributes('title')).not.toContain('dashboard.ups_policy_on')
     wrapper.unmount()
   })
 
   it('is absent entirely when no UPS is attached', async () => {
     getUps.mockResolvedValue({ present: false })
     const wrapper = await render()
-    expect(wrapper.find('[data-test="ups-policy"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="ups-indicator"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

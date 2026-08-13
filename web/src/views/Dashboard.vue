@@ -82,7 +82,25 @@
     <!-- Host strip — Unraid / Glances header -->
     <div class="host-strip">
       <div class="host-main">
-        <div class="host-name">{{ host?.hostname || '—' }}</div>
+        <div class="host-name">
+          <span>{{ host?.hostname || '—' }}</span>
+          <!-- UPS / battery chip. The old full-width tile was mostly empty
+               space, so the details it carried (name, runtime, threshold,
+               policy switch) moved into this chip's tooltip. On AC it stays a
+               quiet icon+percent; it only turns amber/red and grows a state
+               word when the box is on battery, engaged, or restoring. -->
+          <span
+            v-if="ups?.present"
+            class="host-ups"
+            :class="upsChipClass"
+            :title="upsTooltip"
+            data-test="ups-indicator"
+          >
+            <component :is="upsIcon" :size="13" />
+            <span v-if="ups.battery_percent != null" class="ups-pct">{{ ups.battery_percent }}%</span>
+            <span v-if="upsStateLabel">{{ upsStateLabel }}</span>
+          </span>
+        </div>
         <div class="host-meta">
           <span>{{ host?.cpu || 'CPU' }}</span>
           <span class="dot">·</span>
@@ -433,43 +451,6 @@
         </div>
       </div>
 
-      <!-- ===== UPS (rendered only when a UPS / battery is attached) ===== -->
-      <div class="tile span-4" v-if="ups?.present">
-        <h3>
-          {{ t('dashboard.ups_title') }}
-          <span class="badge" :class="ups.on_battery ? 'down' : 'ok'">
-            {{ ups.on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac') }}
-          </span>
-        </h3>
-        <div class="sub" style="margin-bottom:6px">{{ ups.name || '—' }}</div>
-        <template v-if="ups.battery_percent != null">
-          <div style="display:flex;justify-content:space-between;font-size:12px;align-items:baseline">
-            <span class="sub">{{ t('dashboard.ups_battery') }}</span>
-            <b class="mono">
-              {{ ups.battery_percent }}%<template v-if="ups.charging"> · {{ t('dashboard.ups_charging') }}</template>
-            </b>
-          </div>
-          <div class="pct-bar thick" :class="upsBarClass">
-            <i :style="{ width: ups.battery_percent + '%' }"></i>
-          </div>
-        </template>
-        <div class="sub" style="margin-top:6px" v-if="ups.time_remaining_min != null">
-          {{ t('dashboard.ups_remaining', { m: ups.time_remaining_min }) }}
-        </div>
-        <div class="sub" style="margin-top:4px">
-          {{ t('dashboard.ups_threshold', { pct: ups.settings?.low_battery_pct ?? 20 }) }}
-        </div>
-        <!-- Safe-shutdown policy: state matters most mid-outage, so the badge
-             switches to the live phase while the policy is engaged/restoring. -->
-        <div class="sub" style="margin-top:4px" data-test="ups-policy">
-          {{ t('dashboard.ups_policy') }}
-          <span v-if="upsPolicyPhase === 'engaged'" class="badge down">{{ t('dashboard.ups_policy_engaged') }}</span>
-          <span v-else-if="upsPolicyPhase === 'restoring'" class="badge warn">{{ t('dashboard.ups_policy_restoring') }}</span>
-          <span v-else-if="ups.settings?.shutdown?.enabled" class="badge ok">{{ t('dashboard.ups_policy_on') }}</span>
-          <span v-else class="badge">{{ t('dashboard.ups_policy_off') }}</span>
-        </div>
-      </div>
-
       <!-- ===== Ports ===== -->
       <div class="tile span-4">
         <h3>
@@ -545,7 +526,10 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { Monitor, Play, Square, Copy, Moon, RefreshCw, Power } from '@lucide/vue'
+import {
+  Battery, BatteryCharging, BatteryFull, BatteryLow, BatteryMedium,
+  Monitor, Play, Square, Copy, Moon, RefreshCw, Power,
+} from '@lucide/vue'
 import { startVisibleInterval } from '../lib/poll'
 import { authState } from '../lib/authState'
 import LineChart from '../components/LineChart.vue'
@@ -753,12 +737,53 @@ const uptimeText = computed(() =>
 
 const upsPolicyPhase = computed(() => ups.value?.shutdown_state?.phase || 'idle')
 
-const upsBarClass = computed(() => {
+const upsLow = computed(() => {
   const u = ups.value
-  if (!u || u.battery_percent == null) return ''
-  if (u.battery_percent <= (u.settings?.low_battery_pct ?? 20)) return 'danger'
-  if (u.on_battery) return 'warn'
+  return u?.battery_percent != null
+    && u.battery_percent <= (u.settings?.low_battery_pct ?? 20)
+})
+const upsChipClass = computed(() => {
+  if (!ups.value?.present) return ''
+  if (upsPolicyPhase.value === 'engaged' || upsLow.value) return 'danger'
+  if (ups.value.on_battery || upsPolicyPhase.value === 'restoring') return 'warn'
   return ''
+})
+const upsIcon = computed(() => {
+  const u = ups.value || {}
+  if (u.charging) return BatteryCharging
+  const p = Number(u.battery_percent)
+  if (!Number.isFinite(p)) return Battery
+  if (upsLow.value) return BatteryLow
+  return p >= 85 ? BatteryFull : BatteryMedium
+})
+// Mid-outage the live phase matters more than the policy switch, so the chip
+// promotes engaged/restoring (then plain on-battery) to visible text; on AC
+// there is no state word at all.
+const upsStateLabel = computed(() => {
+  if (upsPolicyPhase.value === 'engaged') return t('dashboard.ups_policy_engaged')
+  if (upsPolicyPhase.value === 'restoring') return t('dashboard.ups_policy_restoring')
+  if (ups.value?.on_battery) return t('dashboard.ups_on_battery')
+  return ''
+})
+// Everything the removed tile said, one hover away.
+const upsTooltip = computed(() => {
+  const u = ups.value
+  if (!u?.present) return ''
+  const lines = [`${t('dashboard.ups_title')} · ${u.name || '—'}`]
+  lines.push(
+    (u.on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac'))
+    + (u.charging ? ` · ${t('dashboard.ups_charging')}` : ''),
+  )
+  if (u.battery_percent != null) lines.push(`${t('dashboard.ups_battery')} ${u.battery_percent}%`)
+  if (u.time_remaining_min != null) lines.push(t('dashboard.ups_remaining', { m: u.time_remaining_min }))
+  lines.push(t('dashboard.ups_threshold', { pct: u.settings?.low_battery_pct ?? 20 }))
+  const policy = upsPolicyPhase.value === 'engaged'
+    ? t('dashboard.ups_policy_engaged')
+    : upsPolicyPhase.value === 'restoring'
+      ? t('dashboard.ups_policy_restoring')
+      : t(u.settings?.shutdown?.enabled ? 'dashboard.ups_policy_on' : 'dashboard.ups_policy_off')
+  lines.push(`${t('dashboard.ups_policy')}: ${policy}`)
+  return lines.join('\n')
 })
 
 const healthOk = computed(() => health.value?.healthy !== false && !(health.value?.summary?.error > 0))
@@ -1142,7 +1167,21 @@ onUnmounted(() => {
   border-radius: var(--radius);
   box-shadow: var(--card-shadow);
 }
-.host-name { font-size: 18px; font-weight: 800; letter-spacing: -.2px; }
+.host-name {
+  font-size: 18px; font-weight: 800; letter-spacing: -.2px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.host-ups {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  background: var(--btn); border: 1px solid var(--line); border-radius: var(--radius-pill);
+  font-size: 11px; font-weight: 600; letter-spacing: 0; line-height: 1.4;
+  color: var(--txt);
+  cursor: default;
+}
+.host-ups .ups-pct { font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
+.host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: transparent; }
+.host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
 .host-meta { color: var(--sub); font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 5px; }
 .host-meta .dot { opacity: .35; }
 .host-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
