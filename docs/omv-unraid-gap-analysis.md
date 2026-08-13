@@ -264,6 +264,11 @@
 - **前端**:Dashboard 增 UPS tile(`present` 才渲染);Settings.vue 电源卡片(现有 power 区旁)加阈值编辑。
 - **测试**:pmset 输出的表驱动解析用例(市电/电池/无 UPS 三态)、告警转变用例。
 
+**已实现(二期,安全关机)**:`hub/ups_policy.py` 落地软着陆策略,与系统 pmset halt 构成双层防护:
+
+- **第一层(面板软着陆,先触发)**:`settings.ups.shutdown` 配置触发条件(电量 ≤ N% / 预计续航 ≤ M 分钟,任一或双条件)与动作序列——按配置顺序 `docker compose stop` 所选栈(全部或指定顺序),可附加停 services.yaml `scripts`/launchd 服务(复用 `actions.run_action`)。触发即发一条 down 级告警(断电早期网络还活着时先发),动作在独立 worker 线程执行,告警 sweep 不被阻塞。状态机 `idle → engaged →(市电恢复)→ restoring → idle` 持久化在 `data/ups-policy-state.json`:一次断电只触发一次(latched,电量 49↔51 抖动不复触发);每个栈在 `compose stop` 前先落盘 `stop_issued` 标记(与 stack-backup-inflight 同款纪律),面板中途被杀,重启后在电池上续停、来电后只拉起策略停掉的目标——用户手动停的栈不碰。全过程逐目标写 `audit.record`(`ups.policy.*`)。演练端点 `POST /api/ups/shutdown/drill`(admin,dry-run)只报告序列不执行。
+- **第二层(系统 pmset halt,最后防线)**:`pmset -u haltlevel/haltafter/haltremain` 是 macOS 自带的 UPS 紧急关机(与面板存活无关;内置电池机型忽略)。面板只读展示 `pmset -g ups`,并支持经 `macos_admin` 管理员授权流写入 `haltlevel`(`PUT /api/ups/halt`);面板自身绝不执行 `shutdown`。软着陆阈值应设在 haltlevel 之上,让系统级切断只作用于已静默的机器。
+
 ---
 
 ## 6. 实施顺序建议

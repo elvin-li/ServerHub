@@ -16,47 +16,42 @@ A home-server management panel for macOS — modelled on **Unraid**'s informatio
 
 ![ServerHub apps and processes (fictional demo data)](docs/screenshots/apps-demo.png)
 
-## Module map (`/modules`)
+## Feature overview
 
-| Category | Modules | Inspiration |
+| Area | What you get | Details |
 |------|------|------|
-| System | Dashboard, Services, **Brew**, Sensors | Unraid / Glances / Homebrew |
-| Containers | Docker table, **Compose editor**, App catalog | dockerMan / **Dockge** / Portainer / CA |
-| Storage | Storage array, Shares | Unraid Main / OMV |
-| Network | Interfaces / Ports / Routes | Unraid Network |
-| Apps | **Bookmark health probes** | **Heimdall / Homarr / Glance** |
-| Operations | Logs, Alerts, Backups, Tools, Maintenance | Unraid Tools + Notifications |
+| Dashboard | live tiles, UPS power tile, metrics charts from **1 hour to 1 year** (tiered 90s/5min/1h history) | [docs/metrics.md](docs/metrics.md) |
+| Storage | disk inventory/format/mount, SMART attributes + scheduled self-tests, AppleRAID, APFS snapshots, usage analytics, Time Machine control | — |
+| Shares | SMB share CRUD (guest/read-only/encryption), **Time Machine backup destinations with quotas**, per-user access via filesystem ACLs, NFS exports | [docs/time-machine.md](docs/time-machine.md) |
+| Containers & apps | full container lifecycle (OrbStack), Dockge-style Compose editing with validation, **50-template app catalog + optional remote template source**, credentials tracking, autostart policy | [docs/app-catalog.md](docs/app-catalog.md) |
+| Services | auto-discovery of launchd/Homebrew/Docker/UTM services, recognition of common daemons, **adoption** into managed entries | [docs/app-catalog.md](docs/app-catalog.md) |
+| Scheduler | user-defined **cron jobs** (shell / rsync / stack backup / APFS snapshot), run history, failure alerts | [docs/scheduler-and-backups.md](docs/scheduler-and-backups.md) |
+| Backups | **rsync push/pull with dry-run preview** (brew rsync 3.x / openrsync auto-detected), **Compose stack backups** (stop → archive → always restart, crash-safe), database/config archives with restore hints | [docs/scheduler-and-backups.md](docs/scheduler-and-backups.md) |
+| Notifications | **SMTP / ntfy / Telegram / Discord / Slack / webhook / Home Assistant**, per-channel severity routing and tests | [docs/notifications.md](docs/notifications.md) |
+| UPS | native USB UPS monitoring (pmset), power-loss/low-battery alerts, **safe-shutdown policy** (ordered graceful stop + auto-restore) layered above the macOS halt threshold | [docs/ups.md](docs/ups.md) |
+| Users & security | mandatory auth, **multi-user (admin/member) with per-service grants**, **TOTP 2FA with recovery codes**, **hashed API keys**, audit trail, session revocation | [docs/authentication.md](docs/authentication.md) |
+| Network | interfaces/DHCP/DNS/aliases/failover/Wi-Fi, WireGuard (peers, pf forwarding, self-healing), Cloudflare Tunnel, bookmark health probes | — |
+| Tools | diagnostics bundle, web terminal (host + containers, audited), health checks, logs, alerts, maintenance tasks, module registry (`/api/modules`) | — |
 
-## Highlights
+Member accounts see a reduced panel (Dashboard, their granted services, and a
+self-service Account page for password and 2FA).
 
-### Compose (Dockge-style)
-- Stack list with **in-browser YAML editing**
-- **Validation** via `docker compose config`
-- Automatic `.bak` on save
-- New stacks are written to `~/Services/<id>/`
-- Up / Down / update task logs
+## Documentation
 
-### Homebrew (macOS-specific)
-- `brew services list --json`
-- Start / stop / restart grafana, postgres, mosquitto and friends
-
-### Bookmark probes (Homarr-style)
-- HTTP probes against `quick_links` plus override URLs
-- Latency in ms, 401/403 counted as online, self-signed HTTPS tolerated
-- Dashboard tiles plus the `/bookmarks` page
-
-### Sensors (Glances-style)
-- CPU user/sys/idle, load, memory, root volume
-- `/api/system/sensors`
-
-### Module registry
-- `/api/modules` makes every capability and its inspiration discoverable
+- [Notifications](docs/notifications.md) — channels, severity routing, where secrets live
+- [Scheduler and backups](docs/scheduler-and-backups.md) — cron semantics, rsync, stack backups
+- [Time Machine destinations](docs/time-machine.md) — serving TM backups to other Macs
+- [UPS](docs/ups.md) — monitoring, alerts, the two-layer safe-shutdown design
+- [Authentication](docs/authentication.md) — setup, multi-user, 2FA, API keys, share ACLs
+- [Metrics](docs/metrics.md) — tiered long-term history and the query API
+- [App catalog](docs/app-catalog.md) — templates, placeholders, the remote-source trust model
 
 ## Stack
 
 - FastAPI package `hub/` + Vue 3 (`web/` → `static/`)
 - Container engine: **OrbStack**
 - Menu bar: native `macos/ServerHubLauncher.swift`; `menubar.py` is the legacy implementation
+- No third-party auth/crypto/scheduling dependencies: TOTP, API-key hashing, cron matching and notification senders are standard-library implementations (see `requirements.txt`)
 
 ## Quick start
 
@@ -124,7 +119,7 @@ done
 
 The panel's own LaunchAgent uses `KeepAlive`, which covers the ordinary failure: the process exits, launchd starts a replacement. It does not cover a hang. A replacement can wedge in `xpcproxy` — spinning on CPU, never exec'ing Python, never listening, and never exiting — and because it still holds the job's pid, launchd reports the job as running and `KeepAlive` never fires. That is the "panel never came back after a reboot" symptom.
 
-The watchdog restarts the panel only after three consecutive unreachable probes (about three minutes), and only for a label that is currently loaded, so a deliberate `launchctl bootout` is left alone. Any HTTP status counts as healthy, including the 401 you get when signed out. It writes to `~/Library/Logs/serverhub-watchdog.log`, which stays quiet unless something actually happens.
+The watchdog restarts the panel only after three consecutive unreachable probes (about three minutes), and only for a label that is currently loaded, so a deliberate `launchctl bootout` is left alone. Any HTTP status counts as healthy, including the 401 you get when signed out — and so does a mere TCP listener on the panel port, so a serving process is never kickstarted just because one health request was slow. It writes to `~/Library/Logs/serverhub-watchdog.log`, which stays quiet unless something actually happens.
 
 ```bash
 # Watch it work
@@ -136,7 +131,7 @@ launchctl bootout "gui/$(id -u)/local.serverhub.watchdog"
 
 ## Template catalog `templates/`
 
-Templates must not hardcode anything specific to the machine they were authored on. The server fills these placeholders in automatically, so a template adapts to whoever installs it; they never appear as fields in the install form.
+Fifty templates ship built in, and an administrator can optionally add a remote HTTPS template source (sha256-pinned; see [docs/app-catalog.md](docs/app-catalog.md) for the trust model). Templates must not hardcode anything specific to the machine they were authored on. The server fills these placeholders in automatically, so a template adapts to whoever installs it; they never appear as fields in the install form.
 
 | Placeholder | Resolves to |
 |------|------|
@@ -149,6 +144,4 @@ Templates must not hardcode anything specific to the machine they were authored 
 
 Both language lists come from the macOS preferred-language order and always keep English available. One caveat when writing templates: quote any default that starts with a placeholder — `default: "{{HOME}}/Music"`. Unquoted, YAML reads `{{` as a flow mapping, the front matter fails to parse, and the catalog silently discards the entire listing in favour of a generated placeholder card. `tests/test_template_metadata.py` fails the build if that happens.
 
-
-
-uptime-kuma · portainer · navidrome · adguard-home · cloudflared · homarr · glance · dockge · filebrowser
+Highlights among the shipped templates: jellyfin · plex · immich · nextcloud · uptime-kuma · portainer · navidrome · adguard-home · vaultwarden · home-assistant · paperless-ngx · nginx-proxy-manager · syncthing · gitea · n8n — see `templates/` for all 50.
