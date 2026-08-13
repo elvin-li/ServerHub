@@ -102,10 +102,19 @@ def replace_secret_text(
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    write_secret_text(tmp, content, encoding=encoding)
-    os.replace(tmp, p)
-    os.chmod(p, SECRET_MODE)
+    # Per-writer temp: a fixed "name.tmp" collides when two panel processes
+    # save secrets concurrently (config save + credentials apply).
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        write_secret_text(tmp, content, encoding=encoding)
+        os.replace(tmp, p)
+        os.chmod(p, SECRET_MODE)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return p
 
 

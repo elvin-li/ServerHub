@@ -48,7 +48,9 @@ log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$LOG"; }
 
 # Keep the log from growing without bound; this runs every minute forever.
 if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
-  tail -n 500 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
+  tmp="$LOG.$$.tmp"
+  tail -n 500 "$LOG" > "$tmp" 2>/dev/null && mv "$tmp" "$LOG"
+  rm -f "$tmp"
 fi
 
 # Prefer the lineage that actually owns this host (com.elvin.serverhub).

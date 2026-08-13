@@ -288,9 +288,11 @@ class DataDirModeTests(unittest.TestCase):
 class DenylistCoverageTests(unittest.TestCase):
     """The intermediate files these fixes create must not be browsable.
 
-    ``replace_secret_text`` stages at ``services.yaml.tmp`` and ``save_full``
-    drops ``services.yaml.bak.<epoch>`` into DATA_DIR.  Both are verbatim copies
-    of the credentials file, so the file browser has to refuse them by the same
+    ``replace_secret_text`` stages at ``services.yaml.<pid>.tmp`` (and still
+    matches the ``services.yaml`` prefix deny-list for the legacy
+    ``services.yaml.tmp`` spelling) and ``save_full`` drops
+    ``services.yaml.bak.<epoch>`` into DATA_DIR.  Both are verbatim copies of
+    the credentials file, so the file browser has to refuse them by the same
     rule that refuses ``services.yaml`` itself.  The mode fixes above make the
     files 0600, but the browser runs as the owner -- 0600 is no defence there,
     the deny-list is.
@@ -312,10 +314,12 @@ class DenylistCoverageTests(unittest.TestCase):
 
     def test_staging_file_is_protected(self):
         self._refuses("services.yaml.tmp")
+        self._refuses(f"services.yaml.{os.getpid()}.tmp")
 
     def test_staging_file_is_protected_case_folded(self):
         self._refuses("Services.YAML.tmp")
         self._refuses("SERVICES.YAML.TMP")
+        self._refuses(f"Services.YAML.{os.getpid()}.TMP")
 
     def test_backup_is_protected(self):
         self._refuses("services.yaml.bak.1784879564")
@@ -328,7 +332,7 @@ class DenylistCoverageTests(unittest.TestCase):
         # deny-list assertions above would still pass while covering dead names.
         io_src = (BASE / "hub" / "secure_io.py").read_text(encoding="utf-8")
         cfg_src = (BASE / "hub" / "config.py").read_text(encoding="utf-8")
-        self.assertIn('p.with_name(p.name + ".tmp")', io_src)
+        self.assertIn('p.with_name(f"{p.name}.{os.getpid()}.tmp")', io_src)
         self.assertIn('f"services.yaml.bak.{int(time.time())}"', cfg_src)
 
 

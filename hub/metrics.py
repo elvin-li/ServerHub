@@ -136,7 +136,19 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
         try:
             lines = METRICS_FILE.read_text().splitlines()
             if len(lines) > MAX_POINTS + _TRIM_SLACK:
-                METRICS_FILE.write_text("\n".join(lines[-MAX_POINTS:]) + "\n")
+                # Atomic ring-buffer rewrite: partial write_text left a short
+                # or empty history and the next sampler grew a second full copy.
+                payload = "\n".join(lines[-MAX_POINTS:]) + "\n"
+                tmp = METRICS_FILE.with_name(f"{METRICS_FILE.name}.{os.getpid()}.tmp")
+                try:
+                    tmp.write_text(payload)
+                    os.replace(tmp, METRICS_FILE)
+                except Exception:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
         except OSError:
             pass
 

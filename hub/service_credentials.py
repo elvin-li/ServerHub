@@ -287,7 +287,9 @@ def apply_teslamate(username: str, password: str) -> dict:
 
     with _lock:
         old = TESLAMATE_HTPASSWD.read_bytes() if TESLAMATE_HTPASSWD.exists() else None
-        tmp = TESLAMATE_HTPASSWD.with_suffix(".tmp")
+        tmp = TESLAMATE_HTPASSWD.with_name(
+            f"{TESLAMATE_HTPASSWD.name}.{os.getpid()}.tmp"
+        )
         try:
             TESLAMATE_HTPASSWD.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(entry + "\n", encoding="utf-8")
