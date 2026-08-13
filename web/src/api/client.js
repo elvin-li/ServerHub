@@ -596,9 +596,44 @@ export const getAlerts = (limit = 50) => json(`/api/alerts?limit=${limit}`)
 export const getAuthAudit = (limit = 100) => json(`/api/audit/auth?limit=${limit}`)
 export const testNotify = () => json('/api/alerts/test', { method: 'POST' })
 export const forceAlertCheck = () => json('/api/alerts/check', { method: 'POST' })
+// Notification channels (multi-channel alert outlets). Secrets are write-only:
+// responses carry has.<field> booleans, never the stored values.
+export const getNotifyChannels = () => json('/api/alerts/channels')
+export const createNotifyChannel = (body) =>
+  json('/api/alerts/channels', jsonBody('POST', body))
+export const updateNotifyChannel = (id, body) =>
+  json(`/api/alerts/channels/${encodeURIComponent(id)}`, jsonBody('PUT', body))
+export const deleteNotifyChannel = (id) =>
+  json(`/api/alerts/channels/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export const testNotifyChannel = (id) =>
+  json(`/api/alerts/channels/${encodeURIComponent(id)}/test`, { method: 'POST' })
+// UPS / battery power monitoring
+export const getUps = (force = false) => json(`/api/ups${force ? '?force=true' : ''}`)
+export const putUpsSettings = (body) => json('/api/ups/settings', jsonBody('PUT', body))
 export const getBackups = () => json('/api/backups')
 export const backupPostgres = () => json('/api/backups/postgres', { method: 'POST' })
 export const backupConfigs = () => json('/api/backups/configs', { method: 'POST' })
+// Panel scheduler (user-defined cron jobs) — distinct from getScheduler(),
+// which lists the read-only launchd timers.
+export const getSchedulerJobs = () => json('/api/scheduler/jobs')
+export const createSchedulerJob = (body) =>
+  json('/api/scheduler/jobs', jsonBody('POST', body))
+export const updateSchedulerJob = (id, body) =>
+  json(`/api/scheduler/jobs/${encodeURIComponent(id)}`, jsonBody('PUT', body))
+export const deleteSchedulerJob = (id) =>
+  json(`/api/scheduler/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export const enableSchedulerJob = (id, enabled) =>
+  json(`/api/scheduler/jobs/${encodeURIComponent(id)}/enable`, jsonBody('POST', { enabled }))
+export const runSchedulerJobNow = (id) =>
+  json(`/api/scheduler/jobs/${encodeURIComponent(id)}/run-now`, { method: 'POST' })
+export const getSchedulerJobRuns = (id, limit = 20) =>
+  json(`/api/scheduler/jobs/${encodeURIComponent(id)}/runs?limit=${limit}`)
+// rsync backup helpers: binary capabilities + dry-run preview.  The backend
+// caps a preview at 120s (rsync_svc.PREVIEW_TIMEOUT) and kills the process
+// group past that, so the client only needs that ceiling plus transport slack.
+export const getRsyncBinary = () => json('/api/backups/rsync/binary')
+export const rsyncPreview = (body) =>
+  json('/api/backups/rsync/preview', jsonBody('POST', body), 130000)
 export const getCatalog = () => json('/api/catalog')
 const CATALOG_INSTALL_TIMEOUT = 900000 // brew cask / pull can exceed 30s
 

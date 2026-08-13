@@ -11,7 +11,9 @@ from hub.routers import (
     launcher_api,
     modules_api,
     nas_storage,
+    notify_api,
     power,
+    scheduler_api,
     services_api,
     settings_api,
     shares,
@@ -19,6 +21,7 @@ from hub.routers import (
     system_extra,
     terminal_api,
     unraid_parity,
+    ups_api,
     wireguard_api,
 )
 
@@ -41,6 +44,9 @@ router.include_router(terminal_api.router)
 router.include_router(audit_api.router)
 router.include_router(launcher_api.router)
 router.include_router(nas_storage.router)
+router.include_router(notify_api.router)
+router.include_router(scheduler_api.router)
+router.include_router(ups_api.router)
 router.include_router(wireguard_api.router)
 
 __all__ = ["router"]

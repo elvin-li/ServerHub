@@ -47,6 +47,8 @@ CODES: dict[str, tuple[int, str]] = {
     "shares.protected_path": (403, "this directory is protected and cannot be shared"),
     "shares.exists": (409, "a share with this record name already exists"),
     "shares.not_found": (404, "the requested share was not found"),
+    "shares.bad_quota": (400, "the Time Machine quota must be a whole number of gigabytes between 1 and 1000000"),
+    "shares.quota_requires_time_machine": (400, "a backup quota only applies when the share is a Time Machine destination"),
     "shares.unknown_service": (400, "unsupported macOS sharing service: {service}"),
     "shares.confirm_required": (400, "removing a share requires confirm=true"),
     "shares.authorization_cancelled": (409, "macOS administrator authorization was cancelled"),
@@ -294,6 +296,41 @@ CODES: dict[str, tuple[int, str]] = {
     "services.adopt_not_auto": (400, "{id} is not an auto-discovered service"),
     "services.adopt_no_port": (400, "{id} has no detected listen port to adopt"),
     "jobs.already_running": (409, 'a maintenance task is already running; wait for it to finish'),
+    # ── panel scheduler (user-defined cron jobs) ─────────────────────────────
+    "scheduler.not_found": (404, "no scheduled job with id {id}"),
+    "scheduler.bad_id": (400, "job ids are 1-64 letters, digits, . _ -"),
+    "scheduler.exists": (409, "a scheduled job with id {id} already exists"),
+    "scheduler.bad_cron": (400, "invalid cron expression: {cron}"),
+    "scheduler.bad_type": (400, "unsupported job type: {type}"),
+    "scheduler.bad_params": (400, "invalid job parameter: {field}"),
+    "scheduler.bad_name": (400, "a job name of 1-80 characters is required"),
+    "scheduler.running": (409, "this job is currently running; wait for it to finish"),
+    "scheduler.readonly": (400, "this entry is managed elsewhere and cannot be edited here"),
+    # ── rsync backups ────────────────────────────────────────────────────────
+    "rsync.unavailable": (503, "no usable rsync binary was found on this host"),
+    "rsync.bad_direction": (400, "direction must be push or pull"),
+    "rsync.bad_path": (400, "{field} must be an absolute local path"),
+    "rsync.bad_dest": (400, "{field} must be an absolute path or user@host:path"),
+    "rsync.bad_exclude": (400, "invalid exclude pattern: {pattern}"),
+    "rsync.bad_params": (400, "invalid rsync parameter: {field}"),
+    # ── compose stack (appdata) backups ──────────────────────────────────────
+    "backup.stack_unknown": (404, "no compose stack named {stack}"),
+    "backup.stack_no_compose": (400, "stack {stack} has no compose file to back up"),
+    "backup.engine_down": (503, "the Docker engine is not running, so the stack cannot be backed up"),
+    # ── notification channels ────────────────────────────────────────────────
+    "notify.bad_type": (400, "unsupported channel type: {type}"),
+    "notify.bad_id": (400, "channel ids are 1-64 lowercase letters, digits, . _ -"),
+    "notify.not_found": (404, "no notification channel with id {id}"),
+    "notify.bad_level": (400, "min_level must be one of: info | warn | down"),
+    "notify.missing_field": (400, "required field is missing: {field}"),
+    "notify.bad_url": (400, "{field} must be an http(s) URL"),
+    "notify.exists": (409, "a channel with id {id} already exists"),
+    "notify.type_immutable": (400, "the type of channel {id} cannot be changed; delete it and create a new one"),
+    "notify.secret_control_chars": (400, "{field} contains control characters (a pasted newline or tab?)"),
+    # ── UPS / battery ────────────────────────────────────────────────────────
+    "ups.empty_patch": (400, "the settings patch is empty"),
+    # ── rsync dry-run preview ────────────────────────────────────────────────
+    "rsync.preview_busy": (409, "a dry-run preview for this job is already running; wait for it to finish"),
 }
 
 
