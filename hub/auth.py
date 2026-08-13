@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import threading
 import time
@@ -69,13 +70,23 @@ def accounts() -> dict[str, dict]:
     account, so an installation that has never seen a second account keeps
     working untouched -- and existing session cookies keep verifying, because the
     admin's per-account version is computed from the same hash as before.
+
+    Names containing ``:`` are dropped at this single entrance.  API keys with
+    the member role act under the synthetic identity ``key:<name>``
+    (:func:`request_username`), and every authorisation lookup on that identity
+    must fail closed to "member with no resources".  ``create_account`` already
+    refuses ``:`` via USERNAME_RE, but services.yaml is hand-editable: an
+    account literally named ``key:mon`` would otherwise hand its resource list
+    to whoever holds the API key named ``mon``.  Filtering here covers every
+    consumer (account/role_of/allowed_resources/verify_session) at once; the
+    hand-written entry simply stops resolving, which is fail-closed.
     """
     a = _auth_cfg()
     out: dict[str, dict] = {}
 
     legacy_name = str(a.get("username") or "admin").strip() or "admin"
     legacy_hash = str(a.get("password_hash") or a.get("password") or "")
-    if legacy_hash:
+    if legacy_hash and ":" not in legacy_name:
         out[legacy_name] = {
             "username": legacy_name,
             "password_hash": legacy_hash,
@@ -87,7 +98,7 @@ def accounts() -> dict[str, dict]:
         if not isinstance(raw, dict):
             continue
         name = str(raw.get("username") or "").strip()
-        if not name:
+        if not name or ":" in name:
             continue
         role = str(raw.get("role") or ROLE_MEMBER)
         if role not in ROLES:
@@ -355,21 +366,65 @@ def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+def _verify_scrypt(encoded: str, password: str) -> bool:
+    """Whether *password* matches one ``scrypt$…`` digest string."""
+    try:
+        _, ns, rs, ps, salt_s, expected_s = encoded.split("$", 5)
+        actual = hashlib.scrypt(
+            password.encode("utf-8"), salt=_b64decode(salt_s),
+            n=int(ns), r=int(rs), p=int(ps), dklen=32,
+        )
+        return hmac.compare_digest(actual, _b64decode(expected_s))
+    except (ValueError, TypeError):
+        return False
+
+
 def verify_password(password: str) -> bool:
     a = _auth_cfg()
     encoded = str(a.get("password_hash") or "")
     if encoded.startswith("scrypt$"):
-        try:
-            _, ns, rs, ps, salt_s, expected_s = encoded.split("$", 5)
-            actual = hashlib.scrypt(
-                password.encode("utf-8"), salt=_b64decode(salt_s),
-                n=int(ns), r=int(rs), p=int(ps), dklen=32,
-            )
-            return hmac.compare_digest(actual, _b64decode(expected_s))
-        except (ValueError, TypeError):
-            return False
+        return _verify_scrypt(encoded, password)
     legacy = str(a.get("password") or "")
     return bool(legacy and legacy != "change-me" and constant_time_equals(password, legacy))
+
+
+#: Burned when a login names an unknown account, so "no such user" costs the
+#: same scrypt evaluation as "wrong password" and response timing does not
+#: enumerate usernames.  Random per process: it can never match anything.
+_DUMMY_HASH: str | None = None
+
+
+def _dummy_hash() -> str:
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password(secrets.token_urlsafe(24))
+    return _DUMMY_HASH
+
+
+def verify_account_password(username: str | None, password: str) -> bool:
+    """Whether *password* is *username*'s own panel password.
+
+    Unlike :func:`verify_password` (which only ever checks the legacy
+    administrator credential) this verifies against the account's individual
+    hash, so member sign-ins do not share the administrator's secret.  An
+    unknown username still performs one scrypt evaluation against a dummy
+    digest, keeping its timing indistinguishable from a wrong password.
+    """
+    acct = account(username)
+    if not acct:
+        _verify_scrypt(_dummy_hash(), password)
+        return False
+    encoded = str(acct.get("password_hash") or "")
+    if encoded.startswith("scrypt$"):
+        return _verify_scrypt(encoded, password)
+    # Only the legacy admin pair may carry a plaintext password from very old
+    # configs; accounts-list entries are always created hashed.
+    if str(acct.get("role")) == ROLE_ADMIN:
+        legacy = str(_auth_cfg().get("password") or "")
+        return bool(
+            legacy and legacy != "change-me" and constant_time_equals(password, legacy)
+        )
+    return False
 
 
 def set_password(password: str, username: str = "admin", *, enable: bool = True) -> None:
@@ -397,6 +452,160 @@ def set_password(password: str, username: str = "admin", *, enable: bool = True)
         })
         auth.pop("password", None)
         settings["auth"] = auth
+
+    config_mutate(apply)
+
+
+# ── panel accounts (multi-user) ──────────────────────────────────────────────
+# CRUD over the ``settings.auth.accounts`` list.  The legacy admin pair
+# (``settings.auth.username``/``password_hash``) is left where it is: it keeps
+# old sessions verifying, and accounts() already presents it as the admin.
+# Every writer below raises ValueError with a stable reason string; the router
+# maps those to namespaced API error codes.
+
+#: Same shape the credentials store enforces: human-typable, shell-safe, and
+#: unambiguous in audit lines.  ``|`` is excluded by construction, so session
+#: payload parsing never meets its separator inside a new account name.
+USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
+#: A family panel with dozens of accounts is misconfiguration, not scale.
+MAX_ACCOUNTS = 32
+
+
+def _valid_username(name: str) -> bool:
+    return bool(USERNAME_RE.match(name))
+
+
+def create_account(
+    username: str,
+    password: str,
+    *,
+    role: str = ROLE_MEMBER,
+    resources: list[str] | None = None,
+) -> dict:
+    """Add one account to ``settings.auth.accounts`` and return its public view."""
+    name = str(username or "").strip()
+    if not _valid_username(name):
+        raise ValueError("bad_username")
+    if role not in ROLES:
+        raise ValueError("bad_role")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError("password_too_short")
+    existing = accounts()
+    # Case-insensitive collision check: two accounts differing only by case
+    # would be indistinguishable in every audit line and login form.
+    if any(name.lower() == taken.lower() for taken in existing):
+        raise ValueError("exists")
+    if len(existing) >= MAX_ACCOUNTS:
+        raise ValueError("too_many")
+    digest = hash_password(password)
+    clean_resources = [str(r).strip() for r in (resources or []) if str(r).strip()]
+
+    def apply(data: dict) -> None:
+        settings = data.setdefault("settings", {})
+        auth_cfg = dict(settings.get("auth") or {})
+        entries = [dict(e) for e in (auth_cfg.get("accounts") or []) if isinstance(e, dict)]
+        entries.append({
+            "username": name,
+            "password_hash": digest,
+            "role": role,
+            "resources": clean_resources,
+        })
+        auth_cfg["accounts"] = entries
+        settings["auth"] = auth_cfg
+
+    config_mutate(apply)
+    return {"username": name, "role": role, "resources": clean_resources}
+
+
+def set_account_resources(username: str, resources: list[str]) -> list[str]:
+    """Replace a member account's resource grants (admins are unrestricted)."""
+    name = str(username or "").strip()
+    acct = account(name)
+    if not acct:
+        raise ValueError("not_found")
+    if str(acct.get("role")) == ROLE_ADMIN:
+        raise ValueError("not_member")
+    clean = [str(r).strip() for r in (resources or []) if str(r).strip()]
+
+    def apply(data: dict) -> None:
+        settings = data.setdefault("settings", {})
+        auth_cfg = dict(settings.get("auth") or {})
+        entries = [dict(e) for e in (auth_cfg.get("accounts") or []) if isinstance(e, dict)]
+        for entry in entries:
+            if str(entry.get("username") or "") == name:
+                entry["resources"] = clean
+        auth_cfg["accounts"] = entries
+        settings["auth"] = auth_cfg
+
+    config_mutate(apply)
+    return clean
+
+
+def set_account_password(username: str, password: str) -> None:
+    """Rotate one account's own password hash.
+
+    The legacy admin pair is written through :func:`set_password` (same
+    fields it has always lived in); an accounts-list entry is rewritten in
+    place.  Either way the account's session version changes with the hash,
+    so every outstanding session for that account stops verifying.
+    """
+    name = str(username or "").strip()
+    acct = account(name)
+    if not acct:
+        raise ValueError("not_found")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError("password_too_short")
+    in_accounts_list = any(
+        isinstance(raw, dict) and str(raw.get("username") or "").strip() == name
+        for raw in (_auth_cfg().get("accounts") or [])
+    )
+    if not in_accounts_list:
+        # Only the legacy admin exists outside the accounts list.
+        set_password(password, name, enable=True)
+        return
+    digest = hash_password(password)
+
+    def apply(data: dict) -> None:
+        settings = data.setdefault("settings", {})
+        auth_cfg = dict(settings.get("auth") or {})
+        entries = [dict(e) for e in (auth_cfg.get("accounts") or []) if isinstance(e, dict)]
+        for entry in entries:
+            if str(entry.get("username") or "").strip() == name:
+                entry["password_hash"] = digest
+        auth_cfg["accounts"] = entries
+        settings["auth"] = auth_cfg
+
+    config_mutate(apply)
+
+
+def delete_account(username: str) -> None:
+    """Remove one member account.  Admins cannot be deleted through here.
+
+    Existing sessions die on their own: verify_session requires membership in
+    accounts(), and the deleted name no longer resolves.
+    """
+    name = str(username or "").strip()
+    acct = account(name)
+    if not acct:
+        raise ValueError("not_found")
+    if str(acct.get("role")) == ROLE_ADMIN:
+        raise ValueError("not_member")
+
+    def apply(data: dict) -> None:
+        settings = data.setdefault("settings", {})
+        auth_cfg = dict(settings.get("auth") or {})
+        entries = [
+            dict(e)
+            for e in (auth_cfg.get("accounts") or [])
+            if isinstance(e, dict) and str(e.get("username") or "").strip() != name
+        ]
+        auth_cfg["accounts"] = entries
+        # Drop the logout counter too: a recreated account with the same name
+        # must not inherit a stale epoch that predates it.
+        epochs = dict(auth_cfg.get("session_epochs") or {})
+        epochs.pop(name, None)
+        auth_cfg["session_epochs"] = epochs
+        settings["auth"] = auth_cfg
 
     config_mutate(apply)
 
@@ -646,8 +855,45 @@ def request_username(request: Request) -> str:
         return username
     record = getattr(request.state, "serverhub_api_key", None)
     if isinstance(record, dict) and record.get("role") != ROLE_ADMIN:
+        # The ":" makes this synthetic identity unrepresentable as an account:
+        # USERNAME_RE refuses colons at creation and accounts() drops any
+        # hand-written name containing one, so ``key:<x>`` can never resolve
+        # to an account record and inherit its resources.
         return f"key:{record.get('name') or record.get('id') or 'unknown'}"
     return ""
+
+
+def request_client(request: Request | None) -> str:
+    """Peer address used for the login rate-limit bucket and audit lines.
+
+    Trust model, from the outside in:
+
+    * A *non-loopback* direct peer is its own answer.  Whatever
+      ``X-Forwarded-For`` it sends is attacker-controlled text and is ignored
+      — honouring it would let one remote client mint a fresh bucket per
+      request and sidestep :func:`login_allowed` entirely.
+    * A *loopback* direct peer is, in this deployment, a local reverse proxy
+      (cloudflared or nginx terminate TLS on this machine and speak plain
+      HTTP to the panel).  Without the forwarded header every proxied visitor
+      collapses into one shared 127.0.0.1 bucket, so a single flaky client
+      locks the whole family out for five minutes.  Only then is the *last*
+      hop of ``X-Forwarded-For`` believed: that element was appended by the
+      trusted local proxy and names the peer it actually accepted, while any
+      earlier elements remain client-supplied noise.
+
+    This is deliberately only a reporting/bucketing identity.  Authorisation
+    decisions that key on loopback (setup-token disclosure, the menu-bar
+    token) keep reading ``request.client.host`` directly — a forwarded header
+    must never make a remote caller *more* trusted.
+    """
+    host = (request.client.host if request and request.client else "") or "unknown"
+    if host not in LOOPBACK_HOSTS:
+        return host
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    last_hop = forwarded.rsplit(",", 1)[-1].strip()
+    # Bounded so a local caller cannot bloat the attempt table or the audit
+    # trail with an arbitrarily long fabricated value.
+    return last_hop[:64] or host
 
 
 def login_allowed(client: str) -> tuple[bool, int]:

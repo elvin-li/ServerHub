@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import {
   clearStaleChunkFlag, isChunkLoadError, recoverFromStaleChunk,
 } from './lib/chunkRecovery'
+import { applyAuthStatus, MEMBER_ROUTE_NAMES } from './lib/authState'
 
 // Every page, including the two entry points, is an on-demand chunk.
 //
@@ -46,6 +47,7 @@ const Bookmarks = () => import('./views/Bookmarks.vue')
 const Modules = () => import('./views/Modules.vue')
 const Maintenance = () => import('./views/Maintenance.vue')
 const Settings = () => import('./views/Settings.vue')
+const Account = () => import('./views/Account.vue')
 
 // Unraid Tasks order: Main → Shares → Users → Docker → VMs → Apps → Tools → Settings
 // + macOS extras: Dashboard, Services, Brew, Compose, Network, Gateway, Health, Scheduler
@@ -80,6 +82,9 @@ const routes = [
   { path: '/maintenance', name: 'maintenance', component: Maintenance },
   { path: '/power', redirect: '/' },
   { path: '/settings', name: 'settings', component: Settings },
+  // Per-account self-service (password, 2FA).  Reachable by every signed-in
+  // role; it is the only management surface a member session can use.
+  { path: '/account', name: 'account', component: Account },
   // Catch-all → redirect to dashboard
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
@@ -170,12 +175,24 @@ router.beforeEach(async (to) => {
   } catch {
     return true
   }
+  // Every navigation already pays for this status probe; publishing the answer
+  // is what lets App.vue tailor the nav to the session's role.
+  applyAuthStatus(state)
   const needsLogin = state.setup_required || (state.auth_required && !state.authenticated)
   if (to.name === 'login') {
     return needsLogin ? true : { path: '/' }
   }
   if (needsLogin) {
     return { path: '/login', query: { next: to.fullPath } }
+  }
+  // Members only reach the pages their API surface can actually feed; a deep
+  // link to an admin page lands on the dashboard instead of a wall of 403s.
+  if (
+    state.authenticated &&
+    state.role === 'member' &&
+    !MEMBER_ROUTE_NAMES.has(to.name)
+  ) {
+    return { path: '/' }
   }
   return true
 })

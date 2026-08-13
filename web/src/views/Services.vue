@@ -22,10 +22,10 @@
         <span class="led" :class="ledOf(p.state)"></span>
         {{ p.name }}
       </span>
-      <button type="button" class="tiny primary" :disabled="busy || !downIds.length" @click="bulkAction(downIds, 'start')">
+      <button v-if="canManage" type="button" class="tiny primary" :disabled="busy || !downIds.length" @click="bulkAction(downIds, 'start')">
         {{ t('services.start_all_down') }}
       </button>
-      <button type="button" class="tiny" :disabled="busy || !warnIds.length" @click="bulkAction(warnIds, 'restart')">
+      <button v-if="canManage" type="button" class="tiny" :disabled="busy || !warnIds.length" @click="bulkAction(warnIds, 'restart')">
         {{ t('services.restart_all_warn') }}
       </button>
     </div>
@@ -90,7 +90,7 @@
         <table class="dense svc-table">
           <thead>
             <tr>
-              <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
+              <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
               <th></th>
               <th>{{ t('common.name') }}</th>
               <th>{{ t('services.group') }}</th>
@@ -107,7 +107,7 @@
               :class="{ selected: selected.has(s.id), bad: s.state === 'down' || s.state === 'warn' }"
               @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
             >
-              <td class="col-check" @click.stop>
+              <td v-if="canManage" class="col-check" @click.stop>
                 <input type="checkbox" :checked="selected.has(s.id)" @change="toggleSelect(s.id)" />
               </td>
               <td><span class="led" :class="ledOf(s.state)"></span></td>
@@ -134,7 +134,7 @@
               </td>
             </tr>
             <tr v-if="!filtered.length && !loadError">
-              <td colspan="8" class="empty-row">{{ t('services.empty') }}</td>
+              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ t('services.empty') }}</td>
             </tr>
           </tbody>
         </table>
@@ -200,7 +200,7 @@
           <button v-if="canAct(detail, 'pause')" type="button" :disabled="busy" @click="onAction(detail, 'pause')">{{ t('services.act_pause') }}</button>
           <button v-if="canAct(detail, 'unpause')" type="button" :disabled="busy" @click="onAction(detail, 'unpause')">{{ t('services.act_unpause') }}</button>
           <button v-if="detail.can_logs !== false && canLogs(detail)" type="button" @click="loadDetailLogs">{{ t('services.logs') }}</button>
-          <button type="button" class="danger" :disabled="busy" @click="hideService">{{ t('services.hide') }}</button>
+          <button v-if="canManage" type="button" class="danger" :disabled="busy" @click="hideService">{{ t('services.hide') }}</button>
           <button v-if="canUninstall(detail)" type="button" class="danger" :disabled="busy" @click="openUninstall(detail)">{{ t('services.uninstall') }}</button>
         </div>
 
@@ -276,8 +276,8 @@
           </div>
         </section>
 
-        <!-- Edit override -->
-        <section class="drawer-sec">
+        <!-- Edit override (writes services.yaml — administrators only) -->
+        <section class="drawer-sec" v-if="canManage">
           <h3>{{ t('services.sec_override') }}</h3>
           <p class="hint-line">{{ t('services.override_hint') }}</p>
           <div class="form-grid">
@@ -381,12 +381,17 @@ import {
   updateServiceOverride,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { authState } from '../lib/authState'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
+
+// Members get a read-only page: mutating controls (bulk actions, hide,
+// override editing) are admin-only and the backend refuses them anyway.
+const canManage = computed(() => authState.canManage)
 
 const status = ref(null)
 const busy = ref(false)

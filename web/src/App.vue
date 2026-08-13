@@ -128,8 +128,9 @@ import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
   Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Settings,
-  ScrollText, ShieldCheck,
+  ScrollText, ShieldCheck, CircleUser,
 } from '@lucide/vue'
+import { authState } from './lib/authState'
 import { startVisibleInterval } from './lib/poll'
 import { clearAdminPassword } from './lib/adminPassword'
 import AdminPasswordDialog from './components/AdminPasswordDialog.vue'
@@ -191,7 +192,7 @@ const engineClass = computed(() => (engineUp.value ? 'ok' : 'down'))
  * services owns every runnable workload: containers, stacks, VMs, native
  * services, Homebrew packages, and catalog applications.
  */
-const nav = [
+const NAV_ADMIN = [
   { to: '/', labelKey: 'nav.dashboard', exact: true, icon: LayoutDashboard },
   {
     // Array + the things you do *to* stored data: browse, share, own.
@@ -258,9 +259,26 @@ const nav = [
   { to: '/settings', labelKey: 'nav.settings', icon: Settings },
 ]
 
+/**
+ * A member session reaches exactly the read surface the backend allows it
+ * (dashboard/services, filtered per account) plus its own account page.
+ * Rendering the admin groups would only produce 403 toasts on every click.
+ */
+const NAV_MEMBER = [
+  { to: '/', labelKey: 'nav.dashboard', exact: true, icon: LayoutDashboard },
+  { to: '/services', labelKey: 'nav.app_services', match: ['/services'], icon: Package },
+  { to: '/account', labelKey: 'nav.account', icon: CircleUser },
+]
+
+// The router guard refreshes authState on every navigation, so this flips as
+// soon as a member signs in (or an admin signs back in).
+const nav = computed(() =>
+  authState.authenticated && authState.role === 'member' ? NAV_MEMBER : NAV_ADMIN,
+)
+
 const activeGroup = computed(() => {
   const path = route.path
-  for (const item of nav) {
+  for (const item of nav.value) {
     if (item.exact && path === item.to) return item
     if (item.match && item.match.some(m => path === m || path.startsWith(m + '/'))) return item
     if (!item.exact && !item.match && (path === item.to || path.startsWith(item.to + '/'))) return item
@@ -454,7 +472,7 @@ function onCmdKey(e) {
 }
 const cmdResults = computed(() => {
   const q = cmdQuery.value.toLowerCase().trim()
-  const items = nav.flatMap(n => n.children ? [n, ...n.children] : [n])
+  const items = nav.value.flatMap(n => n.children ? [n, ...n.children] : [n])
   if (!q) return items.slice(0, 8)
   return items.filter(n => {
     const label = t(n.labelKey).toLowerCase()

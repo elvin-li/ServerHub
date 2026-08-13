@@ -172,7 +172,9 @@ class AuthEventCoverageTests(unittest.TestCase):
             with (
                 patch("hub.auth.setup_required", return_value=False),
                 patch("hub.auth.login_allowed", return_value=(True, 0)),
-                patch("hub.auth.verify_password", return_value=True),
+                # Login verifies against the submitted account's own hash
+                # since multi-user support, so that is what gets stubbed.
+                patch("hub.auth.verify_account_password", return_value=True),
                 patch("hub.auth.clear_login_failures"),
                 patch("hub.auth.create_session", return_value="tok"),
                 patch.object(auth_api.auth, "_auth_cfg", self._auth_cfg),
@@ -195,7 +197,7 @@ class AuthEventCoverageTests(unittest.TestCase):
             with (
                 patch("hub.auth.setup_required", return_value=False),
                 patch("hub.auth.login_allowed", return_value=(True, 0)),
-                patch("hub.auth.verify_password", return_value=False),
+                patch("hub.auth.verify_account_password", return_value=False),
                 patch("hub.auth.record_login_failure"),
                 patch.object(auth_api.auth, "_auth_cfg", self._auth_cfg),
             ):
@@ -253,11 +255,12 @@ class AuthEventCoverageTests(unittest.TestCase):
                 patch("hub.auth.request_username", return_value="admin"),
                 patch("hub.auth.is_admin", return_value=True),
                 patch("hub.auth.login_allowed", return_value=(True, 0)),
+                # Same-name rotation verifies and writes per account.
                 patch(
-                    "hub.auth.verify_password",
-                    side_effect=lambda pw: pw == PASSWORD,
+                    "hub.auth.verify_account_password",
+                    side_effect=lambda user, pw: pw == PASSWORD,
                 ),
-                patch("hub.auth.set_password"),
+                patch("hub.auth.set_account_password"),
                 patch("hub.auth.clear_login_failures"),
                 patch("hub.auth.create_session", return_value="tok"),
                 patch.object(auth_api.auth, "_auth_cfg", self._auth_cfg),

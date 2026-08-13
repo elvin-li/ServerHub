@@ -11,7 +11,11 @@ router = APIRouter(tags=["auth"])
 
 
 def _client(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    # Loopback-aware (see auth.request_client): behind the local cloudflared /
+    # nginx proxy this names the real visitor, so rate-limit buckets and audit
+    # lines stop collapsing every proxied client into 127.0.0.1.  A direct
+    # remote peer cannot influence it.
+    return auth.request_client(request)
 
 
 class LoginBody(BaseModel):
@@ -154,14 +158,17 @@ def auth_login(body: LoginBody, request: Request, response: Response):
             retry_after=retry,
         )
         raise api_error("auth.rate_limited", retry=retry)
-    username = str(auth._auth_cfg().get("username") or "admin")
-    if not secrets_compare(body.username, username) or not auth.verify_password(body.password):
+    # Any configured account may sign in — admin and member alike.  The lookup
+    # is exact-name; verify_account_password burns a dummy scrypt evaluation
+    # for unknown names so the timing does not say which usernames exist.
+    username = body.username.strip()
+    if not auth.verify_account_password(username, body.password):
         auth.record_login_failure(client)
         # The attempted name is kept (it is not a secret and is the only clue
         # to *which* account is under attack); audit.record drops the password.
         audit.record(
             audit.LOGIN_FAILED,
-            username=username,
+            username=username[:64],
             client=client,
             outcome="failure",
         )
@@ -195,52 +202,63 @@ def auth_login(body: LoginBody, request: Request, response: Response):
 
 @router.post("/api/auth/change-password")
 def auth_change_password(body: ChangePasswordBody, request: Request, response: Response):
-    """Change panel credentials after re-authentication.
+    """Change the signed-in account's password after re-authentication.
 
     This deliberately requires a browser session instead of the localhost
     exemption used by the menu-bar client. Rotating the password changes the
     session version, invalidating every other existing browser session.
+
+    Members rotate only their own credential (``username`` must be their own
+    account).  An administrator may additionally rename themselves by sending
+    a different ``username`` — the legacy behaviour of this endpoint.
     """
     if auth.setup_required():
         raise api_error("auth.setup_required")
     if not auth.browser_authenticated(request):
         raise api_error("auth.login_required")
     current_username = auth.request_username(request)
-    if not auth.is_admin(current_username):
-        # Member password rotation needs a dedicated per-account writer. The
-        # legacy setter below rewrites the primary administrator credential, so
-        # allowing a member through here would be a privilege escalation.
+    username = body.username.strip()
+    if not username:
+        raise api_error("auth.username_required")
+    if not auth.is_admin(current_username) and username != current_username:
+        # A member touches nobody's credential but their own.
         raise api_error("auth.admin_required")
 
-    client = request.client.host if request.client else "unknown"
+    client = _client(request)
     allowed, retry = auth.login_allowed(client)
     if not allowed:
         raise api_error("auth.rate_limited", retry=retry)
-    if not auth.verify_password(body.current_password):
+    # Always the *caller's own* current password, whatever name is being set:
+    # re-authentication proves the person at the keyboard, and for members it
+    # must check their account hash rather than the administrator's.
+    if not auth.verify_account_password(current_username, body.current_password):
         auth.record_login_failure(client)
         audit.record(
             audit.PASSWORD_CHANGE_DENIED,
-            username=auth.request_username(request) or body.username.strip(),
+            username=current_username or username,
             client=client,
             reason="bad_current_password",
             outcome="failure",
         )
         raise api_error("auth.bad_credentials")
-    if auth.verify_password(body.new_password):
+    if auth.verify_account_password(current_username, body.new_password):
         audit.record(
             audit.PASSWORD_CHANGE_DENIED,
-            username=auth.request_username(request) or body.username.strip(),
+            username=current_username or username,
             client=client,
             reason="password_reused",
             outcome="failure",
         )
         raise api_error("auth.password_reused")
 
-    username = body.username.strip()
-    if not username:
-        raise api_error("auth.username_required")
     try:
-        auth.set_password(body.new_password, username, enable=True)
+        if username == current_username:
+            # In-place rotation for the caller's own account (admin or member).
+            auth.set_account_password(username, body.new_password)
+        else:
+            # Admin-only rename path (guarded above): rewrites the legacy
+            # administrator pair, exactly as this endpoint always has.
+            auth.set_password(body.new_password, username, enable=True)
     except ValueError:
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
     auth.clear_login_failures(client)

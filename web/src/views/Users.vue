@@ -18,6 +18,136 @@
       </p>
     </div>
 
+    <!-- ── panel accounts (ServerHub sign-ins, not macOS users) ─────────── -->
+    <div class="tile" style="margin-bottom:12px" v-if="authState.canManage">
+      <div class="accounts-head">
+        <h3 style="margin:0">{{ t('accounts.title') }}</h3>
+        <button class="primary" @click="creating = !creating">
+          {{ creating ? t('common.cancel') : t('accounts.add') }}
+        </button>
+      </div>
+      <p class="hint" style="margin-top:4px">{{ t('accounts.hint') }}</p>
+
+      <form v-if="creating" class="accounts-create" @submit.prevent="createAccount">
+        <div class="form-grid">
+          <label>{{ t('users.username') }}</label>
+          <input v-model.trim="createForm.username" maxlength="64" required :aria-label="t('users.username')" />
+          <label>{{ t('accounts.initial_password') }}</label>
+          <input v-model="createForm.password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required :aria-label="t('accounts.initial_password')" />
+          <label>{{ t('accounts.resources') }}</label>
+          <div class="resource-picker">
+            <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
+              <input type="checkbox" :value="opt.id" v-model="createForm.resources" />
+              <span>{{ opt.name }}</span>
+              <code class="mono">{{ opt.id }}</code>
+            </label>
+            <span v-if="!serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
+          </div>
+        </div>
+        <div class="btns" style="margin-top:10px">
+          <button class="primary" :disabled="accountsBusy || !createForm.username || createForm.password.length < 10">
+            {{ t('accounts.create') }}
+          </button>
+        </div>
+      </form>
+
+      <div class="table-wrap" style="margin-top:10px">
+        <table class="dense">
+          <thead>
+            <tr>
+              <th>{{ t('users.username') }}</th>
+              <th>{{ t('users.role') }}</th>
+              <th>2FA</th>
+              <th>{{ t('accounts.resources') }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="acct in accounts" :key="acct.username">
+              <tr>
+                <td><strong>{{ acct.username }}</strong></td>
+                <td>
+                  <span class="badge" :class="acct.role === 'admin' ? 'ok' : ''">
+                    {{ acct.role === 'admin' ? t('common.admin') : t('accounts.member') }}
+                  </span>
+                </td>
+                <td>
+                  <span class="badge" :class="acct.twofa_enabled ? 'ok' : ''">
+                    {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}
+                  </span>
+                </td>
+                <td class="mono" style="font-size:11px">
+                  <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
+                  <template v-else-if="acct.resources.length">{{ acct.resources.join(', ') }}</template>
+                  <template v-else><span style="color:var(--sub)">{{ t('accounts.no_resources') }}</span></template>
+                </td>
+                <td style="text-align:right">
+                  <button v-if="acct.role !== 'admin'" class="tiny" @click="toggleEditor(acct)">
+                    {{ editing === acct.username ? t('common.close') : t('common.manage') }}
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="editing === acct.username">
+                <td colspan="5" class="account-editor">
+                  <div class="editor-section">
+                    <strong>{{ t('accounts.resources') }}</strong>
+                    <div class="resource-picker">
+                      <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
+                        <input type="checkbox" :value="opt.id" v-model="editResources" />
+                        <span>{{ opt.name }}</span>
+                        <code class="mono">{{ opt.id }}</code>
+                      </label>
+                      <span v-if="!serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
+                    </div>
+                    <div class="btns" style="margin-top:8px">
+                      <button class="primary" :disabled="accountsBusy" @click="saveResources(acct)">
+                        {{ t('accounts.save_resources') }}
+                      </button>
+                    </div>
+                  </div>
+                  <div class="editor-section">
+                    <strong>{{ t('accounts.reset_password') }}</strong>
+                    <p class="hint" style="margin:4px 0 6px">{{ t('accounts.reset_password_hint') }}</p>
+                    <div class="btns">
+                      <input
+                        v-model="resetPassword"
+                        type="password"
+                        minlength="10"
+                        maxlength="256"
+                        autocomplete="new-password"
+                        :placeholder="t('settings.new_password')"
+                        :aria-label="t('accounts.reset_password')"
+                        style="max-width:240px"
+                      />
+                      <button :disabled="accountsBusy || resetPassword.length < 10" @click="doResetPassword(acct)">
+                        {{ t('accounts.reset_password') }}
+                      </button>
+                    </div>
+                  </div>
+                  <div class="editor-section">
+                    <strong>{{ t('accounts.danger_zone') }}</strong>
+                    <div class="btns" style="margin-top:6px">
+                      <button v-if="acct.twofa_enabled" :disabled="accountsBusy" @click="resetTwofa(acct)">
+                        {{ t('twofa.admin_reset_button') }}
+                      </button>
+                      <button class="danger" :disabled="accountsBusy" @click="removeAccount(acct)">
+                        {{ t('accounts.delete') }}
+                      </button>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
+            <tr v-if="!accounts.length">
+              <td colspan="5" style="color:var(--sub)">
+                {{ accountsError || t('common.loading') }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
@@ -77,7 +207,12 @@
 
 <script setup>
 import { inject, onMounted, ref } from 'vue'
-import { getUsers } from '../api/client'
+import {
+  adminDisableTotp, createPanelAccount, deletePanelAccount, getServices,
+  getUsers, listPanelAccounts, resetPanelAccountPassword,
+  setPanelAccountResources,
+} from '../api/client'
+import { authState } from '../lib/authState'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -106,5 +241,145 @@ async function load() {
   }
 }
 
-onMounted(load)
+// ── panel accounts (ServerHub sign-ins) ──────────────────────────────────────
+const accounts = ref([])
+const accountsError = ref('')
+const accountsBusy = ref(false)
+const creating = ref(false)
+const createForm = ref({ username: '', password: '', resources: [] })
+const editing = ref('')        // username whose editor row is open
+const editResources = ref([])
+const resetPassword = ref('')
+// Options for the visibility picker: every manageable service, flattened.
+const serviceOptions = ref([])
+
+async function loadAccounts() {
+  try {
+    accounts.value = (await listPanelAccounts()).accounts || []
+    accountsError.value = ''
+  } catch (e) {
+    accountsError.value = e.message || String(e)
+  }
+}
+
+async function loadServiceOptions() {
+  try {
+    const status = await getServices()
+    serviceOptions.value = (status.groups || []).flatMap((group) =>
+      (group.services || []).map((svc) => ({ id: svc.id, name: svc.name || svc.id })),
+    )
+  } catch {
+    serviceOptions.value = []
+  }
+}
+
+function toggleEditor(acct) {
+  if (editing.value === acct.username) {
+    editing.value = ''
+    return
+  }
+  editing.value = acct.username
+  editResources.value = [...(acct.resources || [])]
+  resetPassword.value = ''
+}
+
+async function createAccount() {
+  accountsBusy.value = true
+  try {
+    await createPanelAccount({
+      username: createForm.value.username,
+      password: createForm.value.password,
+      resources: createForm.value.resources,
+    })
+    toast('✅ ' + t('accounts.created', { name: createForm.value.username }))
+    createForm.value = { username: '', password: '', resources: [] }
+    creating.value = false
+    await loadAccounts()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  accountsBusy.value = false
+}
+
+async function saveResources(acct) {
+  accountsBusy.value = true
+  try {
+    await setPanelAccountResources(acct.username, editResources.value)
+    toast('✅ ' + t('accounts.resources_saved', { name: acct.username }))
+    await loadAccounts()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  accountsBusy.value = false
+}
+
+async function doResetPassword(acct) {
+  // Resetting revokes every session the member still holds; make that explicit.
+  if (!confirm(t('accounts.reset_password_confirm', { name: acct.username }))) return
+  accountsBusy.value = true
+  try {
+    await resetPanelAccountPassword(acct.username, resetPassword.value)
+    resetPassword.value = ''
+    toast('✅ ' + t('accounts.password_reset_done', { name: acct.username }))
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  accountsBusy.value = false
+}
+
+async function resetTwofa(acct) {
+  if (!confirm(t('twofa.admin_reset_confirm', { name: acct.username }))) return
+  accountsBusy.value = true
+  try {
+    await adminDisableTotp(acct.username)
+    toast('✅ ' + t('twofa.admin_reset_toast', { name: acct.username }))
+    await loadAccounts()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  accountsBusy.value = false
+}
+
+async function removeAccount(acct) {
+  if (!confirm(t('accounts.delete_confirm', { name: acct.username }))) return
+  accountsBusy.value = true
+  try {
+    await deletePanelAccount(acct.username)
+    editing.value = ''
+    toast('✅ ' + t('accounts.deleted', { name: acct.username }))
+    await loadAccounts()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  accountsBusy.value = false
+}
+
+onMounted(() => {
+  load()
+  if (authState.canManage) {
+    loadAccounts()
+    loadServiceOptions()
+  }
+})
 </script>
+
+<style scoped>
+.accounts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hint { color: var(--sub); font-size: 12px; line-height: 1.5; }
+.accounts-create { margin-top: 10px; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
+.form-grid { display: grid; grid-template-columns: 150px 1fr; gap: 8px 12px; align-items: start; }
+.form-grid > label { color: var(--sub); font-size: 12px; font-weight: 600; padding-top: 8px; }
+.resource-picker { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; }
+.resource-option { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.resource-option input { margin: 0; }
+.resource-option code { color: var(--sub); font-size: 10px; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.account-editor { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.editor-section { padding: 8px 4px; }
+.editor-section + .editor-section { border-top: 1px dashed var(--line); }
+button.tiny { font-size: 11px; padding: 3px 10px; }
+@media (max-width: 560px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .form-grid > label { padding-top: 0; }
+}
+</style>

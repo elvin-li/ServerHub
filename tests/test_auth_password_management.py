@@ -67,13 +67,15 @@ class PasswordManagementTests(unittest.TestCase):
         self.assertEqual(raised.exception.detail["code"], "auth.admin_required")
 
     def test_change_password_verifies_current_password(self):
+        # Re-authentication is per-account since multi-user login: the check
+        # runs against the caller's own hash, not the legacy admin credential.
         with (
             patch("hub.auth.setup_required", return_value=False),
             patch("hub.auth.browser_authenticated", return_value=True),
             patch("hub.auth.request_username", return_value="admin"),
             patch("hub.auth.is_admin", return_value=True),
             patch("hub.auth.login_allowed", return_value=(True, 0)),
-            patch("hub.auth.verify_password", return_value=False),
+            patch("hub.auth.verify_account_password", return_value=False),
             patch("hub.auth.record_login_failure") as failure,
         ):
             with self.assertRaises(HTTPException) as raised:
@@ -82,13 +84,18 @@ class PasswordManagementTests(unittest.TestCase):
         failure.assert_called_once()
 
     def test_change_password_rotates_credentials_and_session(self):
+        # username != the signed-in name: the admin-only rename path, which
+        # still writes through the legacy set_password pair.
         with (
             patch("hub.auth.setup_required", return_value=False),
             patch("hub.auth.browser_authenticated", return_value=True),
             patch("hub.auth.request_username", return_value="admin"),
             patch("hub.auth.is_admin", return_value=True),
             patch("hub.auth.login_allowed", return_value=(True, 0)),
-            patch("hub.auth.verify_password", side_effect=lambda password: password == "old-password"),
+            patch(
+                "hub.auth.verify_account_password",
+                side_effect=lambda user, password: password == "old-password",
+            ),
             patch("hub.auth.set_password") as set_password,
             patch("hub.auth.clear_login_failures"),
             patch("hub.auth.create_session", return_value="rotated-session"),
