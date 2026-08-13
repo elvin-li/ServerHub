@@ -699,6 +699,20 @@ _failover_state = {
 }
 
 
+def _coerce_int(value, default: int) -> int:
+    """``int(value)``, or *default* when the value does not parse.
+
+    services.yaml is hand-editable, and both settings readers below run at
+    the *head* of the autobind loop: a bare ``int("abc")`` there raised out
+    of the loop body and silently killed the worker thread until the next
+    panel restart.  A bad value now degrades to the default instead.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _alias_settings() -> dict:
     from hub.config import cfg
 
@@ -718,7 +732,7 @@ def _alias_settings() -> dict:
         "auto_bind": bool(s.get("auto_bind", True)),
         "ips": clean,
         "netmask": netmask,
-        "interval": int(s.get("interval") or 60),
+        "interval": _coerce_int(s.get("interval") or 60, 60),
         "prefer_wired": bool(s.get("prefer_wired", True)),
     }
 
@@ -730,10 +744,10 @@ def _failover_settings() -> dict:
     return {
         "enabled": bool(settings.get("enabled", False)),
         "power_save_wifi": bool(settings.get("power_save_wifi", True)),
-        "interval": max(10, min(300, int(settings.get("interval") or 15))),
-        "fail_threshold": max(1, min(10, int(settings.get("fail_threshold") or 2))),
-        "recover_threshold": max(1, min(10, int(settings.get("recover_threshold") or 2))),
-        "probe_timeout_ms": max(500, min(5000, int(settings.get("probe_timeout_ms") or 1200))),
+        "interval": max(10, min(300, _coerce_int(settings.get("interval") or 15, 15))),
+        "fail_threshold": max(1, min(10, _coerce_int(settings.get("fail_threshold") or 2, 2))),
+        "recover_threshold": max(1, min(10, _coerce_int(settings.get("recover_threshold") or 2, 2))),
+        "probe_timeout_ms": max(500, min(5000, _coerce_int(settings.get("probe_timeout_ms") or 1200, 1200))),
     }
 
 
@@ -1258,31 +1272,40 @@ def start_alias_autobind(interval: int | None = None) -> None:
         next_alias = 0.0
         next_failover = 0.0
         while not _alias_stop.is_set():
-            now = time.monotonic()
-            alias_conf = _alias_settings()
-            fail_conf = _failover_settings()
-            failover_action = None
+            # The whole iteration is guarded, settings reads included: the
+            # config reads used to sit outside the try, so a raise there (a
+            # corrupt services.yaml, cfg() failing mid-edit) escaped the loop
+            # body and silently killed this thread until the next restart.
+            wait_for = 30.0
             try:
-                if fail_conf["enabled"] and now >= next_failover:
-                    fail_result = network_failover_tick(force=False)
-                    failover_action = fail_result.get("action")
-                    next_failover = now + fail_conf["interval"]
-                if alias_conf["auto_bind"] and (now >= next_alias or failover_action):
-                    alias_result = ensure_aliases_on_preferred(force=False)
-                    # Wi-Fi needs a few seconds for association and DHCP after
-                    # power-on; retry soon if no usable target exists yet.
-                    if failover_action == "wifi_on" and not alias_result.get("ok"):
-                        next_alias = now + 5
-                    else:
-                        next_alias = now + (interval or alias_conf["interval"] or 60)
+                now = time.monotonic()
+                alias_conf = _alias_settings()
+                fail_conf = _failover_settings()
+                failover_action = None
+                try:
+                    if fail_conf["enabled"] and now >= next_failover:
+                        fail_result = network_failover_tick(force=False)
+                        failover_action = fail_result.get("action")
+                        next_failover = now + fail_conf["interval"]
+                    if alias_conf["auto_bind"] and (now >= next_alias or failover_action):
+                        alias_result = ensure_aliases_on_preferred(force=False)
+                        # Wi-Fi needs a few seconds for association and DHCP after
+                        # power-on; retry soon if no usable target exists yet.
+                        if failover_action == "wifi_on" and not alias_result.get("ok"):
+                            next_alias = now + 5
+                        else:
+                            next_alias = now + (interval or alias_conf["interval"] or 60)
+                except Exception:
+                    pass
+                deadlines = []
+                if alias_conf["auto_bind"]:
+                    deadlines.append(next_alias)
+                if fail_conf["enabled"]:
+                    deadlines.append(next_failover)
+                if deadlines:
+                    wait_for = max(1.0, min(deadlines) - time.monotonic())
             except Exception:
                 pass
-            deadlines = []
-            if alias_conf["auto_bind"]:
-                deadlines.append(next_alias)
-            if fail_conf["enabled"]:
-                deadlines.append(next_failover)
-            wait_for = max(1.0, min(deadlines) - time.monotonic()) if deadlines else 30.0
             _alias_stop.wait(wait_for)
 
     _alias_thread = threading.Thread(target=loop, daemon=True, name="ip-alias-autobind")

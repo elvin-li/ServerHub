@@ -78,7 +78,9 @@ def _load() -> dict[str, dict]:
     try:
         raw = json.loads(STORE_FILE.read_text(encoding="utf-8"))
         return raw if isinstance(raw, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (OSError, ValueError):
+        # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
+        # (torn write leaving non-UTF-8 bytes); the login path reads this.
         return {}
 
 

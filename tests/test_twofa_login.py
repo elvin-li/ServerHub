@@ -275,7 +275,7 @@ class ManagementTests(_AppSandbox):
 
         # The sign-in above spent the current window; wait out the counter by
         # using a recovery code instead — disable accepts either factor.
-        _, codes = twofa_svc.status("admin"), None
+        twofa_svc.status("admin")
         recovery = twofa_svc.regenerate_recovery("admin")
         done = self.client.post(
             "/api/auth/totp/disable", json={"code": recovery[0]}

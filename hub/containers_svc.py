@@ -19,7 +19,7 @@ from hub.docker_cli import docker, docker_json, engine_up, redact_env
 from hub.paths import DATA_DIR, DOCKER
 from hub.host_address import resolve_value
 from hub.status import invalidate_status
-from hub.util import ttl_memo
+from hub.util import iter_capped_lines, ttl_memo
 
 # long-running compose / pull jobs (reuse pattern of maintenance)
 _cjobs: dict = {}
@@ -32,6 +32,11 @@ JOB_CMD_TIMEOUT = 1800
 #: Cap the retained log so a chatty pull cannot grow a job dict without bound.
 JOB_LOG_MAX_LINES = 1000
 JOB_LOG_TRIM_LINES = 200
+#: Byte-denominated caps beside the line trim above: one enormous line (or a
+#: thousand near-cap ones) must not balloon the job dict either.  Same shape
+#: as hub/jobs.LOG_LINE_CAP / LOG_TOTAL_CAP.
+JOB_LOG_LINE_CAP = 4096
+JOB_LOG_TOTAL_CAP = 512 * 1024
 #: Cap the number of retained jobs.  Job ids embed a timestamp
 #: (``stack-<id>-<action>-<epoch>``), so every run used to add a permanent entry
 #: holding up to JOB_LOG_MAX_LINES lines; a panel left running for weeks grew
@@ -86,44 +91,68 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
                         timeout: int = JOB_CMD_TIMEOUT) -> int:
     """Run *cmd*, stream its output into ``j["log"]``, and always reap it.
 
-    ``for line in p.stdout`` blocks until the child closes the pipe, so a
-    ``p.wait(timeout=...)`` placed after the loop can never fire — the timeout
-    has to be enforced while reading.  The child is started in its own session
-    so a stuck ``docker compose`` takes its descendants down with it.
+    ``for line in p.stdout`` blocks until the child writes or closes the
+    pipe, so an in-loop deadline check alone only fires while output keeps
+    flowing — a child that hangs *silently* (a wedged daemon socket, a pull
+    stalled before its first byte) blocked the read loop forever, and with it
+    the one-job-at-a-time mutex for the whole subsystem.  The deadline is
+    therefore enforced by an independent watchdog timer that kills the
+    process group (same executor shape as hub/jobs.run_watchdog), which
+    closes the pipe and releases the reader.  The child is started in its own
+    session so a stuck ``docker compose`` takes its descendants down with it.
+
+    Output is bounded three ways: the existing line-count trim, a per-line
+    character cap (``iter_capped_lines`` — one giant line would otherwise be
+    buffered whole before the trim could see it), and a total-characters cap.
 
     Returns the exit status, or 124 when the deadline was hit.
     """
-    deadline = time.monotonic() + timeout
-    timed_out = False
+    timed_out = threading.Event()
     with subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, env=env, start_new_session=True,
+        # errors="replace": binary junk in CLI output must not kill the read.
+        text=True, errors="replace", env=env, start_new_session=True,
     ) as p:
+        def _reap():
+            # Signal the process group: killing only the docker CLI would
+            # leave its children holding the pipe open.
+            for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+                if p.poll() is not None:
+                    return
+                try:
+                    os.killpg(os.getpgid(p.pid), sig)
+                except (ProcessLookupError, PermissionError):
+                    return
+                try:
+                    p.wait(timeout=grace)
+                    return
+                except subprocess.TimeoutExpired:
+                    continue
+
+        def _on_deadline():
+            if p.poll() is None:
+                timed_out.set()
+                j["log"].append(f"!! timeout after {timeout}s - terminating")
+                _reap()
+
+        watchdog = threading.Timer(timeout, _on_deadline)
+        watchdog.daemon = True
+        watchdog.start()
         try:
             assert p.stdout is not None
-            for line in p.stdout:
-                j["log"].append(line.rstrip())
+            total = sum(len(x) for x in j["log"])
+            for line in iter_capped_lines(p.stdout, JOB_LOG_LINE_CAP):
+                j["log"].append(line)
+                total += len(line)
                 if len(j["log"]) > JOB_LOG_MAX_LINES:
                     del j["log"][:JOB_LOG_TRIM_LINES]
-                if time.monotonic() > deadline:
-                    timed_out = True
-                    j["log"].append(f"!! timeout after {timeout}s - terminating")
-                    break
+                    total = sum(len(x) for x in j["log"])
+                while total > JOB_LOG_TOTAL_CAP and len(j["log"]) > 1:
+                    total -= len(j["log"].pop(0))
         finally:
-            if p.poll() is None:
-                # Signal the process group: killing only the docker CLI would
-                # leave its children holding the pipe open.
-                for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
-                    try:
-                        os.killpg(os.getpgid(p.pid), sig)
-                    except (ProcessLookupError, PermissionError):
-                        break
-                    try:
-                        p.wait(timeout=grace)
-                        break
-                    except subprocess.TimeoutExpired:
-                        continue
-    return 124 if timed_out else (p.returncode if p.returncode is not None else -1)
+            watchdog.cancel()
+            _reap()
+    return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
 UPDATE_STATUS_PATH = DATA_DIR / "docker-update-status.json"
 
 # docker stats --no-stream is ~2s; cache aggressively for snappy UI

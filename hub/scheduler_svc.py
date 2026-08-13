@@ -22,6 +22,10 @@ Scheduling semantics — deliberate, and relied on by the tests:
   going at its next matching minute, the new trigger is recorded as
   ``skipped`` and dropped.  Two concurrent runs of one backup are never right,
   and a queue would let a wedged job pile up silently.
+* **Backwards clock steps never replay.**  Minutes already evaluated stay
+  evaluated when the wall clock steps back (NTP correction, DST fall-back);
+  the engine waits out a small step and re-anchors after a large one — see
+  :func:`_tick_once` for the exact rule.
 
 Execution reuses the maintenance runner's watchdog executor
 (:func:`hub.jobs.run_watchdog`): process-group kill on timeout, bounded output
@@ -539,6 +543,12 @@ def run_job_now(job_id: str, *, wait: bool = False) -> dict:
 #: the boot minute by start_scheduler so restarts never re-fire or back-fill.
 _last_minute: tuple | None = None
 
+#: A backwards wall-clock step larger than this is treated as a deliberate
+#: clock change rather than a correction: the engine adopts the new timeline
+#: (with boot semantics) instead of staying silent until the old high-water
+#: mark is reached again.  Same 3-hour rule as vixie cron.
+_BACKWARD_RESYNC = timedelta(hours=3)
+
 
 def _minute_key(t: time.struct_time) -> tuple:
     return (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min)
@@ -549,11 +559,29 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
 
     Only the *current* minute is ever considered — see the module docstring
     for why missed minutes are dropped rather than replayed.
+
+    ``_last_minute`` is a high-water mark, not just an equality latch.  When
+    the wall clock steps *backwards* (NTP correction, DST fall-back on hosts
+    that observe it, an operator fixing a fast clock), the minutes between the
+    new time and the mark were already evaluated on their first pass;
+    re-evaluating them would double-run every fixed-time job in the replayed
+    window.  A small step therefore keeps the engine quiet until the clock
+    passes the mark again — vixie cron's behaviour for jumps under three
+    hours.  A step larger than :data:`_BACKWARD_RESYNC` is a deliberate clock
+    change: the engine re-anchors on the new timeline with the same
+    mark-evaluated-not-fired semantics as boot, so the stall is bounded.
     """
     global _last_minute
     now = time.localtime(now_ts if now_ts is not None else time.time())
     key = _minute_key(now)
     if key == _last_minute:
+        return []
+    if _last_minute is not None and key < _last_minute:
+        # Naive datetimes on purpose: both keys came from time.localtime(),
+        # so their difference is the wall-clock distance the operator sees.
+        if datetime(*_last_minute) - datetime(*key) <= _BACKWARD_RESYNC:
+            return []
+        _last_minute = key
         return []
     _last_minute = key
     launched: list[str] = []
@@ -574,8 +602,11 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
 
 
 def _loop() -> None:
+    from hub import worker_health
+    worker_health.register("panel-scheduler", 60)
     while not _stop.is_set():
         try:
+            worker_health.beat("panel-scheduler")
             _tick_once()
         except Exception:
             # The engine thread must survive anything a tick throws.
@@ -603,4 +634,7 @@ def start_scheduler() -> None:
 def stop_scheduler() -> None:
     global _thread
     _stop.set()
+    # A deliberately stopped worker must not be reported as a dead one.
+    from hub import worker_health
+    worker_health.unregister("panel-scheduler")
     _thread = None

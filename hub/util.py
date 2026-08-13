@@ -180,6 +180,30 @@ def cached_snapshot(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]
     return decorate
 
 
+def iter_capped_lines(stream, cap):
+    """Yield lines from a text stream, each capped at *cap* characters.
+
+    ``for line in stream`` buffers a whole line before the caller can trim it,
+    so one line with no newline in it — a dumped blob, a progress bar written
+    with ``\\r`` — balloons memory no matter how the caller caps its log.
+    ``readline(cap)`` bounds every read; the remainder of an over-long line is
+    read and *discarded* in cap-sized chunks, and the kept prefix is marked.
+    Trailing whitespace is stripped, matching what the log loops did inline.
+    """
+    while True:
+        line = stream.readline(cap)
+        if line == "":
+            return
+        if len(line) >= cap and not line.endswith("\n"):
+            while True:
+                rest = stream.readline(cap)
+                if rest == "" or rest.endswith("\n"):
+                    break
+            yield line.rstrip() + " …[line truncated]"
+            continue
+        yield line.rstrip()
+
+
 def sh(cmd, timeout=10, shell=False):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=shell)

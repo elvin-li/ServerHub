@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 import threading
 import time
 from typing import Any
@@ -420,13 +419,17 @@ def utm_vm_running(vm_uuid: str) -> bool:
 
 def _utm_restart_async(name: str) -> dict:
     def job():
-        subprocess.run([UTMCTL, "stop", name, "--force"], timeout=180)
+        # sh(), not bare subprocess.run: a TimeoutExpired from stop/start
+        # escaped this worker thread, abandoning the restart halfway with
+        # the VM left stopped.  sh() bounds every call and reports failure
+        # as a return code instead of raising.
+        sh([UTMCTL, "stop", name, "--force"], timeout=180)
         for _ in range(40):
-            r = subprocess.run([UTMCTL, "status", name], capture_output=True, text=True, timeout=10)
-            if (r.stdout or "").strip() == "stopped":
+            _, out, _ = sh([UTMCTL, "status", name], timeout=10)
+            if out == "stopped":
                 break
             time.sleep(2)
-        subprocess.run([UTMCTL, "start", name], timeout=90)
+        sh([UTMCTL, "start", name], timeout=90)
         _invalidate()
 
     threading.Thread(target=job, daemon=True).start()

@@ -10,9 +10,21 @@ import time
 from hub.config import cfg
 from hub.errors import api_error
 from hub.status import invalidate_status
+from hub.util import iter_capped_lines
 
 _jobs = {}
 _jobs_lock = threading.Lock()
+
+#: Per-line character cap for captured output.  The line-count trim below
+#: bounds how many lines are retained, but a single line has no natural
+#: bound — one giant line (a dumped blob, a \r-driven progress bar) used to
+#: be buffered whole before the trim could see it.
+LOG_LINE_CAP = 4096
+#: Total characters retained across the log window.  The 800-line trim alone
+#: still admits 800 × LOG_LINE_CAP ≈ 3 MB per job of pathological output;
+#: past this cap the oldest lines are dropped first, same direction as the
+#: line trim.
+LOG_TOTAL_CAP = 512 * 1024
 
 
 def run_watchdog(argv, *, timeout, log, env=None, cwd=None):
@@ -31,6 +43,10 @@ def run_watchdog(argv, *, timeout, log, env=None, cwd=None):
     * *log* is a caller-owned list; it is trimmed in place so a chatty command
       cannot grow memory without bound.  The caller keeps whatever reference it
       handed in, so live tailing keeps working.
+    * Output is additionally byte-capped, per line and in total
+      (:data:`LOG_LINE_CAP` / :data:`LOG_TOTAL_CAP`): the line trim alone
+      cannot defend against one enormous line, which ``for line in stdout``
+      would buffer whole before the trim ever saw it.
 
     Returns the exit code: 124 on timeout (matching GNU timeout), the child's
     own code otherwise, and -1 when the process could not be run at all.
@@ -41,7 +57,9 @@ def run_watchdog(argv, *, timeout, log, env=None, cwd=None):
         with subprocess.Popen(
             list(argv),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, env=env, cwd=cwd, start_new_session=True,
+            # errors="replace": a stray non-UTF-8 byte in job output must
+            # degrade to a replacement character, not kill the read loop.
+            text=True, errors="replace", env=env, cwd=cwd, start_new_session=True,
         ) as p:
             def _reap():
                 """Signal the whole group; SIGTERM first, then SIGKILL."""
@@ -68,10 +86,18 @@ def run_watchdog(argv, *, timeout, log, env=None, cwd=None):
             watchdog.daemon = True
             watchdog.start()
             try:
-                for line in p.stdout:
-                    log.append(line.rstrip())
+                # Cheap running total; recomputed after every line trim so
+                # the two caps cannot drift apart.  Seeded from the caller's
+                # pre-existing lines (the "$ command" header and friends).
+                total = sum(len(x) for x in log)
+                for line in iter_capped_lines(p.stdout, LOG_LINE_CAP):
+                    log.append(line)
+                    total += len(line)
                     if len(log) > 800:
                         del log[:200]
+                        total = sum(len(x) for x in log)
+                    while total > LOG_TOTAL_CAP and len(log) > 1:
+                        total -= len(log.pop(0))
             finally:
                 watchdog.cancel()
                 _reap()

@@ -510,8 +510,11 @@ def start_scheduler(check_interval: int = 900) -> None:
     stop = threading.Event()
 
     def loop():
+        from hub import worker_health
+        worker_health.register("smart-schedule", check_interval)
         while not stop.wait(check_interval):
             try:
+                worker_health.beat("smart-schedule")
                 run_due_tests()
             except Exception:
                 # A background health task must never take the panel down.
@@ -526,6 +529,9 @@ def stop_scheduler() -> None:
     global _scheduler_stop, _scheduler_thread
     if _scheduler_stop is not None:
         _scheduler_stop.set()
+    # A deliberately stopped worker must not be reported as a dead one.
+    from hub import worker_health
+    worker_health.unregister("smart-schedule")
     _scheduler_stop = None
     _scheduler_thread = None
 

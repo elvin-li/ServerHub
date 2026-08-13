@@ -45,7 +45,7 @@ from unittest import mock
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from hub.util import cached_snapshot, ttl_memo  # noqa: E402
+from hub.util import cached_snapshot  # noqa: E402
 
 HUB = BASE / "hub"
 

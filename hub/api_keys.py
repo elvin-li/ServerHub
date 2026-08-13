@@ -88,7 +88,10 @@ def _digest(token: str) -> str:
 def _load() -> list[dict]:
     try:
         raw = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (OSError, ValueError):
+        # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError: a
+        # torn write leaving non-UTF-8 bytes used to raise past this guard,
+        # and this loader runs on every Bearer-authenticated request.
         return []
     keys = raw.get("keys") if isinstance(raw, dict) else None
     return [k for k in (keys or []) if isinstance(k, dict)]

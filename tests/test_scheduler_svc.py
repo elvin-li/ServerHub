@@ -120,6 +120,68 @@ class TickTests(_Sandbox):
         self.assertEqual(launched, [])
 
 
+class ClockJumpTests(_Sandbox):
+    """Wall-clock steps must never double-run a job or stall the engine.
+
+    ``_last_minute`` is a high-water mark: an NTP correction (or DST
+    fall-back on hosts that observe it) replays wall-clock minutes that were
+    already evaluated, and before the guard every fixed-time job in the
+    replayed window fired a second time.
+    """
+
+    JOB = {"id": "j1", "name": "every minute", "type": "command",
+           "cron": "* * * * *", "enabled": True, "params": {"command": "true"}}
+
+    def test_small_backwards_step_does_not_refire(self):
+        """03:35 fired; the clock steps back to 03:30: the replayed window
+        stays quiet, and normal firing resumes past the high-water mark."""
+        self.use_jobs([self.JOB])
+        launched = self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 35)), ["j1"])
+        for minute in (30, 31, 34, 35):  # the replayed window, incl. the mark
+            self.assertEqual(
+                scheduler_svc._tick_once(_ts(2026, 8, 13, 3, minute)), [],
+                f"03:{minute} was already evaluated once and must not re-fire",
+            )
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 36)), ["j1"])
+        self.assertEqual(len(launched), 2, "one launch per wall-clock minute")
+
+    def test_fixed_time_job_survives_a_dst_style_hour_replay(self):
+        """A nightly 03:30 job: the hour replays (fall-back), one run only."""
+        self.use_jobs([{**self.JOB, "cron": "30 3 * * *"}])
+        launched = self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), ["j1"])
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 59)), [])
+        # The wall clock falls back one hour and walks through 03:30 again.
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 0)), [])
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), [])
+        self.assertEqual(len(launched), 1)
+
+    def test_large_backwards_step_reanchors_with_boot_semantics(self):
+        """An operator fixing a day-fast clock must not silence the engine
+        for a day: past _BACKWARD_RESYNC the new timeline is adopted, with
+        the current minute marked evaluated rather than fired (boot rule)."""
+        self.use_jobs([self.JOB])
+        launched = self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 12, 0)), ["j1"])
+        # Nine hours back: deliberate clock change, not a correction.
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 0)), [],
+                         "the re-anchor minute is marked, not fired")
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 1)), ["j1"],
+                         "the minute after the re-anchor schedules normally")
+        self.assertEqual(len(launched), 2)
+
+    def test_backwards_step_never_stalls_permanently(self):
+        """Even inside the quiet window the mark is eventually re-passed."""
+        self.use_jobs([self.JOB])
+        self.capture_launches()
+        scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 35))
+        scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 33))  # small step back
+        self.assertEqual(scheduler_svc._last_minute, (2026, 8, 13, 3, 35),
+                         "a small step must not move the high-water mark")
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 36)), ["j1"])
+
+
 class ExecuteTests(_Sandbox):
     def test_overlap_is_skipped_and_journalled(self):
         job = {"id": "busy", "name": "busy", "type": "command",

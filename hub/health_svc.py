@@ -266,6 +266,36 @@ def _wireguard_checks() -> list[dict]:
         )]
 
 
+def _worker_checks() -> list[dict]:
+    """Liveness of the long-lived worker threads (hub/worker_health.py).
+
+    A dead sampler/alerter/scheduler thread is otherwise invisible: the panel
+    keeps serving requests while alerts stop firing and metrics stop
+    recording, which is precisely the failure an operator opens this page to
+    rule out.  Pure in-memory read — no subprocess, no lock held while slow —
+    so it runs outside the fan-out and can never be the slow row.  No row is
+    emitted before any worker has registered (unit-test apps built without
+    the lifespan), so existing payload consumers see no change there.
+    """
+    try:
+        from hub import worker_health
+
+        registered = worker_health.snapshot()
+        if not registered:
+            return []
+        dead = worker_health.problems()
+        return [_check(
+            "workers", "Panel background workers",
+            "error", not dead,
+            f"{len(registered)} worker threads ticking" if not dead
+            else "; ".join(dead)[:160],
+            "Restart the ServerHub panel LaunchAgent (launchctl kickstart)"
+            if dead else "",
+        )]
+    except Exception:
+        return []
+
+
 def run_checks(force: bool = False) -> dict:
     """Cached health snapshot, collected once however many readers ask at once.
 
@@ -422,6 +452,9 @@ def _collect_checks() -> dict:
 
     # Time Machine share prerequisites — probed in the wave above.
     checks.extend(tm)
+
+    # Worker-thread liveness — in-memory, deliberately outside the fan-out.
+    checks.extend(_worker_checks())
 
     errors = sum(1 for c in checks if not c["ok"] and c["level"] == "error")
     warns = sum(1 for c in checks if not c["ok"] and c["level"] == "warn")

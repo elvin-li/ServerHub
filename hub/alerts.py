@@ -21,6 +21,14 @@ _lock = threading.Lock()
 _thread: threading.Thread | None = None
 _stop = threading.Event()
 _appends_since_trim = 0
+#: Trim gate: full read-and-rewrite at most every N appends.  Deliberately a
+#: count gate rather than the time gate metrics.py/scheduler_svc.py use: this
+#: journal appends 10-170 lines per *day* (measured 2026-08, quiet days vs the
+#: worst alert-storm day), so 50 appends is hours-to-days between trims and the
+#: file is ~130KB — the rewrite costs less than the bookkeeping to avoid it.
+#: The count gate also bounds the file at MAX_ALERTS+_TRIM_EVERY lines, which
+#: a pure time gate does not.  Revisit only if the append rate grows by orders
+#: of magnitude.
 _TRIM_EVERY = 50
 
 
@@ -66,7 +74,10 @@ def _append_alert(alert: dict):
             return
         _appends_since_trim = 0
         try:
-            lines = ALERTS_FILE.read_text().splitlines()
+            # errors="replace": one torn/binary write must not raise
+            # UnicodeDecodeError past the OSError guard and disable trimming
+            # forever; the per-line json parse skips mangled lines instead.
+            lines = ALERTS_FILE.read_text(errors="replace").splitlines()
             if len(lines) > MAX_ALERTS:
                 # Atomic trim: a crash mid-write_text used to empty the trail.
                 payload = "\n".join(lines[-MAX_ALERTS:]) + "\n"
@@ -88,7 +99,12 @@ def list_alerts(limit: int = 50) -> list:
     if not ALERTS_FILE.exists():
         return []
     try:
-        lines = [ln for ln in ALERTS_FILE.read_text().splitlines() if ln.strip()]
+        # errors="replace", same reason as the trim above: a torn write must
+        # degrade to skipped lines, not a 500 from the alerts endpoint.
+        lines = [
+            ln for ln in ALERTS_FILE.read_text(errors="replace").splitlines()
+            if ln.strip()
+        ]
     except OSError:
         return []
     out = []
@@ -880,6 +896,8 @@ def check_once(force_status: bool = False) -> list:
 
 
 def _loop(interval: int = 90):
+    from hub import worker_health
+    worker_health.register("alert-engine", interval)
     try:
         st = full_status(force=False)
         baseline = {}
@@ -897,6 +915,7 @@ def _loop(interval: int = 90):
         pass
     while not _stop.is_set():
         try:
+            worker_health.beat("alert-engine")
             # Prefer cache; force at most occasionally via TTL
             check_once(force_status=False)
         except Exception:
@@ -919,6 +938,9 @@ def stop_alerter(timeout: float = 3.0) -> None:
     """Stop the alert worker cleanly during app shutdown/reload."""
     global _thread
     _stop.set()
+    # A deliberately stopped worker must not be reported as a dead one.
+    from hub import worker_health
+    worker_health.unregister("alert-engine")
     thread = _thread
     if thread and thread.is_alive() and thread is not threading.current_thread():
         thread.join(timeout=timeout)

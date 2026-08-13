@@ -134,7 +134,10 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
     if force_trim or now - _last_trim >= _TRIM_INTERVAL:
         _last_trim = now
         try:
-            lines = METRICS_FILE.read_text().splitlines()
+            # errors="replace": a torn/binary write raised UnicodeDecodeError
+            # past the OSError guard below, which disabled the ring-buffer
+            # trim forever and let the file grow without bound.
+            lines = METRICS_FILE.read_text(errors="replace").splitlines()
             if len(lines) > MAX_POINTS + _TRIM_SLACK:
                 # Atomic ring-buffer rewrite: partial write_text left a short
                 # or empty history and the next sampler grew a second full copy.
@@ -221,7 +224,9 @@ def history(minutes: int = 60) -> list:
     out = []
     try:
         if METRICS_FILE.exists():
-            for line in METRICS_FILE.read_text().splitlines():
+            # errors="replace", matching the trim: mangled lines fail the
+            # per-line json parse below and are skipped, not raised.
+            for line in METRICS_FILE.read_text(errors="replace").splitlines():
                 if not line.strip():
                     continue
                 try:
@@ -244,9 +249,12 @@ def history(minutes: int = 60) -> list:
 
 
 def _loop(interval: int = 90):
+    from hub import worker_health
+    worker_health.register("metrics-sampler", interval)
     tick = 0
     while not _stop.is_set():
         try:
+            worker_health.beat("metrics-sampler")
             tick += 1
             try:
                 from hub import sensors_svc
@@ -300,6 +308,9 @@ def stop_sampler(timeout: float = 3.0) -> None:
     """Stop the sampler and flush buffered metrics during app shutdown."""
     global _thread
     _stop.set()
+    # A deliberately stopped worker must not be reported as a dead one.
+    from hub import worker_health
+    worker_health.unregister("metrics-sampler")
     thread = _thread
     if thread and thread.is_alive() and thread is not threading.current_thread():
         thread.join(timeout=timeout)

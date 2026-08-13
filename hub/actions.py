@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import glob
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -64,13 +63,18 @@ def registry():
 
 def vm_restart_async(name):
     def job():
-        subprocess.run([UTMCTL, "stop", name, "--force"], timeout=120)
+        # sh(), not bare subprocess.run: the status probe had no timeout (a
+        # wedged utmctl parked this thread forever), and a TimeoutExpired
+        # from stop/start escaped the thread — leaving the VM stopped with
+        # the restart silently abandoned halfway.  sh() bounds every call
+        # and reports failure as a return code instead of raising.
+        sh([UTMCTL, "stop", name, "--force"], timeout=120)
         for _ in range(40):
-            r = subprocess.run([UTMCTL, "status", name], capture_output=True, text=True)
-            if r.stdout.strip() == "stopped":
+            _, out, _ = sh([UTMCTL, "status", name], timeout=10)
+            if out == "stopped":
                 break
             time.sleep(3)
-        subprocess.run([UTMCTL, "start", name], timeout=60)
+        sh([UTMCTL, "start", name], timeout=60)
     threading.Thread(target=job, daemon=True).start()
     return 0, "Restart started (takes about 1-2 minutes)", ""
 
