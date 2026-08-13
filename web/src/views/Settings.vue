@@ -454,6 +454,9 @@
             <span v-if="upsInfo.battery_percent != null" class="mono" style="margin-left:8px">
               {{ upsInfo.battery_percent }}%
             </span>
+            <span v-if="upsPhase !== 'idle'" class="badge down" style="margin-left:8px">
+              {{ upsPhase === 'engaged' ? t('settings.ups_phase_engaged') : t('settings.ups_phase_restoring') }}
+            </span>
           </div>
           <label>{{ t('settings.ups_alerts_enable') }}</label>
           <input type="checkbox" v-model="upsForm.alerts_enabled" :aria-label="t('settings.ups_alerts_enable')" />
@@ -461,9 +464,113 @@
           <input v-model.number="upsForm.low_battery_pct" type="number" min="5" max="95" :aria-label="t('settings.ups_low_pct')" />
         </div>
         <div v-else class="sub">{{ t('common.loading') }}</div>
-        <div class="btns" style="margin-top:10px">
-          <button class="primary" :disabled="saving || !upsInfo" @click="saveUps">{{ t('common.save') }}</button>
-        </div>
+
+        <template v-if="upsInfo">
+          <h2 class="section-title">{{ t('settings.ups_shutdown_title') }}</h2>
+          <p class="hint" style="margin-top:0">{{ t('settings.ups_shutdown_hint') }}</p>
+          <div class="form-grid">
+            <label>{{ t('settings.ups_shutdown_enable') }}</label>
+            <input type="checkbox" v-model="upsForm.shutdown.enabled" :aria-label="t('settings.ups_shutdown_enable')" />
+            <label>{{ t('settings.ups_shutdown_pct') }}</label>
+            <input v-model="upsForm.shutdown.trigger_pct" type="number" min="5" max="95"
+                   :placeholder="t('settings.ups_shutdown_empty_off')"
+                   :aria-label="t('settings.ups_shutdown_pct')" />
+            <label>{{ t('settings.ups_shutdown_remaining') }}</label>
+            <input v-model="upsForm.shutdown.trigger_remaining_min" type="number" min="1" max="720"
+                   :placeholder="t('settings.ups_shutdown_empty_off')"
+                   :aria-label="t('settings.ups_shutdown_remaining')" />
+            <label>{{ t('settings.ups_shutdown_mode') }}</label>
+            <select v-model="upsForm.shutdown.require_both" :aria-label="t('settings.ups_shutdown_mode')">
+              <option :value="false">{{ t('settings.ups_shutdown_mode_any') }}</option>
+              <option :value="true">{{ t('settings.ups_shutdown_mode_both') }}</option>
+            </select>
+            <label>{{ t('settings.ups_shutdown_stacks') }}</label>
+            <div>
+              <select v-model="upsForm.shutdown.stacksMode" :aria-label="t('settings.ups_shutdown_stacks')">
+                <option value="all">{{ t('settings.ups_shutdown_stacks_all') }}</option>
+                <option value="custom">{{ t('settings.ups_shutdown_stacks_custom') }}</option>
+              </select>
+              <div v-if="upsForm.shutdown.stacksMode === 'custom'" style="margin-top:6px">
+                <div v-for="(row, i) in upsStackRows" :key="row.id"
+                     style="display:flex;align-items:center;gap:6px;padding:2px 0">
+                  <input type="checkbox" v-model="row.selected" :aria-label="row.id" />
+                  <span class="mono" style="flex:1">
+                    {{ row.name }}
+                    <span class="sub" v-if="row.missing">· {{ t('settings.ups_shutdown_stack_missing') }}</span>
+                  </span>
+                  <button class="btn" :disabled="i === 0" :aria-label="t('settings.ups_move_up')"
+                          @click="moveStackRow(i, -1)">↑</button>
+                  <button class="btn" :disabled="i === upsStackRows.length - 1" :aria-label="t('settings.ups_move_down')"
+                          @click="moveStackRow(i, 1)">↓</button>
+                </div>
+                <p class="hint" style="margin:4px 0 0">{{ t('settings.ups_shutdown_order_hint') }}</p>
+              </div>
+            </div>
+            <label v-if="upsScriptChoices.length">{{ t('settings.ups_shutdown_scripts') }}</label>
+            <div v-if="upsScriptChoices.length">
+              <div v-for="s in upsScriptChoices" :key="s.id"
+                   style="display:flex;align-items:center;gap:6px;padding:2px 0">
+                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="s.id" />
+                <span class="mono">{{ s.name }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="btns" style="margin-top:10px">
+            <button class="primary" :disabled="saving" @click="saveUps">{{ t('common.save') }}</button>
+            <button class="btn" :disabled="saving || drillBusy" @click="runDrill">
+              {{ t('settings.ups_shutdown_drill') }}
+            </button>
+          </div>
+
+          <div v-if="upsDrill" style="margin-top:10px" data-test="drill-result">
+            <p class="hint" style="margin:0 0 6px">
+              <template v-if="upsDrill.would_trigger_now">
+                {{ t('settings.ups_would_trigger', { reason: upsDrill.reason }) }}
+              </template>
+              <template v-else>{{ t('settings.ups_would_not_trigger') }}</template>
+            </p>
+            <div v-for="s in upsDrill.steps" :key="s.kind + ':' + s.id"
+                 style="display:flex;align-items:center;gap:8px;padding:2px 0">
+              <span class="badge" :class="s.running ? 'warn' : ''">
+                {{ s.running ? t('settings.ups_step_stop') : t('settings.ups_step_skip') }}
+              </span>
+              <span class="mono">{{ s.name || s.id }}</span>
+              <span class="sub">{{ s.kind === 'stack' ? 'compose' : 'service' }}</span>
+            </div>
+          </div>
+
+          <p class="hint" v-if="upsLast" style="margin-top:10px" data-test="last-run">
+            {{ t('settings.ups_last_trigger', { time: fmtUpsTs(upsLast.engaged_at), reason: upsLast.reason || '—' }) }}
+            <template v-if="upsLast.restored_at">
+              · {{ t('settings.ups_last_restored', { time: fmtUpsTs(upsLast.restored_at), n: (upsLast.restarted || []).length }) }}
+            </template>
+            <template v-if="(upsLast.failed || []).length">
+              · {{ t('settings.ups_last_failed', { ids: upsLast.failed.join(', ') }) }}
+            </template>
+          </p>
+
+          <h2 class="section-title">{{ t('settings.ups_halt_title') }}</h2>
+          <p class="hint" style="margin-top:0">{{ t('settings.ups_halt_hint') }}</p>
+          <div class="form-grid">
+            <label>{{ t('settings.ups_halt_current') }}</label>
+            <div class="mono">
+              <template v-if="upsInfo.halt_levels">
+                <span v-if="upsInfo.halt_levels.haltlevel != null">haltlevel {{ upsInfo.halt_levels.haltlevel }}%</span>
+                <span v-if="upsInfo.halt_levels.haltafter != null" style="margin-left:8px">haltafter {{ upsInfo.halt_levels.haltafter }} min</span>
+                <span v-if="upsInfo.halt_levels.haltremain != null" style="margin-left:8px">haltremain {{ upsInfo.halt_levels.haltremain }} min</span>
+              </template>
+              <span v-else class="sub">{{ t('settings.ups_halt_none') }}</span>
+            </div>
+            <label>{{ t('settings.ups_halt_level') }}</label>
+            <div>
+              <input v-model.number="haltLevel" type="number" min="-1" max="95" style="width:90px"
+                     :aria-label="t('settings.ups_halt_level')" />
+              <button class="btn" style="margin-left:8px" :disabled="saving || haltLevel === null || haltLevel === ''"
+                      @click="saveHalt">{{ t('settings.ups_halt_set') }}</button>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -901,8 +1008,8 @@ import qrcode from 'qrcode-generator'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
   getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, getUps,
-  openLauncherApp, putIdentity, putSettings, putUpsSettings, runAliasAutoBind,
-  setLauncherLogin, setPowerSetting,
+  getUpsShutdownPlan, openLauncherApp, putIdentity, putSettings, putUpsHalt, putUpsSettings,
+  runAliasAutoBind, runUpsShutdownDrill, setLauncherLogin, setPowerSetting,
   testNotify as apiTest,
 } from '../api/client'
 import {
@@ -954,7 +1061,62 @@ const diagPreview = ref('')
 const savingPassword = ref(false)
 const accountForm = ref({ username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
 const upsInfo = ref(null)
-const upsForm = ref({ alerts_enabled: true, low_battery_pct: 20 })
+// shutdown.trigger_* hold '' for "condition off" (the inputs are cleared, not
+// zeroed); the empty string becomes an explicit null on save.
+const upsForm = ref({
+  alerts_enabled: true,
+  low_battery_pct: 20,
+  shutdown: {
+    enabled: false,
+    trigger_pct: 25,
+    trigger_remaining_min: '',
+    require_both: false,
+    stacksMode: 'all',
+    stop_scripts: [],
+  },
+})
+// Full stack menu in stop order: configured entries first (their saved order),
+// then the rest of the catalog unticked. Rows move with the ↑/↓ buttons.
+const upsStackRows = ref([])
+const upsPlan = ref(null)   // catalog + resolved plan from /api/ups/shutdown/plan
+const upsDrill = ref(null)  // last drill result shown under the button
+const drillBusy = ref(false)
+const haltLevel = ref(null)
+
+const upsPhase = computed(() => upsInfo.value?.shutdown_state?.phase || 'idle')
+const upsLast = computed(() => upsInfo.value?.shutdown_state?.last || null)
+const upsScriptChoices = computed(() => upsPlan.value?.catalog?.scripts || [])
+
+function fmtUpsTs(ts) {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString()
+}
+
+function moveStackRow(i, delta) {
+  const rows = upsStackRows.value
+  const j = i + delta
+  if (j < 0 || j >= rows.length) return
+  ;[rows[i], rows[j]] = [rows[j], rows[i]]
+}
+
+function buildStackRows() {
+  const catalog = upsPlan.value?.catalog?.stacks || []
+  const saved = upsInfo.value?.settings?.shutdown?.stacks
+  const custom = Array.isArray(saved)
+  const rows = []
+  if (custom) {
+    for (const id of saved) {
+      const hit = catalog.find((s) => s.id === id)
+      rows.push({ id, name: hit?.name || id, selected: true, missing: !hit })
+    }
+  }
+  for (const s of catalog) {
+    if (!rows.some((r) => r.id === s.id)) {
+      rows.push({ id: s.id, name: s.name, selected: !custom, missing: false })
+    }
+  }
+  upsStackRows.value = rows
+}
 
 // ── two-factor (TOTP) card state ─────────────────────────────────────────────
 const twofa = ref(null)          // status from the server, null while unknown
@@ -1639,25 +1801,88 @@ async function saveTerminal() {
 async function loadUps() {
   try {
     upsInfo.value = await getUps()
+    const sd = upsInfo.value.settings?.shutdown || {}
     upsForm.value = {
       alerts_enabled: upsInfo.value.settings?.alerts_enabled !== false,
       low_battery_pct: upsInfo.value.settings?.low_battery_pct ?? 20,
+      shutdown: {
+        enabled: sd.enabled === true,
+        trigger_pct: sd.trigger_pct ?? '',
+        trigger_remaining_min: sd.trigger_remaining_min ?? '',
+        require_both: sd.require_both === true,
+        stacksMode: Array.isArray(sd.stacks) ? 'custom' : 'all',
+        stop_scripts: Array.isArray(sd.stop_scripts) ? [...sd.stop_scripts] : [],
+      },
     }
   } catch (e) {
     // The card stays on its loading placeholder; the toast says why.
     toast('❌ ' + e.message)
+    return
   }
+  // Catalog for the stack/script pickers; enumeration is a docker round-trip,
+  // so a failure degrades to "no pickers" rather than blocking the card.
+  try {
+    upsPlan.value = await getUpsShutdownPlan()
+  } catch {
+    upsPlan.value = null
+  }
+  buildStackRows()
+}
+
+// '' (cleared input) → explicit null, meaning "this condition is off".
+function numOrNull(v) {
+  return v === '' || v === null || v === undefined ? null : Number(v)
 }
 
 async function saveUps() {
+  const f = upsForm.value
+  const shutdown = {
+    enabled: f.shutdown.enabled,
+    trigger_pct: numOrNull(f.shutdown.trigger_pct),
+    trigger_remaining_min: numOrNull(f.shutdown.trigger_remaining_min),
+    require_both: f.shutdown.require_both,
+    stacks: f.shutdown.stacksMode === 'all'
+      ? 'all'
+      : upsStackRows.value.filter((r) => r.selected).map((r) => r.id),
+    stop_scripts: [...f.shutdown.stop_scripts],
+  }
+  // Same rule the server enforces (ups.policy_no_condition), said upfront.
+  if (shutdown.enabled && shutdown.trigger_pct === null && shutdown.trigger_remaining_min === null) {
+    toast('❌ ' + t('settings.ups_shutdown_need_condition'))
+    return
+  }
   saving.value = true
   try {
     const r = await putUpsSettings({
-      alerts_enabled: upsForm.value.alerts_enabled,
-      low_battery_pct: upsForm.value.low_battery_pct,
+      alerts_enabled: f.alerts_enabled,
+      low_battery_pct: f.low_battery_pct,
+      shutdown,
     })
     if (r.ups) upsInfo.value = r.ups
+    buildStackRows()
     toast('✅ ' + t('common.save'))
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  saving.value = false
+}
+
+async function runDrill() {
+  drillBusy.value = true
+  try {
+    upsDrill.value = await runUpsShutdownDrill()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  drillBusy.value = false
+}
+
+async function saveHalt() {
+  saving.value = true
+  try {
+    const r = await putUpsHalt({ haltlevel: Number(haltLevel.value) })
+    if (r.ups) upsInfo.value = r.ups
+    toast('✅ ' + t('settings.ups_halt_set'))
   } catch (e) {
     toast('❌ ' + e.message)
   }

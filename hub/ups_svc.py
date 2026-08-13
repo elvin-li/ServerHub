@@ -20,9 +20,25 @@ from hub.util import cached_snapshot, sh
 #: Panel-level alert policy (settings.ups).  Distinct from the pmset halt
 #: thresholds, which are the *system's* hard shutdown policy: the panel warns
 #: first so the operator can act before macOS pulls the plug.
+#: Safe-shutdown (soft landing) policy defaults — settings.ups.shutdown.
+#: ``None`` for a trigger means "this condition is off"; with both off the
+#: policy can never fire, which the settings API refuses to save while
+#: ``enabled`` is true.  ``stacks`` is either the literal "all" or an ordered
+#: list of stack ids — order is the stop order.  See hub/ups_policy.py for
+#: the state machine that consumes this.
+SHUTDOWN_DEFAULTS = {
+    "enabled": False,
+    "trigger_pct": 25,
+    "trigger_remaining_min": None,
+    "require_both": False,
+    "stacks": "all",
+    "stop_scripts": [],
+}
+
 UPS_DEFAULTS = {
     "alerts_enabled": True,
     "low_battery_pct": 20,
+    "shutdown": SHUTDOWN_DEFAULTS,
 }
 
 _PCT_RE = re.compile(r"(\d{1,3})%")
@@ -129,15 +145,38 @@ def ups_snapshot() -> dict:
     return snapshot
 
 
+def _normalized_shutdown(raw: dict | None) -> dict:
+    """Stored shutdown policy -> complete dict, unknown keys dropped.
+
+    Unlike the flat keys above, ``None`` is a *meaningful* stored value here
+    (a trigger condition switched off), so only unknown keys are filtered —
+    explicit nulls pass through instead of being replaced by the default.
+    """
+    out = dict(SHUTDOWN_DEFAULTS)
+    if isinstance(raw, dict):
+        out.update({k: v for k, v in raw.items() if k in SHUTDOWN_DEFAULTS})
+    return out
+
+
 def ups_settings() -> dict:
     raw = (cfg().get("settings") or {}).get("ups") or {}
     out = dict(UPS_DEFAULTS)
-    out.update({k: v for k, v in raw.items() if k in UPS_DEFAULTS and v is not None})
+    out.update({
+        k: v for k, v in raw.items()
+        if k in UPS_DEFAULTS and k != "shutdown" and v is not None
+    })
+    out["shutdown"] = _normalized_shutdown(raw.get("shutdown"))
     return out
 
 
 def save_ups_settings(patch: dict) -> dict:
-    update_settings({"ups": {k: v for k, v in patch.items() if k in UPS_DEFAULTS}})
+    clean = {k: v for k, v in patch.items() if k in UPS_DEFAULTS and k != "shutdown"}
+    shutdown = patch.get("shutdown")
+    if isinstance(shutdown, dict):
+        # Partial patch: update_settings deep-merges dicts, so only the keys
+        # provided here move; lists (stacks order) are replaced wholesale.
+        clean["shutdown"] = {k: v for k, v in shutdown.items() if k in SHUTDOWN_DEFAULTS}
+    update_settings({"ups": clean})
     return ups_settings()
 
 

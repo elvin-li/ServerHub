@@ -11,16 +11,55 @@
     >
       <div class="row">
         <span class="name">{{ t('dashboard.load_failed') }}</span>
-        <button class="tiny" :disabled="loading" @click="refreshHeavy(true)">
+        <button class="tiny" :disabled="loading" @click="retryLoad">
           {{ t('common.retry') }}
         </button>
       </div>
       <div class="sub mono" style="margin-top:4px">{{ loadError }}</div>
     </div>
 
+    <!-- ===== Member view: only the services assigned to this account. The
+         host metrics, containers, power and sensor tiles all read admin
+         endpoints the member surface deliberately refuses, so none of them
+         are rendered (or fetched) for a member session. ===== -->
+    <template v-if="isMemberView">
+      <div class="host-strip">
+        <div class="host-main">
+          <div class="host-name">{{ t('dashboard.member_title') }}</div>
+          <div class="host-meta">
+            <span>{{ t('dashboard.services_count', { total: status?.service_total ?? '—', ok: status?.counts?.ok ?? 0 }) }}</span>
+            <span class="dot">·</span>
+            <span>{{ status?.ts || '…' }}</span>
+          </div>
+        </div>
+        <div class="host-pills">
+          <button class="tiny" @click="refresh" :disabled="loading">{{ t('common.refresh') }}</button>
+        </div>
+      </div>
+      <template v-for="g in status?.groups || []" :key="g.group">
+        <h2 class="member-group">{{ g.group }}</h2>
+        <div class="dash-grid">
+          <div v-for="s in g.services || []" :key="s.id" class="tile span-4 member-svc">
+            <div class="row">
+              <span class="led" :class="led(s.state)"></span>
+              <span class="name">{{ s.name }}</span>
+            </div>
+            <div class="sub" style="margin-top:4px">{{ s.detail || s.state }}</div>
+            <div class="row" style="margin-top:8px;gap:6px">
+              <a v-if="s.url" class="btn tiny primary" :href="s.url" target="_blank" rel="noopener">{{ t('services.open') }}</a>
+              <router-link class="btn tiny" to="/services">{{ t('services.more') }}</router-link>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div v-if="!(status?.groups || []).length && !loadError" class="tile" style="color:var(--sub)">
+        {{ t('dashboard.member_empty') }}
+      </div>
+    </template>
+
     <!-- Skeleton loading state. Gated on loadError too: without that, a failed
          first load left this placeholder on screen permanently. -->
-    <template v-if="!host && !sensors && !loadError">
+    <template v-else-if="!host && !sensors && !loadError">
       <div class="host-strip">
         <div class="host-main">
           <div class="skeleton skeleton-title" style="width:140px"></div>
@@ -416,6 +455,15 @@
         <div class="sub" style="margin-top:4px">
           {{ t('dashboard.ups_threshold', { pct: ups.settings?.low_battery_pct ?? 20 }) }}
         </div>
+        <!-- Safe-shutdown policy: state matters most mid-outage, so the badge
+             switches to the live phase while the policy is engaged/restoring. -->
+        <div class="sub" style="margin-top:4px" data-test="ups-policy">
+          {{ t('dashboard.ups_policy') }}
+          <span v-if="upsPolicyPhase === 'engaged'" class="badge down">{{ t('dashboard.ups_policy_engaged') }}</span>
+          <span v-else-if="upsPolicyPhase === 'restoring'" class="badge warn">{{ t('dashboard.ups_policy_restoring') }}</span>
+          <span v-else-if="ups.settings?.shutdown?.enabled" class="badge ok">{{ t('dashboard.ups_policy_on') }}</span>
+          <span v-else class="badge">{{ t('dashboard.ups_policy_off') }}</span>
+        </div>
       </div>
 
       <!-- ===== Ports ===== -->
@@ -493,6 +541,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { Monitor, Play, Square, Copy, Moon, RefreshCw, Power } from '@lucide/vue'
 import { startVisibleInterval } from '../lib/poll'
+import { authState } from '../lib/authState'
 import LineChart from '../components/LineChart.vue'
 import StackBar from '../components/StackBar.vue'
 import {
@@ -504,6 +553,10 @@ import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
 const { t, errText } = injectI18n()
+
+// Member sessions render the reduced services-only dashboard; the router
+// guard refreshed authState before this component was allowed to mount.
+const isMemberView = computed(() => authState.authenticated && authState.role === 'member')
 
 const status = ref(null)
 const storage = ref(null)
@@ -691,6 +744,8 @@ const diskPct = computed(() => {
 const uptimeText = computed(() =>
   sensors.value?.uptime?.uptime_text || sys.value.uptime || '—'
 )
+
+const upsPolicyPhase = computed(() => ups.value?.shutdown_state?.phase || 'idle')
 
 const upsBarClass = computed(() => {
   const u = ups.value
@@ -997,6 +1052,12 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
 async function refreshAll() {
   await Promise.all([refresh(), refreshHeavy(true, true)])
 }
+// The failure banner's retry has to match what this session may actually
+// fetch: heavy loaders 401 for members and would re-raise the banner forever.
+function retryLoad() {
+  if (isMemberView.value) return refresh()
+  return refreshHeavy(true)
+}
 async function act(svc, action) {
   if (busy.value) return
   busy.value = true
@@ -1013,6 +1074,15 @@ async function act(svc, action) {
 
 onMounted(() => {
   void refresh()
+  if (isMemberView.value) {
+    // Members only have /api/status; every heavy loader below reads admin
+    // endpoints and would produce nothing but 401s for this session.
+    timer = startVisibleInterval(async () => {
+      await refresh()
+      clock.value = Date.now()
+    }, 12000)
+    return
+  }
   // first paint: include docker stats once
   void refreshHeavy(true, true)
   // light: status + sensors from cache; pause when tab hidden
@@ -1034,6 +1104,9 @@ onUnmounted(() => {
 <style scoped>
 .dash { }
 .dash-grid { gap: 10px; }
+.member-group { font-size: 14px; margin: 14px 0 8px; color: var(--sub); }
+.member-svc .name { font-weight: 600; }
+.member-svc .row { display: flex; align-items: center; gap: 8px; }
 .dash-grid > .tile { min-width: 0; overflow: hidden; }
 .alert-item > * { min-width: 0; overflow-wrap: anywhere; }
 .host-strip {

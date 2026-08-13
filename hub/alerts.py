@@ -146,15 +146,18 @@ def send_ha_notify(title: str, message: str, *, level: str | None = None,
 
 
 def emit_alert(*, kind: str, level: str, alert_id: str, message: str,
-               title: str = "ServerHub scheduled task") -> dict:
+               title: str = "ServerHub scheduled task",
+               event: str = "problem") -> dict:
     """Record one alert and notify through the configured channels.
 
     Public entry for modules outside the sweep loop (the scheduler engine's
-    consecutive-failure alerts).  Mirrors what the checks above do per event:
-    append to alerts.jsonl, then hand the text to send_ha_notify, whose
-    per-channel min_level routing decides who actually hears about it.  The
-    global enabled/include_warn gates are honoured the same way the resource
-    alerts honour them.
+    consecutive-failure alerts, the UPS shutdown policy's trigger/reset
+    events).  Mirrors what the checks above do per event: append to
+    alerts.jsonl, then hand the text to send_ha_notify, whose per-channel
+    min_level routing decides who actually hears about it.  The global
+    enabled/include_warn/notify_resolve gates are honoured the same way the
+    sweep-loop alerts honour them: ``down`` always notifies, a resolved
+    ``ok`` follows notify_resolve, everything else follows include_warn.
     """
     alert = {
         "t": int(time.time()),
@@ -164,14 +167,20 @@ def emit_alert(*, kind: str, level: str, alert_id: str, message: str,
         # Same shape as the sweep-loop alerts above: the Alerts page renders
         # a.name and a.event, and records missing them drew blank cells.
         "name": title or alert_id,
-        "event": "problem",
+        "event": event,
         "message": message,
     }
     _append_alert(alert)
     n = notify_settings()
-    if n.get("enabled") and (level == "down" or n.get("include_warn", True)):
+    if level == "down":
+        wanted = bool(n.get("enabled"))
+    elif event == "resolved":
+        wanted = bool(n.get("enabled")) and n.get("notify_resolve", True)
+    else:
+        wanted = bool(n.get("enabled")) and n.get("include_warn", True)
+    if wanted:
         try:
-            send_ha_notify(title, message, level=level)
+            send_ha_notify(title, message, level=level, event=event if event != "problem" else None)
         except Exception:
             # Notification failure must not propagate into the caller's thread.
             pass
@@ -817,6 +826,17 @@ def check_once(force_status: bool = False) -> list:
         pass
     try:
         emitted.extend(_check_ups(prev, new_state, now))
+    except Exception:
+        pass
+    # UPS safe-shutdown policy (hub/ups_policy.py): decides on the same
+    # 30s-cached snapshot _check_ups just read, keeps its latch in its own
+    # persisted file (not alert_state.json — it must survive independently of
+    # this sweep's state), and runs every slow action on a worker thread, so
+    # this tick costs the sweep nothing.  Same containment rule as the other
+    # checks: a policy bug must not kill the alerter thread.
+    try:
+        from hub import ups_policy
+        emitted.extend(ups_policy.sweep(now))
     except Exception:
         pass
     # Artifact freshness for daily launchd jobs — catches "loaded but never
