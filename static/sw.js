@@ -1,9 +1,9 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-const CACHE_NAME = 'serverhub-14c75c185d45c645'
+const CACHE_NAME = 'serverhub-7e5eaf48dd3ee1db'
 // Vite replaces the placeholder with the first-paint assets (entry + vendor
 // chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Apps-Dnt3IBgV.css","/assets/Bookmarks-CmO1-9tu.css","/assets/Compose-Xwt2I3WS.css","/assets/Dashboard-C14QEmLD.css","/assets/Files-BmSpWPVS.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-CufDTflA.css","/assets/Logs-BQ6oAIpl.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-MCrVcGgE.css","/assets/Pool-WTeE8dOI.css","/assets/Services-DRVv7-vs.css","/assets/Settings-DUqtYXH3.css","/assets/Shares-Dj6ZDy9k.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-zqGm35wn.css","/assets/Tools-DHNuKtAn.css","/assets/VMs-A_c68-4Z.css","/assets/WireGuard-DFr8bFHO.css","/assets/en-2yM1bw0M.js","/assets/index-B12m2YTV.css","/assets/index-IqxkNXiq.js","/assets/vendor-qnL6aF8z.js"]
+const PRECACHE_ASSETS = ["/assets/Account-Bybzo2vd.css","/assets/Apps-rjcpkSkU.css","/assets/Bookmarks-CmO1-9tu.css","/assets/Compose-Xwt2I3WS.css","/assets/Dashboard-Dzd_8Lpn.css","/assets/Files-BmSpWPVS.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-CufDTflA.css","/assets/Logs-BQ6oAIpl.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-MCrVcGgE.css","/assets/Pool-WTeE8dOI.css","/assets/Services-BM7Qef8c.css","/assets/Settings-DjtnbGYy.css","/assets/Shares-CtP2VtOe.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-zqGm35wn.css","/assets/Tools-DHNuKtAn.css","/assets/Users-DsyV07kA.css","/assets/VMs-A_c68-4Z.css","/assets/WireGuard-DFr8bFHO.css","/assets/en-HZziJ4nQ.js","/assets/index-4wSmgG5v.js","/assets/index-B12m2YTV.css","/assets/vendor-vg4QWJnw.js"]
 const SHELL_ASSETS = [
   '/',
   '/index.html',

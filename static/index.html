@@ -38,11 +38,23 @@
         if (meta && tc[t]) meta.setAttribute('content', tc[t]);
       } catch (e) {}
     </script>
-    <script type="module" crossorigin src="/assets/index-IqxkNXiq.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/vendor-qnL6aF8z.js">
+    <script type="module" crossorigin src="/assets/index-4wSmgG5v.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-vg4QWJnw.js">
     <link rel="stylesheet" crossorigin href="/assets/index-B12m2YTV.css">
   </head>
   <body>
     <div id="app"></div>
+    <!-- Revealed by main.js only when every locale dictionary failed to load
+         (initializeI18n() returned false).  Mounting the SPA in that state
+         would render raw key paths on every surface, so this tiny bilingual
+         notice ships hardcoded in the shell — it must not depend on the very
+         dictionaries that just failed.  The reload handler is attached from
+         main.js because the CSP (script-src 'self') forbids inline handlers. -->
+    <div id="i18n-failure" hidden role="alert"
+         style="max-width: 520px; margin: 20vh auto 0; padding: 0 24px; font-family: system-ui, sans-serif; text-align: center; line-height: 1.6;">
+      <p lang="zh-CN" style="margin: 0 0 6px;">界面语言包加载失败，页面暂时无法显示。请刷新重试。</p>
+      <p lang="en" style="margin: 0;">The interface language packs failed to load, so the page cannot be displayed. Please refresh to try again.</p>
+      <button type="button" style="margin-top: 14px; padding: 8px 20px; font-size: 14px; cursor: pointer;">刷新 / Reload</button>
+    </div>
   </body>
 </html>
