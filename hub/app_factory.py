@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -55,12 +56,42 @@ def _configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from hub import alerts, metrics, network_svc, tools_svc
+    import threading
+
+    from hub import (
+        alerts, backups, metrics, network_svc, scheduler_svc, smart_test_svc,
+        tools_svc,
+    )
 
     s = cfg().get("settings") or {}
     # SSD-friendly defaults: 90s metrics / 90s alerts (was 30/30)
     metrics.start_sampler(int(s.get("metrics_interval") or 90))
     alerts.start_alerter(int(s.get("alert_interval") or 90))
+    # User-defined cron jobs (see hub/scheduler_svc.py for the semantics).
+    try:
+        scheduler_svc.start_scheduler()
+    except Exception:
+        pass
+    # SMART self-test schedules.  The engine existed but nothing ever started
+    # it, so a configured schedule (which the scheduler page even displays
+    # with a next_run) never actually ran a test.  Idempotent, and its loop
+    # sleeps 15 minutes before the first check, so a schedule-less install
+    # pays nothing at startup.
+    try:
+        smart_test_svc.start_scheduler()
+    except Exception:
+        pass
+    # A panel death between `compose stop` and the finally-restart of a stack
+    # backup leaves that stack stopped; scan for leftover in-flight markers
+    # and start those stacks back up.  Background thread: a compose start can
+    # take minutes and must not hold up startup.
+    try:
+        threading.Thread(
+            target=backups.recover_interrupted_stack_backups,
+            daemon=True, name="stack-backup-recovery",
+        ).start()
+    except Exception:
+        pass
     # `brew outdated` + `softwareupdate -l` is ~11.5s. Warm it in the background
     # so the first visitor to the Tools page reads a cache instead of waiting.
     try:
@@ -80,6 +111,8 @@ async def lifespan(app: FastAPI):
         alerts.stop_alerter()
         network_svc.stop_alias_autobind()
         tools_svc.stop_updates_warmer()
+        scheduler_svc.stop_scheduler()
+        smart_test_svc.stop_scheduler()
 
 
 async def admin_password_scope(request: Request):
@@ -180,6 +213,16 @@ def create_app() -> FastAPI:
             # backpressure characteristics.
             resp.headers.setdefault("Cache-Control", "private, max-age=3")
         return resp
+
+    @app.get("/api/health")
+    def public_liveness():
+        """Unauthenticated liveness. Body is {ok, ts} only — no host inventory.
+
+        The panel router also exposes GET /api/health behind require_auth.
+        Registering this first means probes (watchdog, install.sh, curl)
+        get 200 without a session. Privileged data stays on /api/status.
+        """
+        return {"ok": True, "ts": int(time.time())}
 
     app.include_router(auth_router)
     app.include_router(

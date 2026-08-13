@@ -14,6 +14,16 @@ vi.mock('../api/client', () => ({
   getBackups: vi.fn(),
   backupPostgres: vi.fn(),
   backupConfigs: vi.fn(),
+  // The scheduled-task cards (rsync / stack backups) load alongside the
+  // artefact table; empty answers keep them rendered but inert.
+  getSchedulerJobs: vi.fn(async () => ({ jobs: [] })),
+  getRsyncBinary: vi.fn(async () => ({ available: true, variant: 'rsync3', version: '3.4.1' })),
+  rsyncPreview: vi.fn(),
+  createSchedulerJob: vi.fn(),
+  updateSchedulerJob: vi.fn(),
+  deleteSchedulerJob: vi.fn(),
+  runSchedulerJobNow: vi.fn(),
+  getStacks: vi.fn(async () => ({ stacks: [] })),
 }))
 
 const { getBackups } = await import('../api/client')
@@ -70,6 +80,9 @@ describe('the backups table is honest about its cap', () => {
 
   it('renders one row per backup', async () => {
     const wrapper = await render({ backups: rows(5), root: '/b', total: 5 })
-    expect(wrapper.findAll('tbody tr')).toHaveLength(5)
+    // Scoped to the artefact table: the scheduled-task cards above it own
+    // their own <tbody> rows (including empty-state rows) and, since the
+    // mobile-overflow fix, their own .table-wrap as well.
+    expect(wrapper.findAll('.backups-artefacts tbody tr')).toHaveLength(5)
   })
 })

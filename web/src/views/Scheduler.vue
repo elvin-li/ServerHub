@@ -5,89 +5,349 @@
       <span class="meta">{{ t('pages.scheduler_meta') }}</span>
     </div>
 
-    <div class="toolbar">
-      <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
-      <span class="meta" style="color:var(--sub)" v-if="data">{{ data.count }} {{ t('scheduler.timers') }}</span>
+    <div class="tabs">
+      <button :class="{ active: tab === 'panel' }" :aria-pressed="tab === 'panel'" @click="tab = 'panel'">
+        {{ t('sched.tab_panel') }}
+      </button>
+      <button :class="{ active: tab === 'system' }" :aria-pressed="tab === 'system'" @click="tab = 'system'">
+        {{ t('sched.tab_system') }}
+      </button>
     </div>
 
-    <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-      <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">
-        {{ t('scheduler.hint') }}
-      </p>
-    </div>
-
-    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
-    <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
-    <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
-      <div class="tile span-4">
-        <h3>{{ t('scheduler.timers') }}</h3>
-        <div class="v">{{ data.count }}</div>
+    <!-- ── panel jobs (user-defined cron) ─────────────────────────────── -->
+    <div v-if="tab === 'panel'">
+      <div class="toolbar">
+        <button class="primary" @click="openCreate">{{ t('sched.new_job') }}</button>
+        <button :disabled="jobsBusy" @click="loadJobs">{{ t('common.refresh') }}</button>
+        <span class="meta" style="color:var(--sub)" v-if="jobsLoaded">{{ jobs.length }} {{ t('sched.jobs_count') }}</span>
       </div>
-      <div class="tile span-4">
-        <h3>{{ t('scheduler.interval_type') }}</h3>
-        <div class="v">{{ intervalCount }}</div>
-        <div class="sub">StartInterval</div>
+
+      <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
+        <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">{{ t('sched.panel_hint') }}</p>
       </div>
-      <div class="tile span-4">
-        <h3>{{ t('scheduler.calendar_type') }}</h3>
-        <div class="v">{{ calendarCount }}</div>
-        <div class="sub">StartCalendarInterval</div>
+
+      <LoadFailure v-if="jobsError" :detail="jobsError" :retry="loadJobs" :busy="jobsBusy" />
+      <SkeletonLoader v-if="!jobsLoaded" :cols="6" :rows="4" />
+      <div v-else class="table-wrap">
+        <table class="dense">
+          <thead>
+            <tr>
+              <th>{{ t('sched.name') }}</th>
+              <th>{{ t('sched.type') }}</th>
+              <th>{{ t('sched.cron') }}</th>
+              <th>{{ t('sched.next_run') }}</th>
+              <th>{{ t('sched.last_run') }}</th>
+              <th>{{ t('sched.enabled') }}</th>
+              <th>{{ t('common.actions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="job in jobs" :key="job.id">
+              <td><strong>{{ job.name }}</strong></td>
+              <td><span class="badge accent">{{ t(`sched.type_${job.type}`) }}</span></td>
+              <td class="mono" style="font-size:11px">{{ job.cron }}</td>
+              <td style="font-size:12px">{{ job.enabled ? fmt(job.next_run) : '—' }}</td>
+              <td>
+                <span v-if="job.running" class="badge warn">{{ t('sched.running') }}</span>
+                <span v-else-if="job.last" class="badge" :class="job.last.status === 'ok' ? 'ok' : 'warn'">
+                  {{ t(`sched.status_${job.last.status}`) }} · {{ fmt(job.last.ts) }}
+                </span>
+                <span v-else class="meta">{{ t('sched.never') }}</span>
+              </td>
+              <td>
+                <input type="checkbox" :checked="job.enabled" :aria-label="t('sched.enabled')"
+                       @change="toggle(job, $event.target.checked)" />
+              </td>
+              <td>
+                <div class="btns" style="gap:4px">
+                  <button class="tiny" :disabled="job.running" @click="runNow(job)">{{ t('sched.run_now') }}</button>
+                  <button class="tiny" @click="openRuns(job)">{{ t('sched.history') }}</button>
+                  <button class="tiny" @click="openEdit(job)">{{ t('common.edit') }}</button>
+                  <button class="tiny" @click="removeJob(job)">{{ t('common.delete') }}</button>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!jobs.length && !jobsError">
+              <td colspan="7" style="color:var(--sub)">{{ t('sched.no_jobs') }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- bridged system-managed schedules (read-only) -->
+      <div v-if="systemJobs.length" class="tile" style="margin-top:12px">
+        <h3 style="margin-top:0">{{ t('sched.managed_title') }}</h3>
+        <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.managed_smart_hint') }}</p>
+        <div class="table-wrap" style="margin-top:6px">
+        <table class="dense">
+          <tbody>
+            <tr v-for="s in systemJobs" :key="s.id">
+              <td><strong>{{ s.name }}</strong> <span class="badge">{{ t('sched.readonly') }}</span></td>
+              <td>{{ s.enabled ? s.interval : t('sched.disabled') }}</td>
+              <td style="font-size:12px">{{ s.enabled ? fmt(s.next_run) : '—' }}</td>
+              <td><router-link class="btn tiny" to="/main">{{ t('sched.managed_edit_link') }}</router-link></td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
       </div>
     </div>
 
-    <div class="toolbar">
-      <input v-model="q" type="text" :placeholder="t('scheduler.filter_ph')" style="min-width:200px"  :aria-label="t('scheduler.filter_ph')"/>
+    <!-- ── system tab: launchd timers (read-only, unchanged) ──────────── -->
+    <div v-else>
+      <div class="toolbar">
+        <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
+        <span class="meta" style="color:var(--sub)" v-if="data">{{ data.count }} {{ t('scheduler.timers') }}</span>
+      </div>
+
+      <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
+        <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">
+          {{ t('scheduler.hint') }}
+        </p>
+      </div>
+
+      <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
+      <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
+      <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
+        <div class="tile span-4">
+          <h3>{{ t('scheduler.timers') }}</h3>
+          <div class="v">{{ data.count }}</div>
+        </div>
+        <div class="tile span-4">
+          <h3>{{ t('scheduler.interval_type') }}</h3>
+          <div class="v">{{ intervalCount }}</div>
+          <div class="sub">StartInterval</div>
+        </div>
+        <div class="tile span-4">
+          <h3>{{ t('scheduler.calendar_type') }}</h3>
+          <div class="v">{{ calendarCount }}</div>
+          <div class="sub">StartCalendarInterval</div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <input v-model="q" type="text" :placeholder="t('scheduler.filter_ph')" style="min-width:200px" :aria-label="t('scheduler.filter_ph')" />
+      </div>
+
+      <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
+      <div v-else class="table-wrap">
+        <table class="dense">
+          <thead>
+            <tr>
+              <th>{{ t('scheduler.label') }}</th>
+              <th>{{ t('common.type') }}</th>
+              <th>{{ t('scheduler.interval') }}</th>
+              <th>{{ t('scheduler.calendar') }}</th>
+              <th>{{ t('scheduler.program') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in filtered" :key="row.label">
+              <td class="mono"><strong>{{ row.label }}</strong></td>
+              <td>
+                <span class="badge accent">{{ row.interval_sec ? t('scheduler.interval_type') : t('scheduler.calendar_type') }}</span>
+              </td>
+              <td>{{ row.interval_sec ? formatInterval(row.interval_sec) : '—' }}</td>
+              <td class="mono" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
+              <td class="mono" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="row.program">
+                {{ row.program || '—' }}
+              </td>
+            </tr>
+            <tr v-if="!filtered.length && !loadError">
+              <td colspan="5" style="color:var(--sub)">
+                {{ loading ? t('common.loading') : t('common.none') }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="toolbar" style="margin-top:12px">
+        <router-link class="btn" to="/tools">{{ t('nav.tools') }}</router-link>
+        <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>
+      </div>
     </div>
 
-    <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
-    <div v-else class="table-wrap">
-      <table class="dense">
-        <thead>
-          <tr>
-            <th>{{ t('scheduler.label') }}</th>
-            <th>{{ t('common.type') }}</th>
-            <th>{{ t('scheduler.interval') }}</th>
-            <th>{{ t('scheduler.calendar') }}</th>
-            <th>{{ t('scheduler.program') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in filtered" :key="row.label">
-            <td class="mono"><strong>{{ row.label }}</strong></td>
-            <td>
-              <span class="badge accent">{{ row.interval_sec ? t('scheduler.interval_type') : t('scheduler.calendar_type') }}</span>
-            </td>
-            <td>{{ row.interval_sec ? formatInterval(row.interval_sec) : '—' }}</td>
-            <td class="mono" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
-            <td class="mono" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="row.program">
-              {{ row.program || '—' }}
-            </td>
-          </tr>
-          <tr v-if="!filtered.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">
-              {{ loading ? t('common.loading') : t('common.none') }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <!-- create / edit modal -->
+    <div ref="formPanel" v-if="editorOpen" class="modal-bg" @click.self="closeEditor" role="presentation">
+      <div class="modal" style="max-width:560px;max-height:90vh;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="sched-form-title">
+        <div class="row" style="margin-bottom:10px">
+          <span id="sched-form-title" class="name">{{ editing ? t('sched.edit_job') : t('sched.new_job') }}</span>
+          <button class="tiny" @click="closeEditor">{{ t('common.close') }}</button>
+        </div>
+        <ScheduleJobForm :job="editing" :busy="jobsBusy" @save="saveJob" @cancel="closeEditor" />
+      </div>
     </div>
 
-    <div class="toolbar" style="margin-top:12px">
-      <router-link class="btn" to="/tools">{{ t('nav.tools') }}</router-link>
-      <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>
+    <!-- run history modal -->
+    <div ref="runsPanel" v-if="runsFor" class="modal-bg" @click.self="runsFor = null" role="presentation">
+      <div class="modal" style="max-width:640px;max-height:90vh;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="sched-runs-title">
+        <div class="row" style="margin-bottom:10px">
+          <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: runsFor.name }) }}</span>
+          <button class="tiny" @click="runsFor = null">{{ t('common.close') }}</button>
+        </div>
+        <div v-if="!runs.length" class="meta">{{ t('sched.runs_empty') }}</div>
+        <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
+          <div style="font-size:12px;margin-bottom:4px">
+            <span class="badge" :class="run.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${run.status}`) }}</span>
+            <span class="mono" style="margin-left:8px">{{ fmt(run.ts) }}</span>
+            <span class="meta" style="margin-left:8px">{{ t('sched.col_duration') }}: {{ run.duration }}s · rc={{ run.rc ?? '—' }} · {{ t(`sched.trigger_${run.trigger}`) }}</span>
+          </div>
+          <pre v-if="run.tail" class="log" style="max-height:160px;font-size:11px;margin:0">{{ run.tail }}</pre>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
-import { getScheduler } from '../api/client'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import {
+  createSchedulerJob,
+  deleteSchedulerJob,
+  enableSchedulerJob,
+  getScheduler,
+  getSchedulerJobRuns,
+  getSchedulerJobs,
+  runSchedulerJobNow,
+  updateSchedulerJob,
+} from '../api/client'
 import { injectI18n } from '../i18n'
+import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
+import ScheduleJobForm from '../components/ScheduleJobForm.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
+const tab = ref('panel')
+
+// ── panel jobs state ─────────────────────────────────────────────────────
+const jobs = ref([])
+const systemJobs = ref([])
+const jobsLoaded = ref(false)
+const jobsBusy = ref(false)
+const jobsError = ref('')
+const editorOpen = ref(false)
+const editing = ref(null)
+const runsFor = ref(null)
+const runs = ref([])
+const formPanel = ref(null)
+const runsPanel = ref(null)
+useDismissable(editorOpen, () => { editorOpen.value = false }, formPanel)
+useDismissable(() => Boolean(runsFor.value), () => { runsFor.value = null }, runsPanel)
+
+function fmt(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString() : '—'
+}
+
+async function loadJobs() {
+  jobsBusy.value = true
+  try {
+    const d = await getSchedulerJobs()
+    jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
+    systemJobs.value = Array.isArray(d?.system) ? d.system : []
+    jobsError.value = ''
+  } catch (e) {
+    jobsError.value = e.message || String(e)
+  } finally {
+    jobsBusy.value = false
+    jobsLoaded.value = true
+  }
+  schedulePoll()
+}
+
+// While any job is running, refresh every few seconds so the "running" badge
+// and last-run status update themselves; the timer stops as soon as nothing
+// is running, so an idle page polls nothing.
+let pollTimer = null
+function schedulePoll() {
+  if (pollTimer) return
+  if (!jobs.value.some(j => j.running)) return
+  pollTimer = setTimeout(() => {
+    pollTimer = null
+    loadJobs()
+  }, 7000)
+}
+
+onBeforeUnmount(() => {
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = null
+})
+
+function openCreate() {
+  editing.value = null
+  editorOpen.value = true
+}
+
+function openEdit(job) {
+  editing.value = job
+  editorOpen.value = true
+}
+
+function closeEditor() {
+  editorOpen.value = false
+  editing.value = null
+}
+
+async function saveJob(body) {
+  jobsBusy.value = true
+  try {
+    if (editing.value) await updateSchedulerJob(editing.value.id, body)
+    else await createSchedulerJob(body)
+    toast('✅ ' + t('sched.saved'))
+    closeEditor()
+    await loadJobs()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  } finally {
+    jobsBusy.value = false
+  }
+}
+
+async function toggle(job, enabled) {
+  try {
+    await enableSchedulerJob(job.id, enabled)
+    await loadJobs()
+  } catch (e) {
+    toast('❌ ' + e.message)
+    await loadJobs()
+  }
+}
+
+async function runNow(job) {
+  try {
+    await runSchedulerJobNow(job.id)
+    toast('✅ ' + t('sched.started', { name: job.name }))
+    await loadJobs()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+async function removeJob(job) {
+  if (!confirm(t('sched.confirm_delete', { name: job.name }))) return
+  try {
+    await deleteSchedulerJob(job.id)
+    toast('✅ ' + t('sched.deleted'))
+    await loadJobs()
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+async function openRuns(job) {
+  runsFor.value = job
+  runs.value = []
+  try {
+    const d = await getSchedulerJobRuns(job.id, 30)
+    runs.value = Array.isArray(d?.runs) ? d.runs : []
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+}
+
+// ── launchd (system) tab state — unchanged read-only view ────────────────
 const data = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
@@ -136,5 +396,8 @@ async function load() {
   loaded.value = true
 }
 
-onMounted(load)
+onMounted(() => {
+  loadJobs()
+  load()
+})
 </script>

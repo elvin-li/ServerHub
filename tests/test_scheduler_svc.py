@@ -1,0 +1,294 @@
+"""Scheduler engine semantics: tick, no-backfill, overlap skip, history, alerts.
+
+Time is always injected (``_tick_once(now_ts=...)``) and the run journal is
+redirected to a scratch directory, so these tests are deterministic and never
+touch the panel's real ``data/``.  The only real subprocesses are two
+one-liner ``/bin/bash`` commands exercising the shared watchdog executor.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+import unittest
+from datetime import datetime
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from hub import scheduler_svc  # noqa: E402
+
+
+def _ts(year, month, day, hour, minute, second=0):
+    return datetime(year, month, day, hour, minute, second).timestamp()
+
+
+class _Sandbox(unittest.TestCase):
+    """Scratch run journal + clean engine state per test."""
+
+    def setUp(self):
+        root = Path(os.environ.get("TMPDIR", "/tmp")) / f"serverhub-sched-{os.getpid()}-{id(self)}"
+        root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.root = root
+        runs = mock.patch.object(scheduler_svc, "RUNS_PATH", root / "schedule-runs.jsonl")
+        runs.start()
+        self.addCleanup(runs.stop)
+        # Reset the trim time gate so no test inherits another's window.
+        for attr, value in (("_last_trim", 0.0), ("_last_minute", None)):
+            setattr(scheduler_svc, attr, value)
+        scheduler_svc._fail_counts.clear()
+        with scheduler_svc._running_guard:
+            scheduler_svc._running.clear()
+
+    def journal(self) -> list[dict]:
+        try:
+            lines = scheduler_svc.RUNS_PATH.read_text().splitlines()
+        except OSError:
+            return []
+        return [json.loads(ln) for ln in lines if ln.strip()]
+
+    def use_jobs(self, jobs: list[dict]):
+        patched = mock.patch.object(scheduler_svc, "list_jobs", lambda: [dict(j) for j in jobs])
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def capture_launches(self) -> list:
+        """Replace _execute so ticks record launches instead of running jobs."""
+        launched: list = []
+        patched = mock.patch.object(
+            scheduler_svc, "_execute",
+            lambda job, trigger: launched.append((job["id"], trigger)),
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
+        return launched
+
+
+class TickTests(_Sandbox):
+    JOB = {"id": "j1", "name": "every minute", "type": "command",
+           "cron": "* * * * *", "enabled": True, "params": {"command": "true"}}
+
+    def test_fires_matching_minute(self):
+        self.use_jobs([self.JOB])
+        self.capture_launches()
+        fired = scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30))
+        self.assertEqual(fired, ["j1"])
+
+    def test_disabled_job_never_fires(self):
+        self.use_jobs([{**self.JOB, "enabled": False}])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), [])
+
+    def test_non_matching_minute_does_not_fire(self):
+        self.use_jobs([{**self.JOB, "cron": "0 4 * * *"}])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), [])
+
+    def test_unparsable_cron_never_fires(self):
+        self.use_jobs([{**self.JOB, "cron": "banana"}])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), [])
+
+    def test_same_minute_is_evaluated_once(self):
+        self.use_jobs([self.JOB])
+        launched = self.capture_launches()
+        scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30, 2))
+        scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30, 40))
+        self.assertEqual(len(launched), 1, "one minute, one launch")
+
+    def test_missed_minutes_are_not_backfilled(self):
+        """Sleeping through five matching minutes yields one launch, not five."""
+        self.use_jobs([self.JOB])
+        launched = self.capture_launches()
+        scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30))
+        # The machine slept; the next evaluation happens five minutes later.
+        scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 35))
+        self.assertEqual(len(launched), 2, "only the two evaluated minutes fire")
+        self.assertEqual([t for _, t in launched], ["schedule", "schedule"])
+
+    def test_boot_minute_is_marked_evaluated_not_fired(self):
+        """start_scheduler's contract, tested via the same mechanism it uses."""
+        self.use_jobs([self.JOB])
+        launched = self.capture_launches()
+        now = _ts(2026, 8, 13, 3, 30)
+        scheduler_svc._last_minute = scheduler_svc._minute_key(
+            __import__("time").localtime(now))
+        self.assertEqual(scheduler_svc._tick_once(now), [])
+        self.assertEqual(launched, [])
+
+
+class ExecuteTests(_Sandbox):
+    def test_overlap_is_skipped_and_journalled(self):
+        job = {"id": "busy", "name": "busy", "type": "command",
+               "cron": "* * * * *", "enabled": True, "params": {"command": "true"}}
+        with scheduler_svc._running_guard:
+            scheduler_svc._running.add("busy")
+        entry = scheduler_svc._execute(job, "schedule")
+        self.assertEqual(entry["status"], "skipped")
+        records = self.journal()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["status"], "skipped")
+        # The stuck marker must survive: this run did not clear it.
+        self.assertTrue(scheduler_svc.is_running("busy"))
+
+    def test_command_runner_captures_output_and_succeeds(self):
+        job = {"id": "echo", "name": "echo", "type": "command", "timeout": 30,
+               "params": {"command": "echo scheduled-hello"}}
+        entry = scheduler_svc._execute(job, "manual")
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["rc"], 0)
+        self.assertIn("scheduled-hello", entry["tail"])
+        self.assertEqual(entry["trigger"], "manual")
+        self.assertFalse(scheduler_svc.is_running("echo"))
+
+    def test_timeout_is_reported_as_timeout(self):
+        job = {"id": "slow", "name": "slow", "type": "command", "timeout": 1,
+               "params": {"command": "sleep 30"}}
+        entry = scheduler_svc._execute(job, "schedule")
+        self.assertEqual(entry["rc"], 124)
+        self.assertEqual(entry["status"], "timeout")
+
+    def test_unknown_type_fails_without_raising(self):
+        job = {"id": "odd", "name": "odd", "type": "teleport", "params": {}}
+        entry = scheduler_svc._execute(job, "schedule")
+        self.assertEqual(entry["status"], "failed")
+
+    def test_runner_exception_is_contained(self):
+        job = {"id": "boom", "name": "boom", "type": "command", "params": {}}
+        with mock.patch.dict(scheduler_svc._RUNNERS,
+                             {"command": mock.Mock(side_effect=RuntimeError("kapow"))}):
+            entry = scheduler_svc._execute(job, "schedule")
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("kapow", entry["tail"])
+        self.assertFalse(scheduler_svc.is_running("boom"))
+
+
+class FailureAlertTests(_Sandbox):
+    def _failing_job(self):
+        return {"id": "flaky", "name": "flaky", "type": "command",
+                "params": {"command": "exit 3"}, "timeout": 30}
+
+    def test_alert_fires_on_second_consecutive_failure(self):
+        job = self._failing_job()
+        with mock.patch("hub.alerts.emit_alert") as emit:
+            scheduler_svc._execute(job, "schedule")
+            emit.assert_not_called()
+            scheduler_svc._execute(job, "schedule")
+            emit.assert_called_once()
+            kwargs = emit.call_args.kwargs
+        self.assertEqual(kwargs["kind"], "schedule")
+        self.assertEqual(kwargs["alert_id"], "schedule:flaky")
+        self.assertIn("flaky", kwargs["message"])
+
+    def test_success_resets_the_streak(self):
+        job = self._failing_job()
+        ok_job = {**job, "params": {"command": "true"}}
+        with mock.patch("hub.alerts.emit_alert") as emit:
+            scheduler_svc._execute(job, "schedule")
+            scheduler_svc._execute(ok_job, "schedule")
+            scheduler_svc._execute(job, "schedule")
+            emit.assert_not_called()
+
+    def test_skip_does_not_count_as_failure(self):
+        job = self._failing_job()
+        with mock.patch("hub.alerts.emit_alert") as emit:
+            scheduler_svc._execute(job, "schedule")
+            with scheduler_svc._running_guard:
+                scheduler_svc._running.add("flaky")
+            scheduler_svc._execute(job, "schedule")   # skipped
+            emit.assert_not_called()
+
+    def test_emit_alert_record_carries_name_and_event(self):
+        """The Alerts page renders a.name and a.event; emit_alert records
+        used to omit both, leaving blank cells for every scheduler alert."""
+        from hub import alerts
+
+        appended: list = []
+        with mock.patch.object(alerts, "_append_alert", appended.append), \
+             mock.patch.object(alerts, "notify_settings", lambda: {"enabled": False}):
+            alert = alerts.emit_alert(
+                kind="schedule", level="warn",
+                alert_id="schedule:flaky", message="failed twice",
+            )
+            fallback = alerts.emit_alert(
+                kind="schedule", level="warn",
+                alert_id="schedule:anon", message="m", title="",
+            )
+        self.assertEqual(alert["name"], "ServerHub scheduled task")
+        self.assertEqual(alert["event"], "problem")
+        self.assertEqual(appended[0], alert)
+        self.assertEqual(fallback["name"], "schedule:anon",
+                         "an empty title falls back to the alert id")
+
+
+class HistoryTests(_Sandbox):
+    def test_journal_is_capped(self):
+        # _TRIM_INTERVAL=0 opens the time gate on every append, so the cap
+        # itself (not the gate) is what this test exercises.
+        with mock.patch.object(scheduler_svc, "MAX_RUNS", 10), \
+             mock.patch.object(scheduler_svc, "_TRIM_SOFT_BYTES", 0), \
+             mock.patch.object(scheduler_svc, "_TRIM_INTERVAL", 0.0):
+            for i in range(25):
+                scheduler_svc._record_run({"ts": i, "job": "j", "status": "ok"})
+        records = self.journal()
+        self.assertLessEqual(len(records), 10)
+        self.assertEqual(records[-1]["ts"], 24, "newest records survive the trim")
+
+    def test_trim_is_time_gated_not_per_append(self):
+        """The full-file rewrite runs at most once per _TRIM_INTERVAL.
+
+        The previous every-N-appends rule rewrote the whole journal every 20
+        records once the file sat at the cap — for a minute-level job that is
+        a multi-MB rewrite every 20 minutes, forever (tens of MB/day of write
+        amplification on an appliance SSD).
+        """
+        with mock.patch.object(scheduler_svc, "MAX_RUNS", 5), \
+             mock.patch.object(scheduler_svc, "_TRIM_SOFT_BYTES", 0):
+            # Gate closed: appends far past the cap must not trigger a rewrite.
+            scheduler_svc._last_trim = __import__("time").time()
+            for i in range(20):
+                scheduler_svc._record_run({"ts": i, "job": "j", "status": "ok"})
+            self.assertGreater(
+                len(self.journal()), 5,
+                "no rewrite may happen while the time gate is closed",
+            )
+            # Gate open: the next append trims back to the cap.
+            scheduler_svc._last_trim = 0.0
+            scheduler_svc._record_run({"ts": 99, "job": "j", "status": "ok"})
+        records = self.journal()
+        self.assertLessEqual(len(records), 5)
+        self.assertEqual(records[-1]["ts"], 99)
+
+    def test_runs_filters_by_job_and_orders_newest_first(self):
+        for i in range(5):
+            scheduler_svc._record_run({"ts": i, "job": "a" if i % 2 else "b", "status": "ok"})
+        hits = scheduler_svc.runs("a", limit=10)
+        self.assertEqual([r["ts"] for r in hits], [3, 1])
+        self.assertEqual(scheduler_svc.runs(limit=2)[0]["ts"], 4)
+
+    def test_last_run(self):
+        self.assertIsNone(scheduler_svc.last_run("nope"))
+        scheduler_svc._record_run({"ts": 1, "job": "x", "status": "failed"})
+        scheduler_svc._record_run({"ts": 2, "job": "x", "status": "ok"})
+        self.assertEqual(scheduler_svc.last_run("x")["ts"], 2)
+
+
+class RunNowTests(_Sandbox):
+    def test_run_now_unknown_job(self):
+        with mock.patch.object(scheduler_svc, "get_job", lambda _: None):
+            self.assertFalse(scheduler_svc.run_job_now("ghost")["ok"])
+
+    def test_run_now_wait_returns_the_run(self):
+        job = {"id": "now", "name": "now", "type": "command",
+               "params": {"command": "echo ran-now"}, "timeout": 30}
+        with mock.patch.object(scheduler_svc, "get_job", lambda _: dict(job)):
+            result = scheduler_svc.run_job_now("now", wait=True)
+        self.assertTrue(result["ok"])
+        self.assertIn("ran-now", result["run"]["tail"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
