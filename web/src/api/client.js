@@ -159,6 +159,44 @@ export const changeAuthPassword = (username, currentPassword, newPassword) =>
     }),
   })
 
+// ── two-factor (TOTP) ────────────────────────────────────────────────────────
+export const verifyTotpLogin = (pending, code) => json('/api/auth/totp/verify', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ pending, code }),
+})
+export const getTotpStatus = () => json('/api/auth/totp')
+export const enrollTotp = () => json('/api/auth/totp/enroll', { method: 'POST' })
+export const confirmTotp = (code) => json('/api/auth/totp/confirm', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ code }),
+})
+export const disableTotp = (code) => json('/api/auth/totp/disable', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ code }),
+})
+export const regenerateTotpRecovery = (code) => json('/api/auth/totp/recovery', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ code }),
+})
+export const adminDisableTotp = (username) => json('/api/auth/totp/admin-disable', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ username }),
+})
+
+// ── API keys (admin browser session only; see hub/routers/api_keys_api.py) ──
+export const listApiKeys = () => json('/api/api-keys')
+export const createApiKey = ({ name, role, expiresDays }) => json('/api/api-keys', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    name,
+    role,
+    ...(expiresDays ? { expires_days: expiresDays } : {}),
+  }),
+})
+export const revokeApiKey = (id) => json(`/api/api-keys/${encodeURIComponent(id)}`, {
+  method: 'DELETE',
+})
+
 export const getStatus = () => json('/api/status')
 export const doAction = async (target, action) => {
   try {
@@ -590,6 +628,9 @@ export const putSettings = (body) =>
     body: JSON.stringify(body),
   })
 export const getMetrics = (minutes = 60) => json(`/api/metrics?minutes=${minutes}`)
+// Tiered history: backend picks the layer (raw 90s / 5m / 1h) for the span and
+// caps the point count; response adds { tier, since, until } next to points.
+export const getMetricsRange = (range) => json(`/api/metrics?range=${encodeURIComponent(range)}`)
 export const getAlerts = (limit = 50) => json(`/api/alerts?limit=${limit}`)
 // Read-only: there is deliberately no writer or clear endpoint for the audit
 // trail, so this module exposes only the reader.
@@ -657,6 +698,16 @@ export const uninstallCatalog = (id, { remove_data = true } = {}) =>
     },
     CATALOG_INSTALL_TIMEOUT,
   )
+
+// Remote template catalog source (admin action; sync may download many files)
+const CATALOG_SYNC_TIMEOUT = 120000
+export const getCatalogRemote = () => json('/api/catalog/remote')
+export const setCatalogRemoteSource = (url) =>
+  json('/api/catalog/remote', jsonBody('PUT', { url }))
+export const checkCatalogRemoteUpdates = () =>
+  json('/api/catalog/remote/check', { method: 'POST' }, CATALOG_SYNC_TIMEOUT)
+export const restoreCatalogBuiltin = (id) =>
+  json('/api/catalog/remote/restore', jsonBody('POST', { id }))
 
 // Nginx gateway. Reload can test, reload and fall back to kickstart server-side.
 const NGINX_RELOAD_TIMEOUT = 70000

@@ -35,6 +35,20 @@ CODES: dict[str, tuple[int, str]] = {
     "auth.cross_site_denied": (403, "cross-site write requests are refused"),
     "auth.bad_origin": (400, "invalid Origin header"),
     "auth.local_token_required": (400, "localhost clients require a dedicated token"),
+    # ── auth: two-factor (TOTP) ──────────────────────────────────────────────
+    "auth.totp_required": (401, "a two-factor code is required to finish signing in"),
+    "auth.bad_totp": (401, "invalid two-factor code"),
+    "auth.totp_pending_invalid": (401, "the two-factor sign-in window expired — sign in again"),
+    "auth.totp_already_enabled": (409, "two-factor authentication is already enabled"),
+    "auth.totp_not_pending": (400, "no two-factor enrollment is awaiting confirmation"),
+    "auth.totp_not_enabled": (400, "two-factor authentication is not enabled for this account"),
+    # ── auth: API keys ───────────────────────────────────────────────────────
+    "auth.bad_api_key": (401, "invalid, revoked or expired API key"),
+    "apikeys.name_required": (400, "a key name of 1-64 characters is required"),
+    "apikeys.bad_role": (400, "the key role must be admin or member"),
+    "apikeys.bad_expiry": (400, "the key expiry must be between 1 and 3650 days"),
+    "apikeys.too_many": (400, "too many API keys — revoke unused keys first"),
+    "apikeys.not_found": (404, "no such API key"),
     # ── native launcher ───────────────────────────────────────────────────────
     "launcher.browser_session_required": (401, "a signed-in browser session is required"),
     "launcher.admin_required": (403, "administrator access is required"),

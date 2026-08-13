@@ -18,7 +18,9 @@ from hub.errors import error_payload
 from hub.macos_admin import use_admin_password
 from hub.paths import LEGACY_INDEX, STATIC_DIR
 from hub.routers import router
+from hub.routers.api_keys_api import router as api_keys_router
 from hub.routers.auth_api import router as auth_router
+from hub.routers.twofa_api import router as twofa_router
 from hub.terminal_pty import terminal_websocket
 from hub.vm_console import console_websocket
 
@@ -225,6 +227,13 @@ def create_app() -> FastAPI:
         return {"ok": True, "ts": int(time.time())}
 
     app.include_router(auth_router)
+    # Self-guarded like auth_router, deliberately outside require_auth: the
+    # TOTP routes serve the pre-session sign-in step and per-account (member
+    # included) self-service, and key management must stay reachable only by
+    # an administrator's *browser* session — never by an API key, which would
+    # otherwise be able to mint more keys.  Each route enforces its own guard.
+    app.include_router(twofa_router)
+    app.include_router(api_keys_router)
     app.include_router(
         router,
         dependencies=[Depends(require_auth), Depends(admin_password_scope)],

@@ -54,6 +54,20 @@ SETUP_CLAIMED = "auth.setup.claimed"
 SETUP_REJECTED = "auth.setup.rejected"
 PASSWORD_CHANGED = "auth.password.changed"
 PASSWORD_CHANGE_DENIED = "auth.password.change_denied"
+#: Two-factor lifecycle.  Enabling, disabling and recovery-code churn change
+#: what signing in takes, and a forced removal is an administrator acting on
+#: someone else's credential — all of it leaves a trail.  The shared secret,
+#: TOTP codes and recovery codes themselves are never passed to record().
+TWOFA_ENABLED = "auth.2fa.enabled"
+TWOFA_DISABLED = "auth.2fa.disabled"
+TWOFA_FORCE_DISABLED = "auth.2fa.force_disabled"
+TWOFA_RECOVERY_REGENERATED = "auth.2fa.recovery_regenerated"
+TWOFA_RECOVERY_USED = "auth.2fa.recovery_used"
+#: API keys are standing credentials, so minting and revoking one names the
+#: operator.  Records carry the key's id/name/role — never the key itself,
+#: which exists in plaintext only inside the create response.
+APIKEY_CREATED = "apikey.created"
+APIKEY_REVOKED = "apikey.revoked"
 SHARE_CHANGED = "shares.changed"
 SYSTEM_SHARING_CHANGED = "shares.system.changed"
 #: Storage and data-protection operations.  Every one of these either exposes
