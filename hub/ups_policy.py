@@ -43,17 +43,20 @@ the 30s-cached snapshot, the small state file, and spawns workers.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 
 from hub.paths import DATA_DIR
 
 log = logging.getLogger("serverhub.ups_policy")
 
 STATE_FILE = DATA_DIR / "ups-policy-state.json"
+_LOCK_PATH = STATE_FILE.with_name(STATE_FILE.name + ".lock")
 
 PHASE_IDLE = "idle"
 PHASE_ENGAGED = "engaged"
@@ -68,6 +71,48 @@ _spawn_lock = threading.Lock()
 #: A stop/restore worker is running in this process.  Spawn guard only —
 #: correctness across restarts comes from the persisted phase, not from this.
 _worker_active = threading.Event()
+#: Re-entrancy depth for _file_lock, per thread.  Lets the sweep hold the
+#: cross-process lock across its whole decision while the nested _mutate /
+#: _engage calls on the same thread reuse it instead of self-deadlocking on a
+#: second flock of the same file.
+_lock_depth = threading.local()
+
+
+@contextmanager
+def _file_lock():
+    """Exclusive cross-process lock around every state read-modify-write.
+
+    The in-process locks are not enough on their own: a packaged
+    ServerHub.app and the LaunchAgent panel can share one ``data/`` directory
+    (the deployment ``hub/config.py`` and ``twofa_svc`` already flock for), and
+    two interpreters that each evaluate the trigger and latch independently
+    would *both* engage and *both* spawn a stop sequence.  The decision has to
+    be atomic across processes, not just across threads.  Same shape as
+    ``twofa_svc._file_lock``: a separate ``.lock`` file, because the state
+    itself is swapped in by ``os.replace`` and a lock on the old inode would
+    silently stop excluding anybody.  Re-entrant per thread so the sweep can
+    hold it across ``_engage``/``_mutate`` without a second flock.
+    """
+    depth = getattr(_lock_depth, "n", 0)
+    if depth:
+        _lock_depth.n = depth + 1
+        try:
+            yield
+        finally:
+            _lock_depth.n -= 1
+        return
+    _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _lock_depth.n = 1
+        try:
+            yield
+        finally:
+            _lock_depth.n = 0
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 # ── seams ─────────────────────────────────────────────────────────────────────
@@ -132,6 +177,11 @@ def _spawn(target) -> bool:
             return False
         _worker_active.set()
 
+    # Persist which process owns the worker so a sibling sharing data/ sees it
+    # and holds off.  Cleared in finally; a crash leaves it for _worker_busy's
+    # liveness probe to reap.
+    _mutate(lambda s: s.update(worker_owner={"pid": os.getpid(), "ts": int(time.time())}))
+
     def run():
         try:
             target()
@@ -142,6 +192,10 @@ def _spawn(target) -> bool:
             log.exception("ups policy worker failed")
         finally:
             _worker_active.clear()
+            try:
+                _mutate(lambda s: s.pop("worker_owner", None))
+            except OSError:
+                pass
 
     threading.Thread(target=run, daemon=True, name="ups-policy").start()
     return True
@@ -178,8 +232,8 @@ def _save_state(st: dict) -> None:
 
 
 def _mutate(fn) -> dict:
-    """Read-modify-write the state file under one lock."""
-    with _state_lock:
+    """Read-modify-write the state file under the cross-process + thread lock."""
+    with _file_lock(), _state_lock:
         st = _load_state()
         fn(st)
         _save_state(st)
@@ -363,7 +417,10 @@ def sweep(now: int) -> list[dict]:
     """One state-machine tick.  Returns the alerts it emitted (already
     appended + notified via alerts.emit_alert; the list is informational,
     matching what the other checks hand back to check_once)."""
-    with _sweep_lock:
+    # File lock (outer) so only one process advances the state machine per
+    # tick; thread lock (inner) so the alerter thread and POST /api/alerts/check
+    # cannot tick concurrently within this process.
+    with _file_lock(), _sweep_lock:
         return _sweep_locked(int(now))
 
 
@@ -392,15 +449,40 @@ def _sweep_locked(now: int) -> list[dict]:
 
     # engaged / restoring: latched until AC is seen, however the charge moves.
     if status.get("on_ac"):
-        if not _worker_active.is_set():
+        if not _worker_busy(st):
             _mutate(lambda s: s.update(phase=PHASE_RESTORING))
             _spawn(_run_restore_sequence)
         return []
     # Still on battery.  A panel death mid-sequence lands here on restart:
-    # phase engaged, steps not all resolved, no worker in this process yet.
-    if phase == PHASE_ENGAGED and not st.get("stop_done") and not _worker_active.is_set():
+    # phase engaged, steps not all resolved, no worker anywhere yet.
+    if phase == PHASE_ENGAGED and not st.get("stop_done") and not _worker_busy(st):
         _spawn(_run_stop_sequence)
     return []
+
+
+def _worker_busy(st: dict) -> bool:
+    """Whether a stop/restore worker is running — in this process or a sibling.
+
+    ``_worker_active`` only knows about this interpreter.  When two processes
+    share ``data/`` the owner is persisted in the state, so a sibling can see
+    it and not spawn a second sequence.  The shared-``data/`` deployment is a
+    single Mac, so ``os.kill(pid, 0)`` is a valid liveness probe; a dead owner
+    (the crash-mid-sequence case) reads as free so the next sweep resumes.
+    """
+    if _worker_active.is_set():
+        return True
+    owner = st.get("worker_owner")
+    if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int):
+        return False
+    # A claim older than a day is treated as stale even if the pid now happens
+    # to be alive (pid reuse across a reboot), so it can never wedge forever.
+    if int(time.time()) - int(owner.get("ts") or 0) > 86400:
+        return False
+    try:
+        os.kill(owner["pid"], 0)
+        return True
+    except OSError:
+        return False
 
 
 def _engage(now: int, reason: str, policy: dict) -> dict:

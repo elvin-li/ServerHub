@@ -21,9 +21,13 @@ class Action(BaseModel):
 
 
 def _visible_status(request: Request, *, force: bool = False) -> dict:
-    status = full_status(force=force)
     username = auth.request_username(request)
-    if username and not auth.is_admin(username):
+    is_admin = bool(username and auth.is_admin(username))
+    # A forced rebuild bypasses the 20s status cache (docker + launchctl +
+    # lsof).  Only an admin may pay that cost on demand; a member is served the
+    # cached snapshot regardless of ?force= so they cannot spin the host.
+    status = full_status(force=force and is_admin)
+    if username and not is_admin:
         return filter_status_for_resources(status, auth.allowed_resources(username))
     return status
 

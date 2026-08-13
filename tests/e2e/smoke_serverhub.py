@@ -819,7 +819,7 @@ def s5_member(ctx: Ctx, check: Checker):
     check.that(j.get("role") == "member" and j.get("can_manage") is False
                and j.get("resources") == ["e2e-svc"], "member 身份/资源", r.text[:200])
 
-    for path in ("/api/health", "/api/status", "/api/services", "/api/launcher"):
+    for path in ("/api/health", "/api/status", "/api/services"):
         r = m.get(path, timeout=90.0)
         check.status(r, 200, f"member 白名单 GET {path}")
     r = m.get("/api/status")
@@ -838,6 +838,8 @@ def s5_member(ctx: Ctx, check: Checker):
         ("GET", "/api/metrics"), ("GET", "/api/scheduler/jobs"),
         ("GET", "/api/alerts/channels"), ("GET", "/api/catalog"),
         ("POST", "/api/alerts/test"),
+        # /api/launcher left the member whitelist (admin install metadata).
+        ("GET", "/api/launcher"),
     ]
     for method, path in admin_only:
         r = m.request(method, path, body={} if method == "POST" else None)

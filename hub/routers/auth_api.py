@@ -81,18 +81,22 @@ def _set_session(response: Response, request: Request, username: str) -> None:
 def auth_status(request: Request):
     authenticated = auth.browser_authenticated(request)
     username = auth.request_username(request) if authenticated else ""
-    # Keep the legacy administrator name as a login-form convenience only. Once a
-    # session exists, every identity/capability field is derived from that signed
-    # session instead of from the global administrator config.
-    suggested_username = str(auth._auth_cfg().get("username") or "admin")
+    setup_required = auth.setup_required()
+    # The administrator name is only offered as a first-run convenience so the
+    # setup form can pre-fill it.  Once an account exists we do not hand the name
+    # back to an unauthenticated caller — it is not a secret, but a scanner has
+    # no reason to learn it, and a signed session already carries the real name.
+    suggested_username = ""
+    if setup_required:
+        suggested_username = str(auth._auth_cfg().get("username") or "admin")
     return {
-        "setup_required": auth.setup_required(),
+        "setup_required": setup_required,
         # Lets the setup form omit the token field entirely when this claim does
         # not need one, instead of showing a box the operator must go and fill
         # from a file for no security gain.
         "setup_token_required": auth.setup_token_required(request),
         "setup_token_mode": auth.setup_token_mode(),
-        "auth_required": auth.auth_enabled() or auth.setup_required(),
+        "auth_required": auth.auth_enabled() or setup_required,
         "authenticated": authenticated,
         "username": username or suggested_username,
         "role": auth.role_of(username) if authenticated else None,

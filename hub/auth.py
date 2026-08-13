@@ -340,7 +340,11 @@ def member_request_authorized(request: Request, username: str) -> bool:
     if request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
         return False
     path = request.url.path.rstrip("/") or "/"
-    if path in {"/api/health", "/api/status", "/api/services", "/api/launcher"}:
+    # A member sees a trimmed dashboard, their assigned services, and their own
+    # account page — nothing else.  /api/launcher is admin-only (install paths,
+    # LaunchAgent registration state, and four subprocesses per call); the
+    # member UI never requests it, so it stays off the whitelist.
+    if path in {"/api/health", "/api/status", "/api/services"}:
         return True
     parts = path.strip("/").split("/")
     return (

@@ -201,6 +201,12 @@ BACKUP_SECRETS_FILE = DATA_DIR / "backup-credentials.json"
 _PG_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 
+def _pg_conninfo_chars(value: str) -> bool:
+    """True if *value* could act as a libpq connection string rather than a
+    plain host/db/role name (contains whitespace or a ``key=value`` ``=``)."""
+    return "=" in value or any(c.isspace() for c in value)
+
+
 def _backups_cfg() -> dict:
     raw = cfg().get("backups")
     return raw if isinstance(raw, dict) else {}
@@ -230,6 +236,8 @@ def pg_targets(raw: list | None = None) -> list[dict]:
             continue
         tid = str(entry.get("id") or "").strip()
         db = str(entry.get("db") or "").strip()
+        host = str(entry.get("host") or "").strip() or "localhost"
+        user = str(entry.get("user") or "").strip() or db
         port_raw = entry.get("port", 5432)
         try:
             # None/"" mean "unset" and take the default; 0 is a typo, not a port.
@@ -240,20 +248,47 @@ def pg_targets(raw: list | None = None) -> list[dict]:
             continue
         if not 1 <= port <= 65535:
             continue
+        # pg_dump's -d/-U/-h accept a full libpq connection string ("host=...
+        # dbname=..."), whose keywords override the other flags — a value with
+        # whitespace or '=' could redirect this dump (and its resolved
+        # PGPASSWORD) to another server.  These are argv, not a shell, so this
+        # is connection redirection rather than command injection, but a real
+        # database/host/role name never needs those characters, so reject them.
+        if any(_pg_conninfo_chars(v) for v in (host, db, user)):
+            continue
         seen.add(tid)
         out.append({
             "id": tid,
-            "host": str(entry.get("host") or "").strip() or "localhost",
+            "host": host,
             "port": port,
             "db": db,
-            "user": str(entry.get("user") or "").strip() or db,
+            "user": user,
             "password_env": str(entry.get("password_env") or "").strip(),
         })
     return out
 
 
+def _ensure_secret_mode(path: Path) -> None:
+    """Tighten a plaintext-secret file to 0600 if it was left group/world
+    readable.  DATA_DIR is 0700 so the exposure is already contained, but this
+    file holds database passwords and there is no reason for it to carry looser
+    bits — matching the 0600-at-creation guarantee the other secret stores make.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return
+    if mode & 0o077:
+        try:
+            os.chmod(path, 0o600)
+            log.warning("tightened %s from %o to 0600", path.name, mode & 0o777)
+        except OSError:
+            pass
+
+
 def _pg_password(target_id: str) -> str:
     """The stored password for one pg target, or "" when none is on file."""
+    _ensure_secret_mode(BACKUP_SECRETS_FILE)
     try:
         raw = json.loads(BACKUP_SECRETS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):

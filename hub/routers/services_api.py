@@ -52,12 +52,14 @@ def _require_resource(request: Request, sid: str) -> None:
 @router.get("/api/services")
 def services_list(request: Request, force: bool = False):
     """Status with enriched management actions, filtered for member accounts."""
-    result = services_manage_svc.list_manageable(force=force)
-    username = _member_username(request)
-    if username:
+    member = _member_username(request)
+    # A member gets the cached snapshot regardless of ?force=; only an admin
+    # may force the expensive docker/launchctl rebuild (see _visible_status).
+    result = services_manage_svc.list_manageable(force=force and not member)
+    if member:
         from hub.status import filter_status_for_resources
 
-        result = filter_status_for_resources(result, auth.allowed_resources(username))
+        result = filter_status_for_resources(result, auth.allowed_resources(member))
     return result
 
 

@@ -206,11 +206,13 @@ class LauncherServiceTests(unittest.TestCase):
         self.assertEqual(body, expected)
         get_status.assert_called_once_with()
 
-    def test_http_browser_member_can_read_launcher_status(self):
+    def test_http_admin_can_read_launcher_status(self):
         expected = {"app_installed": True, "panel_running": False}
         with (
             patch("hub.auth.setup_required", return_value=False),
             patch("hub.auth.browser_authenticated", return_value=True),
+            patch("hub.auth.request_username", return_value="admin"),
+            patch("hub.auth.is_admin", return_value=True),
             patch("hub.launcher_svc.status", return_value=expected) as get_status,
         ):
             status, body = asgi_request("GET", "/api/launcher")
@@ -218,6 +220,22 @@ class LauncherServiceTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, expected)
         get_status.assert_called_once_with()
+
+    def test_http_member_cannot_read_launcher_status(self):
+        # /api/launcher left the member read whitelist: it exposes the install
+        # path and spawns four subprocesses, and the member UI never calls it.
+        with (
+            patch("hub.auth.setup_required", return_value=False),
+            patch("hub.auth.browser_authenticated", return_value=True),
+            patch("hub.auth.request_username", return_value="mom"),
+            patch("hub.auth.is_admin", return_value=False),
+            patch("hub.auth.may_use_resource", return_value=False),
+            patch("hub.launcher_svc.status", return_value={"x": 1}) as get_status,
+        ):
+            status, _ = asgi_request("GET", "/api/launcher")
+
+        self.assertEqual(status, 403)
+        get_status.assert_not_called()
 
     def test_http_invalid_local_token_cannot_access_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:

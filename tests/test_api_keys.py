@@ -153,13 +153,16 @@ class RequireAuthRoleTests(_Store):
 
     def test_member_key_gets_the_member_read_surface_only(self):
         _, token = api_keys.create("mon", "member")
-        for path in ("/api/health", "/api/status", "/api/services", "/api/launcher"):
+        for path in ("/api/health", "/api/status", "/api/services"):
             with self.subTest(allowed=path):
                 req = request(token=token, path=path)
                 self.assertTrue(auth.require_auth(req))
                 self.assertEqual(req.state.serverhub_auth_kind, "api-key-member")
         refused = [
             ("GET", "/api/settings"),
+            # /api/launcher is admin-only (install paths + subprocess fan-out);
+            # the member surface is status + services, nothing else.
+            ("GET", "/api/launcher"),
             ("GET", "/api/services/jellyfin/detail"),
             ("GET", "/api/files/list"),
             ("POST", "/api/action"),

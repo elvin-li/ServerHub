@@ -70,10 +70,11 @@ class AuthHardeningTests(unittest.TestCase):
             "/api/status",
             "/api/services",
             "/api/services/jellyfin/detail",
-            "/api/launcher",
         ]
         refused = [
             "/api/settings",
+            # Admin-only: leaks install paths and spawns four subprocesses.
+            "/api/launcher",
             "/api/files/list",
             "/api/services/jellyfin/logs",
             "/api/system/diagnostics",
