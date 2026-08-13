@@ -183,6 +183,12 @@ class MacOSLauncherContractTests(unittest.TestCase):
         )
         self.assertEqual(self.source.count("private func inferredPort("), 1)
 
+    def test_start_panel_defers_to_existing_elvin_job(self):
+        self.assertIn('"com.elvin.serverhub"', self.source)
+        self.assertIn("func loadedPanelLabel()", self.source)
+        self.assertIn("existing != Labels.panel", self.source)
+        self.assertIn("using existing \\(existing)", self.source)
+
     def test_first_launch_waits_for_health_and_shows_setup_token_locally(self):
         self.assertIn("let started = self.manager.startPanel()", self.source)
         self.assertIn("guard self.manager.waitUntilHealthy() else", self.source)

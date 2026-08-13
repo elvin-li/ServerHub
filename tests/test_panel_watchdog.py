@@ -65,6 +65,12 @@ class WatchdogScript(unittest.TestCase):
         self.assertIn("curl -sS -o /dev/null", self.text)
         self.assertNotIn("curl -fsS", self.text)
 
+    def test_overlapping_ticks_do_not_race_the_fail_counter(self):
+        # util-linux flock is not on stock macOS / launchd PATH. mkdir is.
+        self.assertIn('mkdir "$LOCK_DIR"', self.text)
+        self.assertNotIn("flock -n 9", self.text)
+        self.assertIn('trap ', self.text)
+
     def test_prefers_elvin_label_and_skips_kickstart_if_port_listens(self):
         elvin = self.text.index("com.elvin.serverhub")
         local = self.text.index("local.serverhub.panel")

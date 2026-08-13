@@ -28,6 +28,22 @@ STATE_FILE="${TMPDIR:-/tmp}/serverhub-watchdog.state"
 LOG="$HOME/Library/Logs/serverhub-watchdog.log"
 DOMAIN="gui/$(id -u)"
 
+# StartInterval + a slow probe can overlap. Two writers racing the fail
+# counter reached the threshold in one second and kickstarted a live panel.
+# launchd PATH is /usr/bin:/bin — no util-linux `flock` on macOS. mkdir is
+# atomic on APFS and is held for the life of this process via EXIT trap.
+LOCK_DIR="${STATE_FILE}.lck"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  # Stale leftover from a SIGKILL'd tick (trap never ran).
+  age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0) ))
+  if [ "$age" -le 180 ]; then
+    exit 0
+  fi
+  rmdir "$LOCK_DIR" 2>/dev/null || rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR" 2>/dev/null || exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
+
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$LOG"; }
 
 # Keep the log from growing without bound; this runs every minute forever.
@@ -35,10 +51,11 @@ if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; 
   tail -n 500 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
 fi
 
-# The panel task has used three labels across versions; act on whichever is
-# actually loaded.  Same probe order as the restart snippet in README.md.
+# Prefer the lineage that actually owns this host (com.elvin.serverhub).
+# The app still knows how to bootstrap local.serverhub; if that label is
+# listed first, a kickstart restarts the loser of the bind race.
 LABEL=""
-for candidate in local.serverhub.panel local.serverhub com.elvin.serverhub; do
+for candidate in com.elvin.serverhub local.serverhub.panel local.serverhub; do
   if launchctl print "$DOMAIN/$candidate" >/dev/null 2>&1; then
     LABEL="$candidate"
     break
@@ -51,10 +68,10 @@ if [ -z "$LABEL" ]; then
   exit 0
 fi
 
-# curl exits non-zero only when it cannot get a response at all.  A 401/403/500
-# still means a live server, so treat any status code as healthy.
-if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/api/health" 2>/dev/null \
-   || curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/api/health" 2>/dev/null; then
+# A listener on the panel port is enough: do not kickstart a serving process
+# just because /api/health was slow. curl -f treats 401 as failure, so use -sS.
+if curl -sS -o /dev/null --max-time 3 "http://127.0.0.1:$PORT/api/health" 2>/dev/null \
+   || lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   if [ -f "$STATE_FILE" ]; then
     log "panel healthy again on port $PORT ($LABEL)"
     rm -f "$STATE_FILE"

@@ -1,6 +1,8 @@
 """REST API — menubar-compatible + panel."""
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -28,17 +30,15 @@ def _visible_status(request: Request, *, force: bool = False) -> dict:
 
 @router.get("/api/health")
 def api_health(request: Request):
-    """Lightweight health for menubar / monitoring."""
-    try:
-        st = _visible_status(request)
-        return {
-            "ok": True,
-            "counts": st.get("counts"),
-            "engine_up": st.get("engine_up"),
-            "ts": st.get("ts"),
-        }
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    """Liveness only. Do not collect host status here.
+
+    The menubar, the watchdog and install.sh poll this every minute. The
+    previous body called ``full_status()`` (docker + launchctl + lsof),
+    which routinely exceeded the watchdog's 5s curl budget and made a
+    healthy panel look dead — then kickstart tore it down.
+    Counts and engine state belong on ``GET /api/status``.
+    """
+    return {"ok": True, "ts": int(time.time())}
 
 
 @router.get("/api/status")
