@@ -197,6 +197,26 @@ export const revokeApiKey = (id) => json(`/api/api-keys/${encodeURIComponent(id)
   method: 'DELETE',
 })
 
+// ── panel accounts (admin browser session only; hub/routers/accounts_api.py) ─
+export const listPanelAccounts = () => json('/api/auth/accounts')
+export const createPanelAccount = ({ username, password, resources }) =>
+  json('/api/auth/accounts', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, resources: resources || [] }),
+  })
+export const setPanelAccountResources = (username, resources) =>
+  json(`/api/auth/accounts/${encodeURIComponent(username)}/resources`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resources }),
+  })
+export const resetPanelAccountPassword = (username, newPassword) =>
+  json(`/api/auth/accounts/${encodeURIComponent(username)}/password`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_password: newPassword }),
+  })
+export const deletePanelAccount = (username) =>
+  json(`/api/auth/accounts/${encodeURIComponent(username)}`, { method: 'DELETE' })
+
 export const getStatus = () => json('/api/status')
 export const doAction = async (target, action) => {
   try {
@@ -600,6 +620,15 @@ export const removeShare = (recordName) =>
   json(`/api/shares/smb/${encodeURIComponent(recordName)}?confirm=true`, {
     method: 'DELETE',
   }, SHARING_ADMIN_TIMEOUT)
+// Per-user share access = the shared directory's filesystem ACL.
+export const getShareAcl = (path) =>
+  json(`/api/shares/acl?path=${encodeURIComponent(path)}`)
+export const setShareAcl = (path, username, level) =>
+  json('/api/shares/acl', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, username, level }),
+  }, SHARING_ADMIN_TIMEOUT)
 export const setSystemSharing = (serviceId, enabled) =>
   json(`/api/shares/system/${encodeURIComponent(serviceId)}`, {
     method: 'PUT',
@@ -651,6 +680,13 @@ export const testNotifyChannel = (id) =>
 // UPS / battery power monitoring
 export const getUps = (force = false) => json(`/api/ups${force ? '?force=true' : ''}`)
 export const putUpsSettings = (body) => json('/api/ups/settings', jsonBody('PUT', body))
+// Safe-shutdown policy: `plan` backs the settings form (unaudited read of the
+// resolved stop sequence + catalogs); `drill` is the deliberate dry-run button
+// (admin browser session, audited). Neither ever stops anything.
+export const getUpsShutdownPlan = () => json('/api/ups/shutdown/plan')
+export const runUpsShutdownDrill = () => json('/api/ups/shutdown/drill', { method: 'POST' })
+// Writes the macOS pmset UPS halt level (root via the admin-password flow).
+export const putUpsHalt = (body) => json('/api/ups/halt', jsonBody('PUT', body))
 export const getBackups = () => json('/api/backups')
 export const backupPostgres = () => json('/api/backups/postgres', { method: 'POST' })
 export const backupConfigs = () => json('/api/backups/configs', { method: 'POST' })

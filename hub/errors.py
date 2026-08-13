@@ -42,6 +42,12 @@ CODES: dict[str, tuple[int, str]] = {
     "auth.totp_already_enabled": (409, "two-factor authentication is already enabled"),
     "auth.totp_not_pending": (400, "no two-factor enrollment is awaiting confirmation"),
     "auth.totp_not_enabled": (400, "two-factor authentication is not enabled for this account"),
+    # ── auth: panel accounts (multi-user) ────────────────────────────────────
+    "accounts.bad_username": (400, "usernames are 1-64 letters, digits and . _ @ + - starting with a letter or digit"),
+    "accounts.exists": (409, "an account with this username already exists"),
+    "accounts.not_found": (404, "no such panel account"),
+    "accounts.not_member": (400, "only member accounts can be managed here"),
+    "accounts.too_many": (400, "too many panel accounts — remove unused accounts first"),
     # ── auth: API keys ───────────────────────────────────────────────────────
     "auth.bad_api_key": (401, "invalid, revoked or expired API key"),
     "apikeys.name_required": (400, "a key name of 1-64 characters is required"),
@@ -71,6 +77,11 @@ CODES: dict[str, tuple[int, str]] = {
     "shares.verification_failed": (409, "macOS did not report the requested sharing state"),
     "shares.operation_failed": (500, "the macOS sharing operation failed"),
     "shares.settings_open_failed": (500, "System Settings could not be opened on this Mac"),
+    # ── per-user share access (filesystem ACLs) ─────────────────────────────
+    "shares.acl_not_share": (400, "this directory is not a current SMB share point"),
+    "shares.acl_read_failed": (500, "the directory's access control list could not be read"),
+    "shares.acl_bad_user": (400, "unknown local macOS user"),
+    "shares.acl_bad_level": (400, "the access level must be none, read or readwrite"),
     # ── terminal ─────────────────────────────────────────────────────────────
     "terminal.timeout": (504, "command timed out after {seconds} seconds"),
     "terminal.empty_command": (400, "command is empty"),
@@ -343,6 +354,9 @@ CODES: dict[str, tuple[int, str]] = {
     "notify.secret_control_chars": (400, "{field} contains control characters (a pasted newline or tab?)"),
     # ── UPS / battery ────────────────────────────────────────────────────────
     "ups.empty_patch": (400, "the settings patch is empty"),
+    "ups.policy_no_condition": (400, "enable at least one trigger condition (battery % or minutes remaining) before enabling the shutdown policy"),
+    "ups.bad_stack_id": (400, "invalid stack or service id: {id}"),
+    "ups.halt_bad_level": (400, "haltlevel must be -1 (off) or between 5 and 95"),
     # ── rsync dry-run preview ────────────────────────────────────────────────
     "rsync.preview_busy": (409, "a dry-run preview for this job is already running; wait for it to finish"),
 }

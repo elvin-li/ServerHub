@@ -18,6 +18,7 @@ from hub.errors import error_payload
 from hub.macos_admin import use_admin_password
 from hub.paths import LEGACY_INDEX, STATIC_DIR
 from hub.routers import router
+from hub.routers.accounts_api import router as accounts_router
 from hub.routers.api_keys_api import router as api_keys_router
 from hub.routers.auth_api import router as auth_router
 from hub.routers.twofa_api import router as twofa_router
@@ -234,6 +235,9 @@ def create_app() -> FastAPI:
     # otherwise be able to mint more keys.  Each route enforces its own guard.
     app.include_router(twofa_router)
     app.include_router(api_keys_router)
+    # Same posture as key management: member accounts are credentials, so the
+    # CRUD surface demands an administrator's browser session in each route.
+    app.include_router(accounts_router)
     app.include_router(
         router,
         dependencies=[Depends(require_auth), Depends(admin_password_scope)],

@@ -63,6 +63,14 @@ TWOFA_DISABLED = "auth.2fa.disabled"
 TWOFA_FORCE_DISABLED = "auth.2fa.force_disabled"
 TWOFA_RECOVERY_REGENERATED = "auth.2fa.recovery_regenerated"
 TWOFA_RECOVERY_USED = "auth.2fa.recovery_used"
+#: Panel accounts (multi-user).  Creating, re-scoping, resetting or deleting a
+#: member account changes who can sign in and what they reach, so each names
+#: both the administrator acting (``username``) and the account acted on
+#: (``target``).  Passwords never reach record(); resource ids are public.
+ACCOUNT_CREATED = "auth.account.created"
+ACCOUNT_RESOURCES_CHANGED = "auth.account.resources_changed"
+ACCOUNT_PASSWORD_RESET = "auth.account.password_reset"
+ACCOUNT_DELETED = "auth.account.deleted"
 #: API keys are standing credentials, so minting and revoking one names the
 #: operator.  Records carry the key's id/name/role — never the key itself,
 #: which exists in plaintext only inside the create response.
@@ -98,6 +106,19 @@ WIREGUARD_PEER_ADDED = "wireguard.peer.added"
 WIREGUARD_PEER_REMOVED = "wireguard.peer.removed"
 WIREGUARD_PEER_CHANGED = "wireguard.peer.changed"
 WIREGUARD_INTERFACE = "wireguard.interface"
+#: UPS safe-shutdown policy (hub/ups_policy.py).  The policy stops and starts
+#: real workloads on its own, with nobody at the keyboard, so the trail must
+#: answer "why is this stack down / who told it to do that" afterwards: every
+#: trigger, every per-target stop/start result, the reset, each config change
+#: and each drill leaves a record.  Trigger/step/reset events carry no
+#: username — they are the machine acting on policy; the config/drill/halt
+#: events name the operator.
+UPS_POLICY_TRIGGERED = "ups.policy.triggered"
+UPS_POLICY_STEP = "ups.policy.step"
+UPS_POLICY_RESET = "ups.policy.reset"
+UPS_POLICY_CHANGED = "ups.policy.changed"
+UPS_POLICY_DRILL = "ups.policy.drill"
+UPS_HALT_CHANGED = "ups.halt.changed"
 
 #: Any field whose name contains one of these is replaced wholesale.  Substring
 #: matching rather than exact names, so ``current_password``, ``new_password``
