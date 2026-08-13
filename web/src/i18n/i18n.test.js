@@ -57,9 +57,13 @@ describe('locale dictionaries', () => {
     expect(process.execArgv).toContain('--no-experimental-webstorage')
   })
 
-  it('loads non-fallback dictionaries on demand', () => {
+  it('loads every dictionary on demand, the en fallback included', () => {
+    // en.js used to be a static import and alone was ~half of the entry-chunk
+    // budget enforced by vite.config.js; a reverted split would not fail any
+    // behavioral test, only the build gate, so pin the loading shape here too.
     const entry = readFileSync(join(HERE, 'index.js'), 'utf8')
-    expect(entry).not.toMatch(/import\s+\w+\s+from\s+['"]\.\/(?:zh-CN|ja)\.js['"]/)
+    expect(entry).not.toMatch(/import\s+\w+\s+from\s+['"]\.\/(?:en|zh-CN|ja)\.js['"]/)
+    expect(entry).toContain("import('./en.js')")
     expect(entry).toContain("import('./zh-CN.js')")
     expect(entry).toContain("import('./ja.js')")
   })

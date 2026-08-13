@@ -1,8 +1,15 @@
 import { computed, inject, ref } from 'vue'
-import en from './en.js'
 
-const MESSAGES = { en }
+const MESSAGES = {}
 const MESSAGE_LOADERS = {
+  // English is code-split exactly like the other locales. Statically imported
+  // it rendered ~110 KB into the entry chunk — nearly half of the first-paint
+  // budget vite.config.js enforces — and every dictionary edit invalidated the
+  // cached entry. t() still promises a *synchronous* English fallback for any
+  // missing key, so initializeI18n() keeps the app from mounting until this
+  // dictionary is resident: nothing renders while it is in flight, which is
+  // what makes the split safe without weakening that contract.
+  en: () => import('./en.js'),
   'zh-CN': () => import('./zh-CN.js'),
   ja: () => import('./ja.js'),
 }
@@ -142,8 +149,23 @@ export async function setLocale(id) {
 }
 
 export async function initializeI18n() {
+  // Two dictionaries gate the first render: the selected one, so the page never
+  // flashes untranslated keys, and English, so t()'s synchronous missing-key
+  // fallback holds from the very first paint — the contract that let en.js be
+  // split out of the entry chunk. Both fetches start immediately and run
+  // concurrently with the landing-chunk warm-up and the router's auth probe
+  // (see main.js), so neither adds a serial round trip before mount.
+  //
+  // A failed English fetch is deliberately non-fatal when the selected locale
+  // did load: the page still renders fully translated, and the key-alignment
+  // tests in i18n.test.js keep the fallback path unreachable in practice. If
+  // the failure was a stale chunk hash after a redeploy, lib/chunkRecovery.js
+  // reloads the shell once anyway.
+  const fallbackReady = loadMessages(FALLBACK_LOCALE).catch(() => null)
   const requested = locale.value
-  if (await setLocale(requested)) return true
+  const selectedOk = await setLocale(requested)
+  await fallbackReady
+  if (selectedOk) return true
   return setLocale(FALLBACK_LOCALE)
 }
 
@@ -174,7 +196,8 @@ function useI18n() {
 const I18N_KEY = Symbol('i18n')
 
 export function provideI18n(app) {
-  // initializeI18n() loads the selected dictionary before the app is created.
+  // initializeI18n() loads the selected and the fallback (English) dictionaries
+  // before the app is created.
   applyDocumentLocale(locale.value)
   const api = {
     locale,

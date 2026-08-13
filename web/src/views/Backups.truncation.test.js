@@ -27,6 +27,7 @@ vi.mock('../api/client', () => ({
 }))
 
 const { getBackups } = await import('../api/client')
+const { setLocale } = await import('../i18n/index.js')
 const Backups = (await import('./Backups.vue')).default
 
 function rows(n) {
@@ -40,6 +41,11 @@ function rows(n) {
 }
 
 async function render(payload) {
+  // Every dictionary is code-split, the en fallback included, so English is no
+  // longer resident just because the module graph loaded. These assertions read
+  // real interpolated copy ("Showing the 40 newest of 137 backup files…"), so
+  // pin the locale before mounting — the same convention client.test.js uses.
+  await setLocale('en')
   getBackups.mockResolvedValue(payload)
   const wrapper = mount(Backups, {
     global: {

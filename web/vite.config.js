@@ -96,14 +96,18 @@ function fingerprintServiceWorker() {
       }
       const fingerprint = hash.digest('hex').slice(0, 16)
 
-      // First-paint assets: entry + vendor chunks and all CSS. Lazy route
-      // chunks stay network-fetched so the install cache does not grow with
-      // every view in the app.
+      // First-paint assets: entry + vendor chunks, all CSS, and the English
+      // dictionary chunk. en.js is code-split out of the entry but the app
+      // refuses to mount before it is resident (see src/i18n/index.js), so an
+      // install that skipped it would boot into raw key paths when offline.
+      // zh-CN/ja stay network-fetched like lazy route chunks so the install
+      // cache does not grow with every view or locale in the app.
       const precache = outputFiles
         .filter((path) => {
           if (!path.startsWith('assets/')) return false
           const name = path.slice('assets/'.length)
           return path.endsWith('.css') || /^index-/.test(name) || /^vendor-/.test(name)
+            || /^en-/.test(name)
         })
         .map((path) => `/${path}`)
 

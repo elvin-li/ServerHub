@@ -19,8 +19,10 @@ async function bootstrap() {
   // it, this only removes the wait.
   warmLandingChunk()
 
-  // Keep English as the synchronous fallback, but fetch the selected non-English
-  // dictionary before first render so the page never flashes untranslated keys.
+  // Hold the first render until both the selected dictionary and the English
+  // fallback are resident (all three locales are code-split; see i18n/index.js),
+  // so the page never flashes raw key paths and t()'s synchronous English
+  // fallback keeps working from the first paint on.
   await initializeI18n()
 
   const app = createApp(App)
