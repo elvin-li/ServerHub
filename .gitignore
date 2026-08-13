@@ -13,6 +13,7 @@ data/.session-secret
 data/.local-client-token
 data/.setup-token
 data/service-credentials.json
+data/notify-credentials.json
 .env
 .env.*
 !.env.example
@@ -82,3 +83,10 @@ data/wg*.sync.conf
 .DS_Store
 .claude/settings.local.json
 .claude/launch.json
+
+# Crash-recovery markers written around `compose stop` during a stack backup;
+# consumed by the startup scan.  Runtime state, never source.
+data/stack-backup-inflight-*
+# pf-anchor runtime artifacts: timestamped backups and helper scripts the
+# anchor writer drops next to the live file.
+data/pf-anchor-*
