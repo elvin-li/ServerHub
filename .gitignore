@@ -14,6 +14,7 @@ data/.local-client-token
 data/.setup-token
 data/service-credentials.json
 data/notify-credentials.json
+data/backup-credentials.json
 .env
 .env.*
 !.env.example
@@ -93,3 +94,5 @@ data/pf-anchor-*
 # Templates downloaded from the remote catalog source (runtime state; the
 # shipped catalog lives in templates/).
 data/catalog-remote/
+# Rollup watermark for the tiered metrics history.
+data/metrics-rollup-state.json

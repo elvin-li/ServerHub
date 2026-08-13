@@ -18,11 +18,17 @@ These tests pin the properties that make the check trustworthy:
   recovery, and fires on first sight (a job already stale when ServerHub
   starts must not wait for a second incident);
 * the wiring in alerts.check_once() actually runs the check and persists its
-  bookkeeping, since a check that is never called tests nothing.
+  bookkeeping, since a check that is never called tests nothing;
+* the table itself comes from services.yaml (``freshness_targets:``) with no
+  built-in entries -- the four /Users/a0000 jobs it used to hardcode moved to
+  this host's live config, so the parser must reproduce the old table from
+  that config (LIVE_FRESHNESS_TARGETS below is a verbatim fixture copy of it,
+  deliberately not a read of the live file: the suite must pass anywhere,
+  and fixture-vs-live drift is the operator equivalence check's job).
 
-Everything runs against a temp directory; the real TARGETS table is only
-inspected structurally, never stat()ed, so the suite is green regardless of
-what state the host's real backups are in.
+Everything runs against a temp directory; no test stat()s the host's real
+backups or reads its real services.yaml, so the suite is green regardless of
+what state this machine is in.
 """
 from __future__ import annotations
 
@@ -39,8 +45,9 @@ BASE = Path(__file__).resolve().parents[1]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
+import hub.config  # noqa: E402
 from hub import alerts, freshness_svc  # noqa: E402
-from hub.freshness_svc import Target, check_freshness  # noqa: E402
+from hub.freshness_svc import Target, check_freshness, configured_targets  # noqa: E402
 
 #: Fixed "now" so ages are exact instead of racing the wall clock.
 NOW = 1_800_000_000
@@ -105,9 +112,15 @@ class _Harness(unittest.TestCase):
         )
 
     def sweep(self, targets, prev=None, now=NOW):
-        """``(emitted, new_state)`` for one freshness pass."""
+        """``(emitted, new_state)`` for one freshness pass.
+
+        ``targets=None`` exercises the config-reading default path.
+        """
         state: dict = {}
-        emitted = check_freshness(dict(prev or {}), state, now, targets=tuple(targets))
+        emitted = check_freshness(
+            dict(prev or {}), state, now,
+            targets=tuple(targets) if targets is not None else None,
+        )
         return emitted, state
 
     def one(self, targets, prev=None, now=NOW) -> dict:
@@ -174,6 +187,15 @@ class FreshnessTests(_Harness):
         self.write_artifact("example_x.tgz", age_hours=25)
         emitted, _ = self.sweep([self.target()])
         self.assertEqual(emitted, [])
+
+    def test_an_unconfigured_install_sweeps_quietly(self):
+        """No freshness_targets in services.yaml: the sweep is a clean no-op
+        (no alerts, no per-target state keys), not an error in the alert
+        thread of every install that never configured the watchdog."""
+        with mock.patch.object(hub.config, "cfg", lambda: {}):
+            emitted, state = self.sweep(None)
+        self.assertEqual(emitted, [])
+        self.assertEqual(state, {"_freshness_last": {}})
 
     # -- state machine ---------------------------------------------------
 
@@ -288,7 +310,8 @@ class WiringTests(_Harness):
 
     def test_check_once_runs_the_freshness_check_and_persists_state(self):
         self.write_artifact("example_x.tgz", age_hours=26, now=time.time())
-        with mock.patch.object(freshness_svc, "TARGETS", (self.target(),)):
+        with mock.patch.object(freshness_svc, "configured_targets",
+                               lambda raw=None: (self.target(),)):
             emitted = self._check_once()
         self.assertEqual([a["id"] for a in emitted], ["freshness:t1"])
         saved = json.loads((self.tmp / "alert_state.json").read_text())
@@ -302,7 +325,8 @@ class WiringTests(_Harness):
         dropped when the check raises re-announces on every sweep after the
         next restart -- the exact bug the _resource_last carry fixed."""
         self.write_artifact("example_x.tgz", age_hours=26, now=time.time())
-        with mock.patch.object(freshness_svc, "TARGETS", (self.target(),)):
+        with mock.patch.object(freshness_svc, "configured_targets",
+                               lambda raw=None: (self.target(),)):
             self._check_once()
             # Second sweep: the check itself blows up before touching state.
             with mock.patch.object(freshness_svc, "newest_mtime",
@@ -313,38 +337,97 @@ class WiringTests(_Harness):
                       "a raising sweep must not lose the stamp map")
 
 
-class RealTableTests(unittest.TestCase):
-    """Structural checks on the shipped TARGETS — no host filesystem access,
-    so these stay green whatever state the real backups are in."""
+#: Verbatim fixture copy of ``freshness_targets:`` in this host's
+#: services.yaml.  If the live file changes, change this fixture with it.
+LIVE_FRESHNESS_TARGETS = [
+    {"id": "config-backup", "label": "local.config-backup",
+     "pattern": "/Users/a0000/Services/backups/configs_*.tgz",
+     "max_age_hours": 25},
+    {"id": "immich-backup", "label": "local.immich-backup",
+     "pattern": "/Users/a0000/Services/backups/immich_*.sql.gz",
+     "max_age_hours": 25},
+    {"id": "onedrive-share-regulations",
+     "label": "local.onedrive-share-regulations",
+     "pattern": "/Users/a0000/Library/Logs/onedrive-share-regulations.log",
+     "max_age_hours": 27},
+    {"id": "gravity-rotate-logs", "label": "com.gravity.rotate-logs",
+     "pattern": "/Users/a0000/Services/gravity/logs/freshness.log",
+     "max_age_hours": 25},
+]
 
-    def test_ids_are_unique_and_key_safe(self):
-        ids = [t.id for t in freshness_svc.TARGETS]
-        self.assertEqual(len(ids), len(set(ids)))
-        for tid in ids:
-            self.assertRegex(tid, r"\A[a-z0-9-]+\Z",
-                             "ids end up in state keys and alert ids")
+#: The table hub.freshness_svc.TARGETS hardcoded before it became
+#: configuration.  The four stalled jobs of 2026-08-10, verbatim.
+OLD_HARDCODED_TABLE = (
+    Target(id="config-backup", label="local.config-backup",
+           pattern="/Users/a0000/Services/backups/configs_*.tgz",
+           max_age_hours=25.0),
+    Target(id="immich-backup", label="local.immich-backup",
+           pattern="/Users/a0000/Services/backups/immich_*.sql.gz",
+           max_age_hours=25.0),
+    Target(id="onedrive-share-regulations",
+           label="local.onedrive-share-regulations",
+           pattern="/Users/a0000/Library/Logs/onedrive-share-regulations.log",
+           max_age_hours=27.0),
+    Target(id="gravity-rotate-logs", label="com.gravity.rotate-logs",
+           pattern="/Users/a0000/Services/gravity/logs/freshness.log",
+           max_age_hours=25.0),
+)
 
-    def test_patterns_are_absolute_and_limits_sane(self):
-        for t in freshness_svc.TARGETS:
-            with self.subTest(target=t.id):
-                self.assertTrue(os.path.isabs(t.pattern),
-                                "the sweep runs from an arbitrary cwd")
-                # A daily job needs >24h of allowance or it alerts every
-                # morning before its own run; anything past 48h means a
-                # whole missed day goes unreported.
-                self.assertGreater(t.max_age_hours, 24)
-                self.assertLess(t.max_age_hours, 48)
-                self.assertTrue(t.label)
 
-    def test_the_four_stalled_jobs_of_2026_08_10_are_covered(self):
-        """The incident this module exists for: these four must stay in the
-        table unless the jobs themselves are retired."""
-        labels = {t.label for t in freshness_svc.TARGETS}
-        self.assertLessEqual(
-            {"local.config-backup", "local.immich-backup",
-             "local.onedrive-share-regulations", "com.gravity.rotate-logs"},
-            labels,
+class ConfiguredTargetsTests(unittest.TestCase):
+    """Parsing of ``freshness_targets:`` -- no host filesystem access, so
+    these stay green whatever state the real backups are in."""
+
+    def test_this_hosts_config_reproduces_the_old_hardcoded_table(self):
+        """The incident guard, restated for configuration: parsing this
+        host's live entries (fixture copy above) must yield exactly the
+        table the module used to hardcode -- the four jobs that stalled on
+        2026-08-10 included."""
+        self.assertEqual(configured_targets(LIVE_FRESHNESS_TARGETS),
+                         OLD_HARDCODED_TABLE)
+
+    def test_no_config_means_no_targets(self):
+        with mock.patch.object(hub.config, "cfg", lambda: {}):
+            self.assertEqual(configured_targets(), ())
+
+    def test_wrong_shapes_mean_no_targets(self):
+        for raw in ({}, "text", 7):
+            with self.subTest(raw=raw):
+                self.assertEqual(configured_targets(raw), ())
+
+    def test_malformed_entries_are_skipped_not_fatal(self):
+        """One mistyped row must not take the watchdog down for the rows
+        that are fine -- a watchdog that stops watching is the incident."""
+        raw = [
+            "not-a-mapping",
+            {"label": "no-id", "pattern": "/x/*.log", "max_age_hours": 25},
+            {"id": "no-pattern", "max_age_hours": 25},
+            {"id": "relative", "pattern": "logs/*.log", "max_age_hours": 25},
+            {"id": "Bad_Id", "pattern": "/x/*.log", "max_age_hours": 25},
+            {"id": "bad-age", "pattern": "/x/*.log", "max_age_hours": "soon"},
+            {"id": "zero-age", "pattern": "/x/*.log", "max_age_hours": 0},
+            {"id": "negative", "pattern": "/x/*.log", "max_age_hours": -3},
+            {"id": "good", "pattern": "/x/*.log", "max_age_hours": 25},
+            {"id": "good", "pattern": "/dup/*.log", "max_age_hours": 25},
+        ]
+        parsed = configured_targets(raw)
+        self.assertEqual([t.id for t in parsed], ["good"])
+        self.assertEqual(parsed[0].pattern, "/x/*.log")
+
+    def test_tilde_patterns_expand_to_absolute(self):
+        (t,) = configured_targets(
+            [{"id": "home", "pattern": "~/Services/backups/x_*.tgz",
+              "max_age_hours": 25}]
         )
+        self.assertTrue(os.path.isabs(t.pattern))
+        self.assertTrue(t.pattern.endswith("/Services/backups/x_*.tgz"))
+
+    def test_label_defaults_to_the_id(self):
+        (t,) = configured_targets(
+            [{"id": "nightly", "pattern": "/x/*.log", "max_age_hours": "26.5"}]
+        )
+        self.assertEqual(t.label, "nightly")
+        self.assertEqual(t.max_age_hours, 26.5)
 
 
 if __name__ == "__main__":

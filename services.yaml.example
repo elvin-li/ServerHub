@@ -29,9 +29,15 @@ settings:
     # Deprecated compatibility field. Loopback clients now require a separate
     # random bearer token stored in data/.local-client-token (mode 0600).
     allow_localhost: false
+    # Member accounts (family users with per-service grants) are appended
+    # here by the Users page as `accounts:` entries with scrypt password
+    # hashes; manage them in the UI rather than by hand.
+    # See docs/authentication.md.
 
   ui:
-    theme: auto        # auto | light | dark
+    # system | unraid | unraid-dark | omv | docker | nord | glass | mono
+    theme: system
+    # locale: en | zh-CN | ja ; density: compact | comfortable | cozy
 
   # Resource alerts.  cooldown_sec throttles repeat notifications.
   thresholds:
@@ -40,6 +46,50 @@ settings:
     mem_pct: 90
     disk_pct: 90
     cooldown_sec: 1800
+
+  # Notification channels (docs/notifications.md).  Non-secret parameters
+  # only: passwords, bot tokens and webhook URLs are stored in
+  # data/notify-credentials.json (mode 0600) via the Settings UI or API and
+  # never belong in this file.  Types: email | ntfy | telegram | discord |
+  # slack | webhook | home_assistant.  min_level: info | warn | down.
+  #   notify:
+  #     channels:
+  #       - id: ops-mail
+  #         type: email
+  #         enabled: true
+  #         min_level: warn
+  #         notify_resolve: true
+  #         host: smtp.example.com
+  #         port: 587
+  #         tls: starttls        # starttls | ssl | plain
+  #         username: serverhub@example.com
+  #         from_addr: serverhub@example.com
+  #         to: [admin@example.com]
+  #       - id: phone
+  #         type: ntfy
+  #         min_level: down
+  #         topic: my-serverhub-topic
+  # Legacy Home Assistant keys (enabled/ha_url/ha_service/include_warn/...)
+  # keep working unchanged as an implicit channel.
+
+  # UPS monitoring and safe shutdown (docs/ups.md).  Requires a USB UPS that
+  # macOS recognises (pmset).  The shutdown block is the panel's soft-landing
+  # policy; keep its trigger above the macOS `pmset -u haltlevel` threshold.
+  #   ups:
+  #     alerts_enabled: true
+  #     low_battery_pct: 20
+  #     shutdown:
+  #       enabled: false
+  #       trigger_pct: 25            # fire at <= this charge %, or null
+  #       trigger_remaining_min: null  # fire at <= this est. runtime, or null
+  #       require_both: false
+  #       stacks: all                # or an ordered list: [db, immich]
+  #       stop_scripts: []
+
+  # Optional remote template source for the app catalog
+  # (docs/app-catalog.md).  HTTPS only; the source URL is the root of trust.
+  #   catalog_remote:
+  #     url: https://templates.example.com/index.json
 
 # Order of the group headings on the Services page.  Unlisted groups are
 # appended alphabetically.  e.g. ['Apps', 'Gateway', 'Containers']
@@ -93,6 +143,79 @@ log_sources: []
 #       timeout: 300
 #       command: brew update >/dev/null 2>&1; brew outdated || echo "up to date"
 maintenance: []
+
+# Scheduled jobs run by the panel (docs/scheduler-and-backups.md).  Managed
+# on the Scheduler page.  Five-field cron, host local time; missed triggers
+# are not back-filled and an overlapping run is skipped, not queued.
+# Types: command | rsync | stack_backup | snapshot.
+#   schedules:
+#     - id: nightly-sync
+#       name: Nightly media sync
+#       type: rsync
+#       cron: '30 3 * * *'
+#       enabled: true
+#       timeout: 7200              # seconds; default 3600
+#       params:
+#         direction: push          # push | pull
+#         src: /Users/me/Services/media   # absolute path (push side is local)
+#         dest: /Volumes/Backup/media     # local path or user@host:path
+#         delete: false            # --delete stays opt-in
+#         compress: true
+#         exclude: ['.cache']
+#     - id: appdata-weekly
+#       name: Weekly Immich backup
+#       type: stack_backup
+#       cron: '0 4 * * 0'
+#       enabled: true
+#       params: { stack_id: immich, retain: 8 }
+#     - id: hourly-snapshot
+#       name: Hourly APFS snapshot
+#       type: snapshot
+#       cron: '0 * * * *'
+#       enabled: true
+#       params: {}
+schedules: []
+
+# One-click backups on the Backups page (docs/scheduler-and-backups.md).
+#
+# `postgres` lists pg_dump targets; each entry writes a custom-format dump
+# named <id>_<stamp>.sql.bak into ~/Services/backups (14 copies kept, restore
+# hint shown beside the artifact).  Passwords never go in this file: they are
+# read from data/backup-credentials.json ({"<id>": {"password": "..."}},
+# mode 0600) or, with `password_env`, from that environment variable.  With
+# no entries the PostgreSQL button reports "not configured".
+#
+# `config_archive` tunes the config tarball, which always contains
+# services.yaml plus every ~/Library/LaunchAgents plist whose filename
+# contains a built-in keyword (serverhub, config-backup, services-logrotate,
+# homeassistant, filebrowser, cloudflare, immich).  `agent_keywords` adds
+# keywords for your own agents (built-ins cannot be removed); `extra_paths`
+# archives additional files (absolute paths; missing ones are skipped).
+#   backups:
+#     postgres:
+#       - id: myapp
+#         host: localhost
+#         port: 5432
+#         db: myapp
+#         user: myapp
+#         # password_env: MYAPP_PGPASSWORD
+#     config_archive:
+#       agent_keywords: [myapp, nightly-sync]
+#       extra_paths:
+#         - ~/Services/myapp/docker-compose.yml
+backups: {}
+
+# Artifact freshness watchdog (docs/scheduler-and-backups.md).  Alerts at
+# level `down` when the newest file matching `pattern` (absolute glob) is
+# older than `max_age_hours` — catching scheduled jobs that launchd still
+# lists as loaded but that never fire.  Give each daily job the cadence plus
+# slack for its own runtime: ~25 for a fast job, ~27 for one that runs long.
+#   freshness_targets:
+#     - id: config-backup
+#       label: local.config-backup
+#       pattern: ~/Services/backups/configs_*.tgz
+#       max_age_hours: 25
+freshness_targets: []
 
 # Multi-port projects that are not containers, grouped as one card.
 # "Adopt" on an auto-discovered service writes its entry here (with an

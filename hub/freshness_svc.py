@@ -16,14 +16,24 @@ second line of defense behind the plist/config archive kept by
 ``hub.backups`` (first line: the damage is recoverable; this line: the damage
 is *noticed*).
 
-Extending the table
+Configuring targets
 -------------------
-Add a :class:`Target` to :data:`TARGETS`.  Pick the one file the job itself
-touches on **every** run (its product, or a log it appends), and set
-``max_age_hours`` to the cadence plus enough slack for runtime drift -- a
-daily job that can run for two hours needs ~27h, one that finishes in seconds
-needs ~25h.  Patterns go through :func:`glob.glob`, so both literal paths and
-wildcards work; the newest match wins.
+Targets live in services.yaml under a top-level ``freshness_targets:`` list,
+hot-reloaded like the rest of the config.  There are no built-in entries:
+which artifact proves which job ran is install-specific by nature, and a
+shipped default would watch files that exist on exactly one machine::
+
+    freshness_targets:
+      - id: config-backup           # state key / alert id `freshness:<id>`
+        label: local.config-backup  # launchd label, shown in alert prose
+        pattern: ~/Services/backups/configs_*.tgz
+        max_age_hours: 25
+
+Pick the one file the job itself touches on **every** run (its product, or a
+log it appends), and set ``max_age_hours`` to the cadence plus enough slack
+for runtime drift -- a daily job that can run for two hours needs ~27h, one
+that finishes in seconds needs ~25h.  Patterns go through :func:`glob.glob`,
+so both literal paths and wildcards work; the newest match wins.
 
 The sweep itself is wired into :func:`hub.alerts.check_once`, runs on the
 alerter thread at ``alert_interval``, and follows the same state-machine
@@ -35,8 +45,12 @@ not a reason to stay silent about a job that is not running).
 from __future__ import annotations
 
 import glob
+import logging
 import os
+import re
 from dataclasses import dataclass
+
+log = logging.getLogger("serverhub.freshness")
 
 
 @dataclass(frozen=True)
@@ -51,50 +65,50 @@ class Target:
     max_age_hours: float
 
 
-#: Job -> artifact map.  Every entry states *which file* proves the job ran and
-#: why that file, because the wrong probe here silently monitors nothing.
-TARGETS: tuple[Target, ...] = (
-    # backup-configs.sh (04:05) wraps hub.backups.backup_configs(), which writes
-    # a timestamped configs_YYYYmmdd_HHMMSS.tgz into Services/backups.  Manual
-    # archives (configs_preimmich_...) also match; they are rare, and a fresh
-    # manual archive genuinely means a fresh config copy exists.
-    Target(
-        id="config-backup",
-        label="local.config-backup",
-        pattern="/Users/a0000/Services/backups/configs_*.tgz",
-        max_age_hours=25.0,
-    ),
-    # backup-db.sh (03:37) gzips a pg_dump to immich_YYYYmmdd_HHMMSS.sql.gz in
-    # the same directory.  Its immich_backup.err scratch file does not match
-    # this suffix, so a run that only managed to write errors stays stale.
-    Target(
-        id="immich-backup",
-        label="local.immich-backup",
-        pattern="/Users/a0000/Services/backups/immich_*.sql.gz",
-        max_age_hours=25.0,
-    ),
-    # regulations_update.py (03:30) has no single product file -- it upserts
-    # into a sqlite DB that other backfill agents also write, so the DB mtime
-    # cannot distinguish this job from its siblings.  Its launchd stdout log is
-    # per-job and appended on every run.  The run may last up to 2h (perl
-    # alarm 7200), so the last-append time drifts run to run; 27h keeps ~1h of
-    # margin over the worst case (yesterday finished late, today early).
-    Target(
-        id="onedrive-share-regulations",
-        label="local.onedrive-share-regulations",
-        pattern="/Users/a0000/Library/Logs/onedrive-share-regulations.log",
-        max_age_hours=27.0,
-    ),
-    # rotate_logs.sh (04:15) appends a completion marker to freshness.log as
-    # its final line on every run.  Its launchd .out file is useless as a
-    # probe: a clean run prints nothing, so the .out mtime never moves.
-    Target(
-        id="gravity-rotate-logs",
-        label="com.gravity.rotate-logs",
-        pattern="/Users/a0000/Services/gravity/logs/freshness.log",
-        max_age_hours=25.0,
-    ),
-)
+#: ids end up in state keys, alert ids and alert prose, so they keep the shape
+#: the original hardcoded table used.
+_ID_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,63}\Z")
+
+
+def configured_targets(raw: list | None = None) -> tuple[Target, ...]:
+    """The job -> artifact map from services.yaml (``freshness_targets:``).
+
+    Malformed entries are skipped with a log line rather than raising: this
+    runs on the alert thread, and one mistyped row must not silently disable
+    the watchdog for every other job (check_once would swallow the exception,
+    and a watchdog that stops watching is the incident all over again).
+    Skipped means: id missing/duplicate/oddly shaped, pattern not absolute
+    once ``~`` is expanded, or max_age_hours not a positive number.
+    """
+    if raw is None:
+        from hub.config import cfg
+        raw = cfg().get("freshness_targets")
+    if not isinstance(raw, list):
+        return ()
+    out: list[Target] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            log.warning("freshness_targets: skipping non-mapping entry %r", entry)
+            continue
+        tid = str(entry.get("id") or "").strip()
+        pattern = os.path.expanduser(str(entry.get("pattern") or "").strip())
+        try:
+            max_age = float(entry.get("max_age_hours") or 0)
+        except (TypeError, ValueError):
+            max_age = 0.0
+        if (not _ID_RE.fullmatch(tid) or tid in seen
+                or not os.path.isabs(pattern) or max_age <= 0):
+            log.warning("freshness_targets: skipping malformed entry %r", entry)
+            continue
+        seen.add(tid)
+        out.append(Target(
+            id=tid,
+            label=str(entry.get("label") or "").strip() or tid,
+            pattern=pattern,
+            max_age_hours=max_age,
+        ))
+    return tuple(out)
 
 #: While a target stays stale, remind at most this often.  Deliberately not the
 #: SMART ``cooldown_sec`` (30min): a missed daily backup stays missed for ~24h
@@ -141,7 +155,7 @@ def check_freshness(prev: dict, new_state: dict, now: int,
     emitted: list = []
     n = _alerts.notify_settings()
 
-    for t in targets if targets is not None else TARGETS:
+    for t in targets if targets is not None else configured_targets():
         key = f"freshness:{t.id}"
         limit_sec = t.max_age_hours * 3600
         mt = newest_mtime(t.pattern)

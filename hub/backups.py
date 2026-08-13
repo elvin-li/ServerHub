@@ -164,23 +164,152 @@ def _discard(dest: Path) -> None:
         pass
 
 
+# ── configurable backup targets (services.yaml `backups:`) ───────────────────
+#
+# The machine-specific parts of the one-click backups used to be hardcoded
+# here: the pg_dump connection named one specific TeslaMate database (with a
+# literal fallback password), and the config archive carried two compose paths
+# from this host's ~/Services.  On any other install those were dead code at
+# best and a dump of a database that does not exist at worst.  They are
+# configuration now:
+#
+#   backups:
+#     postgres:                 # pg_dump targets, one artefact per entry
+#       - id: teslamate         # names the artefact: <id>_<stamp>.sql.bak
+#         host: localhost
+#         port: 5432            # the default port is omitted from argv
+#         db: teslamate
+#         user: teslamate       # defaults to db
+#         password_env: VAR     # optional, see the password note below
+#     config_archive:
+#       agent_keywords: [...]   # merged after DEFAULT_AGENT_KEYWORDS
+#       extra_paths: [...]      # archived beside services.yaml
+#
+# Passwords never enter services.yaml: that file is returned verbatim by the
+# settings export and archived verbatim by backup_configs, so a password in it
+# would leak into every copy.  Following the split notify_channels.py uses
+# (non-secret parameters in services.yaml, secrets in a 0600 data/ file), a
+# target's password is looked up in data/backup-credentials.json
+# (``{"<id>": {"password": "..."}}``), then in the environment variable named
+# by ``password_env``, and otherwise left to the ambient environment
+# (PGPASSWORD / ~/.pgpass), which is what unconfigured installs relied on.
+
+BACKUP_SECRETS_FILE = DATA_DIR / "backup-credentials.json"
+
+#: Target ids become filenames and prune globs, so the charset is pinned the
+#: same way volume names are below: no separators, no wildcards.
+_PG_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+
+def _backups_cfg() -> dict:
+    raw = cfg().get("backups")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _config_archive_cfg() -> dict:
+    raw = _backups_cfg().get("config_archive")
+    return raw if isinstance(raw, dict) else {}
+
+
+def pg_targets(raw: list | None = None) -> list[dict]:
+    """Validated ``backups.postgres`` entries, in file order.
+
+    Malformed entries are dropped one by one rather than raising: one mistyped
+    row must not take the dump of a healthy target (or the whole Backups page)
+    down with it.  Defaults follow pg_dump's own: localhost, port 5432, and
+    the role named after the database.
+    """
+    if raw is None:
+        raw = _backups_cfg().get("postgres")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        tid = str(entry.get("id") or "").strip()
+        db = str(entry.get("db") or "").strip()
+        port_raw = entry.get("port", 5432)
+        try:
+            # None/"" mean "unset" and take the default; 0 is a typo, not a port.
+            port = int(5432 if port_raw in (None, "") else port_raw)
+        except (TypeError, ValueError):
+            continue
+        if not _PG_ID_RE.fullmatch(tid) or tid in seen or not db:
+            continue
+        if not 1 <= port <= 65535:
+            continue
+        seen.add(tid)
+        out.append({
+            "id": tid,
+            "host": str(entry.get("host") or "").strip() or "localhost",
+            "port": port,
+            "db": db,
+            "user": str(entry.get("user") or "").strip() or db,
+            "password_env": str(entry.get("password_env") or "").strip(),
+        })
+    return out
+
+
+def _pg_password(target_id: str) -> str:
+    """The stored password for one pg target, or "" when none is on file."""
+    try:
+        raw = json.loads(BACKUP_SECRETS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    entry = raw.get(target_id) if isinstance(raw, dict) else None
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("password") or "")
+
+
+def _pg_dump_argv(target: dict, dest: Path) -> list[str]:
+    """The pg_dump invocation for one target.
+
+    Split out so tests (and an operator comparing against an older install)
+    can inspect the exact command without running anything.
+    """
+    argv = ["pg_dump", "-h", target["host"]]
+    if target["port"] != 5432:
+        # The default port is omitted rather than pinned so PGPORT and
+        # ~/.pgpass keep meaning what they meant before this was configurable.
+        argv += ["-p", str(target["port"])]
+    argv += ["-U", target["user"], "-d", target["db"],
+             "-F", "c", "-b", "-f", str(dest)]
+    return argv
+
+
+def _pg_env(target: dict) -> dict:
+    """Subprocess environment for one dump: maintenance_env over os.environ,
+    plus the target's password resolved per the note above."""
+    env = dict(os.environ)
+    env.update({
+        k: str(v)
+        for k, v in ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()
+    })
+    password = _pg_password(target["id"])
+    if not password and target["password_env"]:
+        password = str(env.get(target["password_env"]) or "")
+    if password:
+        env["PGPASSWORD"] = password
+    return env
+
+
 #: How to put each kind of artefact back, keyed by a filename test.
 #:
-#: A backup nobody knows how to restore is a filesystem full of reassurance.  None
-#: of these artefacts had a restore path anywhere -- no code, no script, no note --
-#: and the TeslaMate one actively misleads: `pg_dump -F c` writes a *custom-format*
-#: archive, so the `.sql.bak` name points a restorer at `psql`, which cannot read
-#: it.  The command belongs next to the file rather than in someone's memory.
+#: A backup nobody knows how to restore is a filesystem full of reassurance.
+#: None of these artefacts had a restore path anywhere -- no code, no script,
+#: no note -- and the pg dumps actively mislead: `pg_dump -F c` writes a
+#: *custom-format* archive, so the `.sql.bak` name points a restorer at
+#: `psql`, which cannot read it.  The command belongs next to the file rather
+#: than in someone's memory.
 #:
-#: Hints are commands, deliberately not run by anything here: restoring overwrites
-#: live data and is the operator's decision, not a button.
+#: Hints are commands, deliberately not run by anything here: restoring
+#: overwrites live data and is the operator's decision, not a button.  This
+#: table holds the fixed hints; hints for configured pg targets are derived
+#: from their connection parameters in :func:`restore_hint`.
 _RESTORE_HINTS: tuple[tuple[str, str], ...] = (
-    (
-        "teslamate_",
-        # -F c archive: pg_restore, never psql. --clean --if-exists so a re-run
-        # into a populated database replaces rather than collides.
-        "pg_restore -h localhost -U teslamate -d teslamate --clean --if-exists {path}",
-    ),
     (
         "immich_",
         # Plain SQL, gzipped, PG18 on 5433, and it carries CREATE EXTENSION vchord,
@@ -201,11 +330,21 @@ def restore_hint(name: str) -> str:
     """The command that puts *name* back, or "" when this module cannot say.
 
     Matched on the filename so it also answers for artefacts written before this
-    existed, and for the ones the neighbouring scripts produce.
+    existed, and for the ones the neighbouring scripts produce.  pg dumps match
+    on their target id, so the hint carries the same host/user/db the dump was
+    taken with -- and an artefact whose target has since left the config gets
+    "" rather than a guessed connection.
     """
     for prefix, template in _RESTORE_HINTS:
         if name.startswith(prefix):
             return template
+    for target in pg_targets():
+        if name.startswith(f"{target['id']}_"):
+            port = "" if target["port"] == 5432 else f" -p {target['port']}"
+            return (
+                f"pg_restore -h {target['host']}{port} -U {target['user']} "
+                f"-d {target['db']} --clean --if-exists {{path}}"
+            )
     return ""
 
 
@@ -259,26 +398,45 @@ def list_backups(limit: int = 40) -> list:
 
 
 def backup_postgres() -> dict:
-    """Dump TeslaMate DB (native PG17)."""
+    """Dump every configured PostgreSQL target (``backups.postgres``)."""
     with _only_one("postgres"):
         return _backup_postgres()
 
 
 def _backup_postgres() -> dict:
+    targets = pg_targets()
+    if not targets:
+        # Not an exception: an install with no pg targets is a normal install,
+        # and the Backups page should report a sentence, not a stack trace.
+        return {
+            "ok": False,
+            "error": "not_configured",
+            "message": "no PostgreSQL dump targets configured "
+                       "(services.yaml: backups.postgres)",
+        }
+    results = [_dump_one_postgres(t) for t in targets]
+    if len(results) == 1:
+        # The single-target answer keeps its historical shape verbatim; every
+        # existing consumer (Backups page, backup-pg maintenance task) reads it.
+        return results[0]
+    ok = all(r.get("ok") for r in results)
+    return {
+        "ok": ok,
+        "targets": results,
+        "message": "; ".join(
+            f"{t['id']}: {'ok' if r.get('ok') else (r.get('message') or 'fail')}"
+            for t, r in zip(targets, results)
+        )[:500],
+    }
+
+
+def _dump_one_postgres(target: dict) -> dict:
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    dest = _private_dest(BACKUP_ROOT / f"teslamate_{stamp}.sql.bak")
-    env = dict(os.environ)
-    env.update({
-        k: str(v)
-        for k, v in ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()
-    })
-    env.setdefault("PGPASSWORD", os.environ.get("PGPASSWORD", "teslamate_secret"))
-    cmd = [
-        "pg_dump", "-h", "localhost", "-U", "teslamate", "-d", "teslamate",
-        "-F", "c", "-b", "-f", str(dest),
-    ]
+    dest = _private_dest(BACKUP_ROOT / f"{target['id']}_{stamp}.sql.bak")
+    cmd = _pg_dump_argv(target, dest)
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                           env=_pg_env(target))
         # Size, not existence: the destination was pre-created 0600 so pg_dump
         # could not publish it, which means it exists even when the dump failed.
         size = _written_bytes(dest)
@@ -286,7 +444,7 @@ def _backup_postgres() -> dict:
         if not ok:
             _discard(dest)
         else:
-            _prune("teslamate_*.sql.bak")
+            _prune(f"{target['id']}_*.sql.bak")
         return {
             "ok": ok,
             "path": str(dest) if ok else None,
@@ -299,7 +457,8 @@ def _backup_postgres() -> dict:
 
 
 #: Substrings that pick which ~/Library/LaunchAgents/*.plist go into a config
-#: archive.
+#: archive, before the install's own additions from services.yaml
+#: (``backups.config_archive.agent_keywords``) are merged in.
 #:
 #: This list is a forensics tool, not just a restore convenience.  On the night
 #: of 2026-08-10 an overnight session rewrote several agent plists and broke
@@ -307,22 +466,65 @@ def _backup_postgres() -> dict:
 #: local.immich-backup, com.gravity.rotate-logs) matched the five keywords this
 #: started with, so no archive held a pre-damage copy to diff against --
 #: ironically including the plist of the agent that runs this very backup.
-#: Every user-managed agent on the host must match.  Vendor-generated plists
-#: (homebrew.mxcl.*, com.google.*) stay out deliberately: brew and Google
-#: rewrite them on upgrade and they carry no local edits worth archiving.
-#: ``*.plist.bak.<stamp>`` clutter is excluded by the ``*.plist`` glob at the
-#: call site, not by this list.
-_AGENT_KEYWORDS = (
-    "serverhub", "homeassistant", "filebrowser", "onedrive", "cloudflare",
-    "config-backup", "immich", "gravity", "sgcc", "kiro-go", "kidsmusic",
-    "esphome", "sub2api", "system-nginx", "services-logrotate", "cf-ips",
-    "remote-desktop", "server-autostart",
+#: Every user-managed agent on the host must match.  The built-ins cover the
+#: panel's own agents and the products it integrates with (its backup and
+#: log-rotation agents, Home Assistant, FileBrowser, cloudflared, Immich);
+#: agents named after one install's private apps belong in agent_keywords,
+#: not here.  Vendor-generated plists (homebrew.mxcl.*, com.google.*) stay
+#: out deliberately: brew and Google rewrite them on upgrade and they carry
+#: no local edits worth archiving.  ``*.plist.bak.<stamp>`` clutter is
+#: excluded by the ``*.plist`` glob at the call site, not by this list.
+DEFAULT_AGENT_KEYWORDS: tuple[str, ...] = (
+    "serverhub", "config-backup", "services-logrotate",
+    "homeassistant", "filebrowser", "cloudflare", "immich",
 )
 
 
-def _wanted_agent(name: str) -> bool:
+def agent_keywords() -> tuple[str, ...]:
+    """Built-in keywords plus the install's own; defaults first, deduplicated.
+
+    Config can only widen the manifest, never narrow it: the defaults cover
+    the panel's own agents (including the one that runs this very backup), and
+    a key that could remove them would let a single bad edit re-open the
+    2026-08-10 blind spot.  Non-string entries are ignored for the same
+    reason: a malformed list must degrade to the defaults, not to nothing.
+    """
+    merged = list(DEFAULT_AGENT_KEYWORDS)
+    extras = _config_archive_cfg().get("agent_keywords")
+    if isinstance(extras, list):
+        for kw in extras:
+            if isinstance(kw, str):
+                kw = kw.strip()
+                if kw and kw not in merged:
+                    merged.append(kw)
+    return tuple(merged)
+
+
+def config_archive_extra_paths() -> list[Path]:
+    """Absolute paths from ``backups.config_archive.extra_paths``.
+
+    Relative entries are dropped: tar archives members under the path given,
+    and a member relative to whatever cwd the panel started from is a file
+    nobody can predictably restore.  Missing files are kept and filtered at
+    archive time like every other member, so a temporarily absent compose
+    file does not silently fall out of the configuration.
+    """
+    out: list[Path] = []
+    raw = _config_archive_cfg().get("extra_paths")
+    if not isinstance(raw, list):
+        return out
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        path = Path(os.path.expanduser(entry.strip()))
+        if path.is_absolute() and path not in out:
+            out.append(path)
+    return out
+
+
+def _wanted_agent(name: str, keywords: tuple[str, ...] | None = None) -> bool:
     """Whether a LaunchAgents filename belongs in a config archive."""
-    return any(k in name for k in _AGENT_KEYWORDS)
+    return any(k in name for k in (agent_keywords() if keywords is None else keywords))
 
 
 def backup_configs() -> dict:
@@ -665,11 +867,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
 
 def _backup_configs() -> dict:
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    paths = [
-        CONFIG_FILE,
-        Path.home() / "Services" / "teslamate" / "docker-compose.yml",
-        Path.home() / "Services" / "music-assistant" / "docker-compose.yml",
-    ]
+    paths = [CONFIG_FILE, *config_archive_extra_paths()]
     # include launchagents selectively
     agents = Path.home() / "Library" / "LaunchAgents"
     if agents.is_dir():
