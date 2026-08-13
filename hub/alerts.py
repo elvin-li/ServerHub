@@ -19,6 +19,8 @@ MAX_ALERTS = 500
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
 _stop = threading.Event()
+_appends_since_trim = 0
+_TRIM_EVERY = 50
 
 
 def _load_state() -> dict:
@@ -36,10 +38,15 @@ def _save_state(st: dict):
 
 
 def _append_alert(alert: dict):
+    global _appends_since_trim
     ALERTS_FILE.parent.mkdir(exist_ok=True)
     with _lock:
         with open(ALERTS_FILE, "a") as f:
             f.write(json.dumps(alert, ensure_ascii=False) + "\n")
+        _appends_since_trim += 1
+        if _appends_since_trim < _TRIM_EVERY:
+            return
+        _appends_since_trim = 0
         try:
             lines = ALERTS_FILE.read_text().splitlines()
             if len(lines) > MAX_ALERTS:
@@ -464,6 +471,10 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
     if not isinstance(last_fire, dict):
         last_fire = {}
     new_last = dict(last_fire)
+    last_details = prev.get("_smart_detail")
+    if not isinstance(last_details, dict):
+        last_details = {}
+    new_details = dict(last_details)
     n = notify_settings()
     emitted: list = []
 
@@ -516,7 +527,20 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
             # state file happening to be new -- fresh install, wiped data/, first
             # boot after the disk was added -- is not a reason to stay silent until
             # something else changes.
-            if old != level or (now - last_t) >= cooldown:
+            #
+            # Warn-level counters (reallocated=55 on a PASSED drive) are
+            # informational.  Re-announcing the same number every cooldown
+            # writes alerts.jsonl + state and trains the operator to ignore
+            # disk alerts.  Re-fire warn only when the detail changes
+            # (growth).  ``down`` still uses the cooldown so a dying disk
+            # does not go quiet after the first ping.
+            detail = " · ".join(d for d, _ in reasons)
+            new_details[key] = detail
+            # Missing stamp is not growth: first-seen fires via `old != level`,
+            # and a freshly upgraded state file must not re-siren a known warn.
+            grew = key in last_details and last_details[key] != detail
+            fatal = level == "down"
+            if old != level or grew or (fatal and (now - last_t) >= cooldown):
                 title, template = _SMART_ALERT_TEXT[level]
                 message = template.format(
                     label=label, body="; ".join(s for _, s in reasons)
@@ -529,7 +553,7 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
                     "group": "storage",
                     "level": level,
                     "event": "problem",
-                    "detail": " · ".join(d for d, _ in reasons),
+                    "detail": detail,
                     "message": message,
                 }
                 _append_alert(alert)
@@ -559,10 +583,12 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
             # Drop the cooldown stamp with the alert it belonged to, so the map does
             # not accumulate an entry per disk ever seen.
             new_last.pop(key, None)
+            new_details.pop(key, None)
             if n.get("enabled") and n.get("notify_resolve", True):
                 send_ha_notify(title, alert["message"])
 
     new_state["_smart_last"] = new_last
+    new_state["_smart_detail"] = new_details
     return emitted
 
 
@@ -590,6 +616,8 @@ def check_once(force_status: bool = False) -> list:
         new_state["_resource_last"] = prev["_resource_last"]
     if isinstance(prev.get("_smart_last"), dict):
         new_state["_smart_last"] = prev["_smart_last"]
+    if isinstance(prev.get("_smart_detail"), dict):
+        new_state["_smart_detail"] = prev["_smart_detail"]
     for sid, s in services.items():
         state = s.get("state", "unknown")
         new_state[sid] = state

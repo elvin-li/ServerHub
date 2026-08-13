@@ -196,7 +196,7 @@ class FalsePositiveTests(SmartAlertCase):
         emitted, state = self.sweep([opaque])
         self.assertEqual(emitted, [])
         self.assertEqual(
-            [k for k in state if k != "_smart_last"], [],
+            [k for k in state if k not in ("_smart_last", "_smart_detail")], [],
             "an unreadable disk must not get a state key either -- otherwise the "
             "next readable sweep looks like a recovery from a fault it never had",
         )
@@ -274,6 +274,33 @@ class StateMachineTests(SmartAlertCase):
         self.assertEqual([a["level"] for a in emitted], ["down"])
         self.assertEqual(state["_smart_last"]["SN-INTERNAL"], now)
 
+    def test_an_unchanged_warn_is_not_re_announced_after_cooldown(self):
+        """Stable reallocated=55 is something to watch, not a 30-minute siren.
+
+        The real external SSD sits at this count permanently. Re-firing the
+        same warn every cooldown wrote alerts.jsonl + state for no new
+        information and trained the operator to ignore disk alerts.
+        """
+        now = 1_800_000
+        first, state = self.sweep([REAL_EXTERNAL_DISK], prev={}, now=now)
+        self.assertEqual([a["level"] for a in first], ["warn"])
+        later, _ = self.sweep(
+            [REAL_EXTERNAL_DISK],
+            prev=state,
+            now=now + 10_000,
+        )
+        self.assertEqual(later, [])
+
+    def test_a_growing_warn_is_re_announced(self):
+        now = 1_800_000
+        first, state = self.sweep([REAL_EXTERNAL_DISK], prev={}, now=now)
+        self.assertEqual([a["level"] for a in first], ["warn"])
+        grown = dict(REAL_EXTERNAL_DISK)
+        grown["smart"] = dict(REAL_EXTERNAL_DISK["smart"], reallocated="60")
+        later, _ = self.sweep([grown], prev=state, now=now + 60)
+        self.assertEqual([a["level"] for a in later], ["warn"])
+        self.assertIn("60", later[0]["detail"])
+
     def test_recovery_is_announced_and_drops_the_cooldown_stamp(self):
         """Otherwise ``_smart_last`` grows for every disk ever seen."""
         prev = {"smart:SN-INTERNAL": "down", "_smart_last": {"SN-INTERNAL": 1}}
@@ -281,6 +308,7 @@ class StateMachineTests(SmartAlertCase):
         self.assertEqual([(a["level"], a["event"]) for a in emitted],
                          [("ok", "resolved")])
         self.assertNotIn("SN-INTERNAL", state["_smart_last"])
+        self.assertNotIn("SN-INTERNAL", state.get("_smart_detail") or {})
 
     def test_the_cooldown_map_survives_a_full_sweep(self):
         """``check_once`` rebuilds its state dict from empty every pass.
@@ -314,7 +342,7 @@ class SwitchTests(SmartAlertCase):
         with mock.patch.object(alerts, "_resource_thresholds", lambda: thresholds):
             emitted, state = self.sweep([disk(health="FAILED!")])
         self.assertEqual(emitted, [])
-        self.assertEqual([k for k in state if k != "_smart_last"], [])
+        self.assertEqual([k for k in state if k not in ("_smart_last", "_smart_detail")], [])
 
     def test_the_resource_switch_does_not_silence_it(self):
         """``enabled`` mutes CPU/memory/disk-usage noise during a big build.
