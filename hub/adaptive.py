@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.host_address import host_ip as resolved_host_ip
+from hub.service_signatures import identify
 from hub.util import port_open, sh
 
 # Common flags that take a port as next argument
@@ -473,23 +474,44 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
     for port, info in sorted(by_port.items()):
         if any(info["proc"].lower() in n.lower() for n in known_names):
             continue
-        if port in webish or port >= 8000:
+        # Signature library: a recognised daemon gets its real name, and its
+        # http flag beats the port-number guess in both directions — Redis on
+        # 8079 gets no link, Syncthing's GUI on 8384 gets one.
+        sig = identify(info["proc"], port)
+        sig_http = sig.get("http") if sig else None
+        if sig_http is False:
+            url = None
+        elif sig_http is True and sig.get("confidence") == "high":
+            url = f"https://{hip}:{port}" if port in (443, 8443) else f"http://{hip}:{port}"
+        elif port in webish or port >= 8000:
             url = f"http://{hip}:{port}" if port not in (443, 8443, 8281) else f"https://{hip}:{port}"
-            if port in (443, 8443):
-                url = f"https://{hip}:{port}"
         else:
             url = None
+        if sig and sig.get("confidence") == "high":
+            name = f"{sig['name']} :{port}"
+            detail = f"Auto-discovered · {sig['name']} · pid {info['pid']} · {info['bind']}"
+        elif sig:
+            # Port-only or runtime match is a hint, so the raw process name
+            # stays visible; the guess rides along in the detail line.
+            name = f"{info['proc']} :{port}"
+            detail = f"Auto-discovered · {sig['name']}? · pid {info['pid']} · {info['bind']}"
+        else:
+            name = f"{info['proc']} :{port}"
+            detail = f"Auto-discovered · pid {info['pid']} · {info['bind']}"
+        meta = {"port": port, "pid": info["pid"], "process": info["proc"]}
+        if sig:
+            meta["signature"] = sig
         items.append({
             "id": f"auto.port.{port}",
             "kind": "auto",
-            "name": f"{info['proc']} :{port}",
+            "name": name,
             "state": "ok",
-            "detail": f"Auto-discovered · pid {info['pid']} · {info['bind']}",
+            "detail": detail,
             "url": url,
             "group": "Auto-discovered",
-            "actions": [],
+            "actions": ["adopt"],
             "auto": True,
-            "meta": {"port": port, "pid": info["pid"], "process": info["proc"]},
+            "meta": meta,
         })
     return items[:40]
 

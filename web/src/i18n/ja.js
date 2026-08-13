@@ -1053,6 +1053,13 @@ export default {
     bulk_running: '一括 {action} × {n}…',
     copy_log: 'ログをコピー',
     log_empty: '（空）',
+    sec_adopt: '管理対象サービスとして採用',
+    adopt: '採用',
+    adopt_hint: 'この自動検出リスナーを services.yaml に管理対象エントリとして書き込みます。固定の名前とグループを持ち、ポートで死活監視され、自動検出としては表示されなくなります。',
+    identified_as: '識別：{name} · {category}',
+    identified_guess: 'ポートからの推測',
+    adopt_ports: 'ポート（カンマ区切り）',
+    adopt_done: '{name} を採用し services.yaml に書き込みました',
   },
   logs: {
     title: 'ログ',
@@ -2022,6 +2029,9 @@ export default {
       uninstall_failed: '{id} をアンインストールできませんでした：{error}',
       uninstall_browser_session_required: 'アンインストールにはブラウザセッションが必要です',
       docker_unavailable: 'docker CLI が利用できません',
+      adopt_not_found: 'サービスが見つかりません：{id}',
+      adopt_not_auto: '{id} は自動検出されたサービスではありません',
+      adopt_no_port: '{id} には採用できるリッスンポートがありません',
     },
     admin: {
       browser_session_required: 'この管理者操作を行うにはブラウザでサインインしてください',

@@ -95,6 +95,8 @@ log_sources: []
 maintenance: []
 
 # Multi-port projects that are not containers, grouped as one card.
+# "Adopt" on an auto-discovered service writes its entry here (with an
+# adopted_from marker). Add start/stop shell commands to enable the buttons.
 #   scripts:
 #     - id: myproject
 #       name: My Project

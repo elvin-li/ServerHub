@@ -110,8 +110,17 @@ def collect_scripts():
             detail = f"Partially running · missing {' '.join(':'+str(p) for p in downp)}"
         else:
             state, detail = "down", "Stopped"
+        # Only offer actions the registry can actually execute: a script's
+        # start/stop run the commands from services.yaml, and an entry without
+        # them (e.g. one adopted from adaptive discovery) would render buttons
+        # that always fail.
+        has_start, has_stop = bool(s.get("start")), bool(s.get("stop"))
+        if up:
+            acts = (["restart"] if has_start and has_stop else []) + (["stop"] if has_stop else [])
+        else:
+            acts = ["start"] if has_start else []
         items.append({"id": s["id"], "kind": "script", "name": s.get("name", s["id"]),
                       "state": state, "detail": detail, "url": s.get("url"),
                       "group": s.get("group", "Custom"), "links": s.get("links"),
-                      "actions": ["restart", "stop"] if up else ["start"]})
+                      "actions": acts})
     return items

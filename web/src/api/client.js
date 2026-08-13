@@ -278,6 +278,9 @@ export const updateServiceOverride = (id, body) =>
   json(`/api/services/${encodeURIComponent(id)}/override`, jsonBody('PUT', body))
 export const setServiceHidden = (id, hide = true) =>
   json(`/api/services/${encodeURIComponent(id)}/hide`, jsonBody('POST', { hide }))
+// Promote an auto-discovered listener into a managed services.yaml entry.
+export const adoptService = (id, body = {}) =>
+  json(`/api/services/${encodeURIComponent(id)}/adopt`, jsonBody('POST', body))
 
 // Network configuration and diagnostics
 export const getSystemNetwork = (force = false) =>

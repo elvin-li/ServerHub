@@ -289,6 +289,10 @@ CODES: dict[str, tuple[int, str]] = {
     "vms.bad_distro": (400, 'invalid distro'),
     "vms.bad_machine_name": (400, 'invalid machine name'),
     "services.docker_unavailable": (400, 'the docker CLI is not available'),
+    # ── adopting auto-discovered services ────────────────────────────────────
+    "services.adopt_not_found": (404, "service not found: {id}"),
+    "services.adopt_not_auto": (400, "{id} is not an auto-discovered service"),
+    "services.adopt_no_port": (400, "{id} has no detected listen port to adopt"),
     "jobs.already_running": (409, 'a maintenance task is already running; wait for it to finish'),
 }
 

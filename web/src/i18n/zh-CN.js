@@ -1054,6 +1054,13 @@ export default {
     bulk_running: '批量 {action} × {n}…',
     copy_log: '复制日志',
     log_empty: '（无日志）',
+    sec_adopt: '采纳为受管服务',
+    adopt: '采纳',
+    adopt_hint: '将该自动发现的监听端口写入 services.yaml 成为受管条目：拥有固定名称与分组，按端口做健康检查，不再显示为自动发现。',
+    identified_as: '识别为：{name} · {category}',
+    identified_guess: '按端口推测',
+    adopt_ports: '端口（逗号分隔）',
+    adopt_done: '已采纳 {name}，写入 services.yaml',
   },
   logs: {
     title: '日志中心',
@@ -2023,6 +2030,9 @@ export default {
       uninstall_failed: '无法卸载 {id}：{error}',
       uninstall_browser_session_required: '卸载操作需要浏览器会话',
       docker_unavailable: 'docker 不可用',
+      adopt_not_found: '找不到服务：{id}',
+      adopt_not_auto: '{id} 不是自动发现的服务',
+      adopt_no_port: '{id} 没有可采纳的监听端口',
     },
     admin: {
       browser_session_required: '请通过浏览器登录后再执行此管理员操作',

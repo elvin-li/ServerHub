@@ -1053,6 +1053,13 @@ export default {
     bulk_running: 'Bulk {action} × {n}…',
     copy_log: 'Copy log',
     log_empty: '(empty)',
+    sec_adopt: 'Adopt as managed service',
+    adopt: 'Adopt',
+    adopt_hint: 'Writes this discovered listener into services.yaml as a managed entry: it gets a stable name and group, is health-checked by port, and no longer shows up as auto-discovered.',
+    identified_as: 'Identified: {name} · {category}',
+    identified_guess: 'guess from port',
+    adopt_ports: 'Ports (comma-separated)',
+    adopt_done: 'Adopted {name} into services.yaml',
   },
   logs: {
     title: 'Logs',
@@ -2022,6 +2029,9 @@ export default {
       uninstall_failed: 'Could not uninstall {id}: {error}',
       uninstall_browser_session_required: 'Uninstalling requires a browser session',
       docker_unavailable: 'the docker CLI is not available',
+      adopt_not_found: 'Service not found: {id}',
+      adopt_not_auto: '{id} is not an auto-discovered service',
+      adopt_no_port: '{id} has no detected listen port to adopt',
     },
     admin: {
       browser_session_required: 'Sign in from a browser to authorize this administrator action',

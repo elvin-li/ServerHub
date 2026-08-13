@@ -182,6 +182,9 @@
               <span class="chip">{{ kindLabel(detail.kind) }}</span>
               <span class="chip" :class="stateChipClass(detail.state)">{{ stateLabel(detail.state) }}</span>
               <span v-if="detail.auto" class="chip chip-muted">auto</span>
+              <span v-if="detail.signature" class="chip chip-sig" :title="detail.signature.category">
+                {{ detail.signature.confidence === 'high' ? detail.signature.name : `${detail.signature.name}?` }}
+              </span>
             </div>
             <div class="mono sub-id">{{ detail.id }}</div>
           </div>
@@ -240,6 +243,37 @@
         <section class="drawer-sec" v-if="detail.launchctl">
           <h3>launchctl</h3>
           <pre class="log mini-log">{{ detail.launchctl }}</pre>
+        </section>
+
+        <!-- Adopt auto-discovered listener into services.yaml -->
+        <section class="drawer-sec" v-if="detail.can_adopt">
+          <h3>{{ t('services.sec_adopt') }}</h3>
+          <p class="hint-line">{{ t('services.adopt_hint') }}</p>
+          <div v-if="detail.signature" class="hint-line">
+            {{ t('services.identified_as', {
+              name: detail.signature.name,
+              category: detail.signature.category,
+            }) }}
+            <span v-if="detail.signature.confidence !== 'high'">({{ t('services.identified_guess') }})</span>
+          </div>
+          <div class="form-grid">
+            <label>{{ t('common.name') }}
+              <input v-model="adoptForm.name" type="text" />
+            </label>
+            <label>{{ t('services.group') }}
+              <input v-model="adoptForm.group" type="text" />
+            </label>
+            <label>URL
+              <input v-model="adoptForm.url" type="text" placeholder="http://…" />
+            </label>
+            <label>{{ t('services.adopt_ports') }}
+              <input v-model="adoptForm.ports" type="text" placeholder="8080, 8443" />
+            </label>
+          </div>
+          <div class="mono sub-id" style="margin-top:4px">id: {{ adoptForm.id }}</div>
+          <div class="drawer-actions" style="margin-top:8px">
+            <button type="button" class="primary" :disabled="busy" @click="adopt">{{ t('services.adopt') }}</button>
+          </div>
         </section>
 
         <!-- Edit override -->
@@ -334,6 +368,7 @@
 import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { startVisibleInterval } from '../lib/poll'
 import {
+  adoptService,
   bulkServiceAction,
   doAction,
   getServiceDetail,
@@ -377,6 +412,7 @@ const logPanel = ref(null)
 const uninstallModal = ref(null)
 const uninstallPanel = ref(null)
 const editForm = reactive({ name: '', group: '', url: '', port: null })
+const adoptForm = reactive({ id: '', name: '', group: '', url: '', ports: '' })
 let timer = null
 
 const CONTROL_ACTS = new Set(['start', 'stop', 'restart', 'run', 'pause', 'unpause', 'remove', 'kill'])
@@ -506,9 +542,13 @@ function portOf(s) {
 
 function canAct(s, act) {
   if (!s) return false
-  const acts = s.actions || []
-  if (acts.includes(act)) return true
-  // soft fallbacks
+  if ((s.actions || []).includes(act)) return true
+  // Soft fallbacks only when the server sent no action list at all (older
+  // servers / the /api/status fallback).  When it did, it is authoritative:
+  // guessing here rendered Start/Stop buttons for entries the backend has no
+  // way to control (adopted scripts without commands, auto-discovered ports),
+  // and every such click failed.
+  if (Array.isArray(s.actions)) return false
   if (act === 'start' && (s.state === 'down' || s.state === 'stopped')) return true
   if (act === 'stop' && s.state === 'ok') return true
   if (act === 'restart' && s.state === 'ok') return true
@@ -670,6 +710,37 @@ function resetEditForm() {
   editForm.group = ov.group != null ? ov.group : (d.group || '')
   editForm.url = ov.url != null ? ov.url : (d.url || '')
   editForm.port = ov.port != null ? ov.port : (d.port ?? null)
+  const ad = d.adopt_defaults || {}
+  adoptForm.id = ad.id || ''
+  adoptForm.name = ad.name || ''
+  adoptForm.group = ad.group || ''
+  adoptForm.url = ad.url || ''
+  adoptForm.ports = (ad.ports || []).join(', ')
+}
+
+async function adopt() {
+  if (!detail.value?.can_adopt) return
+  busy.value = true
+  try {
+    const ports = adoptForm.ports
+      .split(/[\s,]+/)
+      .map(p => parseInt(p, 10))
+      .filter(p => Number.isInteger(p) && p >= 1 && p <= 65535)
+    const r = await adoptService(detail.value.id, {
+      id: adoptForm.id || null,
+      name: adoptForm.name || null,
+      group: adoptForm.group || null,
+      url: adoptForm.url || null,
+      ports: ports.length ? ports : null,
+    })
+    toast(`✅ ${t('services.adopt_done', { name: r.entry?.name || r.id })}`)
+    closeDrawer()
+    await refresh(true)
+  } catch (e) {
+    toast(`❌ ${e.message || e}`)
+  } finally {
+    busy.value = false
+  }
 }
 
 async function saveOverride() {
@@ -813,6 +884,7 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .chip-warn.active { border-color: var(--warn); }
 .chip-down.active { border-color: var(--down); }
 .chip-muted { opacity: .85; }
+.chip-sig { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; }
 .chk { font-size: 12px; color: var(--sub); display: inline-flex; align-items: center; gap: 5px; }
 
 .svc-table tr { cursor: pointer; transition: background .1s; }

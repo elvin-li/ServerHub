@@ -25,6 +25,14 @@ class HideBody(BaseModel):
     hide: bool = True
 
 
+class AdoptBody(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+    group: Optional[str] = None
+    url: Optional[str] = None
+    ports: Optional[list[int]] = None
+
+
 class BulkActionBody(BaseModel):
     ids: list[str] = Field(default_factory=list)
     action: str
@@ -81,6 +89,18 @@ def services_override(sid: str, body: OverrideBody):
 @router.post("/api/services/{sid}/hide")
 def services_hide(sid: str, body: HideBody = HideBody()):
     return services_manage_svc.hide_service(sid, hide=body.hide)
+
+
+@router.post("/api/services/{sid}/adopt")
+def services_adopt(sid: str, request: Request, body: AdoptBody = AdoptBody()):
+    """Promote an auto-discovered listener into a managed services.yaml entry.
+
+    Writes configuration, so member accounts are refused outright rather than
+    resource-checked: adoption changes what everyone's Services page shows.
+    """
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.adopt_service(sid, body.model_dump(exclude_unset=True))
 
 
 @router.get("/api/services/{sid}/uninstall/preview")

@@ -8,10 +8,12 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from hub import config
 from hub.config import cfg, override, set_override
 from hub.errors import api_error
 from hub.host_address import host_ip, normalize_local_url, resolve_value
 from hub.paths import AGENTS_DIR, DOCKER, UID
+from hub.service_signatures import suggest_id
 from hub.status import full_status, invalidate_status
 from hub.util import sh
 
@@ -284,6 +286,13 @@ def service_detail(sid: str) -> dict:
     elif kind == "auto":
         detail["notes"] = "Auto-discovered listening port; you can edit the display name/URL, or hide it."
         detail["can_logs"] = False
+        meta = svc.get("meta") or {}
+        detail["process"] = meta.get("process")
+        detail["pid"] = meta.get("pid")
+        detail["signature"] = meta.get("signature")
+        detail["can_adopt"] = True
+        detail["adopt_defaults"] = adopt_defaults(svc)
+        detail["actions"] = sorted(set(detail["actions"]) | {"adopt"})
 
     # resolve final open url
     if not detail.get("url") and ov.get("url"):
@@ -444,6 +453,116 @@ def update_override(sid: str, patch: dict) -> dict:
 
 def hide_service(sid: str, hide: bool = True) -> dict:
     return update_override(sid, {"hide": hide if hide else None})
+
+
+def _full_process_name(pid) -> str:
+    """The process's real image name — lsof truncates COMMAND to ~9 chars."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    if pid <= 0:
+        return ""
+    rc, out, _ = sh(["/bin/ps", "-p", str(pid), "-o", "comm="], timeout=5)
+    if rc != 0 or not out.strip():
+        return ""
+    return Path(out.strip().splitlines()[0]).name
+
+
+def _taken_service_ids() -> set[str]:
+    data = cfg()
+    taken = set()
+    for key in ("apps", "scripts", "stacks"):
+        for entry in data.get(key) or []:
+            if isinstance(entry, dict) and entry.get("id"):
+                taken.add(str(entry["id"]))
+    return taken
+
+
+def adopt_defaults(svc: dict) -> dict:
+    """Suggested services.yaml entry for an auto-discovered listener.
+
+    Shown by the UI as the pre-filled adopt form, and used verbatim when the
+    caller adopts without overriding anything.
+    """
+    meta = svc.get("meta") or {}
+    sig = meta.get("signature") or {}
+    process = _full_process_name(meta.get("pid")) or meta.get("process") or ""
+    recognised = sig.get("confidence") == "high"
+    name = sig["name"] if recognised else (process or svc.get("name") or "")
+    group = sig.get("category") if recognised else None
+    return {
+        "id": suggest_id(
+            sig.get("slug") if recognised else "",
+            process,
+            f"port-{meta.get('port')}" if meta.get("port") else "",
+            taken=_taken_service_ids(),
+        ),
+        "name": name,
+        "group": group or "Adopted",
+        "ports": [meta["port"]] if meta.get("port") else [],
+        "url": svc.get("url"),
+        "process": process,
+    }
+
+
+def adopt_service(sid: str, patch: dict | None = None) -> dict:
+    """Promote an auto-discovered listener into a managed services.yaml script.
+
+    A `scripts` entry rather than an `apps` one: scripts are checked by TCP
+    port, which is exactly the evidence adaptive discovery has.  An `apps`
+    entry would be checked by `pgrep -x`, and the process name lsof reports is
+    truncated, so the adopted service would immediately show as down.
+    """
+    patch = patch or {}
+    svc = find_service(sid, force=True)
+    if not svc:
+        raise api_error("services.adopt_not_found", id=sid)
+    if svc.get("kind") != "auto":
+        raise api_error("services.adopt_not_auto", id=sid)
+
+    defaults = adopt_defaults(svc)
+    ports = []
+    for p in (patch.get("ports") or defaults["ports"]):
+        try:
+            p = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= p <= 65535 and p not in ports:
+            ports.append(p)
+    if not ports:
+        raise api_error("services.adopt_no_port", id=sid)
+
+    new_id = suggest_id(
+        str(patch.get("id") or "").strip() or defaults["id"],
+        taken=_taken_service_ids(),
+    )
+    entry: dict = {
+        "id": new_id,
+        "name": str(patch.get("name") or "").strip() or defaults["name"] or new_id,
+        "group": str(patch.get("group") or "").strip() or defaults["group"],
+        "ports": ports,
+    }
+    url = str(patch.get("url") or "").strip() or defaults.get("url")
+    if url:
+        entry["url"] = normalize_local_url(url)
+    # Provenance, so the operator can later tell adopted entries from
+    # hand-written ones when editing services.yaml.
+    entry["adopted_from"] = {
+        "process": defaults.get("process") or (svc.get("meta") or {}).get("process"),
+        "auto_id": sid,
+    }
+
+    def apply(data: dict) -> None:
+        scripts = data.setdefault("scripts", [])
+        scripts.append(entry)
+        # The auto row disappears on its own once the port is claimed, but a
+        # stale hide/override for it would silently apply to nothing forever.
+        (data.get("overrides") or {}).pop(sid, None)
+
+    config.mutate(apply)
+    invalidate_status()
+    return {"ok": True, "id": new_id, "entry": entry}
 
 
 def enrich_service_list_item(s: dict) -> dict:
