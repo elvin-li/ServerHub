@@ -760,6 +760,8 @@ def check_once(force_status: bool = False) -> list:
         new_state["_smart_last"] = prev["_smart_last"]
     if isinstance(prev.get("_smart_detail"), dict):
         new_state["_smart_detail"] = prev["_smart_detail"]
+    if isinstance(prev.get("_freshness_last"), dict):
+        new_state["_freshness_last"] = prev["_freshness_last"]
     for sid, s in services.items():
         state = s.get("state", "unknown")
         new_state[sid] = state
@@ -815,6 +817,14 @@ def check_once(force_status: bool = False) -> list:
         pass
     try:
         emitted.extend(_check_ups(prev, new_state, now))
+    except Exception:
+        pass
+    # Artifact freshness for daily launchd jobs — catches "loaded but never
+    # firing", the failure class the service sweep above is blind to (see
+    # hub/freshness_svc.py for the 2026-08-10 incident this guards against).
+    try:
+        from hub import freshness_svc
+        emitted.extend(freshness_svc.check_freshness(prev, new_state, now))
     except Exception:
         pass
     # Only rewrite state file when map actually changed (huge SSD win)
