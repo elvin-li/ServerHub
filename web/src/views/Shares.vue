@@ -255,6 +255,45 @@
           <p v-if="form.time_machine" class="sheet-security">
             <History :size="17" />{{ t('shares.tm_howto', { host: hostName }) }}
           </p>
+
+          <!-- Per-user access = the share directory's filesystem ACL: macOS has
+               no per-user field on the share record itself, smbd enforces the
+               filesystem. Each change is applied immediately and read back. -->
+          <section v-if="editing" class="acl-block">
+            <h3>{{ t('shares.acl_title') }}</h3>
+            <p class="acl-hint">{{ t('shares.acl_hint') }}</p>
+            <div v-if="aclLoading" class="acl-hint">{{ t('common.loading') }}</div>
+            <div v-else-if="aclError" class="acl-error">{{ aclError }}</div>
+            <template v-else-if="acl">
+              <div v-for="user in acl.users" :key="user.username" class="acl-user-row">
+                <span class="acl-user">
+                  <strong>{{ user.username }}</strong>
+                  <small v-if="user.real_name">{{ user.real_name }}</small>
+                  <small v-if="user.username === acl.owner" class="acl-owner-tag">{{ t('shares.acl_owner') }}</small>
+                </span>
+                <select
+                  :value="aclLevelOf(user.username)"
+                  :disabled="aclBusy || user.username === acl.owner"
+                  :aria-label="t('shares.acl_level_for', { name: user.username })"
+                  @change="applyAcl(user.username, $event.target.value)"
+                >
+                  <option value="none">{{ t('shares.acl_none') }}</option>
+                  <option value="read">{{ t('shares.acl_read') }}</option>
+                  <option value="readwrite">{{ t('shares.acl_readwrite') }}</option>
+                </select>
+              </div>
+              <details class="acl-entries" v-if="acl.entries.length">
+                <summary>{{ t('shares.acl_current', { n: acl.entries.length }) }}</summary>
+                <code v-for="entry in acl.entries" :key="entry.index" class="acl-entry mono">
+                  {{ entry.index }}: {{ entry.kind }}:{{ entry.name }}
+                  {{ entry.inherited ? 'inherited ' : '' }}{{ entry.effect }}
+                  {{ entry.perms.join(',') }}
+                </code>
+              </details>
+              <p class="acl-hint">{{ t('shares.acl_guest_note') }}</p>
+            </template>
+          </section>
+
           <p class="sheet-security"><ShieldCheck :size="17" />{{ t('shares.native_auth_hint') }}</p>
         </div>
       </section>
@@ -271,8 +310,8 @@ import {
   Trash2, Users, Workflow,
 } from '@lucide/vue'
 import {
-  createShare, getShares, openSharingSettings, removeShare as removeShareRequest,
-  setSystemSharing, updateShare,
+  createShare, getShareAcl, getShares, openSharingSettings,
+  removeShare as removeShareRequest, setShareAcl, setSystemSharing, updateShare,
 } from '../api/client'
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
@@ -357,6 +396,55 @@ function openEdit(share) {
     tm_quota_gb: share.tm_quota_gb ? String(share.tm_quota_gb) : '',
   }
   sheetOpen.value = true
+  void loadAcl(share.path)
+}
+
+// ── per-user access (filesystem ACL of the shared directory) ────────────────
+const acl = ref(null)
+const aclLoading = ref(false)
+const aclError = ref('')
+const aclBusy = ref(false)
+
+async function loadAcl(path) {
+  acl.value = null
+  aclError.value = ''
+  if (!path) return
+  aclLoading.value = true
+  try {
+    acl.value = await getShareAcl(path)
+  } catch (error) {
+    // Read failure degrades to guidance instead of hiding the whole sheet.
+    aclError.value = error.message
+  } finally {
+    aclLoading.value = false
+  }
+}
+
+/** Level currently granted to *username* by a direct (non-inherited) entry. */
+function aclLevelOf(username) {
+  const entries = acl.value?.entries || []
+  const direct = entries.filter(
+    (entry) => entry.kind === 'user' && entry.name === username && !entry.inherited,
+  )
+  if (direct.some((entry) => entry.effect === 'allow' && entry.level === 'readwrite')) return 'readwrite'
+  if (direct.some((entry) => entry.effect === 'allow')) return 'read'
+  return 'none'
+}
+
+async function applyAcl(username, level) {
+  if (aclBusy.value || !editing.value?.path) return
+  aclBusy.value = true
+  try {
+    // The response carries the read-back, verified on-disk state.
+    const result = await setShareAcl(editing.value.path, username, level)
+    acl.value = { ...acl.value, ...result }
+    toast(`✅ ${t('shares.acl_saved', { name: username })}`)
+  } catch (error) {
+    toast(`❌ ${error.message}`)
+    await loadAcl(editing.value.path)
+  } finally {
+    aclBusy.value = false
+  }
 }
 
 function closeSheet() {
@@ -529,6 +617,18 @@ onMounted(refresh)
 .option-row input { width:19px; height:19px; accent-color:var(--accent); }
 .sheet-security { display:flex; gap:7px; align-items:flex-start; margin:0; padding:10px; border-left:3px solid var(--accent); color:var(--sub); background:color-mix(in srgb,var(--accent) 7%,var(--card)); font-size:10.5px; line-height:1.45; }
 .sheet-security svg { flex:0 0 auto; color:var(--accent); }
+.acl-block { border:1px dashed var(--line); border-radius:8px; padding:10px 12px; }
+.acl-block h3 { margin:0 0 4px; font-size:12.5px; }
+.acl-hint { color:var(--sub); font-size:10.5px; line-height:1.45; margin:2px 0 8px; }
+.acl-error { color:var(--down); font-size:11px; }
+.acl-user-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:5px 0; }
+.acl-user { display:flex; align-items:baseline; gap:7px; min-width:0; }
+.acl-user small { color:var(--sub); font-size:10px; }
+.acl-owner-tag { color:var(--accent); font-weight:600; }
+.acl-user-row select { font-size:11.5px; padding:3px 6px; border-radius:5px; }
+.acl-entries { margin-top:6px; }
+.acl-entries summary { font-size:10.5px; color:var(--sub); cursor:pointer; }
+.acl-entry { display:block; font-size:10px; color:var(--sub); padding:2px 0; word-break:break-all; }
 .spinning { animation:spin 1s linear infinite; }
 button:disabled { opacity:.48; cursor:not-allowed; }
 @keyframes spin { to { transform:rotate(360deg); } }

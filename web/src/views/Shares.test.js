@@ -4,8 +4,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 const api = vi.hoisted(() => ({
   createShare: vi.fn(),
   getShares: vi.fn(),
+  getShareAcl: vi.fn(),
   openSharingSettings: vi.fn(),
   removeShare: vi.fn(),
+  setShareAcl: vi.fn(),
   setSystemSharing: vi.fn(),
   updateShare: vi.fn(),
 }))
@@ -68,6 +70,10 @@ describe('integrated sharing panel', () => {
     api.setSystemSharing.mockResolvedValue({ ok: true })
     api.updateShare.mockResolvedValue({ ok: true })
     api.openSharingSettings.mockResolvedValue({ ok: true })
+    // Editing a share now also loads the folder's ACL; a benign default keeps
+    // every pre-ACL scenario in this file behaving exactly as before.
+    api.getShareAcl.mockResolvedValue({ path: '/tmp', owner: 'x', entries: [], users: [] })
+    api.setShareAcl.mockResolvedValue({ ok: true, entries: [] })
   })
 
   afterEach(() => {

@@ -203,3 +203,83 @@ def open_system_settings(request: Request):
     if not result.get("ok"):
         raise api_error("shares.settings_open_failed")
     return result
+
+
+# ── per-user share access (filesystem ACLs) ──────────────────────────────────
+# macOS has no per-user field on the share record itself (verified: sharing -l
+# and the dscl SharePoints attributes are share-wide flags only), so per-user
+# access is the share directory's ACL.  See hub/share_acl_svc.py.
+
+
+class ShareAclPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    username: str
+    level: str  # none | read | readwrite
+
+
+def _share_directory(path: str) -> str:
+    """Resolve *path* against the current share points, fail closed.
+
+    Restricting the ACL surface to directories that are actually shared keeps
+    this endpoint from becoming a generic chmod-as-root oracle: everything
+    else in the filesystem stays out of reach no matter what is posted.
+    """
+    try:
+        resolved = str(Path(str(path or "")).resolve(strict=True))
+    except OSError:
+        raise api_error("shares.bad_path")
+    shared = {
+        str(Path(str(share.get("path"))).resolve())
+        for share in shares_svc.list_smb_shares(include_sizes=False)
+        if share.get("path")
+    }
+    if resolved not in shared:
+        raise api_error("shares.acl_not_share")
+    return resolved
+
+
+@router.get("/api/shares/acl")
+def share_acl(path: str, request: Request):
+    """Current ACL of one shared directory plus the pickable local users."""
+    from hub import share_acl_svc
+
+    _require_admin_browser(request)
+    resolved = _share_directory(path)
+    try:
+        state = share_acl_svc.read_acl(resolved)
+    except share_acl_svc.ShareAclError as error:
+        raise api_error(error.code)
+    return {**state, "users": share_acl_svc.local_users()}
+
+
+@router.put("/api/shares/acl")
+def share_acl_put(body: ShareAclPut, request: Request):
+    """Grant / revoke one user's access to one shared directory.
+
+    Writes are verified by reading the ACL back; the response carries the
+    on-disk state.  Runs under the same web-password escalation as every
+    other privileged share mutation when the panel does not own the folder.
+    """
+    from hub import share_acl_svc
+
+    username = _require_admin_browser(request)
+    resolved = _share_directory(body.path)
+    try:
+        result = share_acl_svc.set_user_access(resolved, body.username, body.level)
+    except share_acl_svc.ShareAclError as error:
+        raise api_error(error.code)
+    _audit_change(
+        audit.SHARE_CHANGED,
+        request,
+        username,
+        action="acl_set",
+        outcome="success" if result.get("ok") else "failure",
+        folder=_path_label(resolved),
+        target=body.username[:64],
+        level=body.level[:16],
+    )
+    if not result.get("ok"):
+        _raise_service_error(result)
+    return result
