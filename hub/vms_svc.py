@@ -21,7 +21,7 @@ from hub.util import cached_snapshot, fan_out, port_open, sh
 # on that cadence, so a 5s TTL here guaranteed a miss on every refresh and paid
 # ~390ms for utmctl+orbctl every single time.  Correctness after a VM
 # start/stop comes from invalidate_vm_lists(), not from the TTL lapsing.
-_LIST_TTL = 15.0
+_LIST_TTL = 30.0
 
 
 

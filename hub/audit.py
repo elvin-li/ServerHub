@@ -39,6 +39,10 @@ AUDIT_PATH = DATA_DIR / "auth-audit.jsonl"
 #: dropped from the front, because the newest events are the ones being
 #: investigated.
 MAX_LINES = 5000
+# Skip the full-file read while the log is still well under the cap.  A
+# typical line is ~150 B; 192 B/line starts checking before a fat-line
+# trail can run far past MAX_LINES.
+_TRIM_SOFT_BYTES = MAX_LINES * 192
 
 #: Event names.  Kept as constants so a typo in a caller is an AttributeError
 #: rather than a silently unqueryable log line.
@@ -142,8 +146,14 @@ def redact(value: Any) -> Any:
 
 
 def _trim(path: Path) -> None:
-    """Drop the oldest lines once the log exceeds :data:`MAX_LINES`."""
+    """Drop the oldest lines once the log exceeds :data:`MAX_LINES`.
+
+    A cheap size check avoids reading and rewriting the file on every
+    sign-in while it is still far below the cap.
+    """
     try:
+        if path.stat().st_size <= _TRIM_SOFT_BYTES:
+            return
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return
@@ -183,7 +193,11 @@ def record(event: str, **fields: Any) -> dict:
             # passed an object json cannot encode.  Losing fidelity on one
             # field is strictly better than losing the whole record.
             fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-        os.chmod(AUDIT_PATH, 0o600)
+        # chmod only when the mode drifted.  The create helper already
+        # writes 0600; repeating chmod on every login is a metadata write
+        # against an otherwise append-only file.
+        if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
+            os.chmod(AUDIT_PATH, 0o600)
         _trim(AUDIT_PATH)
     except (OSError, TypeError, ValueError):
         # An unwritable or unencodable log must never turn a valid sign-in

@@ -19,7 +19,7 @@ from hub.config import cfg
 from hub.host_address import resolve_value
 from hub.util import cached_snapshot, fan_out
 
-_TTL = 45.0
+_TTL = 120.0
 
 #: A probe is an HTTP reachability check, nothing else.  urlopen also speaks
 #: file:, ftp: and data:, and bookmark URLs are not all typed by the operator --

@@ -19,8 +19,9 @@ from hub.discovery import (
 )
 from hub.system import collect_system
 
-# Hot path: 10s TTL + single-flight keeps UI snappy under multi-tab polling.
-_STATUS_TTL = 10.0
+# Hot path: 20s TTL + single-flight. The shell polls /api/status every 15s,
+# so a 10s TTL missed on almost every tick and re-ran docker+launchctl+lsof.
+_STATUS_TTL = 20.0
 _status_cache = {"t": 0.0, "v": None}
 _lock = threading.Lock()
 # Single-flight: only one full refresh at a time; waiters reuse the result.

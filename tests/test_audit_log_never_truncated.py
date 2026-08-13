@@ -84,6 +84,21 @@ class AuditAppendTests(unittest.TestCase):
             entry = audit.record("auth.login", user="elvin")
         self.assertEqual(entry["event"], "auth.login")
 
+    def test_trim_is_skipped_while_the_file_is_small(self):
+        """A sign-in must not read-and-rewrite a trail still under the cap."""
+        with mock.patch.object(audit, "_TRIM_SOFT_BYTES", 10**9):
+            with mock.patch.object(audit.secure_io, "write_secret_text") as write:
+                audit.record("auth.login", user="elvin")
+        write.assert_not_called()
+
+    def test_trim_drops_oldest_once_over_the_byte_cap(self):
+        fat = '{"ts": "x", "event": "auth.login", "pad": "' + ("n" * 400) + '"}\n'
+        self.path.write_text(fat * (audit.MAX_LINES + 8))
+        self.assertGreater(self.path.stat().st_size, audit._TRIM_SOFT_BYTES)
+        audit._trim(self.path)
+        lines = self.path.read_text().splitlines()
+        self.assertEqual(len(lines), audit.MAX_LINES)
+
 
 class SourceShapeTests(unittest.TestCase):
     def test_audit_does_not_use_the_truncating_helper(self):

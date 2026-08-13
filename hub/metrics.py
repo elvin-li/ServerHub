@@ -13,18 +13,22 @@ from hub.util import sh
 METRICS_FILE = DATA_DIR / "metrics.jsonl"
 # ~48h at 90s interval ≈ 1920 points; keep headroom
 MAX_POINTS = 2880
+# Rewrite only once we have grown this far past the cap. At the 90s sample
+# interval a 10% slack is ~7h between full rewrites instead of every hour
+# at a file that sits permanently at the cap.
+_TRIM_SLACK = 288
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
 _stop = threading.Event()
 _last_trim = 0.0
-_TRIM_INTERVAL = 900.0  # full rewrite at most every 15 min
+_TRIM_INTERVAL = 3600.0  # full rewrite at most hourly — SSD-friendly
 _ncpu_cache: dict = {"t": 0.0, "n": None}
 _NCPU_TTL = 600.0
 # In-memory batch: fewer fsync/small-write cycles on SSD
 _write_buf: list[str] = []
 _last_flush = 0.0
-_FLUSH_EVERY_N = 2          # flush every N samples
-_FLUSH_MAX_AGE = 180.0      # or at least every 3 min
+_FLUSH_EVERY_N = 4          # flush every N samples (~6 min at 90s)
+_FLUSH_MAX_AGE = 300.0      # or at least every 5 min
 
 
 def _ncpu() -> int:
@@ -131,7 +135,7 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
         _last_trim = now
         try:
             lines = METRICS_FILE.read_text().splitlines()
-            if len(lines) > MAX_POINTS:
+            if len(lines) > MAX_POINTS + _TRIM_SLACK:
                 METRICS_FILE.write_text("\n".join(lines[-MAX_POINTS:]) + "\n")
         except OSError:
             pass

@@ -248,7 +248,7 @@ class TestOrphanScanBehaviourUnchanged(LsofSnapshotTestCase):
 
 
 class TestVmListTtlOutlivesStatusTtl(unittest.TestCase):
-    """A 5s VM list TTL under a 10s status TTL missed on every single refresh."""
+    """A VM list TTL under the status TTL missed on every single refresh."""
 
     def test_vm_list_ttl_exceeds_status_ttl(self):
         from hub import status, vms_svc
