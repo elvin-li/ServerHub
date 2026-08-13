@@ -92,13 +92,18 @@ class SharesServiceTests(unittest.TestCase):
                 "smb_sealed": True,
             }
         })
+        # The JSON payload is returned for every sh() call, including the dscl
+        # SharePoints read that follows the listing; it is not a plist, so the
+        # Time Machine merge falls back to its defaults.
         with (
             patch("hub.shares_svc.sh", return_value=(0, payload, "")) as run,
             patch("hub.shares_svc.host_ip", return_value="192.0.2.20"),
         ):
             result = shares_svc.list_smb_shares(include_sizes=False)
 
-        self.assertEqual(run.call_args.args[0], ["/usr/sbin/sharing", "-l", "-f", "json"])
+        self.assertEqual(
+            run.call_args_list[0].args[0], ["/usr/sbin/sharing", "-l", "-f", "json"],
+        )
         self.assertEqual(result, [{
             "record_name": "Archive",
             "name": "Archive",
@@ -110,12 +115,17 @@ class SharesServiceTests(unittest.TestCase):
             "encrypted": True,
             "size_mb": None,
             "url": "smb://192.0.2.20/Archive SMB",
+            "time_machine": False,
+            "tm_quota_gb": None,
         }])
 
     def test_invalid_json_falls_back_to_legacy_output(self):
         legacy = """name: Public\npath: /Users/example/Public\nsmb:\n  name: Public\n  shared: 1\n  guest access: 1\n  read-only: 0\n}\n"""
         with (
-            patch("hub.shares_svc.sh", side_effect=[(0, "{bad", ""), (0, legacy, "")]) as run,
+            patch(
+                "hub.shares_svc.sh",
+                side_effect=[(0, "{bad", ""), (0, legacy, ""), (1, "", "")],
+            ) as run,
             patch("hub.shares_svc.host_ip", return_value="host.local"),
         ):
             result = shares_svc.list_smb_shares(include_sizes=False)
@@ -123,6 +133,7 @@ class SharesServiceTests(unittest.TestCase):
         self.assertEqual(run.call_args_list, [
             call(["/usr/sbin/sharing", "-l", "-f", "json"], timeout=8),
             call(["/usr/sbin/sharing", "-l"], timeout=8),
+            call(["/usr/bin/dscl", "-plist", ".", "-readall", "/SharePoints"], timeout=8),
         ])
         self.assertEqual(result[0]["record_name"], "Public")
         self.assertTrue(result[0]["guest"])
@@ -150,13 +161,16 @@ class SharesServiceTests(unittest.TestCase):
         actual = {
             "record_name": "Media", "smb_name": "Media SMB", "shared": True,
             "guest": False, "readonly": True, "encrypted": True,
+            "time_machine": False, "tm_quota_gb": None,
         }
         with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
             folder = Path(temporary) / "Media"
             folder.mkdir()
             with (
                 patch("hub.shares_svc._find_share", side_effect=[None, actual]),
-                patch("hub.shares_svc.run_admin", return_value={"ok": True}) as admin,
+                patch(
+                    "hub.shares_svc.run_admin_sequence", return_value={"ok": True},
+                ) as admin,
             ):
                 result = shares_svc.create_smb_share(
                     path=str(folder), name="Media", smb_name="Media SMB",
@@ -164,22 +178,23 @@ class SharesServiceTests(unittest.TestCase):
                 )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(admin.call_args.args[0], [
+        self.assertEqual(admin.call_args.args[0], [[
             "/usr/sbin/sharing", "-a", str(folder.resolve()), "-n", "Media",
             "-S", "Media SMB", "-s", "001", "-g", "000", "-R", "1", "-E", "1",
-        ])
+        ]])
 
     def test_create_share_fails_when_system_state_does_not_match(self):
         actual = {
             "record_name": "Media", "smb_name": "Wrong", "shared": True,
             "guest": False, "readonly": False, "encrypted": False,
+            "time_machine": False, "tm_quota_gb": None,
         }
         with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
             folder = Path(temporary) / "Media"
             folder.mkdir()
             with (
                 patch("hub.shares_svc._find_share", side_effect=[None, actual]),
-                patch("hub.shares_svc.run_admin", return_value={"ok": True}),
+                patch("hub.shares_svc.run_admin_sequence", return_value={"ok": True}),
             ):
                 result = shares_svc.create_smb_share(
                     path=str(folder), name="Media", smb_name="Media",

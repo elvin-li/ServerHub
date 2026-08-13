@@ -8,17 +8,25 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import socket
+import subprocess
+import threading
 from pathlib import Path
+from uuid import uuid4
 
 from hub.config import cfg
 from hub.host_address import host_ip, resolve_value
 from hub.macos_admin import run_admin, run_admin_sequence
 from hub.paths import BASE, STATE_ROOT
-from hub.util import fan_out, port_open, sh
+from hub.util import fan_out, port_open, sh, ttl_memo
 
 SHARING = "/usr/sbin/sharing"
+DSCL = "/usr/bin/dscl"
+DNS_SD = "/usr/bin/dns-sd"
+SMB_PORT = 445
+_SHAREPOINTS = "/SharePoints"
 SYSTEMSETUP = "/usr/sbin/systemsetup"
 LAUNCHCTL = "/bin/launchctl"
 OPEN = "/usr/bin/open"
@@ -140,6 +148,194 @@ def _json_shares(output: str) -> list[dict]:
     return result
 
 
+# ── Time Machine destination attributes ─────────────────────────────────────
+#
+# `sharing` on this macOS (26.5, checked with `man sharing` and the tool's own
+# usage text) has no Time Machine flag at all, so the panel writes the
+# share-point record attributes directly with `dscl`, the same records
+# `sharing` itself edits.  Attribute-name provenance, since no GUI-enabled TM
+# share existed on the dev machine to copy from:
+#
+# * flag + UUID: the dslocal sharepoint records documented since OS X Server
+#   spell them ``timeMachineBackup`` (0/1) and ``timeMachineBackupUUID``, and
+#   the File Sharing advanced-options sheet of *this* macOS version
+#   (Sharing.appex on 26.5.2) exposes matching ``timeMachineBackupUUID`` /
+#   ``isTimeMachineBackupDestination`` properties.
+# * quota: Sharing.appex names it ``backupQuotaSize``; assumed to be bytes
+#   (every neighbouring Apple quota knob — .com.apple.TimeMachine.quota.plist
+#   GlobalQuota, APFS quotas — is bytes).
+#
+# None of these were verified against a real GUI-created TM share.  That is
+# survivable because every write below is verified by a fresh read of the same
+# attributes: if Apple renamed them, enabling fails loudly with
+# ``verification_failed`` instead of pretending the share is a backup target.
+_TM_FLAG_ATTR = "dsAttrTypeNative:timeMachineBackup"
+_TM_UUID_ATTR = "dsAttrTypeNative:timeMachineBackupUUID"
+_TM_QUOTA_ATTR = "dsAttrTypeNative:backupQuotaSize"
+#: Read-side tolerance: spellings reported for GUI-enabled shares on other
+#: macOS versions (community dscl dumps), so a share configured outside the
+#: panel is still recognized.  Canonical name first.
+_TM_FLAG_READ_ATTRS = (_TM_FLAG_ATTR, "dsAttrTypeNative:timemachine")
+_TM_QUOTA_READ_ATTRS = (_TM_QUOTA_ATTR, "dsAttrTypeNative:timemachine_quota")
+_TM_QUOTA_MAX_GB = 1_000_000
+_GB = 1_000_000_000  # decimal, matching how macOS reports disk sizes
+
+
+def _plist_first(record: dict, key: str) -> str | None:
+    """First value of a dscl plist attribute (they are always string arrays)."""
+    values = record.get(key)
+    if isinstance(values, list) and values:
+        return str(values[0])
+    return None
+
+
+def parse_time_machine_records(plist_text: str | bytes) -> dict[str, dict]:
+    """RecordName -> Time Machine attributes, from `dscl -plist . -readall`."""
+    data = plist_text.encode() if isinstance(plist_text, str) else plist_text
+    records = plistlib.loads(data)
+    if not isinstance(records, list):
+        raise ValueError("SharePoints plist is not an array")
+    result: dict[str, dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name = _plist_first(record, "dsAttrTypeStandard:RecordName")
+        if not name:
+            continue
+        flag = next(
+            (value for key in _TM_FLAG_READ_ATTRS
+             if (value := _plist_first(record, key)) is not None),
+            None,
+        )
+        quota_raw = next(
+            (value for key in _TM_QUOTA_READ_ATTRS
+             if (value := _plist_first(record, key)) is not None),
+            None,
+        )
+        try:
+            quota_bytes = int(quota_raw) if quota_raw is not None else 0
+        except ValueError:
+            quota_bytes = 0
+        # 0 and absent both mean "no cap" (server-era backupQuota = 0).
+        quota_gb = round(quota_bytes / _GB) if quota_bytes > 0 else 0
+        result[name] = {
+            "time_machine": _flag(flag) if flag is not None else False,
+            "tm_quota_gb": quota_gb or None,
+            "uuid": _plist_first(record, _TM_UUID_ATTR),
+        }
+    return result
+
+
+def time_machine_records() -> dict[str, dict]:
+    """Live Time Machine state of every share point; {} when unreadable.
+
+    Reading the local directory node needs no privileges, unlike the writes.
+    """
+    rc, output, _ = sh([DSCL, "-plist", ".", "-readall", _SHAREPOINTS], timeout=8)
+    if rc != 0 or not output:
+        return {}
+    try:
+        return parse_time_machine_records(output)
+    except Exception:
+        return {}
+
+
+def smb_service_running() -> bool:
+    """Whether smbd is accepting connections (File Sharing is on)."""
+    try:
+        return bool(port_open(SMB_PORT, host="localhost", timeout=0.4))
+    except Exception:
+        return False
+
+
+def dns_sd_instances(output: str) -> list[str]:
+    """Instance names from `dns-sd -B` browse output ("Add" rows only)."""
+    instances = []
+    for line in output.splitlines():
+        tokens = line.split()
+        # Timestamp  A/R  Flags  if  Domain  Service Type  Instance Name…
+        if len(tokens) >= 7 and tokens[1] == "Add":
+            instances.append(" ".join(tokens[6:]))
+    return instances
+
+
+def _dns_sd_advertised(service_type: str, *, wait: float = 2.5) -> bool | None:
+    """Whether any `service_type` instance is advertised on the LAN right now.
+
+    `dns-sd -B` browses forever, so it can never simply be awaited.  Its
+    stdout is read line by line and the browse is killed **as soon as the
+    first "Add" row arrives** — sharingd usually answers within milliseconds,
+    and waiting out the full window on every call held the shares page for
+    the whole 2.5s even when the answer was already in.  The window is only
+    paid in full when nothing is advertised.  None means the probe itself
+    failed, not that nothing is advertised.
+    """
+    try:
+        proc = subprocess.Popen(
+            [DNS_SD, "-B", service_type, "local."],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return None
+    found = threading.Event()
+
+    def _scan():
+        # Reader thread because the pipe read blocks and dns-sd never exits
+        # on its own; the main thread waits on the event with a deadline.
+        try:
+            for line in proc.stdout:
+                if dns_sd_instances(line):
+                    found.set()
+                    return
+        except (OSError, ValueError):
+            pass
+
+    reader = threading.Thread(target=_scan, daemon=True, name="dns-sd-browse")
+    reader.start()
+    found.wait(wait)
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    reader.join(timeout=1)
+    return bool(found.is_set())
+
+
+@ttl_memo(60.0)
+def _adisk_advertised() -> bool | None:
+    """The `_adisk._tcp` browse, cached for a minute (single-flight).
+
+    Every ``GET /api/shares`` re-ran the browse while a TM share existed —
+    up to 2.5s of wall time per page load for an answer that only changes
+    when File Sharing or the share set changes.
+    """
+    return _dns_sd_advertised("_adisk._tcp")
+
+
+def time_machine_status(shares: list[dict] | None = None) -> dict:
+    """Prerequisite state for serving Time Machine clients.
+
+    A share point flagged for Time Machine is only reachable while smbd runs
+    (File Sharing in System Settings), and only discoverable in the clients'
+    destination picker once sharingd advertises ``_adisk._tcp``.  Both are
+    outside the share record itself, so they are reported instead of silently
+    assumed; the SPA and the health page turn them into actionable hints.
+    """
+    if shares is None:
+        shares = list_smb_shares(include_sizes=False)
+    tm_count = sum(1 for share in shares if share.get("time_machine"))
+    return {
+        "share_count": tm_count,
+        "smb_service_running": smb_service_running(),
+        # The Bonjour browse can cost its full window, so it only runs when
+        # there is a TM share whose advertisement is worth confirming.
+        "adisk_advertised": _adisk_advertised() if tm_count else None,
+    }
+
+
 def _dir_size_mb(path: str) -> float | None:
     expanded = os.path.expanduser(path)
     if not os.path.isdir(expanded):
@@ -184,9 +380,15 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     ]
     measured = fan_out(lambda i: _dir_size_mb(str(shares[i]["path"])), wanted)
     sizes = dict(zip(wanted, measured))
+    # `sharing -l` knows nothing about the Time Machine attributes, so the
+    # share-point records are read once and merged into every row.
+    tm_records = time_machine_records()
     for index, share in enumerate(shares):
         share["size_mb"] = sizes.get(index)
         share["url"] = _connection_url(share.get("smb_name"))
+        tm = tm_records.get(share["record_name"]) or {}
+        share["time_machine"] = bool(tm.get("time_machine"))
+        share["tm_quota_gb"] = tm.get("tm_quota_gb") if share["time_machine"] else None
     return shares
 
 
@@ -254,6 +456,56 @@ def _sharing_flags(*, guest: bool, readonly: bool, encrypted: bool) -> list[str]
     ]
 
 
+def _validate_quota(time_machine: bool, quota_gb) -> int | None:
+    if quota_gb is None:
+        return None
+    if not time_machine:
+        raise ShareValidationError("shares.quota_requires_time_machine")
+    if (
+        isinstance(quota_gb, bool)
+        or not isinstance(quota_gb, int)
+        or not 1 <= quota_gb <= _TM_QUOTA_MAX_GB
+    ):
+        raise ShareValidationError("shares.bad_quota")
+    return quota_gb
+
+
+def _time_machine_commands(
+    record: str, *, time_machine: bool, quota_gb: int | None, current: dict,
+) -> list[list[str]]:
+    """dscl argv that reconciles a record's TM attributes with the request.
+
+    Values are always written with ``-create`` (which replaces) rather than
+    toggled with ``-delete``: deleting an attribute that is absent — or that an
+    older macOS spelled differently — makes the whole privileged sequence
+    report failure for a state that is actually correct.
+    """
+    target = f"{_SHAREPOINTS}/{record}"
+    commands: list[list[str]] = []
+    if time_machine:
+        commands.append([DSCL, ".", "-create", target, _TM_FLAG_ATTR, "1"])
+        if not current.get("uuid"):
+            # Clients key their backup sets to this identity, so it is minted
+            # once and never rotated on subsequent edits.
+            commands.append(
+                [DSCL, ".", "-create", target, _TM_UUID_ATTR, str(uuid4()).upper()],
+            )
+        if quota_gb:
+            commands.append(
+                [DSCL, ".", "-create", target, _TM_QUOTA_ATTR, str(quota_gb * _GB)],
+            )
+        elif current.get("tm_quota_gb"):
+            commands.append([DSCL, ".", "-create", target, _TM_QUOTA_ATTR, "0"])
+    else:
+        if current.get("time_machine"):
+            commands.append([DSCL, ".", "-create", target, _TM_FLAG_ATTR, "0"])
+        if current.get("tm_quota_gb"):
+            commands.append([DSCL, ".", "-create", target, _TM_QUOTA_ATTR, "0"])
+        # The UUID attribute survives a disable: it names the existing backup
+        # sets, and keeping it lets a re-enabled share adopt them again.
+    return commands
+
+
 def _admin_failure(result: dict) -> dict:
     return {
         "ok": False,
@@ -262,55 +514,87 @@ def _admin_failure(result: dict) -> dict:
     }
 
 
-def create_smb_share(
-    *, path: str, name: str, smb_name: str, guest: bool,
-    readonly: bool, encrypted: bool,
+def _verify_share_state(
+    record: str, *, smb: str, guest: bool, readonly: bool, encrypted: bool,
+    time_machine: bool, quota_gb: int | None,
 ) -> dict:
-    directory = validate_share_path(path)
-    record = _validate_name(name)
-    smb = _validate_name(smb_name)
-    if _find_share(record):
-        return {"ok": False, "error": "exists"}
-    command = [
-        SHARING, "-a", str(directory), "-n", record, "-S", smb,
-        *_sharing_flags(guest=guest, readonly=readonly, encrypted=encrypted),
-    ]
-    result = run_admin(command)
-    if not result.get("ok"):
-        return _admin_failure(result)
+    """Fresh read after a privileged write; the read is the source of truth."""
     actual = _find_share(record)
     expected = {
         "smb_name": smb, "shared": True, "guest": guest,
         "readonly": readonly, "encrypted": encrypted,
+        "time_machine": time_machine,
+        "tm_quota_gb": quota_gb if time_machine else None,
     }
     if not actual or any(actual.get(key) != value for key, value in expected.items()):
         return {"ok": False, "error": "verification_failed"}
     return {"ok": True, "share": actual}
+
+
+def create_smb_share(
+    *, path: str, name: str, smb_name: str, guest: bool,
+    readonly: bool, encrypted: bool,
+    time_machine: bool = False, tm_quota_gb: int | None = None,
+) -> dict:
+    directory = validate_share_path(path)
+    record = _validate_name(name)
+    smb = _validate_name(smb_name)
+    quota = _validate_quota(time_machine, tm_quota_gb)
+    if _find_share(record):
+        return {"ok": False, "error": "exists"}
+    commands = [[
+        SHARING, "-a", str(directory), "-n", record, "-S", smb,
+        *_sharing_flags(guest=guest, readonly=readonly, encrypted=encrypted),
+    ]]
+    if time_machine:
+        commands += _time_machine_commands(
+            record, time_machine=True, quota_gb=quota,
+            current={},  # brand-new record: no UUID, no quota
+        )
+    # One sequence, one authorization: the dscl attribute writes ride the same
+    # admin approval as the share creation itself.
+    result = run_admin_sequence(commands)
+    if not result.get("ok"):
+        return _admin_failure(result)
+    return _verify_share_state(
+        record, smb=smb, guest=guest, readonly=readonly, encrypted=encrypted,
+        time_machine=time_machine, quota_gb=quota,
+    )
 
 
 def update_smb_share(
     record_name: str, *, smb_name: str, guest: bool,
     readonly: bool, encrypted: bool,
+    time_machine: bool = False, tm_quota_gb: int | None = None,
 ) -> dict:
     record = _validate_name(record_name)
     smb = _validate_name(smb_name)
-    if not _find_share(record):
+    quota = _validate_quota(time_machine, tm_quota_gb)
+    existing = _find_share(record)
+    if not existing:
         return {"ok": False, "error": "not_found"}
-    command = [
+    current = {
+        "time_machine": existing.get("time_machine"),
+        "tm_quota_gb": existing.get("tm_quota_gb"),
+        # The UUID is not part of the share rows; it is only needed here, to
+        # decide whether enabling has to mint one.
+        "uuid": (time_machine_records().get(record) or {}).get("uuid")
+        if time_machine else None,
+    }
+    commands = [[
         SHARING, "-e", record, "-S", smb,
         *_sharing_flags(guest=guest, readonly=readonly, encrypted=encrypted),
-    ]
-    result = run_admin(command)
+    ]]
+    commands += _time_machine_commands(
+        record, time_machine=time_machine, quota_gb=quota, current=current,
+    )
+    result = run_admin_sequence(commands)
     if not result.get("ok"):
         return _admin_failure(result)
-    actual = _find_share(record)
-    expected = {
-        "smb_name": smb, "shared": True, "guest": guest,
-        "readonly": readonly, "encrypted": encrypted,
-    }
-    if not actual or any(actual.get(key) != value for key, value in expected.items()):
-        return {"ok": False, "error": "verification_failed"}
-    return {"ok": True, "share": actual}
+    return _verify_share_state(
+        record, smb=smb, guest=guest, readonly=readonly, encrypted=encrypted,
+        time_machine=time_machine, quota_gb=quota,
+    )
 
 
 def remove_smb_share(record_name: str) -> dict:
@@ -543,6 +827,9 @@ def shares_overview() -> dict:
         "file_services": files,
         # Compatibility for clients released before the grouped response.
         "services": files,
+        # After the wave, not in it: this reads the share list gathered above,
+        # and its Bonjour browse only runs when a TM share actually exists.
+        "time_machine": time_machine_status(smb),
         "capabilities": {
             "smb_management": True,
             "system_settings_fallback": True,

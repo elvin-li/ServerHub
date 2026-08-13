@@ -188,6 +188,8 @@ describe('integrated sharing panel', () => {
       guest: false,
       readonly: false,
       encrypted: false,
+      time_machine: false,
+      tm_quota_gb: null,
     })
     expect(api.getShares).toHaveBeenCalledTimes(2)
     wrapper.unmount()
@@ -215,7 +217,131 @@ describe('integrated sharing panel', () => {
       guest: false,
       readonly: true,
       encrypted: true,
+      time_machine: false,
+      tm_quota_gb: null,
     })
+    wrapper.unmount()
+  })
+
+  it('badges Time Machine shares with their quota', async () => {
+    const shares = [
+      {
+        record_name: 'Backups', name: 'Backups', smb_name: 'Backups',
+        path: '/Volumes/Backups/TM', url: 'smb://host/Backups', guest: false,
+        readonly: false, encrypted: false, time_machine: true, tm_quota_gb: 500,
+      },
+      {
+        record_name: 'Plain', name: 'Plain', smb_name: 'Plain',
+        path: '/Users/test/Plain', url: 'smb://host/Plain', guest: false,
+        readonly: false, encrypted: false, time_machine: false, tm_quota_gb: null,
+      },
+    ]
+    const { wrapper } = await mountShares(payload({ smb: shares }))
+    const badges = wrapper.findAll('.tm-badge')
+
+    expect(badges).toHaveLength(1)
+    expect(badges[0].text()).toContain('shares.tm_quota_badge')
+    wrapper.unmount()
+  })
+
+  it('sends the Time Machine flag and an integer quota when enabled', async () => {
+    const { wrapper } = await mountShares()
+    await buttonByText(wrapper, 'shares.add_folder').trigger('click')
+    const inputs = wrapper.findAll('.share-sheet input[type="text"]')
+    await inputs[0].setValue('/Volumes/Backups/TM')
+    await inputs[1].setValue('Backups')
+    await inputs[2].setValue('Backups')
+
+    expect(wrapper.find('.share-sheet input[type="number"]').exists()).toBe(false)
+    const options = wrapper.findAll('.share-sheet input[type="checkbox"]')
+    await options[3].setValue(true)
+    const quota = wrapper.find('.share-sheet input[type="number"]')
+    expect(quota.exists()).toBe(true)
+    await quota.setValue('500')
+
+    await buttonByText(wrapper, 'common.save').trigger('click')
+    await flushPromises()
+
+    expect(api.createShare).toHaveBeenCalledWith({
+      path: '/Volumes/Backups/TM',
+      name: 'Backups',
+      smb_name: 'Backups',
+      guest: false,
+      readonly: false,
+      encrypted: false,
+      time_machine: true,
+      tm_quota_gb: 500,
+    })
+    wrapper.unmount()
+  })
+
+  it('treats a blank quota as no cap', async () => {
+    const share = {
+      record_name: 'Backups', name: 'Backups', smb_name: 'Backups',
+      path: '/Volumes/Backups/TM', url: 'smb://host/Backups', guest: false,
+      readonly: false, encrypted: false, time_machine: true, tm_quota_gb: 500,
+    }
+    const { wrapper } = await mountShares(payload({
+      smb: [share],
+      time_machine: { share_count: 1, smb_service_running: true, adisk_advertised: true },
+    }))
+    await wrapper.find('button[aria-label="shares.edit_named"]').trigger('click')
+    const quota = wrapper.find('.share-sheet input[type="number"]')
+    expect(quota.element.value).toBe('500')
+    await quota.setValue('')
+
+    await buttonByText(wrapper, 'common.save').trigger('click')
+    await flushPromises()
+
+    expect(api.updateShare).toHaveBeenCalledWith('Backups', {
+      smb_name: 'Backups',
+      guest: false,
+      readonly: false,
+      encrypted: false,
+      time_machine: true,
+      tm_quota_gb: null,
+    })
+    wrapper.unmount()
+  })
+
+  it('explains client setup and warns when SMB sharing is off', async () => {
+    const share = {
+      record_name: 'Backups', name: 'Backups', smb_name: 'Backups',
+      path: '/Volumes/Backups/TM', url: 'smb://host/Backups', guest: false,
+      readonly: false, encrypted: false, time_machine: true, tm_quota_gb: null,
+    }
+    const { wrapper } = await mountShares(payload({
+      smb: [share],
+      time_machine: { share_count: 1, smb_service_running: false, adisk_advertised: null },
+    }))
+    const note = wrapper.find('.tm-note')
+
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('shares.tm_howto')
+    expect(note.find('.tm-warn').text()).toBe('shares.tm_smb_off')
+    wrapper.unmount()
+  })
+
+  it('hints when the destination is not advertised yet', async () => {
+    const share = {
+      record_name: 'Backups', name: 'Backups', smb_name: 'Backups',
+      path: '/Volumes/Backups/TM', url: 'smb://host/Backups', guest: false,
+      readonly: false, encrypted: false, time_machine: true, tm_quota_gb: null,
+    }
+    const { wrapper } = await mountShares(payload({
+      smb: [share],
+      time_machine: { share_count: 1, smb_service_running: true, adisk_advertised: false },
+    }))
+
+    expect(wrapper.find('.tm-note .tm-warn').text()).toBe('shares.tm_not_advertised')
+    wrapper.unmount()
+  })
+
+  it('shows no Time Machine note when no share carries the flag', async () => {
+    const { wrapper } = await mountShares(payload({
+      time_machine: { share_count: 0, smb_service_running: true, adisk_advertised: null },
+    }))
+    expect(wrapper.find('.tm-note').exists()).toBe(false)
     wrapper.unmount()
   })
 

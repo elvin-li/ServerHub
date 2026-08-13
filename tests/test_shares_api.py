@@ -89,6 +89,8 @@ class SharesAPIContractTests(unittest.TestCase):
             "guest": False,
             "readonly": False,
             "encrypted": True,
+            "time_machine": False,
+            "tm_quota_gb": None,
         }
 
     def _admin_patches(self):
@@ -218,6 +220,7 @@ class SharesAPIContractTests(unittest.TestCase):
         create_mock.assert_called_once_with(**self.valid_create)
         update.assert_called_once_with(
             "Media", smb_name="Media", guest=False, readonly=True, encrypted=True,
+            time_machine=False, tm_quota_gb=None,
         )
         remove.assert_called_once_with("Media")
         toggle.assert_called_once_with("remote_login", True)
@@ -285,6 +288,65 @@ class SharesAPIContractTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["detail"]["code"], "shares.unknown_service")
         self.assertEqual(body["detail"]["params"], {"service": "internet_sharing"})
+
+    def test_time_machine_fields_pass_through_to_the_service(self):
+        created = {"ok": True, "share": {"record_name": "Backups", "time_machine": True}}
+        payload = {
+            **self.valid_create,
+            "name": "Backups", "smb_name": "Backups",
+            "time_machine": True, "tm_quota_gb": 500,
+        }
+        with (
+            self._admin_context(),
+            patch("hub.shares_svc.create_smb_share", return_value=created) as create,
+            patch("hub.audit.record") as audit_record,
+        ):
+            status, _ = asgi_request(
+                "POST", "/api/shares/smb",
+                headers=self.json_headers, payload=payload,
+            )
+        self.assertEqual(status, 200)
+        create.assert_called_once_with(**payload)
+        self.assertTrue(audit_record.call_args.kwargs["time_machine"])
+
+    def test_quota_must_be_a_strict_integer(self):
+        with (
+            self._admin_context(),
+            patch("hub.shares_svc.create_smb_share") as create,
+        ):
+            responses = [
+                asgi_request(
+                    "POST", "/api/shares/smb",
+                    headers=self.json_headers,
+                    payload={**self.valid_create, "time_machine": True, "tm_quota_gb": bad},
+                )
+                for bad in ("500", 1.5)
+            ]
+        self.assertEqual([status for status, _ in responses], [422, 422])
+        create.assert_not_called()
+
+    def test_quota_domain_errors_surface_as_machine_readable_codes(self):
+        from hub.shares_svc import ShareValidationError
+
+        cases = {
+            "shares.bad_quota": {**self.valid_create, "time_machine": True, "tm_quota_gb": 0},
+            "shares.quota_requires_time_machine": {**self.valid_create, "tm_quota_gb": 100},
+        }
+        for code, payload in cases.items():
+            with (
+                self.subTest(code=code),
+                self._admin_context(),
+                patch(
+                    "hub.shares_svc.create_smb_share",
+                    side_effect=ShareValidationError(code),
+                ),
+            ):
+                status, body = asgi_request(
+                    "POST", "/api/shares/smb",
+                    headers=self.json_headers, payload=payload,
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(body["detail"]["code"], code)
 
     def test_authorization_cancel_maps_to_conflict(self):
         with (

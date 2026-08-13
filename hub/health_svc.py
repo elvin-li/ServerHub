@@ -181,6 +181,40 @@ def _immich_checks() -> list[dict]:
         )]
 
 
+def _time_machine_checks() -> list[dict]:
+    """A Time Machine share is only a backup target while smbd is running.
+
+    The share-point flag survives File Sharing being switched off, and client
+    Macs then fail their backups silently — the panel row still looks
+    configured.  Nothing is reported when no share carries the flag: this is a
+    prerequisite check, not a feature advertisement.
+    """
+    try:
+        from hub import shares_svc
+
+        flagged = [
+            name
+            for name, info in shares_svc.time_machine_records().items()
+            if info.get("time_machine")
+        ]
+        if not flagged:
+            return []
+        up = shares_svc.smb_service_running()
+        return [_check(
+            "tm_share_smb", "Time Machine share reachable",
+            "warn", up,
+            f"{len(flagged)} Time Machine share(s); SMB "
+            + ("listening on :445" if up else "service not running"),
+            "Turn on File Sharing in System Settings so client Macs can reach "
+            "the backup share" if not up else "",
+        )]
+    except Exception as e:
+        return [_check(
+            "tm_share_smb", "Time Machine share check", "warn", False,
+            f"check failed: {e}"[:160], "See hub/shares_svc.py",
+        )]
+
+
 def _wireguard_checks() -> list[dict]:
     """WireGuard tunnel liveness + boot daemon integrity.
 
@@ -281,7 +315,7 @@ def _collect_checks() -> dict:
     # Order is restored below, not taken from completion: `fan_out` returns results in
     # submission order, and each probe returns its checks already assembled, so the
     # rendered sequence is identical to when this ran top to bottom.
-    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich, wg = fan_out(
+    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich, wg, tm = fan_out(
         lambda probe: probe(),
         [
             _engine_up,
@@ -292,8 +326,9 @@ def _collect_checks() -> dict:
             _smart_checks,
             _immich_checks,
             _wireguard_checks,
+            _time_machine_checks,
         ],
-        max_workers=8,
+        max_workers=9,
     )
 
     # OrbStack / docker
@@ -384,6 +419,9 @@ def _collect_checks() -> dict:
 
     # WireGuard tunnel + boot daemon — probed in the wave above.
     checks.extend(wg)
+
+    # Time Machine share prerequisites — probed in the wave above.
+    checks.extend(tm)
 
     errors = sum(1 for c in checks if not c["ok"] and c["level"] == "error")
     warns = sum(1 for c in checks if not c["ok"] and c["level"] == "warn")

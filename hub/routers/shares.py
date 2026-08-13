@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 
 from hub import audit, auth, shares_svc
 from hub.errors import api_error
@@ -20,6 +20,10 @@ class SMBCreate(BaseModel):
     guest: StrictBool = False
     readonly: StrictBool = False
     encrypted: StrictBool = False
+    time_machine: StrictBool = False
+    # Range and the "quota needs the TM flag" rule are enforced in shares_svc,
+    # where violations surface as machine-readable codes instead of a 422.
+    tm_quota_gb: StrictInt | None = None
 
 
 class SMBUpdate(BaseModel):
@@ -29,6 +33,8 @@ class SMBUpdate(BaseModel):
     guest: StrictBool = False
     readonly: StrictBool = False
     encrypted: StrictBool = False
+    time_machine: StrictBool = False
+    tm_quota_gb: StrictInt | None = None
 
 
 class SystemServicePatch(BaseModel):
@@ -115,6 +121,10 @@ def create_share(body: SMBCreate, request: Request):
         outcome=outcome,
         record=body.name[:64],
         folder=_path_label(body.path),
+        time_machine=body.time_machine,
+        # The quota is part of the TM contract (it caps how much a client may
+        # write), so a change to it must be answerable from the trail too.
+        tm_quota_gb=body.tm_quota_gb,
     )
     if not result.get("ok"):
         _raise_service_error(result)
@@ -135,6 +145,8 @@ def update_share(record_name: str, body: SMBUpdate, request: Request):
         action="update",
         outcome="success" if result.get("ok") else "failure",
         record=record_name[:64],
+        time_machine=body.time_machine,
+        tm_quota_gb=body.tm_quota_gb,
     )
     if not result.get("ok"):
         _raise_service_error(result)

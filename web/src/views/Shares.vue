@@ -89,6 +89,12 @@
               <span v-else class="badge ok"><LockKeyhole :size="12" />{{ t('shares.secure') }}</span>
               <span v-if="share.readonly" class="badge">{{ t('shares.readonly') }}</span>
               <span v-if="share.encrypted" class="badge accent">{{ t('shares.encrypted') }}</span>
+              <span v-if="share.time_machine" class="badge accent tm-badge">
+                <History :size="12" />
+                {{ share.tm_quota_gb
+                  ? t('shares.tm_quota_badge', { gb: share.tm_quota_gb })
+                  : t('shares.time_machine_badge') }}
+              </span>
             </div>
             <div class="share-actions btns">
               <button class="tiny" :aria-label="t('shares.edit_named', { name: share.smb_name || share.name })" :disabled="busy" @click="openEdit(share)">
@@ -99,6 +105,19 @@
               </button>
             </div>
           </article>
+        </div>
+        <div v-if="tmStatus.share_count" class="card tm-note" role="note">
+          <History :size="17" />
+          <div>
+            <strong>{{ t('shares.tm_howto_title') }}</strong>
+            <span>{{ t('shares.tm_howto', { host: hostName }) }}</span>
+            <span v-if="tmStatus.smb_service_running === false" class="tm-warn">
+              {{ t('shares.tm_smb_off') }}
+            </span>
+            <span v-else-if="tmStatus.adisk_advertised === false" class="tm-warn">
+              {{ t('shares.tm_not_advertised') }}
+            </span>
+          </div>
         </div>
       </section>
 
@@ -216,7 +235,26 @@
               <span><strong>{{ t('shares.encrypted') }}</strong><small>{{ t('shares.encrypted_hint') }}</small></span>
               <input v-model="form.encrypted" type="checkbox" />
             </label>
+            <label class="option-row">
+              <span><strong>{{ t('shares.time_machine') }}</strong><small>{{ t('shares.time_machine_hint') }}</small></span>
+              <input v-model="form.time_machine" type="checkbox" />
+            </label>
           </div>
+          <label v-if="form.time_machine">
+            <span>{{ t('shares.tm_quota') }}</span>
+            <input
+              v-model="form.tm_quota_gb"
+              type="number"
+              min="1"
+              step="1"
+              inputmode="numeric"
+              :placeholder="t('shares.tm_quota_placeholder')"
+            />
+            <small>{{ t('shares.tm_quota_hint') }}</small>
+          </label>
+          <p v-if="form.time_machine" class="sheet-security">
+            <History :size="17" />{{ t('shares.tm_howto', { host: hostName }) }}
+          </p>
           <p class="sheet-security"><ShieldCheck :size="17" />{{ t('shares.native_auth_hint') }}</p>
         </div>
       </section>
@@ -228,9 +266,9 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import {
   Archive, Bluetooth, ExternalLink, Folder, FolderOpen, Globe2, HardDriveDownload,
-  Laptop, LoaderCircle, LockKeyhole, Monitor, Music2, Pencil, Plus, Printer,
-  RefreshCw, Router, Server, Settings, ShieldCheck, TerminalSquare, Trash2, Users,
-  Workflow,
+  History, Laptop, LoaderCircle, LockKeyhole, Monitor, Music2, Pencil, Plus,
+  Printer, RefreshCw, Router, Server, Settings, ShieldCheck, TerminalSquare,
+  Trash2, Users, Workflow,
 } from '@lucide/vue'
 import {
   createShare, getShares, openSharingSettings, removeShare as removeShareRequest,
@@ -250,7 +288,10 @@ const busyLabel = ref('')
 const editing = ref(null)
 const sheetOpen = ref(false)
 const sheetPanel = ref(null)
-const emptyForm = () => ({ path: '', name: '', smb_name: '', guest: false, readonly: false, encrypted: false })
+const emptyForm = () => ({
+  path: '', name: '', smb_name: '', guest: false, readonly: false,
+  encrypted: false, time_machine: false, tm_quota_gb: '',
+})
 const form = ref(emptyForm())
 
 const iconMap = {
@@ -269,6 +310,8 @@ const systemServices = computed(() => data.value?.system_services || [])
 const coreServices = computed(() => systemServices.value.filter((service) => service.controllable))
 const managedServices = computed(() => systemServices.value.filter((service) => !service.controllable))
 const shareCount = computed(() => data.value?.smb?.length || 0)
+const tmStatus = computed(() => data.value?.time_machine || {})
+const hostName = computed(() => data.value?.host?.name || t('shares.unknown'))
 const activeCoreCount = computed(() => coreServices.value.filter((service) => service.enabled === true).length)
 const stateClass = (enabled) => enabled === true ? 'ok' : enabled === false ? 'stopped' : 'warn'
 const stateText = (enabled) => enabled === true
@@ -310,6 +353,8 @@ function openEdit(share) {
     guest: Boolean(share.guest),
     readonly: Boolean(share.readonly),
     encrypted: Boolean(share.encrypted),
+    time_machine: Boolean(share.time_machine),
+    tm_quota_gb: share.tm_quota_gb ? String(share.tm_quota_gb) : '',
   }
   sheetOpen.value = true
 }
@@ -320,20 +365,31 @@ function closeSheet() {
   editing.value = null
 }
 
+// The quota travels as an integer GB count or null: the input yields strings,
+// and a blank means "limited by disk capacity only", which the API spells null.
+function quotaPayload() {
+  if (!form.value.time_machine) return null
+  const value = Number.parseInt(form.value.tm_quota_gb, 10)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
 async function saveShare() {
   if (busy.value || !formValid.value) return
   if (form.value.guest && !confirm(t('shares.confirm_guest'))) return
   busy.value = true
   busyLabel.value = t('shares.waiting_for_admin')
   try {
+    const options = {
+      smb_name: form.value.smb_name,
+      guest: form.value.guest,
+      readonly: form.value.readonly,
+      encrypted: form.value.encrypted,
+      time_machine: form.value.time_machine,
+      tm_quota_gb: quotaPayload(),
+    }
     const result = editing.value
-      ? await updateShare(editing.value.record_name, {
-        smb_name: form.value.smb_name,
-        guest: form.value.guest,
-        readonly: form.value.readonly,
-        encrypted: form.value.encrypted,
-      })
-      : await createShare({ ...form.value })
+      ? await updateShare(editing.value.record_name, options)
+      : await createShare({ path: form.value.path, name: form.value.name, ...options })
     toast(`✅ ${result.message || t('shares.saved')}`)
     sheetOpen.value = false
     editing.value = null
@@ -424,6 +480,11 @@ onMounted(refresh)
 .share-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
 .share-badges .badge { display:inline-flex; align-items:center; gap:3px; }
 .danger-button { color:var(--down); }
+.tm-note { display:flex; gap:10px; align-items:flex-start; margin-top:8px; padding:12px; border-left:3px solid var(--accent); color:var(--sub); font-size:11px; line-height:1.5; }
+.tm-note > svg { flex:0 0 auto; margin-top:1px; color:var(--accent); }
+.tm-note > div { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.tm-note strong { color:var(--txt); font-size:12px; }
+.tm-note .tm-warn { color:var(--warn); font-weight:600; }
 .empty-state { display:flex; align-items:center; justify-content:center; gap:12px; min-height:92px; color:var(--sub); text-align:left; }
 .empty-state > div { display:flex; flex-direction:column; gap:3px; }
 .empty-state strong { color:var(--txt); font-size:13px; }
@@ -459,7 +520,7 @@ onMounted(refresh)
 .sheet-body { display:flex; flex-direction:column; gap:14px; padding:16px; }
 .sheet-body > label { display:flex; flex-direction:column; gap:6px; }
 .sheet-body label > span { font-size:11px; font-weight:600; }
-.sheet-body input[type="text"] { min-height:40px; padding:0 10px; border:1px solid var(--line); border-radius:var(--radius); color:var(--txt); background:var(--bg); }
+.sheet-body input[type="text"],.sheet-body input[type="number"] { min-height:40px; padding:0 10px; border:1px solid var(--line); border-radius:var(--radius); color:var(--txt); background:var(--bg); }
 .sheet-body small { color:var(--sub); font-size:10.5px; }
 .sheet-options { border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
 .option-row { display:flex; align-items:center; justify-content:space-between; gap:14px; min-height:54px; padding:8px 10px; }
