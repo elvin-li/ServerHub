@@ -32,6 +32,7 @@ const Apps = () => import('./views/Apps.vue')
 const VMs = () => import('./views/VMs.vue')
 const Services = () => import('./views/Services.vue')
 const Brew = () => import('./views/Brew.vue')
+const Ollama = () => import('./views/Ollama.vue')
 const Network = () => import('./views/Network.vue')
 const Gateway = () => import('./views/Gateway.vue')
 const WireGuard = () => import('./views/WireGuard.vue')
@@ -66,6 +67,7 @@ const routes = [
   { path: '/vms', name: 'vms', component: VMs },
   { path: '/services', name: 'services', component: Services },
   { path: '/brew', name: 'brew', component: Brew },
+  { path: '/ollama', name: 'ollama', component: Ollama },
   { path: '/network', name: 'network', component: Network },
   { path: '/gateway', name: 'gateway', component: Gateway },
   { path: '/wireguard', name: 'wireguard', component: WireGuard },

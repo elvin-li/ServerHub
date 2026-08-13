@@ -181,6 +181,25 @@ def _immich_checks() -> list[dict]:
         )]
 
 
+def _ollama_checks() -> list[dict]:
+    """Local LLM daemon liveness + resident model count.
+
+    hub/ollama_svc.py gates the row on this host actually running ollama (a
+    binary on PATH or an ollama-referencing LaunchAgent plist) and probes with
+    two short HTTP GETs — never a subprocess — so machines without ollama get
+    no row at all and a sick daemon costs this fan-out at most the HTTP timeout.
+    """
+    try:
+        from hub import ollama_svc
+
+        return ollama_svc.health_checks()
+    except Exception as e:
+        return [_check(
+            "ollama_api", "Ollama local LLM check", "warn", False,
+            f"check failed: {e}"[:160], "See hub/ollama_svc.py",
+        )]
+
+
 def _time_machine_checks() -> list[dict]:
     """A Time Machine share is only a backup target while smbd is running.
 
@@ -345,7 +364,7 @@ def _collect_checks() -> dict:
     # Order is restored below, not taken from completion: `fan_out` returns results in
     # submission order, and each probe returns its checks already assembled, so the
     # rendered sequence is identical to when this ran top to bottom.
-    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich, wg, tm = fan_out(
+    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich, wg, tm, ollama = fan_out(
         lambda probe: probe(),
         [
             _engine_up,
@@ -357,8 +376,9 @@ def _collect_checks() -> dict:
             _immich_checks,
             _wireguard_checks,
             _time_machine_checks,
+            _ollama_checks,
         ],
-        max_workers=9,
+        max_workers=10,
     )
 
     # OrbStack / docker
@@ -449,6 +469,10 @@ def _collect_checks() -> dict:
 
     # WireGuard tunnel + boot daemon — probed in the wave above.
     checks.extend(wg)
+
+    # Ollama local LLM daemon — probed in the wave above; empty on hosts
+    # without ollama.
+    checks.extend(ollama)
 
     # Time Machine share prerequisites — probed in the wave above.
     checks.extend(tm)

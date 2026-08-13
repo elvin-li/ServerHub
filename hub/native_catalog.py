@@ -356,6 +356,26 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "ports": ["9100"],
     },
     {
+        "id": "native-ollama",
+        "name": "Ollama (brew)",
+        "desc": "Local LLM runtime · REST API on :11434 · Apple Silicon GPU acceleration",
+        "category": "dev",
+        "tags": ["ai", "llm", "native"],
+        "featured": False,
+        "method": "brew_formula",
+        "package": "ollama",
+        # Newer builds may not put the binary on PATH before the shell reloads,
+        # so accept the brew receipt as installation proof too.
+        "check": ["bin:ollama", "brew:ollama"],
+        "service": True,
+        "ports": ["11434"],
+        # Deliberately no url_hint: :11434 is a JSON API, not a web UI —
+        # manage models from the panel's Ollama page instead.
+        "notes": "brew services start ollama runs the API server at login. "
+                 "If this host already runs ollama through a custom LaunchAgent, "
+                 "keep using that agent instead of starting a second daemon on the same port.",
+    },
+    {
         "id": "native-jellyfin",
         "name": "Jellyfin (native app)",
         "desc": "Media server cask · fits macOS better than Docker",

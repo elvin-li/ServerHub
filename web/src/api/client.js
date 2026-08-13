@@ -866,3 +866,19 @@ export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
   })
   return new EventSource(`/api/containers/${encodeURIComponent(name)}/logs?${q}`)
 }
+
+// ── Ollama local LLM (hub/routers/ollama_api.py) ─────────────────────────────
+// The quick test proxies one bounded /api/generate; a cold model spends tens of
+// seconds loading before it answers, and the backend allows the generation 120s.
+const OLLAMA_TEST_TIMEOUT = 130000
+export const getOllamaStatus = (force = false) =>
+  json(`/api/ollama/status${force ? '?force=true' : ''}`)
+export const startOllamaPull = (model) =>
+  json('/api/ollama/pull', jsonBody('POST', { model }))
+export const getOllamaPullLog = () => json('/api/ollama/pull/log')
+export const deleteOllamaModel = (model) =>
+  json('/api/ollama/models/delete', jsonBody('POST', { model, confirm: true }))
+export const unloadOllamaModel = (model) =>
+  json('/api/ollama/models/unload', jsonBody('POST', { model }))
+export const testOllamaModel = (model, prompt, numPredict = 128) =>
+  json('/api/ollama/test', jsonBody('POST', { model, prompt, num_predict: numPredict }), OLLAMA_TEST_TIMEOUT)

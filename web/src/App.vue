@@ -127,8 +127,8 @@ import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 
 import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
   Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
-  Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Settings,
-  ScrollText, ShieldCheck, CircleUser,
+  Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot,
+  Settings, ScrollText, ShieldCheck, CircleUser,
 } from '@lucide/vue'
 import { authState } from './lib/authState'
 import { startVisibleInterval } from './lib/poll'
@@ -213,7 +213,7 @@ const NAV_ADMIN = [
     // One group for everything runnable keeps the top bar compact and predictable.
     to: '/services',
     labelKey: 'nav.app_services',
-    match: ['/services', '/containers', '/compose', '/vms', '/brew', '/apps'],
+    match: ['/services', '/containers', '/compose', '/vms', '/brew', '/apps', '/ollama'],
     icon: Package,
     children: [
       { to: '/services', labelKey: 'nav.sub_all_services', exact: true, icon: Server },
@@ -222,6 +222,7 @@ const NAV_ADMIN = [
       { to: '/vms', labelKey: 'nav.vms', icon: Monitor },
       { to: '/apps', labelKey: 'nav.apps', icon: Package },
       { to: '/brew', labelKey: 'nav.brew', icon: Terminal },
+      { to: '/ollama', labelKey: 'nav.ollama', icon: Bot },
     ],
   },
   {
