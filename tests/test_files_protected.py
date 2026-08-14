@@ -107,8 +107,18 @@ class TestFileBrowserStartup(unittest.TestCase):
         self.assertIsInstance(argv, list)
         self.assertEqual(argv[0], str(binary))
         self.assertIn(str(media), argv)
+        self.assertIn("-a", argv)
+        self.assertEqual(argv[argv.index("-a") + 1], "127.0.0.1")
+        self.assertNotIn("0.0.0.0", argv)
         self.assertNotIn("shell", popen.call_args.kwargs)
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    def test_catalog_install_also_binds_loopback(self):
+        source = (
+            Path(__file__).resolve().parent.parent / "hub" / "native_catalog.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"-a", "127.0.0.1"', source)
+        self.assertNotIn('"-a", "0.0.0.0"', source)
 
 
 if __name__ == "__main__":

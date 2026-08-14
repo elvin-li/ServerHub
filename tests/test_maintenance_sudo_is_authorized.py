@@ -36,6 +36,22 @@ from hub.config import cfg  # noqa: E402
 
 TEMPLATE = BASE / "deploy" / "sudoers.d" / "serverhub"
 
+#: Shipped commands the live services.yaml may omit (a clean checkout has
+#: ``maintenance: []``).  These are the shapes that already broke once when the
+#: policy was tightened; the fixture must still examine them on every host.
+_CANONICAL_MAINTENANCE_TASKS = [
+    {
+        "id": "smart-report",
+        "command": "sudo -n /usr/local/libexec/serverhub/smartctl -a /dev/disk0",
+    },
+    {
+        "id": "smart-health",
+        "command": "sudo -n /usr/local/libexec/serverhub/smartctl -H /dev/disk0",
+    },
+    {"id": "reboot", "command": "sudo -n /sbin/shutdown -r now"},
+    {"id": "shutdown", "command": "sudo -n /sbin/shutdown -h now"},
+]
+
 #: Flags that sit between `sudo` and the command and take no value of their own.
 _SUDO_FLAGS = {"-n", "-E", "-A", "-b", "-H", "-K", "-k", "-P", "-S", "-s"}
 
@@ -94,7 +110,12 @@ class MaintenanceSudoTests(unittest.TestCase):
             state_root=str(BASE),
             user="a0000",
         )
-        cls.tasks = list(cfg().get("maintenance") or [])
+        live = list(cfg().get("maintenance") or [])
+        seen = {task.get("id") for task in live}
+        cls.tasks = list(live)
+        for task in _CANONICAL_MAINTENANCE_TASKS:
+            if task["id"] not in seen:
+                cls.tasks.append(task)
 
     def test_the_fixture_found_rules_and_tasks(self):
         # Without this, an empty parse would make every assertion below vacuous.

@@ -1901,6 +1901,11 @@ export default {
       bad_network_name: 'Invalid network name',
       builtin_network: 'Built-in networks cannot be removed',
       no_compose_file: 'This stack has no compose file, so compose actions are unavailable',
+      bad_shell: 'Unsupported container exec shell',
+    },
+    maintenance: {
+      job_running: 'A maintenance task is already running — wait for it to finish',
+      unknown_task: 'Unknown maintenance task',
     },
 
     invalid_input: 'Invalid input',

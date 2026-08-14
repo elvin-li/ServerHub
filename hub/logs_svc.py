@@ -7,6 +7,15 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub.config import cfg
+from hub import files_svc
+
+
+def _log_path_allowed(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    return not files_svc.is_protected(path) and not files_svc.is_protected(resolved)
 
 
 def log_sources() -> list:
@@ -22,6 +31,8 @@ def log_sources() -> list:
     out = []
     for s in sources:
         p = Path(os.path.expanduser(s["path"]))
+        if not _log_path_allowed(p):
+            continue
         out.append({
             "id": s["id"],
             "name": s.get("name", s["id"]),
@@ -38,6 +49,8 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
         raise HTTPException(404, "unknown log source")
     meta = sources[source_id]
     p = Path(meta["path"])
+    if not _log_path_allowed(p):
+        raise HTTPException(403, "protected log path")
     if not p.is_file():
         return {"id": source_id, "name": meta["name"], "path": meta["path"],
                 "exists": False, "log": "（文件不存在）", "lines": 0}

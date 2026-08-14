@@ -31,28 +31,50 @@ _ALLOWED_SCHEMES = frozenset({"http", "https"})
 #: certificate is the norm rather than a sign of interception.
 _PRIVATE_SUFFIXES = (".local", ".lan", ".internal", ".home", ".arpa")
 
+#: Names that must never be probed. ``localhost`` is the panel itself;
+#: ``metadata`` / ``metadata.google.internal`` are cloud IMDS aliases.
+_BLOCKED_PROBE_NAMES = frozenset({
+    "localhost",
+    "metadata",
+    "metadata.google.internal",
+})
+
+
+def _is_blocked_probe_host(host: str) -> bool:
+    """Loopback, link-local (including 169.254.169.254), and IMDS names.
+
+    Bookmark URLs come from quick_links and from discovered container/VM
+    labels. Probing those would turn the dashboard into a LAN SSRF client
+    against the panel, the metadata service, and other loopback listeners.
+    """
+    name = (host or "").strip().strip("[]").lower()
+    if not name or name in _BLOCKED_PROBE_NAMES:
+        return True
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return bool(addr.is_loopback or addr.is_link_local or addr.is_unspecified)
+
 
 def _is_private_host(host: str) -> bool:
-    """Whether *host* names the local machine or a LAN host, by literal form.
+    """Whether *host* is a LAN name we may probe with TLS verification off.
 
-    Certificate verification is skipped only for these.  Home services on the
-    LAN legitimately serve self-signed certificates, so verifying them would
-    turn every such bookmark permanently red -- but a public host has no such
-    excuse, and probing it without verification means a network attacker can
-    decide what the dashboard reports.
+    RFC1918, ``.local`` / ``.lan`` / similar suffixes, and dotless short names
+    are the Heimdall-style home-NAS case. Loopback, link-local, and unspecified
+    addresses are not LAN for this purpose — they are blocked by
+    :func:`_is_blocked_probe_host` before a socket is opened.
 
     Deliberately decided from the literal hostname and *not* from a DNS lookup.
     A resolver is not a trustworthy input for a security decision: split-horizon
     DNS, and fake-IP proxies such as Clash or Surge, map every public name into a
     private-looking range (198.18.0.0/15 in the case that surfaced this), which
-    would have silently turned verification off for the entire internet.  The
-    cost of the strict reading is a self-signed *public* hostname probing red,
-    which is the correct outcome anyway.
+    would have silently turned verification off for the entire internet.
     """
     name = (host or "").strip().strip("[]").lower()
-    if not name:
+    if not name or _is_blocked_probe_host(name):
         return False
-    if name == "localhost" or name.endswith(_PRIVATE_SUFFIXES):
+    if name.endswith(_PRIVATE_SUFFIXES):
         return True
     try:
         addr = ipaddress.ip_address(name)
@@ -61,13 +83,7 @@ def _is_private_host(host: str) -> bool:
         # practice ("nas", "pi"); anything with a dot is treated as a real
         # public DNS name and gets verified.
         return "." not in name
-    return bool(
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-        or addr.is_unspecified
-    )
+    return bool(addr.is_private)
 
 
 class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
@@ -78,7 +94,18 @@ class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if (urllib.parse.urlsplit(newurl).scheme or "").lower() not in _ALLOWED_SCHEMES:
+        parts = urllib.parse.urlsplit(newurl)
+        if (parts.scheme or "").lower() not in _ALLOWED_SCHEMES:
+            return None
+        dest = parts.hostname or ""
+        src = urllib.parse.urlsplit(getattr(req, "full_url", "") or "").hostname or ""
+        # Loopback / link-local / IMDS are refused from every source, including
+        # a LAN bookmark that 302s onto 169.254.169.254. A public bookmark that
+        # 302s onto RFC1918 is still SSRF. LAN→LAN redirects stay allowed: that
+        # is how a home NAS bookmark follows its own login bounce.
+        if _is_blocked_probe_host(dest):
+            return None
+        if _is_private_host(dest) and not _is_private_host(src):
             return None
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -91,6 +118,9 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         if scheme not in _ALLOWED_SCHEMES:
             return {"ok": False, "status": None, "ms": 0,
                     "error": f"unsupported scheme: {scheme or 'none'}"}
+        if _is_blocked_probe_host(parts.hostname or ""):
+            return {"ok": False, "status": None, "ms": 0,
+                    "error": "blocked host"}
         req = urllib.request.Request(
             url,
             method="GET",

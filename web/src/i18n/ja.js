@@ -1901,6 +1901,11 @@ export default {
       bad_network_name: 'ネットワーク名が不正です',
       builtin_network: '組み込みネットワークは削除できません',
       no_compose_file: 'このスタックには compose ファイルがないため、compose 操作は利用できません',
+      bad_shell: 'このコンテナ実行シェルはサポートされていません',
+    },
+    maintenance: {
+      job_running: '別のメンテナンスタスクが実行中です。完了までお待ちください',
+      unknown_task: '不明なメンテナンスタスクです',
     },
 
     invalid_input: '入力に誤りがあります',

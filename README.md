@@ -2,7 +2,7 @@
 
 macOS 家庭服务器管理面板 — 对标 **Unraid** 信息架构，并吸收 **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew** 等开源优秀能力。
 
-**面板：** 默认仅本机 `http://localhost:8086`；远程访问请通过启用 TLS 与身份策略的 Cloudflare Tunnel/反向代理，勿直接暴露 8086。
+**面板：** 默认访问地址是 `http://localhost:8086`。进程默认绑定 `127.0.0.1:8086`（仅本机）。局域网直连时设置 `SERVERHUB_HOST=0.0.0.0`。设置完成后必须登录。远程访问请通过启用 TLS 与身份策略的 Cloudflare Tunnel/反向代理，勿把未加保护的 8086 直接暴露到公网。
 
 ## 界面展示
 
@@ -69,7 +69,21 @@ cd ServerHub
 open http://localhost:8086
 ```
 
-安装脚本会创建本地虚拟环境、保留已有 `services.yaml`，并生成仅存于本机且已被 Git 忽略的认证令牌。首次打开时请使用 `data/.setup-token` 完成管理员设置。卸载时运行 `./uninstall.sh`；使用 `--purge` 会额外删除本地配置和运行数据。
+安装脚本会创建本地虚拟环境、保留已有 `services.yaml`，并生成仅存于本机且已被 Git 忽略的认证令牌。首次打开时请使用 `data/.setup-token` 完成管理员设置。
+
+通过 Cloudflare Tunnel 或反向代理访问时，首次设置**必须**填写该令牌：代理连到 `127.0.0.1` 并不等于“人在这台 Mac 上”。本机浏览器打开 `http://localhost:8086` 时，面板会自动填入令牌。
+
+常用环境变量（LaunchAgent 的 `EnvironmentVariables` 或 shell）：
+
+| 变量 | 默认 | 作用 |
+|------|------|------|
+| `SERVERHUB_HOST` | `127.0.0.1` | 监听地址。设为 `0.0.0.0` 则局域网可达 |
+| `SERVERHUB_PORT` | `8086` | TCP 端口 |
+| `SERVERHUB_TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | 可信任的反向代理 CIDR；仅这些对端的 `X-Forwarded-For` / `CF-Connecting-IP` 会用于登录限速与审计 |
+
+`GET /api/health` 是存活探测（不跑主机发现）。完整清单用 `GET /api/status`。响应带 `X-Request-ID`，日志行里也能看到同一个 id。
+
+卸载时运行 `./uninstall.sh`；使用 `--purge` 会额外删除本地配置和运行数据。
 
 ## 原生 macOS 菜单栏
 

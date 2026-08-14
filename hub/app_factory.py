@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import logging
+import re
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -20,6 +23,14 @@ from hub.routers import router
 from hub.routers.auth_api import router as auth_router
 from hub.terminal_pty import terminal_websocket
 from hub.vm_console import console_websocket
+
+#: Bound per request so ``serverhub.*`` log lines can carry a correlation id
+#: without every call site threading the Request through.
+request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "serverhub_request_id", default="-"
+)
+
+_REQUEST_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 
 
 #: Handlers are attached to the "serverhub" parent, not to the root logger.
@@ -44,7 +55,16 @@ def _configure_logging() -> None:
     if any(getattr(h, "_serverhub", False) for h in logger.handlers):
         return
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(levelname)s:    %(name)s: %(message)s"))
+
+    class _RequestIdFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            record.request_id = request_id_var.get("-")
+            return True
+
+    handler.addFilter(_RequestIdFilter())
+    handler.setFormatter(
+        logging.Formatter("%(levelname)s:    %(name)s: [%(request_id)s] %(message)s")
+    )
     handler._serverhub = True  # type: ignore[attr-defined]
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
@@ -63,15 +83,16 @@ async def lifespan(app: FastAPI):
     alerts.start_alerter(int(s.get("alert_interval") or 90))
     # `brew outdated` + `softwareupdate -l` is ~11.5s. Warm it in the background
     # so the first visitor to the Tools page reads a cache instead of waiting.
+    log = logging.getLogger("serverhub.lifespan")
     try:
         tools_svc.start_updates_warmer()
     except Exception:
-        pass
+        log.exception("updates warmer failed to start")
     # Keep managed IP aliases on the highest-priority active NIC
     try:
         network_svc.start_alias_autobind()
     except Exception:
-        pass
+        log.exception("alias autobind failed to start")
     try:
         yield
     finally:
@@ -128,58 +149,72 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        # Browsers send Origin/Sec-Fetch-Site on cross-site mutations.  Reject
-        # those requests while keeping curl, the menu-bar client and same-origin
-        # SPA calls compatible.  This matters even when optional auth is off.
-        if request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"}:
-            def reject(code: str) -> JSONResponse:
-                # Middleware cannot raise HTTPException, so build the same
-                # {"detail": {"code", "message"}} body the SPA translates.
-                status, body = error_payload(code)
-                return JSONResponse(body, status_code=status)
+        incoming = (request.headers.get("x-request-id") or "").strip()
+        rid = incoming if _REQUEST_ID_RE.match(incoming) else uuid.uuid4().hex
+        request_id_token = request_id_var.set(rid)
+        try:
+            # Browsers send Origin/Sec-Fetch-Site on cross-site mutations.  Reject
+            # those requests while keeping curl, the menu-bar client and same-origin
+            # SPA calls compatible.  This matters even when optional auth is off.
+            if request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"}:
+                def reject(code: str) -> JSONResponse:
+                    # Middleware cannot raise HTTPException, so build the same
+                    # {"detail": {"code", "message"}} body the SPA translates.
+                    status, body = error_payload(code)
+                    return JSONResponse(body, status_code=status)
 
-            if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
-                return reject("auth.cross_site_denied")
-            origin = request.headers.get("origin")
-            host = request.headers.get("host")
-            if origin and host:
-                from urllib.parse import urlsplit
+                if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+                    resp = reject("auth.cross_site_denied")
+                else:
+                    origin = request.headers.get("origin")
+                    host = request.headers.get("host")
+                    resp = None
+                    if origin and host:
+                        from urllib.parse import urlsplit
 
-                try:
-                    if urlsplit(origin).netloc.lower() != host.lower():
-                        return reject("auth.cross_site_denied")
-                except ValueError:
-                    return reject("auth.bad_origin")
-
-        resp = await call_next(request)
-        # Defensive headers — cheap and non-breaking for a local SPA panel.
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("X-Frame-Options", "DENY")
-        resp.headers.setdefault("Referrer-Policy", "same-origin")
-        resp.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        resp.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
-        resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-        resp.headers.setdefault(
-            "Content-Security-Policy",
-            "default-src 'self'; base-uri 'none'; object-src 'none'; "
-            "frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; "
-            "style-src 'self' 'unsafe-inline'; script-src 'self'; "
-            "connect-src 'self' ws: wss:",
-        )
-        if request.url.scheme == "https":
-            resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-        if request.url.path.startswith("/assets/"):
-            # Vite filenames are content-hashed, so they are safe to cache hard.
-            resp.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
-        elif request.url.path == "/" or not request.url.path.startswith("/api/"):
-            # SPA shell/routes must revalidate so a new build is picked up.
-            resp.headers.setdefault("Cache-Control", "no-cache")
-        elif request.method == "GET" and request.url.path.startswith("/api/"):
-            # Do not consume body_iterator here.  File downloads, SSE, and other
-            # streaming API responses must retain their incremental delivery and
-            # backpressure characteristics.
-            resp.headers.setdefault("Cache-Control", "private, max-age=3")
-        return resp
+                        try:
+                            if urlsplit(origin).netloc.lower() != host.lower():
+                                resp = reject("auth.cross_site_denied")
+                        except ValueError:
+                            resp = reject("auth.bad_origin")
+                    if resp is None:
+                        resp = await call_next(request)
+            else:
+                resp = await call_next(request)
+            resp.headers.setdefault("X-Request-ID", rid)
+            # Defensive headers — cheap and non-breaking for a local SPA panel.
+            resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+            resp.headers.setdefault("X-Frame-Options", "DENY")
+            resp.headers.setdefault("Referrer-Policy", "same-origin")
+            resp.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+            resp.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+            resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            resp.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; base-uri 'none'; object-src 'none'; "
+                "frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; "
+                "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+                "connect-src 'self' ws: wss:",
+            )
+            if request.url.scheme == "https" or (
+                request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+                == "https"
+            ):
+                resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+            if request.url.path.startswith("/assets/"):
+                # Vite filenames are content-hashed, so they are safe to cache hard.
+                resp.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+            elif request.url.path == "/" or not request.url.path.startswith("/api/"):
+                # SPA shell/routes must revalidate so a new build is picked up.
+                resp.headers.setdefault("Cache-Control", "no-cache")
+            elif request.method == "GET" and request.url.path.startswith("/api/"):
+                # Do not consume body_iterator here.  File downloads, SSE, and other
+                # streaming API responses must retain their incremental delivery and
+                # backpressure characteristics.
+                resp.headers.setdefault("Cache-Control", "private, max-age=3")
+            return resp
+        finally:
+            request_id_var.reset(request_id_token)
 
     app.include_router(auth_router)
     app.include_router(

@@ -39,6 +39,7 @@ PUBLIC = {
     ("POST", "/api/auth/setup"),
     ("POST", "/api/auth/logout"),
     ("GET", "/api/auth/status"),
+    ("GET", "/ready"),
 }
 
 #: The loopback menu-bar client's entire surface, mirrored from
@@ -208,7 +209,11 @@ class LocalTokenScopeTests(unittest.TestCase):
             if self._token_reaches(method, path)
             and (method, path) not in LOCAL_TOKEN_ALLOWED
             and not _is_delegated(path)
-            and not (path.startswith("/api/maintenance/") and path.endswith(("/run", "/log")))
+            and not (
+                method == "GET"
+                and path.startswith("/api/maintenance/")
+                and path.endswith("/log")
+            )
         ]
         self.assertEqual(
             extra,
@@ -226,6 +231,7 @@ class LocalTokenScopeTests(unittest.TestCase):
             ("POST", "/api/files/delete"),
             ("GET", "/api/settings"),
             ("POST", "/api/raid/delete"),
+            ("POST", "/api/maintenance/daily/run"),
         ):
             with self.subTest(path=path):
                 self.assertFalse(

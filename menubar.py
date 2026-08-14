@@ -15,6 +15,12 @@ from rumps.rumps import NSApp
 
 # Port must match the panel (install.sh writes SERVERHUB_PORT into the plist).
 API = f"http://127.0.0.1:{os.environ.get('SERVERHUB_PORT', '8086')}"
+#: install.sh writes local.serverhub.panel; older trees used the other two.
+_PANEL_LABELS = (
+    "local.serverhub.panel",
+    "local.serverhub",
+    "com.elvin.serverhub",
+)
 LOCAL_TOKEN_FILE = Path(__file__).resolve().parent / "data" / ".local-client-token"
 REFRESH_SECONDS = 30
 DOT = {"ok": "🟢", "warn": "🟡", "down": "🔴"}
@@ -68,6 +74,18 @@ def api_action(target, action):
                      data={"target": target, "action": action}, timeout=120)
     except Exception as e:
         return {"ok": False, "message": str(e)}
+
+
+def _kickstart_panel():
+    """Start whichever panel launchd label is actually installed."""
+    uid = os.getuid()
+    for label in _PANEL_LABELS:
+        result = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
 
 
 def _menu_signature(status, tasks):
@@ -230,9 +248,7 @@ class ServerHubBar(rumps.App):
             if self._menu_state != "offline":
                 self.replace_menu([
                     rumps.MenuItem("⚠️ 面板后端 (8086) 无响应"),
-                    rumps.MenuItem("▶️ 启动面板服务", callback=lambda _: subprocess.run(
-                        ["launchctl", "kickstart", "-k",
-                         f"gui/{os.getuid()}/local.serverhub.panel"])),
+                    rumps.MenuItem("▶️ 启动面板服务", callback=lambda _: _kickstart_panel()),
                     None,
                     rumps.MenuItem("❌ 退出图标", callback=lambda _: rumps.quit_application()),
                 ], "offline")

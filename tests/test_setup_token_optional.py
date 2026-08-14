@@ -29,9 +29,9 @@ from hub import auth  # noqa: E402
 
 
 class _Req:
-    def __init__(self, host: str = "127.0.0.1"):
+    def __init__(self, host: str = "127.0.0.1", headers: dict | None = None):
         self.client = type("C", (), {"host": host})() if host is not None else None
-        self.headers = {}
+        self.headers = headers or {}
         self.url = type("U", (), {"path": "/api/auth/setup"})()
         self.state = type("S", (), {})()
         self.cookies = {}
@@ -58,6 +58,35 @@ class RequirementBoundaryTests(unittest.TestCase):
             for host in ("127.0.0.1", "::1"):
                 with self.subTest(host=host):
                     self.assertFalse(auth.setup_token_required(_Req(host)))
+
+    def test_a_proxied_loopback_claim_needs_a_token(self):
+        """Tunnel/nginx hops are TCP-loopback but are not 'on this Mac'.
+
+        cloudflared and typical reverse proxies connect to 127.0.0.1:8086, so
+        ``request.client.host`` is loopback for every remote visitor. The Host
+        header and forwarded-client headers are what distinguish that from a
+        browser opened on the machine itself. Getting this wrong in the lenient
+        direction lets the first stranger through a published tunnel claim the
+        panel with no setup token.
+        """
+        with with_mode("auto"):
+            cases = [
+                _Req("127.0.0.1", headers={"host": "panel.example.com"}),
+                _Req("127.0.0.1", headers={"host": "localhost:8086", "x-forwarded-for": "203.0.113.9"}),
+                _Req("127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}),
+                _Req("::1", headers={"x-forwarded-proto": "https"}),
+                _Req("127.0.0.1", headers={"forwarded": "for=203.0.113.9;proto=https"}),
+            ]
+            for req in cases:
+                with self.subTest(headers=dict(req.headers)):
+                    self.assertTrue(auth.setup_token_required(req))
+
+    def test_a_direct_localhost_host_header_is_still_local(self):
+        with with_mode("auto"):
+            for host_header in ("localhost", "localhost:8086", "127.0.0.1:8086", "[::1]:8086"):
+                with self.subTest(host=host_header):
+                    req = _Req("127.0.0.1", headers={"host": host_header})
+                    self.assertFalse(auth.setup_token_required(req))
 
     def test_a_lan_client_needs_a_token(self):
         with with_mode("auto"):

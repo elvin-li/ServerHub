@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import functools
 import inspect
+import logging
 import socket
 import subprocess
 import threading
 import time
 from typing import Any, Callable, TypeVar
+
+log = logging.getLogger("serverhub.util")
 
 T = TypeVar("T")
 
@@ -185,8 +188,10 @@ def sh(cmd, timeout=10, shell=False):
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=shell)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except subprocess.TimeoutExpired:
+        log.warning("command timed out: %s", cmd)
         return -1, "", "timeout"
     except FileNotFoundError:
+        log.warning("command not found: %s", cmd)
         return -1, "", "not found"
 
 

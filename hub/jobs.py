@@ -7,9 +7,8 @@ import subprocess
 import threading
 import time
 
-from fastapi import HTTPException
-
 from hub.config import cfg
+from hub.errors import api_error
 from hub.status import invalidate_status
 
 _jobs = {}
@@ -34,7 +33,7 @@ def start_job(task):
     tid = task["id"]
     with _jobs_lock:
         if any(j.get("running") for j in _jobs.values()):
-            raise HTTPException(409, "已有维护任务在运行，请等它结束")
+            raise api_error("maintenance.job_running")
         _jobs[tid] = {"running": True, "rc": None, "log": [],
                       "started": time.strftime("%H:%M:%S"), "finished": None}
 

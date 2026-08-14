@@ -53,6 +53,7 @@ from hub import (  # noqa: E402
     containers_svc,
     disk_manage_svc,
     disk_power_svc,
+    disk_snapshot,
     health_svc,
     launchd_cache,
     native_catalog,
@@ -1143,6 +1144,7 @@ class DiskPowerListingTests(unittest.TestCase):
         with (
             mock.patch.object(disk_power_svc, "_list_whole_disks", lambda: list(self.IDS)),
             mock.patch.object(disk_power_svc, "sh", fake_sh),
+            mock.patch.object(disk_snapshot, "sh", fake_sh),
             mock.patch.object(disk_power_svc, "subprocess", FakeSubprocess),
             mock.patch.object(disk_power_svc, "_diskutil_info", info),
             mock.patch.object(disk_power_svc, "_power_state", state),
@@ -1207,11 +1209,16 @@ class DiskPowerListingTests(unittest.TestCase):
 
     def test_invalidation_drops_both_derived_reads(self):
         self._run()
-        self.assertIsNotNone(disk_power_svc._df_cache)
-        self.assertIsNotNone(disk_power_svc._root_disks)
+        primed = disk_snapshot.df_lines()
+        self.assertTrue(primed, "listing should have populated the shared mount table")
         disk_power_svc.invalidate_power_disks()
-        self.assertIsNone(disk_power_svc._df_cache)
-        self.assertIsNone(disk_power_svc._root_disks)
+        with mock.patch.object(disk_snapshot, "sh", return_value=(0, "STALE-CHECK\n", "")):
+            after = disk_snapshot.df_lines()
+        self.assertEqual(
+            after,
+            ("STALE-CHECK",),
+            "invalidate_power_disks() left the shared mount table in place",
+        )
 
 
 class AppsInventoryTests(unittest.TestCase):

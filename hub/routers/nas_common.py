@@ -43,7 +43,7 @@ def require_admin_browser(request: Request) -> str:
 
 
 def client_host(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return auth.request_client_id(request)
 
 
 def raise_for_admin_result(result: dict) -> dict:

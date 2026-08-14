@@ -36,6 +36,10 @@ say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m warn\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror\033[0m %s\n' "$*" >&2; exit 1; }
 
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || ((10#$PORT < 1 || 10#$PORT > 65535)); then
+  die "--port must be an integer between 1 and 65535"
+fi
+
 STATIC_DIR="$BASE/static"
 STATIC_NEXT="$BASE/static.next"
 STATIC_PREV="$BASE/static.prev"
@@ -212,6 +216,7 @@ write_plist() {   # write_plist <label> <script> <logfile> [extra-env-key extra-
 	<dict>
 		<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<key>SERVERHUB_PORT</key><string>$PORT</string>
+		<key>SERVERHUB_HOST</key><string>127.0.0.1</string>
 	</dict>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
@@ -239,6 +244,30 @@ if [[ "$WITH_MENUBAR" == "1" ]]; then
   say "Installing launch agent: $LABEL_MENUBAR"
   write_plist "$LABEL_MENUBAR" "menubar.py" "serverhub-menubar"
   reload_agent "$LABEL_MENUBAR"
+fi
+
+# Earlier installs used other launchd labels. Stop leftover panel (and, when
+# this install owns the menu bar, leftover launcher) jobs so :$PORT is not
+# held by com.elvin.serverhub / local.serverhub / the old watchdog.
+_retire_leftover_agent() {
+  local label="$1"
+  [[ "$label" == "$LABEL_PANEL" || "$label" == "$LABEL_MENUBAR" ]] && return 0
+  local target="gui/$(id -u)/$label"
+  if launchctl print "$target" >/dev/null 2>&1; then
+    say "Retiring leftover launch agent: $label"
+    launchctl bootout "$target" 2>/dev/null || true
+  fi
+  rm -f "$AGENTS/$label.plist"
+}
+for leftover in local.serverhub.watchdog local.serverhub com.elvin.serverhub; do
+  _retire_leftover_agent "$leftover"
+done
+if [[ "$WITH_MENUBAR" == "1" ]]; then
+  for leftover in \
+    local.serverhub-launcher local.serverhub-menubar \
+    com.elvin.serverhub-launcher com.elvin.serverhub-menubar; do
+    _retire_leftover_agent "$leftover"
+  done
 fi
 
 # ── WireGuard system integration ────────────────────────────────────────────
@@ -345,8 +374,10 @@ cat <<NEXT
 
       $BASE/data/.setup-token
 
-  The panel listens on loopback by default. Authentication is mandatory after
-  setup; the menu-bar client uses its own mode-0600 local token.
+  The panel binds 127.0.0.1:$PORT (this Mac only). Open it at
+  http://localhost:$PORT. Authentication is mandatory after setup; the
+  menu-bar client uses its own mode-0600 local token. To listen on the LAN
+  set SERVERHUB_HOST=0.0.0.0 in the LaunchAgent plist.
 
   Manage the service:
       launchctl kickstart -k gui/$(id -u)/$LABEL_PANEL    # restart

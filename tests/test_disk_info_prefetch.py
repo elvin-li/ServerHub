@@ -154,7 +154,7 @@ class PrefetchCoverageTests(unittest.TestCase):
         extra = [n for n in h.info_calls if n not in EXPECTED_NODES]
         self.assertEqual(
             extra,
-            ["/"],
+            [],
             f"unexpected uncached fetches outside the batch: {extra}",
         )
 

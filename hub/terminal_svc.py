@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from hub import secure_io
+from hub import cli_args, secure_io
 from hub.config import cfg
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR, DOCKER
@@ -313,6 +313,7 @@ def run_container(
     name = (container or "").strip()
     if not name:
         raise api_error("terminal.no_container")
+    name = cli_args.require_positional(name, label="container name")
     cmd = _check_command(command)
     secs = _clamp_timeout(timeout)
     sh = (shell or "/bin/sh").strip() or "/bin/sh"
@@ -323,7 +324,7 @@ def run_container(
     if start_cwd:
         wrapped = f"cd {_sh_quote(start_cwd)} 2>/dev/null || true\n{wrapped}"
 
-    result = _run([DOCKER, "exec", name, sh, "-c", wrapped], secs)
+    result = _run([DOCKER, "exec", "--", name, sh, "-c", wrapped], secs)
     result["stdout"], end_cwd = _split_cwd(result["stdout"], start_cwd)
     _audit({
         "ts": int(time.time()),
