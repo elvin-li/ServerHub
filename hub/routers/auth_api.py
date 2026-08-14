@@ -101,6 +101,18 @@ def auth_status(request: Request):
 def auth_setup(body: SetupBody, request: Request, response: Response):
     if not auth.setup_required():
         raise api_error("auth.already_setup")
+    client = _client(request)
+    allowed, retry = auth.login_allowed(client)
+    if not allowed:
+        audit.record(
+            audit.LOGIN_RATE_LIMITED,
+            username=body.username.strip() or "admin",
+            client=client,
+            outcome="failure",
+            retry_after=retry,
+            action="setup",
+        )
+        raise api_error("auth.rate_limited", retry=retry)
     try:
         completed = auth.complete_setup(
             body.setup_token,
@@ -117,20 +129,22 @@ def auth_setup(body: SetupBody, request: Request, response: Response):
         # A bad setup token is an attempt to claim an unclaimed install -- the
         # single most sensitive moment in the lifecycle.  The token itself is
         # never passed to record(); redaction would drop it anyway.
+        auth.record_login_failure(client)
         audit.record(
             audit.SETUP_REJECTED,
             username=body.username.strip() or "admin",
-            client=_client(request),
+            client=client,
             reason="bad_setup_token",
             outcome="failure",
         )
         raise api_error("auth.bad_setup_token")
+    auth.clear_login_failures(client)
     claimed = body.username.strip() or "admin"
     _set_session(response, request, claimed)
     audit.record(
         audit.SETUP_CLAIMED,
         username=claimed,
-        client=_client(request),
+        client=client,
         outcome="success",
     )
     # No ``message``: the SPA owns the success wording so it stays localized.
