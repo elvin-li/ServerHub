@@ -417,7 +417,15 @@ def download(path: str, root_id: str | None = None) -> FileResponse:
     if not p.is_file():
         raise api_error("files.file_only")
     media = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
-    return FileResponse(str(p), filename=p.name, media_type=media)
+    return FileResponse(
+        str(p),
+        filename=p.name,
+        media_type=media,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dict:
