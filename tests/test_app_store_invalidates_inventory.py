@@ -16,7 +16,9 @@ they do.
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,6 +53,11 @@ class InvalidationOnStoreActionsTests(unittest.TestCase):
         )
         run_patcher.start()
         self.addCleanup(run_patcher.stop)
+
+        brew = tempfile.NamedTemporaryFile(prefix="brew-", delete=False)
+        brew.close()
+        self.addCleanup(os.unlink, brew.name)
+        mock.patch.object(native_catalog, "BREW", brew.name).start()
 
         self.invalidate = mock.patch.object(
             apps_manage_svc, "invalidate_inventory"

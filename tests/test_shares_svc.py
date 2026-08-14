@@ -136,10 +136,18 @@ class SharesServiceTests(unittest.TestCase):
                 shares_svc.validate_share_path("relative/path")
             with self.assertRaisesRegex(shares_svc.ShareValidationError, "shares.protected_path"):
                 shares_svc.validate_share_path(str(shares_svc.BASE))
-            with self.assertRaisesRegex(shares_svc.ShareValidationError, "shares.protected_path"):
-                shares_svc.validate_share_path(str(shares_svc.BASE.parent))
-            with self.assertRaisesRegex(shares_svc.ShareValidationError, "shares.protected_path"):
-                shares_svc.validate_share_path("/System")
+            parent = shares_svc.BASE.parent.resolve()
+            if parent != Path("/"):
+                with self.assertRaisesRegex(
+                    shares_svc.ShareValidationError, "shares.protected_path"
+                ):
+                    shares_svc.validate_share_path(str(parent))
+            for candidate in ("/System", "/usr"):
+                if Path(candidate).is_dir():
+                    with self.assertRaisesRegex(
+                        shares_svc.ShareValidationError, "shares.protected_path"
+                    ):
+                        shares_svc.validate_share_path(candidate)
 
     def test_share_names_reject_slashes_controls_and_empty_values(self):
         for value in ("", "a/b", "a\\b", "bad\nname", "x" * 65):

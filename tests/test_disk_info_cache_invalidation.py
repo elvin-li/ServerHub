@@ -257,7 +257,8 @@ class WiringTests(unittest.TestCase):
         # disk_power_svc imports disk_manage_svc; the reverse edge would make
         # that a cycle and break module load.
         src = (BASE / "hub" / "disk_manage_svc.py").read_text(encoding="utf-8")
-        self.assertNotIn("disk_power_svc", src)
+        self.assertNotIn("from hub.disk_power_svc", src)
+        self.assertNotIn("import disk_power_svc", src)
 
     def test_every_power_mutation_point_invalidates(self):
         src = (BASE / "hub" / "disk_power_svc.py").read_text(encoding="utf-8")

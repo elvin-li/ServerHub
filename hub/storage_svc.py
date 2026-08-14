@@ -343,9 +343,7 @@ def _probe_disk(d: str) -> dict:
                 parts = stripped.split()
                 if len(parts) >= 10 and parts[0].isdigit():
                     # WHEN_FAILED is "-" which merges with next token;
-                    # raw value starts after WHEN_FAILED column
-                    raw_parts = parts[9:] if len(parts) > 9 else [parts[-1]]
-                    # If parts[8] is "-", raw is parts[9:]; else raw is parts[8:]
+                    # raw value starts after WHEN_FAILED column.
                     if parts[8] == "-":
                         raw_val = " ".join(parts[9:]) if len(parts) > 9 else "-"
                     else:

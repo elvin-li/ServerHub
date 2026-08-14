@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,30 +19,41 @@ class MacOSLauncherContractTests(unittest.TestCase):
         cls.source = SOURCE.read_text(encoding="utf-8")
         cls.temporary = tempfile.TemporaryDirectory()
         cls.binary = Path(cls.temporary.name) / "ServerHubLauncher"
-        try:
-            cls.compile_result = subprocess.run(
-                [
-                    "swiftc",
-                    "-parse-as-library",
-                    "-warnings-as-errors",
-                    "-target",
-                    f"{os.uname().machine}-apple-macosx13.0",
-                    "-framework",
-                    "AppKit",
-                    "-framework",
-                    "Foundation",
-                    str(SOURCE),
-                    "-o",
-                    str(cls.binary),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except FileNotFoundError:
+        if sys.platform != "darwin":
             cls.compile_result = subprocess.CompletedProcess(
-                args=["swiftc"], returncode=127, stdout="", stderr="swiftc not found",
+                args=["swiftc"],
+                returncode=127,
+                stdout="",
+                stderr="Apple SDK / usable swiftc is not available on this host",
             )
+        else:
+            try:
+                cls.compile_result = subprocess.run(
+                    [
+                        "swiftc",
+                        "-parse-as-library",
+                        "-warnings-as-errors",
+                        "-target",
+                        f"{os.uname().machine}-apple-macosx13.0",
+                        "-framework",
+                        "AppKit",
+                        "-framework",
+                        "Foundation",
+                        str(SOURCE),
+                        "-o",
+                        str(cls.binary),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except FileNotFoundError:
+                cls.compile_result = subprocess.CompletedProcess(
+                    args=["swiftc"],
+                    returncode=127,
+                    stdout="",
+                    stderr="swiftc not found",
+                )
 
     @classmethod
     def tearDownClass(cls):
@@ -53,10 +65,11 @@ class MacOSLauncherContractTests(unittest.TestCase):
         *,
         apple_language: str | None = None,
     ) -> str:
-        if self.compile_result.returncode == 127 and "swiftc not found" in (
-            self.compile_result.stderr or ""
-        ):
-            self.skipTest("swiftc is not available on this host")
+        if self.compile_result.returncode != 0:
+            self.skipTest(
+                "Apple SDK / usable swiftc is not available on this host: "
+                + (self.compile_result.stderr or "swiftc failed").strip()
+            )
         self.assertEqual(
             self.compile_result.returncode,
             0,

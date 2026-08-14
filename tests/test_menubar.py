@@ -1,10 +1,21 @@
 import copy
 import unittest
 
-from menubar import _menu_signature
+try:
+    from menubar import _menu_signature
+except ModuleNotFoundError as exc:
+    if exc.name != "rumps":
+        raise
+    _menu_signature = None
 
 
 class MenuBarSignatureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if _menu_signature is None:
+            raise unittest.SkipTest(
+                "rumps is macOS-only and is not installed on this host"
+            )
     def _status(self):
         return {
             "counts": {"ok": 1, "warn": 0, "down": 0},

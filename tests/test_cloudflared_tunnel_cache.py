@@ -36,6 +36,11 @@ class TunnelCacheTests(unittest.TestCase):
         cf.invalidate_tunnels()
         self.addCleanup(cf.invalidate_tunnels)
         self.reads = 0
+        # list_tunnels() resolves the binary before the mocked `sh` runs.
+        # Linux CI has no cloudflared; the cache contract does not need one.
+        bin_patch = patch.object(cf, "_bin", return_value="/usr/local/bin/cloudflared")
+        bin_patch.start()
+        self.addCleanup(bin_patch.stop)
 
     def _sh(self, argv, timeout=None):
         self.reads += 1

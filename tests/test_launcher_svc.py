@@ -985,6 +985,11 @@ class LauncherServiceTests(unittest.TestCase):
 
     def test_status_preserves_other_results_when_panel_probe_fails(self):
         with (
+            patch.object(
+                launcher_svc,
+                "_app_path",
+                return_value=Path("/Applications/ServerHub.app"),
+            ),
             patch.object(launcher_svc, "_app_running", return_value=True),
             patch.object(
                 launcher_svc,
@@ -1012,6 +1017,11 @@ class LauncherServiceTests(unittest.TestCase):
             return True
 
         with (
+            patch.object(
+                launcher_svc,
+                "_app_path",
+                return_value=Path("/Applications/ServerHub.app"),
+            ),
             patch.object(launcher_svc, "_app_running", return_value=True),
             patch.object(launcher_svc, "_job_state", return_value="running"),
             patch.object(launcher_svc, "_loaded", side_effect=loaded),
