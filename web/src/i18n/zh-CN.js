@@ -1930,6 +1930,9 @@ export default {
       setup_required: '尚未设置管理员密码',
       setup_token_localhost_only: '令牌仅限本机浏览器查看，请用这台电脑访问面板',
     },
+    settings: {
+      bad_notify_url: '通知 URL 已拒绝：{reason}',
+    },
     disk: {
       confirm_name_mismatch: '确认名称必须等于卷名「{name}」或设备 id「{id}」',
       confirm_required: '破坏性操作需要确认',

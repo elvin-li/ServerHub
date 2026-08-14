@@ -281,8 +281,7 @@ def apply_teslamate(username: str, password: str) -> dict:
         tmp = TESLAMATE_HTPASSWD.with_suffix(".tmp")
         try:
             TESLAMATE_HTPASSWD.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(entry + "\n", encoding="utf-8")
-            os.chmod(tmp, 0o600)
+            secure_io.write_secret_text(tmp, entry + "\n")
             os.replace(tmp, TESLAMATE_HTPASSWD)
             os.chmod(TESLAMATE_HTPASSWD, 0o600)
 
@@ -295,8 +294,7 @@ def apply_teslamate(username: str, password: str) -> dict:
             if old is None:
                 TESLAMATE_HTPASSWD.unlink(missing_ok=True)
             else:
-                TESLAMATE_HTPASSWD.write_bytes(old)
-                os.chmod(TESLAMATE_HTPASSWD, 0o600)
+                secure_io.write_secret_text(TESLAMATE_HTPASSWD, old.decode("utf-8", errors="replace"))
             raise HTTPException(503, f"TeslaMate 密码未生效，已回滚：{str(exc)[:180]}")
 
     return {"ok": True, "message": "TeslaMate 4000 端口访问密码已更新"}

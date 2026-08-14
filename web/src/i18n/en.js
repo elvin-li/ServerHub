@@ -1929,6 +1929,9 @@ export default {
       setup_required: 'Administrator password is not set yet',
       setup_token_localhost_only: 'The setup token is only viewable from this Mac\'s own browser',
     },
+    settings: {
+      bad_notify_url: 'Notify URL refused: {reason}',
+    },
     disk: {
       confirm_name_mismatch: 'Confirmation must equal the volume name {name} or device id {id}',
       confirm_required: 'Destructive operations require confirmation',

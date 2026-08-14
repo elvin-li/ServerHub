@@ -208,6 +208,33 @@ def _resolve_safe(path: str | None, root_id: str | None = None) -> Path:
     return p
 
 
+def _resolve_leaf(path: str, root_id: str | None = None) -> Path:
+    """Resolve for delete/rename: parent resolved, leaf name not followed.
+
+    ``Path.resolve()`` follows the final symlink, so deleting
+    ``~/Downloads/link → realfile`` would unlink ``realfile``.  Mutations keep
+    the leaf as the operator named it; containment is checked on the parent,
+    and both the link and its target (when present) are refused if protected.
+    """
+    raw = Path(os.path.expanduser(str(path)))
+    if not raw.name or raw.name in (".", ".."):
+        raise api_error("files.bad_name")
+    parent = _resolve_safe(str(raw.parent), root_id)
+    if not parent.is_dir():
+        raise api_error("files.parent_not_a_dir")
+    leaf = parent / raw.name
+    if is_protected(leaf):
+        raise api_error("files.path_protected")
+    if leaf.exists() or leaf.is_symlink():
+        try:
+            target = leaf.resolve(strict=False)
+        except OSError:
+            target = None
+        if target is not None and is_protected(target):
+            raise api_error("files.path_protected")
+    return leaf
+
+
 def _entry(p: Path, root: Path) -> dict:
     try:
         st = p.lstat()
@@ -339,14 +366,16 @@ def mkdir(path: str, name: str, root_id: str | None = None) -> dict:
 
 
 def delete_path(path: str, root_id: str | None = None) -> dict:
-    p = _resolve_safe(path, root_id)
+    p = _resolve_leaf(path, root_id)
     # never delete roots themselves
     for r in default_roots():
-        if p == Path(r["path"]).resolve():
+        if p.resolve() == Path(r["path"]).resolve():
             raise api_error("files.cannot_delete_root")
-    if not p.exists():
+    if not p.exists() and not p.is_symlink():
         raise api_error("files.not_found")
-    if p.is_dir() and not p.is_symlink():
+    if p.is_symlink():
+        p.unlink()
+    elif p.is_dir():
         shutil.rmtree(p)
     else:
         p.unlink()
@@ -354,14 +383,19 @@ def delete_path(path: str, root_id: str | None = None) -> dict:
 
 
 def rename_path(path: str, new_name: str, root_id: str | None = None) -> dict:
-    p = _resolve_safe(path, root_id)
+    p = _resolve_leaf(path, root_id)
     new_name = _clean_component(new_name)
     if not new_name or new_name in (".", ".."):
         raise api_error("files.bad_name")
-    dest = (p.parent / new_name).resolve()
-    _resolve_safe(str(dest), root_id)
-    if dest.exists():
+    if not p.exists() and not p.is_symlink():
+        raise api_error("files.not_found")
+    dest = p.parent / new_name
+    if dest.exists() or dest.is_symlink():
         raise api_error("files.dest_exists")
+    # Dest must stay under the same root and must not land on a protected name.
+    _resolve_safe(str(dest.parent), root_id)
+    if is_protected(dest):
+        raise api_error("files.path_protected")
     p.rename(dest)
     return {"ok": True, "path": str(dest), "from": str(p)}
 

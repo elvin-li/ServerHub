@@ -782,15 +782,14 @@ def _resolve_url(hint: str, host: str, ports: list) -> str:
     return ""
 
 
-def _run(cmd: list[str], timeout: int = 600, shell: bool = False) -> dict:
+def _run(cmd: list[str], timeout: int = 600) -> dict:
     try:
         p = subprocess.run(
-            cmd if not shell else cmd[0] if len(cmd) == 1 else " ".join(cmd),
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             env=_brew_env(),
-            shell=shell,
         )
         msg = ((p.stdout or "") + (p.stderr or "")).strip()
         return {"ok": p.returncode == 0, "message": msg or f"exit {p.returncode}", "rc": p.returncode}

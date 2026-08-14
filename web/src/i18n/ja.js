@@ -1929,6 +1929,9 @@ export default {
       setup_required: '管理者パスワードが未設定です',
       setup_token_localhost_only: 'セットアップトークンはこの Mac のブラウザーからのみ表示できます',
     },
+    settings: {
+      bad_notify_url: '通知 URL を拒否しました: {reason}',
+    },
     disk: {
       confirm_name_mismatch: '確認名はボリューム名「{name}」またはデバイス id「{id}」と一致する必要があります',
       confirm_required: '破壊的な操作には確認が必要です',

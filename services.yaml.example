@@ -91,7 +91,10 @@ log_sources: []
 #       name: Check for updates
 #       desc: List available Homebrew updates without installing them
 #       timeout: 300
-#       command: brew update >/dev/null 2>&1; brew outdated || echo "up to date"
+#       # Prefer an argv list (no shell). A string still runs via /bin/bash -c
+#       # for compatibility with existing operator recipes.
+#       command: ["/opt/homebrew/bin/brew", "outdated"]
+#       # command: brew update >/dev/null 2>&1; brew outdated || echo "up to date"
 maintenance: []
 
 # Multi-port projects that are not containers, grouped as one card.

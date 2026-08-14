@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -11,6 +12,7 @@ from hub import secure_io
 from hub.config import cfg
 from hub.paths import DATA_DIR
 from hub.status import full_status
+from hub.url_safety import outbound_url_allowed
 
 ALERTS_FILE = DATA_DIR / "alerts.jsonl"
 STATE_FILE = DATA_DIR / "alert_state.json"
@@ -43,7 +45,10 @@ def _append_alert(alert: dict):
         try:
             lines = ALERTS_FILE.read_text().splitlines()
             if len(lines) > MAX_ALERTS:
-                ALERTS_FILE.write_text("\n".join(lines[-MAX_ALERTS:]) + "\n")
+                trimmed = "\n".join(lines[-MAX_ALERTS:]) + "\n"
+                tmp = ALERTS_FILE.with_suffix(".jsonl.tmp")
+                tmp.write_text(trimmed)
+                os.replace(tmp, ALERTS_FILE)
         except OSError:
             pass
 
@@ -106,6 +111,9 @@ def send_ha_notify(title: str, message: str) -> dict:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
+    allowed, reason = outbound_url_allowed(url, allow_loopback=True)
+    if not allowed:
+        return {"ok": False, "message": f"blocked notify url: {reason}"}
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             return {

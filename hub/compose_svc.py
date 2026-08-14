@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -72,36 +73,39 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
 
 
 def validate_compose_text(content: str, cwd: str | None = None) -> dict:
-    """docker compose config -q via temp file."""
-    import tempfile
+    """docker compose config -q via a 0600 temp file."""
     work = cwd or str(Path.home() / "Services")
+    tmp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".yml", delete=False, dir=work, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            tmp = f.name
-        try:
-            p = subprocess.run(
-                [DOCKER, "compose", "-f", tmp, "config", "-q"],
-                cwd=work,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                env={**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")},
-            )
-            ok = p.returncode == 0
-            return {
-                "ok": ok,
-                "message": (p.stderr or p.stdout or ("valid" if ok else "invalid")).strip()[:800],
-            }
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        Path(work).mkdir(parents=True, exist_ok=True)
+        # Compose text routinely embeds generated DB/admin passwords.  A
+        # NamedTemporaryFile under ~/Services is born at the umask (0644), so
+        # write through secure_io instead.
+        fd, tmp_name = tempfile.mkstemp(suffix=".yml", prefix=".compose-validate-", dir=work)
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        secure_io.write_secret_text(tmp_path, content)
+        p = subprocess.run(
+            [DOCKER, "compose", "-f", str(tmp_path), "config", "-q"],
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")},
+        )
+        ok = p.returncode == 0
+        return {
+            "ok": ok,
+            "message": (p.stderr or p.stdout or ("valid" if ok else "invalid")).strip()[:800],
+        }
     except Exception as e:
         return {"ok": False, "message": str(e)}
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def validate_stack(stack_id: str) -> dict:

@@ -31,6 +31,15 @@ def get_job(tid):
 
 def start_job(task):
     tid = task["id"]
+    command = task.get("command")
+    if isinstance(command, list):
+        argv = [str(part) for part in command]
+        if not argv:
+            raise api_error("maintenance.unknown_task")
+    elif isinstance(command, str) and command.strip():
+        argv = ["/bin/bash", "-c", command]
+    else:
+        raise api_error("maintenance.unknown_task")
     with _jobs_lock:
         if any(j.get("running") for j in _jobs.values()):
             raise api_error("maintenance.job_running")
@@ -52,7 +61,7 @@ def start_job(task):
             # which closes the pipe and releases the reader.  start_new_session
             # lets killpg take the child's descendants down with it.
             with subprocess.Popen(
-                ["/bin/bash", "-c", task["command"]],
+                argv,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, env=env, start_new_session=True,
             ) as p:

@@ -7,7 +7,6 @@ health:
 """
 from __future__ import annotations
 
-import ipaddress
 import ssl
 import time
 import urllib.error
@@ -16,6 +15,11 @@ import urllib.request
 
 from hub.config import cfg
 from hub.host_address import resolve_value
+from hub.url_safety import (
+    is_blocked_literal_host,
+    is_lan_host,
+    resolved_probe_blocked,
+)
 from hub.util import cached_snapshot, fan_out
 
 _TTL = 45.0
@@ -27,63 +31,19 @@ _TTL = 45.0
 #: its status back through the dashboard.
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
-#: Suffixes that mean "a host on my own network", where a self-signed
-#: certificate is the norm rather than a sign of interception.
-_PRIVATE_SUFFIXES = (".local", ".lan", ".internal", ".home", ".arpa")
-
-#: Names that must never be probed. ``localhost`` is the panel itself;
-#: ``metadata`` / ``metadata.google.internal`` are cloud IMDS aliases.
-_BLOCKED_PROBE_NAMES = frozenset({
-    "localhost",
-    "metadata",
-    "metadata.google.internal",
-})
-
 
 def _is_blocked_probe_host(host: str) -> bool:
-    """Loopback, link-local (including 169.254.169.254), and IMDS names.
-
-    Bookmark URLs come from quick_links and from discovered container/VM
-    labels. Probing those would turn the dashboard into a LAN SSRF client
-    against the panel, the metadata service, and other loopback listeners.
-    """
-    name = (host or "").strip().strip("[]").lower()
-    if not name or name in _BLOCKED_PROBE_NAMES:
-        return True
-    try:
-        addr = ipaddress.ip_address(name)
-    except ValueError:
-        return False
-    return bool(addr.is_loopback or addr.is_link_local or addr.is_unspecified)
+    """Literal loopback / link-local / IMDS, kept as a thin alias for tests."""
+    return is_blocked_literal_host(host)
 
 
 def _is_private_host(host: str) -> bool:
     """Whether *host* is a LAN name we may probe with TLS verification off.
 
-    RFC1918, ``.local`` / ``.lan`` / similar suffixes, and dotless short names
-    are the Heimdall-style home-NAS case. Loopback, link-local, and unspecified
-    addresses are not LAN for this purpose — they are blocked by
-    :func:`_is_blocked_probe_host` before a socket is opened.
-
-    Deliberately decided from the literal hostname and *not* from a DNS lookup.
-    A resolver is not a trustworthy input for a security decision: split-horizon
-    DNS, and fake-IP proxies such as Clash or Surge, map every public name into a
-    private-looking range (198.18.0.0/15 in the case that surfaced this), which
-    would have silently turned verification off for the entire internet.
+    Delegates to :func:`hub.url_safety.is_lan_host`, which decides from the
+    literal hostname and never consults DNS.
     """
-    name = (host or "").strip().strip("[]").lower()
-    if not name or _is_blocked_probe_host(name):
-        return False
-    if name.endswith(_PRIVATE_SUFFIXES):
-        return True
-    try:
-        addr = ipaddress.ip_address(name)
-    except ValueError:
-        # Not a literal address.  A dotless short name is a LAN name in
-        # practice ("nas", "pi"); anything with a dot is treated as a real
-        # public DNS name and gets verified.
-        return "." not in name
-    return bool(addr.is_private)
+    return is_lan_host(host)
 
 
 class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
@@ -99,11 +59,12 @@ class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
             return None
         dest = parts.hostname or ""
         src = urllib.parse.urlsplit(getattr(req, "full_url", "") or "").hostname or ""
-        # Loopback / link-local / IMDS are refused from every source, including
-        # a LAN bookmark that 302s onto 169.254.169.254. A public bookmark that
-        # 302s onto RFC1918 is still SSRF. LAN→LAN redirects stay allowed: that
-        # is how a home NAS bookmark follows its own login bounce.
-        if _is_blocked_probe_host(dest):
+        # Loopback / link-local / IMDS (literal or resolved) are refused from
+        # every source, including a LAN bookmark that 302s onto a rebinding
+        # name. A public bookmark that 302s onto RFC1918 is still SSRF.
+        # LAN→LAN redirects stay allowed: that is how a home NAS bookmark
+        # follows its own login bounce.
+        if resolved_probe_blocked(dest):
             return None
         if _is_private_host(dest) and not _is_private_host(src):
             return None
@@ -118,7 +79,8 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         if scheme not in _ALLOWED_SCHEMES:
             return {"ok": False, "status": None, "ms": 0,
                     "error": f"unsupported scheme: {scheme or 'none'}"}
-        if _is_blocked_probe_host(parts.hostname or ""):
+        host = parts.hostname or ""
+        if resolved_probe_blocked(host):
             return {"ok": False, "status": None, "ms": 0,
                     "error": "blocked host"}
         req = urllib.request.Request(
@@ -128,7 +90,7 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         )
         handlers: list = [_SchemeSafeRedirects]
         if scheme == "https":
-            if _is_private_host(parts.hostname or ""):
+            if _is_private_host(host):
                 # LAN service: a self-signed certificate is expected here, and
                 # there is no meaningful interception risk inside the home network.
                 ctx = ssl._create_unverified_context()

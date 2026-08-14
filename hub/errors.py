@@ -35,6 +35,8 @@ CODES: dict[str, tuple[int, str]] = {
     "auth.cross_site_denied": (403, "cross-site write requests are refused"),
     "auth.bad_origin": (400, "invalid Origin header"),
     "auth.local_token_required": (400, "localhost clients require a dedicated token"),
+    # ── settings ──────────────────────────────────────────────────────────────
+    "settings.bad_notify_url": (400, "notify url refused: {reason}"),
     # ── native launcher ───────────────────────────────────────────────────────
     "launcher.browser_session_required": (401, "a signed-in browser session is required"),
     "launcher.admin_required": (403, "administrator access is required"),

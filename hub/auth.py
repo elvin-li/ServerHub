@@ -32,6 +32,76 @@ LOCAL_TOKEN_HEADER = "x-serverhub-local-token"
 _login_lock = threading.Lock()
 _setup_lock = threading.Lock()
 _login_attempts: dict[str, list[float]] = {}
+LOGIN_FAILURES_FILE = DATA_DIR / ".login-failures.json"
+_LOGIN_WINDOW = 300.0
+_LOGIN_LIMIT = 5
+
+
+def _load_login_attempts() -> dict[str, list[float]]:
+    if not LOGIN_FAILURES_FILE.is_file():
+        return {}
+    try:
+        import json
+        raw = json.loads(LOGIN_FAILURES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[float]] = {}
+    now = time.time()
+    for client, stamps in raw.items():
+        if not isinstance(stamps, list):
+            continue
+        kept = [float(t) for t in stamps if isinstance(t, (int, float)) and now - float(t) < _LOGIN_WINDOW]
+        if kept:
+            out[str(client)] = kept
+    return out
+
+
+def _persist_login_attempts(attempts: dict[str, list[float]]) -> None:
+    import json
+    from hub import secure_io
+    now = time.time()
+    pruned = {
+        client: [t for t in stamps if now - t < _LOGIN_WINDOW]
+        for client, stamps in attempts.items()
+    }
+    pruned = {c: s for c, s in pruned.items() if s}
+    try:
+        secure_io.replace_secret_text(
+            LOGIN_FAILURES_FILE,
+            json.dumps(pruned, ensure_ascii=False),
+        )
+    except OSError:
+        pass
+
+
+def login_allowed(client: str) -> tuple[bool, int]:
+    now = time.time()
+    with _login_lock:
+        if client not in _login_attempts:
+            _login_attempts.update(_load_login_attempts())
+        attempts = [t for t in _login_attempts.get(client, []) if now - t < _LOGIN_WINDOW]
+        _login_attempts[client] = attempts
+        if len(attempts) >= _LOGIN_LIMIT:
+            return False, max(1, int(_LOGIN_WINDOW - (now - attempts[0])))
+        return True, 0
+
+
+def record_login_failure(client: str) -> None:
+    with _login_lock:
+        if client not in _login_attempts:
+            _login_attempts.update(_load_login_attempts())
+        _login_attempts.setdefault(client, []).append(time.time())
+        _persist_login_attempts(_login_attempts)
+
+
+def clear_login_failures(client: str) -> None:
+    with _login_lock:
+        if client not in _login_attempts:
+            _login_attempts.update(_load_login_attempts())
+        _login_attempts.pop(client, None)
+        _persist_login_attempts(_login_attempts)
 
 
 def _auth_cfg() -> dict:
@@ -734,26 +804,6 @@ def session_username(token: str | None) -> str:
 def request_username(request: Request) -> str:
     """Best-effort identity of the caller, for audit logs."""
     return session_username(request.cookies.get(COOKIE_NAME))
-
-
-def login_allowed(client: str) -> tuple[bool, int]:
-    now = time.time()
-    with _login_lock:
-        attempts = [t for t in _login_attempts.get(client, []) if now - t < 300]
-        _login_attempts[client] = attempts
-        if len(attempts) >= 5:
-            return False, max(1, int(300 - (now - attempts[0])))
-        return True, 0
-
-
-def record_login_failure(client: str) -> None:
-    with _login_lock:
-        _login_attempts.setdefault(client, []).append(time.time())
-
-
-def clear_login_failures(client: str) -> None:
-    with _login_lock:
-        _login_attempts.pop(client, None)
 
 
 def _route_has_own_admin_guard(request: Request) -> bool:

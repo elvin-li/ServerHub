@@ -183,9 +183,9 @@ def cached_snapshot(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]
     return decorate
 
 
-def sh(cmd, timeout=10, shell=False):
+def sh(cmd, timeout=10):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=shell)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except subprocess.TimeoutExpired:
         log.warning("command timed out: %s", cmd)

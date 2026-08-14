@@ -11,6 +11,7 @@ from hub.config import cfg, update_settings
 from hub.errors import api_error
 from hub.host_address import configured_host, host_ip
 from hub.paths import DOCKER, ORB
+from hub.url_safety import outbound_url_allowed
 
 router = APIRouter(tags=["settings"])
 
@@ -173,6 +174,13 @@ def put_settings(body: SettingsPatch):
             del n["ha_token"]
         if n.get("ha_webhook_url") == "":
             del n["ha_webhook_url"]
+        for key in ("ha_webhook_url", "webhook_url", "ha_url"):
+            value = n.get(key)
+            if not value:
+                continue
+            allowed, reason = outbound_url_allowed(str(value), allow_loopback=True)
+            if not allowed:
+                raise api_error("settings.bad_notify_url", reason=reason)
         patch["notify"] = n
     if body.ui is not None:
         ui_patch: dict[str, Any] = {}
