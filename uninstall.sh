@@ -53,6 +53,10 @@ if launchctl print "gui/$UID_NUM/local.filebrowser" >/dev/null 2>&1; then
   launchctl bootout "gui/$UID_NUM/local.filebrowser" 2>/dev/null || true
 fi
 rm -f "$AGENTS/local.filebrowser.plist"
+# FileBrowser's hub-managed log is outside the source tree.
+rm -f "$HOME/Library/Logs/filebrowser-hub.log" 2>/dev/null || true
+rm -f "$HOME/Library/Logs/serverhub"*.log 2>/dev/null || true
+rm -f "$HOME/Library/Logs/ServerHub"*.log 2>/dev/null || true
 
 # install.sh may have written a WireGuard LaunchDaemon, PF NAT lines, and
 # sudoers. Undo only those artifacts — never the rest of /etc/pf.conf.

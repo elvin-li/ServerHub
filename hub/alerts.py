@@ -157,8 +157,8 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         cpu_val = latest.get("load_pct")
     checks = [
         ("cpu", cpu_val, th.get("cpu_pct", 90), "CPU"),
-        ("mem", latest.get("mem_used_pct"), th.get("mem_pct", 90), "内存"),
-        ("disk", latest.get("disk_pct"), th.get("disk_pct", 90), "磁盘"),
+        ("mem", latest.get("mem_used_pct"), th.get("mem_pct", 90), "Memory"),
+        ("disk", latest.get("disk_pct"), th.get("disk_pct", 90), "Disk"),
     ]
     cooldown = int(th.get("cooldown_sec") or 1800)
     last_fire = prev.get("_resource_last") or {}
@@ -183,35 +183,35 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             alert = {
                 "t": now,
                 "id": key,
-                "name": f"资源 · {label}",
+                "name": f"Resource · {label}",
                 "kind": "resource",
                 "group": "system",
                 "level": "warn",
                 "event": "problem",
                 "detail": f"{val_f:.0f}% ≥ {limit_f:.0f}%",
-                "message": f"{label}使用率 {val_f:.0f}%（阈值 {limit_f:.0f}%）",
+                "message": f"{label} usage {val_f:.0f}% (threshold {limit_f:.0f}%)",
             }
             _append_alert(alert)
             emitted.append(alert)
             new_last[rid] = now
             if n.get("enabled") and n.get("include_warn", True):
-                send_ha_notify("ServerHub 资源告警", alert["message"])
+                send_ha_notify("ServerHub resource alert", alert["message"])
         elif old == "warn" and not over:
             alert = {
                 "t": now,
                 "id": key,
-                "name": f"资源 · {label}",
+                "name": f"Resource · {label}",
                 "kind": "resource",
                 "group": "system",
                 "level": "ok",
                 "event": "resolved",
                 "detail": f"{val_f:.0f}%",
-                "message": f"{label}使用率已回落至 {val_f:.0f}%",
+                "message": f"{label} usage recovered to {val_f:.0f}%",
             }
             _append_alert(alert)
             emitted.append(alert)
             if n.get("enabled") and n.get("notify_resolve", True):
-                send_ha_notify("ServerHub 资源恢复", alert["message"])
+                send_ha_notify("ServerHub resource recovered", alert["message"])
     new_state["_resource_last"] = new_last
     return emitted
 
@@ -249,13 +249,13 @@ def check_once(force_status: bool = False) -> list:
                 "level": state,
                 "event": "problem",
                 "detail": s.get("detail", ""),
-                "message": f"{s.get('name', sid)} 变为 {state}: {s.get('detail', '')}",
+                "message": f"{s.get('name', sid)} became {state}: {s.get('detail', '')}",
             }
             _append_alert(alert)
             emitted.append(alert)
             n = notify_settings()
             if n.get("enabled") and (state == "down" or n.get("include_warn")):
-                send_ha_notify("ServerHub 告警", alert["message"])
+                send_ha_notify("ServerHub alert", alert["message"])
         elif old in ("down", "warn") and state == "ok":
             alert = {
                 "t": now,
@@ -266,13 +266,13 @@ def check_once(force_status: bool = False) -> list:
                 "level": "ok",
                 "event": "resolved",
                 "detail": s.get("detail", ""),
-                "message": f"{s.get('name', sid)} 已恢复",
+                "message": f"{s.get('name', sid)} recovered",
             }
             _append_alert(alert)
             emitted.append(alert)
             n = notify_settings()
             if n.get("enabled") and n.get("notify_resolve", True):
-                send_ha_notify("ServerHub 恢复", alert["message"])
+                send_ha_notify("ServerHub recovered", alert["message"])
     try:
         emitted.extend(_check_resource_thresholds(prev, new_state, now))
     except Exception:
