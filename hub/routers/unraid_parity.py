@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -111,8 +111,10 @@ def api_settings_scheduler():
 
 
 @router.get("/api/diagnostics")
-def api_diagnostics():
+def api_diagnostics(response: Response):
     """Unraid Diagnostics-style JSON snapshot."""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
     return system_settings_svc.collect_diagnostics()
 
 
@@ -127,5 +129,9 @@ def api_diagnostics_download():
     return PlainTextResponse(
         body,
         media_type="application/json; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
     )
