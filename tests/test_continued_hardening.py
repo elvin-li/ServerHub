@@ -519,5 +519,17 @@ class TerminalCommandScrubTests(unittest.TestCase):
         self.assertNotIn("super-secret", entries[0]["command"])
 
 
+class NoStoreHeaderContractTests(unittest.TestCase):
+    def test_download_and_export_declare_no_store(self):
+        files_src = (BASE / "hub" / "files_svc.py").read_text(encoding="utf-8")
+        settings_src = (BASE / "hub" / "routers" / "settings_api.py").read_text(
+            encoding="utf-8"
+        )
+        auth_src = (BASE / "hub" / "routers" / "auth_api.py").read_text(encoding="utf-8")
+        self.assertIn('Cache-Control": "no-store', files_src)
+        self.assertIn('Cache-Control": "no-store', settings_src)
+        self.assertIn('Cache-Control"] = "no-store', auth_src)
+
+
 if __name__ == "__main__":
     unittest.main()
