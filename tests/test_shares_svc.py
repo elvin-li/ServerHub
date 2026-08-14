@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hub import macos_admin, shares_svc
+from hub.paths import BASE as INSTALL_BASE
 
 
 class MacOSAdminTests(unittest.TestCase):
@@ -135,8 +136,8 @@ class SharesServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(shares_svc.ShareValidationError, "shares.bad_path"):
                 shares_svc.validate_share_path("relative/path")
             with self.assertRaisesRegex(shares_svc.ShareValidationError, "shares.protected_path"):
-                shares_svc.validate_share_path(str(shares_svc.BASE))
-            parent = shares_svc.BASE.parent.resolve()
+                shares_svc.validate_share_path(str(INSTALL_BASE))
+            parent = INSTALL_BASE.parent.resolve()
             if parent != Path("/"):
                 with self.assertRaisesRegex(
                     shares_svc.ShareValidationError, "shares.protected_path"

@@ -15,7 +15,7 @@ from pathlib import Path
 from hub.config import cfg
 from hub.host_address import host_ip, resolve_value
 from hub.macos_admin import run_admin, run_admin_sequence
-from hub.paths import BASE, STATE_ROOT
+from hub.path_policy import path_inside, sensitive_export_roots
 from hub.util import fan_out, port_open, sh
 
 SHARING = "/usr/sbin/sharing"
@@ -35,20 +35,7 @@ _SYSTEM_ROOTS = tuple(
         "/etc", "/var", "/dev",
     )
 )
-_SENSITIVE_ROOTS = (
-    BASE.resolve(),
-    STATE_ROOT.resolve(),
-    (Path.home() / ".ssh").resolve(),
-    (Path.home() / ".aws").resolve(),
-    (Path.home() / ".gnupg").resolve(),
-    (Path.home() / ".kube").resolve(),
-    (Path.home() / "Library" / "Keychains").resolve(),
-    (Path.home() / "Services" / "backups").resolve(),
-    (Path.home() / "Services" / "filebrowser").resolve(),
-    (Path.home() / "Services" / "cloudflared").resolve(),
-    (Path.home() / "Services" / "private_integration").resolve(),
-    (Path.home() / ".cloudflared").resolve(),
-)
+_SENSITIVE_ROOTS = sensitive_export_roots()
 
 
 class ShareValidationError(ValueError):
@@ -213,11 +200,7 @@ def _validate_name(value: str) -> str:
 
 
 def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    return path_inside(path, root)
 
 
 def validate_share_path(value: str) -> Path:

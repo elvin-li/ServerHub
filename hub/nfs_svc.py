@@ -24,7 +24,8 @@ import time
 from pathlib import Path
 
 from hub.macos_admin import run_admin_sequence
-from hub.paths import BASE, DATA_DIR, STATE_ROOT
+from hub.path_policy import path_inside, sensitive_export_roots
+from hub.paths import DATA_DIR
 from hub.secure_io import write_secret_text
 from hub.util import cached_snapshot, sh
 
@@ -55,34 +56,11 @@ _PROTECTED_ROOTS = (
 
 
 def _sensitive_export_roots() -> tuple[Path, ...]:
-    """Credential-bearing trees that must not be exported (or have a parent shared).
-
-    Mirrors :data:`hub.shares_svc._SENSITIVE_ROOTS` and the file-browser denylist
-    so NFS cannot publish what SMB and the panel browser already refuse.
-    """
-    home = Path.home()
-    return (
-        BASE.resolve(),
-        STATE_ROOT.resolve(),
-        (home / ".ssh").resolve(),
-        (home / ".aws").resolve(),
-        (home / ".gnupg").resolve(),
-        (home / ".kube").resolve(),
-        (home / "Library" / "Keychains").resolve(),
-        (home / "Services" / "backups").resolve(),
-        (home / "Services" / "filebrowser").resolve(),
-        (home / "Services" / "cloudflared").resolve(),
-        (home / "Services" / "private_integration").resolve(),
-        (home / ".cloudflared").resolve(),
-    )
+    return sensitive_export_roots()
 
 
 def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    return path_inside(path, root)
 
 
 def _is_protected_export(real: Path) -> bool:
