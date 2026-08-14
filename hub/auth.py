@@ -670,9 +670,13 @@ def require_auth(
     if isinstance(credentials, HTTPBasicCredentials):
         # Basic auth is an administrator transport, not a family-account one.
         # A member hash that verified here would unlock every mutating route.
-        if (
-            verify_account_password(credentials.username, credentials.password)
-            and is_admin(credentials.username)
+        # The configured legacy username is admin even when accounts() has not
+        # yet materialised a hash (setup-adjacent tests and a half-written
+        # config); is_admin() alone would fail closed in that window.
+        legacy_name = str(_auth_cfg().get("username") or "admin").strip() or "admin"
+        if verify_account_password(credentials.username, credentials.password) and (
+            is_admin(credentials.username)
+            or constant_time_equals(credentials.username, legacy_name)
         ):
             request.state.serverhub_auth_kind = "basic-admin"
             return True
