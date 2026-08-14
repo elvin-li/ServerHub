@@ -26,6 +26,7 @@ import threading
 import time
 from pathlib import Path
 
+from hub import secure_io
 from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
@@ -376,7 +377,9 @@ def _append_history(record: dict) -> None:
         del history[:-500]
         try:
             HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-            HISTORY_PATH.write_text(json.dumps(history, indent=2, ensure_ascii=False))
+            secure_io.replace_secret_text(
+                HISTORY_PATH, json.dumps(history, indent=2, ensure_ascii=False)
+            )
         except OSError:
             pass
 
