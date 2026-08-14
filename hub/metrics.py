@@ -115,16 +115,31 @@ def _sample() -> dict:
     }
 
 
+def _append_metrics_chunk(chunk: str) -> None:
+    """Append metrics bytes at 0600; refuse a symlink planted at the leaf."""
+    METRICS_FILE.parent.mkdir(exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(METRICS_FILE, flags, 0o600)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        os.write(fd, chunk.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def _flush_buf_locked(force_trim: bool = False) -> None:
     """Caller must hold _lock."""
     global _last_flush, _last_trim, _write_buf
     if not _write_buf:
         return
-    METRICS_FILE.parent.mkdir(exist_ok=True)
     chunk = "".join(_write_buf)
     _write_buf = []
-    with open(METRICS_FILE, "a") as f:
-        f.write(chunk)
+    _append_metrics_chunk(chunk)
     _last_flush = time.time()
     now = time.time()
     if force_trim or now - _last_trim >= _TRIM_INTERVAL:

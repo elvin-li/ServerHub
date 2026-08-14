@@ -56,6 +56,17 @@ class UrlSafetyTests(unittest.TestCase):
         with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
             self.assertTrue(url_safety.resolved_probe_blocked("evil.example"))
 
+    def test_notify_blocks_public_name_rebinding_to_rfc1918(self):
+        with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
+            ok, reason = url_safety.outbound_url_allowed("http://evil.example/hook")
+            self.assertFalse(ok)
+            self.assertIn("blocked", reason)
+
+    def test_notify_allows_literal_lan_ha(self):
+        self.assertTrue(url_safety.outbound_url_allowed("http://192.168.1.50:8123/")[0])
+        with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("192.168.1.50")):
+            self.assertTrue(url_safety.outbound_url_allowed("http://ha.local:8123/")[0])
+
     def test_lan_name_may_resolve_to_rfc1918(self):
         with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("192.168.1.10")):
             self.assertFalse(url_safety.resolved_probe_blocked("nas.local"))
@@ -130,6 +141,15 @@ class NotifyUrlTests(unittest.TestCase):
     def test_localhost_ha_url_is_still_allowed(self):
         self.assertTrue(url_safety.outbound_url_allowed("http://localhost:8123/")[0])
         self.assertTrue(url_safety.outbound_url_allowed("http://127.0.0.1:8123/")[0])
+
+    def test_notify_redirect_to_imds_is_not_followed(self):
+        handler = url_safety.SafeOutboundRedirects(allow_loopback=True)
+        req = urllib.request.Request("http://hooks.example/notify")
+        self.assertIsNone(
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "http://169.254.169.254/latest"
+            )
+        )
 
 
 class SymlinkMutationTests(unittest.TestCase):
@@ -314,6 +334,62 @@ class ShellFootgunTests(unittest.TestCase):
         self.assertNotIn("shell=", source)
         catalog = (BASE / "hub" / "native_catalog.py").read_text(encoding="utf-8")
         self.assertNotRegex(catalog, r"def _run\([^)]*shell")
+
+
+class SecureIoSymlinkTests(unittest.TestCase):
+    def test_write_secret_text_refuses_a_leaf_symlink(self):
+        import errno
+
+        from hub import secure_io
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "victim.txt"
+            target.write_text("keep", encoding="utf-8")
+            link = root / "secret.txt"
+            link.symlink_to(target)
+            with self.assertRaises(OSError) as raised:
+                secure_io.write_secret_text(link, "stolen\n")
+            self.assertEqual(raised.exception.errno, errno.ELOOP)
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep")
+
+
+class CredentialDenylistTests(unittest.TestCase):
+    def test_filebrowser_db_and_htpasswd_are_protected(self):
+        self.assertTrue(files_svc.is_protected(Path("/tmp/anywhere/filebrowser.db")))
+        self.assertTrue(files_svc.is_protected(Path.home() / "Services" / "teslamate" / ".htpasswd"))
+        self.assertTrue(
+            files_svc.is_protected(Path.home() / "Services" / "filebrowser" / "config.json")
+        )
+
+
+class AlertsAppendModeTests(unittest.TestCase):
+    def test_alert_append_creates_private_jsonl(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "alerts.jsonl"
+            with mock.patch.object(alerts, "ALERTS_FILE", path):
+                alerts._append_alert({"t": 1, "message": "x"})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_test_notify_uses_english_copy(self):
+        source = (BASE / "hub" / "alerts.py").read_text(encoding="utf-8")
+        self.assertIn("ServerHub notify test", source)
+        self.assertNotIn("ServerHub 测试", source)
+
+
+class ComposeValidateModeTests(unittest.TestCase):
+    def test_validate_writes_through_fchmod_0600(self):
+        source = (BASE / "hub" / "compose_svc.py").read_text(encoding="utf-8")
+        self.assertIn("os.fchmod(fd, 0o600)", source)
+        self.assertIn("prefix=\".compose-validate-\"", source)
+
+
+class InstallTokenContractTests(unittest.TestCase):
+    def test_install_creates_tokens_with_o_excl(self):
+        source = (BASE / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("O_EXCL", source)
+        self.assertIn("_write_token", source)
+        self.assertNotIn('open(sys.argv[1], "w")', source)
 
 
 if __name__ == "__main__":

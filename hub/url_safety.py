@@ -15,6 +15,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import urllib.parse
+import urllib.request
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
@@ -158,10 +159,35 @@ def outbound_url_allowed(url: str, *, allow_loopback: bool = True) -> tuple[bool
     addrs = _resolved_ips(name)
     if addrs is None:
         return False, "unresolved host"
+    # Same rebinding rule as bookmark probes: a *public* name that resolves
+    # onto RFC1918 is SSRF, while a literal LAN hostname (``.local``, short
+    # name) may still reach a home HA install on 10/8 or 192.168/16.
+    allow_private = is_lan_host(name)
     for addr in addrs:
         addr = _unwrap_ip(addr)
         if addr.is_link_local or addr.is_unspecified:
             return False, "blocked host"
         if addr.is_loopback and not allow_loopback:
             return False, "blocked host"
+        if addr.is_private and not allow_private:
+            return False, "blocked host"
     return True, ""
+
+
+class SafeOutboundRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse notify/webhook redirects that fail :func:`outbound_url_allowed`.
+
+    Stock ``urlopen`` re-resolves every Location.  Without this, an allowed
+    public webhook that answers ``302`` to link-local / IMDS / RFC1918 would
+    still be followed after the initial allow check.
+    """
+
+    def __init__(self, *, allow_loopback: bool = True):
+        super().__init__()
+        self._allow_loopback = allow_loopback
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        allowed, _ = outbound_url_allowed(newurl, allow_loopback=self._allow_loopback)
+        if not allowed:
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)

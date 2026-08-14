@@ -12,7 +12,7 @@ from hub import secure_io
 from hub.config import cfg
 from hub.paths import DATA_DIR
 from hub.status import full_status
-from hub.url_safety import outbound_url_allowed
+from hub.url_safety import SafeOutboundRedirects, outbound_url_allowed
 
 ALERTS_FILE = DATA_DIR / "alerts.jsonl"
 STATE_FILE = DATA_DIR / "alert_state.json"
@@ -37,11 +37,26 @@ def _save_state(st: dict):
     )
 
 
+def _append_jsonl(path, line: str) -> None:
+    """Append one line at mode 0600 without following a planted leaf symlink."""
+    path.parent.mkdir(exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def _append_alert(alert: dict):
-    ALERTS_FILE.parent.mkdir(exist_ok=True)
     with _lock:
-        with open(ALERTS_FILE, "a") as f:
-            f.write(json.dumps(alert, ensure_ascii=False) + "\n")
+        _append_jsonl(ALERTS_FILE, json.dumps(alert, ensure_ascii=False) + "\n")
         try:
             lines = ALERTS_FILE.read_text().splitlines()
             if len(lines) > MAX_ALERTS:
@@ -117,7 +132,10 @@ def send_ha_notify(title: str, message: str) -> dict:
     if not allowed:
         return {"ok": False, "message": f"blocked notify url: {reason}"}
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        opener = urllib.request.build_opener(
+            SafeOutboundRedirects(allow_loopback=True)
+        )
+        with opener.open(req, timeout=10) as r:
             return {
                 "ok": True,
                 "status": r.status,
@@ -330,4 +348,7 @@ def stop_alerter(timeout: float = 3.0) -> None:
 
 
 def test_notify() -> dict:
-    return send_ha_notify("ServerHub 测试", f"通知通道测试 {time.strftime('%H:%M:%S')}")
+    return send_ha_notify(
+        "ServerHub notify test",
+        f"Notification channel test {time.strftime('%H:%M:%S')}",
+    )

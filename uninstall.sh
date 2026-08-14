@@ -57,6 +57,10 @@ rm -f "$AGENTS/local.filebrowser.plist"
 rm -f "$HOME/Library/Logs/filebrowser-hub.log" 2>/dev/null || true
 rm -f "$HOME/Library/Logs/serverhub"*.log 2>/dev/null || true
 rm -f "$HOME/Library/Logs/ServerHub"*.log 2>/dev/null || true
+# Install-time web publish markers and interrupted compose-validate temps.
+rm -rf "$BASE/static.prev" "$BASE/.static-deploy-pending" 2>/dev/null || true
+rm -f "$HOME/Services"/.compose-validate-* 2>/dev/null || true
+rm -f "$BASE"/Services/.compose-validate-* 2>/dev/null || true
 
 # install.sh may have written a WireGuard LaunchDaemon, PF NAT lines, and
 # sudoers. Undo only those artifacts — never the rest of /etc/pf.conf.

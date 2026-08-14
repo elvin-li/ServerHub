@@ -50,6 +50,18 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("/usr/local/libexec/serverhub", self.uninstall)
         self.assertIn("sed -i.bak '/serverhub-wireguard/d'", self.uninstall)
 
+    def test_uninstall_removes_filebrowser_hub_log(self):
+        self.assertIn("filebrowser-hub.log", self.uninstall)
+
+    def test_uninstall_clears_static_prev_and_compose_validate_temps(self):
+        self.assertIn("static.prev", self.uninstall)
+        self.assertIn(".static-deploy-pending", self.uninstall)
+        self.assertIn(".compose-validate-", self.uninstall)
+
+    def test_install_token_writer_uses_o_excl(self):
+        self.assertIn("O_EXCL", self.install)
+        self.assertIn("refusing symlink", self.install)
+
 
 if __name__ == "__main__":
     unittest.main()

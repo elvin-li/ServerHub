@@ -53,12 +53,17 @@ PROTECTED_DIRS: tuple[Path, ...] = (
     # The deny-list protected the original and not the copy.  Database dumps live
     # here too.  0600/0700 is no defence: the panel runs as the owner.
     SERVICES_ROOT / "backups",
+    # FileBrowser's own SQLite holds password hashes for every FB user the panel
+    # provisioned; the tree is under ~/Services which is a default browse root.
+    SERVICES_ROOT / "filebrowser",
 )
 
 #: Basenames that are never exposed, wherever they appear.
 PROTECTED_NAMES: frozenset[str] = frozenset({
     ".session-secret",
     "service-credentials.json",
+    "filebrowser.db",
+    ".htpasswd",
     "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
 })
 
@@ -605,6 +610,8 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     if not FB_PLIST.exists():
         raise api_error("files.fb_no_plist")
     import plistlib
+    import tempfile
+
     with open(FB_PLIST, "rb") as f:
         pl = plistlib.load(f)
     if enabled:
@@ -613,8 +620,31 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     else:
         pl["RunAtLoad"] = True
         pl["KeepAlive"] = True
-    with open(FB_PLIST, "wb") as f:
-        plistlib.dump(pl, f)
+    # Atomic replace via a private temp in the agents dir.  A direct open("wb")
+    # would follow a symlink planted at FB_PLIST and rewrite an attacker path.
+    payload = plistlib.dumps(pl)
+    fd, tmp_name = tempfile.mkstemp(
+        suffix=".plist", prefix=".filebrowser-", dir=str(FB_PLIST.parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(payload)
+        os.replace(tmp_path, FB_PLIST)
+        tmp_path = Path()  # replaced; skip unlink in finally
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
     # reload definition if loaded
     dom = f"gui/{UID}"
     sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=8)

@@ -178,14 +178,37 @@ xattr -d com.apple.provenance "$BASE/data" 2>/dev/null || true
 chmod 700 "$BASE/data" 2>/dev/null || true
 # Native clients and first-run setup use independent bearer secrets. They are
 # generated locally and never placed in services.yaml or command arguments.
+# O_EXCL (and O_NOFOLLOW on truncate) matches hub.auth._persistent_token so a
+# pre-planted symlink at the token path cannot redirect the bearer bytes.
+_write_token() {
+  local path="$1"
+  "$VENV/bin/python" -c '
+import os, secrets, sys
+path = sys.argv[1]
+token = secrets.token_urlsafe(32) + "\n"
+try:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except FileExistsError:
+    if os.path.islink(path):
+        raise SystemExit(f"refusing symlink at {path}")
+    if os.path.getsize(path) > 0:
+        raise SystemExit(0)
+    flags = os.O_WRONLY | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    handle.write(token)
+' "$path"
+}
 if [[ ! -s "$BASE/data/.local-client-token" ]]; then
   umask 077
-  "$VENV/bin/python" -c 'import secrets,sys; open(sys.argv[1], "w").write(secrets.token_urlsafe(32)+"\n")' "$BASE/data/.local-client-token"
+  _write_token "$BASE/data/.local-client-token"
 fi
 chmod 600 "$BASE/data/.local-client-token"
 if [[ ! -s "$BASE/data/.setup-token" ]] && ! grep -q 'password_hash:' "$BASE/services.yaml" 2>/dev/null; then
   umask 077
-  "$VENV/bin/python" -c 'import secrets,sys; open(sys.argv[1], "w").write(secrets.token_urlsafe(32)+"\n")' "$BASE/data/.setup-token"
+  _write_token "$BASE/data/.setup-token"
 fi
 [[ ! -e "$BASE/data/.setup-token" ]] || chmod 600 "$BASE/data/.setup-token"
 if [[ -f "$BASE/services.yaml" ]]; then

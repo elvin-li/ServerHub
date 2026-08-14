@@ -14,11 +14,27 @@ atomic replace-an-existing-file case that O_EXCL alone cannot express.
 """
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
 SECRET_MODE = 0o600
 SECRET_DIR_MODE = 0o700
+
+
+def _open_flags(*base: int) -> int:
+    """Combine open flags and add O_NOFOLLOW when the platform supports it."""
+    flags = 0
+    for flag in base:
+        flags |= flag
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return flags
+
+
+def _refuse_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise OSError(errno.ELOOP, "Refusing to write through a symlink", str(path))
 
 
 def _ensure_private_parents(path: Path) -> None:
@@ -53,11 +69,15 @@ def write_secret_text(path: Path | str, content: str, *, encoding: str = "utf-8"
     """
     p = Path(path)
     _ensure_private_parents(p)
+    # A planted symlink at the secret path must not become write-through to a
+    # file the attacker chooses.  O_NOFOLLOW covers the open; the lexists check
+    # gives a clear error before chmod would follow the link on some platforms.
+    _refuse_symlink(p)
     if p.exists():
         # Tighten first: truncating a 0644 file and then writing would expose
         # the new content for the duration of the write.
         os.chmod(p, SECRET_MODE)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_MODE)
+    fd = os.open(p, _open_flags(os.O_WRONLY, os.O_CREAT, os.O_TRUNC), SECRET_MODE)
     # fdopen takes ownership of fd, so its context manager closes it on both the
     # success and the exception path.
     with os.fdopen(fd, "w", encoding=encoding) as fh:
@@ -125,9 +145,10 @@ def copy_secret_file(src: Path | str, dst: Path | str) -> Path:
     s, d = Path(src), Path(dst)
     data = s.read_bytes()
     _ensure_private_parents(d)
+    _refuse_symlink(d)
     if d.exists():
         os.chmod(d, SECRET_MODE)
-    fd = os.open(d, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_MODE)
+    fd = os.open(d, _open_flags(os.O_WRONLY, os.O_CREAT, os.O_TRUNC), SECRET_MODE)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
     os.chmod(d, SECRET_MODE)
