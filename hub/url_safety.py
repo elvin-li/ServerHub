@@ -31,13 +31,33 @@ def _normalize_host(host: str) -> str:
     return (host or "").strip().strip("[]").lower()
 
 
+def _unwrap_ip(addr: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+    """Prefer the embedded IPv4 address for IPv4-mapped IPv6 literals.
+
+    ``::ffff:127.0.0.1`` and ``::ffff:169.254.169.254`` are neither
+    ``is_loopback`` nor ``is_link_local`` on the IPv6 object, so checks that
+    only look at the outer address would let mapped IMDS/loopback through.
+    """
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return mapped if mapped is not None else addr
+
+
+def _addr_is_probe_forbidden(addr: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
+    addr = _unwrap_ip(addr)
+    if addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+        return True
+    if not allow_private and addr.is_private:
+        return True
+    return False
+
+
 def is_blocked_literal_host(host: str) -> bool:
     """Loopback, link-local (including IMDS), unspecified, and known IMDS names."""
     name = _normalize_host(host)
     if not name or name in _BLOCKED_NAMES:
         return True
     try:
-        addr = ipaddress.ip_address(name)
+        addr = _unwrap_ip(ipaddress.ip_address(name))
     except ValueError:
         return False
     return bool(addr.is_loopback or addr.is_link_local or addr.is_unspecified)
@@ -51,7 +71,7 @@ def is_lan_host(host: str) -> bool:
     if name.endswith(_PRIVATE_SUFFIXES):
         return True
     try:
-        addr = ipaddress.ip_address(name)
+        addr = _unwrap_ip(ipaddress.ip_address(name))
     except ValueError:
         return "." not in name
     return bool(addr.is_private)
@@ -63,7 +83,7 @@ def _resolved_ips(host: str) -> list[ipaddress._BaseAddress] | None:
     if not name:
         return None
     try:
-        return [ipaddress.ip_address(name)]
+        return [_unwrap_ip(ipaddress.ip_address(name))]
     except ValueError:
         pass
     try:
@@ -73,18 +93,10 @@ def _resolved_ips(host: str) -> list[ipaddress._BaseAddress] | None:
     out: list[ipaddress._BaseAddress] = []
     for info in infos:
         try:
-            out.append(ipaddress.ip_address(info[4][0]))
+            out.append(_unwrap_ip(ipaddress.ip_address(info[4][0])))
         except (ValueError, IndexError, TypeError):
             continue
     return out or None
-
-
-def _addr_is_probe_forbidden(addr: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
-    if addr.is_loopback or addr.is_link_local or addr.is_unspecified:
-        return True
-    if not allow_private and addr.is_private:
-        return True
-    return False
 
 
 def resolved_probe_blocked(host: str) -> bool:
@@ -132,7 +144,7 @@ def outbound_url_allowed(url: str, *, allow_loopback: bool = True) -> tuple[bool
     if name in _BLOCKED_NAMES and name != "localhost":
         return False, "blocked host"
     try:
-        literal = ipaddress.ip_address(name)
+        literal = _unwrap_ip(ipaddress.ip_address(name))
     except ValueError:
         literal = None
     if literal is not None:
@@ -147,6 +159,7 @@ def outbound_url_allowed(url: str, *, allow_loopback: bool = True) -> tuple[bool
     if addrs is None:
         return False, "unresolved host"
     for addr in addrs:
+        addr = _unwrap_ip(addr)
         if addr.is_link_local or addr.is_unspecified:
             return False, "blocked host"
         if addr.is_loopback and not allow_loopback:

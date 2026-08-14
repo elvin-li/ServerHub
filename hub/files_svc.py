@@ -6,6 +6,7 @@ built-in browser works without it and uses no extra process memory when idle.
 from __future__ import annotations
 
 import mimetypes
+import errno
 import os
 import shutil
 import stat
@@ -412,38 +413,61 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
     parent = _resolve_safe(path, root_id)
     if not parent.is_dir():
         raise api_error("files.dest_not_a_dir")
-    name = Path(file.filename or "upload.bin").name
+    name = _clean_component(Path(file.filename or "upload.bin").name)
     if not name or name in (".", ".."):
         raise api_error("files.bad_filename")
-    dest = (parent / name).resolve()
-    _resolve_safe(str(dest), root_id)
+    # Keep the leaf unfollowed so a planted symlink cannot redirect the write.
+    dest = parent / name
+    if is_protected(dest):
+        raise api_error("files.path_protected")
+    if dest.exists() or dest.is_symlink():
+        raise api_error("files.upload_would_overwrite", name=name)
     # Refuse to clobber an existing file.  rename() already guards this way, and
     # the error code was defined for upload from the start but never raised, so an
     # upload silently overwrote whatever was there.  Combined with a deny-list
     # bypass that turns a read hole into arbitrary code execution: overwrite any
     # .py under the install dir and the next restart runs it.
-    if dest.exists():
-        raise api_error("files.upload_would_overwrite", name=name)
-    # stream write
+    #
+    # O_EXCL|O_NOFOLLOW closes the TOCTOU where a symlink appears between the
+    # exists() check and open("wb"), which would otherwise follow the link.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     max_mb = int(_settings().get("max_upload_mb") or 512)
     max_bytes = max_mb * 1024 * 1024
     written = 0
+    fd = -1
     try:
-        with open(dest, "wb") as f:
+        try:
+            fd = os.open(dest, flags, 0o600)
+        except FileExistsError:
+            raise api_error("files.upload_would_overwrite", name=name)
+        except OSError as exc:
+            # Linux: ELOOP when the final component is a symlink under O_NOFOLLOW.
+            if getattr(exc, "errno", None) in {errno.ELOOP, errno.EEXIST}:
+                raise api_error("files.upload_would_overwrite", name=name) from exc
+            raise
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
             while True:
                 chunk = await file.read(1024 * 1024)
                 if not chunk:
                     break
                 written += len(chunk)
                 if written > max_bytes:
-                    f.close()
+                    handle.close()
                     try:
                         dest.unlink()
                     except OSError:
                         pass
                     raise api_error("files.upload_too_large", max_mb=max_mb)
-                f.write(chunk)
+                handle.write(chunk)
     finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         await file.close()
     return {"ok": True, "path": str(dest), "size": written, "name": name}
 

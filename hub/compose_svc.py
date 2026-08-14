@@ -76,15 +76,19 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
     """docker compose config -q via a 0600 temp file."""
     work = cwd or str(Path.home() / "Services")
     tmp_path: Path | None = None
+    fd = -1
     try:
         Path(work).mkdir(parents=True, exist_ok=True)
-        # Compose text routinely embeds generated DB/admin passwords.  A
-        # NamedTemporaryFile under ~/Services is born at the umask (0644), so
-        # write through secure_io instead.
+        # Compose text routinely embeds generated DB/admin passwords.  Write
+        # through the mkstemp fd with an explicit 0600 mode so the bytes are
+        # never world-readable in ~/Services, and never re-open the path
+        # (which would race a symlink planted between create and write).
         fd, tmp_name = tempfile.mkstemp(suffix=".yml", prefix=".compose-validate-", dir=work)
-        os.close(fd)
         tmp_path = Path(tmp_name)
-        secure_io.write_secret_text(tmp_path, content)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(content)
         p = subprocess.run(
             [DOCKER, "compose", "-f", str(tmp_path), "config", "-q"],
             cwd=work,
@@ -101,6 +105,11 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
     except Exception as e:
         return {"ok": False, "message": str(e)}
     finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         if tmp_path is not None:
             try:
                 tmp_path.unlink()

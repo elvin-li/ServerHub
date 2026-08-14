@@ -32,6 +32,7 @@ LOCAL_TOKEN_HEADER = "x-serverhub-local-token"
 _login_lock = threading.Lock()
 _setup_lock = threading.Lock()
 _login_attempts: dict[str, list[float]] = {}
+_login_hydrated = False
 LOGIN_FAILURES_FILE = DATA_DIR / ".login-failures.json"
 _LOGIN_WINDOW = 300.0
 _LOGIN_LIMIT = 5
@@ -58,6 +59,17 @@ def _load_login_attempts() -> dict[str, list[float]]:
     return out
 
 
+def _ensure_login_hydrated() -> None:
+    """Merge disk failures into memory once under the login lock."""
+    global _login_hydrated
+    if _login_hydrated:
+        return
+    for client, stamps in _load_login_attempts().items():
+        existing = _login_attempts.get(client, [])
+        _login_attempts[client] = sorted(set(existing) | set(stamps))
+    _login_hydrated = True
+
+
 def _persist_login_attempts(attempts: dict[str, list[float]]) -> None:
     import json
     from hub import secure_io
@@ -79,8 +91,7 @@ def _persist_login_attempts(attempts: dict[str, list[float]]) -> None:
 def login_allowed(client: str) -> tuple[bool, int]:
     now = time.time()
     with _login_lock:
-        if client not in _login_attempts:
-            _login_attempts.update(_load_login_attempts())
+        _ensure_login_hydrated()
         attempts = [t for t in _login_attempts.get(client, []) if now - t < _LOGIN_WINDOW]
         _login_attempts[client] = attempts
         if len(attempts) >= _LOGIN_LIMIT:
@@ -90,16 +101,14 @@ def login_allowed(client: str) -> tuple[bool, int]:
 
 def record_login_failure(client: str) -> None:
     with _login_lock:
-        if client not in _login_attempts:
-            _login_attempts.update(_load_login_attempts())
+        _ensure_login_hydrated()
         _login_attempts.setdefault(client, []).append(time.time())
         _persist_login_attempts(_login_attempts)
 
 
 def clear_login_failures(client: str) -> None:
     with _login_lock:
-        if client not in _login_attempts:
-            _login_attempts.update(_load_login_attempts())
+        _ensure_login_hydrated()
         _login_attempts.pop(client, None)
         _persist_login_attempts(_login_attempts)
 

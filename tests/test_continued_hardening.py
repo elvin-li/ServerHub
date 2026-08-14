@@ -29,9 +29,28 @@ class UrlSafetyTests(unittest.TestCase):
                 self.assertTrue(url_safety.is_blocked_literal_host(host))
                 self.assertTrue(url_safety.resolved_probe_blocked(host))
 
+    def test_ipv4_mapped_loopback_and_imds_are_blocked(self):
+        for host in ("::ffff:127.0.0.1", "::ffff:169.254.169.254"):
+            with self.subTest(host=host):
+                self.assertTrue(url_safety.is_blocked_literal_host(host))
+                self.assertTrue(url_safety.resolved_probe_blocked(host))
+        # Notify may talk to localhost HA, but never to mapped IMDS.
+        self.assertTrue(url_safety.outbound_url_allowed("http://[::ffff:127.0.0.1]/")[0])
+        self.assertFalse(url_safety.outbound_url_allowed("http://[::ffff:169.254.169.254]/")[0])
+        self.assertFalse(
+            url_safety.outbound_url_allowed("http://[::ffff:127.0.0.1]/", allow_loopback=False)[0]
+        )
+
     def test_public_name_rebinding_to_loopback_is_blocked(self):
         with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("127.0.0.1")):
             self.assertTrue(url_safety.resolved_probe_blocked("evil.example"))
+
+    def test_public_name_rebinding_to_mapped_imds_is_blocked_for_notify(self):
+        with mock.patch.object(
+            socket, "getaddrinfo", return_value=_addrinfo("::ffff:169.254.169.254")
+        ):
+            ok, _ = url_safety.outbound_url_allowed("http://evil.example/hook")
+            self.assertFalse(ok)
 
     def test_public_name_rebinding_to_rfc1918_is_blocked(self):
         with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
@@ -154,6 +173,37 @@ class SymlinkMutationTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "keep-me")
             self.assertFalse(link.exists() or link.is_symlink())
 
+    def test_upload_refuses_a_leaf_symlink(self):
+        import asyncio
+
+        class FakeUpload:
+            filename = "alias.txt"
+
+            async def read(self, _size: int = -1):
+                return b""
+
+            async def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            media = Path(temporary) / "media"
+            media.mkdir()
+            target = media / "real.txt"
+            target.write_text("keep-me", encoding="utf-8")
+            link = media / "alias.txt"
+            link.symlink_to(target)
+            with mock.patch.object(
+                files_svc,
+                "default_roots",
+                return_value=[{"id": "media", "name": "Media", "path": str(media)}],
+            ):
+                with self.assertRaises(Exception) as raised:
+                    asyncio.run(files_svc.upload(str(media), FakeUpload(), "media"))
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep-me")
+            detail = getattr(raised.exception, "detail", {})
+            code = detail.get("code") if isinstance(detail, dict) else None
+            self.assertEqual(code, "files.upload_would_overwrite")
+
 
 class LoginRatePersistTests(unittest.TestCase):
     def setUp(self):
@@ -163,6 +213,7 @@ class LoginRatePersistTests(unittest.TestCase):
         self.patchers = [
             mock.patch.object(auth, "LOGIN_FAILURES_FILE", self.path),
             mock.patch.object(auth, "_login_attempts", {}),
+            mock.patch.object(auth, "_login_hydrated", False),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -175,12 +226,24 @@ class LoginRatePersistTests(unittest.TestCase):
         allowed, _ = auth.login_allowed(client)
         self.assertFalse(allowed)
         auth._login_attempts.clear()
+        auth._login_hydrated = False
         allowed, retry = auth.login_allowed(client)
         self.assertFalse(allowed)
         self.assertGreater(retry, 0)
         self.assertTrue(self.path.is_file())
         data = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(len(data[client]), 5)
+
+    def test_clear_login_failures_wipes_the_disk_entry(self):
+        client = "198.51.100.10"
+        auth.record_login_failure(client)
+        auth.clear_login_failures(client)
+        auth._login_attempts.clear()
+        auth._login_hydrated = False
+        allowed, _ = auth.login_allowed(client)
+        self.assertTrue(allowed)
+        data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else {}
+        self.assertNotIn(client, data)
 
 
 class JobsArgvTests(unittest.TestCase):

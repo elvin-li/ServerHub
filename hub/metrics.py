@@ -134,7 +134,9 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
             if len(lines) > MAX_POINTS:
                 trimmed = "\n".join(lines[-MAX_POINTS:]) + "\n"
                 tmp = METRICS_FILE.with_suffix(".jsonl.tmp")
-                tmp.write_text(trimmed)
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(trimmed)
                 os.replace(tmp, METRICS_FILE)
         except OSError:
             pass

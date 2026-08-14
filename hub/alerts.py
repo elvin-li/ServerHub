@@ -47,7 +47,9 @@ def _append_alert(alert: dict):
             if len(lines) > MAX_ALERTS:
                 trimmed = "\n".join(lines[-MAX_ALERTS:]) + "\n"
                 tmp = ALERTS_FILE.with_suffix(".jsonl.tmp")
-                tmp.write_text(trimmed)
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(trimmed)
                 os.replace(tmp, ALERTS_FILE)
         except OSError:
             pass
