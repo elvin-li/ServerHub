@@ -44,6 +44,33 @@ class HostAddressTests(unittest.TestCase):
         self.assertEqual(value["url"], "http://server.local:8123")
         self.assertEqual(value["unknown"], "{other}")
 
+    def test_loopback_bind_is_not_an_advertised_host(self):
+        with (
+            patch.dict("os.environ", {
+                "SERVERHUB_HOST": "127.0.0.1",
+                "SERVERHUB_HOST_IP": "",
+            }, clear=False),
+            patch("hub.config.cfg", return_value={"settings": {"host_ip": "auto"}}),
+        ):
+            self.assertEqual(host_address.configured_host(), "auto")
+
+    def test_unspecified_bind_is_not_an_advertised_host(self):
+        with (
+            patch.dict("os.environ", {
+                "SERVERHUB_HOST": "0.0.0.0",
+                "SERVERHUB_HOST_IP": "",
+            }, clear=False),
+            patch("hub.config.cfg", return_value={"settings": {"host_ip": "auto"}}),
+        ):
+            self.assertEqual(host_address.configured_host(), "auto")
+
+    def test_explicit_lan_bind_is_still_advertised(self):
+        with patch.dict("os.environ", {
+            "SERVERHUB_HOST": "192.0.2.40",
+            "SERVERHUB_HOST_IP": "",
+        }, clear=False):
+            self.assertEqual(host_address.configured_host(), "192.0.2.40")
+
     def test_local_url_is_normalized_before_storage(self):
         with patch.object(host_address, "host_ip", return_value="192.0.2.40"):
             self.assertEqual(

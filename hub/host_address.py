@@ -19,6 +19,10 @@ _ROUTE_TTL = 5.0
 _ADDRESS_TTL = 5.0
 
 _AUTO_VALUES = {"", "auto", "automatic", "dhcp", "dynamic"}
+#: Listen addresses are not an advertised LAN identity. If SERVERHUB_HOST is
+#: 127.0.0.1 (the default bind) or 0.0.0.0, {host} templates still resolve
+#: through route detection / settings.host_ip.
+_BIND_ONLY_HOSTS = frozenset({"0.0.0.0", "127.0.0.1", "::", "::1", "[::]", "[::1]"})
 _VAR_RE = re.compile(r"\$?\{([A-Za-z][A-Za-z0-9_.-]{0,63})\}")
 _cache_lock = threading.Lock()
 #: Held across the detection itself, so concurrent callers that miss a cold cache
@@ -31,14 +35,18 @@ _DETECT_TTL = 30.0
 
 
 def configured_host() -> str:
-    """Return the configured host selector; auto means route discovery."""
-    env_value = (
-        os.environ.get("SERVERHUB_HOST")
-        or os.environ.get("SERVERHUB_HOST_IP")
-        or ""
-    ).strip()
-    if env_value:
-        return env_value
+    """Return the advertised host selector; auto means route discovery.
+
+    ``SERVERHUB_HOST`` is also the bind address. Loopback and unspecified
+    values there must not become ``{host}`` in bookmark / compose URLs.
+    ``SERVERHUB_HOST_IP`` remains an explicit advertised-address override.
+    """
+    advertised = (os.environ.get("SERVERHUB_HOST_IP") or "").strip()
+    if advertised and advertised not in _BIND_ONLY_HOSTS:
+        return advertised
+    bind_or_host = (os.environ.get("SERVERHUB_HOST") or "").strip()
+    if bind_or_host and bind_or_host not in _BIND_ONLY_HOSTS:
+        return bind_or_host
     try:
         from hub.config import cfg
 

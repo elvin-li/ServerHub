@@ -32,6 +32,7 @@ warn() { printf '\033[1;33m warn\033[0m %s\n' "$*"; }
 # that are not present simply do not match and cost one launchctl probe.
 for label in \
   local.serverhub.panel local.serverhub.menubar local.serverhub.launcher \
+  local.serverhub.watchdog \
   local.serverhub local.serverhub-launcher local.serverhub-menubar \
   com.elvin.serverhub com.elvin.serverhub-launcher com.elvin.serverhub-menubar; do
   plist="$AGENTS/$label.plist"
@@ -52,6 +53,34 @@ if launchctl print "gui/$UID_NUM/local.filebrowser" >/dev/null 2>&1; then
   launchctl bootout "gui/$UID_NUM/local.filebrowser" 2>/dev/null || true
 fi
 rm -f "$AGENTS/local.filebrowser.plist"
+
+# install.sh may have written a WireGuard LaunchDaemon, PF NAT lines, and
+# sudoers. Undo only those artifacts — never the rest of /etc/pf.conf.
+WG_PLIST="/Library/LaunchDaemons/com.wireguard.wg0.plist"
+if [[ -f "$WG_PLIST" ]] || launchctl print system/com.wireguard.wg0 >/dev/null 2>&1; then
+  say "removing WireGuard LaunchDaemon"
+  sudo launchctl bootout system/com.wireguard.wg0 2>/dev/null || true
+  sudo launchctl unload "$WG_PLIST" 2>/dev/null || true
+  sudo rm -f "$WG_PLIST"
+fi
+if [[ -f /etc/pf.anchors/serverhub-wireguard ]] || grep -q 'serverhub-wireguard' /etc/pf.conf 2>/dev/null; then
+  say "removing ServerHub PF WireGuard rules"
+  sudo rm -f /etc/pf.anchors/serverhub-wireguard
+  if [[ -f /etc/pf.conf ]]; then
+    # macOS sed -i requires a suffix; delete only our marker lines.
+    sudo sed -i.bak '/serverhub-wireguard/d' /etc/pf.conf
+    sudo rm -f /etc/pf.conf.bak
+  fi
+  sudo pfctl -f /etc/pf.conf 2>/dev/null || true
+fi
+if [[ -f /etc/sudoers.d/serverhub ]]; then
+  say "removing sudoers rules"
+  sudo rm -f /etc/sudoers.d/serverhub
+fi
+if [[ -d /usr/local/libexec/serverhub ]]; then
+  say "removing pinned helper copies"
+  sudo rm -rf /usr/local/libexec/serverhub
+fi
 
 if [[ "$PURGE" == "1" ]]; then
   warn "--purge: deleting venv, data/ and services.yaml"

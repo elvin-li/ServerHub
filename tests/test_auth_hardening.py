@@ -118,11 +118,11 @@ class AuthHardeningTests(unittest.TestCase):
             ("POST", "/api/action"),
             ("GET", "/api/maintenance"),
             ("GET", "/api/maintenance/daily/log"),
-            ("POST", "/api/maintenance/daily/run"),
             ("POST", "/api/containers/all"),
             ("GET", "/api/launcher"),
         ]
         refused = [
+            ("POST", "/api/maintenance/daily/run"),
             ("POST", "/api/files/delete"),
             ("POST", "/api/terminal/run"),
             ("PUT", "/api/settings"),

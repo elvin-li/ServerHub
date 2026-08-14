@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import glob
+import re
+import shlex
 import subprocess
 import threading
 import time
@@ -14,6 +16,26 @@ from hub.config import cfg
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
 from hub.util import sh
+
+_PROCESS_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
+
+
+def _app_process_name(name: str) -> str:
+    """Refuse osascript interpolation of an option-shaped or quoted process name."""
+    value = str(name or "").strip()
+    if not _PROCESS_NAME_RE.fullmatch(value):
+        raise HTTPException(400, "invalid application process name")
+    return value
+
+
+def _script_argv(command) -> list[str]:
+    if isinstance(command, (list, tuple)):
+        argv = [str(part) for part in command]
+    else:
+        argv = shlex.split(str(command))
+    if not argv:
+        raise HTTPException(400, "empty script command")
+    return argv
 
 
 def _launchctl(args: list[str]):
@@ -149,11 +171,12 @@ def run_action(target, action):
             if action == "restart":
                 return vm_restart_async(target)
     if kind == "app":
+        process = _app_process_name(meta.get("process") or "")
         if action in ("stop", "restart"):
-            sh(["osascript", "-e", f'quit app "{meta["process"]}"'], timeout=15)
+            sh(["osascript", "-e", f'quit app "{process}"'], timeout=15)
             time.sleep(2)
         if action in ("start", "restart"):
-            return sh(["open", "-ga", meta["process"]])
+            return sh(["open", "-ga", process])
         return 0, "stopped", ""
     if kind == "app-engine":
         if action == "start":
@@ -168,9 +191,18 @@ def run_action(target, action):
             return sh(["osascript", "-e", 'quit app "OrbStack"'], timeout=20)
     if kind == "script":
         if action in ("stop", "restart") and meta.get("stop"):
-            sh(meta["stop"], timeout=30, shell=True)
+            sh(_script_argv(meta["stop"]), timeout=30)
             time.sleep(1)
         if action in ("start", "restart") and meta.get("start"):
-            return sh(f"nohup {meta['start']} >/dev/null 2>&1 &", timeout=20, shell=True)
+            argv = _script_argv(meta["start"])
+            subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+            return 0, "started", ""
         return 0, "stopped", ""
     raise HTTPException(400, f"bad action {action} for {kind}")

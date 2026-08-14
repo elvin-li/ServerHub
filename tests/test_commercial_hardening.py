@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from fastapi.testclient import TestClient
 
 from hub import __version__, auth
@@ -120,6 +120,68 @@ class RequestIdTests(unittest.TestCase):
         hostile = "not a valid id\nX-Injected: 1"
         resp = self.client.get("/api/auth/status", headers={"X-Request-ID": hostile})
         self.assertNotEqual(resp.headers.get("x-request-id"), hostile)
+
+
+class ProxyClientIdentityTests(unittest.TestCase):
+    def test_a_trusted_proxy_uses_the_forwarded_client(self):
+        req = request(
+            client="127.0.0.1",
+            headers=[(b"x-forwarded-for", b"203.0.113.9, 127.0.0.1")],
+        )
+        self.assertEqual(auth.request_client_id(req), "203.0.113.9")
+
+    def test_cf_connecting_ip_is_preferred(self):
+        req = request(
+            client="127.0.0.1",
+            headers=[
+                (b"cf-connecting-ip", b"198.51.100.4"),
+                (b"x-forwarded-for", b"203.0.113.9"),
+            ],
+        )
+        self.assertEqual(auth.request_client_id(req), "198.51.100.4")
+
+    def test_a_non_proxy_peer_cannot_spoof_forwarded_headers(self):
+        req = request(
+            client="192.168.1.50",
+            headers=[(b"x-forwarded-for", b"203.0.113.9")],
+        )
+        self.assertEqual(auth.request_client_id(req), "192.168.1.50")
+
+    def test_login_rate_limit_keys_on_the_forwarded_client(self):
+        req = request(
+            client="127.0.0.1",
+            path="/api/auth/login",
+            method="POST",
+            headers=[(b"x-forwarded-for", b"203.0.113.77")],
+        )
+        with (
+            patch.object(auth, "setup_required", return_value=False),
+            patch.object(auth, "login_allowed", return_value=(False, 42)) as allowed,
+            patch.object(auth_api.audit, "record"),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                auth_api.auth_login(
+                    auth_api.LoginBody(username="admin", password="x"),
+                    req,
+                    Response(),
+                )
+        self.assertEqual(raised.exception.status_code, 429)
+        allowed.assert_called_once_with("203.0.113.77")
+
+
+class ReadyProbeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(create_app())
+
+    def test_ready_is_unauthenticated_and_tiny(self):
+        resp = self.client.get("/ready")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["version"], __version__)
+        self.assertNotIn("counts", body)
+        self.assertNotIn("engine_up", body)
 
 
 class CatalogSecretWriteTests(unittest.TestCase):

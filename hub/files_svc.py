@@ -495,7 +495,7 @@ def ensure_filebrowser() -> dict:
                 subprocess.Popen(
                     [
                         str(FB_BIN), "-d", str(FB_DB), "-r", str(FB_ROOT_DEFAULT),
-                        "-a", "0.0.0.0", "-p", str(FB_PORT),
+                        "-a", "127.0.0.1", "-p", str(FB_PORT),
                     ],
                     stdin=subprocess.DEVNULL,
                     stdout=log,

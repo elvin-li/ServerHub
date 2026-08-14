@@ -355,14 +355,38 @@ class BookmarkProbeTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertIn("unsupported scheme", result["error"])
 
-    def test_loopback_and_private_hosts_are_treated_as_lan(self):
+    def test_rfc1918_and_lan_names_are_treated_as_lan(self):
         for host in (
-            "localhost", "127.0.0.1", "::1", "192.168.1.10", "10.1.2.3",
-            "172.16.5.6", "169.254.169.254", "nas.local", "box.lan",
-            "host.internal", "bare-name",
+            "192.168.1.10", "10.1.2.3", "172.16.5.6",
+            "nas.local", "box.lan", "host.internal", "bare-name",
         ):
             with self.subTest(host=host):
                 self.assertTrue(bookmarks_svc._is_private_host(host))
+                self.assertFalse(bookmarks_svc._is_blocked_probe_host(host))
+
+    def test_loopback_link_local_and_metadata_are_blocked(self):
+        for host in (
+            "localhost", "127.0.0.1", "::1", "169.254.169.254",
+            "metadata.google.internal", "metadata", "0.0.0.0",
+        ):
+            with self.subTest(host=host):
+                self.assertTrue(bookmarks_svc._is_blocked_probe_host(host))
+                self.assertFalse(bookmarks_svc._is_private_host(host))
+
+    def test_a_blocked_host_is_not_opened(self):
+        for url in (
+            "http://127.0.0.1:8086/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://localhost/admin",
+            "http://metadata.google.internal/",
+        ):
+            with self.subTest(url=url):
+                with mock.patch.object(
+                    urllib.request, "build_opener", side_effect=AssertionError("opened")
+                ):
+                    result = bookmarks_svc._probe(url)
+                self.assertFalse(result["ok"])
+                self.assertIn("blocked host", result["error"])
 
     def test_public_hosts_are_not_treated_as_lan(self):
         for host in (
@@ -399,10 +423,24 @@ class BookmarkProbeTests(unittest.TestCase):
 
     def test_a_redirect_within_http_is_still_followed(self):
         handler = bookmarks_svc._SchemeSafeRedirects()
-        req = urllib.request.Request("http://127.0.0.1/a")
+        req = urllib.request.Request("http://nas.local/a")
         self.assertIsNotNone(
-            handler.redirect_request(req, None, 302, "Found", {}, "http://127.0.0.1/b")
+            handler.redirect_request(req, None, 302, "Found", {}, "http://nas.local/b")
         )
+
+    def test_a_lan_bookmark_cannot_redirect_to_loopback_or_metadata(self):
+        handler = bookmarks_svc._SchemeSafeRedirects()
+        req = urllib.request.Request("http://nas.local/app")
+        for target in (
+            "http://127.0.0.1:8086/api/auth/setup-token",
+            "http://169.254.169.254/latest/meta-data",
+            "http://localhost/",
+        ):
+            with self.subTest(target=target):
+                self.assertIsNone(
+                    handler.redirect_request(req, None, 302, "Found", {}, target),
+                    f"a LAN bookmark must not follow a 302 to {target}",
+                )
 
     def test_a_public_bookmark_cannot_redirect_to_a_private_target(self):
         """http://attacker → http://169.254.169.254 is SSRF, not a health check."""

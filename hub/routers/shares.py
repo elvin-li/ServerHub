@@ -47,7 +47,7 @@ def _require_admin_browser(request: Request) -> str:
 
 
 def _client(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return auth.request_client_id(request)
 
 
 def _raise_service_error(result: dict, *, service: str = "") -> None:

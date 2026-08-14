@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 import threading
@@ -209,6 +210,11 @@ _PROXY_HINT_HEADERS = (
     "forwarded",
 )
 
+#: TCP peers we treat as reverse proxies when reading forwarded client headers.
+#: Override with ``SERVERHUB_TRUSTED_PROXIES`` (comma-separated CIDRs). Default
+#: is loopback only — the usual cloudflared / nginx hop on this Mac.
+_DEFAULT_TRUSTED_PROXIES = "127.0.0.1/32,::1/128"
+
 #: How strictly the first-run token is enforced.
 #:
 #: ``auto``   - required unless the claim is a *direct* loopback browser
@@ -272,6 +278,84 @@ def is_direct_loopback(request: Request | None) -> bool:
     if host and host not in LOOPBACK_HOST_NAMES:
         return False
     return True
+
+
+def trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
+    """CIDRs whose TCP peers may supply a forwarded client address."""
+    raw = os.environ.get("SERVERHUB_TRUSTED_PROXIES") or _DEFAULT_TRUSTED_PROXIES
+    nets: list[ipaddress._BaseNetwork] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+    return tuple(nets)
+
+
+def _peer_in_trusted_proxy(peer: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(addr in net for net in trusted_proxy_networks())
+
+
+def _as_ip(value: str) -> str:
+    """Return a canonical IP from a forwarded-header token, or ``""``."""
+    raw = (value or "").strip().strip('"')
+    if raw.startswith("[") and "]" in raw:
+        raw = raw[1:raw.index("]")]
+    try:
+        return str(ipaddress.ip_address(raw))
+    except ValueError:
+        pass
+    # IPv4 host:port — not IPv6, which has more than one colon.
+    if raw.count(":") == 1:
+        host, _, _port = raw.rpartition(":")
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            return ""
+    return ""
+
+
+def _parse_forwarded_client(request: Request) -> str:
+    """Original client from proxy headers. Empty when none are a valid IP."""
+    cf = (request.headers.get("cf-connecting-ip") or "").strip()
+    parsed = _as_ip(cf)
+    if parsed:
+        return parsed
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        parsed = _as_ip(xff.split(",")[0].strip())
+        if parsed:
+            return parsed
+    for element in (request.headers.get("forwarded") or "").split(","):
+        for param in element.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "for":
+                parsed = _as_ip(value)
+                if parsed:
+                    return parsed
+    return _as_ip(request.headers.get("x-real-ip") or "")
+
+
+def request_client_id(request: Request | None) -> str:
+    """Identity used for login rate-limits and the audit trail.
+
+    ``request.client.host`` is the TCP peer. Cloudflare Tunnel and nginx
+    terminate on 127.0.0.1, so every remote visitor would share one bucket
+    (and one audit name) if we keyed on that alone. Forwarded headers are
+    only trusted when the peer is in ``SERVERHUB_TRUSTED_PROXIES``; a
+    spoofed ``X-Forwarded-For`` from a LAN client is ignored.
+    """
+    peer = (request.client.host if request and request.client else "") or "unknown"
+    if request is None or not _peer_in_trusted_proxy(peer):
+        return peer
+    return _parse_forwarded_client(request) or peer
 
 
 def setup_token_required(request: Request | None = None) -> bool:
@@ -371,14 +455,14 @@ def local_client_authorized(request: Request) -> bool:
     }:
         return True
     parts = path.strip("/").split("/")
+    # GET /api/maintenance/{id}/log is what the menu bar tails. POST .../run
+    # executes operator-configured shell from services.yaml — browser-admin only.
     return (
-        len(parts) == 4
+        method == "GET"
+        and len(parts) == 4
         and parts[:2] == ["api", "maintenance"]
         and bool(parts[2])
-        and (
-            (method == "POST" and parts[3] == "run")
-            or (method == "GET" and parts[3] == "log")
-        )
+        and parts[3] == "log"
     )
 
 
@@ -482,6 +566,53 @@ def set_password(password: str, username: str = "admin", *, enable: bool = True)
         })
         auth.pop("password", None)
         settings["auth"] = auth
+
+    config_mutate(apply)
+
+
+def set_account_password(username: str, password: str) -> None:
+    """Rotate the password for one named account.
+
+    Updates the matching ``settings.auth.accounts[]`` entry when one exists,
+    and the legacy administrator pair when *username* is that account. A
+    member can therefore change their own password without rewriting the
+    administrator hash.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    resolved = (username or "").strip()
+    if not resolved:
+        raise ValueError("username is required")
+    digest = hash_password(password)
+
+    def apply(data: dict) -> None:
+        settings = data.setdefault("settings", {})
+        auth_cfg = dict(settings.get("auth") or {})
+        legacy_name = str(auth_cfg.get("username") or "admin").strip() or "admin"
+        updated = False
+        if constant_time_equals(resolved, legacy_name):
+            auth_cfg["password_hash"] = digest
+            auth_cfg.pop("password", None)
+            updated = True
+        accounts = list(auth_cfg.get("accounts") or [])
+        new_accounts = []
+        for raw in accounts:
+            if not isinstance(raw, dict):
+                new_accounts.append(raw)
+                continue
+            name = str(raw.get("username") or "").strip()
+            if name and constant_time_equals(name, resolved):
+                entry = dict(raw)
+                entry["password_hash"] = digest
+                new_accounts.append(entry)
+                updated = True
+            else:
+                new_accounts.append(raw)
+        if not updated:
+            raise ValueError("unknown account")
+        if accounts:
+            auth_cfg["accounts"] = new_accounts
+        settings["auth"] = auth_cfg
 
     config_mutate(apply)
 

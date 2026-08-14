@@ -4,7 +4,7 @@
 Host and port come from the environment so the LaunchAgent written by
 install.sh can pin them without editing code:
 
-    SERVERHUB_HOST   bind address (default 0.0.0.0 — reachable on the LAN)
+    SERVERHUB_HOST   bind address (default 127.0.0.1 — this Mac only)
     SERVERHUB_PORT   TCP port     (default 8086)
 """
 import os
@@ -44,13 +44,10 @@ except Exception as exc:
 if __name__ == "__main__":
     import uvicorn
 
-    # Reachable on the LAN by default so browsers and phones on the home
-    # network can open the panel directly. This is only safe because
-    # authentication is mandatory once setup completes (hub/auth.py:
-    # auth_enabled) — a LAN client gets the login page, not an anonymous
-    # admin API. Set SERVERHUB_HOST=127.0.0.1 to restrict to loopback and
-    # reach the panel exclusively through the Cloudflare tunnel.
-    host = os.environ.get("SERVERHUB_HOST") or "0.0.0.0"  # noqa: S104
+    # Loopback by default. The panel is reached from this Mac, or through a
+    # tunnel / reverse proxy that hops to 127.0.0.1. Binding 0.0.0.0 puts
+    # every privileged API on the LAN; that is opt-in via SERVERHUB_HOST.
+    host = os.environ.get("SERVERHUB_HOST") or "127.0.0.1"
     port = _port()
     max_retries = 5
 

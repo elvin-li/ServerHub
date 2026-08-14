@@ -1313,7 +1313,7 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
             str(bin_path.resolve()),
             "-d", str(db_path),
             "-r", str(media),
-            "-a", "0.0.0.0",
+            "-a", "127.0.0.1",
             "-p", "8125",
         ],
         working_dir=str(dest),

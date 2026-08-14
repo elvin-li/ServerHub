@@ -2,7 +2,7 @@
 
 macOS 家庭服务器管理面板 — 对标 **Unraid** 信息架构，并吸收 **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew** 等开源优秀能力。
 
-**面板：** 默认访问地址是 `http://localhost:8086`。进程默认绑定 `0.0.0.0:8086`（局域网可达），设置完成后必须登录。只想本机访问时设置 `SERVERHUB_HOST=127.0.0.1`。远程访问请通过启用 TLS 与身份策略的 Cloudflare Tunnel/反向代理，勿把未加保护的 8086 直接暴露到公网。
+**面板：** 默认访问地址是 `http://localhost:8086`。进程默认绑定 `127.0.0.1:8086`（仅本机）。局域网直连时设置 `SERVERHUB_HOST=0.0.0.0`。设置完成后必须登录。远程访问请通过启用 TLS 与身份策略的 Cloudflare Tunnel/反向代理，勿把未加保护的 8086 直接暴露到公网。
 
 ## 界面展示
 
@@ -77,8 +77,9 @@ open http://localhost:8086
 
 | 变量 | 默认 | 作用 |
 |------|------|------|
-| `SERVERHUB_HOST` | `0.0.0.0` | 监听地址。设为 `127.0.0.1` 则仅本机（经隧道访问时推荐） |
+| `SERVERHUB_HOST` | `127.0.0.1` | 监听地址。设为 `0.0.0.0` 则局域网可达 |
 | `SERVERHUB_PORT` | `8086` | TCP 端口 |
+| `SERVERHUB_TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | 可信任的反向代理 CIDR；仅这些对端的 `X-Forwarded-For` / `CF-Connecting-IP` 会用于登录限速与审计 |
 
 `GET /api/health` 是存活探测（不跑主机发现）。完整清单用 `GET /api/status`。响应带 `X-Request-ID`，日志行里也能看到同一个 id。
 
