@@ -78,7 +78,16 @@ class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if (urllib.parse.urlsplit(newurl).scheme or "").lower() not in _ALLOWED_SCHEMES:
+        parts = urllib.parse.urlsplit(newurl)
+        if (parts.scheme or "").lower() not in _ALLOWED_SCHEMES:
+            return None
+        dest = parts.hostname or ""
+        src = urllib.parse.urlsplit(getattr(req, "full_url", "") or "").hostname or ""
+        # A public bookmark that 302s onto loopback, link-local, or RFC1918 is
+        # server-side request forgery (cloud metadata, the panel itself, LAN
+        # services). LAN→LAN redirects stay allowed: that is how a home NAS
+        # bookmark follows its own login bounce.
+        if _is_private_host(dest) and not _is_private_host(src):
             return None
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 

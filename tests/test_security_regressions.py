@@ -170,6 +170,16 @@ class SessionCookieSecureFlagTests(unittest.TestCase):
         self.assertIn("HttpOnly", cookie)
         self.assertIn("samesite=strict", cookie.lower())
 
+    def test_logout_clears_a_secure_cookie(self):
+        """delete_cookie must repeat the Secure flag or HTTPS sessions survive logout."""
+        response = Response()
+        req = request(scheme="https")
+        with mock.patch.object(auth, "request_username", return_value="admin"):
+            auth_api.auth_logout(req, response)
+        header = response.headers.get("set-cookie", "")
+        self.assertIn("serverhub_session=", header.lower())
+        self.assertIn("Secure", header)
+
 
 class FileBrowserLogPathTests(unittest.TestCase):
     """The FileBrowser log must not live in a world-writable directory.
@@ -392,6 +402,31 @@ class BookmarkProbeTests(unittest.TestCase):
         req = urllib.request.Request("http://127.0.0.1/a")
         self.assertIsNotNone(
             handler.redirect_request(req, None, 302, "Found", {}, "http://127.0.0.1/b")
+        )
+
+    def test_a_public_bookmark_cannot_redirect_to_a_private_target(self):
+        """http://attacker → http://169.254.169.254 is SSRF, not a health check."""
+        handler = bookmarks_svc._SchemeSafeRedirects()
+        req = urllib.request.Request("http://attacker.example/probe")
+        for target in (
+            "http://169.254.169.254/latest/meta-data",
+            "http://127.0.0.1:8086/api/auth/setup-token",
+            "http://192.168.1.1/admin",
+            "https://localhost/",
+        ):
+            with self.subTest(target=target):
+                self.assertIsNone(
+                    handler.redirect_request(req, None, 302, "Found", {}, target),
+                    f"a public bookmark must not follow a 302 to {target}",
+                )
+
+    def test_a_lan_bookmark_may_still_redirect_on_the_lan(self):
+        handler = bookmarks_svc._SchemeSafeRedirects()
+        req = urllib.request.Request("http://nas.local/app")
+        self.assertIsNotNone(
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "http://192.168.1.10/login"
+            )
         )
 
     def test_the_scheme_allowlist_is_exactly_http_and_https(self):

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from hub import cli_args
 from hub.config import cfg, override, set_override
 from hub.host_address import host_ip, normalize_local_url, resolve_value
 from hub.paths import AGENTS_DIR, DOCKER, UID
@@ -80,7 +81,11 @@ def _tail_file(path: str | Path, lines: int = 150) -> str:
 def _docker_inspect(name: str) -> dict:
     if not DOCKER or not Path(DOCKER).exists():
         return {}
-    rc, out, _ = sh([DOCKER, "inspect", name, "--format", "{{json .}}"], timeout=15)
+    if not cli_args.is_safe_positional(name):
+        return {}
+    rc, out, _ = sh(
+        [DOCKER, "inspect", "--format", "{{json .}}", "--", name], timeout=15
+    )
     if rc != 0 or not out:
         return {}
     try:

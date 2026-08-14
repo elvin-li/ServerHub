@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 
+from hub import secure_io
 from hub.config import cfg
 from hub.paths import DATA_DIR
 from hub.status import full_status
@@ -29,8 +30,9 @@ def _load_state() -> dict:
 
 
 def _save_state(st: dict):
-    STATE_FILE.parent.mkdir(exist_ok=True)
-    STATE_FILE.write_text(json.dumps(st, ensure_ascii=False, indent=2))
+    secure_io.replace_secret_text(
+        STATE_FILE, json.dumps(st, ensure_ascii=False, indent=2)
+    )
 
 
 def _append_alert(alert: dict):

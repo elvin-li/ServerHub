@@ -154,8 +154,8 @@ def auth_login(body: LoginBody, request: Request, response: Response):
             retry_after=retry,
         )
         raise api_error("auth.rate_limited", retry=retry)
-    username = str(auth._auth_cfg().get("username") or "admin")
-    if not secrets_compare(body.username, username) or not auth.verify_password(body.password):
+    username = (body.username or "").strip()
+    if not auth.verify_account_password(username, body.password):
         auth.record_login_failure(client)
         # The attempted name is kept (it is not a secret and is the only clue
         # to *which* account is under attack); audit.record drops the password.
@@ -265,8 +265,9 @@ def auth_setup_token(request: Request):
     """
     if not auth.setup_required():
         raise api_error("auth.already_setup")
-    client = request.client.host if request.client else ""
-    if client not in ("127.0.0.1", "::1"):
+    # TCP-peer loopback is not enough: a Cloudflare tunnel hop is also
+    # 127.0.0.1. Only a browser that is actually on this Mac may read the token.
+    if not auth.is_direct_loopback(request):
         raise api_error("auth.setup_token_localhost_only")
     return {"setup_token": auth.setup_token()}
 
@@ -282,5 +283,13 @@ def auth_logout(request: Request, response: Response):
         client=_client(request),
         outcome="success",
     )
-    response.delete_cookie(auth.COOKIE_NAME, path="/", samesite="strict")
+    # Must match the flags used at login. Omitting ``secure`` leaves a Secure
+    # cookie in place on HTTPS / tunneled deployments, so logout appeared to
+    # succeed while the session stayed valid.
+    response.delete_cookie(
+        auth.COOKIE_NAME,
+        path="/",
+        samesite="strict",
+        secure=_https_request(request),
+    )
     return {"ok": True}

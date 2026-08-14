@@ -146,7 +146,7 @@ def default_roots() -> list[dict]:
                     "name": r.get("name") or p.name or str(p),
                     "path": str(p),
                 })
-        return [x for x in out if Path(x["path"]).is_dir() or True]
+        return [x for x in out if Path(x["path"]).is_dir()]
     candidates = [
         {"id": "services", "name": "Services", "path": str(SERVICES_ROOT)},
         {"id": "media", "name": "Media", "path": str(SERVICES_ROOT / "media")},

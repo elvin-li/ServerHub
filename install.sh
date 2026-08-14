@@ -345,8 +345,10 @@ cat <<NEXT
 
       $BASE/data/.setup-token
 
-  The panel listens on loopback by default. Authentication is mandatory after
-  setup; the menu-bar client uses its own mode-0600 local token.
+  The panel binds 0.0.0.0:$PORT (LAN-reachable) unless SERVERHUB_HOST is set.
+  Open it at http://localhost:$PORT. Authentication is mandatory after setup;
+  the menu-bar client uses its own mode-0600 local token. For tunnel-only
+  access set SERVERHUB_HOST=127.0.0.1 in the LaunchAgent plist.
 
   Manage the service:
       launchctl kickstart -k gui/$(id -u)/$LABEL_PANEL    # restart

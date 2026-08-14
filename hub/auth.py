@@ -191,12 +191,27 @@ def _persistent_token(path: Path) -> str:
 
 
 #: Loopback source addresses. A request from here originates on the machine
-#: itself, which is a stronger proof of access than any token.
+#: itself *or* from a reverse proxy bound to loopback. IP alone is not identity.
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+
+#: Host header values that mean the browser addressed this process as localhost.
+#: Port is stripped before comparison (``localhost:8086`` → ``localhost``).
+LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+#: Headers injected by Cloudflare Tunnel, nginx, and Caddy. A browser on this
+#: Mac does not send them; a proxied remote client almost always does.
+_PROXY_HINT_HEADERS = (
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-real-ip",
+    "cf-connecting-ip",
+    "forwarded",
+)
 
 #: How strictly the first-run token is enforced.
 #:
-#: ``auto``   - required only for a non-loopback claim (the default)
+#: ``auto``   - required unless the claim is a *direct* loopback browser
 #: ``always`` - required even on the machine itself
 #: ``never``  - not required at all
 SETUP_TOKEN_MODES = ("auto", "always", "never")
@@ -217,26 +232,70 @@ def is_loopback(request: Request | None) -> bool:
     return host in LOOPBACK_HOSTS
 
 
+def request_host_name(request: Request | None) -> str:
+    """Hostname from the Host header, with the port stripped.
+
+    ``localhost:8086`` and ``[::1]:8086`` are how a browser on this Mac
+    addresses the panel. A tunnel publishes a public name in the same header.
+    """
+    if request is None:
+        return ""
+    raw = (request.headers.get("host") or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("["):
+        end = raw.find("]")
+        return raw[: end + 1] if end != -1 else raw
+    if raw.count(":") == 1:
+        return raw.rsplit(":", 1)[0]
+    return raw
+
+
+def is_direct_loopback(request: Request | None) -> bool:
+    """True only when the browser is on this Mac, not a reverse-proxy hop.
+
+    Cloudflare Tunnel and nginx terminate on 127.0.0.1, so ``request.client.host``
+    is loopback for every remote visitor of a typical install. Those proxies
+    inject Forwarded / X-Forwarded-* / CF-Connecting-IP, and they send a public
+    Host. A browser opened on the machine itself does neither.
+
+    Treating TCP-peer loopback as "on the machine" was how an unclaimed panel
+    published through cloudflared could be claimed by the first remote visitor
+    with no setup token.
+    """
+    if not is_loopback(request) or request is None:
+        return False
+    for name in _PROXY_HINT_HEADERS:
+        if request.headers.get(name):
+            return False
+    host = request_host_name(request)
+    if host and host not in LOOPBACK_HOST_NAMES:
+        return False
+    return True
+
+
 def setup_token_required(request: Request | None = None) -> bool:
     """Whether this particular claim has to present the first-run token.
 
-    Default is to require it only for a claim arriving from another machine.
-    Requiring it on loopback achieves nothing: ``/api/auth/setup-token`` already
-    hands the token to any loopback client on request, so a browser on this Mac can
-    always obtain it. Demanding it there is pure friction -- copy a 64-character
-    secret from one field into another -- with no attacker it excludes.
+    Default is to require it only for a claim that is not a *direct* loopback
+    browser. Requiring it on the machine itself achieves nothing:
+    ``/api/auth/setup-token`` already hands the token to a direct loopback
+    client, so a browser on this Mac can always obtain it. Demanding it there
+    is pure friction -- copy a 64-character secret from one field into another
+    -- with no attacker it excludes.
 
     Off the machine it is doing real work. It is the only thing standing between
     an unclaimed panel and whoever reaches it first, and this host publishes the
     panel over a Cloudflare tunnel and a VPN, so "first" is not necessarily
-    someone in the house.
+    someone in the house. A tunneled request looks like loopback at the TCP
+    layer; :func:`is_direct_loopback` is what distinguishes the two.
     """
     mode = setup_token_mode()
     if mode == "never":
         return False
     if mode == "always":
         return True
-    return not is_loopback(request)
+    return not is_direct_loopback(request)
 
 
 def consume_setup_token() -> None:
@@ -354,21 +413,48 @@ def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+def _verify_scrypt(password: str, encoded: str) -> bool:
+    try:
+        _, ns, rs, ps, salt_s, expected_s = encoded.split("$", 5)
+        actual = hashlib.scrypt(
+            password.encode("utf-8"), salt=_b64decode(salt_s),
+            n=int(ns), r=int(rs), p=int(ps), dklen=32,
+        )
+        return hmac.compare_digest(actual, _b64decode(expected_s))
+    except (ValueError, TypeError):
+        return False
+
+
 def verify_password(password: str) -> bool:
     a = _auth_cfg()
     encoded = str(a.get("password_hash") or "")
     if encoded.startswith("scrypt$"):
-        try:
-            _, ns, rs, ps, salt_s, expected_s = encoded.split("$", 5)
-            actual = hashlib.scrypt(
-                password.encode("utf-8"), salt=_b64decode(salt_s),
-                n=int(ns), r=int(rs), p=int(ps), dklen=32,
-            )
-            return hmac.compare_digest(actual, _b64decode(expected_s))
-        except (ValueError, TypeError):
-            return False
+        return _verify_scrypt(password, encoded)
     legacy = str(a.get("password") or "")
     return bool(legacy and legacy != "change-me" and constant_time_equals(password, legacy))
+
+
+def verify_account_password(username: str, password: str) -> bool:
+    """Verify *password* for the named account.
+
+    The legacy administrator still goes through :func:`verify_password` so
+    existing tests and the single-hash settings shape keep working. Additional
+    accounts in ``settings.auth.accounts`` use their own ``password_hash``.
+    """
+    name = (username or "").strip()
+    if not name:
+        return False
+    a = _auth_cfg()
+    legacy_name = str(a.get("username") or "admin").strip() or "admin"
+    if constant_time_equals(name, legacy_name):
+        return verify_password(password)
+    acct = account(name)
+    if not acct:
+        return False
+    encoded = str(acct.get("password_hash") or "")
+    if encoded.startswith("scrypt$"):
+        return _verify_scrypt(password, encoded)
+    return bool(encoded and encoded != "change-me" and constant_time_equals(password, encoded))
 
 
 def set_password(password: str, username: str = "admin", *, enable: bool = True) -> None:
@@ -582,8 +668,12 @@ def require_auth(
         request.state.serverhub_auth_kind = "local-client"
         return True
     if isinstance(credentials, HTTPBasicCredentials):
-        user = str(_auth_cfg().get("username") or "admin")
-        if constant_time_equals(credentials.username, user) and verify_password(credentials.password):
+        # Basic auth is an administrator transport, not a family-account one.
+        # A member hash that verified here would unlock every mutating route.
+        if (
+            verify_account_password(credentials.username, credentials.password)
+            and is_admin(credentials.username)
+        ):
             request.state.serverhub_auth_kind = "basic-admin"
             return True
     if local_client:

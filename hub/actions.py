@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from hub import cli_args
 from hub.config import cfg
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
@@ -108,12 +109,19 @@ def run_action(target, action):
                 return rc, o, e
             return _launchctl(["kickstart", f"{dom}/{label}"])
     if kind == "container" and action in ("start", "stop", "restart", "pause", "unpause", "remove", "kill"):
+        # Registry keys are container names. An option-shaped name (or a
+        # caller-supplied target that somehow landed here) must not become
+        # ``docker stop --all``.
+        name = cli_args.require_positional(target, label="container name")
         if action == "remove":
-            return sh([DOCKER, "rm", "-f", target], timeout=90)
-        return sh([DOCKER, action, target], timeout=90)
+            return sh([DOCKER, "rm", "-f", "--", name], timeout=90)
+        return sh([DOCKER, action, "--", name], timeout=90)
     # brew formula services (when not registered as local LaunchAgent)
     if action in ("start", "stop", "restart", "run") and str(target).startswith("homebrew.mxcl."):
-        pkg = str(target).replace("homebrew.mxcl.", "", 1)
+        pkg = cli_args.require_positional(
+            str(target).replace("homebrew.mxcl.", "", 1),
+            label="brew service name",
+        )
         # hub.paths.BREW rather than a local `which(...) or "/opt/homebrew/..."`:
         # that form has no /usr/local fallback, so on an Intel host with brew off
         # PATH this branch found nothing and the service silently never started.

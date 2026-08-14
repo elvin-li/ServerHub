@@ -36,7 +36,8 @@ def _log(msg: str) -> None:
 try:
     from hub.app_factory import create_app
     app = create_app()
-except Exception:
+except Exception as exc:
+    _log(f"create_app failed at import: {exc}")
     app = None
 
 

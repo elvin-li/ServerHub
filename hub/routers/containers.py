@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from hub import cli_args
 from hub import containers_svc as svc
 from hub.errors import api_error
 from hub.paths import DOCKER
@@ -212,11 +213,13 @@ def inspect(name: str):
 
 @router.get("/api/containers/{name}/logs")
 async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: bool = True):
+    name = cli_args.require_positional(name, label="container name")
+
     async def gen():
         cmd = [DOCKER, "logs", "--tail", str(tail), "--timestamps"]
         if follow:
             cmd.append("-f")
-        cmd.append(name)
+        cmd += ["--", name]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,

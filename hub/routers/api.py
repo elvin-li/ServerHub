@@ -1,14 +1,14 @@
 """REST API — menubar-compatible + panel."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from hub import actions, auth, jobs
+from hub import __version__, actions, auth, jobs
 from hub.config import cfg
 from hub.errors import api_error
-from hub.status import filter_status_for_resources, full_status, invalidate_status
+from hub.status import cached_status, filter_status_for_resources, full_status, invalidate_status
 
 router = APIRouter()
 
@@ -28,17 +28,29 @@ def _visible_status(request: Request, *, force: bool = False) -> dict:
 
 @router.get("/api/health")
 def api_health(request: Request):
-    """Lightweight health for menubar / monitoring."""
-    try:
-        st = _visible_status(request)
-        return {
-            "ok": True,
-            "counts": st.get("counts"),
-            "engine_up": st.get("engine_up"),
-            "ts": st.get("ts"),
-        }
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    """Liveness for install.sh, the menu-bar client, and monitors.
+
+    Must not run discovery. ``full_status()`` fans out launchd / docker / VMs /
+    system probes; install.sh used to trigger that on every 1s poll during
+    first boot. Cached counts are included when a snapshot already exists so
+    existing clients that read ``ok`` / ``counts`` / ``engine_up`` keep working
+    without a forced refresh. Use ``/api/status`` for a current inventory.
+    """
+    import time
+
+    body = {
+        "ok": True,
+        "version": __version__,
+        "ts": int(time.time()),
+    }
+    st = cached_status()
+    if st is not None:
+        username = auth.request_username(request)
+        if username and not auth.is_admin(username):
+            st = filter_status_for_resources(st, auth.allowed_resources(username))
+        body["counts"] = st.get("counts")
+        body["engine_up"] = st.get("engine_up")
+    return body
 
 
 @router.get("/api/status")
@@ -94,9 +106,9 @@ def api_maintenance():
 def api_maintenance_run(tid: str):
     task = jobs.maintenance_tasks().get(tid)
     if not task:
-        raise HTTPException(404, "unknown task")
+        raise api_error("maintenance.unknown_task")
     jobs.start_job(task)
-    return {"ok": True, "message": "任务已开始"}
+    return {"ok": True}
 
 
 @router.get("/api/maintenance/{tid}/log")
