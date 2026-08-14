@@ -897,9 +897,9 @@ def _write_launchagent(label: str, program_args: list[str], *,
                        keep_alive: bool = True,
                        env: dict | None = None) -> Path:
     import plistlib
+    from hub import secure_io
     from hub.paths import AGENTS_DIR
     pl_path = Path(AGENTS_DIR) / f"{label}.plist"
-    pl_path.parent.mkdir(parents=True, exist_ok=True)
     pl: dict[str, Any] = {
         "Label": label,
         "ProgramArguments": program_args,
@@ -914,8 +914,12 @@ def _write_launchagent(label: str, program_args: list[str], *,
         pl["StandardErrorPath"] = stderr
     if env:
         pl["EnvironmentVariables"] = env
-    with open(pl_path, "wb") as f:
-        plistlib.dump(pl, f)
+    # Atomic replace refuses a leaf symlink at the LaunchAgent path.
+    secure_io.atomic_write_bytes(
+        pl_path,
+        plistlib.dumps(pl, fmt=plistlib.FMT_XML, sort_keys=False),
+        mode=0o644,
+    )
     return pl_path
 
 

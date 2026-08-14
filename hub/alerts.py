@@ -37,26 +37,11 @@ def _save_state(st: dict):
     )
 
 
-def _append_jsonl(path, line: str) -> None:
-    """Append one line at mode 0600 without following a planted leaf symlink."""
-    path.parent.mkdir(exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)
-    try:
-        try:
-            os.fchmod(fd, 0o600)
-        except OSError:
-            pass
-        os.write(fd, line.encode("utf-8"))
-    finally:
-        os.close(fd)
-
-
 def _append_alert(alert: dict):
     with _lock:
-        _append_jsonl(ALERTS_FILE, json.dumps(alert, ensure_ascii=False) + "\n")
+        secure_io.append_secret_text(
+            ALERTS_FILE, json.dumps(alert, ensure_ascii=False) + "\n"
+        )
         try:
             lines = ALERTS_FILE.read_text().splitlines()
             if len(lines) > MAX_ALERTS:

@@ -94,7 +94,8 @@ class SourceShapeTests(unittest.TestCase):
             src,
             "appending to the audit log must not go through an O_TRUNC write",
         )
-        self.assertIn("create_secret_text(AUDIT_PATH", src)
+        self.assertIn("append_secret_text(", src)
+        self.assertNotIn("AUDIT_PATH.open(\"a\"", src)
 
 
 if __name__ == "__main__":

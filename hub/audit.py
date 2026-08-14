@@ -25,7 +25,6 @@ records; it never grants or refuses anything.
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -168,22 +167,13 @@ def record(event: str, **fields: Any) -> dict:
         **redact(fields),
     }
     try:
-        # secure_io creates the file 0600 from the first byte.  A plain
-        # open("a") would leave it 0644 under the default umask until a later
-        # chmod, and this log names accounts and source addresses.
-        #
-        # Create-if-absent, not "check then write": the write_secret_text form
-        # opens with O_TRUNC, so any false negative from exists() emptied the
-        # entire audit trail before appending one line to it.  The same shape in
-        # config._bootstrap() destroyed a populated services.yaml on every test
-        # run, and here the loss would be the security history specifically.
-        secure_io.create_secret_text(AUDIT_PATH, "")
-        with AUDIT_PATH.open("a", encoding="utf-8") as fh:
-            # default=str: an audit write must not fail because a caller
-            # passed an object json cannot encode.  Losing fidelity on one
-            # field is strictly better than losing the whole record.
-            fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-        os.chmod(AUDIT_PATH, 0o600)
+        # Append at 0600 with O_NOFOLLOW so a leaf symlink cannot redirect the
+        # audit bytes.  Losing one field via default=str is better than losing
+        # the whole record to a TypeError.
+        secure_io.append_secret_text(
+            AUDIT_PATH,
+            json.dumps(entry, ensure_ascii=False, default=str) + "\n",
+        )
         _trim(AUDIT_PATH)
     except (OSError, TypeError, ValueError):
         # An unwritable or unencodable log must never turn a valid sign-in

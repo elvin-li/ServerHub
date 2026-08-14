@@ -18,6 +18,20 @@ def _log_path_allowed(path: Path) -> bool:
     return not files_svc.is_protected(path) and not files_svc.is_protected(resolved)
 
 
+def _open_log_readonly(path: Path):
+    """Open a log file without following a planted leaf symlink."""
+    if path.is_symlink():
+        raise HTTPException(403, "symlink log path refused")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as e:
+        raise HTTPException(403, f"cannot open log: {e.strerror}") from e
+    return os.fdopen(fd, "rb")
+
+
 def log_sources() -> list:
     sources = cfg().get("log_sources") or []
     if not sources:
@@ -33,12 +47,21 @@ def log_sources() -> list:
         p = Path(os.path.expanduser(s["path"]))
         if not _log_path_allowed(p):
             continue
+        if p.is_symlink():
+            continue
+        exists = p.is_file()
+        size = 0
+        if exists:
+            try:
+                size = p.stat().st_size
+            except OSError:
+                exists = False
         out.append({
             "id": s["id"],
             "name": s.get("name", s["id"]),
             "path": str(p),
-            "exists": p.is_file(),
-            "size": p.stat().st_size if p.is_file() else 0,
+            "exists": exists,
+            "size": size,
         })
     return out
 
@@ -51,13 +74,13 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
     p = Path(meta["path"])
     if not _log_path_allowed(p):
         raise HTTPException(403, "protected log path")
-    if not p.is_file():
+    if p.is_symlink() or not p.is_file():
         return {"id": source_id, "name": meta["name"], "path": meta["path"],
                 "exists": False, "log": "（文件不存在）", "lines": 0}
     lines = max(10, min(int(lines), 2000))
     # efficient tail
     try:
-        with open(p, "rb") as f:
+        with _open_log_readonly(p) as f:
             f.seek(0, 2)
             size = f.tell()
             block = 4096
@@ -71,5 +94,7 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
             parts = text.splitlines()[-lines:]
             return {"id": source_id, "name": meta["name"], "path": meta["path"],
                     "exists": True, "log": "\n".join(parts), "lines": len(parts)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))

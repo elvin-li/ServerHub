@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import errno
 import os
+import tempfile
 from pathlib import Path
 
 SECRET_MODE = 0o600
@@ -35,6 +36,74 @@ def _open_flags(*base: int) -> int:
 def _refuse_symlink(path: Path) -> None:
     if path.is_symlink():
         raise OSError(errno.ELOOP, "Refusing to write through a symlink", str(path))
+
+
+def append_secret_text(
+    path: Path | str, content: str, *, encoding: str = "utf-8"
+) -> Path:
+    """Append ``content`` at mode 0600 without following a planted leaf symlink.
+
+    Prefer this over ``create_secret_text`` + ``Path.open("a")``: the second open
+    would still follow a symlink swapped in after create.
+    """
+    p = Path(path)
+    _ensure_private_parents(p)
+    _refuse_symlink(p)
+    fd = os.open(p, _open_flags(os.O_WRONLY, os.O_CREAT, os.O_APPEND), SECRET_MODE)
+    try:
+        try:
+            os.fchmod(fd, SECRET_MODE)
+        except OSError:
+            pass
+        os.write(fd, content.encode(encoding))
+    finally:
+        os.close(fd)
+    return p
+
+
+def atomic_write_bytes(
+    path: Path | str, data: bytes, *, mode: int = SECRET_MODE
+) -> Path:
+    """Atomically replace ``path`` via a same-directory temp file.
+
+    Refuses a leaf symlink at the destination.  Use ``mode=0o644`` for
+    LaunchAgent plists (launchd expects them world-readable) and the default
+    0600 for secret-bearing payloads.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink(p)
+    fd, temporary = tempfile.mkstemp(prefix=f".{p.name}.", dir=p.parent)
+    tmp_path = Path(temporary)
+    try:
+        try:
+            os.fchmod(fd, mode)
+        except OSError:
+            pass
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, p)
+        tmp_path = Path()
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+    try:
+        os.chmod(p, mode)
+    except OSError:
+        pass
+    return p
 
 
 def _ensure_private_parents(path: Path) -> None:

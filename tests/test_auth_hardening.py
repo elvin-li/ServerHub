@@ -40,7 +40,7 @@ class AuthHardeningTests(unittest.TestCase):
     def test_settings_reject_disabling_authentication(self):
         body = SettingsPatch(auth=AuthPatch(enabled=False))
         with self.assertRaises(HTTPException) as raised:
-            put_settings(body)
+            put_settings(body, request())
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail["code"], "auth.cannot_disable")
 

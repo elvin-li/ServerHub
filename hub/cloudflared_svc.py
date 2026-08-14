@@ -469,7 +469,11 @@ def _write_launchagent_token() -> Path:
             "HOME": str(Path.home()),
         },
     }
-    PLIST.write_bytes(plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False))
+    secure_io.atomic_write_bytes(
+        PLIST,
+        plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False),
+        mode=0o644,
+    )
     return PLIST
 
 

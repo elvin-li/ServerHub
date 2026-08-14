@@ -207,7 +207,7 @@ def create_app() -> FastAPI:
                 "default-src 'self'; base-uri 'none'; object-src 'none'; "
                 "frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; "
                 "style-src 'self' 'unsafe-inline'; script-src 'self'; "
-                "connect-src 'self' ws: wss:",
+                "connect-src 'self';",
             )
             if request.url.scheme == "https" or (
                 request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()

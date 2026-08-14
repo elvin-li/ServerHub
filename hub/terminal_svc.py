@@ -176,16 +176,9 @@ def _default_shell() -> str:
 def _audit(entry: dict[str, Any]) -> None:
     """Append one line to the audit log; never let logging break the request."""
     try:
-        # create_secret_text first, so the file is 0600 from the moment it
-        # exists.  Appending and *then* chmod'ing left the first write at the
-        # umask default -- 0644 on this host -- and this log holds whatever the
-        # operator typed into a root-capable shell, which is the one thing in it
-        # that cannot be un-leaked.  Create-if-absent rather than write, because
-        # write_secret_text opens with O_TRUNC and would empty the trail.
-        secure_io.create_secret_text(AUDIT_PATH, "")
-        with AUDIT_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        os.chmod(AUDIT_PATH, 0o600)
+        secure_io.append_secret_text(
+            AUDIT_PATH, json.dumps(entry, ensure_ascii=False) + "\n"
+        )
     except OSError:
         pass
 

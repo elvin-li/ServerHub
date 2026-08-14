@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from hub import cli_args
+from hub import cli_args, secure_io
 from hub.docker_cli import engine_up
 from hub.launchd_cache import invalidate_launchd, loaded_labels
 from hub.util import cached_snapshot, fan_out, sh
@@ -56,9 +56,11 @@ def _read_plist(path: Path) -> dict:
 
 
 def _write_plist(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        plistlib.dump(data, f)
+    secure_io.atomic_write_bytes(
+        path,
+        plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=False),
+        mode=0o644,
+    )
 
 
 def _loaded_labels() -> frozenset[str]:

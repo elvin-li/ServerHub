@@ -376,6 +376,27 @@ class AlertsAppendModeTests(unittest.TestCase):
         self.assertIn("ServerHub notify test", source)
         self.assertNotIn("ServerHub 测试", source)
 
+    def test_csp_connect_src_is_self_only(self):
+        source = (BASE / "hub" / "app_factory.py").read_text(encoding="utf-8")
+        self.assertIn("connect-src 'self'", source)
+        self.assertNotIn("ws: wss:", source)
+
+    def test_append_secret_text_refuses_symlink(self):
+        import errno
+
+        from hub import secure_io
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            victim = root / "victim.jsonl"
+            victim.write_text("keep\n", encoding="utf-8")
+            link = root / "audit.jsonl"
+            link.symlink_to(victim)
+            with self.assertRaises(OSError) as raised:
+                secure_io.append_secret_text(link, "stolen\n")
+            self.assertEqual(raised.exception.errno, errno.ELOOP)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "keep\n")
+
 
 class ComposeValidateModeTests(unittest.TestCase):
     def test_validate_writes_through_fchmod_0600(self):

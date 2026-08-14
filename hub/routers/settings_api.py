@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from hub import __version__, alerts, backups, metrics
-from hub.auth import auth_enabled
+from hub import __version__, alerts, audit, backups, metrics
+from hub.auth import auth_enabled, request_client_id, request_username
 from hub.config import cfg, update_settings
 from hub.errors import api_error
 from hub.host_address import configured_host, host_ip
@@ -151,7 +151,7 @@ def get_settings():
 
 
 @router.put("/api/settings")
-def put_settings(body: SettingsPatch):
+def put_settings(body: SettingsPatch, request: Request):
     patch: dict[str, Any] = {}
     if body.host_ip is not None:
         patch["host_ip"] = body.host_ip.strip()
@@ -219,8 +219,19 @@ def put_settings(body: SettingsPatch):
         tm = {k: v for k, v in body.terminal.model_dump().items() if v is not None}
         if tm:
             cur_tm = dict((cfg().get("settings") or {}).get("terminal") or {})
+            before = bool(cur_tm.get("host_enabled", False))
             cur_tm.update(tm)
+            after = bool(cur_tm.get("host_enabled", False))
             patch["terminal"] = cur_tm
+            if before != after:
+                audit.record(
+                    "terminal.host_enabled",
+                    username=request_username(request) or "",
+                    client=request_client_id(request),
+                    action="enable" if after else "disable",
+                    outcome="ok",
+                    host_enabled=after,
+                )
     if not patch:
         raise HTTPException(400, "empty patch")
     update_settings(patch)

@@ -610,7 +610,8 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     if not FB_PLIST.exists():
         raise api_error("files.fb_no_plist")
     import plistlib
-    import tempfile
+
+    from hub import secure_io
 
     with open(FB_PLIST, "rb") as f:
         pl = plistlib.load(f)
@@ -620,31 +621,11 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     else:
         pl["RunAtLoad"] = True
         pl["KeepAlive"] = True
-    # Atomic replace via a private temp in the agents dir.  A direct open("wb")
-    # would follow a symlink planted at FB_PLIST and rewrite an attacker path.
-    payload = plistlib.dumps(pl)
-    fd, tmp_name = tempfile.mkstemp(
-        suffix=".plist", prefix=".filebrowser-", dir=str(FB_PLIST.parent)
+    secure_io.atomic_write_bytes(
+        FB_PLIST,
+        plistlib.dumps(pl, fmt=plistlib.FMT_XML, sort_keys=False),
+        mode=0o644,
     )
-    tmp_path = Path(tmp_name)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            fd = -1
-            handle.write(payload)
-        os.replace(tmp_path, FB_PLIST)
-        tmp_path = Path()  # replaced; skip unlink in finally
-    finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if tmp_path and tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
     # reload definition if loaded
     dom = f"gui/{UID}"
     sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=8)
