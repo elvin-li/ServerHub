@@ -229,6 +229,28 @@ def issue_ticket(target: ConsoleTarget, *, user: str, session_token: str) -> dic
     }
 
 
+def peek_ticket(ticket: str | None, *, console_id: str, user: str, session_token: str) -> _Ticket | None:
+    """Validate a ticket without burning it.
+
+    Used so a stopped VM or a session-cap rejection does not destroy a still-valid
+    single-use ticket the operator can retry with.
+    """
+    if not ticket:
+        return None
+    digest = _digest(ticket)
+    now = time.time()
+    with _lock:
+        _purge_expired_locked(now)
+        record = _tickets.get(digest)
+    if record is None or record.expires_at <= now:
+        return None
+    if record.console_id != console_id or record.user != user:
+        return None
+    if not hmac.compare_digest(record.session_digest, _digest(session_token)):
+        return None
+    return record
+
+
 def consume_ticket(ticket: str | None, *, console_id: str, user: str, session_token: str) -> _Ticket | None:
     """Validate and burn a ticket. Returns None when it must be refused."""
     if not ticket:
@@ -387,18 +409,16 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
         await reject_websocket(websocket, 4404, "vm_console.unavailable")
         return
 
-    ticket = consume_ticket(
+    # Peek first so a stopped VM / session-cap failure does not burn the ticket.
+    if peek_ticket(
         websocket.query_params.get("ticket"),
         console_id=target.console_id,
         user=user,
         session_token=session_token,
-    )
-    if ticket is None:
+    ) is None:
         await reject_websocket(websocket, 4401, "vm_console.invalid_ticket")
         return
 
-    # Re-checked after the ticket is burned: a VM that stopped, or an allowlist
-    # entry revoked, between issuing and connecting must not still open.
     if not vms_svc.utm_vm_running(target.vm_uuid):
         await reject_websocket(websocket, 4404, "vm_console.unavailable")
         return
@@ -406,6 +426,17 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
     session = reserve_session(console_id=target.console_id, user=user)
     if session is None:
         await reject_websocket(websocket, 4429, "vm_console.too_many_sessions")
+        return
+
+    ticket = consume_ticket(
+        websocket.query_params.get("ticket"),
+        console_id=target.console_id,
+        user=user,
+        session_token=session_token,
+    )
+    if ticket is None:
+        release_session(session.session_id)
+        await reject_websocket(websocket, 4401, "vm_console.invalid_ticket")
         return
 
     reader = writer = None

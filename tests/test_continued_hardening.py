@@ -451,5 +451,63 @@ class CookieCsrfTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
 
+class ConsoleTicketOrderTests(unittest.TestCase):
+    def test_peek_keeps_ticket_for_retry(self):
+        from hub import vm_console
+
+        target = vm_console.ConsoleTarget(
+            console_id="demo",
+            vm_uuid="uuid",
+            protocol="vnc",
+            host="127.0.0.1",
+            port=5900,
+            view_only=False,
+        )
+        issued = vm_console.issue_ticket(target, user="admin", session_token="sess")
+        peeked = vm_console.peek_ticket(
+            issued["ticket"], console_id="demo", user="admin", session_token="sess"
+        )
+        self.assertIsNotNone(peeked)
+        peeked_again = vm_console.peek_ticket(
+            issued["ticket"], console_id="demo", user="admin", session_token="sess"
+        )
+        self.assertIsNotNone(peeked_again)
+        burned = vm_console.consume_ticket(
+            issued["ticket"], console_id="demo", user="admin", session_token="sess"
+        )
+        self.assertIsNotNone(burned)
+        self.assertIsNone(
+            vm_console.peek_ticket(
+                issued["ticket"], console_id="demo", user="admin", session_token="sess"
+            )
+        )
+
+
+class TerminalCommandScrubTests(unittest.TestCase):
+    def test_scrub_command_hides_password_assignments(self):
+        from hub import terminal_svc
+
+        scrubbed = terminal_svc.scrub_command(
+            "mysql -uroot -psecret123 -e 'select 1' && export TOKEN=abc"
+        )
+        self.assertNotIn("secret123", scrubbed)
+        self.assertNotIn("TOKEN=abc", scrubbed)
+        self.assertIn("[redacted]", scrubbed)
+
+    def test_recent_audit_rescrubs_on_read(self):
+        from hub import terminal_svc
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "terminal-audit.jsonl"
+            path.write_text(
+                json.dumps({"command": "export API_KEY=super-secret", "rc": 0}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(terminal_svc, "AUDIT_PATH", path):
+                entries = terminal_svc.recent_audit(10)
+        self.assertEqual(len(entries), 1)
+        self.assertNotIn("super-secret", entries[0]["command"])
+
+
 if __name__ == "__main__":
     unittest.main()

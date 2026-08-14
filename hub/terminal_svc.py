@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -38,6 +39,21 @@ MAX_TIMEOUT = 120
 #: Truncate captured output so one `cat` of a huge file cannot blow up the
 #: response (or the browser).
 MAX_OUTPUT = 200_000
+
+#: Scrub obvious secret assignments from command text before it is stored or
+#: returned through the history API.  Key-name redaction alone cannot see
+#: ``mysql -psecret`` or ``export TOKEN=…`` inside a free-form shell string.
+_CMD_SECRET_RE = re.compile(
+    r"(?i)"
+    r"(?:"
+    r"(?:password|passwd|token|secret|api[_-]?key|authorization|bearer)"
+    r"\s*[=:]\s*\S+"
+    r"|"
+    r"-p['\"]?[^\s'\"]+"
+    r"|"
+    r"--(?:password|token|secret|api-key)=\S+"
+    r")"
+)
 
 CODES.setdefault("terminal.host_disabled", (
     403,
@@ -173,11 +189,22 @@ def _default_shell() -> str:
     return shell if Path(shell).exists() else "/bin/sh"
 
 
+def scrub_command(command: str) -> str:
+    """Replace obvious secret-looking fragments in a shell command string."""
+    text = str(command or "")
+    if not text:
+        return text
+    return _CMD_SECRET_RE.sub("[redacted]", text)
+
+
 def _audit(entry: dict[str, Any]) -> None:
     """Append one line to the audit log; never let logging break the request."""
     try:
+        payload = dict(entry)
+        if "command" in payload:
+            payload["command"] = scrub_command(str(payload.get("command") or ""))
         secure_io.append_secret_text(
-            AUDIT_PATH, json.dumps(entry, ensure_ascii=False) + "\n"
+            AUDIT_PATH, json.dumps(payload, ensure_ascii=False) + "\n"
         )
     except OSError:
         pass
@@ -367,7 +394,11 @@ def recent_audit(limit: int = 50) -> list[dict]:
     out: list[dict] = []
     for raw in lines[-max(1, min(limit, 500)):]:
         try:
-            out.append(json.loads(raw))
+            entry = json.loads(raw)
         except ValueError:
             continue
+        if isinstance(entry, dict) and "command" in entry:
+            entry = dict(entry)
+            entry["command"] = scrub_command(str(entry.get("command") or ""))
+        out.append(entry)
     return out
