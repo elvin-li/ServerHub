@@ -52,7 +52,7 @@ class SetupTokenDisclosureTests(unittest.TestCase):
                 ],
             )
             with self.assertRaises(HTTPException) as caught:
-                auth_api.auth_setup_token(req)
+                auth_api.auth_setup_token(req, Response())
             self.assertEqual(caught.exception.status_code, 403)
             self.assertEqual(
                 caught.exception.detail["code"], "auth.setup_token_localhost_only"
@@ -67,7 +67,7 @@ class SetupTokenDisclosureTests(unittest.TestCase):
                 path="/api/auth/setup-token",
                 headers=[(b"host", b"localhost:8086")],
             )
-            body = auth_api.auth_setup_token(req)
+            body = auth_api.auth_setup_token(req, Response())
             self.assertEqual(body["setup_token"], "T" * 43)
 
 
