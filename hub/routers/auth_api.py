@@ -296,13 +296,21 @@ def auth_setup_token(request: Request):
     only disclosed to loopback clients (127.0.0.1 / ::1) and only while the
     installation is still unclaimed.
     """
+    from fastapi.responses import JSONResponse
+
     if not auth.setup_required():
         raise api_error("auth.already_setup")
     # TCP-peer loopback is not enough: a Cloudflare tunnel hop is also
     # 127.0.0.1. Only a browser that is actually on this Mac may read the token.
     if not auth.is_direct_loopback(request):
         raise api_error("auth.setup_token_localhost_only")
-    return {"setup_token": auth.setup_token()}
+    return JSONResponse(
+        {"setup_token": auth.setup_token()},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @router.post("/api/auth/logout")
