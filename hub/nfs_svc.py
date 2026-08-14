@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 from hub.macos_admin import run_admin_sequence
-from hub.paths import DATA_DIR
+from hub.paths import BASE, DATA_DIR, STATE_ROOT
 from hub.secure_io import write_secret_text
 from hub.util import cached_snapshot, sh
 
@@ -52,6 +52,51 @@ _PROTECTED_ROOTS = (
     "/", "/etc", "/var", "/private", "/System", "/Library", "/bin", "/sbin",
     "/usr", "/dev", "/cores", "/Applications",
 )
+
+
+def _sensitive_export_roots() -> tuple[Path, ...]:
+    """Credential-bearing trees that must not be exported (or have a parent shared).
+
+    Mirrors :data:`hub.shares_svc._SENSITIVE_ROOTS` and the file-browser denylist
+    so NFS cannot publish what SMB and the panel browser already refuse.
+    """
+    home = Path.home()
+    return (
+        BASE.resolve(),
+        STATE_ROOT.resolve(),
+        (home / ".ssh").resolve(),
+        (home / ".aws").resolve(),
+        (home / ".gnupg").resolve(),
+        (home / ".kube").resolve(),
+        (home / "Library" / "Keychains").resolve(),
+        (home / "Services" / "backups").resolve(),
+        (home / "Services" / "filebrowser").resolve(),
+        (home / "Services" / "cloudflared").resolve(),
+        (home / "Services" / "private_integration").resolve(),
+        (home / ".cloudflared").resolve(),
+    )
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_protected_export(real: Path) -> bool:
+    text = str(real)
+    if text in _PROTECTED_ROOTS or any(
+        text == p or (p != "/" and text.startswith(p + "/"))
+        for p in _PROTECTED_ROOTS
+        if p != "/"
+    ):
+        return True
+    return any(
+        _inside(real, root) or _inside(root, real)
+        for root in _sensitive_export_roots()
+    )
 
 _CACHE_TTL = 15.0
 
@@ -153,11 +198,9 @@ def _validate_entry(entry: dict) -> dict:
     resolved = Path(path)
     if not resolved.is_dir():
         raise NfsConfigError("nfs.path_missing", path=path)
-    real = str(resolved.resolve())
-    if real in _PROTECTED_ROOTS or any(
-        real == p or (p != "/" and real.startswith(p + "/")) for p in _PROTECTED_ROOTS if p != "/"
-    ):
-        raise NfsConfigError("nfs.protected_path", path=real)
+    real = resolved.resolve()
+    if _is_protected_export(real):
+        raise NfsConfigError("nfs.protected_path", path=str(real))
     # exports(5) is whitespace-delimited, and render_line only quotes a path
     # containing a literal space.  A tab (or \r, \v, \f) therefore split one
     # validated path into several fields, so the directory actually exported was
