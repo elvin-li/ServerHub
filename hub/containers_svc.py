@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from hub import cli_args
+from hub import cli_args, secure_io
 from hub.config import cfg, override
 from hub.errors import api_error
 from hub.docker_cli import docker, docker_json, engine_up, redact_env
@@ -179,7 +179,9 @@ def _load_update_status() -> dict:
 
 def _save_update_status(data: dict) -> None:
     UPDATE_STATUS_PATH.parent.mkdir(exist_ok=True)
-    UPDATE_STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    secure_io.replace_secret_text(
+        UPDATE_STATUS_PATH, json.dumps(data, ensure_ascii=False, indent=2)
+    )
 
 
 def _parse_k8s_name(name: str) -> dict | None:

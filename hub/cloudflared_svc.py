@@ -627,7 +627,7 @@ def login_start() -> dict:
             "login_pending": True,
         }
     LOGIN_URL_FILE.unlink(missing_ok=True)
-    LOGIN_LOG.write_text("")
+    secure_io.write_secret_text(LOGIN_LOG, "")
     # Run login; cloudflared prints a URL then waits for callback
     proc = subprocess.Popen(
         [_bin(), "tunnel", "login"],
@@ -637,7 +637,7 @@ def login_start() -> dict:
         cwd=str(CF_HOME),
         env={**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": str(Path.home())},
     )
-    LOGIN_PID.write_text(str(proc.pid))
+    secure_io.write_secret_text(LOGIN_PID, str(proc.pid))
     url = None
     # read up to ~8s for URL line
     deadline = time.time() + 12
@@ -651,17 +651,17 @@ def login_start() -> dict:
             time.sleep(0.15)
             continue
         buf += line
-        LOGIN_LOG.write_text(buf[-8000:])
+        secure_io.write_secret_text(LOGIN_LOG, buf[-8000:])
         m = re.search(r"https://[^\s]+", line)
         if m:
             url = m.group(0).rstrip(").,]")
-            LOGIN_URL_FILE.write_text(url)
+            secure_io.write_secret_text(LOGIN_URL_FILE, url)
             break
     if not url and buf:
         m2 = re.search(r"https://[^\s]+", buf)
         if m2:
             url = m2.group(0).rstrip(").,]")
-            LOGIN_URL_FILE.write_text(url)
+            secure_io.write_secret_text(LOGIN_URL_FILE, url)
     if not url:
         # still running? keep process
         if proc.poll() is None:

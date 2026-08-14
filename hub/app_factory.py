@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
 from hub import __version__
-from hub.auth import require_auth
+from hub.auth import COOKIE_NAME, require_auth
 from hub.config import cfg
 from hub.errors import error_payload
 from hub.macos_admin import use_admin_password
@@ -163,7 +163,8 @@ def create_app() -> FastAPI:
                     status, body = error_payload(code)
                     return JSONResponse(body, status_code=status)
 
-                if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+                site = request.headers.get("sec-fetch-site", "").lower()
+                if site == "cross-site":
                     resp = reject("auth.cross_site_denied")
                 else:
                     origin = request.headers.get("origin")
@@ -177,6 +178,18 @@ def create_app() -> FastAPI:
                                 resp = reject("auth.cross_site_denied")
                         except ValueError:
                             resp = reject("auth.bad_origin")
+                    # Cookie sessions are the CSRF-prone path.  Menu-bar / curl
+                    # callers use the local-token header (or no cookie) and stay
+                    # compatible when Origin/Sec-Fetch-Site are absent.  A browser
+                    # with a session cookie must present matching Origin or a
+                    # non-cross-site Sec-Fetch-Site value.
+                    if resp is None and request.cookies.get(COOKIE_NAME):
+                        if origin and host:
+                            pass  # already verified equal above
+                        elif site in {"same-origin", "same-site", "none"}:
+                            pass
+                        else:
+                            resp = reject("auth.cross_site_denied")
                     if resp is None:
                         resp = await call_next(request)
             else:

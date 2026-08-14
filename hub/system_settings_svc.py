@@ -15,7 +15,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from hub import __version__
+from hub import __version__, secure_io
 from hub.config import cfg
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
@@ -585,7 +585,9 @@ def _persist_diagnostics(bundle: dict) -> tuple[str | None, str | None]:
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         path = DATA_DIR / "diagnostics-latest.json"
-        path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2, default=str))
+        secure_io.replace_secret_text(
+            path, json.dumps(bundle, ensure_ascii=False, indent=2, default=str)
+        )
         return str(path), None
     except Exception as e:
         return None, str(e)

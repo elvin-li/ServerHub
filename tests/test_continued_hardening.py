@@ -392,5 +392,43 @@ class InstallTokenContractTests(unittest.TestCase):
         self.assertNotIn('open(sys.argv[1], "w")', source)
 
 
+class CookieCsrfTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+
+        from hub.app_factory import create_app
+
+        cls.client = TestClient(create_app())
+
+    def test_cookie_mutation_without_origin_is_refused(self):
+        resp = self.client.post(
+            "/api/auth/logout",
+            cookies={auth.COOKIE_NAME: "session-placeholder"},
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["detail"]["code"], "auth.cross_site_denied")
+
+    def test_cookie_mutation_with_matching_origin_is_allowed(self):
+        resp = self.client.post(
+            "/api/auth/logout",
+            cookies={auth.COOKIE_NAME: "session-placeholder"},
+            headers={"Origin": "http://testserver"},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_cookie_mutation_with_same_origin_fetch_site_is_allowed(self):
+        resp = self.client.post(
+            "/api/auth/logout",
+            cookies={auth.COOKIE_NAME: "session-placeholder"},
+            headers={"Sec-Fetch-Site": "same-origin"},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_mutation_without_cookie_still_works_for_curl(self):
+        resp = self.client.post("/api/auth/logout")
+        self.assertEqual(resp.status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()
