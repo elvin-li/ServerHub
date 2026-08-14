@@ -149,6 +149,21 @@ class SharesServiceTests(unittest.TestCase):
                     ):
                         shares_svc.validate_share_path(candidate)
 
+    def test_share_path_rejects_cloudflared_and_backup_trees(self):
+        for relative in (
+            "Services/cloudflared",
+            "Services/backups",
+            "Services/filebrowser",
+            ".cloudflared",
+        ):
+            target = Path.home() / relative
+            target.mkdir(parents=True, exist_ok=True)
+            with self.subTest(path=str(target)):
+                with self.assertRaisesRegex(
+                    shares_svc.ShareValidationError, "shares.protected_path"
+                ):
+                    shares_svc.validate_share_path(str(target))
+
     def test_share_names_reject_slashes_controls_and_empty_values(self):
         for value in ("", "a/b", "a\\b", "bad\nname", "x" * 65):
             with self.subTest(value=value), self.assertRaises(shares_svc.ShareValidationError):

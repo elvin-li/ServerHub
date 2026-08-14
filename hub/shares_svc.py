@@ -43,6 +43,11 @@ _SENSITIVE_ROOTS = (
     (Path.home() / ".gnupg").resolve(),
     (Path.home() / ".kube").resolve(),
     (Path.home() / "Library" / "Keychains").resolve(),
+    (Path.home() / "Services" / "backups").resolve(),
+    (Path.home() / "Services" / "filebrowser").resolve(),
+    (Path.home() / "Services" / "cloudflared").resolve(),
+    (Path.home() / "Services" / "private_integration").resolve(),
+    (Path.home() / ".cloudflared").resolve(),
 )
 
 
