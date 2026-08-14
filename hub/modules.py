@@ -149,6 +149,16 @@ MODULES: list[ModuleInfo] = [
         apis=["/api/backups"],
         ui_routes=["/backups"],
     ),
+
+    ModuleInfo(
+        id="photoshub",
+        name="PhotosHub",
+        description="Family photo pipeline: originals rate, Photos to Immich bridge, delete-review, external HDD backup",
+        category="apps",
+        apis=["/api/photoshub/status", "/api/photoshub/action", "/api/photoshub/pending-delete"],
+        ui_routes=["/photoshub"],
+    ),
+
     ModuleInfo(
         id="tools",
         name="Tools",

@@ -47,6 +47,7 @@ const Backups = () => import('./views/Backups.vue')
 const Bookmarks = () => import('./views/Bookmarks.vue')
 const Modules = () => import('./views/Modules.vue')
 const Maintenance = () => import('./views/Maintenance.vue')
+const PhotosHub = () => import('./views/PhotosHub.vue')
 const Settings = () => import('./views/Settings.vue')
 const Account = () => import('./views/Account.vue')
 
@@ -82,6 +83,7 @@ const routes = [
   { path: '/bookmarks', name: 'bookmarks', component: Bookmarks },
   { path: '/modules', name: 'modules', component: Modules },
   { path: '/maintenance', name: 'maintenance', component: Maintenance },
+  { path: '/photoshub', name: 'photoshub', component: PhotosHub },
   { path: '/power', redirect: '/' },
   { path: '/settings', name: 'settings', component: Settings },
   // Per-account self-service (password, 2FA).  Reachable by every signed-in

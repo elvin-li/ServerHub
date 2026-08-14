@@ -7,6 +7,7 @@ so the parsers are exercised against the real wire shapes.
 """
 from __future__ import annotations
 
+import json
 import plistlib
 import shutil
 import sys
@@ -453,6 +454,197 @@ class QuickTest(_NoRealConfig):
         self.assertTrue(result["ok"])
 
 
+class ChatMessages(_NoRealConfig):
+    def test_empty_history_is_refused(self):
+        with self.assertRaises(HTTPException) as ctx:
+            ollama_svc.normalize_chat_messages([])
+        self.assertEqual(_code(ctx.exception), "ollama.messages_required")
+
+    def test_unknown_role_is_refused(self):
+        with self.assertRaises(HTTPException) as ctx:
+            ollama_svc.normalize_chat_messages([{"role": "tool", "content": "x"}])
+        self.assertEqual(_code(ctx.exception), "ollama.bad_message")
+
+    def test_last_turn_must_be_a_non_empty_user_message(self):
+        with self.assertRaises(HTTPException) as ctx:
+            ollama_svc.normalize_chat_messages([{"role": "assistant", "content": "hi"}])
+        self.assertEqual(_code(ctx.exception), "ollama.prompt_required")
+        with self.assertRaises(HTTPException) as ctx:
+            ollama_svc.normalize_chat_messages([{"role": "user", "content": "   "}])
+        self.assertEqual(_code(ctx.exception), "ollama.prompt_required")
+
+    def test_per_message_length_is_capped(self):
+        with self.assertRaises(HTTPException) as ctx:
+            ollama_svc.normalize_chat_messages([
+                {"role": "user", "content": "x" * (ollama_svc.MAX_PROMPT_CHARS + 1)},
+            ])
+        self.assertEqual(_code(ctx.exception), "ollama.prompt_too_long")
+
+    def test_history_is_trimmed_to_the_last_n_and_keeps_the_prompt(self):
+        msgs = []
+        for i in range(ollama_svc.MAX_CHAT_MESSAGES + 4):
+            msgs.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"})
+        # Force the last turn to be the user prompt.
+        msgs[-1] = {"role": "user", "content": "latest"}
+        out = ollama_svc.normalize_chat_messages(msgs)
+        self.assertEqual(len(out), ollama_svc.MAX_CHAT_MESSAGES)
+        self.assertEqual(out[-1], {"role": "user", "content": "latest"})
+        self.assertNotIn("m0", [m["content"] for m in out])
+
+    def test_total_character_budget_drops_oldest_first(self):
+        # Each body stays under the per-message cap; together they exceed
+        # the history budget so the oldest turns are dropped first.
+        big = "y" * ollama_svc.MAX_PROMPT_CHARS
+        msgs = [
+            {"role": "user", "content": big},
+            {"role": "assistant", "content": big},
+            {"role": "user", "content": big},
+            {"role": "assistant", "content": big},
+            {"role": "user", "content": "now"},
+        ]
+        out = ollama_svc.normalize_chat_messages(msgs)
+        self.assertEqual(out[-1]["content"], "now")
+        self.assertLessEqual(sum(len(m["content"]) for m in out), ollama_svc.MAX_CHAT_HISTORY_CHARS)
+        self.assertLess(len(out), len(msgs))
+
+
+class ChatTurn(_NoRealConfig):
+    def test_posts_non_streaming_chat_and_returns_content(self):
+        seen = {}
+
+        def fake_api(path, payload=None, timeout=None):
+            seen["path"], seen["payload"] = path, payload
+            return {
+                "message": {"role": "assistant", "content": "hello there"},
+                "eval_count": 8,
+                "eval_duration": 2_000_000_000,
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.chat("qwen3.5:4b", [{"role": "user", "content": "hi"}])
+        self.assertEqual(seen["path"], "/api/chat")
+        self.assertIs(seen["payload"]["stream"], False)
+        self.assertEqual(
+            seen["payload"]["options"]["num_predict"], 128,
+        )
+        self.assertEqual(result["content"], "hello there")
+        self.assertEqual(result["thinking"], "")
+        self.assertEqual(result["tokens_per_s"], 4.0)
+        self.assertTrue(result["ok"])
+
+    def test_num_predict_is_clamped(self):
+        seen = {}
+
+        def fake_api(path, payload=None, timeout=None):
+            seen["payload"] = payload
+            return {"message": {"role": "assistant", "content": "x"}}
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            ollama_svc.chat("m:1", [{"role": "user", "content": "hi"}], num_predict=99999)
+        self.assertEqual(
+            seen["payload"]["options"]["num_predict"], ollama_svc.MAX_NUM_PREDICT,
+        )
+
+    def test_thinking_only_reply_is_surfaced(self):
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "thinking": "The user greets me, so a short greeting back…",
+                },
+                "eval_count": 32,
+                "eval_duration": 1_400_000_000,
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.chat("qwen3.5:4b", [{"role": "user", "content": "hi"}])
+        self.assertEqual(result["content"], "")
+        self.assertTrue(result["thinking"].startswith("The user greets"))
+        self.assertTrue(result["ok"])
+
+    def test_injection_shape_never_reaches_the_daemon(self):
+        called = []
+        with mock.patch.object(ollama_svc, "_api", side_effect=lambda *a, **k: called.append(a) or {}):
+            with self.assertRaises(HTTPException) as ctx:
+                ollama_svc.chat("-rf", [{"role": "user", "content": "hi"}])
+        self.assertEqual(_code(ctx.exception), "ollama.bad_model_name")
+        self.assertEqual(called, [])
+
+    def test_daemon_failure_becomes_a_coded_502(self):
+        with mock.patch.object(ollama_svc, "_api", side_effect=OSError("timed out")):
+            with self.assertRaises(HTTPException) as ctx:
+                ollama_svc.chat("m:1", [{"role": "user", "content": "hi"}])
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertEqual(_code(ctx.exception), "ollama.chat_failed")
+
+
+class _FakeHttp:
+    """urlopen stand-in: readline() yields NDJSON, close() is recorded."""
+
+    def __init__(self, lines: list[bytes]):
+        self._lines = list(lines)
+        self.closed = False
+
+    def readline(self, limit=-1):
+        if not self._lines:
+            return b""
+        return self._lines.pop(0)
+
+    def close(self):
+        self.closed = True
+
+
+class ChatStream(_NoRealConfig):
+    def test_yields_ndjson_lines_and_closes(self):
+        chunks = [
+            b'{"message":{"role":"assistant","content":"Hel"},"done":false}\n',
+            b'{"message":{"role":"assistant","content":"lo"},"done":false}\n',
+            b'{"message":{"role":"assistant","content":""},"done":true}\n',
+        ]
+        fake = _FakeHttp(chunks)
+        with mock.patch.object(ollama_svc.urllib.request, "urlopen", return_value=fake):
+            lines = list(ollama_svc.start_chat_stream(
+                "qwen3.5:4b", [{"role": "user", "content": "hi"}],
+            ))
+        self.assertEqual(lines, chunks)
+        self.assertTrue(fake.closed)
+
+    def test_stream_is_true_on_the_wire(self):
+        seen = {}
+        fake = _FakeHttp([b'{"done":true}\n'])
+
+        def fake_open(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["body"] = json.loads(req.data.decode("utf-8"))
+            return fake
+
+        with mock.patch.object(ollama_svc.urllib.request, "urlopen", side_effect=fake_open):
+            list(ollama_svc.start_chat_stream("m:1", [{"role": "user", "content": "hi"}]))
+        self.assertTrue(seen["url"].endswith("/api/chat"))
+        self.assertIs(seen["body"]["stream"], True)
+        self.assertEqual(seen["body"]["model"], "m:1")
+
+    def test_connect_failure_is_a_coded_502_before_any_bytes(self):
+        with mock.patch.object(
+            ollama_svc.urllib.request, "urlopen",
+            side_effect=OSError("connection refused"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                ollama_svc.start_chat_stream("m:1", [{"role": "user", "content": "hi"}])
+        self.assertEqual(_code(ctx.exception), "ollama.chat_failed")
+
+    def test_bad_name_never_opens_a_socket(self):
+        opened = []
+        with mock.patch.object(
+            ollama_svc.urllib.request, "urlopen",
+            side_effect=lambda *a, **k: opened.append(True),
+        ):
+            with self.assertRaises(HTTPException):
+                ollama_svc.start_chat_stream("-rf", [{"role": "user", "content": "hi"}])
+        self.assertEqual(opened, [])
+
+
 class LabelDiscovery(_NoRealConfig):
     """Fake ~/Library/LaunchAgents populated with synthetic plists."""
 
@@ -506,6 +698,22 @@ class LabelDiscovery(_NoRealConfig):
                 ollama_svc.discover_label(loaded=frozenset()), "com.kiro.ollama",
             )
 
+    def test_prefers_a_running_label_over_a_loaded_but_dead_one(self):
+        # brew services left homebrew.mxcl.ollama loaded-in-error (no pid)
+        # while the custom wrapper was the one actually serving :11434.
+        agents = self._agents_dir({
+            "com.kiro.ollama.plist": self.KIRO,
+            "homebrew.mxcl.ollama.plist": self.BREW,
+        })
+        with mock.patch.object(ollama_svc, "AGENTS_DIR", agents):
+            self.assertEqual(
+                ollama_svc.discover_label(
+                    loaded=frozenset({"homebrew.mxcl.ollama", "com.kiro.ollama"}),
+                    running=frozenset({"com.kiro.ollama"}),
+                ),
+                "com.kiro.ollama",
+            )
+
     def test_label_key_wins_over_the_filename(self):
         agents = self._agents_dir({
             "renamed-file.plist": self.KIRO,
@@ -534,6 +742,96 @@ class LabelDiscovery(_NoRealConfig):
         with mock.patch.object(ollama_svc, "AGENTS_DIR", agents):
             self.assertIsNone(ollama_svc.discover_label(loaded=frozenset()))
 
+    def test_candidate_labels_lists_every_ollama_agent(self):
+        agents = self._agents_dir({
+            "com.kiro.ollama.plist": self.KIRO,
+            "homebrew.mxcl.ollama.plist": self.BREW,
+            "com.example.unrelated.plist": self.UNRELATED,
+        })
+        with mock.patch.object(ollama_svc, "AGENTS_DIR", agents):
+            self.assertEqual(
+                ollama_svc._candidate_labels(),
+                ["com.kiro.ollama", "homebrew.mxcl.ollama"],
+            )
+
+
+class ServiceState(_NoRealConfig):
+    """``_service_state`` must not trust an empty launchctl listing over the API."""
+
+    KIRO = LabelDiscovery.KIRO
+    BREW = LabelDiscovery.BREW
+    _agents_dir = LabelDiscovery._agents_dir
+
+    def _listing(self, jobs: dict[str, tuple[str, str]]):
+        from hub.launchd_cache import Listing
+
+        return Listing(jobs)
+
+    def test_api_up_marks_running_when_listing_is_empty(self):
+        agents = self._agents_dir({"com.kiro.ollama.plist": self.KIRO})
+        with (
+            mock.patch.object(ollama_svc, "AGENTS_DIR", agents),
+            mock.patch("hub.launchd_cache.listing", return_value=self._listing({})),
+        ):
+            state = ollama_svc._service_state(reachable=True)
+        self.assertEqual(state["label"], "com.kiro.ollama")
+        self.assertTrue(state["running"])
+        self.assertTrue(state["loaded"])
+        self.assertTrue(state["inferred"])
+        self.assertIsNone(state["pid"])
+        self.assertEqual(state["candidates"], ["com.kiro.ollama"])
+
+    def test_api_down_does_not_infer_running_from_an_empty_listing(self):
+        agents = self._agents_dir({"com.kiro.ollama.plist": self.KIRO})
+        with (
+            mock.patch.object(ollama_svc, "AGENTS_DIR", agents),
+            mock.patch("hub.launchd_cache.listing", return_value=self._listing({})),
+        ):
+            state = ollama_svc._service_state(reachable=False)
+        self.assertFalse(state["running"])
+        self.assertFalse(state["inferred"])
+        self.assertIsNone(state["pid"])
+
+    def test_listing_pid_is_not_inferred(self):
+        agents = self._agents_dir({"com.kiro.ollama.plist": self.KIRO})
+        jobs = self._listing({"com.kiro.ollama": ("42", "0")})
+        with (
+            mock.patch.object(ollama_svc, "AGENTS_DIR", agents),
+            mock.patch("hub.launchd_cache.listing", return_value=jobs),
+        ):
+            state = ollama_svc._service_state(reachable=True)
+        self.assertEqual(state["pid"], 42)
+        self.assertTrue(state["running"])
+        self.assertFalse(state["inferred"])
+
+    def test_listing_exception_still_infers_from_a_reachable_api(self):
+        agents = self._agents_dir({"com.kiro.ollama.plist": self.KIRO})
+        with (
+            mock.patch.object(ollama_svc, "AGENTS_DIR", agents),
+            mock.patch("hub.launchd_cache.listing", side_effect=OSError("hang")),
+        ):
+            state = ollama_svc._service_state(reachable=True)
+        self.assertTrue(state["running"])
+        self.assertTrue(state["inferred"])
+        self.assertEqual(state["label"], "com.kiro.ollama")
+
+    def test_candidates_surface_every_ollama_agent(self):
+        agents = self._agents_dir({
+            "com.kiro.ollama.plist": self.KIRO,
+            "homebrew.mxcl.ollama.plist": self.BREW,
+        })
+        jobs = self._listing({"com.kiro.ollama": ("9", "0")})
+        with (
+            mock.patch.object(ollama_svc, "AGENTS_DIR", agents),
+            mock.patch("hub.launchd_cache.listing", return_value=jobs),
+        ):
+            state = ollama_svc._service_state(reachable=True)
+        self.assertEqual(
+            state["candidates"],
+            ["com.kiro.ollama", "homebrew.mxcl.ollama"],
+        )
+        self.assertFalse(state["inferred"])
+
 
 class HealthGating(_NoRealConfig):
     def test_hosts_without_ollama_get_no_row(self):
@@ -550,6 +848,7 @@ class HealthGating(_NoRealConfig):
         with (
             mock.patch.object(ollama_svc, "binary_path", return_value="/fake/bin/ollama"),
             mock.patch.object(ollama_svc, "discover_label", return_value="com.kiro.ollama"),
+            mock.patch.object(ollama_svc, "_candidate_labels", return_value=["com.kiro.ollama"]),
             mock.patch.object(ollama_svc, "_api", side_effect=fake_api),
         ):
             rows = ollama_svc.health_checks()
@@ -562,6 +861,7 @@ class HealthGating(_NoRealConfig):
         with (
             mock.patch.object(ollama_svc, "binary_path", return_value="/fake/bin/ollama"),
             mock.patch.object(ollama_svc, "discover_label", return_value="com.kiro.ollama"),
+            mock.patch.object(ollama_svc, "_candidate_labels", return_value=["com.kiro.ollama"]),
             mock.patch.object(ollama_svc, "_api", side_effect=OSError("refused")),
         ):
             rows = ollama_svc.health_checks()
@@ -569,6 +869,26 @@ class HealthGating(_NoRealConfig):
         self.assertFalse(rows[0]["ok"])
         self.assertEqual(rows[0]["level"], "warn")
         self.assertIn("com.kiro.ollama", rows[0]["fix"])
+
+    def test_multiple_agents_add_a_warn_row_alongside_the_api_check(self):
+        def fake_api(path, payload=None, timeout=None):
+            return {"/api/version": {"version": "0.32.9"}, "/api/ps": PS_PAYLOAD}[path]
+
+        with (
+            mock.patch.object(ollama_svc, "binary_path", return_value="/fake/bin/ollama"),
+            mock.patch.object(ollama_svc, "discover_label", return_value="com.kiro.ollama"),
+            mock.patch.object(
+                ollama_svc, "_candidate_labels",
+                return_value=["com.kiro.ollama", "homebrew.mxcl.ollama"],
+            ),
+            mock.patch.object(ollama_svc, "_api", side_effect=fake_api),
+        ):
+            rows = ollama_svc.health_checks()
+        ids = [r["id"] for r in rows]
+        self.assertEqual(ids, ["ollama_duplicate_agents", "ollama_api"])
+        self.assertFalse(rows[0]["ok"])
+        self.assertIn("homebrew.mxcl.ollama", rows[0]["detail"])
+        self.assertTrue(rows[1]["ok"])
 
     def test_health_svc_probe_never_raises(self):
         from hub import health_svc
@@ -601,6 +921,7 @@ class RouterContract(_NoRealConfig):
             "/api/ollama/models/delete",
             "/api/ollama/models/unload",
             "/api/ollama/test",
+            "/api/ollama/chat",
         ):
             self.assertIn(path, paths)
 
@@ -631,7 +952,10 @@ class RouterContract(_NoRealConfig):
             "ollama.rm_failed",
             "ollama.unload_failed",
             "ollama.generate_failed",
+            "ollama.chat_failed",
             "ollama.prompt_too_long",
+            "ollama.messages_required",
+            "ollama.bad_message",
         ):
             self.assertIn(code, CODES)
 
@@ -649,6 +973,96 @@ class NativeCatalogEntry(_NoRealConfig):
         self.assertTrue(app["service"])
         self.assertEqual(app["ports"], ["11434"])
         self.assertNotIn("url_hint", app)  # an API port is not a web UI
+        self.assertIn("custom LaunchAgent", app["notes"])
+
+
+class NativeOllamaBrewSkip(_NoRealConfig):
+    """Install/start must not spawn a second brew daemon when :11434 is live.
+
+    Every executor is mocked — these tests never call brew or launchctl.
+    """
+
+    def test_helper_reports_the_probed_port(self):
+        from hub import native_catalog
+
+        with mock.patch("hub.util.port_open", return_value=True) as poked:
+            self.assertTrue(native_catalog.ollama_api_already_served())
+        poked.assert_called_once_with(native_catalog.OLLAMA_API_PORT, host="127.0.0.1")
+        with mock.patch("hub.util.port_open", return_value=False):
+            self.assertFalse(native_catalog.ollama_api_already_served())
+
+    def test_install_skips_brew_services_start_when_the_port_is_open(self):
+        from hub import native_catalog
+
+        ran: list[list] = []
+
+        def fake_run(argv, **kwargs):
+            ran.append(list(argv))
+            return {"ok": True, "message": "started", "rc": 0}
+
+        app = next(a for a in native_catalog.NATIVE_APPS if a["id"] == "native-ollama")
+        with (
+            mock.patch.object(native_catalog, "_is_installed", return_value=True),
+            mock.patch.object(native_catalog, "ollama_api_already_served", return_value=True),
+            mock.patch.object(native_catalog, "_run", side_effect=fake_run),
+            mock.patch.object(native_catalog, "_run_brew", side_effect=fake_run),
+        ):
+            result = native_catalog._install_native(app, "native-ollama")
+        self.assertTrue(result["ok"])
+        self.assertIn("already served", result["message"])
+        self.assertFalse(any("services" in cmd and "start" in cmd for cmd in ran))
+
+    def test_install_starts_the_brew_service_when_the_port_is_closed(self):
+        from hub import native_catalog
+
+        ran: list[list] = []
+
+        def fake_run(argv, **kwargs):
+            ran.append(list(argv))
+            return {"ok": True, "message": "started", "rc": 0}
+
+        app = next(a for a in native_catalog.NATIVE_APPS if a["id"] == "native-ollama")
+        with (
+            mock.patch.object(native_catalog, "_is_installed", return_value=True),
+            mock.patch.object(native_catalog, "ollama_api_already_served", return_value=False),
+            mock.patch.object(native_catalog, "_run", side_effect=fake_run),
+            mock.patch.object(native_catalog, "_run_brew", side_effect=fake_run),
+        ):
+            result = native_catalog._install_native(app, "native-ollama")
+        self.assertTrue(result["ok"])
+        self.assertTrue(any("services" in cmd and "start" in cmd for cmd in ran))
+
+    def test_apps_start_skips_a_second_daemon_when_the_port_is_open(self):
+        from hub import apps_manage_svc, native_catalog
+
+        with (
+            mock.patch.object(native_catalog, "ollama_api_already_served", return_value=True),
+            mock.patch.object(native_catalog, "_run") as run,
+            mock.patch.object(apps_manage_svc, "invalidate_inventory"),
+        ):
+            result = apps_manage_svc.action("native-ollama", "start")
+        self.assertTrue(result["ok"])
+        self.assertIn("already serving", result["message"])
+        run.assert_not_called()
+
+    def test_apps_start_calls_brew_when_the_port_is_closed(self):
+        from hub import apps_manage_svc, native_catalog
+
+        with (
+            mock.patch.object(native_catalog, "ollama_api_already_served", return_value=False),
+            mock.patch.object(
+                native_catalog, "_run",
+                return_value={"ok": True, "message": "started", "rc": 0},
+            ) as run,
+            mock.patch.object(apps_manage_svc, "invalidate_inventory"),
+        ):
+            result = apps_manage_svc.action("native-ollama", "start")
+        self.assertTrue(result["ok"])
+        run.assert_called_once()
+        argv = run.call_args[0][0]
+        self.assertIn("services", argv)
+        self.assertIn("start", argv)
+        self.assertIn("ollama", argv)
 
 
 if __name__ == "__main__":

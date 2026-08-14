@@ -27,6 +27,20 @@ def _launchctl(args: list[str]):
         invalidate_launchd()
 
 
+#: `launchctl bootstrap` of a job that is already in the session is not a
+#: failure of Start.  Older macOS reports that as 17 (EEXIST); current macOS
+#: reports it as 5 (EIO) with the wording "Bootstrap failed: 5: Input/output
+#: error".  Either way the job is loaded — kickstart is the start we wanted.
+_BOOTSTRAP_ALREADY = {0, 5, 17}
+
+
+def _bootstrap_ok_to_kickstart(rc: int, out: str = "", err: str = "") -> bool:
+    """True when bootstrap succeeded, or the job was already in the session."""
+    if rc in _BOOTSTRAP_ALREADY:
+        return True
+    return "already" in f"{err} {out}".lower()
+
+
 def registry():
     reg = {}
     for a in cfg().get("apps") or []:
@@ -108,7 +122,7 @@ def run_action(target, action):
             return _launchctl(["bootout", f"{dom}/{label}"])
         if action == "start":
             rc, o, e = _launchctl(["bootstrap", dom, meta["path"]])
-            if rc not in (0, 17) and "already" not in e.lower():
+            if not _bootstrap_ok_to_kickstart(rc, o, e):
                 return rc, o, e
             return _launchctl(["kickstart", f"{dom}/{label}"])
     if kind == "container" and action in ("start", "stop", "restart", "pause", "unpause", "remove", "kill"):

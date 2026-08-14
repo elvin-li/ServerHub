@@ -127,7 +127,7 @@ import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 
 import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
   Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
-  Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot,
+  Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot, Camera,
   Settings, ScrollText, ShieldCheck, CircleUser,
 } from '@lucide/vue'
 import { authState } from './lib/authState'
@@ -255,6 +255,7 @@ const NAV_ADMIN = [
       { to: '/audit', labelKey: 'nav.audit', icon: ScrollText },
       { to: '/backups', labelKey: 'nav.backups', icon: Archive },
       { to: '/maintenance', labelKey: 'nav.maintenance', icon: Hammer },
+      { to: '/photoshub', labelKey: 'nav.photoshub', icon: Camera },
       { to: '/modules', labelKey: 'nav.modules', icon: Blocks },
     ],
   },

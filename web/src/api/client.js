@@ -867,6 +867,12 @@ export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
   return new EventSource(`/api/containers/${encodeURIComponent(name)}/logs?${q}`)
 }
 
+export const getPhotosHubStatus = () => json('/api/photoshub/status')
+export const getPhotosHubPending = () => json('/api/photoshub/pending-delete')
+export const postPhotosHubAction = (action) => json('/api/photoshub/action', { method: 'POST', body: JSON.stringify({ action }) })
+export const postPhotosHubPendingRemove = (ids) => json('/api/photoshub/pending-delete/remove', { method: 'POST', body: JSON.stringify({ ids }) })
+export const getPhotosHubLogs = (name) => json(`/api/photoshub/logs/${name}`)
+
 // ── Ollama local LLM (hub/routers/ollama_api.py) ─────────────────────────────
 // The quick test proxies one bounded /api/generate; a cold model spends tens of
 // seconds loading before it answers, and the backend allows the generation 120s.
@@ -882,3 +888,96 @@ export const unloadOllamaModel = (model) =>
   json('/api/ollama/models/unload', jsonBody('POST', { model }))
 export const testOllamaModel = (model, prompt, numPredict = 128) =>
   json('/api/ollama/test', jsonBody('POST', { model, prompt, num_predict: numPredict }), OLLAMA_TEST_TIMEOUT)
+
+/**
+ * One in-panel chat turn. The backend streams Ollama NDJSON; *onChunk* is
+ * called with the accumulated assistant `{ content, thinking, done }` after
+ * each line so the page can paint tokens as they arrive. The resolved value
+ * is the same shape as a finished chunk.
+ *
+ * Validation failures (bad model, empty prompt) arrive as a normal JSON
+ * error *before* the stream starts — same coded-error path as json().
+ */
+export async function chatOllamaModel(model, messages, numPredict = 128, { onChunk, signal } = {}) {
+  const ctrl = new AbortController()
+  const onAbort = () => ctrl.abort()
+  if (signal) {
+    if (signal.aborted) ctrl.abort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+  }
+  const timer = setTimeout(() => ctrl.abort(), OLLAMA_TEST_TIMEOUT)
+  try {
+    const r = await fetch('/api/ollama/chat', {
+      ...jsonBody('POST', { model, messages, num_predict: numPredict }),
+      signal: ctrl.signal,
+    })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      const err = new Error(errorText(j, r.statusText))
+      err.status = r.status
+      err.body = j
+      err.code = (j?.detail && typeof j.detail === 'object' && j.detail.code) || null
+      if (r.status === 401 && !authLost) {
+        authLost = true
+        try {
+          window.dispatchEvent(new CustomEvent(AUTH_LOST_EVENT, { detail: { url: '/api/ollama/chat' } }))
+        } catch { /* ignore */ }
+      }
+      throw err
+    }
+    const reader = r.body?.getReader?.()
+    if (!reader) {
+      throw new Error(t('err.request_failed'))
+    }
+    const decoder = new TextDecoder()
+    let buf = ''
+    let content = ''
+    let thinking = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        let chunk
+        try {
+          chunk = JSON.parse(trimmed)
+        } catch {
+          continue
+        }
+        if (chunk.error) {
+          const err = new Error(String(chunk.error))
+          err.status = 502
+          throw err
+        }
+        const msg = chunk.message || {}
+        if (msg.content) content += msg.content
+        if (msg.thinking) thinking += msg.thinking
+        const snap = { ok: true, model, content, thinking, done: Boolean(chunk.done) }
+        onChunk?.(snap)
+        if (chunk.done) return snap
+      }
+    }
+    const snap = { ok: true, model, content, thinking, done: true }
+    onChunk?.(snap)
+    return snap
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      const err = new Error(t('err.timeout'))
+      err.status = 0
+      throw err
+    }
+    if (!e.status && e.message === 'Failed to fetch') {
+      const err = new Error(t('err.offline'))
+      err.status = 0
+      throw err
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+    if (signal) signal.removeEventListener('abort', onAbort)
+  }
+}

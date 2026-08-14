@@ -1,9 +1,9 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-const CACHE_NAME = 'serverhub-7df0e66397550d85'
+const CACHE_NAME = 'serverhub-fde1eb3510a28787'
 // Vite replaces the placeholder with the first-paint assets (entry + vendor
 // chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Account-Bybzo2vd.css","/assets/Apps-WjtE4X6x.css","/assets/Bookmarks-CmO1-9tu.css","/assets/Compose-Xwt2I3WS.css","/assets/Dashboard-DnnalXhE.css","/assets/Files-BmSpWPVS.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-CufDTflA.css","/assets/Logs-BQ6oAIpl.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-MCrVcGgE.css","/assets/Ollama-CQ3YbRME.css","/assets/PhotosHub-BwkfI9Pl.css","/assets/Pool-WTeE8dOI.css","/assets/Services-CGQAilrp.css","/assets/Settings-DE6PXInu.css","/assets/Shares-CtP2VtOe.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-zqGm35wn.css","/assets/Tools-Dq0rX2ew.css","/assets/Users-DsyV07kA.css","/assets/VMs-DBd73pIy.css","/assets/WireGuard-CFo2zPrX.css","/assets/en-QWpQzKna.js","/assets/index-B12m2YTV.css","/assets/index-BddPwSr4.js","/assets/vendor-DsKQQMlc.js"]
+const PRECACHE_ASSETS = ["/assets/Account-Bybzo2vd.css","/assets/Apps-WjtE4X6x.css","/assets/Bookmarks-CmO1-9tu.css","/assets/Compose-Xwt2I3WS.css","/assets/Dashboard-DnnalXhE.css","/assets/Files-BmSpWPVS.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-CufDTflA.css","/assets/Logs-BQ6oAIpl.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-MCrVcGgE.css","/assets/Ollama-BhhAQvGW.css","/assets/PhotosHub-BwkfI9Pl.css","/assets/Pool-WTeE8dOI.css","/assets/Services-CGQAilrp.css","/assets/Settings-DE6PXInu.css","/assets/Shares-CtP2VtOe.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-zqGm35wn.css","/assets/Tools-Dq0rX2ew.css","/assets/Users-DsyV07kA.css","/assets/VMs-DBd73pIy.css","/assets/WireGuard-CFo2zPrX.css","/assets/en-Dgsgg-H_.js","/assets/index-B12m2YTV.css","/assets/index-n4TF-r9y.js","/assets/vendor-DsKQQMlc.js"]
 const SHELL_ASSETS = [
   '/',
   '/index.html',

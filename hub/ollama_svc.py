@@ -24,6 +24,10 @@ Mutations are deliberately narrow:
             the resident model without touching its configured default.
 * test   — one non-streaming /api/generate with a capped prompt and capped
             num_predict, returning the text plus timing.
+* chat   — multi-turn /api/chat.  The router streams NDJSON (``stream: true``);
+            :func:`chat` is the non-streaming twin used by tests and as a
+            fallback.  History, prompt length and num_predict share the
+            quick-test caps.
 """
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ import re
 import shutil
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -58,6 +63,14 @@ MODEL_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
 MAX_PROMPT_CHARS = 2000
 MAX_NUM_PREDICT = 256
 GENERATE_TIMEOUT = 120.0
+#: In-panel chat: last N turns, then a total-character trim so a long paste
+#: cannot blow the 4b context on this class of host.
+MAX_CHAT_MESSAGES = 24
+MAX_CHAT_HISTORY_CHARS = 8000
+#: One NDJSON line from a streaming /api/chat is a token or two; anything
+#: near this cap is not the daemon we think it is.
+MAX_NDJSON_LINE = 64 * 1024
+CHAT_ROLES = frozenset({"user", "assistant", "system"})
 #: Unloading only frees memory; it should be near-instant but give it slack.
 UNLOAD_TIMEOUT = 30.0
 #: Probes against a localhost daemon.
@@ -86,8 +99,11 @@ CODES.setdefault("ollama.confirm_required", (400, "deleting a model requires con
 CODES.setdefault("ollama.rm_failed", (500, "could not remove the model: {error}"))
 CODES.setdefault("ollama.unload_failed", (502, "the model could not be unloaded: {error}"))
 CODES.setdefault("ollama.generate_failed", (502, "the test generation failed: {error}"))
-CODES.setdefault("ollama.prompt_too_long", (400, "the test prompt exceeds {max} characters"))
-CODES.setdefault("ollama.prompt_required", (400, "a test prompt is required"))
+CODES.setdefault("ollama.chat_failed", (502, "the chat request failed: {error}"))
+CODES.setdefault("ollama.prompt_too_long", (400, "the prompt exceeds {max} characters"))
+CODES.setdefault("ollama.prompt_required", (400, "a prompt is required"))
+CODES.setdefault("ollama.messages_required", (400, "at least one chat message is required"))
+CODES.setdefault("ollama.bad_message", (400, "each chat message needs a role of user, assistant or system"))
 CODES.setdefault("ollama.status_failed", (500, "the Ollama status could not be read"))
 
 
@@ -214,55 +230,101 @@ def _plist_label_if_ollama(path: Path) -> str | None:
     return str(pl.get("Label") or path.stem)
 
 
-def discover_label(loaded: frozenset[str] | None = None) -> str | None:
+def _candidate_labels() -> list[str]:
+    """Every on-disk LaunchAgent that references ollama, alphabetical, unique.
+
+    Two plists can share a Label (a leftover copy); the set collapses them so
+    the UI warning is about distinct agents, not duplicate files.
+    """
+    seen: set[str] = set()
+    for path in AGENTS_DIR.glob("*.plist"):
+        label = _plist_label_if_ollama(path)
+        if label:
+            seen.add(label)
+    return sorted(seen)
+
+
+def discover_label(
+    loaded: frozenset[str] | None = None,
+    running: frozenset[str] | None = None,
+) -> str | None:
     """The launchd label owning ollama on this host, or None.
 
     ``settings.ollama.label`` wins when set.  Otherwise every LaunchAgent plist
-    is scanned for an ollama reference; a label that is actually loaded (per the
-    shared ``launchctl list`` cache) is preferred over one merely on disk, and
-    ties break alphabetically so the answer is stable between calls.
+    is scanned for an ollama reference.  A label that is actually *running*
+    (live pid) wins over one that is merely loaded — a crashed ``brew services``
+    agent stays in the listing with no pid, and must not steal the start/stop
+    target from the custom wrapper that is serving :11434.  Loaded-but-idle
+    still beats an on-disk-only plist.  Remaining ties break alphabetically
+    so the answer is stable between calls.
 
-    *loaded* is injectable so the health path can pass a pre-fetched (or empty)
-    set instead of triggering a launchctl spawn.
+    *loaded* / *running* are injectable so the health path can pass empty sets
+    instead of triggering a launchctl spawn.
     """
     configured = str(_settings().get("label") or "").strip()
     if configured:
         return configured
-    candidates = sorted(
-        label
-        for path in AGENTS_DIR.glob("*.plist")
-        if (label := _plist_label_if_ollama(path))
-    )
+    candidates = _candidate_labels()
     if not candidates:
         return None
     if loaded is None:
         try:
-            from hub.launchd_cache import loaded_labels
+            from hub.launchd_cache import listing
 
-            loaded = loaded_labels()
+            jobs = listing()
+            loaded = jobs.loaded
+            if running is None:
+                running = jobs.running
         except Exception:
             loaded = frozenset()
+    running = running or frozenset()
+    for label in candidates:
+        if label in running:
+            return label
     for label in candidates:
         if label in loaded:
             return label
     return candidates[0]
 
 
-def _service_state() -> dict:
-    """The owning launchd job as the UI needs it: label + loaded/running/pid."""
+def _service_state(*, reachable: bool = False) -> dict:
+    """The owning launchd job as the UI needs it: label + loaded/running/pid.
+
+    ``launchctl list`` is not ground truth for "is ollama serving".  A sandbox
+    or a hung listing comes back empty (``hub.launchd_cache`` already turns a
+    timeout into ``_EMPTY`` rather than raising); the job can also be missing
+    from a successful listing.  When the HTTP API already answered, the
+    service is running — Start must stay disabled and the badge must say so.
+    ``inferred`` tells the UI the pid came from nowhere because launchd
+    never named the job.
+    """
     from hub.launchd_cache import listing
 
     try:
         jobs = listing()
     except Exception:
         jobs = None
-    label = discover_label(loaded=jobs.loaded if jobs else frozenset())
-    state = {"label": label, "loaded": False, "running": False, "pid": None}
+    label = discover_label(
+        loaded=jobs.loaded if jobs else frozenset(),
+        running=jobs.running if jobs else frozenset(),
+    )
+    state = {
+        "label": label,
+        "loaded": False,
+        "running": False,
+        "pid": None,
+        "candidates": _candidate_labels(),
+        "inferred": False,
+    }
     if label and jobs:
         state["loaded"] = label in jobs.loaded
         pid = jobs.pid_for(label)
         state["running"] = pid is not None
         state["pid"] = int(pid) if pid else None
+    if reachable and not state["running"]:
+        state["running"] = True
+        state["loaded"] = True
+        state["inferred"] = True
     return state
 
 
@@ -289,7 +351,7 @@ def status() -> dict:
             # Version answered but tags/ps failed: still "reachable", but say why.
             error = str(e)[:200]
     binary = binary_path()
-    service = _service_state()
+    service = _service_state(reachable=reachable)
     return {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "url": base_url(),
@@ -450,6 +512,141 @@ def quick_test(name: str, prompt: str, num_predict: int = 128) -> dict:
     }
 
 
+# ── in-panel chat ────────────────────────────────────────────────────────────
+
+def normalize_chat_messages(messages) -> list[dict]:
+    """Validate, cap, and flatten a chat history for /api/chat.
+
+    Roles are restricted to the three Ollama accepts.  Each body is capped at
+    :data:`MAX_PROMPT_CHARS`; the list is then trimmed to the last
+    :data:`MAX_CHAT_MESSAGES` and a total-character budget so a pasted novel
+    cannot pin the resident 4b.  The last turn must be a non-empty user
+    message — that is the prompt being sent.
+    """
+    if not isinstance(messages, list) or not messages:
+        raise api_error("ollama.messages_required")
+    out: list[dict] = []
+    for raw in messages:
+        if not isinstance(raw, dict):
+            raise api_error("ollama.bad_message")
+        role = str(raw.get("role") or "").strip()
+        if role not in CHAT_ROLES:
+            raise api_error("ollama.bad_message")
+        content = str(raw.get("content") or "")
+        if len(content) > MAX_PROMPT_CHARS:
+            raise api_error("ollama.prompt_too_long", max=MAX_PROMPT_CHARS)
+        out.append({"role": role, "content": content})
+    out = out[-MAX_CHAT_MESSAGES:]
+    total = sum(len(m["content"]) for m in out)
+    while len(out) > 1 and total > MAX_CHAT_HISTORY_CHARS:
+        dropped = out.pop(0)
+        total -= len(dropped["content"])
+    last = out[-1]
+    if last["role"] != "user" or not last["content"].strip():
+        raise api_error("ollama.prompt_required")
+    return out
+
+
+def _chat_payload(name: str, messages: list, num_predict: int, *, stream: bool) -> dict:
+    name = validate_model_name(name)
+    msgs = normalize_chat_messages(messages)
+    num_predict = max(1, min(int(num_predict or 128), MAX_NUM_PREDICT))
+    return {
+        "model": name,
+        "messages": msgs,
+        "stream": stream,
+        "options": {"num_predict": num_predict},
+    }
+
+
+def _tokens_per_s(resp: dict) -> float | None:
+    eval_count = int(resp.get("eval_count") or 0)
+    eval_ns = int(resp.get("eval_duration") or 0)
+    return round(eval_count / (eval_ns / 1e9), 1) if eval_ns else None
+
+
+def chat(name: str, messages: list, num_predict: int = 128) -> dict:
+    """One bounded, non-streaming /api/chat turn; returns content plus thinking.
+
+    Same guardrails as :func:`quick_test`.  Thinking-capable models can spend
+    the whole ``num_predict`` budget on ``thinking`` and leave ``content``
+    empty — both fields are returned so the UI still has something to show.
+    """
+    payload = _chat_payload(name, messages, num_predict, stream=False)
+    t0 = time.monotonic()
+    try:
+        resp = _api("/api/chat", payload, timeout=GENERATE_TIMEOUT)
+    except Exception as e:
+        raise api_error("ollama.chat_failed", error=str(e)[:200])
+    msg = resp.get("message") or {}
+    eval_count = int(resp.get("eval_count") or 0)
+    return {
+        "ok": True,
+        "model": payload["model"],
+        "role": str(msg.get("role") or "assistant"),
+        "content": str(msg.get("content") or ""),
+        "thinking": str(msg.get("thinking") or ""),
+        "duration_s": round(time.monotonic() - t0, 2),
+        "eval_count": eval_count,
+        "tokens_per_s": _tokens_per_s(resp),
+    }
+
+
+def _open_chat_http(payload: dict):
+    """POST /api/chat and return the raw HTTPResponse (caller closes it)."""
+    url = base_url() + "/api/chat"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        return urllib.request.urlopen(req, timeout=GENERATE_TIMEOUT)
+    except urllib.error.HTTPError as e:
+        err = ""
+        try:
+            err = e.read(400).decode("utf-8", "replace")
+        except Exception:
+            err = str(e)
+        raise api_error("ollama.chat_failed", error=(err or str(e))[:200])
+    except Exception as e:
+        raise api_error("ollama.chat_failed", error=str(e)[:200])
+
+
+def start_chat_stream(name: str, messages: list, num_predict: int = 128):
+    """Validate + open a streaming /api/chat; yield raw NDJSON lines.
+
+    Connection failures raise :func:`api_error` *before* any bytes are
+    produced so the router can still return a coded JSON 502.  The iterator
+    closes the HTTP response in ``finally``.
+    """
+    payload = _chat_payload(name, messages, num_predict, stream=True)
+    resp = _open_chat_http(payload)
+
+    def lines():
+        try:
+            while True:
+                line = resp.readline(MAX_NDJSON_LINE)
+                if not line:
+                    break
+                if len(line) >= MAX_NDJSON_LINE and not line.endswith(b"\n"):
+                    # Drain the rest of this monster line; do not forward it.
+                    while True:
+                        more = resp.readline(MAX_NDJSON_LINE)
+                        if not more or more.endswith(b"\n"):
+                            break
+                    continue
+                yield line if line.endswith(b"\n") else line + b"\n"
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    return lines()
+
+
 # ── health checks (hub/health_svc fan-out; must never spawn a subprocess) ────
 
 def health_checks() -> list[dict]:
@@ -463,13 +660,30 @@ def health_checks() -> list[dict]:
     label = discover_label(loaded=frozenset())
     if not binary_path() and not label:
         return []
+    rows: list[dict] = []
+    candidates = _candidate_labels()
+    if len(candidates) > 1:
+        rows.append({
+            "id": "ollama_duplicate_agents",
+            "name": "Ollama LaunchAgents",
+            "level": "warn",
+            "ok": False,
+            "detail": (
+                f"{len(candidates)} ollama agents on disk: {', '.join(candidates)}. "
+                "A second KeepAlive job crash-loops on EADDRINUSE."
+            ),
+            "fix": (
+                f"Stop the unused agent (typically homebrew.mxcl.ollama) so "
+                f"Start/Stop target {label or candidates[0]}"
+            ),
+        })
     port = urlsplit(base_url()).port or 11434
     row_name = f"Ollama local LLM API :{port}"
     try:
         version = str(_api("/api/version").get("version") or "")
         resident = parse_ps(_api("/api/ps"))
     except Exception as e:
-        return [{
+        rows.append({
             "id": "ollama_api",
             "name": row_name,
             "level": "warn",
@@ -477,16 +691,18 @@ def health_checks() -> list[dict]:
             "detail": f"API unreachable ({str(e)[:100]})",
             "fix": f"launchctl kickstart -k gui/$(id -u)/{label}" if label
                    else "brew services start ollama",
-        }]
+        })
+        return rows
     names = ", ".join(m["name"] for m in resident) or "none resident"
-    return [{
+    rows.append({
         "id": "ollama_api",
         "name": row_name,
         "level": "ok",
         "ok": True,
         "detail": f"v{version} · {len(resident)} model(s) loaded ({names})",
         "fix": "",
-    }]
+    })
+    return rows
 
 
 if __name__ == "__main__":

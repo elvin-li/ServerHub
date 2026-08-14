@@ -82,6 +82,22 @@ def _which(name: str) -> str | None:
     )
 
 
+#: The ollama daemon's API port.  A custom LaunchAgent already serving this
+#: port must not be joined by `brew services start ollama`.
+OLLAMA_API_PORT = 11434
+
+
+def ollama_api_already_served() -> bool:
+    """True when something already accepts connections on the ollama API port.
+
+    A custom LaunchAgent (com.kiro.ollama on this class of host) owns :11434.
+    Starting the brew formula then crash-loops on EADDRINUSE.
+    """
+    from hub.util import port_open
+
+    return bool(port_open(OLLAMA_API_PORT, host="127.0.0.1"))
+
+
 def _app_exists(name: str) -> bool:
     # Support names with spaces e.g. "Plex Media Server"
     return Path(f"/Applications/{name}.app").exists() or Path(
@@ -1226,14 +1242,24 @@ def _install_native(app: dict, app_id: str) -> dict:
             logs.append(f"{pkg} is already installed")
             ok = True
         if ok and app.get("service"):
-            r2 = _run([BREW, "services", "start", pkg], timeout=120)
-            logs.append(r2["message"])
-            # brew services start: already started counts as ok
-            if not r2["ok"] and "already" not in (r2["message"] or "").lower():
-                # still try restart
-                r3 = _run([BREW, "services", "restart", pkg], timeout=120)
-                logs.append(r3["message"])
-                ok = ok and (r3["ok"] or r2["ok"])
+            # A custom LaunchAgent (com.kiro.ollama on this class of host) already
+            # owns :11434.  `brew services start ollama` would load a second
+            # KeepAlive job that crash-loops on EADDRINUSE — 2881 exits on the
+            # box that prompted this guard — and the Ollama page's Start then
+            # toasted launchctl's "Bootstrap failed: 5: Input/output error".
+            skip_brew_service = False
+            if app_id == "native-ollama" and ollama_api_already_served():
+                logs.append("skipped brew services start: :11434 is already served")
+                skip_brew_service = True
+            if not skip_brew_service:
+                r2 = _run([BREW, "services", "start", pkg], timeout=120)
+                logs.append(r2["message"])
+                # brew services start: already started counts as ok
+                if not r2["ok"] and "already" not in (r2["message"] or "").lower():
+                    # still try restart
+                    r3 = _run([BREW, "services", "restart", pkg], timeout=120)
+                    logs.append(r3["message"])
+                    ok = ok and (r3["ok"] or r2["ok"])
         return {
             "ok": ok,
             "message": "\n".join(logs)[-2000:],

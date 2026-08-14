@@ -27,6 +27,9 @@
           <h2>{{ t('ollama.service_title') }}</h2>
           <span class="badge" :class="serviceBadge.cls">{{ serviceBadge.text }}</span>
         </div>
+        <div v-if="duplicateLabels.length" class="notice warn" role="alert">
+          {{ t('ollama.duplicate_agents', { labels: duplicateLabels.join(', ') }) }}
+        </div>
         <div class="svc-grid">
           <div>
             <div class="meta">{{ t('ollama.service_label') }}</div>
@@ -45,8 +48,11 @@
             <div class="mono">{{ data.service.pid }}</div>
           </div>
         </div>
+        <p v-if="data.service?.inferred" class="meta" style="margin:8px 0 0">
+          {{ t('ollama.listing_missed') }}
+        </p>
         <div class="toolbar" style="margin:10px 0 0">
-          <button class="tiny primary" :disabled="svcBusy || !data.service?.label" @click="act('start')">{{ t('services.act_start') }}</button>
+          <button class="tiny primary" :disabled="svcBusy || !data.service?.label || data.reachable" @click="act('start')">{{ t('services.act_start') }}</button>
           <button class="tiny danger" :disabled="svcBusy || !data.service?.label" @click="act('stop')">{{ t('services.act_stop') }}</button>
           <button class="tiny" :disabled="svcBusy || !data.service?.label" @click="act('restart')">{{ t('services.act_restart') }}</button>
         </div>
@@ -163,6 +169,55 @@
         </div>
       </div>
 
+      <!-- In-panel chat -->
+      <div class="card-block" style="margin-bottom:14px">
+        <div class="section-head">
+          <h2>{{ t('ollama.chat_title') }}</h2>
+          <span class="meta">{{ t('ollama.chat_hint') }}</span>
+        </div>
+        <p v-if="!data.reachable" class="meta" style="margin:0 0 8px">{{ t('ollama.chat_unreachable') }}</p>
+        <p v-else-if="!models.length" class="meta" style="margin:0 0 8px">{{ t('ollama.chat_no_model') }}</p>
+        <div ref="chatLog" class="chat-log" aria-live="polite">
+          <div v-if="!chatMessages.length" class="meta">{{ t('ollama.chat_empty') }}</div>
+          <div
+            v-for="(m, i) in chatMessages"
+            :key="i"
+            class="chat-msg"
+            :class="m.role"
+          >
+            <div class="chat-role">{{ m.role === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
+            <pre v-if="m.thinking && !m.content" class="chat-thinking">{{ m.thinking }}</pre>
+            <details v-else-if="m.thinking" class="chat-thinking-wrap">
+              <summary>{{ t('ollama.chat_thinking') }}</summary>
+              <pre class="chat-thinking">{{ m.thinking }}</pre>
+            </details>
+            <div class="chat-body">{{ m.content || (m.pending ? t('ollama.chat_sending') : '') }}</div>
+            <div v-if="m.error" class="chat-error">{{ m.error }}</div>
+          </div>
+        </div>
+        <div class="toolbar" style="flex-wrap:wrap">
+          <select v-model="chatModel" :aria-label="t('ollama.chat_model_label')" :disabled="chatBusy">
+            <option v-for="m in models" :key="'chat-' + m.name" :value="m.name">{{ m.name }}</option>
+          </select>
+          <textarea
+            v-model="chatInput"
+            class="chat-input"
+            rows="2"
+            maxlength="2000"
+            :placeholder="t('ollama.chat_input_ph')"
+            :aria-label="t('ollama.chat_input_label')"
+            :disabled="chatBusy || !data.reachable || !chatModel"
+            @keydown.enter.exact.prevent="sendChat"
+          />
+          <button
+            class="primary"
+            :disabled="chatSendDisabled"
+            @click="sendChat"
+          >{{ chatBusy ? t('ollama.chat_sending') : t('ollama.chat_send') }}</button>
+          <button :disabled="!chatMessages.length || chatBusy" @click="clearChat">{{ t('ollama.chat_clear') }}</button>
+        </div>
+      </div>
+
       <!-- Quick test -->
       <div class="card-block">
         <div class="section-head">
@@ -230,8 +285,9 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import {
+  chatOllamaModel,
   deleteOllamaModel,
   doAction,
   getOllamaPullLog,
@@ -266,6 +322,13 @@ const testPrompt = ref('')
 const testBusy = ref(false)
 const testResult = ref(null)
 
+const chatModel = ref('')
+const chatInput = ref('')
+const chatBusy = ref(false)
+const chatMessages = ref([])
+const chatLog = ref(null)
+let chatAbort = null
+
 const deleteTarget = ref(null)
 const deleteText = ref('')
 const deleting = ref(false)
@@ -278,6 +341,10 @@ let pullGeneration = 0
 
 const models = computed(() => (Array.isArray(data.value?.models) ? data.value.models : []))
 const resident = computed(() => (Array.isArray(data.value?.resident) ? data.value.resident : []))
+const duplicateLabels = computed(() => {
+  const c = data.value?.service?.candidates
+  return Array.isArray(c) && c.length > 1 ? c : []
+})
 
 const serviceBadge = computed(() => {
   if (!data.value) return { cls: '', text: '' }
@@ -297,6 +364,25 @@ const testText = computed(() => {
   if (!r) return ''
   return r.response || r.thinking || r.error || ''
 })
+
+const chatSendDisabled = computed(() =>
+  chatBusy.value
+  || !data.value?.reachable
+  || !chatModel.value
+  || !chatInput.value.trim())
+
+function defaultChatModel(j) {
+  const res = Array.isArray(j?.resident) ? j.resident : []
+  if (res[0]?.name) return res[0].name
+  const mods = Array.isArray(j?.models) ? j.models : []
+  return mods[0]?.name || ''
+}
+
+async function scrollChat() {
+  await nextTick()
+  const el = chatLog.value
+  if (el) el.scrollTop = el.scrollHeight
+}
 
 function fmtSize(n) {
   const v = Number(n) || 0
@@ -320,6 +406,7 @@ async function refresh(force = false) {
     if (!testModel.value && Array.isArray(j?.models) && j.models.length) {
       testModel.value = j.models[0].name
     }
+    if (!chatModel.value) chatModel.value = defaultChatModel(j)
     // A pull started elsewhere (or before a navigation) resumes its log tail.
     if (j?.pull?.running && !pullTimer) startPullPolling()
     return true
@@ -470,6 +557,49 @@ async function resumePullTail() {
   }
 }
 
+// ── in-panel chat ────────────────────────────────────────────────────────────
+async function sendChat() {
+  const text = chatInput.value.trim()
+  if (chatBusy.value || !data.value?.reachable || !chatModel.value || !text) return
+  chatInput.value = ''
+  chatMessages.value.push({ role: 'user', content: text })
+  const pending = { role: 'assistant', content: '', thinking: '', pending: true, error: '' }
+  chatMessages.value.push(pending)
+  chatBusy.value = true
+  chatAbort = new AbortController()
+  // The just-pushed user turn is not pending; include it. Drop empty assistant stubs.
+  const payload = chatMessages.value
+    .filter((m) => !m.pending && (m.role === 'user' || (m.role === 'assistant' && m.content)))
+    .map((m) => ({ role: m.role, content: m.content }))
+  void scrollChat()
+  try {
+    await chatOllamaModel(chatModel.value, payload, 128, {
+      signal: chatAbort.signal,
+      onChunk(snap) {
+        pending.content = snap.content || ''
+        pending.thinking = snap.thinking || ''
+        pending.pending = !snap.done
+        void scrollChat()
+      },
+    })
+    pending.pending = false
+  } catch (e) {
+    pending.pending = false
+    pending.error = e.message || String(e)
+  } finally {
+    chatBusy.value = false
+    chatAbort = null
+    void scrollChat()
+  }
+}
+
+function clearChat() {
+  if (!chatMessages.value.length) return
+  if (!confirm(t('ollama.chat_clear_confirm'))) return
+  if (chatAbort) chatAbort.abort()
+  chatMessages.value = []
+}
+
 // ── quick test ───────────────────────────────────────────────────────────────
 async function runTest() {
   if (testBusy.value || !testModel.value || !testPrompt.value.trim()) return
@@ -496,6 +626,8 @@ onUnmounted(() => {
   if (actionTimer) clearTimeout(actionTimer)
   actionTimer = null
   stopPullPolling()
+  if (chatAbort) chatAbort.abort()
+  chatAbort = null
 })
 </script>
 
@@ -550,5 +682,64 @@ onUnmounted(() => {
   text-decoration: none;
   color: inherit;
   font-size: 13px;
+}
+.notice.warn {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid var(--warn, #c90);
+  background: rgba(204, 153, 0, .08);
+  font-size: 13px;
+}
+.chat-log {
+  max-height: 360px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+  min-height: 72px;
+}
+.chat-msg {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .04);
+  max-width: 85%;
+}
+.chat-msg.user {
+  align-self: flex-end;
+  background: rgba(0, 90, 200, .08);
+}
+.chat-msg.assistant {
+  align-self: flex-start;
+}
+.chat-role {
+  font-size: 11px;
+  color: var(--sub, #666);
+  margin-bottom: 4px;
+}
+.chat-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+}
+.chat-thinking,
+.chat-thinking-wrap pre {
+  font-size: 11px;
+  color: var(--sub, #666);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 6px;
+}
+.chat-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--down, #c00);
+}
+.chat-input {
+  flex: 1;
+  min-width: 200px;
+  min-height: 42px;
+  resize: vertical;
 }
 </style>

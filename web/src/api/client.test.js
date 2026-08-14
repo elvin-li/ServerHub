@@ -22,6 +22,7 @@ import en from '../i18n/en.js'
 import { setLocale } from '../i18n/index.js'
 import {
   AUTH_LOST_EVENT,
+  chatOllamaModel,
   connectContainerNetwork,
   controlPanelService,
   createShare,
@@ -519,6 +520,71 @@ describe('api client', () => {
       const out = await doAction('svc', 'start')
       expect(out.ok).toBe(false)
       expect(out.status).toBe(500)
+    })
+  })
+
+  describe('chatOllamaModel', () => {
+    function ndjsonRes(chunks) {
+      const text = chunks.map((c) => (typeof c === 'string' ? c : JSON.stringify(c))).join('\n') + '\n'
+      const bytes = new TextEncoder().encode(text)
+      let consumed = false
+      return {
+        ok: true,
+        status: 200,
+        statusText: '',
+        json: async () => ({}),
+        body: {
+          getReader() {
+            return {
+              async read() {
+                if (consumed) return { done: true, value: undefined }
+                consumed = true
+                return { done: false, value: bytes }
+              },
+            }
+          },
+        },
+      }
+    }
+
+    it('accumulates streamed content and thinking', async () => {
+      fetchMock.mockResolvedValue(ndjsonRes([
+        { message: { role: 'assistant', content: 'Hel', thinking: 'hmm ' }, done: false },
+        { message: { role: 'assistant', content: 'lo', thinking: 'ok' }, done: false },
+        { message: { role: 'assistant', content: '' }, done: true },
+      ]))
+      const deltas = []
+      const out = await chatOllamaModel(
+        'qwen3.5:4b',
+        [{ role: 'user', content: 'hi' }],
+        32,
+        { onChunk: (s) => deltas.push({ ...s }) },
+      )
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/ollama/chat')
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        model: 'qwen3.5:4b',
+        messages: [{ role: 'user', content: 'hi' }],
+        num_predict: 32,
+      })
+      expect(out.content).toBe('Hello')
+      expect(out.thinking).toBe('hmm ok')
+      expect(out.done).toBe(true)
+      expect(deltas.at(-1)).toMatchObject({ content: 'Hello', thinking: 'hmm ok', done: true })
+    })
+
+    it('surfaces a coded JSON error before the stream starts', async () => {
+      fetchMock.mockResolvedValue(
+        res(400, {
+          detail: {
+            code: 'ollama.bad_model_name',
+            message: 'invalid model name: -rf',
+            params: { model: '-rf' },
+          },
+        }),
+      )
+      await expect(
+        chatOllamaModel('-rf', [{ role: 'user', content: 'hi' }]),
+      ).rejects.toThrow(en.err.ollama.bad_model_name.replace('{model}', '-rf'))
     })
   })
 })

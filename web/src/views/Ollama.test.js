@@ -37,11 +37,12 @@ vi.mock('../api/client', () => ({
   deleteOllamaModel: vi.fn(),
   unloadOllamaModel: vi.fn(),
   testOllamaModel: vi.fn(),
+  chatOllamaModel: vi.fn(),
   doAction: vi.fn(),
 }))
 
 const {
-  getOllamaStatus, getOllamaPullLog, startOllamaPull,
+  getOllamaStatus, getOllamaPullLog, startOllamaPull, chatOllamaModel,
 } = await import('../api/client')
 const Ollama = (await import('./Ollama.vue')).default
 
@@ -54,7 +55,14 @@ const STATUS = {
   reachable: true,
   version: '0.32.9',
   error: '',
-  service: { label: 'com.kiro.ollama', loaded: true, running: true, pid: 42 },
+  service: {
+    label: 'com.kiro.ollama',
+    loaded: true,
+    running: true,
+    pid: 42,
+    candidates: ['com.kiro.ollama'],
+    inferred: false,
+  },
   models: [{
     name: 'qwen3.5:4b',
     size: 3413361762,
@@ -91,6 +99,7 @@ beforeEach(() => {
   getOllamaStatus.mockReset()
   getOllamaPullLog.mockReset()
   startOllamaPull.mockReset()
+  chatOllamaModel.mockReset()
 })
 
 describe('loaded page', () => {
@@ -119,19 +128,64 @@ describe('loaded page', () => {
     expect(html).toContain('Q4_K_M')
     expect(html).toContain('thinking')
     expect(html).toContain('ollama.act_delete')
-    // pull + quick test boxes
+    // pull + chat + quick test boxes
     expect(html).toContain('ollama.pull_title')
+    expect(html).toContain('ollama.chat_title')
     expect(html).toContain('ollama.test_title')
     // no false claims while everything answered
     expect(html).not.toContain('ollama.absent_title')
     expect(html).not.toContain('ollama.daemon_unreachable')
+    // Start of an already-reachable daemon used to toast launchctl's
+    // "Bootstrap failed: 5: Input/output error".  Disable it; Restart is the
+    // action that still makes sense.
+    const startBtn = wrapper.findAll('button').find(b => b.text() === 'services.act_start')
+    expect(startBtn.attributes('disabled')).toBeDefined()
+    expect(html).not.toContain('ollama.duplicate_agents')
+    expect(html).not.toContain('ollama.listing_missed')
+  })
+
+  it('warns when multiple ollama LaunchAgents exist', async () => {
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS,
+      service: {
+        ...STATUS.service,
+        candidates: ['com.kiro.ollama', 'homebrew.mxcl.ollama'],
+      },
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.html()).toContain('ollama.duplicate_agents')
+    expect(wrapper.find('.notice.warn').exists()).toBe(true)
+  })
+
+  it('notes when running was inferred because launchd missed the job', async () => {
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS,
+      service: { ...STATUS.service, pid: null, inferred: true },
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.html()).toContain('ollama.listing_missed')
   })
 
   it('preselects the first installed model for the quick test', async () => {
     getOllamaStatus.mockResolvedValue(STATUS)
     wrapper = mountPage()
     await flushPromises()
-    expect(wrapper.find('select').element.value).toBe('qwen3.5:4b')
+    expect(wrapper.find('select[aria-label="ollama.test_model_label"]').element.value).toBe('qwen3.5:4b')
+  })
+
+  it('defaults the chat model to the first resident, else the first installed', async () => {
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS,
+      models: [
+        { ...STATUS.models[0], name: 'installed-only:1' },
+        STATUS.models[0],
+      ],
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('select[aria-label="ollama.chat_model_label"]').element.value).toBe('qwen3.5:4b')
   })
 
   it('falls back to the thinking trace when the response is empty', async () => {
@@ -192,6 +246,8 @@ describe('degraded states', () => {
     expect(html).toContain('ollama.daemon_unreachable')
     expect(html).not.toContain('ollama.models_empty')
     expect(html).not.toContain('ollama.resident_empty')
+    const startBtn = wrapper.findAll('button').find(b => b.text() === 'services.act_start')
+    expect(startBtn.attributes('disabled')).toBeUndefined()
   })
 
   it('surfaces a failed first load and drops the skeleton and empty states', async () => {
@@ -322,5 +378,84 @@ describe('pull log tail', () => {
     await vi.advanceTimersByTimeAsync(1500)
     expect(getOllamaPullLog).toHaveBeenCalledTimes(2)
     wrapper.unmount()
+  })
+})
+
+describe('in-panel chat', () => {
+  let wrapper
+
+  afterEach(() => {
+    wrapper?.unmount()
+    chatOllamaModel.mockReset()
+  })
+
+  it('disables send when the daemon is unreachable', async () => {
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS, reachable: false, version: '', models: STATUS.models, resident: [],
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    const html = wrapper.html()
+    expect(html).toContain('ollama.chat_unreachable')
+    const send = wrapper.findAll('button').find(b => b.text() === 'ollama.chat_send')
+    expect(send.attributes('disabled')).toBeDefined()
+    expect(chatOllamaModel).not.toHaveBeenCalled()
+  })
+
+  it('shows an empty-state and disables send when no model is installed', async () => {
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS, models: [], resident: [],
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.html()).toContain('ollama.chat_no_model')
+    expect(wrapper.html()).toContain('ollama.chat_empty')
+    const send = wrapper.findAll('button').find(b => b.text() === 'ollama.chat_send')
+    expect(send.attributes('disabled')).toBeDefined()
+  })
+
+  it('sends the typed turn and paints the reply', async () => {
+    getOllamaStatus.mockResolvedValue(STATUS)
+    chatOllamaModel.mockImplementation(async (model, messages, _n, { onChunk } = {}) => {
+      const snap = { ok: true, model, content: 'hello there', thinking: '', done: true }
+      onChunk?.(snap)
+      return snap
+    })
+    wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('textarea[aria-label="ollama.chat_input_label"]').setValue('hi')
+    const send = wrapper.findAll('button').find(b => b.text() === 'ollama.chat_send')
+    expect(send.attributes('disabled')).toBeUndefined()
+    await send.trigger('click')
+    await flushPromises()
+
+    expect(chatOllamaModel).toHaveBeenCalledTimes(1)
+    const [model, messages] = chatOllamaModel.mock.calls[0]
+    expect(model).toBe('qwen3.5:4b')
+    expect(messages).toEqual([{ role: 'user', content: 'hi' }])
+    const html = wrapper.html()
+    expect(html).toContain('hi')
+    expect(html).toContain('hello there')
+    expect(html).toContain('ollama.chat_you')
+    expect(html).toContain('ollama.chat_assistant')
+  })
+
+  it('shows the thinking trace when the reply has no content', async () => {
+    getOllamaStatus.mockResolvedValue(STATUS)
+    chatOllamaModel.mockImplementation(async (model, _messages, _n, { onChunk } = {}) => {
+      const snap = { ok: true, model, content: '', thinking: 'pondering the greeting…', done: true }
+      onChunk?.(snap)
+      return snap
+    })
+    wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('textarea[aria-label="ollama.chat_input_label"]').setValue('hi')
+    await wrapper.findAll('button').find(b => b.text() === 'ollama.chat_send').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.html()).toContain('pondering the greeting…')
+    expect(wrapper.html()).not.toContain('ollama.chat_sending')
   })
 })

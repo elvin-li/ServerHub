@@ -24,6 +24,7 @@ from hub.routers import (
     unraid_parity,
     ups_api,
     wireguard_api,
+    photoshub_api,
 )
 
 router = APIRouter()
@@ -49,6 +50,7 @@ router.include_router(notify_api.router)
 router.include_router(scheduler_api.router)
 router.include_router(ups_api.router)
 router.include_router(wireguard_api.router)
+router.include_router(photoshub_api.router)
 router.include_router(ollama_api.router)
 
 __all__ = ["router"]

@@ -1094,6 +1094,11 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             from hub.native_catalog import _run, BREW
             if action_name == "start":
                 if app.get("method") == "brew_formula":
+                    if source_id == "native-ollama" and native_catalog.ollama_api_already_served():
+                        return {
+                            "ok": True,
+                            "message": "Ollama is already serving :11434; not starting a second brew daemon",
+                        }
                     return _run([BREW, "services", "start", pkg], timeout=120)
                 if app.get("open"):
                     return _run(["/usr/bin/open", "-a", app["open"]], timeout=15)
