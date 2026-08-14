@@ -90,7 +90,10 @@ class PasswordManagementTests(unittest.TestCase):
             patch("hub.auth.request_username", return_value="member"),
             patch("hub.auth.is_admin", return_value=False),
             patch("hub.auth.login_allowed", return_value=(True, 0)),
-            patch("hub.auth.verify_account_password", return_value=True),
+            patch(
+                "hub.auth.verify_account_password",
+                side_effect=lambda username, password: password == "old-password",
+            ),
             patch("hub.auth.set_account_password") as set_account_password,
             patch("hub.auth.set_password") as set_password,
         ):
