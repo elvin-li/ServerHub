@@ -53,6 +53,10 @@ async def authenticate_websocket(websocket: WebSocket) -> tuple[str, str] | None
     if setup_required() or not verify_session(token):
         await reject_websocket(websocket, 4401, "auth.login_required")
         return None
+    site = (websocket.headers.get("sec-fetch-site") or "").lower()
+    if site == "cross-site":
+        await reject_websocket(websocket, 4403, "auth.cross_site_denied")
+        return None
     if not origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
         await reject_websocket(websocket, 4403, "auth.cross_site_denied")
         return None

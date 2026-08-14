@@ -174,7 +174,17 @@ def create_app() -> FastAPI:
                         from urllib.parse import urlsplit
 
                         try:
-                            if urlsplit(origin).netloc.lower() != host.lower():
+                            parsed = urlsplit(origin)
+                            if (
+                                parsed.scheme not in {"http", "https"}
+                                or not parsed.netloc
+                                or parsed.username is not None
+                                or parsed.password is not None
+                                or parsed.path not in {"", "/"}
+                                or parsed.query
+                                or parsed.fragment
+                                or parsed.netloc.lower() != host.lower()
+                            ):
                                 resp = reject("auth.cross_site_denied")
                         except ValueError:
                             resp = reject("auth.bad_origin")
