@@ -362,6 +362,16 @@ class CredentialDenylistTests(unittest.TestCase):
             files_svc.is_protected(Path.home() / "Services" / "filebrowser" / "config.json")
         )
 
+    def test_cloudflared_and_catalog_secrets_are_protected(self):
+        self.assertTrue(
+            files_svc.is_protected(Path.home() / "Services" / "cloudflared" / "tunnel.token")
+        )
+        self.assertTrue(files_svc.is_protected(Path.home() / ".cloudflared" / "cert.pem"))
+        self.assertTrue(
+            files_svc.is_protected(Path.home() / "Services" / "immich" / ".serverhub-vars.json")
+        )
+        self.assertTrue(files_svc.is_protected(Path("/tmp/copy/tunnel.token")))
+
 
 class AlertsAppendModeTests(unittest.TestCase):
     def test_alert_append_creates_private_jsonl(self):

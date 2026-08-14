@@ -56,6 +56,9 @@ PROTECTED_DIRS: tuple[Path, ...] = (
     # FileBrowser's own SQLite holds password hashes for every FB user the panel
     # provisioned; the tree is under ~/Services which is a default browse root.
     SERVICES_ROOT / "filebrowser",
+    # cloudflared state holds the tunnel run token that grants ingress to the LAN.
+    SERVICES_ROOT / "cloudflared",
+    HOME / ".cloudflared",
 )
 
 #: Basenames that are never exposed, wherever they appear.
@@ -64,6 +67,9 @@ PROTECTED_NAMES: frozenset[str] = frozenset({
     "service-credentials.json",
     "filebrowser.db",
     ".htpasswd",
+    ".serverhub-vars.json",
+    "tunnel.token",
+    "cert.pem",
     "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
 })
 

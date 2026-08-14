@@ -268,7 +268,11 @@ def export_services_yaml():
     return PlainTextResponse(
         CONFIG_FILE.read_text(encoding="utf-8"),
         media_type="text/yaml; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=services.yaml"},
+        headers={
+            "Content-Disposition": "attachment; filename=services.yaml",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
     )
 
 
