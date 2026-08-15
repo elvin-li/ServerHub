@@ -357,6 +357,7 @@ private final class ServiceManager: @unchecked Sendable {
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
             "SERVERHUB_PORT": port,
+            "SERVERHUB_HOST": "127.0.0.1",
             "SERVERHUB_RUNTIME_DIR": root.path,
             "SERVERHUB_STATE_DIR": stateRoot.path,
         ]
@@ -941,10 +942,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             return
         }
 
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(setupToken, forType: .string)
-
         let tokenField = NSTextField(string: setupToken)
         tokenField.isEditable = false
         tokenField.isSelectable = true
@@ -957,17 +954,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let alert = NSAlert()
         alert.messageText = localized("完成 ServerHub 首次设置", "Finish Setting Up ServerHub")
         alert.informativeText = localized(
-            "一次性设置令牌已复制到剪贴板。请在即将打开的本机设置页面中粘贴；完成设置后令牌会自动删除。",
-            "The one-time setup token has been copied to the clipboard. Paste it into the local setup page that opens next; the token is deleted after setup."
+            "一次性设置令牌如下所示，可在框中选中复制。请在即将打开的本机设置页面中粘贴；完成设置后令牌会自动删除。",
+            "The one-time setup token is shown below — select it in the field to copy. Paste it into the local setup page that opens next; the token is deleted after setup."
         )
         alert.alertStyle = .informational
         alert.accessoryView = tokenField
         alert.addButton(withTitle: localized("打开设置", "Open Setup"))
-        alert.addButton(withTitle: localized("再次复制", "Copy Again"))
-        if alert.runModal() == .alertSecondButtonReturn {
-            pasteboard.clearContents()
-            pasteboard.setString(setupToken, forType: .string)
-        }
+        _ = alert.runModal()
         NSWorkspace.shared.open(manager.panelURL.appendingPathComponent("settings"))
     }
 

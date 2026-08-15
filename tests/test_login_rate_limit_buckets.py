@@ -164,6 +164,11 @@ class LoopbackProxyTests(_PanelSandbox):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Login rate-limits now key on request_client_id (trusted-proxy CIDRs),
+        # not LOOPBACK_HOSTS. Treat the TestClient peer as the local proxy hop.
+        proxy = mock.patch.object(auth, "_peer_in_trusted_proxy", return_value=True)
+        proxy.start()
+        self.addCleanup(proxy.stop)
 
     def test_forwarded_clients_get_independent_buckets(self):
         for _ in range(5):

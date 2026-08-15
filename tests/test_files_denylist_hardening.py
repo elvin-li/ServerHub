@@ -177,6 +177,7 @@ class _FakeUpload:
 class TestUploadDoesNotClobber(unittest.TestCase):
     def setUp(self):
         self.dir = files_svc.SERVICES_ROOT / "media"
+        self.dir.mkdir(parents=True, exist_ok=True)
 
     def _upload(self, name: str, payload: bytes = b"new"):
         return asyncio.run(

@@ -50,11 +50,25 @@ def _only_wireguard_missing(self: Path) -> bool:
     return _REAL_EXISTS(self)
 
 
+def _wireguard_present(self: Path) -> bool:
+    """Report the WireGuard binaries as present without requiring Homebrew."""
+    if str(self) in {
+        wireguard_svc.WG,
+        wireguard_svc.WG_QUICK,
+        wireguard_svc.WIREGUARD_GO,
+    }:
+        return True
+    return _REAL_EXISTS(self)
+
+
 class InstallationDetectionTests(unittest.TestCase):
     """Presence must be a fact about the filesystem, not about a subprocess."""
 
     def test_a_failing_version_probe_does_not_mean_uninstalled(self):
-        with patch.object(wireguard_svc, "sh", return_value=(1, "", "boom")):
+        with (
+            patch.object(wireguard_svc.Path, "exists", _wireguard_present),
+            patch.object(wireguard_svc, "sh", return_value=(1, "", "boom")),
+        ):
             info = wireguard_svc.installation()
         self.assertTrue(
             info["installed"],
@@ -64,7 +78,10 @@ class InstallationDetectionTests(unittest.TestCase):
         self.assertTrue(info["probe_failed"], "the degraded state should be visible")
 
     def test_a_timeout_does_not_mean_uninstalled(self):
-        with patch.object(wireguard_svc, "sh", side_effect=TimeoutError("slow")):
+        with (
+            patch.object(wireguard_svc.Path, "exists", _wireguard_present),
+            patch.object(wireguard_svc, "sh", side_effect=TimeoutError("slow")),
+        ):
             with self.assertRaises(TimeoutError):
                 wireguard_svc.installation()
 
@@ -81,7 +98,10 @@ class InstallationDetectionTests(unittest.TestCase):
         self.assertFalse(info["probe_failed"], "absent is not the same as degraded")
 
     def test_a_healthy_host_is_not_flagged_as_degraded(self):
-        with patch.object(wireguard_svc, "sh", return_value=(0, "wireguard-tools v1.0", "")):
+        with (
+            patch.object(wireguard_svc.Path, "exists", _wireguard_present),
+            patch.object(wireguard_svc, "sh", return_value=(0, "wireguard-tools v1.0", "")),
+        ):
             info = wireguard_svc.installation()
         self.assertTrue(info["installed"])
         self.assertFalse(info["probe_failed"])

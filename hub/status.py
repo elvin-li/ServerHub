@@ -247,6 +247,16 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
     }
 
 
+def cached_status() -> dict | None:
+    """Last built status snapshot, or None if none has been built yet.
+
+    Does not trigger discovery. ``/api/health`` uses this so a liveness probe
+    cannot become a 5-way host scan.
+    """
+    with _lock:
+        return _status_cache["v"]
+
+
 def full_status(force=False):
     """Return aggregated status. Cached for _STATUS_TTL; single-flight refresh."""
     now = time.time()

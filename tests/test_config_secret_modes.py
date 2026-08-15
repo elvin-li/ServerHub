@@ -198,11 +198,18 @@ class SaveFullModeTests(_ConfigSandbox):
 
     def test_backups_are_capped(self):
         # Unbounded backups of a credentials file are both SSD churn and a
-        # widening disclosure surface.
+        # widening disclosure surface. Distinct nanosecond suffixes so this
+        # actually counts files instead of colliding on one timestamp.
         for i in range(9):
-            config.save_full({"settings": {"a": i}})
+            with mock.patch.object(config.time, "time_ns", return_value=1_700_000_000_000_000_000 + i):
+                config.save_full({"settings": {"a": i}})
         baks = list(self.data.glob("services.yaml.bak.*"))
-        self.assertLessEqual(len(baks), 5, f"backup retention slipped: {len(baks)}")
+        self.assertLessEqual(
+            len(baks),
+            config.BACKUP_RETENTION,
+            f"backup retention slipped: {len(baks)}",
+        )
+        self.assertEqual(len(baks), 9, "same-second saves must not share one backup name")
 
 
 class DataDirModeTests(unittest.TestCase):
@@ -333,7 +340,8 @@ class DenylistCoverageTests(unittest.TestCase):
         io_src = (BASE / "hub" / "secure_io.py").read_text(encoding="utf-8")
         cfg_src = (BASE / "hub" / "config.py").read_text(encoding="utf-8")
         self.assertIn('p.with_name(f"{p.name}.{os.getpid()}.tmp")', io_src)
-        self.assertIn('f"services.yaml.bak.{int(time.time())}"', cfg_src)
+        self.assertIn("time.time_ns()", cfg_src)
+        self.assertIn("services.yaml.bak.", cfg_src)
 
 
 class WiringTests(unittest.TestCase):
@@ -436,9 +444,9 @@ class BackupRetentionTests(_ConfigSandbox):
         # One more write than the window, each with a distinct epoch suffix so
         # ordering is unambiguous.
         total = config.BACKUP_RETENTION + 5
-        base = 1_700_000_000
+        base = 1_700_000_000_000_000_000
         for i in range(total):
-            with mock.patch.object(config.time, "time", return_value=base + i):
+            with mock.patch.object(config.time, "time_ns", return_value=base + i):
                 config.save_full({"settings": {"a": i}})
 
         baks = sorted(p.name for p in self.data.glob("services.yaml.bak.*"))
@@ -461,10 +469,10 @@ class BackupRetentionTests(_ConfigSandbox):
         )
 
     def test_every_retained_backup_stays_private(self):
-        base = 1_700_000_000
+        base = 1_700_000_000_000_000_000
         with NoChmod():
             for i in range(3):
-                with mock.patch.object(config.time, "time", return_value=base + i):
+                with mock.patch.object(config.time, "time_ns", return_value=base + i):
                     config.save_full({"settings": {"a": i}})
         for bak in self.data.glob("services.yaml.bak.*"):
             self.assertEqual(

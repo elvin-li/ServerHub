@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from hub import actions, auth, jobs
+from hub import __version__, actions, auth, jobs
 from hub.config import cfg
 from hub.errors import api_error
-from hub.status import filter_status_for_resources, full_status, invalidate_status
+from hub.status import cached_status, filter_status_for_resources, full_status, invalidate_status
 
 router = APIRouter()
 
@@ -34,15 +34,25 @@ def _visible_status(request: Request, *, force: bool = False) -> dict:
 
 @router.get("/api/health")
 def api_health(request: Request):
-    """Liveness only. Do not collect host status here.
+    """Liveness for install.sh, the menu-bar client, and monitors.
 
-    The menubar, the watchdog and install.sh poll this every minute. The
-    previous body called ``full_status()`` (docker + launchctl + lsof),
-    which routinely exceeded the watchdog's 5s curl budget and made a
-    healthy panel look dead — then kickstart tore it down.
-    Counts and engine state belong on ``GET /api/status``.
+    Must not run discovery. The app-factory public ``/api/health`` remains the
+    unauthenticated watchdog probe (``{ok, ts}`` only). This authenticated
+    handler may attach cached counts when a snapshot already exists.
     """
-    return {"ok": True, "ts": int(time.time())}
+    body = {
+        "ok": True,
+        "version": __version__,
+        "ts": int(time.time()),
+    }
+    st = cached_status()
+    if st is not None:
+        username = auth.request_username(request)
+        if username and not auth.is_admin(username):
+            st = filter_status_for_resources(st, auth.allowed_resources(username))
+        body["counts"] = st.get("counts")
+        body["engine_up"] = st.get("engine_up")
+    return body
 
 
 @router.get("/api/status")
@@ -98,7 +108,7 @@ def api_maintenance():
 def api_maintenance_run(tid: str):
     task = jobs.maintenance_tasks().get(tid)
     if not task:
-        raise HTTPException(404, "unknown task")
+        raise api_error("maintenance.unknown_task")
     jobs.start_job(task)
     return {"ok": True, "message": "Task started"}
 

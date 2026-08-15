@@ -2,7 +2,7 @@
 
 A home-server management panel for macOS — modelled on **Unraid**'s information architecture, with ideas borrowed from **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew**.
 
-**Panel:** binds `0.0.0.0:8086` by default, so it is reachable from any device on your local network — sign-in is mandatory once setup completes, so LAN clients get the login page rather than an open API. Set `SERVERHUB_HOST=127.0.0.1` to restrict it to loopback. Either way, do not expose port 8086 to the internet directly: put it behind a Cloudflare Tunnel or a reverse proxy that terminates TLS and enforces an identity policy.
+**Panel:** binds `127.0.0.1:8086` by default (this Mac only). Set `SERVERHUB_HOST=0.0.0.0` for LAN access. Sign-in is mandatory once setup completes. Do not expose port 8086 to the internet directly: put it behind a Cloudflare Tunnel or a reverse proxy that terminates TLS and enforces an identity policy.
 
 ## Screenshots
 
@@ -65,7 +65,21 @@ cd ServerHub
 open http://localhost:8086
 ```
 
-The install script creates a local virtual environment, preserves an existing `services.yaml`, and generates authentication tokens that stay on this machine and are gitignored. On first launch, use `data/.setup-token` to complete administrator setup. To uninstall, run `./uninstall.sh`; adding `--purge` also removes local configuration and runtime data.
+The install script creates a local virtual environment, preserves an existing `services.yaml`, and generates authentication tokens that stay on this machine and are gitignored. On first launch, use `data/.setup-token` to complete administrator setup.
+
+When the panel is reached through a Cloudflare Tunnel or reverse proxy, first-run setup **must** present that token: a proxy hop to `127.0.0.1` is not the same as a person on this Mac. Opening `http://localhost:8086` in a browser on this machine auto-fills the token.
+
+Common environment variables (LaunchAgent `EnvironmentVariables` or the shell):
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `SERVERHUB_HOST` | `127.0.0.1` | Bind address. Set `0.0.0.0` for LAN reachability |
+| `SERVERHUB_PORT` | `8086` | TCP port |
+| `SERVERHUB_TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | Reverse-proxy CIDRs whose `X-Forwarded-For` / `CF-Connecting-IP` are used for login rate-limits and audit |
+
+`GET /ready` is an unauthenticated liveness probe (no host discovery). `GET /api/health` stays the tiny watchdog/install probe on this tree. Full inventory is `GET /api/status`. Responses carry `X-Request-ID`, which also appears in log lines.
+
+To uninstall, run `./uninstall.sh`; adding `--purge` also removes local configuration and runtime data.
 
 ## Native macOS menu bar
 

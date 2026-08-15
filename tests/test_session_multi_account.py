@@ -209,5 +209,19 @@ class SessionPayloadDelimiterTests(unittest.TestCase):
             )
 
 
+class AccountPasswordTests(unittest.TestCase):
+    """Login must verify the named account, not only the legacy admin pair."""
+
+    def test_a_family_account_verifies_against_its_own_hash(self):
+        family_hash = auth.hash_password("family-password-123")
+        admin_hash = auth.hash_password("admin-password-123")
+        cfg = cfg_with_family(admin_hash=admin_hash, family_hash=family_hash)
+        with patch.object(auth, "_auth_cfg", return_value=cfg):
+            self.assertTrue(auth.verify_account_password("mom", "family-password-123"))
+            self.assertFalse(auth.verify_account_password("mom", "admin-password-123"))
+            self.assertTrue(auth.verify_account_password("admin", "admin-password-123"))
+            self.assertFalse(auth.verify_account_password("nobody", "family-password-123"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -23,6 +23,7 @@ import yaml
 from fastapi import HTTPException
 
 from hub import catalog_remote
+from hub import secure_io
 from hub.errors import CODES, api_error
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER
@@ -918,9 +919,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     created_dir = not dest_dir.exists()
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest.write_text(rendered)
         # Compose commonly contains generated database/admin secrets.
-        dest.chmod(0o600)
+        # write_text()+chmod() leaves a umask window; secure_io is 0600 from
+        # the first byte.
+        secure_io.write_secret_text(dest, rendered)
         (dest_dir / "data").mkdir(exist_ok=True)
         # extra dirs often used
         for d in ("config", "media", "downloads", "uploads", "library", "pgdata", "model-cache"):
@@ -947,8 +949,9 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             except FileExistsError:
                 pass
         vars_file = dest_dir / ".serverhub-vars.json"
-        vars_file.write_text(json.dumps(values, ensure_ascii=False, indent=2))
-        vars_file.chmod(0o600)
+        secure_io.write_secret_text(
+            vars_file, json.dumps(values, ensure_ascii=False, indent=2)
+        )
         # README with notes
         notes = meta.get("notes") or ""
         url = _suggest_url(meta, values)

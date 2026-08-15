@@ -54,17 +54,55 @@ class PasswordManagementTests(unittest.TestCase):
                 auth_change_password(_body(), _request(), Response())
         self.assertEqual(raised.exception.status_code, 401)
 
-    def test_change_password_refuses_a_member_session(self):
+    def test_change_password_allows_a_member_to_rotate_their_own(self):
         with (
             patch("hub.auth.setup_required", return_value=False),
             patch("hub.auth.browser_authenticated", return_value=True),
             patch("hub.auth.request_username", return_value="member"),
             patch("hub.auth.is_admin", return_value=False),
+            patch("hub.auth.login_allowed", return_value=(True, 0)),
+            patch(
+                "hub.auth.verify_account_password",
+                side_effect=lambda username, password: (
+                    username == "member" and password == "old-password"
+                ),
+            ),
+            patch("hub.auth.set_account_password") as set_account_password,
+            patch("hub.auth.set_password") as set_password,
+            patch("hub.auth.clear_login_failures"),
+            patch("hub.auth.create_session", return_value="rotated-session"),
+        ):
+            response = Response()
+            result = auth_change_password(ChangePasswordBody(
+                username="member",
+                current_password="old-password",
+                new_password="new-password-123",
+            ), _request(), response)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["username"], "member")
+        set_account_password.assert_called_once_with("member", "new-password-123")
+        set_password.assert_not_called()
+
+    def test_change_password_refuses_a_member_changing_another_account(self):
+        with (
+            patch("hub.auth.setup_required", return_value=False),
+            patch("hub.auth.browser_authenticated", return_value=True),
+            patch("hub.auth.request_username", return_value="member"),
+            patch("hub.auth.is_admin", return_value=False),
+            patch("hub.auth.login_allowed", return_value=(True, 0)),
+            patch(
+                "hub.auth.verify_account_password",
+                side_effect=lambda username, password: password == "old-password",
+            ),
+            patch("hub.auth.set_account_password") as set_account_password,
+            patch("hub.auth.set_password") as set_password,
         ):
             with self.assertRaises(HTTPException) as raised:
                 auth_change_password(_body(), _request(), Response())
         self.assertEqual(raised.exception.status_code, 403)
         self.assertEqual(raised.exception.detail["code"], "auth.admin_required")
+        set_account_password.assert_not_called()
+        set_password.assert_not_called()
 
     def test_change_password_verifies_current_password(self):
         # Re-authentication is per-account since multi-user login: the check
@@ -94,7 +132,7 @@ class PasswordManagementTests(unittest.TestCase):
             patch("hub.auth.login_allowed", return_value=(True, 0)),
             patch(
                 "hub.auth.verify_account_password",
-                side_effect=lambda user, password: password == "old-password",
+                side_effect=lambda username, password: password == "old-password",
             ),
             patch("hub.auth.set_password") as set_password,
             patch("hub.auth.clear_login_failures"),

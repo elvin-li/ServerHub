@@ -140,7 +140,7 @@ def default_roots() -> list[dict]:
                     "name": r.get("name") or p.name or str(p),
                     "path": str(p),
                 })
-        return [x for x in out if Path(x["path"]).is_dir() or True]
+        return [x for x in out if Path(x["path"]).is_dir()]
     candidates = [
         {"id": "services", "name": "Services", "path": str(SERVICES_ROOT)},
         {"id": "media", "name": "Media", "path": str(SERVICES_ROOT / "media")},
@@ -502,7 +502,7 @@ def ensure_filebrowser() -> dict:
                 subprocess.Popen(
                     [
                         str(FB_BIN), "-d", str(FB_DB), "-r", str(FB_ROOT_DEFAULT),
-                        "-a", "0.0.0.0", "-p", str(FB_PORT),
+                        "-a", "127.0.0.1", "-p", str(FB_PORT),
                     ],
                     stdin=subprocess.DEVNULL,
                     stdout=log,

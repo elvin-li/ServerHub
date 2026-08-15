@@ -99,7 +99,12 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   else
     # The process can die after mkdir or while writing its PID. Preserve a fresh
     # incomplete or malformed lock to avoid racing that window; reclaim only an old one.
-    lock_mtime="$(stat -f '%m' "$LOCK" 2>/dev/null || true)"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      lock_mtime="$(stat -f '%m' "$LOCK" 2>/dev/null || true)"
+    else
+      # GNU stat: -f is --file-system, so the BSD form never yields a mtime here.
+      lock_mtime="$(stat -c '%Y' "$LOCK" 2>/dev/null || true)"
+    fi
     now="$(date +%s)"
     if [[ "$lock_mtime" =~ ^[0-9]+$ ]] && (( now - lock_mtime >= 60 )); then
       lock_is_stale=1

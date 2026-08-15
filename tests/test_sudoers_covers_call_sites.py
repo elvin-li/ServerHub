@@ -56,13 +56,14 @@ TEMPLATE = BASE / "deploy" / "sudoers.d" / "serverhub"
 #: Module-level constants that appear inside argv lists, so a call site can be
 #: compared against a rule as a concrete path.
 CONSTANTS = {
-    # Taken from the modules rather than written out, because these two are
-    # resolved at import time: hub.paths.pinned_or() returns the root-owned copy
-    # under /usr/local/libexec/serverhub when the installer has put it there, and
-    # the Homebrew path otherwise. Hardcoding either one would make this file
-    # agree with the policy on a machine where the code does not.
-    "SMARTCTL": _paths.SMARTCTL,
-    "WG": _wireguard_svc.WG,
+    # Policy analysis uses the pinned paths the sudoers template grants.  The
+    # runtime constants fall back to Homebrew when /usr/local/libexec/serverhub
+    # is absent (Linux CI, a Mac that has not run install-sudoers.sh).  Using
+    # those fallbacks here would report a host-layout gap as a policy hole.
+    # Runtime drift is checked separately in
+    # test_the_binaries_the_code_resolves_are_the_ones_granted.
+    "SMARTCTL": f"{PINNED_BIN_DIR}/smartctl",
+    "WG": f"{PINNED_BIN_DIR}/wg",
     "WG_QUICK": _wireguard_svc.WG_QUICK,
     "BASH": "/opt/homebrew/bin/bash",
     "RM": "/bin/rm",
@@ -385,6 +386,11 @@ class SudoersCoverageTests(unittest.TestCase):
         # executed_paths, not just the rule's binary: a script reached as an
         # argument to a pinned interpreter is executed by the rule without ever
         # being that rule's binary.
+        if not Path(f"{PINNED_BIN_DIR}/smartctl").is_file():
+            self.skipTest(
+                "pinned /usr/local/libexec/serverhub copies are not installed "
+                "on this host"
+            )
         granted = {p for rule in self.rules for p in executed_paths(rule)}
         # WG_QUICK is intentionally absent from the policy -- see
         # test_wg_quick_is_deliberately_not_granted.

@@ -202,7 +202,15 @@ def save_full(data: dict) -> None:
 def _save_full_locked(data: dict) -> None:
     """Body of :func:`save_full`; assumes both write locks are held."""
     if YAML_PATH.exists():
-        bak = DATA_DIR / f"services.yaml.bak.{int(time.time())}"
+        # Nanoseconds, not seconds: two save_full() calls in the same second
+        # used to overwrite one backup and silently shrink the recovery window.
+        # Under the write lock a collision is still possible on a very fast
+        # host, so step the suffix until the name is free.
+        suffix = time.time_ns()
+        bak = DATA_DIR / f"services.yaml.bak.{suffix}"
+        while bak.exists():
+            suffix += 1
+            bak = DATA_DIR / f"services.yaml.bak.{suffix}"
         # Not shutil.copy2: it creates the destination at the umask and
         # copies the mode afterwards, so a verbatim copy of the admin
         # password hash and every service credential sits at 0644 for the

@@ -240,6 +240,10 @@ CODES: dict[str, tuple[int, str]] = {
     "container.bad_network_name": (400, "invalid network name"),
     "container.builtin_network": (400, "built-in networks cannot be removed"),
     "container.no_compose_file": (400, "this stack has no compose file"),
+    "container.bad_shell": (400, "unsupported container exec shell"),
+    # ── maintenance jobs ────────────────────────────────────────────────────
+    "maintenance.job_running": (409, "a maintenance task is already running"),
+    "maintenance.unknown_task": (404, "unknown maintenance task"),
     # ── immich hybrid stack (health-check prose, resolved by the SPA) ───────
     "immich.worker_down": (
         503,

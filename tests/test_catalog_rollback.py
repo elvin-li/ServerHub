@@ -183,9 +183,13 @@ class PortConflictTest(unittest.TestCase):
         self.templates.mkdir()
         self.tid = "rollback-fixture"
         (self.templates / f"{self.tid}.yml").write_text(TEMPLATE)
+        docker = tmp / "docker"
+        docker.write_text("#!/bin/sh\n")
+        docker.chmod(0o755)
         patches = [
             mock.patch.object(catalog, "SERVICES_ROOT", self.services),
             mock.patch.object(catalog, "TEMPLATES", self.templates),
+            mock.patch.object(catalog, "DOCKER", str(docker)),
             mock.patch.object(catalog, "_register_stack", lambda *a, **k: None),
             mock.patch.object(catalog, "_unregister_stack", lambda *a, **k: None),
         ]

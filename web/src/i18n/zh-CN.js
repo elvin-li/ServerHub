@@ -2472,6 +2472,11 @@ export default {
       bad_network_name: '非法网络名',
       builtin_network: '不能删除内置网络',
       no_compose_file: '该栈没有 compose 文件，无法执行 compose 操作',
+      bad_shell: '不支持的容器执行 shell',
+    },
+    maintenance: {
+      job_running: '已有维护任务在运行，请等它结束',
+      unknown_task: '未知的维护任务',
     },
 
     invalid_input: '输入有误',

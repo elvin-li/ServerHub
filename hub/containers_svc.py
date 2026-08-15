@@ -447,7 +447,7 @@ def container_action(name: str, action: str) -> dict:
     # bare positional, so an option-like value is read by docker as a flag.
     name = cli_args.require_positional(name, label="container name")
     cmd = "rm" if action == "remove" else action
-    args = [cmd, "-f", name] if action == "remove" else [cmd, name]
+    args = [cmd, "-f", "--", name] if action == "remove" else [cmd, "--", name]
     rc, out, err = docker(*args, timeout=90)
     invalidate_container_lists()
     invalidate_status()
@@ -651,7 +651,8 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
 
 def start_update_container_job(name: str) -> dict:
     """Pull image and recreate container (docker compose style recreate via force)."""
-    rc, out, err = docker("inspect", name, timeout=15)
+    name = cli_args.require_positional(name, label="container name")
+    rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
         raise HTTPException(404, err or "container not found")
     data = json.loads(out)[0]
@@ -751,6 +752,11 @@ def start_update_container_job(name: str) -> dict:
     return {"ok": True, "job_id": tid, "message": f"Updating {name}"}
 
 
+_ALLOWED_EXEC_SHELLS = frozenset({
+    "/bin/sh", "/bin/bash", "/bin/ash", "/bin/zsh", "sh", "bash",
+})
+
+
 def exec_in_container(name: str, command: str, shell: str = "/bin/sh") -> dict:
     """One-shot exec (Unraid console simplified)."""
     if not command or not command.strip():
@@ -759,8 +765,11 @@ def exec_in_container(name: str, command: str, shell: str = "/bin/sh") -> dict:
     # would otherwise be read by docker as a flag, not a container. Same guard
     # the action/restart paths already apply.
     name = cli_args.require_positional(name, label="container name")
+    sh = (shell or "/bin/sh").strip() or "/bin/sh"
+    if sh not in _ALLOWED_EXEC_SHELLS:
+        raise api_error("container.bad_shell")
     rc, out, err = docker(
-        "exec", name, shell, "-c", command,
+        "exec", "--", name, sh, "-c", command,
         timeout=60,
     )
     return {
@@ -780,13 +789,14 @@ def set_restart_policy(name: str, policy: str = "unless-stopped") -> dict:
     # from a caller-supplied "docker-ctr:<name>" id, so it needs the same guard
     # the brew autostart path already uses.
     name = cli_args.require_positional(name, label="container name")
-    rc, out, err = docker("update", f"--restart={policy}", name, timeout=30)
+    rc, out, err = docker("update", f"--restart={policy}", "--", name, timeout=30)
     invalidate_status()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out), "policy": policy}
 
 
 def inspect_container(name: str) -> dict:
-    rc, out, err = docker("inspect", name, timeout=15)
+    name = cli_args.require_positional(name, label="container name")
+    rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
         raise HTTPException(404, err or out or "not found")
     data = json.loads(out)[0]
@@ -880,12 +890,12 @@ def prune(kind: str = "system") -> dict:
 
 
 def remove_image(image: str, force: bool = False) -> dict:
-    if not image:
-        raise api_error("container.image_ref_required")
+    if not image or not re_match_image(image):
+        raise api_error("container.image_ref_required" if not image else "container.bad_image_name")
     args = ["rmi"]
     if force:
         args.append("-f")
-    args.append(image)
+    args += ["--", image]
     rc, out, err = docker(*args, timeout=120)
     invalidate_status()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
@@ -894,10 +904,11 @@ def remove_image(image: str, force: bool = False) -> dict:
 def remove_volume(name: str, force: bool = False) -> dict:
     if not name:
         raise api_error("container.volume_name_required")
+    name = cli_args.require_positional(name, label="volume name")
     args = ["volume", "rm"]
     if force:
         args.append("-f")
-    args.append(name)
+    args += ["--", name]
     rc, out, err = docker(*args, timeout=60)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
@@ -905,9 +916,10 @@ def remove_volume(name: str, force: bool = False) -> dict:
 def remove_network(name: str) -> dict:
     if not name:
         raise api_error("container.network_name_required")
+    name = cli_args.require_positional(name, label="network name")
     if name in ("bridge", "host", "none"):
         raise api_error("container.builtin_network")
-    rc, out, err = docker("network", "rm", name, timeout=30)
+    rc, out, err = docker("network", "rm", "--", name, timeout=30)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -924,12 +936,13 @@ def re_match_image(image: str) -> bool:
 
 
 def rename_container(name: str, new_name: str) -> dict:
+    name = cli_args.require_positional(name, label="container name")
     if not new_name or not re_match_image(new_name.replace("/", "x")):
         # name only [a-zA-Z0-9][a-zA-Z0-9_.-]*
         import re
         if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", new_name or ""):
             raise api_error("container.bad_new_name")
-    rc, out, err = docker("rename", name, new_name, timeout=30)
+    rc, out, err = docker("rename", "--", name, new_name, timeout=30)
     invalidate_status()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
@@ -956,6 +969,9 @@ def create_run_container(body: dict) -> dict:
         args.append("--privileged")
     network = (body.get("network") or "").strip()
     if network:
+        # Same class of bug as ``docker stop --all``: an option-shaped value
+        # in the ``--network`` slot is read as another flag.
+        network = cli_args.require_positional(network, label="network name")
         args += ["--network", network]
     # ports: ["8080:80", "443:443"]
     for p in body.get("ports") or []:

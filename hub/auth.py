@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import secrets
@@ -203,12 +204,32 @@ def _persistent_token(path: Path) -> str:
 
 
 #: Loopback source addresses. A request from here originates on the machine
-#: itself, which is a stronger proof of access than any token.
+#: itself *or* from a reverse proxy bound to loopback. IP alone is not identity.
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+
+#: Host header values that mean the browser addressed this process as localhost.
+#: Port is stripped before comparison (``localhost:8086`` → ``localhost``).
+LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+#: Headers injected by Cloudflare Tunnel, nginx, and Caddy. A browser on this
+#: Mac does not send them; a proxied remote client almost always does.
+_PROXY_HINT_HEADERS = (
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-real-ip",
+    "cf-connecting-ip",
+    "forwarded",
+)
+
+#: TCP peers we treat as reverse proxies when reading forwarded client headers.
+#: Override with ``SERVERHUB_TRUSTED_PROXIES`` (comma-separated CIDRs). Default
+#: is loopback only — the usual cloudflared / nginx hop on this Mac.
+_DEFAULT_TRUSTED_PROXIES = "127.0.0.1/32,::1/128"
 
 #: How strictly the first-run token is enforced.
 #:
-#: ``auto``   - required only for a non-loopback claim (the default)
+#: ``auto``   - required unless the claim is a *direct* loopback browser
 #: ``always`` - required even on the machine itself
 #: ``never``  - not required at all
 SETUP_TOKEN_MODES = ("auto", "always", "never")
@@ -229,26 +250,148 @@ def is_loopback(request: Request | None) -> bool:
     return host in LOOPBACK_HOSTS
 
 
+def request_host_name(request: Request | None) -> str:
+    """Hostname from the Host header, with the port stripped.
+
+    ``localhost:8086`` and ``[::1]:8086`` are how a browser on this Mac
+    addresses the panel. A tunnel publishes a public name in the same header.
+    """
+    if request is None:
+        return ""
+    raw = (request.headers.get("host") or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("["):
+        end = raw.find("]")
+        return raw[: end + 1] if end != -1 else raw
+    if raw.count(":") == 1:
+        return raw.rsplit(":", 1)[0]
+    return raw
+
+
+def is_direct_loopback(request: Request | None) -> bool:
+    """True only when the browser is on this Mac, not a reverse-proxy hop.
+
+    Cloudflare Tunnel and nginx terminate on 127.0.0.1, so ``request.client.host``
+    is loopback for every remote visitor of a typical install. Those proxies
+    inject Forwarded / X-Forwarded-* / CF-Connecting-IP, and they send a public
+    Host. A browser opened on the machine itself does neither.
+
+    Treating TCP-peer loopback as "on the machine" was how an unclaimed panel
+    published through cloudflared could be claimed by the first remote visitor
+    with no setup token.
+    """
+    if not is_loopback(request) or request is None:
+        return False
+    for name in _PROXY_HINT_HEADERS:
+        if request.headers.get(name):
+            return False
+    host = request_host_name(request)
+    if host and host not in LOOPBACK_HOST_NAMES:
+        return False
+    return True
+
+
+def trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
+    """CIDRs whose TCP peers may supply a forwarded client address."""
+    raw = os.environ.get("SERVERHUB_TRUSTED_PROXIES") or _DEFAULT_TRUSTED_PROXIES
+    nets: list[ipaddress._BaseNetwork] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+    return tuple(nets)
+
+
+def _peer_in_trusted_proxy(peer: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(addr in net for net in trusted_proxy_networks())
+
+
+def _as_ip(value: str) -> str:
+    """Return a canonical IP from a forwarded-header token, or ``""``."""
+    raw = (value or "").strip().strip('"')
+    if raw.startswith("[") and "]" in raw:
+        raw = raw[1:raw.index("]")]
+    try:
+        return str(ipaddress.ip_address(raw))
+    except ValueError:
+        pass
+    # IPv4 host:port — not IPv6, which has more than one colon.
+    if raw.count(":") == 1:
+        host, _, _port = raw.rpartition(":")
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            return ""
+    return ""
+
+
+def _parse_forwarded_client(request: Request) -> str:
+    """Original client from proxy headers. Empty when none are a valid IP."""
+    cf = (request.headers.get("cf-connecting-ip") or "").strip()
+    parsed = _as_ip(cf)
+    if parsed:
+        return parsed
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        parsed = _as_ip(xff.split(",")[0].strip())
+        if parsed:
+            return parsed
+    for element in (request.headers.get("forwarded") or "").split(","):
+        for param in element.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "for":
+                parsed = _as_ip(value)
+                if parsed:
+                    return parsed
+    return _as_ip(request.headers.get("x-real-ip") or "")
+
+
+def request_client_id(request: Request | None) -> str:
+    """Identity used for login rate-limits and the audit trail.
+
+    ``request.client.host`` is the TCP peer. Cloudflare Tunnel and nginx
+    terminate on 127.0.0.1, so every remote visitor would share one bucket
+    (and one audit name) if we keyed on that alone. Forwarded headers are
+    only trusted when the peer is in ``SERVERHUB_TRUSTED_PROXIES``; a
+    spoofed ``X-Forwarded-For`` from a LAN client is ignored.
+    """
+    peer = (request.client.host if request and request.client else "") or "unknown"
+    if request is None or not _peer_in_trusted_proxy(peer):
+        return peer
+    return _parse_forwarded_client(request) or peer
+
+
 def setup_token_required(request: Request | None = None) -> bool:
     """Whether this particular claim has to present the first-run token.
 
-    Default is to require it only for a claim arriving from another machine.
-    Requiring it on loopback achieves nothing: ``/api/auth/setup-token`` already
-    hands the token to any loopback client on request, so a browser on this Mac can
-    always obtain it. Demanding it there is pure friction -- copy a 64-character
-    secret from one field into another -- with no attacker it excludes.
+    Default is to require it only for a claim that is not a *direct* loopback
+    browser. Requiring it on the machine itself achieves nothing:
+    ``/api/auth/setup-token`` already hands the token to a direct loopback
+    client, so a browser on this Mac can always obtain it. Demanding it there
+    is pure friction -- copy a 64-character secret from one field into another
+    -- with no attacker it excludes.
 
     Off the machine it is doing real work. It is the only thing standing between
     an unclaimed panel and whoever reaches it first, and this host publishes the
     panel over a Cloudflare tunnel and a VPN, so "first" is not necessarily
-    someone in the house.
+    someone in the house. A tunneled request looks like loopback at the TCP
+    layer; :func:`is_direct_loopback` is what distinguishes the two.
     """
     mode = setup_token_mode()
     if mode == "never":
         return False
     if mode == "always":
         return True
-    return not is_loopback(request)
+    return not is_direct_loopback(request)
 
 
 def consume_setup_token() -> None:
@@ -324,14 +467,14 @@ def local_client_authorized(request: Request) -> bool:
     }:
         return True
     parts = path.strip("/").split("/")
+    # GET /api/maintenance/{id}/log is what the menu bar tails. POST .../run
+    # executes operator-configured shell from services.yaml — browser-admin only.
     return (
-        len(parts) == 4
+        method == "GET"
+        and len(parts) == 4
         and parts[:2] == ["api", "maintenance"]
         and bool(parts[2])
-        and (
-            (method == "POST" and parts[3] == "run")
-            or (method == "GET" and parts[3] == "log")
-        )
+        and parts[3] == "log"
     )
 
 
@@ -1001,8 +1144,16 @@ def require_auth(
         request.state.serverhub_auth_kind = "local-client"
         return True
     if isinstance(credentials, HTTPBasicCredentials):
-        user = str(_auth_cfg().get("username") or "admin")
-        if constant_time_equals(credentials.username, user) and verify_password(credentials.password):
+        # Basic auth is an administrator transport, not a family-account one.
+        # A member hash that verified here would unlock every mutating route.
+        # The configured legacy username is admin even when accounts() has not
+        # yet materialised a hash (setup-adjacent tests and a half-written
+        # config); is_admin() alone would fail closed in that window.
+        legacy_name = str(_auth_cfg().get("username") or "admin").strip() or "admin"
+        if verify_account_password(credentials.username, credentials.password) and (
+            is_admin(credentials.username)
+            or constant_time_equals(credentials.username, legacy_name)
+        ):
             request.state.serverhub_auth_kind = "basic-admin"
             return True
     if local_client:

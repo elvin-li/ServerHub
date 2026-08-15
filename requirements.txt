@@ -18,6 +18,10 @@ python-multipart~=0.0.32
 # Interactive terminal transport. Exact pin keeps WebSocket protocol behavior stable.
 websockets==15.0.1
 
+# ── Tests (FastAPI / Starlette TestClient) ───────────────────────────────────
+# Not imported by the panel.  Starlette 1.x's test client loads this extra.
+httpx2~=2.10.0
+
 # ── Menu-bar app (menubar.py) ────────────────────────────────────────────────
 # macOS only.  Previously missing entirely, so a fresh venv could not start the
 # menu bar: `import rumps` raised ModuleNotFoundError.

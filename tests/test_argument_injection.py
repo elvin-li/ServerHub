@@ -112,6 +112,58 @@ class ContainerActionTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             containers_svc.container_action("nginx", "not-an-action")
 
+    def test_exec_inspect_rename_and_update_reject_option_like_names(self):
+        from hub import containers_svc
+
+        for value in ["--all", "-f", "--privileged"]:
+            with self.subTest(value=value):
+                with self.assertRaises(HTTPException) as caught:
+                    containers_svc.exec_in_container(value, "true")
+                self.assertEqual(caught.exception.status_code, 400)
+                with self.assertRaises(HTTPException) as caught:
+                    containers_svc.inspect_container(value)
+                self.assertEqual(caught.exception.status_code, 400)
+                with self.assertRaises(HTTPException) as caught:
+                    containers_svc.rename_container(value, "safe-name")
+                self.assertEqual(caught.exception.status_code, 400)
+                with self.assertRaises(HTTPException) as caught:
+                    containers_svc.start_update_container_job(value)
+                self.assertEqual(caught.exception.status_code, 400)
+
+    def test_exec_rejects_an_option_like_shell(self):
+        from hub import containers_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            containers_svc.exec_in_container("nginx", "true", shell="--privileged")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_remove_image_rejects_an_option_like_ref(self):
+        from hub import containers_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            containers_svc.remove_image("--force")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_create_run_rejects_an_option_like_network(self):
+        from hub import containers_svc
+
+        with mock.patch.object(containers_svc, "engine_up", return_value=True):
+            with self.assertRaises(HTTPException) as caught:
+                containers_svc.create_run_container(
+                    {"image": "nginx:latest", "network": "--help"}
+                )
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_actions_registry_container_rejects_option_like_target(self):
+        from hub import actions
+
+        with mock.patch.object(
+            actions, "registry", return_value={"--all": ("container", {})}
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                actions.run_action("--all", "stop")
+        self.assertEqual(caught.exception.status_code, 400)
+
 
 class BrewServiceNameTests(unittest.TestCase):
     """``brew services stop --all`` would stop every service on the host."""

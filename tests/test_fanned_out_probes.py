@@ -1147,6 +1147,7 @@ class DiskPowerListingTests(unittest.TestCase):
         with (
             mock.patch.object(disk_power_svc, "_list_whole_disks", lambda: list(self.IDS)),
             mock.patch.object(disk_power_svc, "sh", fake_sh),
+            mock.patch.object(disk_snapshot, "sh", fake_sh),
             mock.patch.object(disk_power_svc, "subprocess", FakeSubprocess),
             mock.patch.object(disk_snapshot, "sh", fake_sh),
             mock.patch.object(disk_snapshot, "subprocess", FakeSubprocess),

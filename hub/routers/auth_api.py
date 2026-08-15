@@ -4,18 +4,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
-from hub import audit, auth, twofa_svc
+from hub import __version__, audit, auth, twofa_svc
 from hub.errors import api_error
 
 router = APIRouter(tags=["auth"])
 
 
 def _client(request: Request) -> str:
-    # Loopback-aware (see auth.request_client): behind the local cloudflared /
-    # nginx proxy this names the real visitor, so rate-limit buckets and audit
-    # lines stop collapsing every proxied client into 127.0.0.1.  A direct
-    # remote peer cannot influence it.
-    return auth.request_client(request)
+    # Trusted-proxy identity (auth.request_client_id): Cloudflare / nginx
+    # terminate on 127.0.0.1, so rate-limit buckets and audit lines use the
+    # forwarded client only when the TCP peer is in SERVERHUB_TRUSTED_PROXIES.
+    return auth.request_client_id(request)
 
 
 class LoginBody(BaseModel):
@@ -165,7 +164,7 @@ def auth_login(body: LoginBody, request: Request, response: Response):
     # Any configured account may sign in — admin and member alike.  The lookup
     # is exact-name; verify_account_password burns a dummy scrypt evaluation
     # for unknown names so the timing does not say which usernames exist.
-    username = body.username.strip()
+    username = (body.username or "").strip()
     if not auth.verify_account_password(username, body.password):
         auth.record_login_failure(client)
         # The attempted name is kept (it is not a secret and is the only clue
@@ -224,6 +223,8 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
     username = body.username.strip()
     if not username:
         raise api_error("auth.username_required")
+    if not current_username:
+        raise api_error("auth.login_required")
     if not auth.is_admin(current_username) and username != current_username:
         # A member touches nobody's credential but their own.
         raise api_error("auth.admin_required")
@@ -239,7 +240,7 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
         auth.record_login_failure(client)
         audit.record(
             audit.PASSWORD_CHANGE_DENIED,
-            username=current_username or username,
+            username=current_username,
             client=client,
             reason="bad_current_password",
             outcome="failure",
@@ -248,7 +249,7 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
     if auth.verify_account_password(current_username, body.new_password):
         audit.record(
             audit.PASSWORD_CHANGE_DENIED,
-            username=current_username or username,
+            username=current_username,
             client=client,
             reason="password_reused",
             outcome="failure",
@@ -265,18 +266,25 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
             auth.set_password(body.new_password, username, enable=True)
     except ValueError:
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
+    session_name = username
     auth.clear_login_failures(client)
-    _set_session(response, request, username)
+    _set_session(response, request, session_name)
     # Records the rotation, not either password: both field names contain
     # "password" and are dropped by redaction before anything reaches disk.
     audit.record(
         audit.PASSWORD_CHANGED,
-        username=username,
+        username=session_name,
         client=client,
         outcome="success",
     )
     # No ``message``: Settings.vue falls back to its own localized string.
-    return {"ok": True, "username": username}
+    return {"ok": True, "username": session_name}
+
+
+@router.get("/ready")
+def ready():
+    """Unauthenticated process liveness, distinct from authenticated /api/health."""
+    return {"ok": True, "version": __version__}
 
 
 def secrets_compare(a: str, b: str) -> bool:
@@ -300,8 +308,9 @@ def auth_setup_token(request: Request):
     """
     if not auth.setup_required():
         raise api_error("auth.already_setup")
-    client = request.client.host if request.client else ""
-    if client not in ("127.0.0.1", "::1"):
+    # TCP-peer loopback is not enough: a Cloudflare tunnel hop is also
+    # 127.0.0.1. Only a browser that is actually on this Mac may read the token.
+    if not auth.is_direct_loopback(request):
         raise api_error("auth.setup_token_localhost_only")
     return {"setup_token": auth.setup_token()}
 
@@ -327,5 +336,13 @@ def auth_logout(request: Request, response: Response):
             auth.bump_session_epoch(username)
         except Exception:
             pass
-    response.delete_cookie(auth.COOKIE_NAME, path="/", samesite="strict")
+    # Must match the flags used at login. Omitting ``secure`` leaves a Secure
+    # cookie in place on HTTPS / tunneled deployments, so logout appeared to
+    # succeed while the session stayed valid.
+    response.delete_cookie(
+        auth.COOKIE_NAME,
+        path="/",
+        samesite="strict",
+        secure=_https_request(request),
+    )
     return {"ok": True}
