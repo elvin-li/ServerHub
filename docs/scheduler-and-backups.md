@@ -195,7 +195,8 @@ Notes:
 ## Database and config archives
 
 The Backups page also offers one-click archives (also exposed as
-`POST /api/backups/postgres` and `POST /api/backups/configs`):
+`POST /api/backups/postgres`, `POST /api/backups/immich` and
+`POST /api/backups/configs`):
 
 - **PostgreSQL dump** — `pg_dump -F c` against each target listed under
   `backups.postgres` in services.yaml (`id`, `host`, `port`, `db`, `user`).
@@ -204,6 +205,17 @@ The Backups page also offers one-click archives (also exposed as
   that environment variable — never from services.yaml, which the export and
   the config archive both carry verbatim. With no targets configured the
   button reports "not configured" instead of dumping anything.
+- **Immich dump** — the Immich cluster on this class of host is PostgreSQL 18
+  on :5433. PATH `pg_dump` is 17.x and a version-mismatched dump is empty, so
+  this job is separate from the generic postgres button. When
+  `~/Services/immich/backup-db.sh` exists the panel runs that script; otherwise
+  it uses Homebrew `postgresql@18`'s `pg_dump` and the password in
+  `~/Services/immich/db.env` (never copied into services.yaml). Artefacts are
+  `immich_*.sql.gz` (plain SQL, gzipped; restore with `gunzip | psql`).
+  After the 2026-08-14 library redesign the Backups page also shows the other
+  layers (Apple Photos originals, PhotosBridge index, generated media,
+  PhotosHub external copy). A `stack_backup` of `immich_server` is the wrong
+  tool: originals and PG18 are not inside that compose stack.
 - **Config archive** — a tarball of `services.yaml` plus user-managed
   LaunchAgent plists matched by a keyword manifest: built-in keywords cover
   the panel's own agents and its integrations, and

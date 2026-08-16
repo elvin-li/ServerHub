@@ -10,7 +10,11 @@
       <span class="wg-status-led"></span>
       <span class="wg-status-text">{{ data.running ? t('wg.tunnel_running') : t('wg.tunnel_stopped') }}</span>
       <span v-if="data.running" class="wg-status-meta">
-        {{ data.interface }} · {{ t('wg.listen_port') }} {{ data.listen_port }} · {{ data.active_count }}/{{ data.peer_count }} {{ t('wg.peers_online') }}
+        {{ data.interface }} · {{ t('wg.listen_port') }} {{ data.listen_port }}
+        <template v-if="data.wstunnel?.running || data.wstunnel?.enabled">
+          · {{ t('wg.wstunnel_short') }} {{ data.wstunnel.port || data.wstunnel.listen }}
+        </template>
+        · {{ data.active_count }}/{{ data.peer_count }} {{ t('wg.peers_online') }}
       </span>
     </div>
 
@@ -139,6 +143,18 @@
                   @click="fixNat"
                   :disabled="busy"
                 >{{ t('wg.enable') }}</button>
+                <button
+                  v-else-if="c.id === 'wstunnel' || c.id === 'wstunnel_align'"
+                  class="tiny primary wg-fix-wstunnel"
+                  @click="fixWstunnel"
+                  :disabled="busy"
+                >{{ t('wg.wstunnel_apply') }}</button>
+                <button
+                  v-else-if="c.id === 'wstunnel_restrict'"
+                  class="tiny primary wg-fix-wstunnel-restrict"
+                  @click="stabilizeWstunnel"
+                  :disabled="busy"
+                >{{ t('wg.wstunnel_stabilize') }}</button>
               </td>
             </tr>
           </tbody>
@@ -190,6 +206,68 @@
           {{ t('wg.endpoint') }}:
           <code>{{ data.endpoint || t('wg.endpoint_unset') }}</code>
           <button class="tiny" style="margin-left:8px" @click="settingsOpen = true">{{ t('common.edit') }}</button>
+        </div>
+      </div>
+
+      <div
+        class="tile"
+        style="margin-bottom:12px;border-left:3px solid var(--accent)"
+        v-if="data?.wstunnel?.configured || data?.wstunnel?.running || data?.wstunnel?.enabled"
+      >
+        <div class="row" style="margin-bottom:6px;align-items:center;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0;flex:1">{{ t('wg.wstunnel_title') }}</h3>
+          <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
+            {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
+          </span>
+          <span v-if="data.wstunnel.stale_restrict" class="badge warn">{{ t('wg.wstunnel_stale') }}</span>
+          <span v-else-if="data.wstunnel.stable_restrict === false" class="badge warn">{{ t('wg.wstunnel_unstable') }}</span>
+          <span v-else-if="data.wstunnel.aligned === false" class="badge warn">{{ t('wg.wstunnel_mismatch') }}</span>
+          <button class="tiny" @click="settingsOpen = true">{{ t('common.edit') }}</button>
+        </div>
+        <p style="margin:0 0 8px;font-size:12px;color:var(--sub);line-height:1.5">
+          {{ t('wg.wstunnel_hint') }}
+        </p>
+        <div style="font-size:12px;line-height:1.6">
+          <div>{{ t('wg.wstunnel_listen') }} <code>{{ data.wstunnel.listen || '—' }}</code></div>
+          <div>{{ t('wg.wstunnel_public') }} <code>{{ data.wstunnel.public || '—' }}</code></div>
+          <div>{{ t('wg.wstunnel_restrict') }} <code>{{ data.wstunnel.restrict_to || '—' }}</code></div>
+          <div
+            v-if="!data.wstunnel.aligned && data.wstunnel.desired_restrict_to"
+            class="sub"
+          >
+            {{ t('wg.wstunnel_desired') }}
+            <code>{{ data.wstunnel.desired_listen }} → {{ data.wstunnel.desired_restrict_to }}</code>
+          </div>
+          <div
+            v-if="data.wstunnel.client_command"
+            class="mono"
+            style="margin:8px 0 0;font-size:11px;word-break:break-all"
+          >{{ data.wstunnel.client_command }}</div>
+        </div>
+        <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+          <button
+            v-if="data.wstunnel.client_command"
+            class="tiny"
+            @click="copyWstunnelCommand"
+          >{{ t('common.copy') }}</button>
+          <button
+            v-if="data.wstunnel.needs_stabilize"
+            class="tiny primary wg-stabilize-wstunnel"
+            @click="stabilizeWstunnel"
+            :disabled="busy"
+          >{{ t('wg.wstunnel_stabilize') }}</button>
+          <button
+            v-else-if="data.wstunnel.needs_apply"
+            class="tiny primary wg-apply-wstunnel"
+            @click="fixWstunnel"
+            :disabled="busy"
+          >{{ t('wg.wstunnel_apply') }}</button>
+          <button
+            v-if="data.wstunnel.running"
+            class="tiny"
+            @click="removeWstunnel"
+            :disabled="busy"
+          >{{ t('wg.wstunnel_remove') }}</button>
         </div>
       </div>
 
@@ -369,7 +447,10 @@
             @click="selectFormat(f)"
           >{{ formatLabel(f) }}</button>
         </div>
-        <p v-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn);line-height:1.5;margin:0 0 8px">
+        <p v-if="peerFormat === 'wst'" style="font-size:11px;color:var(--sub);line-height:1.5;margin:0 0 8px">
+          {{ t('wg.wstunnel_client_hint') }}
+        </p>
+        <p v-else-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn);line-height:1.5;margin:0 0 8px">
           {{ t('wg.endpoint_missing_warn') }}
         </p>
         <pre class="mono" style="max-height:180px;overflow:auto;font-size:11px">{{ peerContent }}</pre>
@@ -459,6 +540,30 @@
             <input v-model.number="cfgForm.mtu" type="number" min="576" max="1500" />
           </label>
         </div>
+        <label style="display:flex;align-items:center;gap:8px;margin:10px 0 8px">
+          <input type="checkbox" v-model="cfgForm.wstunnel_enabled" />
+          {{ t('wg.wstunnel_enable') }}
+        </label>
+        <p style="font-size:11px;color:var(--sub);line-height:1.5;margin:0 0 8px">
+          {{ t('wg.wstunnel_hint') }}
+        </p>
+        <div class="form-row">
+          <label>
+            {{ t('wg.wstunnel_listen') }}
+            <input v-model="cfgForm.wstunnel_listen" type="text" placeholder="ws://0.0.0.0:8444" />
+          </label>
+          <label>
+            {{ t('wg.wstunnel_public') }}
+            <input v-model="cfgForm.wstunnel_public" type="text" placeholder="ws://vpn.example.com:8444" />
+          </label>
+        </div>
+        <label>
+          {{ t('wg.wstunnel_restrict') }}
+          <input v-model="cfgForm.wstunnel_restrict_to" type="text" placeholder="127.0.0.1:51821" />
+        </label>
+        <p style="font-size:11px;color:var(--sub);line-height:1.5;margin:4px 0 8px">
+          {{ t('wg.wstunnel_restrict_hint') }}
+        </p>
         <div class="modal-actions">
           <button @click="settingsOpen = false">{{ t('common.cancel') }}</button>
           <button class="primary" @click="saveSettings" :disabled="busy || !settingsLoaded">{{ t('common.save') }}</button>
@@ -511,7 +616,13 @@ useDismissable(() => settingsOpen.value, () => { settingsOpen.value = false }, s
 
 // Clash-full and Shadowrocket are generated from the same peer, so the format
 // list is fixed rather than server-driven.
-const formats = ['wg', 'clash', 'clashfull', 'sr']
+const formats = computed(() => {
+  const base = ['wg', 'clash', 'clashfull', 'sr']
+  if (data.value?.wstunnel?.enabled || data.value?.wstunnel?.running) {
+    return [...base, 'wst']
+  }
+  return base
+})
 
 // Readiness ids and export formats are looked up through explicit maps rather
 // than by concatenating an id onto a key prefix at the call site.  A concatenated
@@ -531,6 +642,9 @@ const CHECK_LABELS = {
   boot: 'wg.check_boot',
   peer_origin: 'wg.check_peer_origin',
   stale_runtime: 'wg.check_stale_runtime',
+  wstunnel: 'wg.check_wstunnel',
+  wstunnel_align: 'wg.check_wstunnel_align',
+  wstunnel_restrict: 'wg.check_wstunnel_restrict',
 }
 const CHECK_FIXES = {
   installed: 'wg.fix_installed',
@@ -545,12 +659,16 @@ const CHECK_FIXES = {
   boot: 'wg.fix_boot',
   peer_origin: 'wg.fix_peer_origin',
   stale_runtime: 'wg.fix_stale_runtime',
+  wstunnel: 'wg.fix_wstunnel',
+  wstunnel_align: 'wg.fix_wstunnel_align',
+  wstunnel_restrict: 'wg.fix_wstunnel_restrict',
 }
 const FORMAT_LABELS = {
   wg: 'wg.fmt_wg',
   clash: 'wg.fmt_clash',
   clashfull: 'wg.fmt_clashfull',
   sr: 'wg.fmt_sr',
+  wst: 'wg.fmt_wst',
 }
 
 const checkLabel = (id) => (CHECK_LABELS[id] ? t(CHECK_LABELS[id]) : id)
@@ -563,6 +681,8 @@ const imp = ref({ pubkey: '', ip: '', name: '' })
 const cfgForm = ref({
   endpoint: '', subnet: '', listen_port: 51820, lan_cidr: '',
   wan_interface: '', dns: '', mtu: 1280,
+  wstunnel_enabled: false, wstunnel_listen: 'ws://0.0.0.0:8444',
+  wstunnel_public: '', wstunnel_restrict_to: '',
 })
 
 // Peers copied from another server get their own callout below, which explains
@@ -589,7 +709,7 @@ const downloadUrl = computed(
 )
 const peerFilename = computed(() => {
   const safe = String(peerDialog.value?.name || 'peer').replace(/[^A-Za-z0-9_-]/g, '-')
-  const ext = { wg: '.conf', clash: '-clash.yaml', clashfull: '-clash-full.yaml', sr: '-shadowrocket.txt' }
+  const ext = { wg: '.conf', clash: '-clash.yaml', clashfull: '-clash-full.yaml', sr: '-shadowrocket.txt', wst: '-wstunnel.conf' }
   return safe + (ext[peerFormat.value] || '.conf')
 })
 
@@ -697,6 +817,26 @@ const fixNat = () => withBusy(() => remediateWireguard('nat', true), 'wg.nat_ins
 // the page called them, so an operator whose LaunchDaemon was missing (or was some
 // other build's) had no way to install the one the panel manages.
 const fixDaemon = () => withBusy(() => remediateWireguard('daemon', true), 'wg.boot_installed')
+const fixWstunnel = () => withBusy(() => remediateWireguard('wstunnel', true), 'wg.wstunnel_applied')
+const stabilizeWstunnel = () => withBusy(
+  () => remediateWireguard('wstunnel_stabilize', true),
+  'wg.wstunnel_stabilized',
+)
+const removeWstunnel = () => {
+  if (!confirm(t('wg.wstunnel_remove_confirm'))) return
+  return withBusy(() => remediateWireguard('wstunnel', false), 'wg.wstunnel_removed')
+}
+
+async function copyWstunnelCommand() {
+  const command = data.value?.wstunnel?.client_command
+  if (!command) return
+  try {
+    await navigator.clipboard.writeText(command)
+    toast('✅ ' + t('common.copied'))
+  } catch {
+    toast('❌ ' + t('common.copy_failed'))
+  }
+}
 
 async function createPeer() {
   const created = await withBusy(
@@ -796,6 +936,10 @@ async function saveSettings() {
   }
   const patch = {}
   for (const [key, value] of Object.entries(cfgForm.value)) {
+    if (key === 'wstunnel_enabled') {
+      patch[key] = Boolean(value)
+      continue
+    }
     if (value !== '' && value != null) patch[key] = value
   }
   const result = await withBusy(() => putWireguardSettings(patch), 'wg.settings_saved')

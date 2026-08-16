@@ -96,6 +96,43 @@
         </div>
       </div>
 
+      <div
+        class="tile"
+        style="margin-bottom:12px;border-left:3px solid var(--accent)"
+        v-if="data?.wstunnel?.configured || data?.wstunnel?.running"
+      >
+        <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0;flex:1">{{ t('network.wstunnel_title') }}</h3>
+          <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
+            {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
+          </span>
+          <span v-if="data.wstunnel.stale_restrict" class="badge warn">{{ t('wg.wstunnel_stale') }}</span>
+          <span v-else-if="data.wstunnel.stable_restrict === false" class="badge warn">{{ t('wg.wstunnel_unstable') }}</span>
+          <span v-else-if="data.wstunnel.aligned === false" class="badge warn">{{ t('wg.wstunnel_mismatch') }}</span>
+          <router-link class="tiny primary" to="/wireguard">{{ t('network.wstunnel_open') }}</router-link>
+        </div>
+        <p style="margin:0 0 8px;font-size:12px;color:var(--sub);line-height:1.5">
+          {{ t('network.wstunnel_hint') }}
+        </p>
+        <div style="font-size:12px;line-height:1.6">
+          <div>
+            {{ t('network.wstunnel_listen') }}
+            <code>{{ data.wstunnel.listen || '—' }}</code>
+          </div>
+          <div>
+            {{ t('network.wstunnel_public') }}
+            <code>{{ data.wstunnel.public || '—' }}</code>
+          </div>
+          <div>
+            {{ t('network.wstunnel_restrict') }}
+            <code>{{ data.wstunnel.restrict_to || '—' }}</code>
+          </div>
+          <div v-if="data.wstunnel.client_command" class="mono" style="margin-top:6px;font-size:11px;word-break:break-all">
+            {{ data.wstunnel.client_command }}
+          </div>
+        </div>
+      </div>
+
       <h2 class="section-title">{{ t('network.prio_title') }}</h2>
       <div class="table-wrap" style="margin-bottom:14px">
         <table class="dense fit-m">
@@ -673,13 +710,13 @@ const failoverWifiLabel = computed(() => {
 })
 
 function isWifi(s) {
-  return /wi-?fi|airport|无线/i.test((s.name || '') + (s.hardware_port || ''))
+  return /wi-?fi|airport|无线/i.test((s.name || '') + (s.hardware_port || '')) // cjk-input: networksetup port names are localized
 }
 function looksEthernet(s) {
   if (isWifi(s)) return false
   const n = (s.name || '') + (s.hardware_port || '')
   const d = s.device || ''
-  return /ethernet|lan|usb.*lan|有线/i.test(n) || (d.startsWith('en') && d !== 'en0')
+  return /ethernet|lan|usb.*lan|有线/i.test(n) || (d.startsWith('en') && d !== 'en0') // cjk-input: networksetup port names are localized
 }
 
 function syncOrderFromData() {

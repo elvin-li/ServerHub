@@ -63,11 +63,26 @@ def _strip_comments_py(line: str) -> str:
     return re.sub(r"#.*$", "", line)
 
 
+#: Opt-out marker for CJK that is *matched against* external input rather than
+#: shown to anybody: keys in a JSON report written by the operator's own
+#: scripts, filenames on their disk, and the Chinese strings that macOS itself
+#: puts in ``networksetup`` / ``brew`` output when the server runs a zh locale.
+#: Translating those would break the match.  A reason is mandatory so the marker
+#: cannot become a silent "shut up" that hides real untranslated prose.
+#:
+#: Spelled the same either side of the wire — ``# cjk-input: why`` in Python,
+#: ``// cjk-input: why`` in a ``.vue`` — because the two sides classify the same
+#: localized ``networksetup`` output and must not drift apart.
+CJK_INPUT_MARKER = re.compile(r"(?:#|//)\s*cjk-input:\s*\S")
+
+
 def _vue_cjk_lines() -> list[str]:
     """CJK lines in .vue sources, excluding the i18n dictionaries themselves."""
     hits: list[str] = []
     for path in sorted(WEB_SRC.rglob("*.vue")):
         for n, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if CJK_INPUT_MARKER.search(raw):
+                continue
             if CJK.search(_strip_comments_js(raw)):
                 hits.append(f"{path.relative_to(BASE)}:{n}")
     return hits
@@ -77,12 +92,15 @@ def _py_user_facing_cjk_lines() -> list[str]:
     """CJK lines in hub/ that plausibly reach the user.
 
     Comments and docstrings are legitimate (the team reads Chinese); strings
-    handed to the client are not.
+    handed to the client are not.  Lines carrying a ``# cjk-input:`` marker are
+    matching external input, not producing output, so they are exempt.
     """
     hits: list[str] = []
     for path in sorted(HUB.rglob("*.py")):
         in_doc = False
         for n, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if CJK_INPUT_MARKER.search(raw):
+                continue
             stripped = raw.strip()
             # crude but adequate docstring tracking for a lint budget
             fences = stripped.count('"""') + stripped.count("'''")
@@ -109,7 +127,9 @@ class TestHardcodedCjkRatchet(unittest.TestCase):
             budget,
             f"\nHardcoded Chinese in .vue files grew to {len(hits)} lines "
             f"(budget {budget}).\nUse t('some.key') and add the key to "
-            f"web/src/i18n/{{en,zh-CN,ja}}.js.\nNew/uncounted lines include:\n  "
+            f"web/src/i18n/{{en,zh-CN,ja}}.js.\nIf the string is matched "
+            "against external input rather than rendered, mark the line "
+            "'// cjk-input: <why>'.\nNew/uncounted lines include:\n  "
             + "\n  ".join(hits[:20]),
         )
 
@@ -122,7 +142,27 @@ class TestHardcodedCjkRatchet(unittest.TestCase):
             f"\nChinese in hub/ code grew to {len(hits)} lines "
             f"(budget {budget}).\nRaise errors with "
             f"api_error('area.code') and register the code in hub/errors.py.\n"
+            "If the string is matched against external input (a JSON key, a "
+            "filename, localized macOS output) rather than shown to anybody, "
+            "mark the line '# cjk-input: <why>'.\n"
             "Lines include:\n  " + "\n  ".join(hits[:20]),
+        )
+
+    def test_no_stale_cjk_input_markers(self):
+        """A marker on a line with no CJK left is dead weight — delete it.
+
+        Without this, ``# cjk-input:`` survives the edit that removed the
+        Chinese it excused, and then silently excuses whatever Chinese lands on
+        that line next.
+        """
+        stale: list[str] = []
+        sources = sorted(HUB.rglob("*.py")) + sorted(WEB_SRC.rglob("*.vue"))
+        for path in sources:
+            for n, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                if CJK_INPUT_MARKER.search(raw) and not CJK.search(raw):
+                    stale.append(f"{path.relative_to(BASE)}:{n}")
+        self.assertEqual(
+            stale, [], f"'# cjk-input:' markers on lines with no CJK: {stale}"
         )
 
 

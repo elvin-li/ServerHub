@@ -22,6 +22,7 @@ import en from '../i18n/en.js'
 import { setLocale } from '../i18n/index.js'
 import {
   AUTH_LOST_EVENT,
+  backupImmich,
   chatOllamaModel,
   connectContainerNetwork,
   controlPanelService,
@@ -33,6 +34,7 @@ import {
   getStatus,
   loginAuth,
   manageApp,
+  uninstallService,
   openLauncherApp,
   openSharingSettings,
   removeShare,
@@ -371,6 +373,42 @@ describe('api client', () => {
       expect(JSON.parse(options.body)).toEqual({
         id: 'docker:media', action: 'uninstall', remove_data: true,
       })
+
+      await uninstallService('com.example.worker', { remove_data: true })
+      const [uurl, uoptions] = fetchMock.mock.calls[2]
+      expect(uurl).toBe('/api/services/com.example.worker/uninstall')
+      expect(uoptions.method).toBe('POST')
+      expect(JSON.parse(uoptions.body)).toEqual({ remove_data: true })
+    })
+
+    it('gives a database dump longer than the default 30s to answer', async () => {
+      // The backup endpoints are synchronous and the server allows a dump 600s,
+      // while holding a per-job lock for the whole run. Aborting at the default
+      // told the operator it had timed out while it was still running, and the
+      // retry they reached for was refused as "already running".
+      vi.useFakeTimers()
+      const signals = []
+      fetchMock.mockImplementation(
+        (_url, opts) => new Promise((_resolve, reject) => {
+          signals.push(opts.signal)
+          opts.signal.addEventListener('abort', () => {
+            const err = new Error('aborted')
+            err.name = 'AbortError'
+            reject(err)
+          })
+        }),
+      )
+      let settled = false
+      const call = backupImmich().catch(() => { settled = true })
+
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(settled, 'aborted a dump that the server was still running').toBe(false)
+
+      await vi.advanceTimersByTimeAsync(600000)
+      await call
+      expect(settled).toBe(true)
+      expect(signals).toHaveLength(1) // a POST is never retried
+      vi.useRealTimers()
     })
 
     it('encodes container names when recreating published ports', async () => {

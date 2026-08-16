@@ -381,6 +381,12 @@ class TestCodedErrors(unittest.TestCase):
             "photoshub.key_missing",
             "photoshub.script_missing",
             "photoshub.bad_ids",
+            "photoshub.bad_config",
+            "photoshub.bad_name",
+            "photoshub.bad_birthday",
+            "photoshub.bad_album",
+            "photoshub.bad_person",
+            "photoshub.bad_link_url",
         ):
             self.assertIn(code, CODES)
 

@@ -457,8 +457,8 @@ export const brewAction = (name, action) =>
 // session-lost handling.
 export const getServiceUninstallPreview = (sid) =>
   json(`/api/services/${encodeURIComponent(sid)}/uninstall/preview`)
-export const uninstallService = (sid) =>
-  json(`/api/services/${encodeURIComponent(sid)}/uninstall`, { method: 'POST' })
+export const uninstallService = (sid, { remove_data = false } = {}) =>
+  json(`/api/services/${encodeURIComponent(sid)}/uninstall`, jsonBody('POST', { remove_data }))
 
 // Container operations. Synchronous Docker commands need the backend ceiling plus
 // a little transport slack; batch/all execute actions serially across containers.
@@ -705,8 +705,17 @@ export const runUpsShutdownDrill = () => json('/api/ups/shutdown/drill', { metho
 // Writes the macOS pmset UPS halt level (root via the admin-password flow).
 export const putUpsHalt = (body) => json('/api/ups/halt', jsonBody('PUT', body))
 export const getBackups = () => json('/api/backups')
-export const backupPostgres = () => json('/api/backups/postgres', { method: 'POST' })
-export const backupConfigs = () => json('/api/backups/configs', { method: 'POST' })
+// A dump gets 600s server-side (per target, for Postgres) and holds a per-job
+// lock for the whole run. Aborting at the default 30s told the operator the
+// backup had timed out while it was still running, and the retry they reached
+// for was refused as "already running" until it finished.
+const BACKUP_TIMEOUT = 620000
+export const backupPostgres = () =>
+  json('/api/backups/postgres', { method: 'POST' }, BACKUP_TIMEOUT)
+export const backupImmich = () =>
+  json('/api/backups/immich', { method: 'POST' }, BACKUP_TIMEOUT)
+export const backupConfigs = () =>
+  json('/api/backups/configs', { method: 'POST' }, BACKUP_TIMEOUT)
 // Panel scheduler (user-defined cron jobs) — distinct from getScheduler(),
 // which lists the read-only launchd timers.
 export const getSchedulerJobs = () => json('/api/scheduler/jobs')
@@ -917,10 +926,19 @@ export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
   return new EventSource(`/api/containers/${encodeURIComponent(name)}/logs?${q}`)
 }
 
+const PHOTOSHUB_ACTION_TIMEOUT = 600000
 export const getPhotosHubStatus = () => json('/api/photoshub/status')
+export const getPhotosHubConfig = () => json('/api/photoshub/config')
+export const patchPhotosHubConfig = (body) => json('/api/photoshub/config', jsonBody('PATCH', body))
 export const getPhotosHubPending = () => json('/api/photoshub/pending-delete')
-export const postPhotosHubAction = (action) => json('/api/photoshub/action', { method: 'POST', body: JSON.stringify({ action }) })
-export const postPhotosHubPendingRemove = (ids) => json('/api/photoshub/pending-delete/remove', { method: 'POST', body: JSON.stringify({ ids }) })
+// A URL, not a request: the browser loads previews itself via <img>, so the
+// panel session authorises them and the Immich API key stays on the server.
+export const photosHubThumbUrl = (id) =>
+  `/api/photoshub/pending-delete/thumb/${encodeURIComponent(id)}`
+export const postPhotosHubAction = (action) =>
+  json('/api/photoshub/action', jsonBody('POST', { action }), PHOTOSHUB_ACTION_TIMEOUT)
+export const postPhotosHubPendingRemove = (ids) =>
+  json('/api/photoshub/pending-delete/remove', jsonBody('POST', { ids }))
 export const getPhotosHubLogs = (name) => json(`/api/photoshub/logs/${name}`)
 
 // ── Ollama local LLM (hub/routers/ollama_api.py) ─────────────────────────────

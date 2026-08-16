@@ -115,6 +115,8 @@ describe('service uninstall UI', () => {
       'services.uninstall_removes',
       'services.uninstall_keeps',
       'services.uninstall_item_program',
+      'services.uninstall_item_override',
+      'services.uninstall_also_delete_tree',
       'services.uninstall_reversible',
     ]) {
       expect(src, `confirmation must show ${key}`).toContain(key)

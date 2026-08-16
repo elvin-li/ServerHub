@@ -173,6 +173,17 @@ def set_override(sid: str, patch: dict) -> dict:
     return result
 
 
+def drop_override(sid: str) -> None:
+    """Remove overrides[sid] so an uninstalled agent does not linger as a ghost."""
+    if not sid:
+        return
+
+    def apply(data: dict) -> None:
+        (data.get("overrides") or {}).pop(sid, None)
+
+    mutate(apply)
+
+
 def reload_cfg():
     with _cfg_lock:
         _cfg["mtime"] = 0

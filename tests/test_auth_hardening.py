@@ -10,6 +10,7 @@ from fastapi.security import HTTPBasicCredentials
 
 from hub import auth
 from hub.routers.api import Action, api_action
+from hub.routers.catalog import ManagedActionBody, apps_managed_action
 from hub.routers.containers import AllBody, containers_all
 from hub.routers.settings_api import AuthPatch, SettingsPatch, put_settings
 
@@ -148,6 +149,61 @@ class AuthHardeningTests(unittest.TestCase):
                     self.assertEqual(
                         raised.exception.detail["code"], "auth.admin_required"
                     )
+
+    def test_apps_managed_uninstall_needs_the_same_browser_session_as_services(self):
+        """The Apps page must not be the cheap way around a browser-only guard.
+
+        ``POST /api/apps/managed/action`` with ``action="uninstall"`` lands in
+        exactly the same ``services_uninstall_svc.uninstall()`` as
+        ``POST /api/services/{sid}/uninstall``, which refuses anything but a
+        real browser session -- it changes what starts at login and can delete
+        a program tree.  An API key is deliberately barred from that surface
+        whatever its role, so both doors have to be locked.
+        """
+        body = ManagedActionBody(
+            id="launchd:local.immich-logrotate", action="uninstall", remove_data=True,
+        )
+        req = request(method="POST", path="/api/apps/managed/action")
+        with (
+            patch("hub.auth.browser_authenticated", return_value=False),
+            patch("hub.routers.catalog.apps_manage_svc.action") as dispatched,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                apps_managed_action(body, req)
+        self.assertEqual(
+            raised.exception.detail["code"],
+            "services.uninstall_browser_session_required",
+        )
+        dispatched.assert_not_called()
+
+    def test_apps_managed_uninstall_proceeds_for_a_browser_session(self):
+        body = ManagedActionBody(id="launchd:com.example.app", action="uninstall")
+        req = request(method="POST", path="/api/apps/managed/action")
+        with (
+            patch("hub.auth.browser_authenticated", return_value=True),
+            patch(
+                "hub.routers.catalog.apps_manage_svc.action", return_value={"ok": True},
+            ) as dispatched,
+        ):
+            self.assertEqual(apps_managed_action(body, req), {"ok": True})
+        dispatched.assert_called_once_with(
+            "launchd:com.example.app", "uninstall", remove_data=False,
+        )
+
+    def test_ordinary_apps_actions_are_not_pushed_behind_the_browser_guard(self):
+        """Only uninstall is browser-only; start/stop stay usable from a key."""
+        req = request(method="POST", path="/api/apps/managed/action")
+        with (
+            patch("hub.auth.browser_authenticated", return_value=False),
+            patch(
+                "hub.routers.catalog.apps_manage_svc.action", return_value={"ok": True},
+            ) as dispatched,
+        ):
+            for action in ("start", "stop", "restart"):
+                with self.subTest(action=action):
+                    body = ManagedActionBody(id="launchd:com.example.app", action=action)
+                    self.assertEqual(apps_managed_action(body, req), {"ok": True})
+        self.assertEqual(dispatched.call_count, 3)
 
     def test_local_client_service_action_is_limited_to_advertised_safe_actions(self):
         req = request(method="POST", path="/api/action")

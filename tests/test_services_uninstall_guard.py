@@ -30,13 +30,15 @@ from fastapi import HTTPException
 from hub import services_uninstall_svc as svc
 
 
-def write_agent(agents: Path, label: str, program: str = "/usr/bin/true") -> Path:
+def write_agent(agents: Path, label: str, program: str = "/usr/bin/true", **extra) -> Path:
     """Create a minimal, valid LaunchAgent plist for *label*."""
-    path = agents / f"{label}.plist"
-    path.write_bytes(plistlib.dumps({
+    payload = {
         "Label": label,
         "ProgramArguments": [program],
-    }))
+    }
+    payload.update(extra)
+    path = agents / f"{label}.plist"
+    path.write_bytes(plistlib.dumps(payload))
     return path
 
 
@@ -53,6 +55,8 @@ class ProtectedLabelTests(unittest.TestCase):
         for patched in (
             patch.object(svc, "AGENTS_DIR", self.agents),
             patch.object(svc, "BACKUP_DIR", self.backups),
+            # uninstall() drops the services.yaml override; never touch the host file.
+            patch.object(svc, "_forget_override"),
         ):
             patched.start()
             self.addCleanup(patched.stop)
@@ -148,6 +152,7 @@ class ProtectedLabelTests(unittest.TestCase):
         argv = run.call_args.args[0]
         self.assertEqual(argv[:2], ["/bin/launchctl", "bootout"])
         self.assertTrue(argv[2].endswith("/com.example.worker"))
+        svc._forget_override.assert_called_with("com.example.worker")
 
     def test_a_label_that_merely_contains_a_protected_name_is_allowed(self):
         """Substring similarity is not protection: only the label itself is."""
@@ -188,6 +193,185 @@ class LabelValidationTests(unittest.TestCase):
 
     def test_a_wellformed_but_absent_label_reports_unknown(self):
         self.assert_code("com.example.absent", "services.uninstall_unknown")
+
+
+class RemoveDataTests(unittest.TestCase):
+    """Program trees are deleted only when they sit strictly inside ~/Services."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.agents = root / "LaunchAgents"
+        self.agents.mkdir()
+        self.backups = root / "uninstalled-agents"
+        self.services = root / "Services"
+        self.tree = self.services / "ExampleApp"
+        self.tree.mkdir(parents=True)
+        (self.tree / "app").write_text("x")
+        write_agent(
+            self.agents,
+            "com.example.app",
+            program=str(self.tree / "app"),
+            WorkingDirectory=str(self.tree),
+        )
+        for patched in (
+            patch.object(svc, "AGENTS_DIR", self.agents),
+            patch.object(svc, "BACKUP_DIR", self.backups),
+            patch.object(svc, "SERVICES_ROOT", self.services),
+            patch.object(svc, "_forget_override"),
+            patch.object(svc, "sh", return_value=(0, "", "")),
+        ):
+            patched.start()
+            self.addCleanup(patched.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_preview_offers_the_tree_under_services(self):
+        info = svc.preview("com.example.app")
+        self.assertTrue(info["can_remove_data"])
+        self.assertEqual(Path(info["remove_data_path"]), self.tree.resolve())
+        self.assertIn("program files", info["keeps"])
+
+    def test_remove_data_deletes_only_the_services_tree(self):
+        result = svc.uninstall("com.example.app", remove_data=True)
+        self.assertEqual(Path(result["removed_tree"]), self.tree.resolve())
+        self.assertFalse(self.tree.exists())
+
+    def test_default_uninstall_keeps_the_tree(self):
+        result = svc.uninstall("com.example.app", remove_data=False)
+        self.assertEqual(result["removed_tree"], "")
+        self.assertTrue(self.tree.exists())
+
+    def test_a_tree_outside_services_is_never_deleted(self):
+        outside = Path(self.tmp.name) / "elsewhere" / "appdir"
+        outside.mkdir(parents=True)
+        (outside / "bin").write_text("x")
+        write_agent(
+            self.agents,
+            "com.example.outside",
+            program=str(outside / "bin"),
+            WorkingDirectory=str(outside),
+        )
+        info = svc.preview("com.example.outside")
+        self.assertFalse(info["can_remove_data"])
+        self.assertEqual(info["remove_data_path"], "")
+        result = svc.uninstall("com.example.outside", remove_data=True)
+        self.assertEqual(result["removed_tree"], "")
+        self.assertTrue(outside.exists())
+
+    def test_services_root_itself_is_not_removable(self):
+        write_agent(
+            self.agents,
+            "com.example.root",
+            program=str(self.services / "dummy"),
+            WorkingDirectory=str(self.services),
+        )
+        info = svc.preview("com.example.root")
+        self.assertFalse(info["can_remove_data"])
+
+
+class SharedTreeTests(unittest.TestCase):
+    """A deployment directory that several agents live in is not "this agent's data".
+
+    ``WorkingDirectory`` is routinely the whole deployment rather than one
+    agent's private files.  On a real host a log-rotation helper named
+    ``~/Services/immich`` -- the compose file, ``.env``, and the programs of its
+    sibling agents -- so uninstalling the helper with ``remove_data`` deleted
+    the entire Immich install.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.agents = root / "LaunchAgents"
+        self.agents.mkdir()
+        self.services = root / "Services"
+        self.deployment = self.services / "immich"
+        (self.deployment / "scripts").mkdir(parents=True)
+        (self.deployment / "docker-compose.yml").write_text("services: {}")
+        (self.deployment / "scripts" / "rotate.sh").write_text("#!/bin/sh\n")
+        (self.deployment / "scripts" / "backup.sh").write_text("#!/bin/sh\n")
+        # The helper names the whole deployment as its working directory.
+        write_agent(
+            self.agents,
+            "local.immich-logrotate",
+            program=str(self.deployment / "scripts" / "rotate.sh"),
+            WorkingDirectory=str(self.deployment),
+        )
+        # A sibling agent's program lives inside that same tree.
+        write_agent(
+            self.agents,
+            "local.immich-backup",
+            program=str(self.deployment / "scripts" / "backup.sh"),
+        )
+        for patched in (
+            patch.object(svc, "AGENTS_DIR", self.agents),
+            patch.object(svc, "BACKUP_DIR", root / "uninstalled-agents"),
+            patch.object(svc, "SERVICES_ROOT", self.services),
+            patch.object(svc, "_forget_override"),
+            patch.object(svc, "sh", return_value=(0, "", "")),
+        ):
+            patched.start()
+            self.addCleanup(patched.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_a_shared_tree_is_not_offered_for_removal(self):
+        info = svc.preview("local.immich-logrotate")
+        self.assertFalse(info["can_remove_data"])
+        self.assertEqual(info["remove_data_shared_with"], ["local.immich-backup"])
+        # The path is still reported, so the dialog can explain what it found.
+        self.assertEqual(Path(info["remove_data_path"]), self.deployment.resolve())
+
+    def test_asking_to_remove_a_shared_tree_is_refused_not_obeyed(self):
+        """The caller may still send remove_data=True; the service decides."""
+        result = svc.uninstall("local.immich-logrotate", remove_data=True)
+        self.assertEqual(result["removed_tree"], "")
+        self.assertTrue((self.deployment / "docker-compose.yml").is_file())
+        self.assertTrue((self.deployment / "scripts" / "backup.sh").is_file())
+
+    def test_the_last_agent_in_a_tree_may_still_remove_it(self):
+        """Sharing is about what is installed now, not about the path shape."""
+        (self.agents / "local.immich-backup.plist").unlink()
+        info = svc.preview("local.immich-logrotate")
+        self.assertTrue(info["can_remove_data"])
+        self.assertEqual(info["remove_data_shared_with"], [])
+        result = svc.uninstall("local.immich-logrotate", remove_data=True)
+        self.assertEqual(Path(result["removed_tree"]), self.deployment.resolve())
+        self.assertFalse(self.deployment.exists())
+
+
+class DropOverrideTests(unittest.TestCase):
+    def test_forget_override_calls_drop_override(self):
+        with patch("hub.config.drop_override") as drop:
+            svc._forget_override("com.example.worker")
+        drop.assert_called_once_with("com.example.worker")
+
+    def test_drop_override_removes_only_that_sid(self):
+        import shutil
+
+        import yaml
+
+        from hub import config
+
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        data_dir = root / "data"
+        data_dir.mkdir()
+        yaml_path = root / "services.yaml"
+        yaml_path.write_text(yaml.dump({
+            "overrides": {
+                "com.example.worker": {"name": "Worker"},
+                "keep.me": {"name": "Keep"},
+            }
+        }))
+        with (
+            patch.object(config, "YAML_PATH", yaml_path),
+            patch.object(config, "DATA_DIR", data_dir),
+            patch.object(config, "BASE", root),
+        ):
+            config.drop_override("com.example.worker")
+            stored = yaml.safe_load(yaml_path.read_text())
+        self.assertNotIn("com.example.worker", stored.get("overrides") or {})
+        self.assertEqual(stored["overrides"]["keep.me"]["name"], "Keep")
 
 
 if __name__ == "__main__":

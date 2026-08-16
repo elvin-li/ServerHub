@@ -836,6 +836,7 @@
         <div class="btns" style="flex-direction:column;align-items:stretch">
           <router-link class="btn" to="/network">{{ t('nav.network') }}</router-link>
           <router-link class="btn" to="/gateway">{{ t('nav.gateway') }}</router-link>
+          <router-link class="btn" to="/wireguard">{{ t('nav.wireguard') }}</router-link>
           <router-link class="btn" to="/bookmarks">{{ t('nav.bookmarks') }}</router-link>
         </div>
       </div>
@@ -1061,6 +1062,7 @@ import {
   getTotpStatus, listApiKeys, regenerateTotpRecovery, revokeApiKey,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { copyToClipboard } from '../lib/clipboard'
 import { injectTheme } from '../theme'
 import LoadFailure from '../components/LoadFailure.vue'
 import NotifyChannels from '../components/NotifyChannels.vue'
@@ -1748,11 +1750,13 @@ async function adminResetTwofa() {
   twofaBusy.value = false
 }
 
-function copyRecoveryCodes() {
-  navigator.clipboard.writeText(recoveryCodes.value.join('\n')).then(() => {
-    copiedRecovery.value = true
-    setTimeout(() => { copiedRecovery.value = false }, 2000)
-  }).catch(() => toast('❌ ' + t('common.copy_failed')))
+async function copyRecoveryCodes() {
+  if (!await copyToClipboard(recoveryCodes.value.join('\n'))) {
+    toast('❌ ' + t('common.copy_failed'))
+    return
+  }
+  copiedRecovery.value = true
+  setTimeout(() => { copiedRecovery.value = false }, 2000)
 }
 
 // ── API keys ─────────────────────────────────────────────────────────────────
@@ -1792,11 +1796,13 @@ async function createKey() {
   apiKeyBusy.value = false
 }
 
-function copyCreatedKey() {
-  navigator.clipboard.writeText(createdKey.value?.key || '').then(() => {
-    copiedKey.value = true
-    setTimeout(() => { copiedKey.value = false }, 2000)
-  }).catch(() => toast('❌ ' + t('common.copy_failed')))
+async function copyCreatedKey() {
+  if (!await copyToClipboard(createdKey.value?.key)) {
+    toast('❌ ' + t('common.copy_failed'))
+    return
+  }
+  copiedKey.value = true
+  setTimeout(() => { copiedKey.value = false }, 2000)
 }
 
 async function revokeKey(key) {

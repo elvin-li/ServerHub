@@ -424,7 +424,7 @@ def enrich_service(item: dict, *, pl: dict | None = None, pid: str | None = None
     if primary and item.get("detail") and f":{primary}" not in item["detail"]:
         # "运行中" kept alongside "Running": the detail text is produced by
         # hub/discovery/*, which is migrating from Chinese to English prose.
-        if item.get("state") == "ok" and ("Running" in item["detail"] or "运行中" in item["detail"]):
+        if item.get("state") == "ok" and ("Running" in item["detail"] or "运行中" in item["detail"]):  # cjk-input: matches detail prose from hub/discovery/*
             item["detail"] = item["detail"] + f" · :{primary}"
     # mark adaptive
     if item.get("auto"):

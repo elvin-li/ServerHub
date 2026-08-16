@@ -73,6 +73,9 @@ data/*.lock
 data/wireguard-peers.json
 # Generated at runtime by the panel when it installs the boot daemon.
 data/com.wireguard.*.plist
+# Staged root LaunchDaemon for the WireGuard WebSocket wrap; copied to
+# /Library/LaunchDaemons after the password sheet. Same class of file.
+data/com.elvin.wstunnel-*.plist
 data/pf-anchor-wireguard
 data/pf.conf.staged
 data/wg*.sync.conf
@@ -98,3 +101,6 @@ data/catalog-remote/
 data/metrics-rollup-state.json
 # Homebrew services probe cache written by hub/brew_cache.py.
 data/brew-services.cache.json
+# Archived LaunchAgent plists from the Apps/Services uninstall path.
+# They name real program paths and working directories on this machine.
+data/uninstalled-agents/

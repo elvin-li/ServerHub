@@ -33,7 +33,7 @@ import re
 import socket
 from pathlib import Path
 
-from hub import wireguard_svc
+from hub import wireguard_svc, wireguard_wstunnel
 from hub.host_address import default_interface
 from hub.launchd_cache import loaded_labels
 from hub.macos_admin import run_admin_sequence, sudo_capture
@@ -830,6 +830,7 @@ def readiness() -> dict:
             "level": "error" if runtime["stale"] else "warn",
             "detail": runtime["name_file"] if runtime["stale"] else "",
         },
+        *_wstunnel_readiness_checks(cfg_),
     ]
     # Drop any check whose stated cause is already failing.  Several of these
     # gates are downstream of one another -- NAT cannot load from a pf.conf that
@@ -1159,4 +1160,172 @@ def uninstall_daemon() -> dict:
     )
     if result.get("ok"):
         result["removed"] = True
+    return result
+
+
+def _wstunnel_readiness_checks(cfg: dict) -> list[dict]:
+    """Warn-only gates, and only when the operator asked for obfuscation.
+
+    A live process on this host must not light these up by itself: readiness
+    tests (and the Health page) stay green on a Mac that happens to run the
+    historical LaunchDaemon while ``wstunnel_enabled`` is off.
+    """
+    if not cfg.get("wstunnel_enabled"):
+        return []
+    snap = wireguard_wstunnel.status(cfg)
+    running = bool(snap.get("running"))
+    restrict = str(snap.get("restrict_to") or "")
+    if snap.get("stale_restrict"):
+        restrict_detail = f"{restrict} (not on this host)"
+    elif not snap.get("stable_restrict"):
+        suggest = snap.get("suggest_restrict_to") or "127.0.0.1"
+        restrict_detail = f"{restrict} (use {suggest})"
+    else:
+        restrict_detail = restrict
+    return [
+        {
+            "id": "wstunnel",
+            "ok": running,
+            "level": "warn",
+            "detail": snap.get("listen") or snap.get("label") or "",
+        },
+        {
+            "id": "wstunnel_align",
+            "ok": bool(snap.get("aligned")),
+            "level": "warn",
+            "detail": (
+                f"{snap.get('listen')} -> {snap.get('restrict_to')} "
+                f"(want {snap.get('desired_listen')} -> {snap.get('desired_restrict_to')})"
+            ),
+            "superseded_by": "wstunnel",
+        },
+        {
+            "id": "wstunnel_restrict",
+            "ok": bool(snap.get("stable_restrict")) and not snap.get("stale_restrict"),
+            "level": "warn",
+            "detail": restrict_detail,
+            # Keep this row while the process is up: "not running" is a
+            # different repair.  Hide it only when the daemon is down, where
+            # Apply/Stabilize on the other row already covers the gap.
+            **({"superseded_by": "wstunnel"} if not running else {}),
+        },
+    ]
+
+
+def install_wstunnel(*, restrict_to: str | None = None) -> dict:
+    """Install or realign the root wstunnel LaunchDaemon from saved settings.
+
+    The binary path is pinned to the Homebrew locations; a user-controlled
+    path must never land in a root job.  ``bootout`` is joined with ``;`` so a
+    missing label does not abort the rest of the sequence.
+    """
+    binary = wireguard_wstunnel.find_binary()
+    if not binary:
+        return {"ok": False, "error": "wstunnel_missing"}
+    cfg = wireguard_svc.settings()
+    snap = wireguard_wstunnel.status(cfg)
+    listen = str(snap.get("desired_listen") or wireguard_wstunnel.DEFAULT_LISTEN)
+    dest = str(restrict_to or snap.get("desired_restrict_to") or "")
+    if not wireguard_wstunnel.valid_listen_url(listen):
+        return {"ok": False, "error": "bad_wstunnel_url", "url": listen[:80]}
+    if not wireguard_wstunnel.valid_restrict_to(dest):
+        return {"ok": False, "error": "bad_wstunnel_target", "target": dest[:60]}
+    try:
+        body = wireguard_wstunnel.render_plist(
+            binary=binary, listen=listen, restrict_to=dest,
+        )
+    except ValueError:
+        return {"ok": False, "error": "bad_wstunnel_target", "target": dest[:60]}
+
+    staged = _STAGE_DIR / f"{wireguard_wstunnel.LABEL}.plist"
+    write_secret_text(staged, body)
+    target = wireguard_wstunnel.PLIST_PATH
+    result = run_admin_sequence(
+        [
+            [LAUNCHCTL, "bootout", f"system/{wireguard_wstunnel.LABEL}"],
+            [CP, str(staged), str(target)],
+            [CHOWN, "root:wheel", str(target)],
+            [CHMOD, "644", str(target)],
+            [LAUNCHCTL, "bootstrap", "system", str(target)],
+        ],
+        timeout=180,
+    )
+    # bootout already ran; drop the memo even when bootstrap is the step that
+    # failed, or the page keeps showing a process we just tore down.
+    wireguard_wstunnel.live.invalidate()
+    if not result.get("ok"):
+        return result
+    # run_admin_sequence joins the steps with ";", so the exit status is the last
+    # step's alone.  When an earlier cp/chown/chmod failed and a plist from a
+    # previous install was already in place, bootstrap succeeds on the *stale*
+    # file -- and echoing back `listen`/`dest` would report settings that are not
+    # what root is running.  Read the installed plist back instead.
+    installed = wireguard_wstunnel.read_plist(target)
+    if installed.get("listen") != listen or installed.get("restrict_to") != dest:
+        return {
+            "ok": False,
+            "error": "wstunnel_install_unverified",
+            "listen": installed.get("listen") or "",
+            "restrict_to": installed.get("restrict_to") or "",
+        }
+    result["label"] = wireguard_wstunnel.LABEL
+    result["restrict_to"] = dest
+    result["listen"] = listen
+    return result
+
+
+def uninstall_wstunnel() -> dict:
+    """Unload the obfuscation daemon.  The WireGuard tunnel itself stays up."""
+    target = wireguard_wstunnel.PLIST_PATH
+    if not target.exists():
+        found = wireguard_wstunnel.live()
+        if not found.get("running"):
+            wireguard_svc.save_settings({"wstunnel_enabled": False})
+            return {"ok": True, "removed": False, "label": wireguard_wstunnel.LABEL}
+        # Process still up without a plist: unload the label, then clear the flag
+        # even if launchctl says the job was already gone.
+        result = run_admin_sequence(
+            [[LAUNCHCTL, "bootout", f"system/{wireguard_wstunnel.LABEL}"]],
+            timeout=180,
+        )
+        wireguard_wstunnel.live.invalidate()
+        wireguard_svc.save_settings({"wstunnel_enabled": False})
+        return {
+            "ok": True,
+            "removed": bool(result.get("ok")),
+            "label": wireguard_wstunnel.LABEL,
+        }
+    result = run_admin_sequence(
+        [
+            [LAUNCHCTL, "bootout", f"system/{wireguard_wstunnel.LABEL}"],
+            [RM, "-f", str(target)],
+        ],
+        timeout=180,
+    )
+    wireguard_wstunnel.live.invalidate()
+    if result.get("ok"):
+        wireguard_svc.save_settings({"wstunnel_enabled": False})
+        result["removed"] = True
+        result["label"] = wireguard_wstunnel.LABEL
+    return result
+
+
+def stabilize_wstunnel() -> dict:
+    """Point ``--restrict-to`` at loopback, then apply the LaunchDaemon.
+
+    Settings are written only after the privileged install succeeds, so a
+    cancelled password sheet does not leave the panel believing the live
+    process already dials 127.0.0.1.
+    """
+    cfg = wireguard_svc.settings()
+    dest = wireguard_wstunnel.default_restrict_to(cfg.get("listen_port") or 0)
+    if not dest:
+        return {"ok": False, "error": "bad_wstunnel_target", "target": ""}
+    result = install_wstunnel(restrict_to=dest)
+    if result.get("ok"):
+        wireguard_svc.save_settings({
+            "wstunnel_enabled": True,
+            "wstunnel_restrict_to": dest,
+        })
+        result["stabilized"] = dest
     return result

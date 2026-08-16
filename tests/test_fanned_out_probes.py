@@ -1315,6 +1315,7 @@ class AppsInventoryTests(unittest.TestCase):
         values = {
             "_docker_stacks": overrides.get("docker", self.DOCKER),
             "_native_apps": overrides.get("native", self.NATIVE),
+            "_launchd_apps": overrides.get("launchd", []),
             "_vms": overrides.get("vms", self.VMS),
             "engine_up": overrides.get("engine", True),
             "_host_ip": overrides.get("host", "192.168.1.9"),
@@ -1336,7 +1337,7 @@ class AppsInventoryTests(unittest.TestCase):
         inventory, _ = self._inventory()
         self.assertEqual(
             inventory["counts"],
-            {"total": 4, "native": 1, "docker": 2, "vm": 1, "running": 2, "stopped": 1},
+            {"total": 4, "native": 1, "docker": 2, "launchd": 0, "vm": 1, "running": 2, "stopped": 1},
         )
 
     def test_the_sort_is_unchanged(self):
@@ -1351,7 +1352,7 @@ class AppsInventoryTests(unittest.TestCase):
         _, elapsed = self._inventory()
         self.assertLess(
             elapsed,
-            5 * PROBE_DELAY * 0.6,
+            6 * PROBE_DELAY * 0.6,
             f"the collectors took {elapsed:.2f}s; they ran in series",
         )
 
@@ -1381,6 +1382,7 @@ class AppsInventoryTests(unittest.TestCase):
             apps_manage_svc,
             _docker_stacks=counting,
             _native_apps=lambda **kw: self.NATIVE,
+            _launchd_apps=lambda: [],
             _vms=lambda: self.VMS,
             engine_up=lambda: True,
             _host_ip=lambda: "192.168.1.9",
@@ -1400,6 +1402,7 @@ class AppsInventoryTests(unittest.TestCase):
             apps_manage_svc,
             _docker_stacks=lambda: [],
             _native_apps=record_native,
+            _launchd_apps=lambda: [],
             _vms=lambda: [],
             engine_up=lambda: True,
             _host_ip=lambda: "h",

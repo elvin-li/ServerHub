@@ -75,9 +75,9 @@
     "ja": "Cloudflare トンネルと公開ゲートウェイ。"
   },
   "wireguard": {
-    "zh-CN": "WireGuard VPN 接口和 peer。",
-    "en": "WireGuard VPN interface and peers.",
-    "ja": "WireGuard VPN のインターフェイスとピア。"
+    "zh-CN": "WireGuard VPN 接口、peer，以及 wstunnel 混淆。",
+    "en": "WireGuard VPN interface, peers, and wstunnel obfuscation.",
+    "ja": "WireGuard VPN のインターフェイス、ピア、wstunnel 難読化。"
   },
   "bookmarks": {
     "zh-CN": "常用服务的快捷入口。",

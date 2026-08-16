@@ -22,6 +22,7 @@ from hub.errors import api_error
 from hub.routers.nas_common import (
     client_host,
     raise_for_admin_result,
+    raise_service_error,
     require_admin_browser,
 )
 
@@ -67,7 +68,11 @@ def api_wireguard_readiness():
 
 @router.get("/api/wireguard/settings")
 def api_wireguard_settings():
-    return {"settings": wireguard_svc.settings(), "install": wireguard_svc.installation()}
+    return {
+        "settings": wireguard_svc.settings(),
+        "install": wireguard_svc.installation(),
+        "wstunnel": wireguard_svc.wstunnel_status(),
+    }
 
 
 @router.get("/api/wireguard/next-ip")
@@ -157,6 +162,12 @@ class WgSettingsBody(BaseModel):
     lan_cidr: str | None = None
     #: NAT egress interface; empty means follow the default route.
     wan_interface: str | None = None
+    #: Wrap the UDP handshake in wstunnel (WebSocket on TCP) so a network
+    #: that drops WireGuard still lets clients in.
+    wstunnel_enabled: StrictBool | None = None
+    wstunnel_listen: str | None = None
+    wstunnel_public: str | None = None
+    wstunnel_restrict_to: str | None = None
 
 
 @router.put("/api/wireguard/settings")
@@ -359,8 +370,8 @@ class WgForwardingBody(BaseModel):
 class WgRemediateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    #: Which gap to close: nat | daemon
-    target: str = Field(..., description="nat|daemon")
+    #: Which gap to close: nat | daemon | wstunnel | wstunnel_stabilize
+    target: str = Field(..., description="nat|daemon|wstunnel|wstunnel_stabilize")
     enabled: StrictBool = True
 
 
@@ -389,6 +400,9 @@ def api_wireguard_remediate(body: WgRemediateBody, request: Request):
         ("nat", False): wireguard_net_svc.remove_nat,
         ("daemon", True): wireguard_net_svc.install_daemon,
         ("daemon", False): wireguard_net_svc.uninstall_daemon,
+        ("wstunnel", True): wireguard_net_svc.install_wstunnel,
+        ("wstunnel", False): wireguard_net_svc.uninstall_wstunnel,
+        ("wstunnel_stabilize", True): wireguard_net_svc.stabilize_wstunnel,
     }
     fn = actions.get((target, bool(body.enabled)))
     if fn is None:
@@ -401,4 +415,9 @@ def api_wireguard_remediate(body: WgRemediateBody, request: Request):
         action=f"{target}_{'install' if body.enabled else 'remove'}",
         ok=bool(result.get("ok")),
     )
-    return raise_for_admin_result(result)
+    return raise_service_error(result, {
+        "wstunnel_missing": "wg.wstunnel_missing",
+        "bad_wstunnel_url": "wg.bad_wstunnel_url",
+        "bad_wstunnel_target": "wg.bad_wstunnel_target",
+        "wstunnel_install_unverified": "wg.wstunnel_install_unverified",
+    })

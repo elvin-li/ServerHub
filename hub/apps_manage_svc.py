@@ -723,6 +723,149 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
     return {"ok": True, "log": "\n\n".join(chunks), "source": "native"}
 
 
+# ─── User LaunchAgents (self-hosted, not brew / not the panel) ───────────────
+
+_BREW_AGENT_PREFIXES = ("homebrew.mxcl.", "homebrew.au.")
+
+
+def _catalog_launchd_labels() -> set[str]:
+    from hub import native_catalog
+    return {
+        str(app.get("launchd_label") or "").lower()
+        for app in native_catalog.NATIVE_APPS
+        if app.get("launchd_label")
+    }
+
+
+def _launchd_apps() -> list[dict]:
+    """LaunchAgents that the Apps page can start, stop, and uninstall.
+
+    Brew formulae already appear as native apps; the panel's own agents are
+    refused by the uninstall guard.  What remains is the self-hosted set
+    (Kiro-Go and the like) that used to show on Services only, with no
+    uninstall on this page.
+    """
+    import plistlib
+
+    from hub import config
+    from hub.launchd_cache import Listing
+    from hub.launchd_cache import listing as launchd_listing
+    from hub.paths import AGENTS_DIR
+    from hub.services_uninstall_svc import PROTECTED_LABELS
+
+    _EMPTY_LISTING = Listing({})
+
+    agents = Path(AGENTS_DIR)
+    if not agents.is_dir():
+        return []
+    try:
+        listing = launchd_listing()
+    except Exception:
+        listing = _EMPTY_LISTING
+    catalog = _catalog_launchd_labels()
+    items = []
+    for path in sorted(agents.glob("*.plist")):
+        label = path.stem
+        low = label.lower()
+        if low in PROTECTED_LABELS or low in catalog:
+            continue
+        if any(low.startswith(prefix) for prefix in _BREW_AGENT_PREFIXES):
+            continue
+        program = ""
+        workdir = ""
+        try:
+            data = plistlib.loads(path.read_bytes())
+            args = data.get("ProgramArguments") or []
+            program = str(args[0]) if args else str(data.get("Program") or "")
+            workdir = str(data.get("WorkingDirectory") or "")
+            label = str(data.get("Label") or label)
+        except Exception:
+            pass
+        # launchctl prints "-" in the pid column for a loaded-but-idle agent,
+        # so the raw column is truthy for a job that is not running at all.
+        # pid_for() tests it for digits; loaded says whether launchd knows the
+        # label, which is the difference between idle and not installed.
+        pid = listing.pid_for(label)
+        running = pid is not None
+        loaded = label in listing.loaded
+        ov = config.override(label) or {}
+        name = ov.get("name") or label
+        acts = (
+            ["stop", "restart", "detail", "logs", "uninstall"]
+            if running
+            else ["start", "detail", "logs", "uninstall"]
+        )
+        items.append({
+            "id": f"launchd:{label}",
+            "source_id": label,
+            "kind": "launchd",
+            "name": name,
+            "state": "ok" if running else "down",
+            "status_text": f"Running · pid {pid}" if running else (
+                "Loaded but not running" if loaded else "Not loaded"
+            ),
+            "path": workdir or (str(Path(program).parent) if program else ""),
+            "package": None,
+            "method": "launchd",
+            "installed": True,
+            "ports_summary": str(ov.get("port") or ""),
+            "autostart": True,
+            "autostart_id": f"launchd:{label}",
+            "actions": acts,
+            "category": ov.get("group") or "other",
+            "url": ov.get("url") or None,
+        })
+    return items
+
+
+def _launchd_detail(label: str) -> dict:
+    from hub import services_uninstall_svc
+    listed = next((item for item in _launchd_apps() if item.get("source_id") == label), None)
+    if not listed:
+        raise api_error("apps.launchd_not_found")
+    preview = services_uninstall_svc.preview(label)
+    return {
+        **listed,
+        "program": preview.get("program") or "",
+        "workdir": preview.get("workdir") or "",
+        "plist": preview.get("plist") or "",
+        "can_remove_data": preview.get("can_remove_data"),
+        "remove_data_path": preview.get("remove_data_path") or "",
+        "data_paths": [preview["remove_data_path"]] if preview.get("remove_data_path") else [],
+    }
+
+
+def _launchd_logs(label: str, lines: int = 120) -> dict:
+    import plistlib
+
+    from hub.paths import AGENTS_DIR
+
+    path = Path(AGENTS_DIR) / f"{label}.plist"
+    if not path.is_file():
+        raise api_error("apps.launchd_not_found")
+    chunks = []
+    try:
+        data = plistlib.loads(path.read_bytes())
+    except Exception as exc:
+        return {"ok": False, "log": str(exc), "source": "launchd"}
+    for key in ("StandardOutPath", "StandardErrorPath"):
+        logp = data.get(key)
+        if not logp:
+            continue
+        p = Path(str(logp)).expanduser()
+        if not p.is_file():
+            chunks.append(f"===== {p} =====\n(missing)")
+            continue
+        try:
+            text = p.read_text(errors="replace").splitlines()
+            chunks.append(f"===== {p} =====\n" + "\n".join(text[-lines:]))
+        except OSError as exc:
+            chunks.append(f"{p}: {exc}")
+    if not chunks:
+        chunks.append("No StandardOutPath / StandardErrorPath on this agent.")
+    return {"ok": True, "log": "\n\n".join(chunks), "source": "launchd"}
+
+
 # ─── VMs ─────────────────────────────────────────────────────────────────────
 
 def _vms() -> list[dict]:
@@ -818,7 +961,7 @@ def _vm_logs(source_id: str, lines: int = 80) -> dict:
 #: Fallbacks for a collector that failed outright.  A backend being unreachable
 #: should cost its own section of the Apps page, not the page.
 _COLLECTOR_FALLBACK = {
-    "docker": [], "native": [], "vms": [], "engine": False, "host": "",
+    "docker": [], "native": [], "launchd": [], "vms": [], "engine": False, "host": "",
 }
 
 
@@ -835,6 +978,8 @@ def _collect(entry):
             return _docker_stacks()
         if which == "native":
             return _native_apps(force=bool(argument))
+        if which == "launchd":
+            return _launchd_apps()
         if which == "vms":
             return _vms()
         if which == "engine":
@@ -859,23 +1004,25 @@ def inventory(force: bool = False) -> dict:
     # Nested pools are fine here: each fan_out builds and disposes its own, and no
     # inner task waits on an outer one, so there is nothing to deadlock against.
     # force=True must re-probe brew/bin so the panel picks up just-installed natives.
-    docker_items, native_items, vm_items, engine, host = fan_out(
+    docker_items, native_items, launchd_items, vm_items, engine, host = fan_out(
         _collect,
         [
             ("docker", None),
             ("native", force),
+            ("launchd", None),
             ("vms", None),
             ("engine", None),
             ("host", None),
         ],
     )
-    all_items = native_items + docker_items + vm_items
+    all_items = native_items + docker_items + launchd_items + vm_items
     # sort: running first, then kind, name
     def sort_key(x):
         st = x.get("state")
+        kind_rank = {"native": 0, "docker": 1, "launchd": 2}.get(x.get("kind"), 3)
         return (
             0 if st == "ok" else 1 if st == "warn" else 2,
-            0 if x.get("kind") == "native" else 1 if x.get("kind") == "docker" else 2,
+            kind_rank,
             x.get("name") or "",
         )
     all_items.sort(key=sort_key)
@@ -883,6 +1030,7 @@ def inventory(force: bool = False) -> dict:
         "total": len(all_items),
         "native": len(native_items),
         "docker": len(docker_items),
+        "launchd": len(launchd_items),
         "vm": len(vm_items),
         "running": sum(1 for x in all_items if x.get("state") == "ok"),
         "stopped": sum(1 for x in all_items if x.get("state") in ("down", "stopped")),
@@ -910,6 +1058,8 @@ def detail(app_id: str) -> dict:
         return _docker_detail(source_id)
     if kind == "native":
         return _native_detail(source_id)
+    if kind == "launchd":
+        return _launchd_detail(source_id)
     if kind == "vm":
         return _vm_detail(source_id)
     raise api_error("apps.unknown_kind", kind=kind)
@@ -926,6 +1076,8 @@ def logs(app_id: str, lines: int = 120) -> dict:
         return _docker_logs(source_id, lines)
     if kind == "native":
         return _native_logs(source_id, lines)
+    if kind == "launchd":
+        return _launchd_logs(source_id, lines)
     if kind == "vm":
         return _vm_logs(source_id, lines)
     raise api_error("apps.unknown_kind", kind=kind)
@@ -964,6 +1116,8 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 results.append(f"{c.get('id')}: {r.get('message')}")
                 ok = ok and r.get("ok")
             return {"ok": ok, "message": "\n".join(results)[-2000:], "autostart": enabled}
+        if kind == "launchd":
+            return autostart_svc.set_launchd_autostart(source_id, enabled)
         if kind == "native":
             # map to brew/launchd
             from hub import native_catalog
@@ -1016,6 +1170,18 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 confirm=True,
             )
         raise api_error("apps.docker_action_unsupported", action=action_name)
+
+    if kind == "launchd":
+        if action_name == "uninstall":
+            from hub import services_uninstall_svc
+            return services_uninstall_svc.uninstall(
+                source_id, remove_data=bool(kwargs.get("remove_data", False)),
+            )
+        if action_name in ("start", "stop", "restart", "run"):
+            from hub import actions
+            rc, out, err = actions.run_action(source_id, action_name)
+            return {"ok": rc == 0, "message": (out or err or "").strip() or action_name}
+        raise api_error("apps.native_action_unsupported", action=action_name)
 
     if kind == "native":
         from hub import native_catalog

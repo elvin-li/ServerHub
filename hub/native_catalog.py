@@ -884,7 +884,7 @@ def _run(cmd: list[str], timeout: int = 600, shell: bool = False) -> dict:
 def _needs_admin_retry(msg: str) -> bool:
     """True when brew failed because sudo needs an interactive/admin session."""
     low = (msg or "").lower()
-    if "user canceled" in low or "用户取消" in low:
+    if "user canceled" in low or "用户取消" in low:  # cjk-input: matches macOS's own zh-locale cancel message
         return False
     return (
         "sudo: a password is required" in low

@@ -139,7 +139,7 @@
       <div v-else-if="!filtered.length" class="placeholder">{{ t('apps.empty') }}</div>
     </template>
 
-    <!-- Managed inventory: native + docker + vm -->
+    <!-- Managed inventory: native + docker + launchd + vm -->
     <template v-else-if="tab === 'managed'">
       <div class="toolbar apps-toolbar">
         <input v-model="mq" type="text" class="search" :placeholder="t('apps.managed_search')"  :aria-label="t('apps.managed_search')"/>
@@ -147,6 +147,7 @@
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
           <option value="docker">{{ t('apps.kind_docker') }}</option>
+          <option value="launchd">{{ t('apps.kind_launchd') }}</option>
           <option value="vm">{{ t('apps.kind_vm') }}</option>
         </select>
         <button type="button" class="primary" @click="loadManaged(true)" :disabled="loading">{{ t('common.refresh') }}</button>
@@ -155,6 +156,7 @@
           {{ managed.counts.total }} ·
           {{ t('apps.kind_native') }} {{ managed.counts.native }} ·
           Docker {{ managed.counts.docker }} ·
+          {{ t('apps.kind_launchd') }} {{ managed.counts.launchd || 0 }} ·
           VM {{ managed.counts.vm }} ·
           {{ t('common.running') }} {{ managed.counts.running }}
         </span>
@@ -231,7 +233,7 @@
                   <button v-if="canAct(it, 'start')" type="button" class="act-btn primary" :disabled="busy" @click="doManagedAction(it, 'start')">{{ t('apps.act_start') }}</button>
                   <button v-if="canAct(it, 'stop')" type="button" class="act-btn" :disabled="busy" @click="doManagedAction(it, 'stop')">{{ t('apps.act_stop') }}</button>
                   <button v-if="canAct(it, 'restart')" type="button" class="act-btn hide-m" :disabled="busy" @click="doManagedAction(it, 'restart')">{{ t('apps.act_restart') }}</button>
-                  <button v-if="canAct(it, 'logs') || it.kind === 'docker' || it.kind === 'native'" type="button" class="act-btn" @click="openManagedLogs(it)">{{ t('apps.logs') }}</button>
+                  <button v-if="canAct(it, 'logs') || it.kind === 'docker' || it.kind === 'native' || it.kind === 'launchd'" type="button" class="act-btn" @click="openManagedLogs(it)">{{ t('apps.logs') }}</button>
                   <button
                     v-if="openUrl(it)"
                     type="button"
@@ -935,12 +937,14 @@ function firstLine(message) {
 function kindLabel(k) {
   if (k === 'native') return t('apps.kind_native')
   if (k === 'docker') return t('apps.kind_docker')
+  if (k === 'launchd') return t('apps.kind_launchd')
   if (k === 'vm') return t('apps.kind_vm')
   return k
 }
 function kindChip(k) {
   if (k === 'native') return 'chip-native'
   if (k === 'docker') return 'chip-docker'
+  if (k === 'launchd') return 'chip-launchd'
   return 'chip-feat'
 }
 function stateLabel(s) {
@@ -956,7 +960,7 @@ function canAct(it, act) {
   const acts = it.actions || []
   if (acts.includes(act)) return true
   // fallbacks when backend omits flags
-  if (act === 'logs' && (it.kind === 'docker' || it.kind === 'native')) return true
+  if (act === 'logs' && (it.kind === 'docker' || it.kind === 'native' || it.kind === 'launchd')) return true
   if (act === 'start' && (it.state === 'down' || it.state === 'stopped')) return true
   if (act === 'stop' && it.state === 'ok' && it.kind !== 'native') return true
   if (act === 'restart' && it.state === 'ok') return true
@@ -968,7 +972,7 @@ function isScreenSharing(it) {
   const id = `${it.id || ''} ${it.source_id || ''}`
   const name = (it.name || '').toLowerCase()
   return id.includes('screen-sharing')
-    || name.includes('屏幕共享')
+    || name.includes('屏幕共享') // cjk-input: matches the service name macOS reports in a zh locale
     || name.includes('screen sharing')
     || (it.url || '').startsWith('vnc://')
     || (it.url_hint || '').startsWith('vnc://')
@@ -1571,8 +1575,15 @@ async function doManagedAction(it, action) {
 
 async function doManagedUninstall(it) {
   if (!it?.id) return
-  if (!confirm(t('apps.confirm_uninstall_managed', { name: it.name || it.id }))) return
-  const removeData = it.kind === 'docker' ? confirm(t('apps.confirm_remove_data')) : false
+  const confirmKey = it.kind === 'launchd'
+    ? 'apps.confirm_uninstall_launchd'
+    : 'apps.confirm_uninstall_managed'
+  if (!confirm(t(confirmKey, { name: it.name || it.id }))) return
+  const removeData = it.kind === 'docker'
+    ? confirm(t('apps.confirm_remove_data'))
+    : it.kind === 'launchd'
+      ? confirm(t('apps.confirm_remove_launchd_data'))
+      : false
   busy.value = true
   try {
     const result = await manageApp(it.id, 'uninstall', removeData)
@@ -2097,6 +2108,12 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   background: color-mix(in srgb, #2496ed 12%, var(--card));
   border-color: color-mix(in srgb, #2496ed 35%, var(--line));
   color: #1a6fb0;
+}
+
+.chip-launchd {
+  background: color-mix(in srgb, #d97706 12%, var(--card));
+  border-color: color-mix(in srgb, #d97706 35%, var(--line));
+  color: #b45309;
 }
 
 .chip-feat {

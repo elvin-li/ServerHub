@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import contextlib
+import gzip
 import json
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -19,6 +21,34 @@ from hub.errors import CODES, api_error
 from hub.paths import CONFIG_FILE, DATA_DIR
 
 BACKUP_ROOT = Path.home() / "Services" / "backups"
+
+#: This host's Immich cluster is PostgreSQL 18 on :5433.  PATH ``pg_dump`` is
+#: 17.x and a version-mismatched dump of that database is empty or truncated,
+#: which is why the neighbouring ``~/Services/immich/backup-db.sh`` pins the
+#: Homebrew @18 binary and writes ``immich_*.sql.gz``.  The Backups page used
+#: to expose that job; after postgres targets became configuration only
+#: TeslaMate remained on the button.  These paths rediscover the Immich dump
+#: without putting its password in services.yaml.
+IMMICH_ROOT = Path.home() / "Services" / "immich"
+IMMICH_SCRIPT = IMMICH_ROOT / "backup-db.sh"
+IMMICH_DB_ENV = IMMICH_ROOT / "db.env"
+_PG18_DUMPS = (
+    Path("/opt/homebrew/opt/postgresql@18/bin/pg_dump"),
+    Path("/usr/local/opt/postgresql@18/bin/pg_dump"),
+)
+IMMICH_RETAIN = 7
+_DUMP_COMPLETE = "PostgreSQL database dump complete"
+_IMMICH_TIMEOUT = 600
+#: Enough trailing plaintext to hold pg_dump's closing comment.
+_DUMP_TAIL_BYTES = 4096
+_DUMP_CHUNK = 1 << 20
+#: PhotosHub holds the post-2026-08-14 Immich layout (Apple Photos originals,
+#: PhotosBridge index, generated media on PhotoVault).  Read-only: the Backups
+#: page needs those paths to explain *what* to back up; it must not ``du`` the
+#: USB volume on every load.
+PHOTOSHUB_CFG = Path.home() / "PhotosHub" / "config" / "config.json"
+PHOTOSHUB_STATE = Path.home() / "PhotosHub" / "state"
+_GENERATED_DIRS = ("thumbs", "encoded-video", "upload", "library")
 # 0700, not the umask default: a config backup contains services.yaml verbatim,
 # which holds the admin password hash and any tunnel/API tokens, and a database
 # dump contains whatever the database holds.  The originals are 0600, so leaving
@@ -430,6 +460,362 @@ def scan_backups() -> list:
 def list_backups(limit: int = 40) -> list:
     """The newest *limit* backups.  Kept for callers that only want the rows."""
     return scan_backups()[:limit]
+
+
+def _pg18_dump() -> Path | None:
+    for path in _PG18_DUMPS:
+        if path.is_file() and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _immich_latest() -> dict | None:
+    if not BACKUP_ROOT.is_dir():
+        return None
+    found = sorted(
+        BACKUP_ROOT.glob("immich_*.sql.gz"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not found:
+        return None
+    latest = found[0]
+    return {
+        "name": latest.name,
+        "mtime": int(latest.stat().st_mtime),
+        "size_mb": round(latest.stat().st_size / 1024 / 1024, 2),
+    }
+
+
+def _json_object(path: Path) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _path_state(raw: object) -> dict:
+    text = str(raw or "").strip()
+    if not text:
+        return {"path": "", "present": False}
+    return {"path": text, "present": Path(text).is_dir()}
+
+
+def _status_snippet(raw: dict) -> dict:
+    """Keep only the fields the Backups page renders — never the whole file."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key in ("ok", "last_success", "last_attempt", "size_human", "reason"):
+        if key in raw and raw[key] not in (None, ""):
+            out[key] = raw[key]
+    return out
+
+
+def _immich_media_from_env() -> str:
+    env = IMMICH_ROOT / ".env"
+    if not env.is_file():
+        return ""
+    try:
+        lines = env.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        if line.startswith("IMMICH_MEDIA_LOCATION="):
+            return line.split("=", 1)[1].strip().strip("\"'")
+    return ""
+
+
+def immich_layers() -> dict:
+    """The Immich data map after the 2026-08-14 redesign.
+
+    Originals left Immich's ``upload/`` / ``library/`` trees and live in the
+    Apple Photos package.  Immich now indexes a read-only PhotosBridge export
+    and only *generates* thumbs / encoded-video under the media root.  A
+    compose-stack tarball of ``immich_server`` therefore misses the database
+    (native PG18) and the originals, which is why those generic cards look
+    empty on this host.
+    """
+    cfg = _json_object(PHOTOSHUB_CFG)
+    immich = cfg.get("immich") if isinstance(cfg.get("immich"), dict) else {}
+    media = str(immich.get("media_location") or _immich_media_from_env() or "").strip()
+    originals = _path_state(cfg.get("photos_library"))
+    bridge = _path_state(immich.get("bridge_mount") or cfg.get("bridge_dir"))
+    generated_root = _path_state(media)
+    generated_dirs = []
+    if generated_root["path"]:
+        root = Path(generated_root["path"])
+        generated_dirs = [
+            {"name": name, "present": (root / name).is_dir()}
+            for name in _GENERATED_DIRS
+        ]
+    last = _immich_latest()
+    restore = ""
+    if last:
+        hint = restore_hint(last["name"])
+        restore = hint.format(path=str(BACKUP_ROOT / last["name"])) if hint else ""
+    panel = _json_object(PHOTOSHUB_STATE / "panel_status.json")
+    orig_snap = panel.get("originals") if isinstance(panel.get("originals"), dict) else {}
+    bridge_snap = panel.get("bridge") if isinstance(panel.get("bridge"), dict) else {}
+    backup = _status_snippet(_json_object(PHOTOSHUB_STATE / "backup_status.json"))
+    if not backup:
+        backup = _status_snippet(panel.get("backup") if isinstance(panel.get("backup"), dict) else {})
+    external = _status_snippet(_json_object(PHOTOSHUB_STATE / "external_backup_status.json"))
+    if not external:
+        external = _status_snippet(
+            panel.get("external_backup") if isinstance(panel.get("external_backup"), dict) else {}
+        )
+    originals_extra = {}
+    if orig_snap.get("local_original_pct") is not None:
+        originals_extra["pct"] = orig_snap.get("local_original_pct")
+    if orig_snap.get("originals_human"):
+        originals_extra["size_human"] = orig_snap.get("originals_human")
+    if orig_snap.get("assets_active") is not None:
+        originals_extra["assets"] = orig_snap.get("assets_active")
+    bridge_extra = {}
+    if bridge_snap.get("last_success"):
+        bridge_extra["last_success"] = bridge_snap.get("last_success")
+    if bridge_snap.get("exported_files") is not None:
+        bridge_extra["exported_files"] = bridge_snap.get("exported_files")
+    return {
+        "db": {
+            "port": 5433,
+            "last": last,
+            "restore": restore,
+        },
+        "originals": {
+            **originals,
+            **originals_extra,
+            "backup": backup,
+        },
+        "bridge": {**bridge, **bridge_extra},
+        "generated": {**generated_root, "dirs": generated_dirs},
+        "external": external,
+    }
+
+
+def immich_backup_info() -> dict:
+    """Whether the Immich dump can run here, plus the post-redesign layout."""
+    via = ""
+    if IMMICH_SCRIPT.is_file() and os.access(IMMICH_SCRIPT, os.X_OK):
+        via = "script"
+    elif _pg18_dump() is not None and IMMICH_DB_ENV.is_file():
+        via = "native"
+    layers = immich_layers()
+    has_layout = bool(
+        layers["originals"]["path"]
+        or layers["bridge"]["path"]
+        or layers["generated"]["path"]
+        or layers["db"]["last"]
+        or via
+    )
+    return {
+        "available": bool(via),
+        "via": via,
+        "last": layers["db"]["last"],
+        "layers": layers if has_layout else None,
+    }
+
+
+def _immich_conn() -> dict:
+    """Read host/port/user/db/password from Immich's db.env.  Never log this."""
+    from urllib.parse import unquote, urlparse
+
+    raw = ""
+    for line in IMMICH_DB_ENV.read_text(encoding="utf-8").splitlines():
+        if line.startswith("DB_URL="):
+            raw = line.split("=", 1)[1].strip().strip("\"'")
+            break
+    parsed = urlparse(raw) if raw else None
+    password = unquote(parsed.password) if parsed and parsed.password else ""
+    if not password:
+        raise RuntimeError("Immich db.env has no usable DB_URL password")
+    return {
+        "host": (parsed.hostname if parsed and parsed.hostname else "127.0.0.1"),
+        "port": (parsed.port if parsed and parsed.port else 5433),
+        "user": unquote(parsed.username) if parsed and parsed.username else "immich",
+        "db": (parsed.path or "/immich").lstrip("/") or "immich",
+        "password": password,
+    }
+
+
+def backup_immich() -> dict:
+    """Dump the Immich PostgreSQL 18 database to ``immich_*.sql.gz``."""
+    with _only_one("immich"):
+        return _backup_immich()
+
+
+def _backup_immich() -> dict:
+    info = immich_backup_info()
+    if not info["available"]:
+        return {
+            "ok": False,
+            "error": "not_configured",
+            "message": "Immich backup is not available "
+                       "(need ~/Services/immich/backup-db.sh or "
+                       "postgresql@18 plus db.env)",
+        }
+    if info["via"] == "script":
+        return _backup_immich_script()
+    return _backup_immich_native()
+
+
+def _backup_immich_script() -> dict:
+    """The host script already pins PG18, gzips, checks the tail, and prunes."""
+    before = {p.name for p in BACKUP_ROOT.glob("immich_*.sql.gz")} if BACKUP_ROOT.is_dir() else set()
+    try:
+        p = subprocess.run(
+            [str(IMMICH_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=str(IMMICH_ROOT),
+        )
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)[:500]}
+    latest = _immich_latest()
+    created = latest and latest["name"] not in before
+    ok = p.returncode == 0 and bool(created)
+    return {
+        "ok": ok,
+        "path": str(BACKUP_ROOT / latest["name"]) if ok and latest else None,
+        "message": ((p.stdout or p.stderr or f"exit {p.returncode}")[:500]),
+        "size_mb": latest["size_mb"] if ok and latest else 0,
+    }
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill *proc* and anything it spawned.
+
+    Killing only the direct child is not enough to unblock a read: a descendant
+    inherits the stdout pipe, so the write end stays open and ``read()`` keeps
+    waiting for a process nobody is watching any more.  The child is started in
+    its own session (``start_new_session``) so the whole group can go at once.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        with contextlib.suppress(Exception):
+            proc.kill()
+
+
+def _backup_immich_native() -> dict:
+    """Same artefact as the host script, when the script itself is absent.
+
+    pg_dump's plaintext is compressed in this process instead of being piped
+    through ``gzip(1)``.  A two-process pipeline cannot drain pg_dump's stderr
+    until gzip has already exited, so a dump chatty enough to fill the 64 KiB
+    stderr pipe wedges both children against each other; stderr goes to a
+    temporary file here, which cannot fill.  Streaming also makes the
+    completeness check free: the trailing plaintext is kept as it goes past,
+    rather than decompressing the finished artefact -- all of it, into memory --
+    to read its last few KiB.
+    """
+    pg18 = _pg18_dump()
+    if pg18 is None:
+        return {"ok": False, "message": "postgresql@18 pg_dump is not installed"}
+    try:
+        conn = _immich_conn()
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)[:200]}
+
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    dest = _private_dest(BACKUP_ROOT / f"immich_{stamp}.sql.gz")
+    env = dict(os.environ)
+    env["PGPASSWORD"] = conn["password"]
+    argv = [
+        str(pg18),
+        "-h", conn["host"],
+        "-p", str(conn["port"]),
+        "-U", conn["user"],
+        "-d", conn["db"],
+        "--no-owner",
+        "--no-privileges",
+    ]
+    dump: subprocess.Popen | None = None
+    tail = b""
+    err_text = ""
+    expired = threading.Event()
+    try:
+        with tempfile.TemporaryFile() as errfile:
+            dump = subprocess.Popen(
+                argv, stdout=subprocess.PIPE, stderr=errfile, env=env,
+                start_new_session=True,
+            )
+
+            def _expire() -> None:
+                """Enforce the deadline from outside the read.
+
+                Checking the clock between reads cannot work: ``read()`` blocks
+                until the chunk is full or the pipe closes, so a pg_dump that
+                stalls mid-dump (a lock wait, a wedged server) never comes back
+                to be checked and parks this thread -- and the job lock -- for
+                the life of the process.  Killing the child turns the blocking
+                read into EOF, which is the only thing that unsticks it.
+                """
+                expired.set()
+                _kill_tree(dump)
+
+            watchdog = threading.Timer(_IMMICH_TIMEOUT, _expire)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                stream = dump.stdout
+                if stream is None:
+                    raise RuntimeError("pg_dump produced no output stream")
+                # gzip.open() reuses the 0600 file _private_dest() pre-created,
+                # so the artefact is never briefly world-readable.
+                with gzip.open(dest, "wb") as out:
+                    while True:
+                        chunk = stream.read(_DUMP_CHUNK)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        tail = (tail + chunk)[-_DUMP_TAIL_BYTES:]
+                stream.close()
+                # Stand the watchdog down before anything reaps the child: once
+                # wait() collects it the pid is free to be reused, and a timer
+                # firing after that would killpg a stranger. Everything past
+                # this point is bounded by its own timeout.
+                watchdog.cancel()
+                # Advisory only -- see the completeness test below.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    dump.wait(timeout=30)
+            finally:
+                watchdog.cancel()
+                errfile.seek(0)
+                err_text = errfile.read().decode("utf-8", "replace")
+    except Exception as exc:
+        _discard(dest)
+        return {"ok": False, "message": (err_text or str(exc))[:500]}
+    finally:
+        # A write error leaves pg_dump holding a connection to the live
+        # database; without this it outlives the request that started it.
+        if dump is not None and dump.poll() is None:
+            _kill_tree(dump)
+            with contextlib.suppress(Exception):
+                dump.wait(timeout=10)
+
+    size = _written_bytes(dest)
+    # pg_dump writes _DUMP_COMPLETE as its very last line, so its presence -- not
+    # the exit status -- is what proves the artefact is whole.  Letting the exit
+    # status veto meant a dump that had already written every byte was deleted
+    # because the process took a moment longer than expected to go away.
+    ok = size > 0 and _DUMP_COMPLETE.encode() in tail
+    if not ok:
+        reason = "immich dump timed out" if expired.is_set() else (
+            err_text or "immich dump failed or truncated"
+        )
+        _discard(dest)
+        return {"ok": False, "message": reason[:500]}
+    _prune("immich_*.sql.gz", retain=IMMICH_RETAIN)
+    return {
+        "ok": True,
+        "path": str(dest),
+        "message": f"immich backup ok: {dest.name}",
+        "size_mb": round(size / 1024 / 1024, 2),
+    }
 
 
 def backup_postgres() -> dict:

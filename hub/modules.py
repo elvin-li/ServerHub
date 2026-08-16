@@ -155,7 +155,7 @@ MODULES: list[ModuleInfo] = [
         name="PhotosHub",
         description="Family photo pipeline: originals rate, Photos to Immich bridge, delete-review, external HDD backup",
         category="apps",
-        apis=["/api/photoshub/status", "/api/photoshub/action", "/api/photoshub/pending-delete"],
+        apis=["/api/photoshub/status", "/api/photoshub/action", "/api/photoshub/pending-delete", "/api/photoshub/config"],
         ui_routes=["/photoshub"],
     ),
 

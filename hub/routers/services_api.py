@@ -175,17 +175,24 @@ def services_uninstall_preview(sid: str):
     return services_uninstall_svc.preview(sid)
 
 
+class UninstallBody(BaseModel):
+    remove_data: bool = False
+
+
 @router.post("/api/services/{sid}/uninstall")
-def services_uninstall(sid: str, request: Request):
+def services_uninstall(sid: str, request: Request, body: Optional[UninstallBody] = None):
     """Unregister a launch agent and archive its plist.
 
     Stricter than ordinary service actions: this changes what starts at login,
     so the loopback menu-bar token is not accepted and the caller must hold a
-    real browser session.
+    real browser session.  ``remove_data`` deletes the program tree only when
+    it sits strictly inside ~/Services.
     """
     if not auth.browser_authenticated(request):
         raise api_error("services.uninstall_browser_session_required", id=sid)
-    return services_uninstall_svc.uninstall(sid)
+    return services_uninstall_svc.uninstall(
+        sid, remove_data=bool(body and body.remove_data),
+    )
 
 
 @router.post("/api/services/bulk-action")

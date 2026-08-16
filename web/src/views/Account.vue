@@ -104,6 +104,7 @@ import {
   getTotpStatus, regenerateTotpRecovery,
 } from '../api/client'
 import { authState } from '../lib/authState'
+import { copyToClipboard } from '../lib/clipboard'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -241,11 +242,13 @@ async function regenRecovery() {
   busy.value = false
 }
 
-function copyRecoveryCodes() {
-  navigator.clipboard.writeText(recoveryCodes.value.join('\n')).then(() => {
-    copiedRecovery.value = true
-    setTimeout(() => { copiedRecovery.value = false }, 2000)
-  }).catch(() => toast('❌ ' + t('common.copy_failed')))
+async function copyRecoveryCodes() {
+  if (!await copyToClipboard(recoveryCodes.value.join('\n'))) {
+    toast('❌ ' + t('common.copy_failed'))
+    return
+  }
+  copiedRecovery.value = true
+  setTimeout(() => { copiedRecovery.value = false }, 2000)
 }
 
 onMounted(loadTwofa)

@@ -606,6 +606,7 @@ import {
   getOllamaStatus, getStorage, getUps, powerAction, setSystemSharing,
 } from '../api/client'
 import { openAssistant } from '../lib/assistant'
+import { copyToClipboard } from '../lib/clipboard'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -1074,24 +1075,17 @@ async function disableSS() {
   }
   ssBusy.value = false
 }
-function copyVnc() {
+async function copyVnc() {
   const text = ss.value?.vnc_url
   if (!text) return
-  try {
-    navigator.clipboard.writeText(text)
-    toast('✅ ' + t('power.copied'))
-  } catch {
-    toast('❌ ' + text)
-  }
+  // The write was never awaited, so a rejected copy still toasted success and
+  // the URL the user needed was neither on the clipboard nor on screen.
+  toast(await copyToClipboard(text) ? '✅ ' + t('power.copied') : '❌ ' + text)
 }
-function copyOllamaApi() {
+async function copyOllamaApi() {
   const text = ollama.value?.url || 'http://127.0.0.1:11434'
-  try {
-    navigator.clipboard.writeText(text)
-    toast('✅ ' + t('common.copied'))
-  } catch {
-    toast('❌ ' + t('common.copy_failed'))
-  }
+  const ok = await copyToClipboard(text)
+  toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 function barClass(pct) {
   if (pct >= 90) return 'danger'

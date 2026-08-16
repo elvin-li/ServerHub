@@ -143,6 +143,49 @@ describe('WireGuard page', () => {
     expect(wrapper.text()).toContain('2.0K')
   })
 
+  it('shows the live wstunnel layout on the page', async () => {
+    const { wrapper } = await mountView({
+      running: true,
+      wstunnel: {
+        enabled: true,
+        configured: true,
+        running: true,
+        listen: 'ws://0.0.0.0:8444',
+        public: 'ws://elvin.top:8444',
+        restrict_to: '192.168.1.206:51821',
+        port: 8444,
+        aligned: true,
+        stable_restrict: false,
+        stale_restrict: false,
+        needs_apply: false,
+        needs_stabilize: true,
+        client_command: 'wstunnel client -L udp://127.0.0.1:51821:192.168.1.206:51821 ws://elvin.top:8444',
+      },
+    })
+    expect(wrapper.text()).toContain('wg.wstunnel_title')
+    expect(wrapper.text()).toContain('ws://0.0.0.0:8444')
+    expect(wrapper.text()).toContain('192.168.1.206:51821')
+    expect(wrapper.text()).toContain('wg.wstunnel_short')
+    expect(wrapper.text()).toContain('wg.wstunnel_unstable')
+    expect(wrapper.find('button.wg-stabilize-wstunnel').exists()).toBe(true)
+  })
+
+  it('hides the wstunnel export format until obfuscation is on', async () => {
+    const { wrapper } = await mountView({ running: true })
+    api.addWireguardPeer.mockResolvedValue({
+      ok: true, name: 'laptop', ip: '10.10.0.3/32', pub: 'PUB=',
+      mode: 'split', psk: '', client_conf: '[Interface]\nPrivateKey = x\n',
+      reissuable: true, applied: false, endpoint_configured: true,
+    })
+    const inputs = wrapper.findAll('input[type="text"]')
+    await inputs[0].setValue('laptop')
+    const createBtn = wrapper.findAll('button').find((b) => b.text() === 'wg.create')
+    await createBtn.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('wg.fmt_wg')
+    expect(wrapper.text()).not.toContain('wg.fmt_wst')
+  })
+
   it('flags peers copied from another server', async () => {
     const { wrapper } = await mountView({}, {
       peer_origin: { conflict: true, foreign: 5, total: 5, foreign_keys: [] },
@@ -358,6 +401,26 @@ describe('WireGuard non-blocking warnings', () => {
       warnings: [],
     })
     expect(wrapper.text()).not.toContain('wg.warnings')
+  })
+
+  it('offers to pin wstunnel to loopback when restrict-to is a LAN address', async () => {
+    const { wrapper } = await mountView({ running: true }, {
+      checks: [{
+        id: 'wstunnel_restrict', ok: false, level: 'warn',
+        detail: '192.168.1.206:51821 (use 127.0.0.1:51821)',
+      }],
+      ready: true,
+      blocking: [],
+      warnings: ['wstunnel_restrict'],
+    })
+    api.remediateWireguard.mockResolvedValue({ ok: true })
+    expect(wrapper.text()).toContain('wg.check_wstunnel_restrict')
+    expect(wrapper.text()).toContain('wg.fix_wstunnel_restrict')
+    const button = wrapper.find('button.wg-fix-wstunnel-restrict')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    await flushPromises()
+    expect(api.remediateWireguard).toHaveBeenCalledWith('wstunnel_stabilize', true)
   })
 
   it('offers to enable pf, since installing the NAT rule is what turns it on', async () => {

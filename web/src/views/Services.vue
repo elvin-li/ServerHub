@@ -203,17 +203,26 @@
           <ul class="plain-list">
             <li>{{ t('services.uninstall_item_registration') }}</li>
             <li>{{ t('services.uninstall_item_plist') }}</li>
+            <li>{{ t('services.uninstall_item_override') }}</li>
+            <li v-if="uninstallModal.removeData">{{ t('services.uninstall_item_program') }}</li>
           </ul>
         </section>
         <section class="uninstall-sec">
           <h3>{{ t('services.uninstall_keeps') }}</h3>
           <ul class="plain-list">
-            <li>{{ t('services.uninstall_item_program') }}</li>
-            <li>{{ t('services.uninstall_item_config') }}</li>
-            <li>{{ t('services.uninstall_item_data') }}</li>
+            <li v-if="!uninstallModal.removeData">{{ t('services.uninstall_item_program') }}</li>
+            <li v-if="!uninstallModal.removeData">{{ t('services.uninstall_item_config') }}</li>
+            <li v-if="!uninstallModal.removeData">{{ t('services.uninstall_item_data') }}</li>
             <li>{{ t('services.uninstall_item_logs') }}</li>
           </ul>
         </section>
+        <label v-if="uninstallModal.can_remove_data" class="chk" style="margin:10px 0;display:flex">
+          <input v-model="uninstallModal.removeData" type="checkbox" />
+          {{ t('services.uninstall_also_delete_tree') }}
+        </label>
+        <p v-if="uninstallModal.removeData && uninstallModal.remove_data_path" class="hint">
+          {{ t('services.uninstall_tree_hint', { path: uninstallModal.remove_data_path }) }}
+        </p>
         <p class="hint">{{ t('services.uninstall_reversible') }}</p>
         <div class="drawer-actions" style="margin-top:12px">
           <button type="button" class="danger" :disabled="busy" @click="confirmUninstall">{{ t('services.uninstall_confirm') }}</button>
@@ -446,7 +455,14 @@ async function openUninstall(svc) {
   busy.value = true
   try {
     const preview = await getServiceUninstallPreview(svc.id)
-    uninstallModal.value = { id: svc.id, name: svc.name || svc.id, plist: preview.plist }
+    uninstallModal.value = {
+      id: svc.id,
+      name: svc.name || svc.id,
+      plist: preview.plist,
+      can_remove_data: Boolean(preview.can_remove_data),
+      remove_data_path: preview.remove_data_path || '',
+      removeData: false,
+    }
   } catch (e) {
     toast(`❌ ${e.message || e}`)
   }
@@ -459,7 +475,7 @@ async function confirmUninstall() {
   busy.value = true
   toast(t('services.uninstall_running', { name: target.name }))
   try {
-    const r = await uninstallService(target.id)
+    const r = await uninstallService(target.id, { remove_data: Boolean(target.removeData) })
     const backup = String(r.backup || '').split('/').pop()
     toast(t('services.uninstall_done', { name: target.name, backup }))
     uninstallModal.value = null

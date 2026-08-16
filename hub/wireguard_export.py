@@ -29,7 +29,7 @@ DEFAULT_MTU = 1280
 DEFAULT_PORT = 51820
 
 #: Formats :func:`render` understands, in the order the UI presents them.
-FORMATS = ("wg", "clash", "clashfull", "sr")
+FORMATS = ("wg", "clash", "clashfull", "sr", "wst")
 
 
 def parse_conf(text: str) -> dict:
@@ -256,6 +256,8 @@ def render(
         return to_clash_full(conf, name, lan_cidr=lan_cidr, wg_cidr=wg_cidr)
     if kind == "sr":
         return to_shadowrocket(conf, name)
+    # ``wst`` is the same wg-quick file with a localhost Endpoint and a
+    # wstunnel client command already written in by the caller.
     return conf
 
 
@@ -267,5 +269,6 @@ def filename_for(fmt: str, name: str) -> str:
         "clash": f"{safe}-clash.yaml",
         "clashfull": f"{safe}-clash-full.yaml",
         "sr": f"{safe}-shadowrocket.txt",
+        "wst": f"{safe}-wstunnel.conf",
     }
     return suffix.get((fmt or "wg").lower(), f"{safe}.conf")

@@ -41,7 +41,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from hub import wireguard_export
+from hub import wireguard_export, wireguard_wstunnel
 from hub.config import cfg, update_settings
 from hub.macos_admin import (
     run_admin,
@@ -155,6 +155,10 @@ DEFAULTS = {
     "endpoint": "",
     "lan_cidr": "",
     "wan_interface": "",
+    "wstunnel_enabled": False,
+    "wstunnel_listen": wireguard_wstunnel.DEFAULT_LISTEN,
+    "wstunnel_public": "",
+    "wstunnel_restrict_to": "",
 }
 
 
@@ -228,8 +232,12 @@ def settings() -> dict:
     stored = (cfg().get("settings") or {}).get("wireguard") or {}
     merged = dict(DEFAULTS)
     for key, value in stored.items():
-        if key in merged and value not in (None, ""):
-            merged[key] = value
+        if key not in merged:
+            continue
+        # False is a real stored value for wstunnel_enabled; only skip blanks.
+        if value in (None, ""):
+            continue
+        merged[key] = value
     iface = str(merged["interface"])
     if not _IFACE_RE.match(iface):
         merged["interface"] = DEFAULTS["interface"]
@@ -297,6 +305,19 @@ def save_settings(patch: dict) -> dict:
         elif key == "wan_interface" and value:
             if not re.match(r"^[a-z][a-z0-9]{0,14}$", str(value)):
                 raise WireGuardError("wg.bad_interface", interface=str(value)[:20])
+        elif key == "wstunnel_enabled":
+            if isinstance(value, str):
+                value = value.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                value = bool(value)
+        elif key in ("wstunnel_listen", "wstunnel_public") and value:
+            if not wireguard_wstunnel.valid_listen_url(str(value)):
+                raise WireGuardError("wg.bad_wstunnel_url", url=str(value)[:80])
+            value = str(value).strip()
+        elif key == "wstunnel_restrict_to" and value:
+            if not wireguard_wstunnel.valid_restrict_to(str(value)):
+                raise WireGuardError("wg.bad_wstunnel_target", target=str(value)[:60])
+            value = str(value).strip()
         current[key] = value
     update_settings({"wireguard": current})
     return settings()
@@ -952,6 +973,7 @@ def status(force: bool = False) -> dict:
         "mtu": int(parsed["interface"].get("MTU") or cfg_["mtu"]),
         "dns": str(parsed["interface"].get("DNS") or cfg_["dns"]),
         "endpoint": cfg_["endpoint"],
+        "wstunnel": wstunnel_status(),
         "peers": peers,
         "peer_count": len(peers),
         "active_count": active,
@@ -1087,16 +1109,23 @@ def _endpoint_for_clients() -> str:
     return format_endpoint(host, port or server_identity()["listen_port"])
 
 
+def wstunnel_status() -> dict:
+    """Live + stored wstunnel layout, cheap enough for the Network overview."""
+    return wireguard_wstunnel.status(settings())
+
+
 def build_client_conf(
     *,
     private_key: str,
     ip: str,
     mode: str,
     preshared_key: str = "",
+    obfuscated: bool = False,
 ) -> str:
     """Assemble the peer-side config for a client."""
     cfg_ = settings()
     server = server_identity()
+    wst = wstunnel_status() if obfuscated else None
     lines = [
         "[Interface]",
         f"PrivateKey = {private_key}",
@@ -1110,11 +1139,16 @@ def build_client_conf(
     if preshared_key:
         lines.append(f"PresharedKey = {preshared_key}")
     lines.append(f"AllowedIPs = {client_allowed_ips(mode)}")
-    endpoint = _endpoint_for_clients()
-    if endpoint:
-        lines.append(f"Endpoint = {endpoint}")
+    if obfuscated and wst and wst.get("local_endpoint"):
+        if wst.get("client_command"):
+            lines.append(f"# {wst['client_command']}")
+        lines.append(f"Endpoint = {wst['local_endpoint']}")
     else:
-        lines.append("# Endpoint = your-host:51820   <- set the public endpoint in settings")
+        endpoint = _endpoint_for_clients()
+        if endpoint:
+            lines.append(f"Endpoint = {endpoint}")
+        else:
+            lines.append("# Endpoint = your-host:51820   <- set the public endpoint in settings")
     if cfg_["keepalive"]:
         lines.append(f"PersistentKeepalive = {cfg_['keepalive']}")
     return "\n".join(lines) + "\n"
@@ -1450,6 +1484,7 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
         ip=configured["ip"] or str(meta.get("ip") or ""),
         mode=str(meta.get("mode") or "split"),
         preshared_key=configured["preshared_key"],
+        obfuscated=(fmt or "").lower() == "wst",
     )
     cfg_ = settings()
     name = str(meta.get("name") or "peer")

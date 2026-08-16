@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('../api/client', () => ({
   getBackups: vi.fn(),
   backupPostgres: vi.fn(),
+  backupImmich: vi.fn(),
   backupConfigs: vi.fn(),
   // The scheduled-task cards (rsync / stack backups) load alongside the
   // artefact table; empty answers keep them rendered but inert.
@@ -50,7 +51,7 @@ async function render(payload) {
   const wrapper = mount(Backups, {
     global: {
       provide: { toast: () => {} },
-      stubs: { SkeletonLoader: true, LoadFailure: true },
+      stubs: { SkeletonLoader: true, LoadFailure: true, RouterLink: true },
     },
   })
   // let onMounted's refresh() settle
@@ -86,9 +87,33 @@ describe('the backups table is honest about its cap', () => {
 
   it('renders one row per backup', async () => {
     const wrapper = await render({ backups: rows(5), root: '/b', total: 5 })
-    // Scoped to the artefact table: the scheduled-task cards above it own
-    // their own <tbody> rows (including empty-state rows) and, since the
-    // mobile-overflow fix, their own .table-wrap as well.
+    // Scoped to the artefact table: configured rsync/stack cards own their
+    // own <tbody> rows. Empty generic tools collapse into <details>.
     expect(wrapper.findAll('.backups-artefacts tbody tr')).toHaveLength(5)
+  })
+
+  it('shows Immich layers and hides empty generic tools', async () => {
+    const wrapper = await render({
+      backups: rows(1),
+      root: '/b',
+      total: 1,
+      immich: {
+        available: true,
+        last: { name: 'immich_20260816_033704.sql.gz', size_mb: 33 },
+        layers: {
+          db: { port: 5433, last: { name: 'immich_20260816_033704.sql.gz', size_mb: 33 } },
+          originals: { path: '/Volumes/PhotoVault/Photos Library.photoslibrary', present: true, backup: { last_success: '2026-08-16T03:20:00', size_human: '12G' } },
+          bridge: { path: '/Volumes/PhotoVault/PhotosBridge/library', present: true },
+          generated: { path: '/Volumes/PhotoVault/immich', present: true, dirs: [{ name: 'thumbs', present: true }] },
+          external: { last_success: '2026-08-16T03:40:00' },
+        },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="immich-layers"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('thumbs')
+    expect(wrapper.find('[data-test="backup-advanced"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="backup-advanced"]').element.tagName).toBe('DETAILS')
   })
 })

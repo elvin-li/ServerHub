@@ -406,7 +406,7 @@ def _wifi_devices() -> list[str]:
     for port in hardware_ports():
         label = port.get("port") or ""
         device = port.get("device") or ""
-        if device and re.search(r"wi-?fi|airport|无线", label, re.I):
+        if device and re.search(r"wi-?fi|airport|无线", label, re.I):  # cjk-input: networksetup port names are localized
             devices.append(device)
     return devices
 
@@ -501,7 +501,7 @@ def switch_profile(profile: str) -> dict:
 
     def is_wifi(s: dict) -> bool:
         n = (s.get("name") or "") + " " + (s.get("hardware_port") or "")
-        return bool(re.search(r"wi-?fi|airport|无线", n, re.I))
+        return bool(re.search(r"wi-?fi|airport|无线", n, re.I))  # cjk-input: networksetup port names are localized
 
     def is_ethernet(s: dict) -> bool:
         if is_wifi(s):
@@ -511,7 +511,7 @@ def switch_profile(profile: str) -> dict:
         if d.startswith("en") and d != "en0":
             # en0 often Wi-Fi on MacBooks; other en* often dongles
             return True
-        if re.search(r"ethernet|lan|usb.*lan|thunderbolt.*ethernet|有线", n, re.I):
+        if re.search(r"ethernet|lan|usb.*lan|thunderbolt.*ethernet|有线", n, re.I):  # cjk-input: networksetup port names are localized
             return True
         # Thunderbolt Bridge usually not primary LAN
         if "bridge" in d or re.search(r"bridge", n, re.I):
@@ -1089,7 +1089,7 @@ def _wired_devices() -> list[dict]:
     for port in hardware_ports():
         label = port.get("port") or ""
         device = port.get("device") or ""
-        if not device or re.search(r"wi-?fi|airport|无线|bridge|thunderbolt", label, re.I):
+        if not device or re.search(r"wi-?fi|airport|无线|bridge|thunderbolt", label, re.I):  # cjk-input: networksetup port names are localized
             continue
         if re.search(r"ethernet|\blan\b|10/100|usb.*network", label, re.I):
             devices.append({"device": device, "port": label})
@@ -1694,6 +1694,27 @@ def _bust():
     invalidate_routing()
 
 
+def _wstunnel_snapshot() -> dict | None:
+    """WireGuard obfuscation layout.  Imported lazily so a wg import error
+    cannot empty the rest of the Network page."""
+    from hub.wireguard_svc import wstunnel_status
+
+    return wstunnel_status()
+
+
+def _with_wstunnel_listener(rows: list, snapshot: dict | None) -> list:
+    """Surface the root wstunnel bind that unprivileged ``lsof`` cannot see."""
+    from hub.wireguard_wstunnel import listener_row
+
+    extra = listener_row(snapshot)
+    if not extra:
+        return rows
+    port = str(extra.get("port") or "")
+    if port and any(str(row.get("port")) == port and "wstunnel" in str(row.get("process") or "").lower() for row in rows):
+        return rows
+    return list(rows) + [extra]
+
+
 def _build_overview(force_services: bool = False) -> dict:
     # Every collector below is an independent subprocess-bound call; run them
     # concurrently so page latency ≈ the single slowest call, not their sum.
@@ -1720,6 +1741,7 @@ def _build_overview(force_services: bool = False) -> dict:
     f_alias = _overview_pool.submit(_safe, alias_auto_status, None)
     f_failover = _overview_pool.submit(_safe, network_failover_status, None)
     f_engine = _overview_pool.submit(engine_up)
+    f_wstunnel = _overview_pool.submit(_safe, _wstunnel_snapshot, None)
 
     ifaces = _safe(f_ifaces.result, [])
     try:
@@ -1742,7 +1764,7 @@ def _build_overview(force_services: bool = False) -> dict:
         "services_error": svc_error,
         "hardware_ports": _safe(f_hwports.result, []),
         "interface_addresses": f_addrs.result(),
-        "listening": f_listen.result(),
+        "listening": _with_wstunnel_listener(f_listen.result(), f_wstunnel.result()),
         "routes": f_routes.result(),
         "default_route": f_defroute.result(),
         "docker_ports": f_dports.result(),
@@ -1750,6 +1772,7 @@ def _build_overview(force_services: bool = False) -> dict:
         "engine_up": _safe(f_engine.result, False),
         "alias_auto": f_alias.result(),
         "network_failover": f_failover.result(),
+        "wstunnel": f_wstunnel.result(),
         "ts": time.strftime("%H:%M:%S"),
         "profiles": [
             {"id": "wifi", "label": "Prefer Wi-Fi (wired as fallback)"},

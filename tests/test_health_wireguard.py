@@ -73,6 +73,39 @@ class WireguardHealthTests(unittest.TestCase):
         self.assertIn("wg_check", checks)
         self.assertEqual(checks["wg_check"]["level"], "warn")
 
+    def test_a_live_wstunnel_is_ignored_until_the_operator_enables_it(self):
+        """This Mac already runs the historical daemon; Health must stay quiet."""
+        with patch("hub.wireguard_svc.installation", return_value={"installed": True}), \
+             patch("hub.wireguard_svc.settings", return_value={"interface": "wg0"}), \
+             patch("hub.wireguard_svc.conf_path", return_value=Path(__file__)), \
+             patch("hub.wireguard_svc.live_interface", return_value=("utun4", [["r"]], "")), \
+             patch("hub.wireguard_net_svc.daemon_state", return_value={
+                 "healthy": True, "defects": [],
+             }), \
+             patch("hub.wireguard_wstunnel.status") as wst:
+            checks = _by_id(health_svc._wireguard_checks())
+        wst.assert_not_called()
+        self.assertNotIn("wg_wstunnel", checks)
+
+    def test_enabled_wstunnel_that_is_down_is_a_warning(self):
+        with patch("hub.wireguard_svc.installation", return_value={"installed": True}), \
+             patch("hub.wireguard_svc.settings", return_value={
+                 "interface": "wg0", "wstunnel_enabled": True,
+             }), \
+             patch("hub.wireguard_svc.conf_path", return_value=Path(__file__)), \
+             patch("hub.wireguard_svc.live_interface", return_value=("utun4", [["r"]], "")), \
+             patch("hub.wireguard_net_svc.daemon_state", return_value={
+                 "healthy": True, "defects": [],
+             }), \
+             patch("hub.wireguard_wstunnel.status", return_value={
+                 "running": False, "listen": "ws://0.0.0.0:8444",
+                 "stable_restrict": True, "stale_restrict": False, "aligned": True,
+             }):
+            checks = _by_id(health_svc._wireguard_checks())
+        self.assertFalse(checks["wg_wstunnel"]["ok"])
+        self.assertEqual(checks["wg_wstunnel"]["level"], "warn")
+        self.assertTrue(checks["wg_wstunnel"]["fix"])
+
 
 if __name__ == "__main__":
     unittest.main()

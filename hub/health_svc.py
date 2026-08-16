@@ -264,11 +264,12 @@ def _wireguard_checks() -> list[dict]:
     rule, and daemon_state() only reads the plist and `launchctl print`.
     """
     try:
-        from hub import wireguard_net_svc, wireguard_svc
+        from hub import wireguard_net_svc, wireguard_svc, wireguard_wstunnel
 
         if not wireguard_svc.installation().get("installed"):
             return []  # wireguard-tools absent — feature unused on this host
-        interface = wireguard_svc.settings().get("interface") or "wg0"
+        cfg = wireguard_svc.settings()
+        interface = cfg.get("interface") or "wg0"
         if not wireguard_svc.conf_path(interface).exists():
             return []  # no tunnel configured — nothing to watch
         checks = []
@@ -294,6 +295,33 @@ def _wireguard_checks() -> list[dict]:
             "Use the fix action on the WireGuard page (admin password), or run "
             "deploy/repair-wireguard.sh" if not healthy else "",
         ))
+
+        # Only when the operator asked for obfuscation.  A leftover root
+        # wstunnel on this Mac must not turn Health red by itself.
+        if cfg.get("wstunnel_enabled"):
+            wst = wireguard_wstunnel.status(cfg)
+            wst_up = bool(wst.get("running"))
+            checks.append(_check(
+                "wg_wstunnel", "WireGuard wstunnel",
+                "warn", wst_up,
+                wst.get("listen") if wst_up else "enabled but not running",
+                "Apply the wstunnel daemon from the WireGuard page"
+                if not wst_up else "",
+            ))
+            if wst_up and (not wst.get("stable_restrict") or wst.get("stale_restrict")):
+                checks.append(_check(
+                    "wg_wstunnel_restrict", "wstunnel restrict-to",
+                    "warn", False,
+                    wst.get("restrict_to") or "",
+                    "Stabilize to 127.0.0.1 from the WireGuard page",
+                ))
+            elif wst_up and not wst.get("aligned"):
+                checks.append(_check(
+                    "wg_wstunnel_align", "wstunnel layout",
+                    "warn", False,
+                    f"{wst.get('listen')} != {wst.get('desired_listen')}",
+                    "Apply the saved wstunnel settings from the WireGuard page",
+                ))
         return checks
     except Exception as e:
         return [_check(

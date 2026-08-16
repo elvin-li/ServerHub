@@ -393,6 +393,10 @@ class DumpShapeContractTests(unittest.TestCase):
                     "conf_path": "/x", "conf_dir": "/x",
                 },
             ),
+            # handshake_age is now - last_handshake.  Two status() calls that
+            # straddle a second used to disagree on that field alone, which is
+            # not a dump-shape difference.
+            patch.object(wireguard_svc.time, "time", return_value=1786081284),
         ):
             return wireguard_svc.status()
 

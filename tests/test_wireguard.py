@@ -173,6 +173,7 @@ class RenderDispatchTests(unittest.TestCase):
         self.assertEqual(wgx.filename_for("clash", "p"), "p-clash.yaml")
         self.assertEqual(wgx.filename_for("clashfull", "p"), "p-clash-full.yaml")
         self.assertEqual(wgx.filename_for("sr", "p"), "p-shadowrocket.txt")
+        self.assertEqual(wgx.filename_for("wst", "p"), "p-wstunnel.conf")
 
 
 SERVER_CONF = f"""[Interface]

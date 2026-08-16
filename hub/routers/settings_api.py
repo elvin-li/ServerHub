@@ -405,12 +405,22 @@ def get_backups():
         "backups": found[:BACKUP_ROWS],
         "root": str(backups.BACKUP_ROOT),
         "total": len(found),
+        "postgres_targets": [
+            {"id": t["id"], "db": t["db"], "port": t["port"]}
+            for t in backups.pg_targets()
+        ],
+        "immich": backups.immich_backup_info(),
     }
 
 
 @router.post("/api/backups/postgres")
 def do_pg_backup():
     return backups.backup_postgres()
+
+
+@router.post("/api/backups/immich")
+def do_immich_backup():
+    return backups.backup_immich()
 
 
 @router.post("/api/backups/configs")

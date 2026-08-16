@@ -107,6 +107,16 @@ SECRET_PATHS = [
         "the inventory write mutex: pure runtime state that is meaningless in "
         "a clone, and a tracked lock file would be checked out held",
     ),
+    (
+        "data/uninstalled-agents/com.example.worker.20260816-000000.plist",
+        "an archived LaunchAgent plist from uninstall: real program paths and "
+        "working directories on this machine",
+    ),
+    (
+        "data/com.elvin.wstunnel-wg-server.plist",
+        "the staged root wstunnel LaunchDaemon: host listen address and the "
+        "WireGuard restrict-to target, written 0600 under data/ before sudo cp",
+    ),
 ]
 
 

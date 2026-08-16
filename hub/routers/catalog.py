@@ -168,7 +168,20 @@ class ManagedActionBody(BaseModel):
 
 
 @router.post("/api/apps/managed/action")
-def apps_managed_action(body: ManagedActionBody):
+def apps_managed_action(body: ManagedActionBody, request: Request):
+    """Dispatch one Apps-page action.
+
+    ``uninstall`` on a launch agent lands in the same
+    ``services_uninstall_svc.uninstall()`` as ``POST /api/services/{sid}/
+    uninstall``, which refuses anything but a real browser session -- it
+    changes what starts at login and can delete a program tree.  Reaching it
+    through this route must not be the cheaper way in: an API key is
+    deliberately not allowed on that surface, whatever its role.
+    """
+    if body.action.strip().lower() == "uninstall":
+        sid = body.id.partition(":")[2] or body.id
+        if not auth.browser_authenticated(request):
+            raise api_error("services.uninstall_browser_session_required", id=sid)
     return apps_manage_svc.action(
         body.id,
         body.action,

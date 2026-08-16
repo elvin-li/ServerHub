@@ -223,6 +223,14 @@ CODES: dict[str, tuple[int, str]] = {
     "wg.bad_interface": (400, "invalid interface name: {interface}"),
     "wg.bad_subnet": (400, "invalid subnet: {subnet}"),
     "wg.bad_endpoint": (400, "invalid public endpoint: {endpoint}"),
+    "wg.bad_wstunnel_url": (400, "invalid wstunnel URL: {url}"),
+    "wg.bad_wstunnel_target": (400, "invalid wstunnel restrict-to: {target}"),
+    "wg.wstunnel_missing": (503, "wstunnel is not installed"),
+    "wg.wstunnel_install_unverified": (
+        500,
+        "the wstunnel daemon was not installed as requested; "
+        "root is running listen={listen} restrict-to={restrict_to}",
+    ),
     "wg.bad_number": (400, "{field} is out of range"),
     "wg.bad_name": (400, "a peer name of 1-32 characters is required"),
     "wg.bad_mode": (400, "unsupported tunnel mode {mode}; choose full or split"),
@@ -324,7 +332,8 @@ CODES: dict[str, tuple[int, str]] = {
     "cloudflared.invalid_name": (400, 'invalid tunnel name (letters, digits, . _ - only)'),
     "cloudflared.login_required": (400, 'sign in to Cloudflare first'),
     "cloudflared.route_args_required": (400, 'tunnel and hostname are required'),
-    "apps.bad_id": (400, 'id must be kind:source, e.g. docker:plex / native:native-redis / vm:uuid'),
+    "apps.bad_id": (400, 'id must be kind:source, e.g. docker:plex / native:native-redis / launchd:label / vm:uuid'),
+    "apps.launchd_not_found": (404, "launch agent not found"),
     "apps.cloudflared_token_required": (400, 'select a tunnel or paste a token and start it once before enabling autostart'),
     "apps.autostart_unsupported": (400, 'this native app does not support toggling login autostart (it may require System Settings)'),
     "apps.vm_autostart_external": (400, 'configure VM autostart in UTM / OrbStack'),
@@ -444,6 +453,14 @@ CODES: dict[str, tuple[int, str]] = {
     "photoshub.album_missing": (404, "the pending-delete album was not found"),
     "photoshub.key_missing": (503, "the Immich API key is missing"),
     "photoshub.script_missing": (404, "the PhotosHub people-album script is not on disk"),
+    "photoshub.bad_config": (400, "PhotosHub config.json is missing or not valid JSON"),
+    "photoshub.config_failed": (500, "PhotosHub settings could not be saved: {detail}"),
+    "photoshub.bad_name": (400, "a person name must be 1–40 characters with no control characters"),
+    "photoshub.bad_birthday": (400, "birthday must be YYYY-MM or YYYY-MM-DD"),
+    "photoshub.bad_album": (400, "album names are 1–80 characters and cannot contain slashes"),
+    "photoshub.bad_person": (400, "only yuanbao and erbao can be edited here"),
+    "photoshub.bad_link_url": (400, "that link must be an http(s) URL with a hostname"),
+    "photoshub.thumb_failed": (502, "the photo preview could not be fetched from Immich: {detail}"),
 }
 
 

@@ -5,14 +5,80 @@
       <span class="meta">{{ root || 'Services/backups' }}</span>
     </div>
     <div class="toolbar">
-      <button class="primary" :disabled="busy" @click="doPg">{{ t('backups.pg') }}</button>
+      <button class="primary" :disabled="busy" @click="doPg">{{ pgLabel }}</button>
+      <button v-if="immich.available" :disabled="busy" @click="doImmich">{{ t('backups.immich') }}</button>
       <button :disabled="busy" @click="doCfg">{{ t('backups.cfg') }}</button>
       <button :disabled="busy" @click="refresh">{{ t('backups.refresh_list') }}</button>
     </div>
     <div v-if="msg" class="card" style="margin-bottom:12px;white-space:pre-wrap;font-size:13px">{{ msg }}</div>
 
+    <div v-if="layers" class="tile" style="margin-bottom:12px" data-test="immich-layers">
+      <div class="row">
+        <h3 style="margin:0">{{ t('backups.immich_layers_title') }}</h3>
+        <router-link class="tiny" to="/photoshub">{{ t('backups.immich_open_photoshub') }}</router-link>
+      </div>
+      <p class="meta" style="font-size:11px;color:var(--sub);margin:6px 0 10px">
+        {{ t('backups.immich_layers_desc') }}
+      </p>
+      <div class="dash-grid">
+        <div class="tile span-4">
+          <h3>{{ t('backups.layer_db') }}</h3>
+          <div class="v" style="font-size:15px">{{ layers.db?.last?.name || t('photoshub.never') }}</div>
+          <div class="meta">
+            <template v-if="layers.db?.last">{{ layers.db.last.size_mb }} MB · :{{ layers.db.port }}</template>
+            <template v-else>{{ t('backups.layer_db_hint') }}</template>
+          </div>
+        </div>
+        <div class="tile span-4">
+          <h3>{{ t('backups.layer_originals') }}</h3>
+          <div class="v" style="font-size:15px">{{ originalsHeadline }}</div>
+          <div class="meta">{{ layers.originals?.backup?.last_success || layers.originals?.path || t('photoshub.never') }}</div>
+          <div v-if="layers.originals?.size_human" class="meta">{{ layers.originals.size_human }}</div>
+        </div>
+        <div class="tile span-4">
+          <h3>{{ t('backups.layer_bridge') }}</h3>
+          <div class="v" style="font-size:15px">{{ layerPresent(layers.bridge) }}</div>
+          <div class="meta">{{ layers.bridge?.last_success || layers.bridge?.path || '—' }}</div>
+          <div v-if="layers.bridge?.exported_files != null" class="meta">{{ t('backups.layer_bridge_files', { n: layers.bridge.exported_files }) }}</div>
+        </div>
+        <div class="tile span-4">
+          <h3>{{ t('backups.layer_generated') }}</h3>
+          <div class="v" style="font-size:15px">{{ layerPresent(layers.generated) }}</div>
+          <div class="meta">{{ generatedSummary }}</div>
+        </div>
+        <div class="tile span-4">
+          <h3>{{ t('backups.layer_external') }}</h3>
+          <div class="v" style="font-size:15px">{{ layers.external?.last_success || t('photoshub.disk_absent') }}</div>
+          <div class="meta">{{ layers.external?.reason || (layers.external?.ok === false ? t('common.issues') : '') }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- A task type with no jobs has no table of its own, so its only "New task"
+         button lives here. Shown whenever *either* type is empty: gating this on
+         both being empty meant one rsync job hid the stack card and this block at
+         the same time, leaving no way to create a stack backup anywhere. -->
+    <details v-if="jobsLoaded && (!rsyncJobs.length || !stackJobs.length)" class="tile" style="margin-bottom:12px" data-test="backup-advanced">
+      <summary class="advanced-sum">{{ t('backups.advanced_generic') }}</summary>
+      <p class="meta" style="font-size:11px;color:var(--sub);margin:8px 0 12px">{{ t('backups.advanced_generic_desc') }}</p>
+      <div v-if="!rsyncJobs.length" class="tile" style="margin-bottom:12px">
+        <div class="row">
+          <h3 style="margin:0">{{ t('backups.rsync_title') }}</h3>
+          <button class="tiny primary" @click="openJobEditor('rsync', null)">{{ t('backups.new_task') }}</button>
+        </div>
+        <p class="meta" style="font-size:11px;color:var(--sub);margin:6px 0">{{ t('backups.rsync_desc') }}</p>
+      </div>
+      <div v-if="!stackJobs.length" class="tile">
+        <div class="row">
+          <h3 style="margin:0">{{ t('backups.stack_title') }}</h3>
+          <button class="tiny primary" @click="openJobEditor('stack_backup', null)">{{ t('backups.new_task') }}</button>
+        </div>
+        <p class="meta" style="font-size:11px;color:var(--sub);margin:6px 0">{{ t('backups.stack_desc') }}</p>
+      </div>
+    </details>
+
     <!-- ── scheduled rsync sync tasks ─────────────────────────────────── -->
-    <div class="tile" style="margin-bottom:12px">
+    <div v-if="rsyncJobs.length" class="tile" style="margin-bottom:12px">
       <div class="row">
         <h3 style="margin:0">{{ t('backups.rsync_title') }}</h3>
         <button class="tiny primary" @click="openJobEditor('rsync', null)">{{ t('backups.new_task') }}</button>
@@ -60,7 +126,7 @@
     </div>
 
     <!-- ── scheduled compose-stack (appdata) backups ──────────────────── -->
-    <div class="tile" style="margin-bottom:12px">
+    <div v-if="stackJobs.length" class="tile" style="margin-bottom:12px">
       <div class="row">
         <h3 style="margin:0">{{ t('backups.stack_title') }}</h3>
         <button class="tiny primary" @click="openJobEditor('stack_backup', null)">{{ t('backups.new_task') }}</button>
@@ -107,6 +173,7 @@
             <th class="col-hide-m">{{ t('backups.dir') }}</th>
             <th>{{ t('backups.size') }}</th>
             <th>{{ t('backups.time') }}</th>
+            <th class="col-hide-m">{{ t('backups.restore') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -114,13 +181,21 @@
             <td class="mono">
               {{ b.name }}
               <div v-if="b.dir" class="show-m sub">{{ b.dir }}</div>
+              <div v-if="b.restore" class="show-m sub">
+                <button class="tiny" type="button" @click="copyRestore(b.restore)">{{ t('common.copy') }}</button>
+                {{ t('backups.restore') }}
+              </div>
             </td>
             <td class="mono col-hide-m" style="font-size:11px">{{ b.dir }}</td>
             <td>{{ b.size_mb }} MB</td>
             <td>{{ fmt(b.mtime) }}</td>
+            <td class="col-hide-m" style="font-size:11px;max-width:280px">
+              <button v-if="b.restore" class="tiny" type="button" :title="t('backups.restore_copy')" @click="copyRestore(b.restore)">{{ t('common.copy') }}</button>
+              <span v-if="b.restore" class="mono sub" :title="b.restore">{{ b.restore }}</span>
+            </td>
           </tr>
           <tr v-if="!backups.length && !loadError">
-            <td colspan="4" style="color:var(--sub)">{{ t('backups.empty') }}</td>
+            <td colspan="5" style="color:var(--sub)">{{ t('backups.empty') }}</td>
           </tr>
         </tbody>
       </table>
@@ -176,6 +251,7 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import {
   backupConfigs,
+  backupImmich,
   backupPostgres,
   createSchedulerJob,
   deleteSchedulerJob,
@@ -187,6 +263,7 @@ import {
   updateSchedulerJob,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -206,6 +283,26 @@ const loadError = ref('')
 // tell "these are all of them" apart from "these are the newest 40".
 const total = ref(0)
 const hiddenCount = computed(() => Math.max(0, total.value - backups.value.length))
+const postgresTargets = ref([])
+const immich = ref({ available: false, last: null, layers: null })
+const layers = computed(() => immich.value.layers || null)
+const generatedSummary = computed(() => {
+  const dirs = layers.value?.generated?.dirs || []
+  if (!dirs.length) return layers.value?.generated?.path || '—'
+  return dirs.map((d) => `${d.name}${d.present ? '' : '?'}`).join(' · ')
+})
+const originalsHeadline = computed(() => {
+  const layer = layers.value?.originals
+  if (!layer) return '—'
+  if (layer.pct != null) return t('backups.layer_originals_pct', { n: layer.pct })
+  return layerPresent(layer)
+})
+const pgLabel = computed(() => {
+  const names = postgresTargets.value.map((t) => t.id).filter(Boolean)
+  if (names.length === 1) return t('backups.pg_named', { name: names[0] })
+  if (names.length > 1) return t('backups.pg')
+  return t('backups.pg')
+})
 
 // Scheduled backup tasks (rsync + stack) ride on the panel scheduler.
 const jobs = ref([])
@@ -228,6 +325,17 @@ function fmt(t) {
   return t ? new Date(t * 1000).toLocaleString() : ''
 }
 
+function layerPresent(layer) {
+  if (!layer) return '—'
+  return layer.present ? t('backups.layer_present') : t('backups.layer_missing')
+}
+
+async function copyRestore(text) {
+  if (!text) return
+  const ok = await copyToClipboard(text)
+  toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
+}
+
 async function refresh() {
   try {
     const d = await getBackups()
@@ -236,6 +344,8 @@ async function refresh() {
     // A panel that predates `total` sends none; falling back to the row count
     // keeps the note hidden rather than claiming everything is truncated.
     total.value = d.total ?? (d.backups || []).length
+    postgresTargets.value = d.postgres_targets || []
+    immich.value = d.immich || { available: false, last: null, layers: null }
     loadError.value = ''
   } catch (e) {
     loadError.value = e.message || String(e)
@@ -320,13 +430,31 @@ async function openPreview(job) {
 }
 
 async function doPg() {
-  if (!confirm(t('backups.confirm_pg'))) return
+  const names = postgresTargets.value.map((t) => t.id).filter(Boolean).join(', ') || 'PostgreSQL'
+  if (!confirm(t('backups.confirm_pg', { names }))) return
   busy.value = true
   msg.value = t('backups.backing_up')
   try {
     const r = await backupPostgres()
     msg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '') + (r.path ? `\n${r.path} (${r.size_mb} MB)` : '')
     toast(r.ok ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
+    if (r.ok) await refresh()
+  } catch (e) {
+    toast('❌ ' + e.message)
+    msg.value = String(e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function doImmich() {
+  if (!confirm(t('backups.confirm_immich'))) return
+  busy.value = true
+  msg.value = t('backups.backing_up')
+  try {
+    const r = await backupImmich()
+    msg.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '') + (r.path ? `\n${r.path} (${r.size_mb} MB)` : '')
+    toast(r.ok ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
     if (r.ok) await refresh()
   } catch (e) {
     toast('❌ ' + e.message)
@@ -358,3 +486,15 @@ onMounted(() => {
   loadBinary()
 })
 </script>
+
+<style scoped>
+.advanced-sum {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.advanced-sum:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+</style>

@@ -358,6 +358,7 @@ import {
   unloadOllamaModel,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { copyToClipboard } from '../lib/clipboard'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -465,12 +466,10 @@ function fmtDate(s) {
   return (s || '').slice(0, 16).replace('T', ' ') || '—'
 }
 
-function copyText(text) {
+async function copyText(text) {
   if (!text) return
-  navigator.clipboard.writeText(text).then(
-    () => toast('✅ ' + t('common.copied')),
-    () => toast('❌ ' + t('common.copy_failed')),
-  )
+  const ok = await copyToClipboard(text)
+  toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
 async function loadOllamaSettings() {

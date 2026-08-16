@@ -131,6 +131,7 @@ class InvalidateInventoryTests(unittest.TestCase):
             mock.patch.object(apps_manage_svc, "_docker_stacks",
                               side_effect=lambda *a, **k: counter.append("docker") or []),
             mock.patch.object(apps_manage_svc, "_native_apps", return_value=[]),
+            mock.patch.object(apps_manage_svc, "_launchd_apps", return_value=[]),
             mock.patch.object(apps_manage_svc, "_vms", return_value=[]),
         )
 

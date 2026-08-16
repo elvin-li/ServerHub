@@ -107,6 +107,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAuthStatus, getSetupToken, loginAuth, resetAuthLost, setupAuth, verifyTotpLogin } from '../api/client'
 import { injectI18n } from '../i18n'
+import { copyToClipboard } from '../lib/clipboard'
 
 const { t, locale, locales, setLocale } = injectI18n()
 const route = useRoute()
@@ -157,11 +158,10 @@ onMounted(async () => {
 
 function onLocale(e) { setLocale(e.target.value) }
 
-function copyToken() {
-  navigator.clipboard.writeText(autoToken.value).then(() => {
-    copied.value = true
-    setTimeout(() => copied.value = false, 2000)
-  }).catch(() => {})
+async function copyToken() {
+  if (!await copyToClipboard(autoToken.value)) return
+  copied.value = true
+  setTimeout(() => copied.value = false, 2000)
 }
 
 async function finishLogin() {

@@ -121,6 +121,7 @@ class ResourceModePathTests(unittest.TestCase):
         self.assertTrue(snap["orbstack"])
 
     def test_high_mode_host_still_probes_docker(self):
+        from hub.docker_cli import invalidate_engine_state
         from hub.routers import system_extra
 
         probes = []
@@ -129,6 +130,10 @@ class ResourceModePathTests(unittest.TestCase):
             probes.append(args)
             return (0, "ok", "")
 
+        # engine_up keeps a process-wide TTL.  A earlier test in the full
+        # suite can leave a hit, and this assertion then sees no docker call
+        # even though high mode did ask for a live engine probe.
+        invalidate_engine_state()
         with (
             patch.object(system_extra, "is_high", return_value=True),
             patch("hub.docker_cli.docker", side_effect=fake_docker),
