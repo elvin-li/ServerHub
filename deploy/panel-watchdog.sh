@@ -73,9 +73,9 @@ fi
 
 # Backstop rotation for the panel's launchd logs.  launchd appends to
 # StandardOut/ErrorPath forever and macOS rotates neither; on this host a
-# daily agent (local.services-logrotate) truncates them at 1-8 MiB, but that
+# host agent (local.services-logrotate) truncates them at 1-8 MiB, but that
 # automation is host infrastructure, not part of ServerHub -- an install
-# without it grows these files without bound.  10 MiB sits above the daily
+# without it grows these files without bound.  10 MiB sits above the host
 # job's thresholds, so wherever that job exists it acts first and this never
 # fires.  Copy-then-truncate, never rename: launchd holds the files open with
 # O_APPEND, so a rename would leave it writing to the unlinked inode until

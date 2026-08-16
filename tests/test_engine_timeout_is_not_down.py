@@ -29,7 +29,7 @@ from hub.discovery import containers  # noqa: E402
 
 TIMEOUT = (-1, "", "timeout")
 DEAD_ENGINE = (1, "", "Cannot connect to the Docker daemon")
-PS_ONE_CONTAINER = (0, "web\trunning\tUp 2 days\tproj", "")
+PS_ONE_CONTAINER = (0, "web\trunning\tUp 2 days\tnginx:latest\tproj", "")
 
 
 class EngineUpTimeoutTests(unittest.TestCase):

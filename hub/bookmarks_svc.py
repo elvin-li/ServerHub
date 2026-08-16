@@ -13,13 +13,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-
 from hub.config import cfg
 from hub.host_address import resolve_value
-from hub.util import cached_snapshot, fan_out
+from hub.util import LazyPool, cached_snapshot, fan_out
 
 _TTL = 120.0
+_pool = LazyPool(2, "hub-bookmarks")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 
 #: A probe is an HTTP reachability check, nothing else.  urlopen also speaks
 #: file:, ftp: and data:, and bookmark URLs are not all typed by the operator --
@@ -386,24 +389,23 @@ def list_bookmarks() -> dict:
     #
     # `_backend_index` is the one that can be slow (three CLIs), so it is submitted
     # first; the link resolution is then this thread's own work rather than a wait.
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        f_idx = ex.submit(_backend_index)
+    f_idx = _pool.submit(_backend_index)
 
-        links = resolve_value(list(cfg().get("quick_links") or []))
-        # also from overrides urls
-        for sid, raw in (cfg().get("overrides") or {}).items():
-            ov = resolve_value(raw)
-            if ov.get("url") and ov.get("hide") is not True:
-                name = ov.get("name") or sid
-                if not any(l.get("url") == ov["url"] for l in links):
-                    links.append({
-                        "name": name,
-                        "url": ov["url"],
-                        "id": sid,
-                        "service": sid,
-                    })
+    links = resolve_value(list(cfg().get("quick_links") or []))
+    # also from overrides urls
+    for sid, raw in (cfg().get("overrides") or {}).items():
+        ov = resolve_value(raw)
+        if ov.get("url") and ov.get("hide") is not True:
+            name = ov.get("name") or sid
+            if not any(l.get("url") == ov["url"] for l in links):
+                links.append({
+                    "name": name,
+                    "url": ov["url"],
+                    "id": sid,
+                    "service": sid,
+                })
 
-        idx = f_idx.result()
+    idx = f_idx.result()
 
     # decide which need probe
     to_probe = []

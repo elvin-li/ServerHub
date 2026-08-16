@@ -11,13 +11,19 @@ import plistlib
 import shlex
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+from hub.errors import soft_fail
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import BASE
-from hub.util import sh
+from hub.util import LazyPool, sh
+
+_pool = LazyPool(4, "hub-launcher")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 
 PANEL_LABEL = "local.serverhub.panel"
 LAUNCHER_LABEL = "local.serverhub.launcher"
@@ -131,21 +137,21 @@ def status() -> dict:
     # These probes each spawn an independent, read-only system command. Running
     # them concurrently keeps the settings page latency near the slowest probe
     # instead of adding four subprocess startup times together.
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        app_running = executor.submit(_app_running, app) if app is not None else None
-        panel_state = executor.submit(_job_state, panel_label)
-        launcher_loaded = executor.submit(_loaded, launcher_label)
-        legacy_loaded = executor.submit(_loaded, legacy_label)
-        def probe_result(future, default):
-            try:
-                return future.result()
-            except Exception:
-                return default
+    app_running = _pool.submit(_app_running, app) if app is not None else None
+    panel_state = _pool.submit(_job_state, panel_label)
+    launcher_loaded = _pool.submit(_loaded, launcher_label)
+    legacy_loaded = _pool.submit(_loaded, legacy_label)
 
-        running = probe_result(app_running, False) if app_running is not None else False
-        panel = probe_result(panel_state, None)
-        launcher = probe_result(launcher_loaded, False)
-        legacy = probe_result(legacy_loaded, False)
+    def probe_result(future, default):
+        try:
+            return future.result()
+        except Exception:
+            return default
+
+    running = probe_result(app_running, False) if app_running is not None else False
+    panel = probe_result(panel_state, None)
+    launcher = probe_result(launcher_loaded, False)
+    legacy = probe_result(legacy_loaded, False)
     return {
         "app_installed": app is not None,
         "app_path": str(app) if app else None,
@@ -186,7 +192,7 @@ def _atomic_plist(path: Path, payload: dict) -> None:
 def set_login_enabled(enabled: bool) -> dict:
     app = _app_path() if enabled else None
     if enabled and app is None:
-        return {"ok": False, "message": "ServerHub.app is not installed in Applications"}
+        return soft_fail("launcher.not_installed")
 
     # Write and unload the launcher this host actually installed, the same pair
     # ``status()`` reports on.  Hard-coding the dotted label/plist here while
@@ -266,7 +272,7 @@ def set_login_enabled(enabled: bool) -> dict:
 def open_app() -> dict:
     app = _app_path()
     if app is None:
-        return {"ok": False, "message": "ServerHub.app is not installed in Applications"}
+        return soft_fail("launcher.not_installed")
     rc, out, err = sh(["/usr/bin/open", "-gj", str(app)], timeout=10)
     message = (
         out or "opened"
@@ -278,7 +284,7 @@ def open_app() -> dict:
 
 def schedule_panel_action(action: Literal["restart", "stop"]) -> dict:
     if action not in ("restart", "stop"):
-        return {"ok": False, "message": f"unsupported panel action: {action}"}
+        return soft_fail("launcher.bad_action", action=action)
     # Target the label this host actually installed.  Hard-coding the dotted
     # spelling made restart/stop fail with "Could not find service" on native and
     # distribution installs, where the very same job is registered as

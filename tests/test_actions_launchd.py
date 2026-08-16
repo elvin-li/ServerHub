@@ -8,7 +8,10 @@ daemon was already serving :11434.
 """
 from __future__ import annotations
 
+import plistlib
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from hub import actions
@@ -36,6 +39,17 @@ class BootstrapAlreadyLoaded(unittest.TestCase):
         self.assertFalse(actions._bootstrap_ok_to_kickstart(
             1, "", "Bootstrap failed: 125: Domain does not support specified action",
         ))
+
+
+class PlistDisabled(unittest.TestCase):
+    def test_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "job.plist")
+            Path(path).write_bytes(plistlib.dumps({"Label": "job", "Disabled": True}))
+            self.assertTrue(actions._plist_disabled(path))
+            actions._set_plist_disabled(path, False)
+            self.assertFalse(actions._plist_disabled(path))
+            self.assertFalse(plistlib.loads(Path(path).read_bytes()).get("Disabled"))
 
 
 class LaunchdStart(unittest.TestCase):
@@ -79,3 +93,36 @@ class LaunchdStart(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("Domain does not support", err)
         mocked.assert_called_once_with(["bootstrap", f"gui/{UID}", self.PLIST])
+
+    def test_start_enables_a_disabled_plist_before_bootstrap(self):
+        with (
+            mock.patch.object(actions, "_plist_disabled", return_value=True),
+            mock.patch.object(actions, "_set_plist_disabled") as persist,
+        ):
+            rc, _, _, mocked = self._run([
+                (0, "", ""),
+                (0, "", ""),
+                (0, "", ""),
+            ])
+        self.assertEqual(rc, 0)
+        persist.assert_called_once_with(self.PLIST, False)
+        self.assertEqual(
+            mocked.call_args_list,
+            [
+                mock.call(["enable", f"gui/{UID}/{self.TARGET}"]),
+                mock.call(["bootstrap", f"gui/{UID}", self.PLIST]),
+                mock.call(["kickstart", f"gui/{UID}/{self.TARGET}"]),
+            ],
+        )
+
+    def test_start_skips_enable_when_plist_is_active(self):
+        with mock.patch.object(actions, "_plist_disabled", return_value=False):
+            rc, _, _, mocked = self._run([(0, "", ""), (0, "", "")])
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            mocked.call_args_list,
+            [
+                mock.call(["bootstrap", f"gui/{UID}", self.PLIST]),
+                mock.call(["kickstart", f"gui/{UID}/{self.TARGET}"]),
+            ],
+        )

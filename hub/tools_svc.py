@@ -16,16 +16,23 @@ import socket
 import threading
 import time
 import glob
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hub import __version__, metrics
 from hub import cli_args
+from hub.errors import soft_fail
 from hub.host_address import host_ip
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
-from hub.util import fan_out, sh, ttl_memo
+from hub.util import LazyPool, fan_out, sh, ttl_memo
+from hub.brew_cache import _brew_busy
+
+_pool = LazyPool(2, "hub-tools")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 
 
 # ─── Catalog (Unraid Tools home tiles) ───────────────────────────────────────
@@ -171,9 +178,9 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     Never force-removes running containers. Requires confirm=True.
     """
     if not confirm:
-        return {"ok": False, "message": "confirm=true is required"}
+        return soft_fail("tools.confirm_required")
     if not engine_up():
-        return {"ok": False, "message": "the Docker engine is not running"}
+        return soft_fail("container.engine_down")
     what = (what or "dangling").strip().lower()
     cmds = {
         "dangling": ["image", "prune", "-f"],
@@ -182,11 +189,9 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
         "all_unused": ["system", "prune", "-f"],  # unused images/networks/stopped containers
     }
     if what not in cmds:
-        return {
-            "ok": False,
-            "message": f"unknown prune type: {what}",
-            "allowed": list(cmds.keys()),
-        }
+        out = soft_fail("tools.bad_prune", what=what)
+        out["allowed"] = list(cmds.keys())
+        return out
     rc, out, err = docker(*cmds[what], timeout=180)
     # A prune is exactly the event the cached totals describe, so the cached copy is
     # wrong the moment this returns.  Drop it before reporting the new figures.
@@ -615,18 +620,47 @@ def check_updates(force: bool = False) -> dict:
         return _check_updates_uncached()
 
 
+#: `brew outdated` hung past 45s for hours on this host (mirror / lock).
+#: The updates warmer calls it every ~7 min with force=True; without a
+#: cooldown that is a 45s blocked thread plus a timeout line each pass.
+_BREW_FAIL_COOLDOWN = 1800.0
+_brew_retry_at = 0.0
+
+
+def _brew_env() -> dict:
+    env = dict(os.environ)
+    env.setdefault("HOMEBREW_NO_AUTO_UPDATE", "1")
+    env.setdefault("HOMEBREW_NO_ANALYTICS", "1")
+    return env
+
+
 def _brew_outdated() -> dict:
     """`brew outdated`, as the updates card wants it.  Never raises."""
     # hub.paths.BREW, not a local which()-or-default: the local form omits the
     # /usr/local prefix, so on Intel with brew off PATH the updates card reported
     # "no brew" while the rest of the panel used brew happily.
+    global _brew_retry_at
     brew = BREW
     if not Path(brew).exists():
         return {"ok": False, "outdated": [], "count": 0, "raw": ""}
+    now = time.time()
+    busy = _brew_busy()
+    if busy or now < _brew_retry_at:
+        hit = _updates_fresh()
+        previous = hit.get("brew") if isinstance(hit, dict) else None
+        if isinstance(previous, dict):
+            return previous
+        return {"ok": False, "outdated": [], "count": 0, "raw": "busy" if busy else "timeout"}
     try:
-        rc, out, err = sh([brew, "outdated", "--verbose"], timeout=45)
+        rc, out, err = sh(
+            [brew, "outdated", "--verbose"], timeout=45, env=_brew_env(),
+        )
     except Exception as exc:  # noqa: BLE001 - reported in the card
         return {"ok": False, "outdated": [], "count": 0, "raw": str(exc)[:200]}
+    if rc == -1 and err == "timeout":
+        _brew_retry_at = now + _BREW_FAIL_COOLDOWN
+    elif rc == 0:
+        _brew_retry_at = 0.0
     lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
     return {
         "ok": rc == 0,
@@ -665,11 +699,10 @@ def _check_updates_uncached() -> dict:
     # and the ordinary case was the sum of two slow commands for no reason.  They
     # share nothing and neither needs elevation, so they run together and the cost
     # becomes the slower of the two.
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        brew_future = ex.submit(_brew_outdated)
-        macos_future = ex.submit(_macos_updates)
-        brew_result = brew_future.result()
-        macos_result = macos_future.result()
+    brew_future = _pool.submit(_brew_outdated)
+    macos_future = _pool.submit(_macos_updates)
+    brew_result = brew_future.result()
+    macos_result = macos_future.result()
 
     result = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -688,7 +721,7 @@ def net_ping(host: str, count: int = 3) -> dict:
     # The old blocklist enumerated shell metacharacters and never considered a
     # leading hyphen, so `-f` / `--flood` landed in ping's option position.
     if not cli_args.is_safe_hostname(host):
-        return {"ok": False, "message": "hostname contains invalid characters"}
+        return soft_fail("tools.bad_host")
     host = host.strip()
     count = max(1, min(int(count or 3), 10))
     rc, out, err = sh(
@@ -705,12 +738,12 @@ def net_ping(host: str, count: int = 3) -> dict:
 
 def net_dns_lookup(name: str) -> dict:
     if not (name or "").strip():
-        return {"ok": False, "message": "domain name is empty"}
+        return soft_fail("tools.empty_name")
     # `dig -f /etc/passwd` treats the file as a query list, and this endpoint
     # returns command output -- an arbitrary-file-read primitive from one
     # unanchored blocklist.  Require an alphanumeric first character instead.
     if not cli_args.is_safe_hostname(name):
-        return {"ok": False, "message": "invalid characters"}
+        return soft_fail("tools.bad_host")
     name = name.strip()
     results = []
     try:
@@ -728,7 +761,9 @@ def net_dns_lookup(name: str) -> dict:
     except socket.gaierror as e:
         return {"ok": False, "name": name, "message": str(e), "results": []}
     # also dig if available for NS/info
-    dig = shutil.which("dig") or "/usr/bin/dig"
+    # System dig first. which("dig") used to win, so a PATH hijack could
+    # replace the resolver this endpoint echoes back to the browser.
+    dig = "/usr/bin/dig" if Path("/usr/bin/dig").is_file() else (shutil.which("dig") or "")
     dig_out = ""
     if Path(dig).exists():
         rc, out, _ = sh([dig, "+short", name], timeout=8)
@@ -812,7 +847,7 @@ def flush_dns() -> dict:
     # may need sudo for killall
     if not ok_any:
         rc, out, err = sh(
-            ["sudo", "-n", "/usr/bin/killall", "-HUP", "mDNSResponder"],
+            ["/usr/bin/sudo", "-n", "/usr/bin/killall", "-HUP", "mDNSResponder"],
             timeout=8,
         )
         msgs.append(f"sudo killall mDNSResponder → rc={rc}")

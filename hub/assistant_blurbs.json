@@ -1,0 +1,152 @@
+{
+  "dashboard": {
+    "zh-CN": "整机总览：负载、内存、服务计数、UPS、TOP CPU。异常时再看健康检查或服务。",
+    "en": "Host overview: load, memory, service counts, UPS, and top CPU. Open Health or Services if something is wrong.",
+    "ja": "ホスト概要：負荷、メモリ、サービス数、UPS、TOP CPU。異常ならヘルスまたはサービスへ。"
+  },
+  "main": {
+    "zh-CN": "存储阵列：磁盘、容量、SMART。根盘或阵列快满时先看这里。",
+    "en": "Storage array: disks, capacity, SMART. Start here when the root disk or array is filling up.",
+    "ja": "ストレージアレイ：ディスク、容量、SMART。空きが少ないときはここ。"
+  },
+  "pool": {
+    "zh-CN": "存储池与成员盘，适合查池容量和故障盘。",
+    "en": "Storage pools and member disks — capacity and failed drives.",
+    "ja": "ストレージプールとメンバーディスク。容量と故障ディスクを確認。"
+  },
+  "files": {
+    "zh-CN": "在允许的根目录里浏览、上传、删除文件。",
+    "en": "Browse, upload, and delete files inside the allowed roots.",
+    "ja": "許可されたルート内でファイルを閲覧・アップロード・削除。"
+  },
+  "shares": {
+    "zh-CN": "SMB / AFP 等文件共享的开关与路径。",
+    "en": "File shares (SMB / AFP): enable them and set their paths.",
+    "ja": "SMB / AFP などのファイル共有のオンオフとパス。"
+  },
+  "users": {
+    "zh-CN": "本机系统用户，不是面板登录账户。",
+    "en": "macOS system users — not the panel login accounts.",
+    "ja": "この Mac のシステムユーザー。パネルログインアカウントではない。"
+  },
+  "services": {
+    "zh-CN": "全部可运行负载：launchd、容器、栈。告警服务从这里启停。",
+    "en": "Every runnable workload: launchd, containers, stacks. Start or stop alerts here.",
+    "ja": "起動できる負荷の一覧。アラート中のサービスはここで起動/停止。"
+  },
+  "containers": {
+    "zh-CN": "Docker / OrbStack 容器列表、日志和端口。",
+    "en": "Docker / OrbStack containers: list, logs, and ports.",
+    "ja": "Docker / OrbStack コンテナの一覧、ログ、ポート。"
+  },
+  "compose": {
+    "zh-CN": "Compose 栈：启动、停止、看 compose 文件。",
+    "en": "Compose stacks: start, stop, and inspect the compose file.",
+    "ja": "Compose スタックの起動・停止とファイル確認。"
+  },
+  "vms": {
+    "zh-CN": "虚拟机电源和图形控制台。",
+    "en": "Virtual machines: power and graphical console.",
+    "ja": "仮想マシンの電源とグラフィカルコンソール。"
+  },
+  "apps": {
+    "zh-CN": "应用市场：安装原生应用和配方。",
+    "en": "App catalog: install native apps and formulae.",
+    "ja": "アプリカタログ。ネイティブアプリとフォーミュラをインストール。"
+  },
+  "brew": {
+    "zh-CN": "Homebrew 配方与 outdated 列表。",
+    "en": "Homebrew formulae and the outdated list.",
+    "ja": "Homebrew のフォーミュラと outdated 一覧。"
+  },
+  "ollama": {
+    "zh-CN": "本机大模型：服务、常驻模型、对话和接口地址。",
+    "en": "Local LLM: service, resident models, chat, and the API URL.",
+    "ja": "ローカル LLM。サービス、常駐モデル、チャット、API アドレス。"
+  },
+  "network": {
+    "zh-CN": "网卡、地址和本机监听端口。",
+    "en": "Network interfaces, addresses, and listening ports.",
+    "ja": "ネットワークインターフェイス、アドレス、待ち受けポート。"
+  },
+  "gateway": {
+    "zh-CN": "Cloudflare 隧道与对外网关。",
+    "en": "Cloudflare tunnels and the public gateway.",
+    "ja": "Cloudflare トンネルと公開ゲートウェイ。"
+  },
+  "wireguard": {
+    "zh-CN": "WireGuard VPN 接口和 peer。",
+    "en": "WireGuard VPN interface and peers.",
+    "ja": "WireGuard VPN のインターフェイスとピア。"
+  },
+  "bookmarks": {
+    "zh-CN": "常用服务的快捷入口。",
+    "en": "Shortcuts to the services you open often.",
+    "ja": "よく使うサービスへのショートカット。"
+  },
+  "tools": {
+    "zh-CN": "诊断工具：ping、DNS、Docker prune。",
+    "en": "Diagnostics: ping, DNS, Docker prune.",
+    "ja": "診断ツール。ping、DNS、Docker prune。"
+  },
+  "terminal": {
+    "zh-CN": "面板里的本机终端。",
+    "en": "An in-panel shell on this Mac.",
+    "ja": "パネル内のこの Mac のターミナル。"
+  },
+  "health": {
+    "zh-CN": "健康检查清单：失败项和修复建议。",
+    "en": "Health checklist: failures and suggested fixes.",
+    "ja": "ヘルスチェック。失敗項目と修正案。"
+  },
+  "scheduler": {
+    "zh-CN": "计划任务：cron 与运行日志。",
+    "en": "Scheduled jobs: cron and run logs.",
+    "ja": "スケジュールジョブ。cron と実行ログ。"
+  },
+  "logs": {
+    "zh-CN": "服务与系统日志，按名称筛选。",
+    "en": "Service and system logs, filterable by name.",
+    "ja": "サービスとシステムのログ。名前で絞り込み。"
+  },
+  "alerts": {
+    "zh-CN": "告警历史和通知渠道。",
+    "en": "Alert history and notification channels.",
+    "ja": "アラート履歴と通知チャネル。"
+  },
+  "audit": {
+    "zh-CN": "面板操作审计：谁在何时改了什么。",
+    "en": "Panel audit trail: who changed what, and when.",
+    "ja": "パネル操作の監査。誰がいつ何を変えたか。"
+  },
+  "backups": {
+    "zh-CN": "备份任务和最近一次结果。",
+    "en": "Backup jobs and the latest result.",
+    "ja": "バックアップジョブと直近の結果。"
+  },
+  "maintenance": {
+    "zh-CN": "维护脚本：预览后再执行。",
+    "en": "Maintenance scripts — preview, then run.",
+    "ja": "メンテナンススクリプト。プレビューしてから実行。"
+  },
+  "photoshub": {
+    "zh-CN": "家庭相册与待删除照片。",
+    "en": "Family photos and the pending-delete album.",
+    "ja": "家族の写真と削除待ちアルバム。"
+  },
+  "modules": {
+    "zh-CN": "可选功能模块的开关。",
+    "en": "Optional feature modules, on or off.",
+    "ja": "オプション機能モジュールのオン/オフ。"
+  },
+  "settings": {
+    "zh-CN": "面板设置：主题、通知、Ollama 接口、电源策略。",
+    "en": "Panel settings: theme, notifications, Ollama URL, power policy.",
+    "ja": "パネル設定。テーマ、通知、Ollama URL、電源ポリシー。"
+  },
+  "account": {
+    "zh-CN": "当前登录账户：密码和两步验证。",
+    "en": "This signed-in account: password and two-factor.",
+    "ja": "このログインアカウント。パスワードと二要素認証。"
+  }
+}

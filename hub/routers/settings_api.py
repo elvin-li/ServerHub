@@ -3,10 +3,10 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from hub import __version__, alerts, backups, metrics, metrics_rollup
+from hub import __version__, alerts, backups, metrics, metrics_rollup, ollama_svc
 from hub.auth import auth_enabled
 from hub.config import cfg, update_settings
 from hub.errors import api_error
@@ -79,6 +79,19 @@ class TerminalPatch(BaseModel):
     cwd: Optional[str] = None
 
 
+class OllamaPatch(BaseModel):
+    """Local LLM daemon the panel is allowed to talk to.
+
+    ``url`` is fetched by the panel process, so it must be a loopback or
+    private HTTP origin — the same gate ``hub.ollama_svc.base_url`` uses.
+    ``label`` overrides LaunchAgent discovery; empty keeps auto-detect.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    url: Optional[str] = Field(None, max_length=256)
+    label: Optional[str] = Field(None, max_length=128)
+
+
 class SettingsPatch(BaseModel):
     host_ip: Optional[str] = None
     auth: Optional[AuthPatch] = None
@@ -86,10 +99,12 @@ class SettingsPatch(BaseModel):
     ui: Optional[UiPatch] = None
     metrics_interval: Optional[int] = Field(None, ge=15, le=600)
     alert_interval: Optional[int] = Field(None, ge=15, le=600)
+    resource_mode: Optional[str] = Field(None, max_length=8)
     adaptive: Optional[bool] = None
     thresholds: Optional[ThresholdsPatch] = None
     ip_aliases: Optional[IpAliasesPatch] = None
     terminal: Optional[TerminalPatch] = None
+    ollama: Optional[OllamaPatch] = None
 
 
 _ALLOWED_LOCALES = {"zh-CN", "en", "ja"}
@@ -133,6 +148,9 @@ def _public_settings() -> dict:
         },
         "metrics_interval": s.get("metrics_interval", 90),
         "alert_interval": s.get("alert_interval", 90),
+        "resource_mode": (
+            s.get("resource_mode") if s.get("resource_mode") in ("low", "high") else "low"
+        ),
         "adaptive": s.get("adaptive", True),
         "thresholds": {
             "enabled": (s.get("thresholds") or {}).get("enabled", True),
@@ -153,6 +171,10 @@ def _public_settings() -> dict:
         # to know the current state to render the gate honestly.
         "terminal": {
             "host_enabled": bool((s.get("terminal") or {}).get("host_enabled", False)),
+        },
+        "ollama": {
+            "url": str((s.get("ollama") or {}).get("url") or ollama_svc.DEFAULT_URL).rstrip("/"),
+            "label": str((s.get("ollama") or {}).get("label") or ""),
         },
         "paths": {"docker": DOCKER, "orb": ORB},
         "stacks": cfg().get("stacks") or [],
@@ -176,6 +198,10 @@ def put_settings(body: SettingsPatch):
         patch["metrics_interval"] = body.metrics_interval
     if body.alert_interval is not None:
         patch["alert_interval"] = body.alert_interval
+    if body.resource_mode is not None:
+        if body.resource_mode not in ("low", "high"):
+            raise api_error("settings.invalid_resource_mode", mode=body.resource_mode)
+        patch["resource_mode"] = body.resource_mode
     if body.auth is not None:
         # ServerHub exposes host/container administration. Authentication is a
         # non-disableable safety boundary, and loopback callers use a dedicated
@@ -196,15 +222,15 @@ def put_settings(body: SettingsPatch):
         ui_patch: dict[str, Any] = {}
         if body.ui.locale is not None:
             if body.ui.locale not in _ALLOWED_LOCALES:
-                raise HTTPException(400, f"invalid locale: {body.ui.locale}")
+                raise api_error("settings.invalid_locale", locale=body.ui.locale)
             ui_patch["locale"] = body.ui.locale
         if body.ui.theme is not None:
             if body.ui.theme not in _ALLOWED_THEMES:
-                raise HTTPException(400, f"invalid theme: {body.ui.theme}")
+                raise api_error("settings.invalid_theme", theme=body.ui.theme)
             ui_patch["theme"] = body.ui.theme
         if body.ui.density is not None:
             if body.ui.density not in _ALLOWED_DENSITY:
-                raise HTTPException(400, f"invalid density: {body.ui.density}")
+                raise api_error("settings.invalid_density", density=body.ui.density)
             ui_patch["density"] = body.ui.density
         if ui_patch:
             # merge with existing ui
@@ -231,9 +257,31 @@ def put_settings(body: SettingsPatch):
             cur_tm = dict((cfg().get("settings") or {}).get("terminal") or {})
             cur_tm.update(tm)
             patch["terminal"] = cur_tm
+    if body.ollama is not None:
+        o: dict[str, Any] = {}
+        if body.ollama.url is not None:
+            o["url"] = ollama_svc.validate_settings_url(body.ollama.url)
+        if body.ollama.label is not None:
+            o["label"] = ollama_svc.validate_settings_label(body.ollama.label)
+        if o:
+            cur_o = dict((cfg().get("settings") or {}).get("ollama") or {})
+            cur_o.update(o)
+            patch["ollama"] = cur_o
     if not patch:
-        raise HTTPException(400, "empty patch")
+        raise api_error("settings.empty_patch")
     update_settings(patch)
+    if "ollama" in patch:
+        ollama_svc.status.invalidate()
+    if "resource_mode" in patch:
+        from hub import tools_svc
+        from hub.status import invalidate_status
+        # Sidebar/dashboard read the mode off /api/status; a warm snapshot
+        # would keep the old poll cadence for the whole status TTL.
+        invalidate_status()
+        if patch["resource_mode"] == "high":
+            tools_svc.start_updates_warmer()
+        else:
+            tools_svc.stop_updates_warmer()
     return {"ok": True, "settings": _public_settings()}
 
 
@@ -265,12 +313,12 @@ def get_metrics(
         start = int(since)
         end = int(until) if until is not None else now
         if end <= start:
-            raise HTTPException(400, "until must be greater than since")
+            raise api_error("metrics.bad_window")
     else:
         try:
             span = metrics_rollup.parse_range(range_)
         except ValueError:
-            raise HTTPException(400, "invalid range (expected e.g. 48h, 30d, 1y)")
+            raise api_error("metrics.bad_range")
         end = now
         start = end - span
     cap = max(50, min(points, metrics_rollup.MAX_QUERY_POINTS))

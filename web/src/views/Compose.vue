@@ -15,7 +15,7 @@
         <LoadFailure v-if="loadError" :detail="loadError" :retry="loadStacks" :busy="busy" />
         <SkeletonLoader v-if="!loaded" :cols="3" :rows="4" />
         <div v-else class="table-wrap">
-          <table class="dense">
+          <table class="dense fit-m">
             <thead>
               <tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th></th></tr>
             </thead>
@@ -34,7 +34,7 @@
                 <td><span class="badge" :class="s.status==='ok'?'ok':''">{{ s.status }}</span></td>
                 <td class="ops">
                   <button class="tiny" :disabled="!s.compose_path || busy" @click.stop="run(s,'up')">Up</button>
-                  <button class="tiny" :disabled="!s.compose_path || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
+                  <button class="tiny hide-m" :disabled="!s.compose_path || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
                   <button class="tiny danger" :disabled="!s.compose_path || busy" @click.stop="run(s,'down')">Down</button>
                 </td>
               </tr>
@@ -310,5 +310,15 @@ useDismissable(showCreate, () => { showCreate.value = false }, createPanel)
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.tile h3 .sub {
+  display: block;
+  text-transform: none;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  margin-top: 4px;
+}
+@media (max-width: 640px) {
+  .compose-editor { min-height: 220px; }
 }
 </style>

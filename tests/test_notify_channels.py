@@ -212,7 +212,7 @@ class LegacyHomeAssistantTests(_Sandbox):
     def test_legacy_webhook_config_is_dispatched_as_a_channel(self):
         requests: list = []
         self.use_cfg({"enabled": True, "ha_webhook_url": "http://ha.lan:8123/api/webhook/x"})
-        with mock.patch.object(notify_channels.urllib.request, "urlopen", self._urlopen_recorder(requests)):
+        with mock.patch.object(notify_channels._OPENER, "open", self._urlopen_recorder(requests)):
             result = notify_channels.dispatch("Title", "Body", level="down")
         self.assertTrue(result["ok"], result)
         url, payload, _ = requests[0]
@@ -228,7 +228,7 @@ class LegacyHomeAssistantTests(_Sandbox):
             "ha_token": "tok123",
             "ha_service": "notify.mobile_app",
         })
-        with mock.patch.object(notify_channels.urllib.request, "urlopen", self._urlopen_recorder(requests)):
+        with mock.patch.object(notify_channels._OPENER, "open", self._urlopen_recorder(requests)):
             notify_channels.dispatch("T", "M", level="down")
         url, payload, headers = requests[0]
         self.assertEqual(url, "http://ha.lan:8123/api/services/notify/mobile_app")
@@ -242,7 +242,7 @@ class LegacyHomeAssistantTests(_Sandbox):
             "include_warn": False,
             "ha_webhook_url": "http://ha.lan/api/webhook/x",
         })
-        with mock.patch.object(notify_channels.urllib.request, "urlopen", self._urlopen_recorder(requests)):
+        with mock.patch.object(notify_channels._OPENER, "open", self._urlopen_recorder(requests)):
             notify_channels.dispatch("T", "warn", level="warn")
             self.assertEqual(requests, [])
             notify_channels.dispatch("T", "down", level="down")
@@ -251,7 +251,7 @@ class LegacyHomeAssistantTests(_Sandbox):
     def test_legacy_disabled_sends_nothing(self):
         requests: list = []
         self.use_cfg({"enabled": False, "ha_webhook_url": "http://ha.lan/api/webhook/x"})
-        with mock.patch.object(notify_channels.urllib.request, "urlopen", self._urlopen_recorder(requests)):
+        with mock.patch.object(notify_channels._OPENER, "open", self._urlopen_recorder(requests)):
             result = notify_channels.dispatch("T", "m", level="down")
         self.assertEqual(requests, [])
         self.assertFalse(result["ok"])
@@ -356,10 +356,21 @@ class SenderTests(_Sandbox):
     def test_post_refuses_non_http_schemes(self):
         # file:// or gopher:// must never leave the box (SSRF guard), and the
         # refusal happens before any socket is opened.
-        with mock.patch.object(notify_channels.urllib.request, "urlopen") as opener:
+        with mock.patch.object(notify_channels._OPENER, "open") as opener:
             res = notify_channels._post("file:///etc/passwd", {"a": 1})
         self.assertFalse(res["ok"])
         opener.assert_not_called()
+
+    def test_post_refuses_redirects(self):
+        from hub.http_guard import RedirectRefused
+
+        with mock.patch.object(
+            notify_channels._OPENER, "open",
+            side_effect=RedirectRefused("redirect to http://evil/ refused"),
+        ):
+            res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
+        self.assertFalse(res["ok"])
+        self.assertIn("redirect", res["message"])
 
     def test_missing_mandatory_secret_fails_cleanly(self):
         for sender, ch in (

@@ -11,16 +11,18 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import HTTPException
-
+from hub import cli_args
 from hub.docker_cli import docker, engine_up
-from hub.errors import api_error
+from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import DOCKER
 from hub.util import cached_snapshot, fan_out, sh
 
 SERVICES_ROOT = Path.home() / "Services"
-_INV_TTL = 8.0
+#: Apps page polls every 15s. An 8s snapshot missed on every sit tick
+#: (~940ms rebuild). 22s lets the 15s poll hit; brew_cache._TTL must stay
+#: strictly longer so inventory rebuilds do not re-run brew services list.
+_INV_TTL = 22.0
 
 
 def invalidate_inventory() -> None:
@@ -206,10 +208,10 @@ def _url_from_known_stack(sid: str) -> str | None:
 
 def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
     if not DOCKER or not Path(DOCKER).exists():
-        return {"ok": False, "message": "docker is not available"}
+        return soft_fail("services.docker_unavailable")
     p = Path(compose_path)
     if not p.exists():
-        return {"ok": False, "message": f"compose file not found: {compose_path}"}
+        return soft_fail("compose.file_missing", path=str(p))
     import subprocess
     try:
         r = subprocess.run(
@@ -234,6 +236,8 @@ def _container_log(lines: int):
     than removing its section from the document.
     """
     def read(name: str) -> str:
+        if not cli_args.is_safe_positional(name):
+            return ""
         try:
             _, out, err = docker("logs", "--tail", str(lines), name, timeout=30)
         except Exception as exc:  # noqa: BLE001 - one container must not lose the rest
@@ -250,6 +254,8 @@ def _inspect(name: str) -> tuple[int, str]:
     container's detail rather than one container's.  A non-zero rc is already a
     case the caller handles by falling back to the list fields.
     """
+    if not cli_args.is_safe_positional(name):
+        return 1, ""
     try:
         rc, out, _ = docker("inspect", name, timeout=15)
         return rc, out
@@ -589,7 +595,7 @@ def _native_detail(source_id: str) -> dict:
     from hub import native_catalog
     app = next((a for a in native_catalog.NATIVE_APPS if a["id"] == source_id), None)
     if not app:
-        raise HTTPException(404, "native app not found")
+        raise api_error("apps.native_not_found")
     listed = next((a for a in native_catalog.list_native_apps(force=True) if a["id"] == source_id), {})
     pkg = app.get("package")
     data_paths = []
@@ -771,7 +777,7 @@ def _vm_detail(source_id: str) -> dict:
     data = vms_svc.list_all_vms()
     v = next((x for x in (data.get("vms") or []) if (x.get("id") or x.get("uuid") or x.get("name")) == source_id), None)
     if not v:
-        raise HTTPException(404, "vm not found")
+        raise api_error("apps.vm_not_found")
     return {
         "id": f"vm:{source_id}",
         "source_id": source_id,
@@ -840,7 +846,6 @@ def _collect(entry):
 
 @cached_snapshot(_INV_TTL)
 def inventory(force: bool = False) -> dict:
-
     # The three collectors are independent aggregations over different backends --
     # compose stacks, Homebrew/native installs, and VMs -- and each shells out
     # several times.  Run in series their latencies simply added, so the Apps page
@@ -900,19 +905,22 @@ def detail(app_id: str) -> dict:
             kind, source_id = "native", app_id
         else:
             raise api_error("apps.bad_id")
+    source_id = cli_args.require_positional(source_id, label="app id")
     if kind == "docker":
         return _docker_detail(source_id)
     if kind == "native":
         return _native_detail(source_id)
     if kind == "vm":
         return _vm_detail(source_id)
-    raise HTTPException(400, f"unknown kind: {kind}")
+    raise api_error("apps.unknown_kind", kind=kind)
 
 
 def logs(app_id: str, lines: int = 120) -> dict:
     kind, _, source_id = app_id.partition(":")
     if not source_id and app_id.startswith("native-"):
         kind, source_id = "native", app_id
+    if source_id:
+        source_id = cli_args.require_positional(source_id, label="app id")
     lines = max(20, min(int(lines or 120), 500))
     if kind == "docker":
         return _docker_logs(source_id, lines)
@@ -920,7 +928,7 @@ def logs(app_id: str, lines: int = 120) -> dict:
         return _native_logs(source_id, lines)
     if kind == "vm":
         return _vm_logs(source_id, lines)
-    raise HTTPException(400, f"unknown kind: {kind}")
+    raise api_error("apps.unknown_kind", kind=kind)
 
 
 def action(app_id: str, action_name: str, **kwargs) -> dict:
@@ -929,6 +937,8 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
     kind, _, source_id = app_id.partition(":")
     if not source_id and app_id.startswith("native-"):
         kind, source_id = "native", app_id
+    if source_id:
+        source_id = cli_args.require_positional(source_id, label="app id")
     invalidate_inventory()
 
     # Autostart toggles
@@ -959,7 +969,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             from hub import native_catalog
             app = next((a for a in native_catalog.NATIVE_APPS if a["id"] == source_id), None)
             if not app:
-                raise HTTPException(404, "native app not found")
+                raise api_error("apps.native_not_found")
             if source_id == "native-cloudflared":
                 from hub import cloudflared_svc
                 if enabled:
@@ -1011,7 +1021,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         from hub import native_catalog
         app = next((a for a in native_catalog.NATIVE_APPS if a["id"] == source_id), None)
         if not app:
-            raise HTTPException(404, "native app not found")
+            raise api_error("apps.native_not_found")
         pkg = app.get("package")
         if action_name == "uninstall":
             return native_catalog.uninstall_native(
@@ -1099,6 +1109,11 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                             "ok": True,
                             "message": "Ollama is already serving :11434; not starting a second brew daemon",
                         }
+                    if source_id == "native-redis" and native_catalog.redis_port_already_served():
+                        return {
+                            "ok": True,
+                            "message": "Valkey/Redis is already serving :6379; not starting Homebrew Redis",
+                        }
                     return _run([BREW, "services", "start", pkg], timeout=120)
                 if app.get("open"):
                     return _run(["/usr/bin/open", "-a", app["open"]], timeout=15)
@@ -1126,4 +1141,4 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         # map restart
         return vms_svc.vm_action(source_id, action_name)
 
-    raise HTTPException(400, f"unknown kind: {kind}")
+    raise api_error("apps.unknown_kind", kind=kind)

@@ -29,25 +29,34 @@
       <LoadFailure v-if="jobsError" :detail="jobsError" :retry="loadJobs" :busy="jobsBusy" />
       <SkeletonLoader v-if="!jobsLoaded" :cols="6" :rows="4" />
       <div v-else class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('sched.name') }}</th>
-              <th>{{ t('sched.type') }}</th>
-              <th>{{ t('sched.cron') }}</th>
-              <th>{{ t('sched.next_run') }}</th>
-              <th>{{ t('sched.last_run') }}</th>
+              <th class="col-hide-m">{{ t('sched.type') }}</th>
+              <th class="col-hide-m">{{ t('sched.cron') }}</th>
+              <th class="col-hide-m">{{ t('sched.next_run') }}</th>
+              <th class="col-hide-m">{{ t('sched.last_run') }}</th>
               <th>{{ t('sched.enabled') }}</th>
               <th>{{ t('common.actions') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="job in jobs" :key="job.id">
-              <td><strong>{{ job.name }}</strong></td>
-              <td><span class="badge accent">{{ t(`sched.type_${job.type}`) }}</span></td>
-              <td class="mono" style="font-size:11px">{{ job.cron }}</td>
-              <td style="font-size:12px">{{ job.enabled ? fmt(job.next_run) : '—' }}</td>
               <td>
+                <strong>{{ job.name }}</strong>
+                <div class="show-m sub">{{ t(`sched.type_${job.type}`) }} · {{ job.cron }}</div>
+                <div v-if="job.enabled" class="show-m sub">{{ fmt(job.next_run) }}</div>
+                <div class="show-m sub">
+                  <span v-if="job.running">{{ t('sched.running') }}</span>
+                  <span v-else-if="job.last">{{ t(`sched.status_${job.last.status}`) }} · {{ fmt(job.last.ts) }}</span>
+                  <span v-else>{{ t('sched.never') }}</span>
+                </div>
+              </td>
+              <td class="col-hide-m"><span class="badge accent">{{ t(`sched.type_${job.type}`) }}</span></td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ job.cron }}</td>
+              <td class="col-hide-m" style="font-size:12px">{{ job.enabled ? fmt(job.next_run) : '—' }}</td>
+              <td class="col-hide-m">
                 <span v-if="job.running" class="badge warn">{{ t('sched.running') }}</span>
                 <span v-else-if="job.last" class="badge" :class="job.last.status === 'ok' ? 'ok' : 'warn'">
                   {{ t(`sched.status_${job.last.status}`) }} · {{ fmt(job.last.ts) }}
@@ -61,7 +70,7 @@
               <td>
                 <div class="btns" style="gap:4px">
                   <button class="tiny" :disabled="job.running" @click="runNow(job)">{{ t('sched.run_now') }}</button>
-                  <button class="tiny" @click="openRuns(job)">{{ t('sched.history') }}</button>
+                  <button class="tiny hide-m" @click="openRuns(job)">{{ t('sched.history') }}</button>
                   <button class="tiny" @click="openEdit(job)">{{ t('common.edit') }}</button>
                   <button class="tiny" @click="removeJob(job)">{{ t('common.delete') }}</button>
                 </div>
@@ -79,12 +88,15 @@
         <h3 style="margin-top:0">{{ t('sched.managed_title') }}</h3>
         <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.managed_smart_hint') }}</p>
         <div class="table-wrap" style="margin-top:6px">
-        <table class="dense">
+        <table class="dense fit-m">
           <tbody>
             <tr v-for="s in systemJobs" :key="s.id">
-              <td><strong>{{ s.name }}</strong> <span class="badge">{{ t('sched.readonly') }}</span></td>
-              <td>{{ s.enabled ? s.interval : t('sched.disabled') }}</td>
-              <td style="font-size:12px">{{ s.enabled ? fmt(s.next_run) : '—' }}</td>
+              <td>
+                <strong>{{ s.name }}</strong> <span class="badge">{{ t('sched.readonly') }}</span>
+                <div class="show-m sub">{{ s.enabled ? s.interval : t('sched.disabled') }}{{ s.enabled ? ' · ' + fmt(s.next_run) : '' }}</div>
+              </td>
+              <td class="col-hide-m">{{ s.enabled ? s.interval : t('sched.disabled') }}</td>
+              <td class="col-hide-m" style="font-size:12px">{{ s.enabled ? fmt(s.next_run) : '—' }}</td>
               <td><router-link class="btn tiny" to="/main">{{ t('sched.managed_edit_link') }}</router-link></td>
             </tr>
           </tbody>
@@ -131,25 +143,29 @@
 
       <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
       <div v-else class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('scheduler.label') }}</th>
               <th>{{ t('common.type') }}</th>
               <th>{{ t('scheduler.interval') }}</th>
-              <th>{{ t('scheduler.calendar') }}</th>
-              <th>{{ t('scheduler.program') }}</th>
+              <th class="col-hide-m">{{ t('scheduler.calendar') }}</th>
+              <th class="col-hide-m">{{ t('scheduler.program') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="row in filtered" :key="row.label">
-              <td class="mono"><strong>{{ row.label }}</strong></td>
+              <td class="mono">
+                <strong>{{ row.label }}</strong>
+                <div v-if="formatCal(row.calendar)" class="show-m sub">{{ formatCal(row.calendar) }}</div>
+                <div v-if="row.program" class="show-m sub">{{ row.program }}</div>
+              </td>
               <td>
                 <span class="badge accent">{{ row.interval_sec ? t('scheduler.interval_type') : t('scheduler.calendar_type') }}</span>
               </td>
               <td>{{ row.interval_sec ? formatInterval(row.interval_sec) : '—' }}</td>
-              <td class="mono" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
-              <td class="mono" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="row.program">
+              <td class="mono col-hide-m" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
+              <td class="mono col-hide-m" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="row.program">
                 {{ row.program || '—' }}
               </td>
             </tr>

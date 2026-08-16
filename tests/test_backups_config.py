@@ -355,7 +355,7 @@ class ConfigArchivePaths(unittest.TestCase):
 
         self.assertTrue(result["ok"], result)
         (argv,) = calls
-        self.assertEqual(argv[:2], ["tar", "czf"])
+        self.assertEqual(argv[:2], ["/usr/bin/tar", "czf"])
         members = argv[3:]
         self.assertIn(str(config_file), members)
         self.assertIn(str(present), members)

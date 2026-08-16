@@ -182,7 +182,7 @@ describe('WireGuard readiness table', () => {
   function blockingRows(wrapper) {
     const table = wrapper.findAll('table.dense')[0]
     if (!table) return []
-    return table.findAll('tbody tr').map((row) => row.findAll('td')[1]?.text() ?? '')
+    return table.findAll('tbody tr').map((row) => row.find('strong')?.text() ?? '')
   }
 
   it('renders one row per problem, not one per check that mentions it', async () => {
@@ -287,7 +287,7 @@ describe('WireGuard non-blocking warnings', () => {
   function warningRows(wrapper) {
     const tile = wrapper.findAll('.tile').find((t) => t.text().includes('wg.warnings'))
     if (!tile) return []
-    return tile.findAll('tbody tr').map((row) => row.findAll('td')[1]?.text() ?? '')
+    return tile.findAll('tbody tr').map((row) => row.find('strong')?.text() ?? '')
   }
 
   it('shows warn-level checks, which previously rendered nowhere at all', async () => {

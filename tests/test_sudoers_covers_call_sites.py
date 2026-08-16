@@ -159,7 +159,8 @@ def call_sites() -> list[tuple[str, int, list[str]]]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.List) or len(node.elts) < 3:
                 continue
-            if _literal(node.elts[0]) != "sudo" or _literal(node.elts[1]) != "-n":
+            first = _literal(node.elts[0])
+            if first not in ("sudo", "/usr/bin/sudo") or _literal(node.elts[1]) != "-n":
                 continue
             argv = [_literal(e) for e in node.elts[2:]]
             found.append((path.relative_to(BASE).as_posix(), node.lineno, argv))

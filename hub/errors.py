@@ -59,6 +59,7 @@ CODES: dict[str, tuple[int, str]] = {
     "launcher.browser_session_required": (401, "a signed-in browser session is required"),
     "launcher.admin_required": (403, "administrator access is required"),
     "launcher.bad_action": (400, "unsupported panel action: {action}"),
+    "launcher.not_installed": (404, "ServerHub.app is not installed in Applications"),
     # ── macOS sharing ────────────────────────────────────────────────────────
     "shares.browser_session_required": (401, "a signed-in browser session is required"),
     "shares.admin_required": (403, "administrator access is required"),
@@ -134,6 +135,7 @@ CODES: dict[str, tuple[int, str]] = {
     "disk.unsupported_fs": (400, "unsupported filesystem {fs}; choose one of {choices}"),
     "disk.whole_disk_only": (400, "eraseDisk only applies to a whole disk (diskN)"),
     "disk.unknown_action": (400, "unknown action: {action}"),
+    "disk.invalid_device": (400, "invalid device id: {device}"),
     # ── optional FileBrowser process ────────────────────────────────────────
     "files.fb_not_installed": (404, "FileBrowser is not installed (~/Services/filebrowser)"),
     "files.fb_start_failed": (500, "could not start FileBrowser"),
@@ -199,7 +201,22 @@ CODES: dict[str, tuple[int, str]] = {
     "usage.bad_volume": (400, "unknown volume"),
     # ── settings export ──────────────────────────────────────────────────────
     "system_settings.export_failed": (500, "the configuration file could not be read for export"),
+    "settings.invalid_locale": (400, "invalid locale: {locale}"),
+    "settings.invalid_theme": (400, "invalid theme: {theme}"),
+    "settings.invalid_density": (400, "invalid density: {density}"),
+    "settings.invalid_resource_mode": (400, "invalid resource mode: {mode}"),
+    "settings.empty_patch": (400, "empty patch"),
+    "metrics.bad_window": (400, "until must be greater than since"),
+    "metrics.bad_range": (400, "invalid range (expected e.g. 48h, 30d, 1y)"),
+    "actions.bad_process_name": (400, "invalid application process name"),
+    "actions.empty_script": (400, "empty script command"),
+    "actions.bad_action": (400, "unsupported action {action} for {kind}"),
+    "actions.unknown_target": (404, "unknown target: {target}"),
     "catalog.no_free_port": (409, "no free host port available at or above {port}"),
+    "catalog.unknown_app": (404, "unknown native app: {app}"),
+    "catalog.unsupported_script": (400, "unsupported script_id: {script}"),
+    "catalog.unsupported_method": (400, "unsupported method: {method}"),
+    "catalog.unsupported_uninstall": (400, "unsupported uninstall method: {method}"),
     # ── WireGuard ───────────────────────────────────────────────────────────
     "wg.not_installed": (503, "wireguard-tools is not installed"),
     "wg.no_conf": (404, "no WireGuard config at {path}"),
@@ -241,6 +258,26 @@ CODES: dict[str, tuple[int, str]] = {
     "container.builtin_network": (400, "built-in networks cannot be removed"),
     "container.no_compose_file": (400, "this stack has no compose file"),
     "container.bad_shell": (400, "unsupported container exec shell"),
+    "container.bad_policy": (400, "unsupported restart policy: {policy}"),
+    "container.bad_action": (400, "unsupported container action: {action}"),
+    "container.empty_names": (400, "at least one container name is required"),
+    "container.unknown_stack": (404, "unknown stack: {stack}"),
+    "container.not_found": (404, "container not found"),
+    "container.empty_command": (400, "command is empty"),
+    "container.list_failed": (500, "could not list {kind}"),
+    "compose.unknown_stack": (404, "unknown stack: {stack}"),
+    "compose.bad_stack_id": (400, "stack id must be 1-41 letters, digits, underscore or dash"),
+    "compose.empty_content": (400, "compose file content is empty"),
+    "compose.path_forbidden": (403, "compose path must be under ~/Services"),
+    "compose.invalid": (400, "compose file is invalid: {detail}"),
+    "compose.exists": (409, "stack already exists: {path}"),
+    "compose.file_missing": (404, "compose file not found: {path}"),
+    "logs.unknown_source": (404, "unknown log source"),
+    "logs.protected": (403, "that log path is protected"),
+    "logs.read_failed": (500, "the log file could not be read"),
+    "brew.bad_action": (400, "unsupported brew action: {action}"),
+    "brew.not_found": (503, "Homebrew is not installed"),
+    "cli.invalid_value": (400, "invalid {label}"),
     # ── maintenance jobs ────────────────────────────────────────────────────
     "maintenance.job_running": (409, "a maintenance task is already running"),
     "maintenance.unknown_task": (404, "unknown maintenance task"),
@@ -277,6 +314,7 @@ CODES: dict[str, tuple[int, str]] = {
     "network.builtin_network_connect": (400, 'cannot connect to the host/none network'),
     "network.container_not_found": (404, 'container not found: {name}'),
     "network.image_unresolvable": (400, "could not resolve the container's image"),
+    "network.bad_wifi_state": (400, "Wi-Fi state must be on or off"),
     "cloudflared.not_installed": (503, 'cloudflared is not installed (install "Cloudflared (native)" from the app store first)'),
     "cloudflared.tunnel_required": (400, 'a tunnel name or UUID is required'),
     "cloudflared.not_logged_in": (400, 'not signed in to Cloudflare (cert.pem missing); sign in first'),
@@ -293,7 +331,13 @@ CODES: dict[str, tuple[int, str]] = {
     "apps.bad_autostart_kind": (400, 'autostart is not supported for kind: {kind}'),
     "apps.docker_action_unsupported": (400, 'unsupported docker action: {action}'),
     "apps.native_action_unsupported": (400, 'unsupported native app action: {action}'),
+    "apps.unknown_kind": (400, "unknown app kind: {kind}"),
+    "apps.native_not_found": (404, "native app not found"),
+    "apps.vm_not_found": (404, "vm not found"),
     "disk_power.protected": (403, 'system disks and non-sleepable disks cannot be slept or ejected'),
+    "disk_power.unknown_action": (400, "unknown disk power action: {action}"),
+    "disk_power.invalid_id": (400, "invalid disk id"),
+    "disk_power.not_found": (404, "disk not found: {disk}"),
     "credentials.bad_service_id": (400, 'invalid service id'),
     "credentials.username_required": (400, 'username is required'),
     "credentials.password_too_short": (400, 'the service password must be at least {min} characters'),
@@ -309,8 +353,15 @@ CODES: dict[str, tuple[int, str]] = {
     "credentials.adapter_unsupported": (400, 'this service does not support automated password changes; the credential can still be saved'),
     "autostart.self_protected": (400, "{label} is ServerHub's own login task and cannot be disabled here; use the 'Start at login' switch on the Settings page instead"),
     "autostart.bad_id": (400, 'id must be kind:name'),
+    "autostart.unknown_kind": (400, "unknown autostart kind: {kind}"),
+    "autostart.plist_missing": (404, "plist not found for {label}"),
+    "autostart.script_missing": (404, "autostart.sh not found"),
+    "nginx.conf_missing": (404, "nginx.conf is missing"),
     "power.unknown_action": (400, 'unknown power action: {action} (choose one of {choices})'),
     "power.confirm_required": (400, 'power actions require confirm=true'),
+    "power.bad_key": (400, "unsupported power setting: {key}"),
+    "power.bad_value": (400, "value must be an integer"),
+    "power.value_range": (400, "value is out of range 0–180"),
     "vms.name_required": (400, 'a new name is required'),
     "vms.utm_unavailable": (503, 'utmctl is not available; install UTM'),
     "vms.utm_unsupported_action": (400, 'UTM does not support action: {action}'),
@@ -319,11 +370,19 @@ CODES: dict[str, tuple[int, str]] = {
     "vms.distro_required": (400, 'distro is required, e.g. ubuntu or ubuntu:24.04'),
     "vms.bad_distro": (400, 'invalid distro'),
     "vms.bad_machine_name": (400, 'invalid machine name'),
+    "vms.unknown_backend": (400, "unknown VM backend for {vm}"),
     "services.docker_unavailable": (400, 'the docker CLI is not available'),
+    "services.bad_action": (400, "action must be start, stop, restart or run"),
     # ── adopting auto-discovered services ────────────────────────────────────
     "services.adopt_not_found": (404, "service not found: {id}"),
     "services.adopt_not_auto": (400, "{id} is not an auto-discovered service"),
     "services.adopt_no_port": (400, "{id} has no detected listen port to adopt"),
+    "services.script_not_found": (404, "no managed script named {id}"),
+    "services.signature_invalid": (400, "recognition rule needs a slug of letters, digits and hyphens"),
+    "services.signature_not_found": (404, "no recognition rule named {slug}"),
+    "services.not_found": (404, "service not found: {id}"),
+    "services.no_logs": (404, "no logs for {id}"),
+    "services.bad_port": (400, "port must be an integer"),
     "jobs.already_running": (409, 'a maintenance task is already running; wait for it to finish'),
     # ── panel scheduler (user-defined cron jobs) ─────────────────────────────
     "scheduler.not_found": (404, "no scheduled job with id {id}"),
@@ -354,6 +413,7 @@ CODES: dict[str, tuple[int, str]] = {
     "notify.missing_field": (400, "required field is missing: {field}"),
     "notify.bad_url": (400, "{field} must be an http(s) URL"),
     "notify.exists": (409, "a channel with id {id} already exists"),
+    "notify.no_match": (404, "no notification channel matched"),
     "notify.type_immutable": (400, "the type of channel {id} cannot be changed; delete it and create a new one"),
     "notify.secret_control_chars": (400, "{field} contains control characters (a pasted newline or tab?)"),
     # ── UPS / battery ────────────────────────────────────────────────────────
@@ -363,6 +423,27 @@ CODES: dict[str, tuple[int, str]] = {
     "ups.halt_bad_level": (400, "haltlevel must be -1 (off) or between 5 and 95"),
     # ── rsync dry-run preview ────────────────────────────────────────────────
     "rsync.preview_busy": (409, "a dry-run preview for this job is already running; wait for it to finish"),
+    # ── tools (ping / dns / prune) ──────────────────────────────────────────
+    # Soft refusals: tools_svc returns {ok:false, code, message} so Tools.vue
+    # can keep rendering the dict.  Codes still live here so the English
+    # fallback and the SPA err.* keys stay in one place.
+    "tools.bad_host": (400, "hostname contains invalid characters"),
+    "tools.empty_name": (400, "domain name is empty"),
+    "tools.confirm_required": (400, "confirm=true is required"),
+    "tools.bad_prune": (400, "unknown prune type: {what}"),
+    # ── PhotosHub ────────────────────────────────────────────────────────────
+    "photoshub.status_failed": (500, "PhotosHub status could not be read: {detail}"),
+    "photoshub.pending_failed": (502, "could not list pending-delete photos: {detail}"),
+    "photoshub.bad_ids": (400, "select at least one photo"),
+    "photoshub.remove_failed": (502, "could not remove photos from the pending album: {detail}"),
+    "photoshub.bad_action": (400, "unknown PhotosHub action: {action}"),
+    "photoshub.action_failed": (500, "PhotosHub action failed: {detail}"),
+    "photoshub.bad_log": (400, "unknown PhotosHub log name"),
+    "photoshub.not_installed": (404, "PhotosHub is not installed on this Mac"),
+    "photoshub.bad_immich_url": (400, "Immich API URL must be a private or loopback http(s) address"),
+    "photoshub.album_missing": (404, "the pending-delete album was not found"),
+    "photoshub.key_missing": (503, "the Immich API key is missing"),
+    "photoshub.script_missing": (404, "the PhotosHub people-album script is not on disk"),
 }
 
 
@@ -382,6 +463,21 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     if params:
         detail["params"] = params
     return status, {"detail": detail}
+
+
+def soft_fail(code: str, **params) -> dict:
+    """``{ok: false, code, message}`` for endpoints that return a dict.
+
+    Tools ping/dns/prune and Settings power prefs keep a dict contract so the
+    SPA can render the payload without treating validation as an HTTP error.
+    The English fallback still comes from CODES.
+    """
+    _, body = error_payload(code, **params)
+    detail = body["detail"]
+    out = {"ok": False, "code": detail["code"], "message": detail["message"]}
+    if "params" in detail:
+        out["params"] = detail["params"]
+    return out
 
 
 def api_error(code: str, /, **params) -> HTTPException:

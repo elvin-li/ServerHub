@@ -36,4 +36,8 @@ if __name__ == "__main__":
         host=os.environ.get("SERVERHUB_HOST") or "127.0.0.1",
         port=_port(),
         access_log=False,
+        # launchd captures stderr into serverhub.err.log.  INFO is just
+        # "Started server process" on every kickstart; warnings and our
+        # own serverhub.* handler still land.
+        log_level="warning",
     )

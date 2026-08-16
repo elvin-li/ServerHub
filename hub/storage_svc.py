@@ -3,12 +3,20 @@ from __future__ import annotations
 
 import re
 import shutil
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hub.disk_snapshot import df_lines
 from hub.paths import SMARTCTL
-from hub.util import fan_out, sh, ttl_memo
+from hub.util import LazyPool, fan_out, sh, ttl_memo
+
+#: Outer composer only.  ``smart_devices`` fans out per disk on the shared
+#: probe pool; putting that work on the same executor would serialize the
+#: disks (or deadlock before the reentrancy guard).
+_OVERVIEW_POOL = LazyPool(2, "storage-overview")
+
+
+def shutdown_executor() -> None:
+    _OVERVIEW_POOL.shutdown()
 
 #: SMART is slow to read and slow to change: each disk costs a `diskutil info` plus a
 #: `smartctl -a`, and wear and error counters move over weeks.
@@ -231,7 +239,7 @@ def _probe_disk(d: str) -> dict:
         "size": None, "size_bytes": None, "size_gb": None,
         "smart": None, "error": None,
     }
-    rc, iout, _ = sh(["diskutil", "info", dev], timeout=8)
+    rc, iout, _ = sh(["/usr/sbin/diskutil", "info", dev], timeout=8)
     if rc == 0:
         for line in iout.splitlines():
             if "Device / Media Name:" in line or "Media Name:" in line:
@@ -254,7 +262,7 @@ def _probe_disk(d: str) -> dict:
     rc, sout, serr = sh([SMARTCTL, "-a", dev], timeout=10)
     msg_lower = f"{sout}\n{serr}".lower()
     if rc not in (0, 4) and any(x in msg_lower for x in ("permission", "operation not permitted", "access denied")):
-        rc, sout, serr = sh(["sudo", "-n", SMARTCTL, "-a", dev], timeout=10)
+        rc, sout, serr = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-a", dev], timeout=10)
     if rc in (0, 4) and sout:
         sm = {}
         attrs = []  # all raw SMART attributes for detail view
@@ -386,7 +394,7 @@ def smart_devices() -> list:
     Results are re-ordered to match `disk_ids` so the array table does not
     reshuffle its rows depending on which disk answered first.
     """
-    rc, out, _ = sh(["diskutil", "list", "physical"], timeout=10)
+    rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=10)
     disk_ids = []
     if rc == 0:
         for m in re.finditer(r"/dev/(disk\d+)\s", out):
@@ -418,11 +426,10 @@ def storage_overview() -> dict:
     # `df` and the SMART probe read different things and neither feeds the other,
     # so overlap them: on a cold cache this takes the page from
     # "df, then every disk" to "df alongside every disk".
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_vols = ex.submit(list_volumes)
-        f_disks = ex.submit(smart_devices)
-        vols = f_vols.result()
-        disks = f_disks.result()
+    f_vols = _OVERVIEW_POOL.submit(list_volumes)
+    f_disks = _OVERVIEW_POOL.submit(smart_devices)
+    vols = f_vols.result()
+    disks = f_disks.result()
     system_vols = [v for v in vols if v["kind"] == "system"]
     external_vols = [v for v in vols if v["kind"] == "external"]
     other_vols = [v for v in vols if v["kind"] not in ("system", "external")]

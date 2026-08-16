@@ -89,16 +89,16 @@
     <!-- Dense table -->
     <template v-else-if="dense">
       <div class="table-wrap">
-        <table class="dense svc-table">
+        <table class="dense svc-table fit-m">
           <thead>
             <tr>
               <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
               <th></th>
               <th>{{ t('common.name') }}</th>
-              <th>{{ t('services.group') }}</th>
-              <th>{{ t('services.kind') }}</th>
+              <th class="col-hide-m">{{ t('services.group') }}</th>
+              <th class="col-hide-m">{{ t('services.kind') }}</th>
               <th>{{ t('services.port') }}</th>
-              <th>{{ t('services.detail') }}</th>
+              <th class="col-hide-m">{{ t('services.detail') }}</th>
               <th>{{ t('common.actions') }}</th>
             </tr>
           </thead>
@@ -115,12 +115,17 @@
               <td><span class="led" :class="ledOf(s.state)"></span></td>
               <td>
                 <strong>{{ s.name }}</strong>
+                <span v-if="signatureOf(s)" class="chip chip-sig chip-inline" :title="signatureOf(s).category">
+                  {{ signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?` }}
+                </span>
                 <div class="mono sub-id">{{ s.id }}</div>
+                <div class="show-m sub">{{ s.group }} · {{ kindLabel(s.kind) }}</div>
+                <div v-if="s.detail" class="show-m sub">{{ s.detail }}</div>
               </td>
-              <td>{{ s.group }}</td>
-              <td><span class="badge kind-badge">{{ kindLabel(s.kind) }}</span></td>
+              <td class="col-hide-m">{{ s.group }}</td>
+              <td class="col-hide-m"><span class="badge kind-badge">{{ kindLabel(s.kind) }}</span></td>
               <td class="mono">{{ portOf(s) }}</td>
-              <td class="detail-cell" :title="s.detail">{{ s.detail }}</td>
+              <td class="detail-cell col-hide-m" :title="s.detail">{{ s.detail }}</td>
               <td class="actions-cell" @click.stop>
                 <ServiceActions :service="s" :busy="busy" variant="table" @act="onAction(s, $event)" @logs="openLogs(s)" @more="openDetail(s)" />
               </td>
@@ -150,6 +155,9 @@
               <span class="led" :class="ledOf(s.state)"></span>
               <span class="name" :title="s.id">{{ s.name }}</span>
               <span class="badge">{{ kindLabel(s.kind) }}</span>
+              <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).category">
+                {{ signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?` }}
+              </span>
             </div>
             <div class="detail" :title="s.detail">{{ s.detail }}</div>
             <ServiceActions :service="s" :busy="busy" variant="card" @act="onAction(s, $event)" @logs="openLogs(s)" @more="openDetail(s)" @click.stop />
@@ -172,6 +180,8 @@
       @act="onAction(detail, $event)"
       @load-logs="loadDetailLogs"
       @adopt="adopt"
+      @save-script="saveScript"
+      @forget="forgetScript"
       @save-override="saveOverride"
       @hide="hideService"
       @uninstall="openUninstall(detail)"
@@ -221,6 +231,7 @@ import {
   adoptService,
   bulkServiceAction,
   doAction,
+  forgetServiceScript,
   getServiceDetail,
   getServiceLogs,
   getServices,
@@ -228,10 +239,11 @@ import {
   setServiceHidden,
   uninstallService,
   updateServiceOverride,
+  updateServiceScript,
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { authState } from '../lib/authState'
-import { canLogs, ledOf, portOf, serviceLabels } from '../lib/serviceActions'
+import { canLogs, ledOf, portOf, serviceLabels, signatureOf } from '../lib/serviceActions'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -254,7 +266,12 @@ const loading = ref(false)
 // never survives a settled load.
 const loaded = ref(false)
 const loadError = ref('')
-const dense = ref(true)
+// Phones get the card grid: a 560px-min table only sideways-scrolls the page.
+const dense = ref(
+  typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+    ? true
+    : !window.matchMedia('(max-width: 640px)').matches,
+)
 const q = ref('')
 const onlyBad = ref(false)
 const kindF = ref('')
@@ -309,6 +326,8 @@ const filtered = computed(() => {
       || (s.detail || '').toLowerCase().includes(qq)
       || String(s.port || '').includes(qq)
       || (s.url || '').toLowerCase().includes(qq)
+      || (signatureOf(s)?.name || '').toLowerCase().includes(qq)
+      || (signatureOf(s)?.category || '').toLowerCase().includes(qq)
     )
   }
   const sb = sortBy.value
@@ -472,6 +491,37 @@ async function adopt(body) {
   }
 }
 
+async function saveScript(body) {
+  if (!detail.value?.can_edit_script) return
+  busy.value = true
+  try {
+    const saved = detail.value
+    await updateServiceScript(saved.id, body)
+    toast(`✅ ${t('common.save')}`)
+    await Promise.all([refresh(true), openDetail(saved, true)])
+  } catch (e) {
+    toast(`❌ ${e.message || e}`)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function forgetScript() {
+  if (!detail.value?.can_forget) return
+  if (!confirm(t('services.confirm_forget', { name: detail.value.name }))) return
+  busy.value = true
+  try {
+    await forgetServiceScript(detail.value.id)
+    toast(`✅ ${t('services.forgotten')}`)
+    closeDrawer()
+    await refresh(true)
+  } catch (e) {
+    toast(`❌ ${e.message || e}`)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function saveOverride(body) {
   if (!detail.value) return
   busy.value = true
@@ -589,6 +639,8 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .chip-warn.active { border-color: var(--warn); }
 .chip-down.active { border-color: var(--down); }
 .chip-muted { opacity: .85; }
+.chip-sig { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; cursor: default; }
+.chip-inline { margin-left: 6px; padding: 1px 7px; font-size: 10px; vertical-align: middle; }
 .chk { font-size: 12px; color: var(--sub); display: inline-flex; align-items: center; gap: 5px; }
 
 .svc-table tr { cursor: pointer; transition: background .1s; }
@@ -621,7 +673,8 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .drawer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .plain-list { margin: 0; padding-left: 18px; font-size: 11px; }
 
-@media (max-width: 700px) {
+@media (max-width: 640px) {
   .detail-cell { max-width: 100px; }
+  .svc-toolbar .search { min-width: 0; flex: 1 1 140px; }
 }
 </style>

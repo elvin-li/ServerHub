@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import os
 
-from fastapi import HTTPException
-
 from hub import cli_args
+from hub.errors import api_error
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.status import invalidate_status
 from hub.util import sh
@@ -89,13 +88,13 @@ def list_services() -> list:
 
 def service_action(name: str, action: str) -> dict:
     if action not in ("start", "stop", "restart"):
-        raise HTTPException(400, f"bad action {action}")
+        raise api_error("brew.bad_action", action=action)
     # `^[\w@.+-]+$` matched `--all`, so `brew services stop --all` stopped every
     # service on the host instead of one.  The shared guard anchors the first
     # character to an alphanumeric.
     name = cli_args.require_positional(name, label="service name")
     if not os.path.isfile(BREW):
-        raise HTTPException(503, "brew not found")
+        raise api_error("brew.not_found")
     import subprocess
     try:
         p = subprocess.run(

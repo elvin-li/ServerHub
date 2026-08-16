@@ -29,10 +29,6 @@ export function applyAuthStatus(status) {
   authState.canManage = !!status.can_manage
 }
 
-export function isMember() {
-  return authState.authenticated && authState.role === 'member'
-}
-
 /**
  * Routes a member session may open, by route name.  Mirrors the backend
  * whitelist (status/services reads + per-account self-service): everything

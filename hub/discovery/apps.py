@@ -23,7 +23,7 @@ def _probe_app(entry):
     """
     process, port = entry
     try:
-        rc, _, _ = sh(["pgrep", "-x", process], timeout=3)
+        rc, _, _ = sh(["/usr/bin/pgrep", "-x", process], timeout=3)
         return rc == 0, port_open(port)
     except Exception:
         return False, None
@@ -90,7 +90,14 @@ def collect_scripts():
     # The (index, port) pairing is what lets the flat results be put back
     # together in configuration order.
     checks = [(i, port) for i, s in enumerate(scripts) for port in (s.get("ports") or [])]
-    states = fan_out(_probe_port, [port for _, port in checks])
+    states = list(fan_out(_probe_port, [port for _, port in checks]))
+    # Gravity's watchdogs bounce :3001/:3010/:8765 for a few seconds.  One
+    # missed connect used to paint 需关注 until the next poll.  Retry only
+    # the misses; a port that is actually down stays down.
+    missing = [port for (_, port), ok in zip(checks, states) if not ok]
+    if missing:
+        recovered = dict(zip(missing, fan_out(_probe_port, missing)))
+        states = [ok or recovered.get(port, False) for (_, port), ok in zip(checks, states)]
 
     reachable: dict[int, set] = {}
     for (index, port), ok in zip(checks, states):
@@ -122,5 +129,7 @@ def collect_scripts():
         items.append({"id": s["id"], "kind": "script", "name": s.get("name", s["id"]),
                       "state": state, "detail": detail, "url": s.get("url"),
                       "group": s.get("group", "Custom"), "links": s.get("links"),
-                      "actions": acts})
+                      "ports": list(ports),
+                      "actions": acts,
+                      "adopted": bool(s.get("adopted_from"))})
     return items

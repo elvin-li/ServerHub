@@ -69,19 +69,19 @@
           <span class="badge">{{ grp.items.length }}</span>
         </h2>
         <div class="table-wrap" :style="groupByProject ? 'margin-bottom:10px' : ''">
-          <table class="dense">
+          <table class="dense fit-m">
             <thead>
               <tr>
                 <th style="width:28px"><input type="checkbox" :checked="allSelected(grp.items)" @change="toggleAll(grp.items, $event)" /></th>
                 <th></th>
                 <th>{{ t('docker.app') }}</th>
-                <th>{{ t('docker.version_update') }}</th>
+                <th class="col-hide-m">{{ t('docker.version_update') }}</th>
                 <th class="col-hide-m">{{ t('docker.network') }}</th>
-                <th v-if="advanced">{{ t('docker.container_ip') }}</th>
+                <th v-if="advanced" class="col-hide-m">{{ t('docker.container_ip') }}</th>
                 <th class="col-hide-m">{{ t('docker.ports') }}</th>
                 <th class="col-hide-m">{{ t('docker.mounts') }}</th>
                 <th class="col-hide-m">{{ t('docker.cpu_mem') }}</th>
-                <th v-if="advanced">Net I/O</th>
+                <th v-if="advanced" class="col-hide-m">Net I/O</th>
                 <th class="col-hide-m">{{ t('docker.autostart') }}</th>
                 <th class="col-hide-m">{{ t('docker.uptime') }}</th>
                 <th>{{ t('common.actions') }}</th>
@@ -101,14 +101,27 @@
                     :title="c.raw_name || c.id"
                   >{{ c.subtitle || c.id }}</div>
                   <span v-if="c.project" class="badge accent">{{ c.project }}</span>
+                  <div v-if="c.network || c.ports" class="show-m sub mono">{{ [c.network, c.ports].filter(Boolean).join(' · ') }}</div>
+                  <div class="show-m sub mono">{{ shortImage(c.image) }}</div>
+                  <span v-if="c.update === true" class="show-m badge warn">{{ t('docker.updateable') }}</span>
+                  <span v-else-if="c.update === false" class="show-m badge ok">{{ t('docker.latest') }}</span>
+                  <div class="show-m" @click.stop>
+                    <button
+                      class="tiny"
+                      :class="c.autostart ? 'primary' : ''"
+                      :disabled="busy"
+                      :title="t('docker.current_policy', { p: c.restart_policy || 'no' })"
+                      @click="toggleAutostart(c)"
+                    >{{ t('docker.autostart') }} {{ c.autostart ? t('common.yes') : t('common.no') }}</button>
+                  </div>
                 </td>
-                <td>
+                <td class="col-hide-m">
                   <div class="mono" :title="c.image">{{ shortImage(c.image) }}</div>
                   <span v-if="c.update === true" class="badge warn">{{ t('docker.updateable') }}</span>
                   <span v-else-if="c.update === false" class="badge ok">{{ t('docker.latest') }}</span>
                 </td>
                 <td class="mono col-hide-m">{{ c.network || '—' }}</td>
-                <td v-if="advanced" class="mono">{{ c.ip || '—' }}</td>
+                <td v-if="advanced" class="mono col-hide-m">{{ c.ip || '—' }}</td>
                 <td class="mono col-hide-m" style="max-width:120px;overflow:hidden;text-overflow:ellipsis" :title="c.ports">{{ c.ports || '—' }}</td>
                 <td class="mono col-hide-m" style="max-width:140px" :title="mountTitle(c)">
                   <template v-if="(c.mounts||[]).length">
@@ -128,7 +141,7 @@
                   </div>
                   <div style="color:var(--sub)">{{ stats[c.id]?.mem_pct || stats[c.id]?.mem || '' }}</div>
                 </td>
-                <td v-if="advanced" class="mono" style="font-size:10px">{{ stats[c.id]?.net || '—' }}</td>
+                <td v-if="advanced" class="mono col-hide-m" style="font-size:10px">{{ stats[c.id]?.net || '—' }}</td>
                 <td class="col-hide-m">
                   <button
                     class="tiny"
@@ -143,14 +156,14 @@
                 <td class="ops">
                   <a v-if="c.url" class="btn tiny primary" :href="c.url" target="_blank">WebUI</a>
                   <button v-if="c.raw_state==='running'" class="tiny" :disabled="busy" @click="act(c,'restart')">{{ t('dashboard.act_restart') }}</button>
-                  <button v-if="c.raw_state==='running'" class="tiny" :disabled="busy" @click="act(c,'pause')">{{ t('docker.pause') }}</button>
-                  <button v-if="c.raw_state==='paused'" class="tiny primary" :disabled="busy" @click="act(c,'unpause')">{{ t('docker.unpause') }}</button>
+                  <button v-if="c.raw_state==='running'" class="tiny hide-m" :disabled="busy" @click="act(c,'pause')">{{ t('docker.pause') }}</button>
+                  <button v-if="c.raw_state==='paused'" class="tiny primary hide-m" :disabled="busy" @click="act(c,'unpause')">{{ t('docker.unpause') }}</button>
                   <button v-if="c.raw_state==='running'||c.raw_state==='paused'" class="tiny danger" :disabled="busy" @click="act(c,'stop')">{{ t('dashboard.act_stop') }}</button>
                   <button v-if="c.raw_state!=='running'&&c.raw_state!=='paused'" class="tiny primary" :disabled="busy" @click="act(c,'start')">{{ t('dashboard.act_start') }}</button>
                   <button class="tiny" :disabled="busy" @click="openLogs(c)">{{ t('docker.logs') }}</button>
-                  <button class="tiny" :disabled="busy" @click="openExec(c)">{{ t('docker.console') }}</button>
+                  <button class="tiny hide-m" :disabled="busy" @click="openExec(c)">{{ t('docker.console') }}</button>
                   <button class="tiny" :disabled="busy" @click="openInspect(c)">{{ t('common.details') }}</button>
-                  <button v-if="c.update" class="tiny primary" :disabled="busy" @click="doUpdate(c)">{{ t('docker.update') }}</button>
+                  <button v-if="c.update" class="tiny primary hide-m" :disabled="busy" @click="doUpdate(c)">{{ t('docker.update') }}</button>
                   <button v-if="c.raw_state!=='running'&&c.raw_state!=='paused'" class="tiny danger" :disabled="busy" @click="act(c,'remove')">{{ t('docker.remove') }}</button>
                 </td>
               </tr>
@@ -170,15 +183,18 @@
       <LoadFailure v-if="subError.images" :detail="subError.images" :retry="loadImages" :busy="busy" />
       <SkeletonLoader v-if="!subLoaded.images" :cols="6" :rows="6" />
       <div v-else class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('docker.repo') }}</th><th>Tag</th><th>ID</th><th>{{ t('docker.size') }}</th><th>{{ t('docker.created') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('docker.repo') }}</th><th>Tag</th><th class="col-hide-m">ID</th><th>{{ t('docker.size') }}</th><th class="col-hide-m">{{ t('docker.created') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
             <tr v-for="(im,i) in images" :key="i">
-              <td class="mono">{{ im.Repository || '—' }}</td>
+              <td class="mono">
+                {{ im.Repository || '—' }}
+                <div class="show-m sub">{{ String(im.ID||'').replace('sha256:','').slice(0,12) }} · {{ im.CreatedSince || im.CreatedAt || '—' }}</div>
+              </td>
               <td>{{ im.Tag || '—' }}</td>
-              <td class="mono">{{ String(im.ID||'').replace('sha256:','').slice(0,12) }}</td>
+              <td class="mono col-hide-m">{{ String(im.ID||'').replace('sha256:','').slice(0,12) }}</td>
               <td>{{ im.Size || '—' }}</td>
-              <td>{{ im.CreatedSince || im.CreatedAt || '—' }}</td>
+              <td class="col-hide-m">{{ im.CreatedSince || im.CreatedAt || '—' }}</td>
               <td class="ops">
                 <button class="tiny danger" :disabled="busy" @click="rmi(im)">{{ t('docker.remove') }}</button>
               </td>
@@ -199,12 +215,15 @@
       <LoadFailure v-if="subError.volumes" :detail="subError.volumes" :retry="loadVolumes" :busy="busy" />
       <SkeletonLoader v-if="!subLoaded.volumes" :cols="4" :rows="5" />
       <div v-else class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th>{{ t('docker.mountpoint') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('docker.driver') }}</th><th>{{ t('docker.mountpoint') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
             <tr v-for="v in volumes" :key="v.Name">
-              <td class="mono">{{ v.Name }}</td>
-              <td>{{ v.Driver }}</td>
+              <td class="mono">
+                {{ v.Name }}
+                <div class="show-m sub">{{ v.Driver }}</div>
+              </td>
+              <td class="col-hide-m">{{ v.Driver }}</td>
               <td class="mono" style="font-size:11px">{{ v.Mountpoint }}</td>
               <td class="ops">
                 <button class="tiny danger" :disabled="busy" @click="rmVol(v)">{{ t('docker.remove') }}</button>
@@ -226,14 +245,17 @@
       <LoadFailure v-if="subError.networks" :detail="subError.networks" :retry="loadNetworks" :busy="busy" />
       <SkeletonLoader v-if="!subLoaded.networks" :cols="5" :rows="4" />
       <div v-else class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th>Scope</th><th>ID</th><th>{{ t('common.actions') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th class="col-hide-m">Scope</th><th class="col-hide-m">ID</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
             <tr v-for="n in networks" :key="n.Id">
-              <td>{{ n.Name }}</td>
+              <td>
+                {{ n.Name }}
+                <div class="show-m sub mono">{{ n.Scope }} · {{ n.Id }}</div>
+              </td>
               <td>{{ n.Driver }}</td>
-              <td>{{ n.Scope }}</td>
-              <td class="mono">{{ n.Id }}</td>
+              <td class="col-hide-m">{{ n.Scope }}</td>
+              <td class="mono col-hide-m">{{ n.Id }}</td>
               <td class="ops">
                 <button
                   v-if="!['bridge','host','none'].includes(n.Name)"
@@ -923,7 +945,7 @@ async function toggleAutostart(c) {
   busy.value = false
 }
 
-onMounted(() => { refresh(); timer = startVisibleInterval(refresh, 15000) })
+onMounted(() => { refresh(); timer = startVisibleInterval(refresh, 20000) })
 onUnmounted(() => {
   if (typeof timer === 'function') timer()
   timer = null

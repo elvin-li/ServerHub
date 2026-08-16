@@ -4,10 +4,14 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor
-
 from hub.paths import SMARTCTL
-from hub.util import sh
+from hub.util import LazyPool, sh
+
+_pool = LazyPool(4, "hub-system")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 
 _smart_cache = {"t": 0.0, "v": None}
 
@@ -22,55 +26,65 @@ def collect_system():
     # `memory_pressure -Q` and — once every 10 minutes — a `sudo -n smartctl`.
     # Running them in sequence made the whole status refresh wait for their sum.
     smart_due = time.time() - _smart_cache["t"] > 600
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        f_boot = ex.submit(sh, ["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
-        f_mem = ex.submit(sh, ["/usr/bin/memory_pressure", "-Q"], timeout=4)
-        f_ncpu = ex.submit(sh, ["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=2)
-        f_smart = (
-            ex.submit(sh, ["sudo", "-n", SMARTCTL, "-a", "/dev/disk0"], timeout=10)
-            if smart_due
-            else None
-        )
+    def _ncpu_and_memsize():
+        # One worker, two cheap sysctls: the pool is already full with boot /
+        # memory_pressure / (sometimes) smartctl, and hw.memsize is what lets
+        # the dashboard print RAM total from /api/status before sensors land.
+        rc_n, ncpu, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=2)
+        rc_m, memsize, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=2)
+        return rc_n, ncpu, rc_m, memsize
 
-        rc, out, _ = f_boot.result()
-        uptime_h = 0.0
-        if rc == 0 and "sec =" in out:
-            boot = int(out.split("sec =")[1].split(",")[0].strip())
-            uptime_h = (time.time() - boot) / 3600
+    f_boot = _pool.submit(sh, ["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
+    f_mem = _pool.submit(sh, ["/usr/bin/memory_pressure", "-Q"], timeout=4)
+    f_hw = _pool.submit(_ncpu_and_memsize)
+    f_smart = (
+        _pool.submit(sh, ["/usr/bin/sudo", "-n", SMARTCTL, "-a", "/dev/disk0"], timeout=10)
+        if smart_due
+        else None
+    )
 
-        rc, out, _ = f_mem.result()
-        mem_free = None
-        for line in out.splitlines():
-            if "free percentage" in line:
-                try:
-                    mem_free = int(line.rstrip("%").split(":")[-1].strip().rstrip("%"))
-                except ValueError:
-                    mem_free = None
+    rc, out, _ = f_boot.result()
+    uptime_h = 0.0
+    if rc == 0 and "sec =" in out:
+        boot = int(out.split("sec =")[1].split(",")[0].strip())
+        uptime_h = (time.time() - boot) / 3600
 
-        rc, ncpu, _ = f_ncpu.result()
-        ncpu_i = int(ncpu) if rc == 0 and ncpu.isdigit() else None
+    rc, out, _ = f_mem.result()
+    mem_free = None
+    for line in out.splitlines():
+        if "free percentage" in line:
+            try:
+                mem_free = int(line.rstrip("%").split(":")[-1].strip().rstrip("%"))
+            except ValueError:
+                mem_free = None
 
-        smart = _smart_cache["v"]
-        if f_smart is not None:
-            rc, out, _ = f_smart.result()
-            if rc in (0, 4):
-                smart = {}
-                for line in out.splitlines():
-                    if "Data Units Written" in line and "[" in line:
-                        smart["written"] = line.split("[")[1].rstrip("]")
-                    elif "Percentage Used" in line:
-                        smart["wear"] = line.split(":")[1].strip()
-                    elif line.strip().startswith("Temperature:"):
-                        smart.setdefault("temp", line.split(":")[1].strip())
-                    elif "Temperature_Celsius" in line:
-                        parts = line.split()
-                        if len(parts) >= 10:
-                            smart.setdefault("temp", f"{parts[9]} Celsius")
-                    elif "Airflow_Temperature" in line:
-                        parts = line.split()
-                        if len(parts) >= 10:
-                            smart.setdefault("temp", f"{parts[9]} Celsius")
-                _smart_cache.update(t=time.time(), v=smart)
+    rc_n, ncpu, rc_m, memsize = f_hw.result()
+    ncpu_i = int(ncpu) if rc_n == 0 and ncpu.isdigit() else None
+    mem_total_gb = (
+        round(int(memsize) / 2**30, 1) if rc_m == 0 and memsize.isdigit() else None
+    )
+
+    smart = _smart_cache["v"]
+    if f_smart is not None:
+        rc, out, _ = f_smart.result()
+        if rc in (0, 4):
+            smart = {}
+            for line in out.splitlines():
+                if "Data Units Written" in line and "[" in line:
+                    smart["written"] = line.split("[")[1].rstrip("]")
+                elif "Percentage Used" in line:
+                    smart["wear"] = line.split(":")[1].strip()
+                elif line.strip().startswith("Temperature:"):
+                    smart.setdefault("temp", line.split(":")[1].strip())
+                elif "Temperature_Celsius" in line:
+                    parts = line.split()
+                    if len(parts) >= 10:
+                        smart.setdefault("temp", f"{parts[9]} Celsius")
+                elif "Airflow_Temperature" in line:
+                    parts = line.split()
+                    if len(parts) >= 10:
+                        smart.setdefault("temp", f"{parts[9]} Celsius")
+            _smart_cache.update(t=time.time(), v=smart)
     n = ncpu_i or 1
     load_pct = round(min(200.0, load1 / n * 100), 1)
     return {
@@ -80,6 +94,7 @@ def collect_system():
         "load15": round(load15, 2),
         "load_pct": load_pct,
         "ncpu": ncpu_i,
+        "mem_total_gb": mem_total_gb,
         "mem_free_pct": mem_free,
         "mem_used_pct": (100 - mem_free) if mem_free is not None else None,
         "disk_used_gb": round(du.used / 2**30),

@@ -31,8 +31,11 @@ import urllib.request
 from pathlib import Path
 
 from hub.docker_cli import engine_up
+from hub.http_guard import RedirectRefused, no_redirect_opener
 from hub.launchd_cache import loaded_labels
 from hub.util import cached_snapshot, port_open, sh
+
+_OPENER = no_redirect_opener()
 
 _TTL = 30.0
 
@@ -68,10 +71,12 @@ def _http(url: str, timeout: float = 3.0):
     """GET url, returning (status, body) or (None, error-string)."""
     try:
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             return r.status, r.read(4096).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, ""
+    except RedirectRefused as e:
+        return None, str(e)
     except Exception as e:  # URLError, socket.timeout, ...
         return None, str(e)
 

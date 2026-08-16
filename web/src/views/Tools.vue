@@ -118,19 +118,19 @@
         <input v-model="procQ" type="text" :placeholder="t('tools.filter_proc')" style="min-width:180px"  :aria-label="t('tools.filter_proc')"/>
       </div>
       <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
-              <th>PID</th><th>{{ t('tools.user') }}</th><th>CPU%</th><th>MEM%</th><th>TIME</th><th>{{ t('tools.command') }}</th>
+              <th>PID</th><th class="col-hide-m">{{ t('tools.user') }}</th><th>CPU%</th><th>MEM%</th><th class="col-hide-m">TIME</th><th>{{ t('tools.command') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="p in filteredProc" :key="p.pid + p.command">
               <td class="mono">{{ p.pid }}</td>
-              <td>{{ p.user }}</td>
+              <td class="col-hide-m">{{ p.user }}</td>
               <td class="mono">{{ p.cpu.toFixed(1) }}</td>
               <td class="mono">{{ p.mem.toFixed(1) }}</td>
-              <td class="mono">{{ p.time }}</td>
+              <td class="mono col-hide-m">{{ p.time }}</td>
               <td class="mono" style="max-width:480px;overflow:hidden;text-overflow:ellipsis" :title="p.command">{{ p.command }}</td>
             </tr>
           </tbody>
@@ -143,21 +143,24 @@
       <h2 class="section-title">docker system df</h2>
       <SkeletonLoader v-if="!tabLoaded.docker" :cols="5" :rows="4" />
       <div v-else class="table-wrap" style="margin-bottom:12px">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('tools.type') }}</th>
               <th>{{ t('tools.col_total') }}</th>
-              <th>{{ t('tools.col_active') }}</th>
+              <th class="col-hide-m">{{ t('tools.col_active') }}</th>
               <th>{{ t('common.size') }}</th>
               <th>{{ t('tools.col_reclaim') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(l,i) in (df.lines||[])" :key="i">
-              <td>{{ l.type }}</td>
+              <td>
+                {{ l.type }}
+                <div class="show-m sub">{{ t('tools.col_active') }} {{ l.active }}</div>
+              </td>
               <td>{{ l.total }}</td>
-              <td>{{ l.active }}</td>
+              <td class="col-hide-m">{{ l.active }}</td>
               <td>{{ l.size }}</td>
               <td>{{ l.reclaimable }}</td>
             </tr>
@@ -180,12 +183,15 @@
 
       <h2 class="section-title">{{ t('tools.container_size') }}</h2>
       <div class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('tools.image') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('tools.image') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
             <tr v-for="c in sizes" :key="c.name">
-              <td><strong>{{ c.name }}</strong></td>
-              <td class="mono">{{ c.image }}</td>
+              <td>
+                <strong>{{ c.name }}</strong>
+                <div class="show-m sub mono">{{ c.image }}</div>
+              </td>
+              <td class="mono col-hide-m">{{ c.image }}</td>
               <td>{{ c.status }}</td>
               <td class="mono">{{ c.size }}</td>
             </tr>
@@ -204,21 +210,25 @@
       <h2 class="section-title">{{ t('tools.timers') }}</h2>
       <SkeletonLoader v-if="!tabLoaded.sched" :cols="4" :rows="5" />
       <div v-else class="table-wrap" style="margin-bottom:14px">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('tools.col_label') }}</th>
               <th>{{ t('scheduler.interval') }}</th>
-              <th>{{ t('scheduler.calendar') }}</th>
-              <th>{{ t('tools.command') }}</th>
+              <th class="col-hide-m">{{ t('scheduler.calendar') }}</th>
+              <th class="col-hide-m">{{ t('tools.command') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="row in timers" :key="row.label">
-              <td class="mono">{{ row.label }}</td>
+              <td class="mono">
+                {{ row.label }}
+                <div v-if="formatCal(row.calendar)" class="show-m sub">{{ formatCal(row.calendar) }}</div>
+                <div v-if="row.program" class="show-m sub">{{ row.program }}</div>
+              </td>
               <td>{{ row.interval_sec ? row.interval_sec + 's' : '—' }}</td>
-              <td class="mono" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
-              <td class="mono" style="max-width:360px;overflow:hidden;text-overflow:ellipsis" :title="row.program">{{ row.program }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
+              <td class="mono col-hide-m" style="max-width:360px;overflow:hidden;text-overflow:ellipsis" :title="row.program">{{ row.program }}</td>
             </tr>
             <tr v-if="!timers.length && !tabError.sched">
               <td colspan="4" style="color:var(--sub)">{{ t('tools.no_timers') }}</td>
@@ -229,23 +239,27 @@
       <h2 class="section-title">{{ t('tools.agents') }}</h2>
       <p class="hint" style="margin-top:0">{{ agents.hint }} · {{ agents.count ?? 0 }}</p>
       <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>Label</th>
-              <th>RunAtLoad</th>
-              <th>KeepAlive</th>
+              <th class="col-hide-m">RunAtLoad</th>
+              <th class="col-hide-m">KeepAlive</th>
               <th>Timer</th>
-              <th>{{ t('tools.command') }}</th>
+              <th class="col-hide-m">{{ t('tools.command') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="a in (agents.agents||[])" :key="a.label">
-              <td class="mono" style="font-size:11px">{{ a.label }}</td>
-              <td>{{ a.run_at_load ? '✓' : '—' }}</td>
-              <td>{{ a.keep_alive ? '✓' : '—' }}</td>
+              <td class="mono" style="font-size:11px">
+                {{ a.label }}
+                <div class="show-m sub">{{ a.run_at_load ? 'RunAtLoad' : '' }}{{ a.keep_alive ? (a.run_at_load ? ' · ' : '') + 'KeepAlive' : '' }}</div>
+                <div v-if="a.program" class="show-m sub">{{ a.program }}</div>
+              </td>
+              <td class="col-hide-m">{{ a.run_at_load ? '✓' : '—' }}</td>
+              <td class="col-hide-m">{{ a.keep_alive ? '✓' : '—' }}</td>
               <td class="mono">{{ a.interval_sec ? a.interval_sec + 's' : (a.calendar ? 'cal' : '—') }}</td>
-              <td class="mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="a.program">{{ a.program }}</td>
+              <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="a.program">{{ a.program }}</td>
             </tr>
           </tbody>
         </table>
@@ -263,14 +277,17 @@
       <div class="card" style="margin-top:12px" v-if="(hw?.disks||[]).length">
         <h2 class="section-title" style="margin-top:0">{{ t('tools.disks') }}</h2>
         <div class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>ID</th><th>{{ t('common.name') }}</th><th>{{ t('common.size') }}</th><th>SSD</th><th>{{ t('common.status') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>ID</th><th>{{ t('common.name') }}</th><th>{{ t('common.size') }}</th><th class="col-hide-m">SSD</th><th>{{ t('common.status') }}</th></tr></thead>
           <tbody>
             <tr v-for="d in hw.disks" :key="d.id">
               <td class="mono">{{ d.id }}</td>
-              <td>{{ d.name }}</td>
+              <td>
+                {{ d.name }}
+                <div class="show-m sub">{{ d.ssd ? 'SSD' : 'HDD' }}</div>
+              </td>
               <td class="mono">{{ d.size_gb != null ? d.size_gb + ' GB' : '—' }}</td>
-              <td>{{ d.ssd ? 'SSD' : 'HDD' }}</td>
+              <td class="col-hide-m">{{ d.ssd ? 'SSD' : 'HDD' }}</td>
               <td><span class="badge">{{ d.power_state || '—' }}</span></td>
             </tr>
           </tbody>
@@ -339,20 +356,23 @@
           <span class="meta">{{ ports.count ?? 0 }}</span>
         </div>
         <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('tools.command') }}</th>
-              <th>PID</th>
-              <th>{{ t('tools.user') }}</th>
+              <th class="col-hide-m">PID</th>
+              <th class="col-hide-m">{{ t('tools.user') }}</th>
               <th>{{ t('tools.listen') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(p,i) in (ports.ports||[])" :key="i">
-              <td class="mono">{{ p.command }}</td>
-              <td class="mono">{{ p.pid }}</td>
-              <td>{{ p.user }}</td>
+              <td class="mono">
+                {{ p.command }}
+                <div class="show-m sub">{{ p.user }} · {{ p.pid }}</div>
+              </td>
+              <td class="mono col-hide-m">{{ p.pid }}</td>
+              <td class="col-hide-m">{{ p.user }}</td>
               <td class="mono">{{ p.name }}</td>
             </tr>
           </tbody>
@@ -625,8 +645,8 @@ async function doPrune(what) {
   pruneMsg.value = ''
   try {
     const j = await pruneDocker(what)
-    pruneMsg.value = j.message || ''
-    toast(j.ok ? '✅ ' + (j.message || 'ok') : '❌ ' + (j.message || 'fail'))
+    pruneMsg.value = j.ok ? (j.message || '') : softText(j)
+    toast(j.ok ? '✅ ' + (j.message || t('common.ok')) : '❌ ' + softText(j))
     if (j.df) df.value = j.df
     await loadDocker()
   } catch (e) { toast('❌ ' + e.message) }
@@ -675,13 +695,22 @@ async function loadPorts() {
   } catch (e) { toast('❌ ' + e.message) }
 }
 
+function softText(j, fallbackKey = 'common.fail') {
+  if (j?.code) {
+    const key = `err.${j.code}`
+    const translated = t(key, j.params || {})
+    if (translated !== key) return translated
+  }
+  return j?.message || t(fallbackKey)
+}
+
 async function doPing() {
   loading.value = true
   pingOut.value = ''
   try {
     const j = await pingHostApi(pingHost.value, 3)
-    pingOut.value = j.output || j.message || ''
-    toast(j.ok ? '✅ ping ok' : '❌ ping fail')
+    pingOut.value = j.output || (j.ok ? '' : softText(j))
+    toast(j.ok ? '✅ ' + t('tools.ping_ok') : '❌ ' + (j.code ? softText(j) : t('tools.ping_fail')))
   } catch (e) { toast('❌ ' + e.message) }
   finally { loading.value = false }
 }
@@ -695,7 +724,7 @@ async function doDns() {
       dnsOut.value = (j.results || []).map(x => `${x.family} ${x.ip}`).join('\n')
         + (j.dig ? `\n\ndig:\n${j.dig}` : '')
     } else {
-      dnsOut.value = j.message || 'fail'
+      dnsOut.value = softText(j)
     }
   } catch (e) { toast('❌ ' + e.message) }
   finally { loading.value = false }
@@ -705,7 +734,7 @@ async function doFlushDns() {
   loading.value = true
   try {
     const j = await flushDns()
-    toast(j.ok ? '✅ ' + j.message : '❌ ' + j.message)
+    toast(j.ok ? '✅ ' + t('tools.flush_ok') : '❌ ' + t('tools.flush_partial'))
     dnsOut.value = (j.detail || []).join('\n')
   } catch (e) { toast('❌ ' + e.message) }
   finally { loading.value = false }
@@ -805,7 +834,7 @@ onMounted(() => {
 /* Home tiles */
 .tool-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr));
   gap: 10px;
   align-items: stretch;
   max-width: 100%;
@@ -944,5 +973,8 @@ button.warn {
     font-size: 11px;
     padding: 5px 8px;
   }
+}
+@media (max-width: 380px) {
+  .tool-grid { grid-template-columns: 1fr; }
 }
 </style>

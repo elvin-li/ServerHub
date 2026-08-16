@@ -12,8 +12,6 @@ import time
 from concurrent.futures import Future
 from typing import Any
 
-from fastapi import HTTPException
-
 from hub.disk_snapshot import (
     invalidate_disks,
     physical_whole_disks,
@@ -187,7 +185,7 @@ def _prefetch_disk_info(nodes: list[str]) -> None:
 def _normalize_id(device: str) -> str:
     d = (device or "").strip().replace("/dev/", "")
     if not DISK_RE.match(d):
-        raise HTTPException(400, f"invalid device id: {device}")
+        raise api_error("disk.invalid_device", device=device)
     return d
 
 

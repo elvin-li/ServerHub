@@ -71,6 +71,14 @@ class LifespanWorkerTests(unittest.TestCase):
                             "the recovery scan never ran during startup")
         del mocks
 
+    def test_lifespan_does_not_start_the_updates_warmer(self):
+        from fastapi.testclient import TestClient
+
+        mocks = self._quiet_lifespan()
+        with TestClient(create_app()):
+            mocks["tools_svc.start_updates_warmer"].assert_not_called()
+        mocks["tools_svc.stop_updates_warmer"].assert_called_once()
+
     def test_smart_scheduler_start_is_idempotent(self):
         """Lifespan may run more than once per process (tests, reloads); a
         second start must reuse the live thread, not stack another."""

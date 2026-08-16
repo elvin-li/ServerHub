@@ -6,8 +6,6 @@ import threading
 import time
 from typing import Any
 
-from fastapi import HTTPException
-
 from hub import vm_console
 from hub.config import override
 from hub.errors import api_error
@@ -16,11 +14,11 @@ from hub.util import cached_snapshot, fan_out, port_open, sh
 
 
 # Short TTL shared by status feed, bookmarks, and /api/vms (dedupe utmctl/orbctl).
-# Must stay LONGER than hub.status._STATUS_TTL (10s): the status feed is polled
-# on that cadence, so a 5s TTL here guaranteed a miss on every refresh and paid
-# ~390ms for utmctl+orbctl every single time.  Correctness after a VM
+# Must stay LONGER than hub.status._STATUS_TTL (35s): the status feed is polled
+# on that cadence, so a shorter TTL here guaranteed a miss on every refresh and
+# paid ~390ms for utmctl+orbctl every single time.  Correctness after a VM
 # start/stop comes from invalidate_vm_lists(), not from the TTL lapsing.
-_LIST_TTL = 30.0
+_LIST_TTL = 45.0
 
 
 
@@ -344,7 +342,7 @@ def vm_action(vm_id: str, action: str, **kwargs) -> dict[str, Any]:
         return _utm_action(name, action, **kwargs)
     if backend == "orb":
         return _orb_action(name, action, **kwargs)
-    raise HTTPException(400, f"unknown backend for {vm_id}")
+    raise api_error("vms.unknown_backend", vm=vm_id)
 
 
 def _utm_action(name: str, action: str, **kwargs) -> dict:

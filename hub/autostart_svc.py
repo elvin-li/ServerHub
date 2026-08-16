@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import os
 import plistlib
-import re
 import time
 from pathlib import Path
-
-from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import engine_up
@@ -239,7 +236,7 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
     # reached `brew services stop --all`.
     name = cli_args.require_positional(name, label="brew service name")
     if not Path(BREW).is_file():
-        raise HTTPException(503, "brew not found")
+        raise api_error("brew.not_found")
     import subprocess
     action = "start" if enabled else "stop"
     try:
@@ -351,8 +348,8 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
     # label is always interpolated behind a "gui/<uid>/" prefix and so can never
     # be argv-initial -- but that is an accident of the current call sites, and a
     # launchd label does not start with a hyphen in the first place.
-    if not re.match(r"^[\w.@+-]+$", label or "") or label.startswith("-"):
-        raise HTTPException(400, "invalid label")
+    # `^[\w.@+-]+$` matched `--all`.  The shared guard anchors the first character.
+    label = cli_args.require_positional(label, label="launchd label")
     # Refused before anything is written or unloaded.  Only the off direction is
     # blocked: enabling has to stay reachable so a host that was already disabled --
     # by this endpoint before the guard existed, or by hand -- can be repaired from
@@ -368,7 +365,7 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
                 path = p
                 break
     if not path.exists():
-        raise HTTPException(404, f"plist not found for {label}")
+        raise api_error("autostart.plist_missing", label=label)
 
     pl = _read_plist(path)
     pl["RunAtLoad"] = bool(enabled)
@@ -486,7 +483,7 @@ def set_script_autostart(enabled: bool) -> dict:
 def run_autostart_now() -> dict:
     script = Path.home() / "Services" / "autostart.sh"
     if not script.exists():
-        raise HTTPException(404, "autostart.sh not found")
+        raise api_error("autostart.script_missing")
     import subprocess
     try:
         p = subprocess.Popen(
@@ -557,7 +554,7 @@ def set_autostart(item_id: str, enabled: bool, policy: str | None = None) -> dic
         return set_launchd_autostart(name, enabled)
     if kind == "script":
         return set_script_autostart(enabled)
-    raise HTTPException(400, f"unknown kind: {kind}")
+    raise api_error("autostart.unknown_kind", kind=kind)
 
 
 def set_docker_policy(name: str, policy: str) -> dict:

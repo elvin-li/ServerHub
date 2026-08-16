@@ -1,0 +1,8 @@
+{
+  "leadin": "^(?:请|帮我|给我)?(?:打开|去|跳到|跳转(?:到)?|找到|查找|看看|查看|进入|带我去|where(?:'s| is)|open|go to|find|show(?: me)?|take me to)\\s+",
+  "find": "(打开|去|跳到|跳转|找到|查找|在哪|哪里|where|open|go to|find|show|take me)",
+  "brief": "(系统状态|状态怎么样|概况|摘要|健康吗|健康状况|\\bstatus\\b|\\bhealth\\b|\\bsummary\\b|\\bbrief\\b|how is (?:the )?(?:box|server|system|host))",
+  "question": "(怎么|如何|为什么|为何|怎么办|什么意思|\\bwhat\\b|\\bwhy\\b|\\bhow\\b|\\bwhich\\b)",
+  "page": "(本页|当前页|这一页|这个页面|this page|explain this|what is this page)",
+  "panel_word": ["面板", "page", "panel", "ページ"]
+}

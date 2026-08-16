@@ -23,6 +23,7 @@ import yaml
 from fastapi import HTTPException
 
 from hub import catalog_remote
+from hub import cli_args
 from hub import secure_io
 from hub.errors import CODES, api_error
 from hub.host_address import host_ip
@@ -800,6 +801,8 @@ def _rollback_install(
 
 def template_file(template_id: str) -> Path | None:
     """The file backing *template_id*: remote override first, then built-in."""
+    if not cli_args.is_safe_positional(template_id):
+        return None
     remote = catalog_remote.remote_template_path(template_id)
     if remote is not None:
         return remote
@@ -815,6 +818,8 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     if str(template_id).startswith("native-"):
         from hub import native_catalog
         return native_catalog.install_native(template_id, variables)
+
+    template_id = cli_args.require_positional(template_id, label="template id")
 
     src = template_file(template_id)
     if src is None:
@@ -1084,6 +1089,8 @@ def uninstall_template(
     if str(template_id).startswith("native-"):
         from hub import native_catalog
         return native_catalog.uninstall_native(template_id, remove_data=remove_data)
+
+    template_id = cli_args.require_positional(template_id, label="template id")
 
     dest_dir = SERVICES_ROOT / template_id
     compose = dest_dir / "docker-compose.yml"

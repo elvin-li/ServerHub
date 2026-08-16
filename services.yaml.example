@@ -230,3 +230,17 @@ freshness_targets: []
 #         - name: API docs
 #           url: http://{host}:8000/docs
 scripts: []
+
+# Extra recognition rules for auto-discovered listeners.  A matching slug
+# replaces the built-in signature of the same name.  `http: false` means
+# never offer a browser link (the probe would otherwise look like an attack
+# in that daemon's log).  `brew` fills start/stop as `brew services …`.
+#   service_signatures:
+#     - slug: my-api
+#       name: My API
+#       category: Apps
+#       procs: [uvicorn, my-api]
+#       ports: [8100]
+#       http: true
+#       brew: my-api
+service_signatures: []

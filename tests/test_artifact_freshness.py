@@ -22,13 +22,15 @@ These tests pin the properties that make the check trustworthy:
 * the table itself comes from services.yaml (``freshness_targets:``) with no
   built-in entries -- the four /Users/a0000 jobs it used to hardcode moved to
   this host's live config, so the parser must reproduce the old table from
-  that config (LIVE_FRESHNESS_TARGETS below is a verbatim fixture copy of it,
-  deliberately not a read of the live file: the suite must pass anywhere,
-  and fixture-vs-live drift is the operator equivalence check's job).
+  that config (LIVE_FRESHNESS_TARGETS below is a verbatim fixture copy of it).
+  ``test_live_yaml_gravity_marker_matches_fixture`` greps the live pattern
+  line (never yaml.safe_load -- secrets) so fixture-vs-live drift cannot
+  go green.  Missing services.yaml (gitignored on a fresh checkout) skips.
 
 Everything runs against a temp directory; no test stat()s the host's real
-backups or reads its real services.yaml, so the suite is green regardless of
-what state this machine is in.
+backups.  The one live-file read is the pattern-line grep above, skipped
+when services.yaml is absent, so the rest of the suite is green regardless
+of what state this machine's archives are in.
 """
 from __future__ import annotations
 
@@ -339,6 +341,8 @@ class WiringTests(_Harness):
 
 #: Verbatim fixture copy of ``freshness_targets:`` in this host's
 #: services.yaml.  If the live file changes, change this fixture with it.
+#: 2026-08-15: gravity-rotate-logs watches rotate_logs.freshness, not
+#: freshness.log (that file is co-written by write_freshness.py).
 LIVE_FRESHNESS_TARGETS = [
     {"id": "config-backup", "label": "local.config-backup",
      "pattern": "/Users/a0000/Services/backups/configs_*.tgz",
@@ -351,12 +355,14 @@ LIVE_FRESHNESS_TARGETS = [
      "pattern": "/Users/a0000/Library/Logs/onedrive-share-regulations.log",
      "max_age_hours": 27},
     {"id": "gravity-rotate-logs", "label": "com.gravity.rotate-logs",
-     "pattern": "/Users/a0000/Services/gravity/logs/freshness.log",
+     "pattern": "/Users/a0000/Services/gravity/logs/rotate_logs.freshness",
      "max_age_hours": 25},
 ]
 
 #: The table hub.freshness_svc.TARGETS hardcoded before it became
-#: configuration.  The four stalled jobs of 2026-08-10, verbatim.
+#: configuration, plus the 2026-08-15 marker split.  The four jobs that
+#: stalled on 2026-08-10 are still the watched set; only the rotate-logs
+#: path changed so the watchdog is not fooled by write_freshness.py.
 OLD_HARDCODED_TABLE = (
     Target(id="config-backup", label="local.config-backup",
            pattern="/Users/a0000/Services/backups/configs_*.tgz",
@@ -369,7 +375,7 @@ OLD_HARDCODED_TABLE = (
            pattern="/Users/a0000/Library/Logs/onedrive-share-regulations.log",
            max_age_hours=27.0),
     Target(id="gravity-rotate-logs", label="com.gravity.rotate-logs",
-           pattern="/Users/a0000/Services/gravity/logs/freshness.log",
+           pattern="/Users/a0000/Services/gravity/logs/rotate_logs.freshness",
            max_age_hours=25.0),
 )
 
@@ -385,6 +391,20 @@ class ConfiguredTargetsTests(unittest.TestCase):
         2026-08-10 included."""
         self.assertEqual(configured_targets(LIVE_FRESHNESS_TARGETS),
                          OLD_HARDCODED_TABLE)
+
+    def test_live_yaml_gravity_marker_matches_fixture(self):
+        """services.yaml 的 gravity-rotate-logs pattern 必须与夹具同字,
+        否则热加载看着绿、夹具却还盯着 freshness.log。不 yaml.safe_load
+        整文件(里面有凭据)。"""
+        yaml_path = BASE / "services.yaml"
+        if not yaml_path.exists():
+            self.skipTest("no live services.yaml in this checkout")
+        text = yaml_path.read_text(encoding="utf-8")
+        expected = LIVE_FRESHNESS_TARGETS[-1]["pattern"]
+        self.assertEqual(LIVE_FRESHNESS_TARGETS[-1]["id"], "gravity-rotate-logs")
+        self.assertIn("pattern: " + expected, text)
+        self.assertNotIn(
+            "pattern: /Users/a0000/Services/gravity/logs/freshness.log", text)
 
     def test_no_config_means_no_targets(self):
         with mock.patch.object(hub.config, "cfg", lambda: {}):

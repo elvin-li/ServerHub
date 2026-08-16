@@ -1,14 +1,21 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from hub import disk_manage_svc, disk_power_svc, storage_pool_svc, storage_svc
+from hub.util import LazyPool
 
 router = APIRouter(tags=["storage"])
+
+#: Page composer only.  Overview fans out SMART on the shared probe pool.
+_PAGE_POOL = LazyPool(3, "storage-page")
+
+
+def shutdown_executor() -> None:
+    _PAGE_POOL.shutdown()
 
 
 @router.get("/api/storage")
@@ -20,20 +27,19 @@ def storage(light: bool = False):
     # unchanged from the serial version: an overview failure propagates (the
     # response is the overview itself, so there is nothing to fall back to),
     # while a power or managed failure degrades just its own key.
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_overview = ex.submit(storage_svc.storage_overview)
-        f_power = ex.submit(disk_power_svc.list_power_disks)
-        f_managed = ex.submit(disk_manage_svc.overview)
-        data = f_overview.result()
-        try:
-            data["power_disks"] = f_power.result()
-        except Exception as e:
-            data["power_disks"] = []
-            data["power_error"] = str(e)
-        try:
-            data["managed"] = f_managed.result()
-        except Exception as e:
-            data["managed"] = {"volumes": [], "error": str(e)}
+    f_overview = _PAGE_POOL.submit(storage_svc.storage_overview)
+    f_power = _PAGE_POOL.submit(disk_power_svc.list_power_disks)
+    f_managed = _PAGE_POOL.submit(disk_manage_svc.overview)
+    data = f_overview.result()
+    try:
+        data["power_disks"] = f_power.result()
+    except Exception as e:
+        data["power_disks"] = []
+        data["power_error"] = str(e)
+    try:
+        data["managed"] = f_managed.result()
+    except Exception as e:
+        data["managed"] = {"volumes": [], "error": str(e)}
     return data
 
 

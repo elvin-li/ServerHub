@@ -34,21 +34,26 @@
     <h2 class="section-title">{{ t('gateway.sites') }}</h2>
     <SkeletonLoader v-if="!loaded" :cols="4" :rows="4" />
     <div v-else class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th>{{ t('gateway.conf') }}</th>
-            <th>{{ t('gateway.listen') }}</th>
-            <th>server_name</th>
-            <th>{{ t('gateway.upstream') }}</th>
+            <th class="col-hide-m">{{ t('gateway.listen') }}</th>
+            <th class="col-hide-m">server_name</th>
+            <th class="col-hide-m">{{ t('gateway.upstream') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="s in data?.sites || []" :key="s.file">
-            <td class="mono"><strong>{{ s.file }}</strong></td>
-            <td class="mono">{{ (s.listens || []).join(', ') }}</td>
-            <td class="mono">{{ (s.server_names || []).join(', ') || '—' }}</td>
-            <td class="mono" style="font-size:11px">{{ (s.upstreams || []).join(' · ') || '—' }}</td>
+            <td class="mono">
+              <strong>{{ s.file }}</strong>
+              <div v-if="(s.server_names || []).length" class="show-m sub">{{ (s.server_names || []).join(', ') }}</div>
+              <div v-if="(s.listens || []).length" class="show-m sub">{{ (s.listens || []).join(', ') }}</div>
+              <div v-if="(s.upstreams || []).length" class="show-m sub">{{ (s.upstreams || []).join(' · ') }}</div>
+            </td>
+            <td class="mono col-hide-m">{{ (s.listens || []).join(', ') }}</td>
+            <td class="mono col-hide-m">{{ (s.server_names || []).join(', ') || '—' }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ (s.upstreams || []).join(' · ') || '—' }}</td>
           </tr>
           <tr v-if="!(data?.sites || []).length && !loadError">
             <td colspan="4" style="color:var(--sub)">{{ t('gateway.empty') }}</td>

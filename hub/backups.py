@@ -848,7 +848,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
 
         if not error:
             dest = _private_dest(dest_dir / f"{stack_id}_{stamp}.tgz")
-            tar_argv = ["tar", "czf", str(dest), str(compose_path), *binds]
+            tar_argv = ["/usr/bin/tar", "czf", str(dest), str(compose_path), *binds]
             if volumes:
                 tar_argv += ["-C", str(staging), "volumes"]
             log.append(f"$ {' '.join(tar_argv)}")
@@ -999,7 +999,7 @@ def _backup_configs() -> dict:
     dest = _private_dest(BACKUP_ROOT / f"configs_{stamp}.tgz")
     try:
         p = subprocess.run(
-            ["tar", "czf", str(dest)] + existing,
+            ["/usr/bin/tar", "czf", str(dest)] + existing,
             capture_output=True,
             text=True,
             timeout=120,

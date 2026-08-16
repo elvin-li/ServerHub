@@ -20,11 +20,15 @@ from __future__ import annotations
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-
 from hub.errors import api_error
 from hub.host_address import default_interface, host_ip
-from hub.util import port_open, sh
+from hub.util import LazyPool, port_open, sh
+
+_pool = LazyPool(3, "hub-power")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 
 VNC_PORT = 5900
 
@@ -70,7 +74,7 @@ def set_wol(enabled: bool) -> dict:
     val = "1" if enabled else "0"
     rc, out, err = sh(["/usr/bin/pmset", "-a", "womp", val], timeout=8)
     if rc != 0:
-        rc, out, err = sh(["sudo", "-n", "/usr/bin/pmset", "-a", "womp", val], timeout=8)
+        rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "womp", val], timeout=8)
     ok = rc == 0
     msg = (out or err or "").strip()
     if not ok:
@@ -124,7 +128,7 @@ def _do_power(action: str) -> None:
     )
     if rc != 0:
         flag = "-h" if action == "shutdown" else "-r"
-        sh(["sudo", "-n", "/sbin/shutdown", flag, "now"], timeout=15)
+        sh(["/usr/bin/sudo", "-n", "/sbin/shutdown", flag, "now"], timeout=15)
 
 
 def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> dict:
@@ -167,13 +171,12 @@ def power_overview() -> dict:
     # and the Screen Sharing probe. `pmset -g` alone is the slow one, and the
     # dashboard refreshes this tile on every heavy tick, so overlapping them
     # removes the part of the wait that was pure sequencing.
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_nic = ex.submit(_nic)
-        f_womp = ex.submit(_womp_enabled)
-        f_ss = ex.submit(screensharing_status)
-        dev, mac = f_nic.result()
-        womp = f_womp.result()
-        screen_sharing = f_ss.result()
+    f_nic = _pool.submit(_nic)
+    f_womp = _pool.submit(_womp_enabled)
+    f_ss = _pool.submit(screensharing_status)
+    dev, mac = f_nic.result()
+    womp = f_womp.result()
+    screen_sharing = f_ss.result()
     return {
         "actions": list(_ACTIONS),
         "wol": {

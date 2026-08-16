@@ -18,11 +18,8 @@ import shutil
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-
-from fastapi import HTTPException
 
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.errors import CODES, api_error
@@ -30,7 +27,13 @@ from hub.host_address import host_ip
 from hub.launchd_cache import invalidate_launchd
 from hub.launchd_cache import running_labels as launchd_running_labels
 from hub.proc_cache import invalidate_processes, process_matches
-from hub.util import cached_snapshot, fan_out, sh
+from hub.util import LazyPool, cached_snapshot, fan_out, sh
+
+_pool = LazyPool(3, "hub-native")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 
 SERVICES_ROOT = Path.home() / "Services"
 # One definition, in hub.paths: it tries `which brew` before the two standard
@@ -77,9 +80,22 @@ def _brew_env() -> dict:
 
 
 def _which(name: str) -> str | None:
-    return shutil.which(name) or (
-        str(p) if (p := Path(f"/opt/homebrew/bin/{name}")).is_file() else None
-    )
+    """Resolve a brew-installed CLI from known prefixes before PATH.
+
+    ``bin:`` install checks and filebrowser linking used to take the first
+    PATH hit, so a hijacked ``filebrowser`` would be reported as installed
+    and then copied into ~/Services.
+    """
+    if not name or "/" in name or "\\" in name or name.startswith("-"):
+        return None
+    for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
+        p = Path(prefix) / name
+        if p.is_file():
+            return str(p)
+    found = shutil.which(name)
+    if found and Path(found).is_absolute() and Path(found).is_file():
+        return found
+    return None
 
 
 #: The ollama daemon's API port.  A custom LaunchAgent already serving this
@@ -96,6 +112,21 @@ def ollama_api_already_served() -> bool:
     from hub.util import port_open
 
     return bool(port_open(OLLAMA_API_PORT, host="127.0.0.1"))
+
+
+#: Immich Valkey (OrbStack ``immich_redis``) owns this port on this class of host.
+REDIS_PORT = 6379
+
+
+def redis_port_already_served() -> bool:
+    """True when something already accepts connections on Redis/Valkey :6379.
+
+    Starting Homebrew Redis then abort-loops on missing ``loadmodule`` paths,
+    and a clean start would steal the port from Immich Valkey.
+    """
+    from hub.util import port_open
+
+    return bool(port_open(REDIS_PORT, host="127.0.0.1"))
 
 
 def _app_exists(name: str) -> bool:
@@ -295,12 +326,14 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "desc": "In-memory database · native service",
         "category": "data",
         "tags": ["cache", "native"],
-        "featured": True,
+        "featured": False,
         "method": "brew_formula",
         "package": "redis",
         "check": "bin:redis-server",
         "service": True,
         "ports": ["6379"],
+        "notes": "Do not start when :6379 is already Immich Valkey. "
+                 "Homebrew Redis 8 ships broken relative loadmodule paths and KeepAlive crash-loops.",
     },
     {
         "id": "native-postgresql",
@@ -656,13 +689,12 @@ def list_native_apps(force: bool = False) -> list[dict]:
     # this function is also called with force=True by catalog_overview(), and `force`
     # must not bypass that cache — it means "re-read the template dir", not "make
     # brew slow again".
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_installed = ex.submit(_brew_list_installed)
-        f_services = ex.submit(brew_services_list)
-        f_host = ex.submit(host_ip)
-        brew_inst = f_installed.result()
-        service_rows = f_services.result()
-        host = f_host.result()
+    f_installed = _pool.submit(_brew_list_installed)
+    f_services = _pool.submit(brew_services_list)
+    f_host = _pool.submit(host_ip)
+    brew_inst = f_installed.result()
+    service_rows = f_services.result()
+    host = f_host.result()
 
     service_states: dict[str, str] = {}
     for s in service_rows:
@@ -890,12 +922,14 @@ def _run_brew(
     it, and then failed with Homebrew's root warning as the error message.
 
     What actually needs root is the macOS package installer that brew invokes
-    *internally*, not brew itself.  There is no way to hand that inner sudo a
-    password from here without a tty, so this reports the situation precisely and
-    tells the operator the one command that does work.  Everything that does not
-    need root -- every formula, and every cask whose artifact is an .app, since
-    /Applications is admin-writable -- installs normally through this path.
+    *internally*, not brew itself.  When the SPA supplies the operator's macOS
+    administrator password (``X-Admin-Password``), we prime a sudo ticket with
+    ``sudo -v`` and retry brew as the same user — brew's inner ``sudo installer``
+    then reuses that ticket.  Without a password we answer ``password_required`` so
+    the in-browser admin dialog can collect one and retry.
     """
+    from hub.macos_admin import admin_password_supplied, prime_sudo_ticket
+
     cmd = [BREW, *brew_args]
     r = _run(cmd, timeout=timeout)
     if r["ok"] or not admin_on_sudo_fail:
@@ -910,17 +944,32 @@ def _run_brew(
         )[-4000:]
         return r
 
-    if _needs_admin_retry(r.get("message") or ""):
-        r["error"] = "password_required"
-        r["message"] = (
-            "This package needs root to run the macOS installer (pkg-based cask), "
-            "and brew itself cannot run as root, so the panel cannot authorize it for you.\n"
-            "Open Terminal on this Mac and run:\n"
-            f"  {' '.join(shlex.quote(c) for c in cmd)}\n\n"
-            "Packages that do not need root (all formulae, and .app-based casks) "
-            "can be installed directly from the panel.\n\n"
-            + (r.get("message") or "")
-        )[-4000:]
+    if not _needs_admin_retry(r.get("message") or ""):
+        return r
+
+    if admin_password_supplied():
+        prime = prime_sudo_ticket(timeout=min(30, timeout))
+        if prime.get("ok"):
+            r2 = _run(cmd, timeout=timeout)
+            if r2["ok"] or not _needs_admin_retry(r2.get("message") or ""):
+                return r2
+            r = r2
+        elif prime.get("error") == "password_incorrect":
+            r["error"] = "password_incorrect"
+            r["message"] = (
+                "The macOS administrator password was rejected.\n\n"
+                + (r.get("message") or "")
+            )[-4000:]
+            return r
+
+    r["error"] = "password_required"
+    r["message"] = (
+        "This package needs the macOS administrator password for its pkg installer.\n"
+        "Enter your Mac login password when prompted and try again.\n\n"
+        "You can also install manually on this Mac:\n"
+        f"  {' '.join(shlex.quote(c) for c in cmd)}\n\n"
+        + (r.get("message") or "")
+    )[-4000:]
     return r
 
 
@@ -1046,7 +1095,11 @@ def _launchctl_unload(label: str) -> dict:
 
 
 def _pick_python() -> str:
-    """Prefer python3.14 (HA native on this host), then 3.13/3.12."""
+    """Prefer a concrete Homebrew or system python3. Never a bare ``python3``.
+
+    A relative name would be resolved from PATH at venv-create time, so a
+    hijacked ``python3`` would become Home Assistant's interpreter.
+    """
     for c in (
         "/opt/homebrew/opt/python@3.14/bin/python3.14",
         "/opt/homebrew/opt/python@3.14/bin/python3",
@@ -1055,11 +1108,18 @@ def _pick_python() -> str:
         "/opt/homebrew/bin/python3.13",
         "/opt/homebrew/opt/python@3.12/bin/python3.12",
         "/opt/homebrew/bin/python3.12",
+        "/usr/local/opt/python@3.14/bin/python3.14",
+        "/usr/local/opt/python@3.13/bin/python3.13",
+        "/usr/local/opt/python@3.12/bin/python3.12",
+        "/usr/local/bin/python3.14",
+        "/usr/local/bin/python3.13",
+        "/usr/local/bin/python3.12",
+        "/usr/bin/python3",
         shutil.which("python3") or "",
     ):
-        if c and Path(c).is_file():
+        if c and Path(c).is_file() and Path(c).is_absolute():
             return c
-    return "python3"
+    return ""
 
 
 def _enable_screen_sharing() -> dict:
@@ -1068,10 +1128,10 @@ def _enable_screen_sharing() -> dict:
         ["/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart",
          "-activate", "-configure", "-access", "-on",
          "-restart", "-agent", "-privs", "-all"],
-        ["sudo", "-n", "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart",
+        ["/usr/bin/sudo", "-n", "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart",
          "-activate", "-configure", "-access", "-on",
          "-restart", "-agent", "-privs", "-all"],
-        ["sudo", "-n", "/bin/launchctl", "load", "-w",
+        ["/usr/bin/sudo", "-n", "/bin/launchctl", "load", "-w",
          "/System/Library/LaunchDaemons/com.apple.screensharing.plist"],
     ]
     logs = []
@@ -1174,7 +1234,7 @@ def _log_outcome(verb: str, app_id: str, app: dict, result: dict) -> None:
 def install_native(app_id: str, variables: dict | None = None) -> dict:
     app = next((a for a in NATIVE_APPS if a["id"] == app_id), None)
     if not app:
-        raise HTTPException(404, f"unknown native app: {app_id}")
+        raise api_error("catalog.unknown_app", app=app_id)
     if not Path(BREW).is_file() and app.get("method", "").startswith("brew"):
         # Name the path actually checked. BREW is resolved at import (`which brew`
         # first, then the two standard prefixes), so quoting a fixed
@@ -1221,7 +1281,7 @@ def _install_native(app: dict, app_id: str) -> dict:
         ok = _brew_install_ok(r["message"], r["rc"]) or _is_installed(app)
         if ok and app.get("open"):
             _run(["/usr/bin/open", "-a", app["open"]], timeout=15)
-        return {
+        out = {
             "ok": ok,
             "message": "\n".join(logs)[-2000:],
             "path": f"/Applications/{app.get('open') or pkg}.app",
@@ -1230,6 +1290,9 @@ def _install_native(app: dict, app_id: str) -> dict:
             "notes": app.get("notes") or "",
             "stack_id": app_id,
         }
+        if not ok and r.get("error"):
+            out["error"] = r["error"]
+        return out
 
     if method == "brew_formula":
         pkg = app["package"]
@@ -1250,6 +1313,9 @@ def _install_native(app: dict, app_id: str) -> dict:
             skip_brew_service = False
             if app_id == "native-ollama" and ollama_api_already_served():
                 logs.append("skipped brew services start: :11434 is already served")
+                skip_brew_service = True
+            if app_id == "native-redis" and redis_port_already_served():
+                logs.append("skipped brew services start: :6379 is already served")
                 skip_brew_service = True
             if not skip_brew_service:
                 r2 = _run([BREW, "services", "start", pkg], timeout=120)
@@ -1318,9 +1384,9 @@ def _install_native(app: dict, app_id: str) -> dict:
             return _install_filebrowser(app, app_id, logs)
         if sid == "homeassistant":
             return _install_homeassistant(app, app_id, logs)
-        raise HTTPException(400, f"unsupported script_id: {sid}")
+        raise api_error("catalog.unsupported_script", script=sid)
 
-    raise HTTPException(400, f"unsupported method: {method}")
+    raise api_error("catalog.unsupported_method", method=method)
 
 
 def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
@@ -1416,12 +1482,20 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
         logs.append(f"{hass} already exists")
     else:
         py = _pick_python()
-        logs.append(f"using Python: {py}")
+        logs.append(f"using Python: {py or '(none)'}")
         # ensure brew python if missing
-        if not Path(py).is_file() or py == "python3":
+        if not py or not Path(py).is_file():
             r0 = _run([BREW, "install", "python@3.14"], timeout=900)
             logs.append(r0["message"][-500:])
             py = _pick_python()
+        if not py:
+            return {
+                "ok": False,
+                "message": "No Python interpreter was found for the Home Assistant venv\n"
+                + "\n".join(logs)[-1500:],
+                "kind": "native",
+                "stack_id": app_id,
+            }
         r1 = _run([py, "-m", "venv", str(venv)], timeout=120)
         logs.append(r1["message"] or f"venv rc={r1['rc']}")
         if not (venv / "bin" / "pip").exists():
@@ -1512,11 +1586,11 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
 
 def _disable_screen_sharing() -> dict:
     cmds = [
-        ["sudo", "-n", "/bin/launchctl", "unload", "-w",
+        ["/usr/bin/sudo", "-n", "/bin/launchctl", "unload", "-w",
          "/System/Library/LaunchDaemons/com.apple.screensharing.plist"],
         ["/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart",
          "-deactivate", "-stop"],
-        ["sudo", "-n",
+        ["/usr/bin/sudo", "-n",
          "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart",
          "-deactivate", "-stop"],
     ]
@@ -1543,7 +1617,7 @@ def uninstall_native(app_id: str, *, remove_data: bool = False) -> dict:
     """Uninstall a native app (brew uninstall / stop service / system off)."""
     app = next((a for a in NATIVE_APPS if a["id"] == app_id), None)
     if not app:
-        raise HTTPException(404, f"unknown native app: {app_id}")
+        raise api_error("catalog.unknown_app", app=app_id)
 
     with _single_flight(app_id):
         result = _uninstall_native(app, app_id, remove_data=remove_data)
@@ -1668,4 +1742,4 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
             "stack_id": app_id,
         }
 
-    raise HTTPException(400, f"unsupported uninstall method: {method}")
+    raise api_error("catalog.unsupported_uninstall", method=method)

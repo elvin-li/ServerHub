@@ -67,7 +67,7 @@ function release(wrapper) {
 }
 
 describe('poll callbacks report a dead server to lib/poll.js', () => {
-  // Dashboard registers two pollers (12s light, 90s heavy); the rest one each.
+  // Dashboard registers two pollers (20s light, 90s heavy); the rest one each.
   const CASES = [
     { name: 'Dashboard', load: () => import('./Dashboard.vue'), pollers: 2 },
     { name: 'Services', load: () => import('./Services.vue'), pollers: 1 },

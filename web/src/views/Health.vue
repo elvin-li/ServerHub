@@ -7,7 +7,7 @@
 
     <div class="toolbar">
       <button class="primary" @click="load" :disabled="loading">{{ t('health.rescan') }}</button>
-      <span class="meta" v-if="data?.summary" style="color:var(--sub)">
+      <span class="meta hide-m" v-if="data?.summary" style="color:var(--sub)">
         {{ t('health.passed') }} {{ data.summary.ok }} · {{ t('health.warnings') }} {{ data.summary.warn }} · {{ t('health.errors') }} {{ data.summary.error }}
         · {{ data.summary.total }}
       </span>
@@ -46,25 +46,29 @@
 
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="7" :label="t('common.scanning')" />
     <div v-else class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th style="width:36px"></th>
             <th>{{ t('health.check') }}</th>
             <th>{{ t('health.level') }}</th>
-            <th>{{ t('health.detail') }}</th>
-            <th>{{ t('health.fix') }}</th>
+            <th class="col-hide-m">{{ t('health.detail') }}</th>
+            <th class="col-hide-m">{{ t('health.fix') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="c in filtered" :key="c.id">
             <td><span class="led" :class="led(c)"></span></td>
-            <td><strong>{{ c.name }}</strong></td>
+            <td>
+              <strong>{{ c.name }}</strong>
+              <div v-if="errText(c.detail)" class="show-m sub">{{ errText(c.detail) }}</div>
+              <div v-if="c.fix && !c.ok" class="show-m sub">{{ errText(c.fix) }}</div>
+            </td>
             <td>
               <span class="badge" :class="levelBadge(c)">{{ levelLabel(c) }}</span>
             </td>
-            <td class="mono" style="max-width:320px;font-size:11px">{{ errText(c.detail) }}</td>
-            <td style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? errText(c.fix) : (c.ok ? '—' : '') }}</td>
+            <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ errText(c.detail) }}</td>
+            <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? errText(c.fix) : (c.ok ? '—' : '') }}</td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
             <td colspan="5" style="color:var(--sub)">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>

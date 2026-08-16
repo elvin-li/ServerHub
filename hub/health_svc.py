@@ -6,6 +6,7 @@ import shutil
 import threading
 import time
 
+from hub.config import override
 from hub.docker_cli import engine_up
 from hub.launchd_cache import running_labels as launchd_running_labels
 from hub.nginx_svc import overview as nginx_overview, test_config as nginx_test
@@ -43,6 +44,7 @@ def _probe_port(port) -> bool | None:
 #: Ports whose reachability is reported, in the order the page renders them.
 _KEY_PORTS = (
     (8086, "ServerHub panel :8086", "launchctl kickstart local.serverhub.panel"),
+    (8443, "ServerHub HTTPS :8443", "Check system Nginx / 35-serverhub.conf"),
     (8123, "Home Assistant :8123", "Check com.homeassistant.core"),
     (8281, "Nginx HTTPS :8281", "Check system Nginx / certificates"),
 )
@@ -108,6 +110,21 @@ def _port_checks() -> list[dict]:
     ]
 
 
+def _skip_keepalive_watch(pl: dict, label: str) -> bool:
+    """True when a KeepAlive plist is intentionally off, not unsupervised.
+
+    `launchctl disable` does not write ``Disabled`` into the Homebrew plist, so
+    panel ``hide`` is the other signal — otherwise a crash-loop we have already
+    taken down keeps lighting Health as "KeepAlive not running".
+    """
+    if pl.get("Disabled"):
+        return True
+    try:
+        return bool(override(label).get("hide"))
+    except Exception:
+        return False
+
+
 def _running_labels() -> frozenset[str]:
     """Labels with a live PID, from one `launchctl list` for the whole function.
 
@@ -150,7 +167,7 @@ def _smart_checks() -> list[dict]:
     root).  A hardcoded Homebrew path here matches no rule, so this probe would
     ask for a password nobody can type and the health card would go blank.
     """
-    rc, out, _ = sh(["sudo", "-n", SMARTCTL, "-H", "/dev/disk0"], timeout=10)
+    rc, out, _ = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-H", "/dev/disk0"], timeout=10)
     if rc in (0, 4) and out:
         ok = "PASSED" in out.upper() or "OK" in out.upper()
         return [_check(
@@ -408,9 +425,10 @@ def _collect_checks() -> dict:
                 st = (s.get("status") or "").lower()
                 ok = st in ("started", "running")
                 if not ok and st in ("none", ""):
-                    # 未经 brew services 纳管但由 LaunchAgent 直接加载时 brew 显示 none，
-                    # 需回查 launchctl 实际运行状态，避免误报。用上面那份全量列表，
-                    # 不再为每个服务单独开一个子进程。
+                    # brew reports "none" when a formula is running under a
+                    # LaunchAgent rather than `brew services`.  Re-check the
+                    # listing already taken above instead of spawning
+                    # launchctl per service.
                     if f"homebrew.mxcl.{n}" in running_labels:
                         ok, st = True, "running (launchd)"
                 checks.append(_check(
@@ -434,6 +452,8 @@ def _collect_checks() -> dict:
         except Exception:
             continue
         label = pl.get("Label") or Path(path).stem
+        if _skip_keepalive_watch(pl, label):
+            continue
         if not pl.get("KeepAlive"):
             continue
         if pl.get("StartInterval") or pl.get("StartCalendarInterval"):

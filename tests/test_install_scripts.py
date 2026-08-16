@@ -17,6 +17,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('os.environ.get("SERVERHUB_HOST") or "127.0.0.1"', source)
         self.assertNotIn('or "0.0.0.0"', source)
 
+    def test_uvicorn_does_not_reprint_startup_into_the_panel_log(self):
+        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("access_log=False", source)
+        self.assertIn('log_level="warning"', source)
+
     def test_port_is_range_checked(self):
         self.assertIn("65535", self.install)
         self.assertIn("--port must be an integer between 1 and 65535", self.install)

@@ -7,10 +7,9 @@ import re
 import shutil
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from hub.util import sh
+from hub.util import LazyPool, sh
 
 # ── Mach host CPU ticks — accurate, non-blocking CPU% via cumulative deltas ──
 # host_statistics(HOST_CPU_LOAD_INFO) returns lifetime ticks in
@@ -71,6 +70,11 @@ def _cpu_from_ticks() -> dict | None:
                 _cpu_ticks_prev = cur
                 return None
             prev, cur = cur, nxt
+        # c_uint wrap or a short noisy window can make a field go backwards;
+        # re-seed instead of publishing used_pct > 100 (measured 149% once).
+        if any(c < p for c, p in zip(cur, prev)):
+            _cpu_ticks_prev = cur
+            return None
         _cpu_ticks_prev = cur
     du = cur[0] - prev[0]
     ds = cur[1] - prev[1]
@@ -80,25 +84,47 @@ def _cpu_from_ticks() -> dict | None:
     total = busy + di
     if total <= 0:
         return None
+    used = round(busy / total * 100, 1)
+    if used > 100.0:
+        return None
     return {
         "user": round((du + dn) / total * 100, 1),
         "sys": round(ds / total * 100, 1),
         "idle": round(di / total * 100, 1),
-        "used_pct": round(busy / total * 100, 1),
+        "used_pct": used,
     }
 
 
 _cache = {"t": 0.0, "v": None}
-# Above the Dashboard's 12s light poll on purpose: at 8s the cache had always
-# expired by the next tick, so every poll re-ran the full 7-subprocess
-# collection (top, memory_pressure, netstat, ps, sysctl, pmset) and the cache
-# absorbed nothing.  At 15s alternate ticks are served from memory.
-_TTL = 15.0
+# Above the Dashboard's 20s light poll: a shorter TTL expired every tick and
+# re-ran top (measured 1.6s here).  30s lets two UI polls share one sample.
+_TTL = 30.0
+_TTL_HIGH = 15.0
+#: `top -l 1` is the expensive half of a sensors collect.  PhysMem breakdown
+#: changes slowly; reuse it across a couple of UI polls.
+_TOP_TTL = 60.0
+_TOP_TTL_HIGH = 20.0
+
+
+def _sensors_ttl() -> float:
+    from hub.resource_mode import is_high
+    return _TTL_HIGH if is_high() else _TTL
+
+
+def _top_ttl() -> float:
+    from hub.resource_mode import is_high
+    return _TOP_TTL_HIGH if is_high() else _TOP_TTL
+_top_cache = {"t": 0.0, "v": None}
 _refresh_lock = threading.Lock()
 _net_prev = {"t": 0.0, "rx": 0, "tx": 0}
 # hw.ncpu / memsize / pagesize almost never change at runtime
 _static = {"t": 0.0, "ncpu": None, "mem_gb": None, "page_size": 16384}
 _STATIC_TTL = 300.0
+_pool = LazyPool(8, "hub-sensors")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 
 
 def _parse_size_to_gb(token: str) -> float | None:
@@ -111,6 +137,15 @@ def _parse_size_to_gb(token: str) -> float | None:
     u = (m.group(2) or "G").upper()
     mul = {"": 1 / 1024**3, "K": 1 / 1024**2, "M": 1 / 1024, "G": 1, "T": 1024, "P": 1024**2}
     return round(n * mul.get(u, 1), 2)
+
+
+def _cpu_and_mem_from_top_cached() -> dict:
+    now = time.time()
+    if _top_cache["v"] is not None and now - _top_cache["t"] < _top_ttl():
+        return _top_cache["v"]
+    value = _cpu_and_mem_from_top() or {}
+    _top_cache.update(t=now, v=value)
+    return value
 
 
 def _cpu_and_mem_from_top() -> dict:
@@ -419,38 +454,113 @@ def _uptime() -> dict:
     return {"uptime_hours": round(hours, 2), "uptime_text": text}
 
 
+def peek_sensors() -> dict | None:
+    """Return the last full sample if it is still within the TTL, else None.
+
+    The metrics sampler uses this so a 5-minute idle tick does not spawn
+    ``top`` (1.6s on this host) just to write one jsonl point.
+    """
+    v = _cache["v"]
+    if v is not None and time.time() - _cache["t"] < _sensors_ttl():
+        return v
+    return None
+
+
+def collect_light() -> dict:
+    """CPU / memory / load without top, ps, or netstat.
+
+    Mach ticks + memory_pressure + hw.memsize.  First ticks call sleeps
+    0.15s to seed a baseline; later calls are microseconds.  Does not
+    overwrite the full sensors cache, so a dashboard poll still gets
+    process rows and PhysMem the next time it asks for a full sample.
+    """
+    mem = _memory_base()
+    cpu_ticks = _cpu_from_ticks() or {}
+    disk = _disk()
+    ncpu = mem.get("ncpu") or 1
+    load1 = mem.get("load1")
+    load5 = mem.get("load5")
+    load15 = mem.get("load15")
+    load_pct = round(min(200, (load1 or 0) / ncpu * 100), 1) if ncpu else None
+    cpu_used = cpu_ticks.get("used_pct")
+    if cpu_used is None:
+        cpu_used = load_pct
+    if cpu_used is not None:
+        cpu_used = min(100.0, max(0.0, float(cpu_used)))
+    pressure_free = mem.get("mem_free_pct")
+    pressure_used = (100 - pressure_free) if pressure_free is not None else None
+    mem_total = mem.get("mem_total_gb")
+    available_gb = None
+    if mem_total is not None and pressure_free is not None:
+        available_gb = round(mem_total * pressure_free / 100, 1)
+    used_gb = None
+    if mem_total is not None and available_gb is not None:
+        used_gb = round(max(0.0, mem_total - available_gb), 1)
+    return {
+        "ts": time.strftime("%H:%M:%S"),
+        "cpu": {
+            "user": cpu_ticks.get("user"),
+            "sys": cpu_ticks.get("sys"),
+            "idle": cpu_ticks.get("idle"),
+            "used_pct": cpu_used,
+            "load1": load1,
+            "load5": load5,
+            "load15": load15,
+            "load_pct": load_pct,
+            "ncpu": ncpu,
+        },
+        "memory": {
+            "total_gb": mem_total,
+            "used_pct": pressure_used,
+            "free_pct": pressure_free,
+            "used_gb": used_gb,
+            "free_gb": available_gb,
+            "available_gb": available_gb,
+            "pressure_free_pct": pressure_free,
+            "pressure_used_pct": pressure_used,
+        },
+        "disk": disk,
+        "network": {},
+        "top_processes": [],
+        "cpu_used_pct": cpu_used,
+        "load1": load1,
+        "load5": load5,
+        "load15": load15,
+        "light": True,
+    }
+
+
 def collect_sensors(force: bool = False) -> dict:
-    if not force and _cache["v"] and time.time() - _cache["t"] < _TTL:
+    if not force and _cache["v"] and time.time() - _cache["t"] < _sensors_ttl():
         return _cache["v"]
 
     with _refresh_lock:
         # Single-flight: concurrent dashboard/metrics callers share one sample.
         # Coalesce back-to-back force=True (metrics + UI) within 1s.
         age = time.time() - _cache["t"] if _cache["v"] else 1e9
-        if _cache["v"] is not None and ((not force and age < _TTL) or age < 1.0):
+        if _cache["v"] is not None and ((not force and age < _sensors_ttl()) or age < 1.0):
             return _cache["v"]
         return _collect_sensors_uncached()
 
 
 def _collect_sensors_uncached() -> dict:
     # Parallel shell collection — top is the slowest (~0.5–1s); overlap the rest.
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        f_mem = ex.submit(_memory_base)
-        f_disk = ex.submit(_disk)
-        f_top = ex.submit(_cpu_and_mem_from_top)
-        f_cpu = ex.submit(_cpu_from_ticks)
-        f_thermal = ex.submit(_thermal)
-        f_net = ex.submit(_network_rates)
-        f_procs = ex.submit(_top_processes, 8)
-        f_up = ex.submit(_uptime)
-        mem = f_mem.result()
-        disk = f_disk.result()
-        top = f_top.result() or {}
-        cpu_ticks = f_cpu.result() or {}
-        thermal = f_thermal.result()
-        net = f_net.result() or {}
-        procs = f_procs.result() or []
-        up = f_up.result()
+    f_mem = _pool.submit(_memory_base)
+    f_disk = _pool.submit(_disk)
+    f_top = _pool.submit(_cpu_and_mem_from_top_cached)
+    f_cpu = _pool.submit(_cpu_from_ticks)
+    f_thermal = _pool.submit(_thermal)
+    f_net = _pool.submit(_network_rates)
+    f_procs = _pool.submit(_top_processes, 8)
+    f_up = _pool.submit(_uptime)
+    mem = f_mem.result()
+    disk = f_disk.result()
+    top = f_top.result() or {}
+    cpu_ticks = f_cpu.result() or {}
+    thermal = f_thermal.result()
+    net = f_net.result() or {}
+    procs = f_procs.result() or []
+    up = f_up.result()
 
     ncpu = mem.get("ncpu") or 1
     load1 = top.get("load1", mem.get("load1"))

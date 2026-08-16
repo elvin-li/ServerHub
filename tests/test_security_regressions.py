@@ -768,12 +768,12 @@ class DiscoveryHostileInputTests(unittest.TestCase):
             return self.containers.discover_containers(force=True)
 
     def test_a_tab_in_a_label_does_not_raise(self):
-        items, _ = self._discover("web\trunning\tUp 2 hours\tproj\tINJECTED")
+        items, _ = self._discover("web\trunning\tUp 2 hours\tnginx:latest\tproj\tINJECTED")
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["id"], "web")
 
     def test_many_tabs_in_a_label_do_not_raise(self):
-        items, _ = self._discover("web\trunning\tUp 2 hours\ta\tb\tc\td")
+        items, _ = self._discover("web\trunning\tUp 2 hours\tnginx:latest\ta\tb\tc\td")
         self.assertEqual(len(items), 1)
         self.assertIsInstance(items[0]["group"], str)
 
@@ -783,9 +783,9 @@ class DiscoveryHostileInputTests(unittest.TestCase):
 
     def test_normal_output_still_parses_correctly(self):
         items, engine_up = self._discover(
-            "web\trunning\tUp 2 hours (healthy)\tteslamate\n"
-            "db\texited\tExited (0) 3 days ago\tteslamate\n"
-            "solo\trunning\tUp 5 minutes\t"
+            "web\trunning\tUp 2 hours (healthy)\tnginx:latest\tteslamate\n"
+            "db\texited\tExited (0) 3 days ago\tpostgres:16\tteslamate\n"
+            "solo\trunning\tUp 5 minutes\tnginx:latest\t"
         )
         self.assertTrue(engine_up)
         self.assertEqual({i["id"] for i in items}, {"web", "db", "solo"})
@@ -794,7 +794,7 @@ class DiscoveryHostileInputTests(unittest.TestCase):
         self.assertEqual(states["db"], "stopped")
 
     def test_an_unhealthy_container_is_still_flagged(self):
-        items, _ = self._discover("web\trunning\tUp 1 hour (unhealthy)\tp")
+        items, _ = self._discover("web\trunning\tUp 1 hour (unhealthy)\tnginx:latest\tp")
         self.assertEqual(items[0]["state"], "warn")
 
     def test_an_option_shaped_process_name_never_reaches_pgrep(self):

@@ -6,10 +6,9 @@ import re
 import subprocess
 from pathlib import Path
 
-from fastapi import HTTPException
-
-from hub import secure_io
+from hub import cli_args, secure_io
 from hub.containers_svc import _stack_paths
+from hub.errors import api_error
 from hub.paths import DOCKER
 from hub.status import invalidate_status as inv
 
@@ -18,14 +17,14 @@ def _find_stack(stack_id: str) -> dict:
     for s in _stack_paths():
         if s.get("id") == stack_id:
             return s
-    raise HTTPException(404, f"unknown stack: {stack_id}")
+    raise api_error("compose.unknown_stack", stack=stack_id)
 
 
 def get_compose(stack_id: str) -> dict:
     s = _find_stack(stack_id)
     path = s.get("compose_path")
     if not path or not Path(path).is_file():
-        raise HTTPException(400, "stack has no compose file")
+        raise api_error("container.no_compose_file")
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     return {
         "id": s["id"],
@@ -42,19 +41,19 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     s = _find_stack(stack_id)
     path = s.get("compose_path")
     if not path:
-        raise HTTPException(400, "stack has no compose file")
+        raise api_error("container.no_compose_file")
     if not content or not content.strip():
-        raise HTTPException(400, "empty content")
+        raise api_error("compose.empty_content")
     # basic safety: no path escape in content writing
     p = Path(path).resolve()
     services_root = (Path.home() / "Services").resolve()
     if services_root not in p.parents and p.parent != services_root:
         # allow only under ~/Services
-        raise HTTPException(403, "compose path must be under ~/Services")
+        raise api_error("compose.path_forbidden")
     if validate:
         v = validate_compose_text(content, cwd=str(p.parent))
         if not v.get("ok"):
-            raise HTTPException(400, v.get("message") or "compose invalid")
+            raise api_error("compose.invalid", detail=v.get("message") or "compose invalid")
     # A compose file carries the generated database and admin passwords for the
     # stack, which is the payload secure_io was written for.  write_text() then
     # chmod() creates the file at the umask default -- 0644 here -- so both the
@@ -111,14 +110,15 @@ def validate_stack(stack_id: str) -> dict:
 
 def create_stack(stack_id: str, name: str | None, content: str) -> dict:
     """Create new stack under ~/Services/<id>/docker-compose.yml"""
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,40}$", stack_id):
-        raise HTTPException(400, "stack id: alphanumeric/underscore/dash")
+    stack_id = cli_args.require_positional(stack_id, label="stack id", max_len=41)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,40}", stack_id):
+        raise api_error("compose.bad_stack_id")
     root = Path.home() / "Services" / stack_id
     if root.exists() and (root / "docker-compose.yml").exists():
-        raise HTTPException(409, f"already exists: {root}")
+        raise api_error("compose.exists", path=str(root))
     v = validate_compose_text(content, cwd=str(Path.home() / "Services"))
     if not v.get("ok"):
-        raise HTTPException(400, v.get("message") or "invalid compose")
+        raise api_error("compose.invalid", detail=v.get("message") or "invalid compose")
     root.mkdir(parents=True, exist_ok=True)
     (root / "data").mkdir(exist_ok=True)
     compose = root / "docker-compose.yml"

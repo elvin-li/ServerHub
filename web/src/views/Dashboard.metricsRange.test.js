@@ -27,6 +27,7 @@ vi.mock('../api/client', () => ({
   getStatus: vi.fn(async () => ({ groups: [] })),
   getStorage: vi.fn(async () => ({ volumes: [], disks: [] })),
   getUps: vi.fn(async () => ({ present: false })),
+  getOllamaStatus: vi.fn(async () => ({ installed: false, reachable: false })),
   powerAction: vi.fn(),
   setSystemSharing: vi.fn(),
 }))

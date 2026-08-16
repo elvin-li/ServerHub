@@ -58,14 +58,14 @@
       <div v-if="error" class="err-bar">{{ error }}</div>
 
       <div class="table-wrap" @dragover.prevent @drop.prevent="onDrop">
-        <table class="dense files-table" v-if="listing">
+        <table class="dense files-table fit-m" v-if="listing">
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
               <th>{{ t('common.name') }}</th>
               <th>{{ t('files.size') }}</th>
-              <th>{{ t('files.mtime') }}</th>
-              <th>{{ t('files.mode') }}</th>
+              <th class="col-hide-m">{{ t('files.mtime') }}</th>
+              <th class="col-hide-m">{{ t('files.mode') }}</th>
               <th>{{ t('common.actions') }}</th>
             </tr>
           </thead>
@@ -88,10 +88,11 @@
                   <span class="ico" aria-hidden="true">{{ it.is_dir ? '📁' : (it.is_link ? '🔗' : '📄') }}</span>
                   <span class="name-text">{{ it.name }}</span>
                 </span>
+                <div class="show-m sub">{{ fmtTime(it.mtime) }}{{ it.mode ? ' · ' + it.mode : '' }}</div>
               </td>
               <td class="mono size-cell">{{ it.is_dir ? '—' : fmtSize(it.size) }}</td>
-              <td class="mono sub time-cell">{{ fmtTime(it.mtime) }}</td>
-              <td class="mono sub mode-cell">{{ it.mode }}</td>
+              <td class="mono sub time-cell col-hide-m">{{ fmtTime(it.mtime) }}</td>
+              <td class="mono sub mode-cell col-hide-m">{{ it.mode }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
                   <button v-if="it.is_file" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
@@ -426,7 +427,7 @@ async function stopFB() {
     const j = await stopFileBrowser()
     if (!j?.ok) throw new Error(j?.message || t('common.failed'))
     fb.value = j
-    toast(j.message || '✅')
+    toast(j.message || '✅ ' + t('common.ok'))
   } catch (e) {
     toast(`❌ ${e.message}`)
   } finally {
@@ -601,4 +602,16 @@ onUnmounted(() => {
 .drop-hint { font-size: 11px; color: var(--sub); margin-top: 8px; }
 .parent-row { cursor: pointer; }
 .parent-row td { height: 34px; }
+
+@media (max-width: 640px) {
+  .files-table th,
+  .files-table td {
+    height: auto;
+    min-height: 34px;
+  }
+  .name-cell { max-width: none; width: auto; }
+  .name-text { white-space: normal; }
+  .actions-cell { white-space: normal; }
+  .act-row { flex-wrap: wrap; }
+}
 </style>

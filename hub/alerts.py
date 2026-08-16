@@ -239,6 +239,10 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         last_fire = {}
     new_last = dict(last_fire)
     n = notify_settings()
+    #: CPU on this host hovers 88–100% during agent / brew work.  Without a
+    #: gap, 90% trips and 89.6% (rendered "90%") resolves every few minutes,
+    #: and a resolve resets the cooldown so the next spike re-alerts.
+    hysteresis = 5.0
     for rid, val, limit, label in checks:
         if val is None or limit is None:
             continue
@@ -249,9 +253,20 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             continue
         key = f"resource:{rid}"
         over = val_f >= limit_f
-        new_state[key] = "warn" if over else "ok"
+        recovered = val_f <= (limit_f - hysteresis)
         old = prev.get(key)
         last_t = int(last_fire.get(rid) or 0)
+        if over and old != "warn" and (now - last_t) < cooldown:
+            # Still inside the last alert's quiet window: a 100→70→100
+            # flap must not reprint.  Keep the recovered state.
+            new_state[key] = old or "ok"
+            continue
+        if over:
+            new_state[key] = "warn"
+        elif old == "warn" and not recovered:
+            new_state[key] = "warn"
+        else:
+            new_state[key] = "ok"
         if over and (old != "warn" or (now - last_t) >= cooldown):
             alert = {
                 "t": now,
@@ -269,7 +284,7 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             new_last[rid] = now
             if n.get("enabled") and n.get("include_warn", True):
                 send_ha_notify("ServerHub resource alert", alert["message"], level="warn")
-        elif old == "warn" and not over:
+        elif old == "warn" and recovered:
             alert = {
                 "t": now,
                 "id": key,
@@ -785,6 +800,91 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
     return emitted
 
 
+def _service_transition_alerts(
+    prev: dict, new_state: dict, services: dict, now: int,
+) -> list:
+    """Page on a confirmed down/warn, not on a one-sweep flicker.
+
+    KeepAlive launchd jobs (OneDrive Share) vanish from ``launchctl list``
+    for one alert tick after a panel kickstart or their own bounce, then
+    come back ``ok`` before the next 90s sweep.  Firing on the first
+    ``ok → down`` trained the operator to ignore the journal.
+
+    First bad sweep is held in ``_service_pending``.  Still bad on the
+    next sweep → problem.  Back to ok before that → silent on both sides,
+    because we never announced the fault.
+    """
+    pending = new_state.get("_service_pending")
+    if not isinstance(pending, dict):
+        pending = {}
+        new_state["_service_pending"] = pending
+    emitted: list = []
+
+    def _fire(alert: dict, *, notify_title: str, notify_ok: bool) -> None:
+        _append_alert(alert)
+        emitted.append(alert)
+        n = notify_settings()
+        if n.get("enabled") and notify_ok:
+            extra = {"event": "resolved"} if alert["event"] == "resolved" else {}
+            send_ha_notify(
+                notify_title, alert["message"], level=alert["level"], **extra,
+            )
+
+    for sid, s in services.items():
+        state = s.get("state", "unknown")
+        new_state[sid] = state
+        old = prev.get(sid)
+        if old is None:
+            pending.pop(sid, None)
+            continue
+        if state in ("down", "warn"):
+            if old not in ("down", "warn") and sid not in pending:
+                pending[sid] = 1
+                continue
+            if sid in pending:
+                pending.pop(sid, None)
+            elif state == old:
+                continue
+            alert = {
+                "t": now,
+                "id": sid,
+                "name": s.get("name", sid),
+                "kind": s.get("kind"),
+                "group": s.get("group"),
+                "level": state,
+                "event": "problem",
+                "detail": s.get("detail", ""),
+                "message": f"{s.get('name', sid)} changed to {state}: {s.get('detail', '')}",
+            }
+            _fire(
+                alert,
+                notify_title="ServerHub alert",
+                notify_ok=(state == "down" or notify_settings().get("include_warn")),
+            )
+        elif old in ("down", "warn") and state == "ok":
+            if pending.pop(sid, None):
+                continue
+            alert = {
+                "t": now,
+                "id": sid,
+                "name": s.get("name", sid),
+                "kind": s.get("kind"),
+                "group": s.get("group"),
+                "level": "ok",
+                "event": "resolved",
+                "detail": s.get("detail", ""),
+                "message": f"{s.get('name', sid)} has recovered",
+            }
+            _fire(
+                alert,
+                notify_title="ServerHub recovered",
+                notify_ok=notify_settings().get("notify_resolve", True),
+            )
+        else:
+            pending.pop(sid, None)
+    return emitted
+
+
 def check_once(force_status: bool = False) -> list:
     """Emit alerts on transition to down/warn and recovery.
 
@@ -803,8 +903,9 @@ def check_once(force_status: bool = False) -> list:
     # that is not copied across here is silently lost.  That is not a hypothetical:
     # a cooldown map dropped each round resets its own debounce, so a still-bad
     # resource or disk gets re-announced on every single sweep (every 300s on a real
-    # install) instead of once per cooldown.  Both maps are carried before the checks
-    # run, so they also survive a check raising halfway through.
+    # install) instead of once per cooldown.  The cooldown maps and the
+    # service-pending set are carried before the checks run, so they also
+    # survive a check raising halfway through.
     if isinstance(prev.get("_resource_last"), dict):
         new_state["_resource_last"] = prev["_resource_last"]
     if isinstance(prev.get("_smart_last"), dict):
@@ -813,47 +914,9 @@ def check_once(force_status: bool = False) -> list:
         new_state["_smart_detail"] = prev["_smart_detail"]
     if isinstance(prev.get("_freshness_last"), dict):
         new_state["_freshness_last"] = prev["_freshness_last"]
-    for sid, s in services.items():
-        state = s.get("state", "unknown")
-        new_state[sid] = state
-        old = prev.get(sid)
-        if old is None:
-            continue
-        if state != old and state in ("down", "warn"):
-            alert = {
-                "t": now,
-                "id": sid,
-                "name": s.get("name", sid),
-                "kind": s.get("kind"),
-                "group": s.get("group"),
-                "level": state,
-                "event": "problem",
-                "detail": s.get("detail", ""),
-                "message": f"{s.get('name', sid)} changed to {state}: {s.get('detail', '')}",
-            }
-            _append_alert(alert)
-            emitted.append(alert)
-            n = notify_settings()
-            if n.get("enabled") and (state == "down" or n.get("include_warn")):
-                send_ha_notify("ServerHub alert", alert["message"], level=state)
-        elif old in ("down", "warn") and state == "ok":
-            alert = {
-                "t": now,
-                "id": sid,
-                "name": s.get("name", sid),
-                "kind": s.get("kind"),
-                "group": s.get("group"),
-                "level": "ok",
-                "event": "resolved",
-                "detail": s.get("detail", ""),
-                "message": f"{s.get('name', sid)} has recovered",
-            }
-            _append_alert(alert)
-            emitted.append(alert)
-            n = notify_settings()
-            if n.get("enabled") and n.get("notify_resolve", True):
-                send_ha_notify("ServerHub recovered", alert["message"],
-                               level="ok", event="resolved")
+    if isinstance(prev.get("_service_pending"), dict):
+        new_state["_service_pending"] = dict(prev["_service_pending"])
+    emitted.extend(_service_transition_alerts(prev, new_state, services, now))
     try:
         emitted.extend(_check_resource_thresholds(prev, new_state, now))
     except Exception:

@@ -110,5 +110,24 @@ class LaunchctlFanoutTests(unittest.TestCase):
         self.assertTrue(mosquitto["ok"])
 
 
+class KeepAliveWatchTests(unittest.TestCase):
+    def test_disabled_plist_is_not_unsupervised(self):
+        self.assertTrue(health_svc._skip_keepalive_watch(
+            {"Disabled": True, "KeepAlive": True}, "local.photoshub-originals",
+        ))
+
+    def test_hidden_override_is_not_unsupervised(self):
+        with patch.object(health_svc, "override", return_value={"hide": True}):
+            self.assertTrue(health_svc._skip_keepalive_watch(
+                {"KeepAlive": True}, "homebrew.mxcl.redis",
+            ))
+
+    def test_live_keepalive_is_watched(self):
+        with patch.object(health_svc, "override", return_value={}):
+            self.assertFalse(health_svc._skip_keepalive_watch(
+                {"KeepAlive": True}, "local.foo",
+            ))
+
+
 if __name__ == "__main__":
     unittest.main()

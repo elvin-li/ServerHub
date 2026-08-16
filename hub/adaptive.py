@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.host_address import host_ip as resolved_host_ip
-from hub.service_signatures import identify
+from hub.service_signatures import configured_signatures, identify
 from hub.util import port_open, sh
 
 # Common flags that take a port as next argument
@@ -465,55 +465,104 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
             continue
         by_port[port] = {"proc": proc, "pid": pid, "bind": name}
 
+    # Same process, several ports (Redis 6379+6380, a UI plus its metrics
+    # port) used to become one card each.  Group by pid so adopt writes one
+    # managed entry that health-checks every listen the process owns.
+    by_pid: dict[str, list[tuple[int, dict]]] = {}
+    for port, info in by_port.items():
+        if any(info["proc"].lower() in n.lower() for n in known_names):
+            continue
+        by_pid.setdefault(info["pid"], []).append((port, info))
+
     hip = host_ip()
+    extras = configured_signatures()
     items = []
     # Speed: port already LISTEN from lsof → treat as ok; skip extra TCP + HTTP
     # probes.  guess_http_url is one round trip now, but at ~40 ports on a busy
     # host that is still work this scan does not need to do.
-    webish = {80, 443, 3000, 3001, 4000, 5000, 8000, 8080, 8086, 8095, 8123, 8125, 8200, 8280, 8281, 8501, 8765, 9000}
-    for port, info in sorted(by_port.items()):
-        if any(info["proc"].lower() in n.lower() for n in known_names):
-            continue
-        # Signature library: a recognised daemon gets its real name, and its
-        # http flag beats the port-number guess in both directions — Redis on
-        # 8079 gets no link, Syncthing's GUI on 8384 gets one.
-        sig = identify(info["proc"], port)
-        sig_http = sig.get("http") if sig else None
-        if sig_http is False:
-            url = None
-        elif sig_http is True and sig.get("confidence") == "high":
-            url = f"https://{hip}:{port}" if port in (443, 8443) else f"http://{hip}:{port}"
-        elif port in webish or port >= 8000:
-            url = f"http://{hip}:{port}" if port not in (443, 8443, 8281) else f"https://{hip}:{port}"
-        else:
-            url = None
+    webish = {80, 443, 3000, 3001, 4000, 5000, 8000, 8080, 8086, 8095, 8123, 8125, 8200, 8280, 8281, 8443, 8501, 8765, 9000}
+    for pid, pairs in sorted(by_pid.items(), key=lambda kv: min(p for p, _ in kv[1])):
+        pairs = sorted(pairs, key=lambda x: x[0])
+        ports = [p for p, _ in pairs]
+        info = pairs[0][1]
+        sig = _best_signature(info["proc"], ports, extras)
+        url = None
+        for port in ports:
+            url = _orphan_url(port, sig, hip, webish)
+            if url:
+                break
+        port_label = " ".join(f":{p}" for p in ports)
         if sig and sig.get("confidence") == "high":
-            name = f"{sig['name']} :{port}"
-            detail = f"Auto-discovered · {sig['name']} · pid {info['pid']} · {info['bind']}"
+            name = f"{sig['name']} {port_label}"
+            detail = f"Auto-discovered · {sig['name']} · pid {pid} · {info['bind']}"
         elif sig:
             # Port-only or runtime match is a hint, so the raw process name
             # stays visible; the guess rides along in the detail line.
-            name = f"{info['proc']} :{port}"
-            detail = f"Auto-discovered · {sig['name']}? · pid {info['pid']} · {info['bind']}"
+            name = f"{info['proc']} {port_label}"
+            detail = f"Auto-discovered · {sig['name']}? · pid {pid} · {info['bind']}"
         else:
-            name = f"{info['proc']} :{port}"
-            detail = f"Auto-discovered · pid {info['pid']} · {info['bind']}"
-        meta = {"port": port, "pid": info["pid"], "process": info["proc"]}
+            name = f"{info['proc']} {port_label}"
+            detail = f"Auto-discovered · pid {pid} · {info['bind']}"
+        primary = ports[0]
+        meta = {
+            "port": primary,
+            "ports": ports,
+            "pid": pid,
+            "process": info["proc"],
+        }
         if sig:
             meta["signature"] = sig
         items.append({
-            "id": f"auto.port.{port}",
+            "id": f"auto.port.{primary}",
             "kind": "auto",
             "name": name,
             "state": "ok",
             "detail": detail,
             "url": url,
+            "port": primary,
+            "ports": ports,
             "group": "Auto-discovered",
             "actions": ["adopt"],
             "auto": True,
+            "signature": sig,
             "meta": meta,
         })
     return items[:40]
+
+
+_SIG_RANK = {"high": 3, "low": 2, "runtime": 1}
+
+
+def _best_signature(proc: str, ports: list[int], extras: list[dict] | None):
+    """Process-name match first; otherwise the strongest port hint among *ports*."""
+    best = identify(proc, None, extras=extras)
+    rank = _SIG_RANK.get((best or {}).get("confidence"), 0)
+    if rank >= 3:
+        return best
+    for port in ports:
+        cand = identify(proc, port, extras=extras)
+        cand_rank = _SIG_RANK.get((cand or {}).get("confidence"), 0)
+        if cand_rank > rank:
+            best, rank = cand, cand_rank
+    return best
+
+
+def _orphan_url(port: int, sig: dict | None, hip: str, webish: set[int]) -> str | None:
+    """Clickable URL for one orphan port, or None.
+
+    A signature's ``http`` flag beats the port-number guess in both directions
+    — Redis on 8079 gets no link, Syncthing's GUI on 8384 gets one.
+    """
+    sig_http = sig.get("http") if sig else None
+    if sig_http is False:
+        return None
+    if sig_http is True and (sig or {}).get("confidence") == "high":
+        return f"https://{hip}:{port}" if port in (443, 8443) else f"http://{hip}:{port}"
+    if port in webish or port >= 8000:
+        if port in (443, 8443, 8281):
+            return f"https://{hip}:{port}"
+        return f"http://{hip}:{port}"
+    return None
 
 
 def scan_new_compose_projects() -> list[dict]:

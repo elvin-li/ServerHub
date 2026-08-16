@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TypeVar
 
 log = logging.getLogger("serverhub.util")
@@ -78,13 +79,69 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
         return wrapper
 
     return decorate
-from concurrent.futures import ThreadPoolExecutor
+
 
 #: Ceiling on probe concurrency.  These pools exist to hide latency, not to use
 #: the CPU: every task in them is blocked on a subprocess or a socket, so the
 #: useful width is bounded by how many of those the machine will service at once
 #: rather than by core count.
 MAX_PROBE_WORKERS = 8
+
+
+class LazyPool:
+    """Process-lifetime ThreadPoolExecutor, created on first use.
+
+    Dashboard polls used to construct and join a pool on every tick.  The
+    probes still dominate latency, but the thread churn was paid on every
+    ``/api/status`` and ``/api/sensors`` request — the same tax, five modules.
+    ``shutdown`` drops the executor so a reload or test can start a fresh one.
+    """
+
+    def __init__(self, max_workers: int, name: str):
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        self.max_workers = max_workers
+        self.name = name
+        self._ex: ThreadPoolExecutor | None = None
+        self._guard = threading.Lock()
+
+    def _executor(self) -> ThreadPoolExecutor:
+        with self._guard:
+            if self._ex is None:
+                self._ex = ThreadPoolExecutor(
+                    max_workers=self.max_workers,
+                    thread_name_prefix=self.name,
+                )
+            return self._ex
+
+    def submit(self, fn, /, *args, **kwargs):
+        return self._executor().submit(fn, *args, **kwargs)
+
+    def map(self, fn, items):
+        return self._executor().map(fn, items)
+
+    def shutdown(self, wait: bool = False) -> None:
+        with self._guard:
+            ex = self._ex
+            self._ex = None
+        if ex is not None:
+            ex.shutdown(wait=wait)
+
+
+_FANOUT_POOL = LazyPool(MAX_PROBE_WORKERS, "hub-fanout")
+#: Nested ``fan_out`` (hardware profile → four system_profiler reports;
+#: health → port sweep) must not ``map`` on :data:`_FANOUT_POOL`: the
+#: caller occupies a worker of that pool while waiting for more work on
+#: it, which deadlocks once the outer batch is wide enough.  A second
+#: pool keeps the inner batch overlapping.  A third level runs inline.
+_FANOUT_NESTED_POOL = LazyPool(MAX_PROBE_WORKERS, "hub-fanout-nested")
+_FANOUT_DEPTH = threading.local()
+
+
+def shutdown_pools() -> None:
+    """Drop the shared fan-out pools (app lifespan / tests)."""
+    _FANOUT_POOL.shutdown()
+    _FANOUT_NESTED_POOL.shutdown()
 
 
 def fan_out(probe, items, *, max_workers=MAX_PROBE_WORKERS):
@@ -100,19 +157,39 @@ def fan_out(probe, items, *, max_workers=MAX_PROBE_WORKERS):
       ValueError rather than an empty pool.
     * a single item runs inline, since a pool cannot overlap one task and only
       adds a thread handoff.
+    * a nested call from a worker uses a second pool so the inner batch still
+      overlaps, without scheduling onto the caller's executor.  A third level
+      runs inline.  Callers that need two overlapping widths on the *same*
+      pool (overview + per-disk SMART) keep a dedicated :class:`LazyPool`
+      for the outer composer.
 
     *probe* must not raise -- ``ex.map`` re-raises on iteration, which would cost
     the whole batch rather than one entry -- and must not depend on the
     request-scoped administrator password, which does not cross into a worker.
     See tests/test_privileged_calls_stay_on_the_request_thread.py.
+
+    *max_workers* is kept for call-site compatibility.  The shared process
+    pool is sized to :data:`MAX_PROBE_WORKERS`; a smaller request still
+    shares that pool rather than constructing a throwaway executor.
     """
     items = list(items)
     if not items:
         return []
     if len(items) == 1:
         return [probe(items[0])]
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as ex:
-        return list(ex.map(probe, items))
+    depth = getattr(_FANOUT_DEPTH, "n", 0)
+    if depth >= 2:
+        return [probe(item) for item in items]
+    pool = _FANOUT_NESTED_POOL if depth else _FANOUT_POOL
+
+    def _run(item):
+        _FANOUT_DEPTH.n = depth + 1
+        try:
+            return probe(item)
+        finally:
+            _FANOUT_DEPTH.n = depth
+
+    return list(pool.map(_run, items))
 
 
 def cached_snapshot(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
@@ -207,15 +284,44 @@ def iter_capped_lines(stream, cap):
         yield line.rstrip()
 
 
-def sh(cmd, timeout=10, shell=False):
+#: Same argv timing out on every dashboard tick used to reprint the warning
+#: into ~/Library/Logs/serverhub.err.log.  `brew outdated` and
+#: `brew services list --json` each hung past their timeout for hours on this
+#: host; the panel already returns a fallback, so one line per gap is enough
+#: to see that brew is stuck without growing the launchd log.
+_TIMEOUT_LOG_GAP = 300.0
+_noisy_log_lock = threading.Lock()
+_noisy_log_at: dict[tuple[str, tuple[str, ...]], float] = {}
+
+
+def _cmd_key(cmd) -> tuple[str, ...]:
+    if isinstance(cmd, (list, tuple)):
+        return tuple(str(part) for part in cmd)
+    return (str(cmd),)
+
+
+def _log_once(kind: str, cmd, message: str) -> None:
+    key = (kind, _cmd_key(cmd))
+    now = time.time()
+    with _noisy_log_lock:
+        last = _noisy_log_at.get(key, 0.0)
+        if now - last < _TIMEOUT_LOG_GAP:
+            return
+        _noisy_log_at[key] = now
+    log.warning(message, cmd)
+
+
+def sh(cmd, timeout=10, shell=False, env=None):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=shell)
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, shell=shell, env=env,
+        )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except subprocess.TimeoutExpired:
-        log.warning("command timed out: %s", cmd)
+        _log_once("timeout", cmd, "command timed out: %s")
         return -1, "", "timeout"
     except FileNotFoundError:
-        log.warning("command not found: %s", cmd)
+        _log_once("missing", cmd, "command not found: %s")
         return -1, "", "not found"
 
 

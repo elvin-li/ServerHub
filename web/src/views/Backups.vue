@@ -24,15 +24,19 @@
       </p>
       <SkeletonLoader v-if="!jobsLoaded" :cols="5" :rows="2" />
       <div v-else class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <tbody>
           <tr v-for="job in rsyncJobs" :key="job.id">
-            <td><strong>{{ job.name }}</strong></td>
-            <td class="mono" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis"
+            <td>
+              <strong>{{ job.name }}</strong>
+              <div class="show-m sub mono">{{ job.params.src }} → {{ job.params.dest }}</div>
+              <div class="show-m sub mono">{{ job.cron }}</div>
+            </td>
+            <td class="mono col-hide-m" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis"
                 :title="job.params.src + ' → ' + job.params.dest">
               {{ job.params.src }} → {{ job.params.dest }}
             </td>
-            <td class="mono" style="font-size:11px">{{ job.cron }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ job.cron }}</td>
             <td>
               <span v-if="job.running" class="badge warn">{{ t('sched.running') }}</span>
               <span v-else-if="job.last" class="badge" :class="job.last.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${job.last.status}`) }}</span>
@@ -40,7 +44,7 @@
             </td>
             <td>
               <div class="btns" style="gap:4px">
-                <button class="tiny" @click="openPreview(job)">{{ t('backups.dry_run') }}</button>
+                <button class="tiny hide-m" @click="openPreview(job)">{{ t('backups.dry_run') }}</button>
                 <button class="tiny" :disabled="job.running" @click="runJob(job)">{{ t('sched.run_now') }}</button>
                 <button class="tiny" @click="openJobEditor('rsync', job)">{{ t('common.edit') }}</button>
                 <button class="tiny" @click="removeJob(job)">{{ t('common.delete') }}</button>
@@ -64,13 +68,17 @@
       <p class="meta" style="font-size:11px;color:var(--sub);margin:6px 0">{{ t('backups.stack_desc') }}</p>
       <SkeletonLoader v-if="!jobsLoaded" :cols="5" :rows="2" />
       <div v-else class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <tbody>
           <tr v-for="job in stackJobs" :key="job.id">
-            <td><strong>{{ job.name }}</strong></td>
-            <td class="mono" style="font-size:11px">{{ job.params.stack_id }}</td>
-            <td style="font-size:11px">{{ t('backups.retain_n', { n: job.params.retain || 14 }) }}</td>
-            <td class="mono" style="font-size:11px">{{ job.cron }}</td>
+            <td>
+              <strong>{{ job.name }}</strong>
+              <div class="show-m sub mono">{{ job.params.stack_id }}</div>
+              <div class="show-m sub">{{ t('backups.retain_n', { n: job.params.retain || 14 }) }} · {{ job.cron }}</div>
+            </td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ job.params.stack_id }}</td>
+            <td class="col-hide-m" style="font-size:11px">{{ t('backups.retain_n', { n: job.params.retain || 14 }) }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ job.cron }}</td>
             <td>
               <div class="btns" style="gap:4px">
                 <span v-if="job.running" class="badge warn">{{ t('sched.running') }}</span>
@@ -92,14 +100,22 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="4" :rows="5" />
     <div v-else class="table-wrap backups-artefacts">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
-          <tr><th>{{ t('backups.file') }}</th><th>{{ t('backups.dir') }}</th><th>{{ t('backups.size') }}</th><th>{{ t('backups.time') }}</th></tr>
+          <tr>
+            <th>{{ t('backups.file') }}</th>
+            <th class="col-hide-m">{{ t('backups.dir') }}</th>
+            <th>{{ t('backups.size') }}</th>
+            <th>{{ t('backups.time') }}</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="b in backups" :key="b.path">
-            <td class="mono">{{ b.name }}</td>
-            <td class="mono" style="font-size:11px">{{ b.dir }}</td>
+            <td class="mono">
+              {{ b.name }}
+              <div v-if="b.dir" class="show-m sub">{{ b.dir }}</div>
+            </td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ b.dir }}</td>
             <td>{{ b.size_mb }} MB</td>
             <td>{{ fmt(b.mtime) }}</td>
           </tr>

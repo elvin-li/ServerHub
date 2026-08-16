@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob
+import plistlib
 import re
 import shlex
 import subprocess
@@ -13,6 +14,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.config import cfg
+from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
 from hub.util import sh
@@ -24,7 +26,7 @@ def _app_process_name(name: str) -> str:
     """Refuse osascript interpolation of an option-shaped or quoted process name."""
     value = str(name or "").strip()
     if not _PROCESS_NAME_RE.fullmatch(value):
-        raise HTTPException(400, "invalid application process name")
+        raise api_error("actions.bad_process_name")
     return value
 
 
@@ -34,7 +36,7 @@ def _script_argv(command) -> list[str]:
     else:
         argv = shlex.split(str(command))
     if not argv:
-        raise HTTPException(400, "empty script command")
+        raise api_error("actions.empty_script")
     return argv
 
 
@@ -46,7 +48,7 @@ def _launchctl(args: list[str]):
     session, and that entry would then be served for the rest of its TTL.
     """
     try:
-        return sh(["launchctl", *args])
+        return sh(["/bin/launchctl", *args])
     finally:
         invalidate_launchd()
 
@@ -63,6 +65,25 @@ def _bootstrap_ok_to_kickstart(rc: int, out: str = "", err: str = "") -> bool:
     if rc in _BOOTSTRAP_ALREADY:
         return True
     return "already" in f"{err} {out}".lower()
+
+
+def _plist_disabled(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return bool(plistlib.load(f).get("Disabled"))
+    except Exception:
+        return False
+
+
+def _set_plist_disabled(path: str, disabled: bool) -> None:
+    """Persist the Disabled key so the services page matches launchctl."""
+    with open(path, "rb") as f:
+        pl = plistlib.load(f)
+    if bool(pl.get("Disabled")) == bool(disabled):
+        return
+    pl["Disabled"] = bool(disabled)
+    with open(path, "wb") as f:
+        plistlib.dump(pl, f)
 
 
 def registry():
@@ -128,9 +149,9 @@ def run_action(target, action):
                 return (0 if r.get("ok") else 1, r.get("message") or "", "")
             except HTTPException:
                 raise
-            except Exception as e:
-                raise HTTPException(404, f"unknown target: {target} ({e})")
-        raise HTTPException(404, f"unknown target: {target}")
+            except Exception:
+                raise api_error("actions.unknown_target", target=target)
+        raise api_error("actions.unknown_target", target=target)
     kind, meta = reg[target]
     if kind == "launchd":
         label, dom = meta["label"], f"gui/{UID}"
@@ -145,6 +166,12 @@ def run_action(target, action):
         if action == "stop":
             return _launchctl(["bootout", f"{dom}/{label}"])
         if action == "start":
+            if _plist_disabled(meta["path"]):
+                _launchctl(["enable", f"{dom}/{label}"])
+                try:
+                    _set_plist_disabled(meta["path"], False)
+                except Exception:
+                    pass
             rc, o, e = _launchctl(["bootstrap", dom, meta["path"]])
             if not _bootstrap_ok_to_kickstart(rc, o, e):
                 return rc, o, e
@@ -192,22 +219,22 @@ def run_action(target, action):
     if kind == "app":
         process = _app_process_name(meta.get("process") or "")
         if action in ("stop", "restart"):
-            sh(["osascript", "-e", f'quit app "{process}"'], timeout=15)
+            sh(["/usr/bin/osascript", "-e", f'quit app "{process}"'], timeout=15)
             time.sleep(2)
         if action in ("start", "restart"):
-            return sh(["open", "-ga", process])
+            return sh(["/usr/bin/open", "-ga", process])
         return 0, "stopped", ""
     if kind == "app-engine":
         if action == "start":
             rc, o, e = sh([ORB, "start"], timeout=60)
             if rc == 0:
                 return rc, o or "OrbStack started", e
-            return sh(["open", "-ga", "OrbStack"])
+            return sh(["/usr/bin/open", "-ga", "OrbStack"])
         if action == "stop":
             rc, o, e = sh([ORB, "stop"], timeout=60)
             if rc == 0:
                 return rc, o or "OrbStack stopped", e
-            return sh(["osascript", "-e", 'quit app "OrbStack"'], timeout=20)
+            return sh(["/usr/bin/osascript", "-e", 'quit app "OrbStack"'], timeout=20)
     if kind == "script":
         if action in ("stop", "restart") and meta.get("stop"):
             sh(_script_argv(meta["stop"]), timeout=30)
@@ -224,4 +251,4 @@ def run_action(target, action):
             )
             return 0, "started", ""
         return 0, "stopped", ""
-    raise HTTPException(400, f"bad action {action} for {kind}")
+    raise api_error("actions.bad_action", action=action, kind=kind)

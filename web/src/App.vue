@@ -3,14 +3,59 @@
   <div v-else class="layout">
     <header class="topchrome">
       <div class="topchrome-inner">
-        <button class="hamburger" @click="menuOpen = !menuOpen" :class="{ open: menuOpen }" aria-label="Menu">
+        <button
+          class="hamburger"
+          type="button"
+          @click="menuOpen = !menuOpen"
+          :class="{ open: menuOpen }"
+          :aria-label="t('common.menu')"
+          :aria-expanded="menuOpen"
+          aria-controls="app-nav"
+        >
           <span></span><span></span><span></span>
         </button>
         <div class="brand">
           <img class="logo" src="/logo.svg" width="22" height="22" alt="" />
           <span class="brand-text">{{ t('brand') }}</span>
         </div>
-        <nav class="top-nav" :class="{ open: menuOpen }" aria-label="Main navigation">
+        <button
+          v-if="canAssist"
+          class="assist-launch"
+          type="button"
+          data-test="assistant-open"
+          :aria-label="t('assistant.title')"
+          :aria-expanded="assistOpen"
+          @click="openAssistant()"
+        >
+          <Sparkles :size="14" />
+          <span class="assist-launch-label">{{ t('assistant.short') }}</span>
+        </button>
+        <button
+          v-if="canAssist"
+          class="assist-launch assist-page"
+          type="button"
+          data-test="assistant-page-header"
+          :aria-label="t('assistant.page')"
+          @click="openAssistant('', 'page')"
+        >
+          <BookOpen :size="14" />
+          <span class="assist-launch-label">{{ t('assistant.page') }}</span>
+        </button>
+        <div class="top-status-m" v-if="counts">
+          <span class="pill" :class="engineClass">{{ engineUp ? t('common.on') : t('common.off') }}</span>
+          <span class="pill down" v-if="counts.down"><b>{{ counts.down }}</b></span>
+          <span class="pill warn" v-if="counts.warn"><b>{{ counts.warn }}</b></span>
+        </div>
+        <nav
+          id="app-nav"
+          ref="navPanel"
+          class="top-nav"
+          :class="{ open: menuOpen }"
+          aria-label="Main navigation"
+          :inert="navInert"
+          :aria-hidden="navInert"
+        >
+          <div class="nav-drawer-title">{{ t('brand') }}</div>
           <router-link
             v-for="item in nav"
             :key="item.to"
@@ -21,16 +66,22 @@
             <component :is="item.icon" :size="15" />
             <span>{{ t(item.labelKey) }}</span>
           </router-link>
+          <div class="top-controls">
+            <label class="nav-tool">
+              <span class="nav-tool-label">{{ t('appearance.language') }}</span>
+              <select :value="locale" @change="onLocale($event)" :title="t('appearance.language')">
+                <option v-for="l in locales" :key="l.id" :value="l.id">{{ l.native }}</option>
+              </select>
+            </label>
+            <label class="nav-tool">
+              <span class="nav-tool-label">{{ t('theme.title') }}</span>
+              <select :value="theme" @change="onTheme($event)" :title="t('theme.title')">
+                <option v-for="th in themes" :key="th.id" :value="th.id">{{ t(th.labelKey) }}</option>
+              </select>
+            </label>
+            <button class="logout-btn" type="button" @click="logout">{{ t('auth.logout') }}</button>
+          </div>
         </nav>
-        <div class="top-controls">
-          <select :value="locale" @change="onLocale($event)" :title="t('appearance.language')">
-            <option v-for="l in locales" :key="l.id" :value="l.id">{{ l.native }}</option>
-          </select>
-          <select :value="theme" @change="onTheme($event)" :title="t('theme.title')">
-            <option v-for="th in themes" :key="th.id" :value="th.id">{{ t(th.labelKey) }}</option>
-          </select>
-          <button class="logout-btn" @click="logout">{{ t('auth.logout') }}</button>
-        </div>
         <div class="top-status" v-if="counts">
           <span class="pill" :class="engineClass">{{ t('top.orbstack') }} {{ engineUp ? t('common.on') : t('common.off') }}</span>
           <span class="pill ok"><b>{{ counts.ok }}</b></span>
@@ -77,7 +128,7 @@
     <!-- Pull-to-refresh indicator (mobile) -->
     <div class="ptr-indicator" :class="{ visible: ptrVisible, refreshing: ptrRefreshing }"></div>
     <!-- Back to top (mobile) -->
-    <button v-show="showTop" class="fab-top" @click="scrollTop" aria-label="Back to top">↑</button>
+    <button v-show="showTop" class="fab-top" type="button" @click="scrollTop" :aria-label="t('common.back_to_top')">↑</button>
     <!-- SW update notification -->
     <div v-if="swUpdate" class="sw-update-banner" role="status">
       🚀 {{ t('common.update_ready') }}
@@ -100,23 +151,32 @@
           :placeholder="t('common.cmd_ph')"
           @keydown.enter="cmdGo(cmdIdx)"
           @keydown.up.prevent="cmdIdx = Math.max(0, cmdIdx - 1)"
-          @keydown.down.prevent="cmdIdx = Math.min(cmdResults.length - 1, cmdIdx + 1)"
+          @keydown.down.prevent="cmdIdx = Math.min(cmdFlat.length - 1, cmdIdx + 1)"
         />
         <ul class="cmd-list">
           <li
-            v-for="(item, i) in cmdResults"
+            v-for="(item, i) in cmdFlat"
             :key="item.to"
-            :class="{ active: i === cmdIdx }"
+            :class="{ active: i === cmdIdx, 'cmd-ai': item.type === 'ai' }"
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
           >
-            <span>{{ t(item.labelKey) }}</span>
-            <kbd>{{ item.to }}</kbd>
+            <span>{{ item.type === 'ai' ? t('assistant.ask_cmd', { q: item.query }) : (item.title || t(item.labelKey)) }}</span>
+            <kbd>{{ item.type === 'ai' ? t('assistant.short') : item.to }}</kbd>
           </li>
-          <li v-if="!cmdResults.length" class="cmd-empty">{{ t('common.cmd_empty') }}</li>
+          <li v-if="!cmdFlat.length" class="cmd-empty">{{ t('common.cmd_empty') }}</li>
         </ul>
       </div>
     </div>
+    <AssistantDrawer
+      :open="assistOpen"
+      :seed="assistSeed"
+      :seed-action="assistAction"
+      @close="assistOpen = false"
+      @consumed-seed="assistSeed = ''"
+      @consumed-action="assistAction = ''"
+      @go="onAssistGo"
+    />
     <!-- Global macOS administrator password dialog for privileged operations -->
     <AdminPasswordDialog />
   </div>
@@ -128,15 +188,17 @@ import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
   Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot, Camera,
-  Settings, ScrollText, ShieldCheck, CircleUser,
+  Settings, ScrollText, ShieldCheck, CircleUser, Sparkles, BookOpen,
 } from '@lucide/vue'
 import { authState } from './lib/authState'
 import { startVisibleInterval } from './lib/poll'
 import { clearAdminPassword } from './lib/adminPassword'
 import { APP_ERROR_EVENT } from './lib/appError'
 import AdminPasswordDialog from './components/AdminPasswordDialog.vue'
+import AssistantDrawer from './components/AssistantDrawer.vue'
 import { useRoute, useRouter } from 'vue-router'
-import { AUTH_LOST_EVENT, getStatus, logoutAuth, putSettings } from './api/client'
+import { AUTH_LOST_EVENT, getAssistantCatalog, getPhotosHubStatus, getStatus, logoutAuth, putSettings } from './api/client'
+import { ASSISTANT_EVENT, matchCatalog } from './lib/assistant'
 import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
@@ -148,12 +210,27 @@ const { theme, themes, setTheme } = injectTheme()
 
 const toast = ref('')
 const status = ref(null)
+const photoHubOk = ref(false)
 const menuOpen = ref(false)
-/* Lock body scroll when mobile menu is open */
-watch(menuOpen, (v) => {
-  document.body.style.overflow = v ? 'hidden' : ''
-})
+const navPanel = ref(null)
+const isNarrow = ref(false)
 const offline = ref(!navigator.onLine)
+let narrowMq = null
+
+// Off-canvas links stay in the tab order unless the closed drawer is inert.
+// Desktop keeps the inline nav interactive even while menuOpen is false.
+const navInert = computed(() => isNarrow.value && !menuOpen.value)
+
+function closeMenu() {
+  menuOpen.value = false
+}
+
+function syncNarrow() {
+  isNarrow.value = Boolean(narrowMq?.matches)
+}
+
+useDismissable(menuOpen, closeMenu, navPanel)
+watch(() => route.path, closeMenu)
 const ptrVisible = ref(false)
 const ptrRefreshing = ref(false)
 const showTop = ref(false)
@@ -163,6 +240,11 @@ const cmdQuery = ref('')
 const cmdIdx = ref(0)
 const cmdInput = ref(null)
 const cmdPanel = ref(null)
+const assistOpen = ref(false)
+const assistSeed = ref('')
+const assistAction = ref('')
+const assistCatalog = ref([])
+const canAssist = computed(() => authState.canManage)
 let toastTimer = null
 let poll = null
 let ptrStartY = 0
@@ -242,7 +324,7 @@ const NAV_ADMIN = [
     labelKey: 'nav.tools',
     match: [
       '/tools', '/terminal', '/health', '/scheduler', '/logs',
-      '/alerts', '/audit', '/backups', '/maintenance', '/modules',
+      '/alerts', '/audit', '/backups', '/maintenance', '/photoshub', '/modules',
     ],
     icon: Wrench,
     children: [
@@ -275,9 +357,17 @@ const NAV_MEMBER = [
 
 // The router guard refreshes authState on every navigation, so this flips as
 // soon as a member signs in (or an admin signs back in).
-const nav = computed(() =>
-  authState.authenticated && authState.role === 'member' ? NAV_MEMBER : NAV_ADMIN,
-)
+const nav = computed(() => {
+  const groups = authState.authenticated && authState.role === 'member' ? NAV_MEMBER : NAV_ADMIN
+  if (photoHubOk.value) return groups
+  return groups.map((item) => {
+    if (!item.children?.some((c) => c.to === '/photoshub')) return item
+    return {
+      ...item,
+      children: item.children.filter((c) => c.to !== '/photoshub'),
+    }
+  })
+})
 
 const activeGroup = computed(() => {
   const path = route.path
@@ -356,14 +446,31 @@ async function refresh() {
   try { status.value = await getStatus() } catch { return false }
 }
 
+function probePhotoHub() {
+  // Members (and the login shell) are not on the photoshub whitelist;
+  // probing here would 403 on every landing the way the Dashboard ollama
+  // chip used to.
+  if (!authState.canManage) {
+    photoHubOk.value = false
+    return
+  }
+  getPhotosHubStatus()
+    .then((j) => { photoHubOk.value = Boolean(j?.photoshub_ok) })
+    .catch(() => { photoHubOk.value = false })
+}
+
 // The sidebar poll is torn down on session loss and restarted once the user is
 // back on a real page.  Null the disposer on stop: keeping a spent disposer in
 // `poll` made `poll != null` look like "already polling", so the badge stayed
 // frozen until a manual reload.
+function statusPollMs() {
+  return status.value?.resource_mode === 'high' ? 15000 : 30000
+}
+
 function startPoll() {
   if (poll) return
-  // Sidebar badge only — 15s + server status TTL 10s; paused when tab hidden.
-  poll = startVisibleInterval(refresh, 15000)
+  // Low: 30s under the 35s status TTL. High: 15s for a livelier badge.
+  poll = startVisibleInterval(refresh, statusPollMs())
 }
 
 function stopPoll() {
@@ -374,6 +481,19 @@ function stopPoll() {
 // App.vue is the root component, so it survives the trip to /login and back —
 // nothing remounts it to restart the poll.  Drive it off the route instead:
 // stop while the login page is showing, resume once a real page is active.
+watch(canAssist, (ok) => {
+  if (ok) loadAssistCatalog()
+  else assistCatalog.value = []
+})
+watch(
+  () => status.value?.resource_mode,
+  (mode, prev) => {
+    if (!mode || mode === prev) return
+    if (mode !== 'high' && prev !== 'high') return
+    stopPoll()
+    if (route.meta.authPage !== true) startPoll()
+  },
+)
 watch(
   () => route.meta.authPage === true,
   (onAuthPage) => {
@@ -381,17 +501,24 @@ watch(
       stopPoll()
     } else {
       refresh()
+      probePhotoHub()
       startPoll()
     }
   },
 )
 
 onMounted(() => {
+  if (typeof window.matchMedia === 'function') {
+    narrowMq = window.matchMedia('(max-width: 640px)')
+    syncNarrow()
+    narrowMq.addEventListener('change', syncNarrow)
+  }
   // Landing straight on /login means there is no session yet, so hitting
   // /api/status here only produces 401s.  The watcher above starts the poll as
   // soon as a real page is active.
   if (!route.meta.authPage) {
     refresh()
+    probePhotoHub()
     startPoll()
   }
   window.addEventListener('online', () => { offline.value = false })
@@ -413,11 +540,16 @@ onMounted(() => {
   window.addEventListener(AUTH_LOST_EVENT, onAuthLost)
   // Errors nothing else caught (Vue errorHandler / unhandledrejection).
   window.addEventListener(APP_ERROR_EVENT, onAppError)
+  window.addEventListener(ASSISTANT_EVENT, onAssistEvent)
+  loadAssistCatalog()
 })
 onUnmounted(() => {
   stopPoll()
   clearTimeout(toastTimer)
-  document.body.style.overflow = ''
+  if (narrowMq) {
+    narrowMq.removeEventListener('change', syncNarrow)
+    narrowMq = null
+  }
   document.removeEventListener('touchstart', ptrTouchStart)
   document.removeEventListener('touchmove', ptrTouchMove)
   document.removeEventListener('touchend', ptrTouchEnd)
@@ -425,6 +557,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onCmdKey)
   window.removeEventListener(AUTH_LOST_EVENT, onAuthLost)
   window.removeEventListener(APP_ERROR_EVENT, onAppError)
+  window.removeEventListener(ASSISTANT_EVENT, onAssistEvent)
 })
 
 function onScroll() {
@@ -476,10 +609,22 @@ async function ptrTouchEnd() {
   }
 }
 
-/* Command palette (Cmd+K) */
+/* Command palette (Cmd+K) + assistant (Cmd+J) */
 function onCmdKey(e) {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'j' || e.key === 'J')) {
+    if (!authState.canManage) return
+    e.preventDefault()
+    cmdOpen.value = false
+    if (assistOpen.value) {
+      assistOpen.value = false
+    } else {
+      openAssistant()
+    }
+    return
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
     e.preventDefault()
+    assistOpen.value = false
     cmdOpen.value = !cmdOpen.value
     cmdQuery.value = ''
     cmdIdx.value = 0
@@ -490,15 +635,54 @@ const cmdResults = computed(() => {
   const q = cmdQuery.value.toLowerCase().trim()
   const items = nav.value.flatMap(n => n.children ? [n, ...n.children] : [n])
   if (!q) return items.slice(0, 8)
-  return items.filter(n => {
+  const fromNav = items.filter(n => {
     const label = t(n.labelKey).toLowerCase()
     return label.includes(q) || n.to.includes(q)
-  }).slice(0, 8)
+  })
+  const seen = new Set(fromNav.map((n) => n.to))
+  const fromCatalog = matchCatalog(assistCatalog.value, q, 8)
+    .filter((p) => !seen.has(p.path))
+    .map((p) => ({ type: 'nav', to: p.path, title: p.title, labelKey: '' }))
+  return [...fromNav, ...fromCatalog].slice(0, 8)
 })
+const cmdFlat = computed(() => {
+  const items = cmdResults.value.map((n) => ({ type: 'nav', ...n }))
+  const q = cmdQuery.value.trim()
+  if (authState.canManage && q) {
+    items.push({ type: 'ai', query: q, to: '__ai__' })
+  }
+  return items
+})
+function openAssistant(seed = '', action = '') {
+  assistSeed.value = seed
+  assistAction.value = action
+  assistOpen.value = true
+}
+function onAssistEvent(event) {
+  if (!authState.canManage) return
+  const action = event.detail?.action || ''
+  openAssistant(event.detail?.query || '', action)
+}
+function loadAssistCatalog() {
+  if (!authState.canManage) {
+    assistCatalog.value = []
+    return
+  }
+  getAssistantCatalog(locale.value)
+    .then((body) => { assistCatalog.value = body.panels || [] })
+    .catch(() => { assistCatalog.value = [] })
+}
+function onAssistGo(path) {
+  if (path) router.push(path)
+}
 function cmdGo(i) {
-  const item = cmdResults.value[i]
+  const item = cmdFlat.value[i]
   if (!item) return
   cmdOpen.value = false
+  if (item.type === 'ai') {
+    openAssistant(item.query)
+    return
+  }
   router.push(item.to)
 }
 

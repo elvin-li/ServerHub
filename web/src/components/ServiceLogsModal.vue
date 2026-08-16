@@ -57,10 +57,10 @@ useDismissable(() => props.entry, () => emit('close'), panel)
 </script>
 
 <style scoped>
-.drawer-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
-.drawer-title { margin: 0; font-size: 18px; font-weight: 700; }
+.drawer-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; }
+.drawer-title { margin: 0; font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
 .drawer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .sub-id { font-size: 10px; color: var(--sub); margin-top: 2px; }
-.log-modal { width: min(900px, 96vw); height: min(80vh, 720px); }
+.log-modal { width: min(900px, 100%); height: min(80vh, 720px); }
 .log-modal .log { flex: 1; min-height: 0; }
 </style>

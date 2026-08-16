@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from hub import actions, auth, services_manage_svc, services_uninstall_svc
@@ -31,6 +31,28 @@ class AdoptBody(BaseModel):
     group: Optional[str] = None
     url: Optional[str] = None
     ports: Optional[list[int]] = None
+    start: Optional[str] = None
+    stop: Optional[str] = None
+    remember: Optional[bool] = None
+
+
+class ScriptBody(BaseModel):
+    name: Optional[str] = None
+    group: Optional[str] = None
+    url: Optional[str] = None
+    ports: Optional[list[int]] = None
+    start: Optional[str] = None
+    stop: Optional[str] = None
+
+
+class SignatureBody(BaseModel):
+    slug: str
+    name: Optional[str] = None
+    category: Optional[str] = None
+    procs: Optional[list[str]] = None
+    ports: Optional[list[int]] = None
+    http: Optional[bool] = None
+    brew: Optional[str] = None
 
 
 class BulkActionBody(BaseModel):
@@ -47,6 +69,28 @@ def _require_resource(request: Request, sid: str) -> None:
     username = _member_username(request)
     if username and not auth.may_use_resource(username, sid):
         raise api_error("auth.admin_required")
+
+
+@router.get("/api/services/signatures")
+def services_list_signatures(request: Request):
+    """Operator recognition rules written by Adopt → Remember or by hand."""
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.list_signatures()
+
+
+@router.put("/api/services/signatures")
+def services_upsert_signature(request: Request, body: SignatureBody):
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.upsert_signature(body.model_dump())
+
+
+@router.delete("/api/services/signatures/{slug}")
+def services_forget_signature(request: Request, slug: str):
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.forget_signature(slug)
 
 
 @router.get("/api/services")
@@ -105,6 +149,22 @@ def services_adopt(sid: str, request: Request, body: AdoptBody = AdoptBody()):
     return services_manage_svc.adopt_service(sid, body.model_dump(exclude_unset=True))
 
 
+@router.put("/api/services/{sid}/script")
+def services_update_script(sid: str, request: Request, body: ScriptBody):
+    """Rewrite a managed scripts[] entry (adopted or hand-written)."""
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.update_script(sid, body.model_dump(exclude_unset=True))
+
+
+@router.delete("/api/services/{sid}/script")
+def services_forget_script(sid: str, request: Request):
+    """Drop a managed scripts[] entry so a live listener can be rediscovered."""
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.forget_script(sid)
+
+
 @router.get("/api/services/{sid}/uninstall/preview")
 def services_uninstall_preview(sid: str):
     """What an uninstall would remove and keep, without changing anything.
@@ -131,7 +191,7 @@ def services_uninstall(sid: str, request: Request):
 @router.post("/api/services/bulk-action")
 def services_bulk(body: BulkActionBody):
     if body.action not in ("start", "stop", "restart", "run"):
-        raise HTTPException(400, "action must be start|stop|restart|run")
+        raise api_error("services.bad_action")
     results = []
     for sid in body.ids or []:
         try:

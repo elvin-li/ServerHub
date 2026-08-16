@@ -36,11 +36,11 @@
         <template v-else>
           <div class="form-grid">
             <label>{{ t('common.status') }}</label>
-            <div>
+            <div class="twofa-status">
               <span class="badge" :class="twofa.enabled ? 'ok' : 'warn'">
                 {{ twofa.enabled ? t('common.on') : t('common.off') }}
               </span>
-              <span v-if="twofa.enabled" class="hint" style="margin-left:8px">
+              <span v-if="twofa.enabled" class="hint">
                 {{ t('twofa.recovery_remaining', { n: twofa.recovery_remaining }) }}
               </span>
             </div>
@@ -262,12 +262,20 @@ onMounted(loadTwofa)
 .form-grid input { min-height: 36px; }
 .password-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .btns { display: flex; gap: 8px; flex-wrap: wrap; }
-.twofa-qr { margin-top: 10px; max-width: 220px; }
-.twofa-qr :deep(svg) { width: 100%; height: auto; border-radius: 6px; background: #fff; }
+.twofa-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.twofa-qr {
+  width: 190px; max-width: 100%; aspect-ratio: 1; margin: 10px 0;
+  padding: 8px; background: #fff; border-radius: 8px; border: 1px solid var(--line);
+}
+.twofa-qr :deep(svg) { display: block; width: 100%; height: 100%; }
 .twofa-recovery { margin-top: 12px; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
 .twofa-recovery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin-top: 8px; }
-.twofa-recovery-grid code { padding: 4px 6px; background: var(--bg); border-radius: 5px; font-size: 12px; }
-@media (max-width: 560px) {
+.twofa-recovery-grid code { padding: 4px 6px; background: var(--bg); border-radius: 5px; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
+  .form-grid label { margin-bottom: -4px; }
+  .password-footer { flex-direction: column; align-items: stretch; }
+  .password-footer button { width: 100%; }
+  .twofa-recovery-grid { grid-template-columns: repeat(2, 1fr); }
 }
 </style>

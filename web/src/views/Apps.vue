@@ -175,11 +175,11 @@
           <thead>
             <tr>
               <th>{{ t('common.name') }}</th>
-              <th>{{ t('apps.col_kind') }}</th>
+              <th class="col-hide-m">{{ t('apps.col_kind') }}</th>
               <th>{{ t('common.status') }}</th>
-              <th>{{ t('apps.col_ports') }}</th>
-              <th>{{ t('apps.col_autostart') }}</th>
-              <th>{{ t('apps.col_path') }}</th>
+              <th class="col-hide-m">{{ t('apps.col_ports') }}</th>
+              <th class="col-hide-m">{{ t('apps.col_autostart') }}</th>
+              <th class="col-hide-m">{{ t('apps.col_path') }}</th>
               <th>{{ t('common.actions') }}</th>
             </tr>
           </thead>
@@ -188,8 +188,22 @@
               <td>
                 <strong>{{ it.name }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ it.status_text }}</div>
+                <div class="show-m sub-line">{{ kindLabel(it.kind) }}</div>
+                <div class="show-m sub-line mono">{{ it.ports_summary || (it.ips || []).join(', ') || '' }}</div>
+                <div class="show-m sub-line mono">{{ it.path || it.package || it.backend || '' }}</div>
+                <div class="show-m" @click.stop>
+                  <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="it.autostart_detail || ''">
+                    <input
+                      type="checkbox"
+                      :checked="!!it.autostart"
+                      :disabled="busy || it.kind === 'vm'"
+                      @change="toggleManagedAutostart(it, $event.target.checked)"
+                    />
+                    <span>{{ it.autostart ? t('apps.auto_on') : t('apps.auto_off') }}</span>
+                  </label>
+                </div>
               </td>
-              <td>
+              <td class="col-hide-m">
                 <span class="chip" :class="kindChip(it.kind)">{{ kindLabel(it.kind) }}</span>
               </td>
               <td>
@@ -197,8 +211,8 @@
                   {{ stateLabel(it.state) }}
                 </span>
               </td>
-              <td class="mono ports-cell">{{ it.ports_summary || (it.ips || []).join(', ') || '—' }}</td>
-              <td @click.stop>
+              <td class="mono ports-cell col-hide-m">{{ it.ports_summary || (it.ips || []).join(', ') || '—' }}</td>
+              <td class="col-hide-m" @click.stop>
                 <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="it.autostart_detail || ''">
                   <input
                     type="checkbox"
@@ -210,13 +224,13 @@
                 </label>
                 <span v-else class="sub-line">—</span>
               </td>
-              <td class="mono path-cell" :title="it.path || it.package || ''">{{ it.path || it.package || it.backend || '—' }}</td>
+              <td class="mono path-cell col-hide-m" :title="it.path || it.package || ''">{{ it.path || it.package || it.backend || '—' }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
                   <button type="button" class="act-btn" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">{{ t('apps.detail') }}</button>
                   <button v-if="canAct(it, 'start')" type="button" class="act-btn primary" :disabled="busy" @click="doManagedAction(it, 'start')">{{ t('apps.act_start') }}</button>
                   <button v-if="canAct(it, 'stop')" type="button" class="act-btn" :disabled="busy" @click="doManagedAction(it, 'stop')">{{ t('apps.act_stop') }}</button>
-                  <button v-if="canAct(it, 'restart')" type="button" class="act-btn" :disabled="busy" @click="doManagedAction(it, 'restart')">{{ t('apps.act_restart') }}</button>
+                  <button v-if="canAct(it, 'restart')" type="button" class="act-btn hide-m" :disabled="busy" @click="doManagedAction(it, 'restart')">{{ t('apps.act_restart') }}</button>
                   <button v-if="canAct(it, 'logs') || it.kind === 'docker' || it.kind === 'native'" type="button" class="act-btn" @click="openManagedLogs(it)">{{ t('apps.logs') }}</button>
                   <button
                     v-if="openUrl(it)"
@@ -261,7 +275,7 @@
                 <th>{{ t('common.name') }}</th>
                 <th>{{ t('common.status') }}</th>
                 <th>{{ t('apps.col_autostart') }}</th>
-                <th>{{ t('apps.col_detail') }}</th>
+                <th class="col-hide-m">{{ t('apps.col_detail') }}</th>
                 <th>{{ t('common.actions') }}</th>
               </tr>
             </thead>
@@ -270,8 +284,12 @@
                 <td>
                   <strong>{{ it.name }}</strong>
                   <div class="sub-line mono" v-if="it.program">{{ it.program }}</div>
+                  <div class="show-m sub-line mono">{{ it.detail || it.plist || '' }}</div>
+                  <div class="show-m sub-line">
+                    {{ it.running ? t('common.running') : t('common.stopped') }}{{ it.policy ? ' · ' + it.policy : '' }}
+                  </div>
                 </td>
-                <td>
+                <td class="col-hide-m">
                   <span class="chip" :class="it.running ? 'chip-ok' : 'chip-muted'">
                     {{ it.running ? t('common.running') : t('common.stopped') }}
                   </span>
@@ -288,7 +306,7 @@
                     <span>{{ it.autostart ? t('apps.auto_on') : t('apps.auto_off') }}</span>
                   </label>
                 </td>
-                <td class="mono path-cell" :title="it.detail || it.plist || ''">{{ it.detail || it.plist || '—' }}</td>
+                <td class="mono path-cell col-hide-m" :title="it.detail || it.plist || ''">{{ it.detail || it.plist || '—' }}</td>
                 <td class="actions-cell">
                   <div class="act-row" v-if="it.kind === 'docker'">
                     <select
@@ -1108,6 +1126,15 @@ async function loadManaged(force = false) {
   }
 }
 
+function softText(j, fallbackKey = 'common.fail') {
+  if (j?.code) {
+    const key = `err.${j.code}`
+    const translated = t(key, j.params || {})
+    if (translated !== key) return translated
+  }
+  return j?.message || t(fallbackKey)
+}
+
 async function loadAutostart(force = false) {
   loading.value = true
   try {
@@ -1123,7 +1150,7 @@ async function setAutostartItem(it, enabled) {
   busy.value = true
   try {
     const result = await setAppAutostart(it.id, enabled)
-    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${it.name}` : '❌ ' + (result.message || ''))
+    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${it.name}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
     await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
@@ -1138,7 +1165,7 @@ async function setDockerPolicy(it, policy) {
   busy.value = true
   try {
     const result = await setDockerAutostartPolicy(name, policy)
-    toast(result.ok ? `✅ restart=${policy}` : '❌ ' + (result.message || ''))
+    toast(result.ok ? `✅ restart=${policy}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
     await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
@@ -1153,7 +1180,7 @@ async function runAutostartNow() {
   busy.value = true
   try {
     const result = await runAppAutostartNow()
-    toast(result.ok ? '✅ ' + (result.message || 'ok') : '❌ ' + (result.message || 'fail'))
+    toast(result.ok ? '✅ ' + (result.message || t('common.ok')) : '❌ ' + softText(result))
     // This starts every autostart-enabled app, so the table it was launched from
     // is immediately out of date. Nothing reloaded it before: the 15s poll only
     // covers the Managed tab, so the Autostart rows kept their pre-run "stopped"
@@ -1175,7 +1202,7 @@ async function toggleManagedAutostart(it, enabled) {
       return
     }
     const result = await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off')
-    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')}` : '❌ ' + (result.message || ''))
+    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')}` : '❌ ' + softText(result))
     await loadManaged(true)
     if (detail.value?.id === it.id) {
       detail.value = { ...detail.value, autostart: enabled }
@@ -1277,7 +1304,7 @@ async function cfLogin() {
   cfMsg.value = ''
   try {
     const result = await startCloudflareLogin()
-    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
     if (result.login_url) {
       cfStatus.value = { ...cfStatus.value, login_url: result.login_url, login_pending: true }
       startCfLoginPolling()
@@ -1299,8 +1326,8 @@ async function cfStartSelected() {
   cfMsg.value = ''
   try {
     const result = await startCloudflareTunnel(cfSelectedTunnel.value)
-    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
-    toast(result.ok ? '✅ ' + t('apps.tunnel_started', { name: cfSelectedTunnel.value }) : '❌ ' + (result.message || ''))
+    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    toast(result.ok ? '✅ ' + t('apps.tunnel_started', { name: cfSelectedTunnel.value }) : '❌ ' + softText(result))
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
     await Promise.all([cfRefresh(), loadManaged(true)])
@@ -1318,8 +1345,8 @@ async function cfStartToken() {
   cfMsg.value = ''
   try {
     const result = await startCloudflareToken(cfToken.value, cfSelectedTunnel.value || 'token')
-    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
-    toast(result.ok ? '✅ ' + t('apps.token_tunnel_started') : '❌ ' + (result.message || ''))
+    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    toast(result.ok ? '✅ ' + t('apps.token_tunnel_started') : '❌ ' + softText(result))
     cfToken.value = ''
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
@@ -1339,8 +1366,8 @@ async function cfStop() {
   cfBusy.value = true
   try {
     const result = await stopCloudflare()
-    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
-    toast(result.ok ? '✅ ' + t('apps.stopped') : '❌ ' + (result.message || ''))
+    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    toast(result.ok ? '✅ ' + t('apps.stopped') : '❌ ' + softText(result))
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
     await Promise.all([cfRefresh(), loadManaged(true)])
@@ -1355,8 +1382,8 @@ async function cfRestart() {
   cfBusy.value = true
   try {
     const result = await restartCloudflare()
-    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
-    toast(result.ok ? '✅ ' + t('apps.restarted') : '❌ ' + (result.message || ''))
+    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    toast(result.ok ? '✅ ' + t('apps.restarted') : '❌ ' + softText(result))
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
     await Promise.all([cfRefresh(), loadManaged(true)])
@@ -1372,7 +1399,7 @@ async function cfCreate() {
   cfBusy.value = true
   try {
     const result = await createCloudflareTunnel(cfNewName.value)
-    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
+    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
     if (result.ok) {
       cfSelectedTunnel.value = cfNewName.value
       cfNewName.value = ''
@@ -1391,8 +1418,8 @@ async function cfRouteDns() {
   cfBusy.value = true
   try {
     const result = await routeCloudflareDns(cfSelectedTunnel.value, cfDnsHost.value)
-    cfMsg.value = (result.ok ? '✅ ' : '❌ ') + (result.message || '')
-    toast(result.ok ? '✅ ' + t('apps.dns_bound') : '❌ ' + (result.message || ''))
+    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    toast(result.ok ? '✅ ' + t('apps.dns_bound') : '❌ ' + softText(result))
   } catch (e) {
     cfMsg.value = '❌ ' + e.message
     toast('❌ ' + e.message)
@@ -1532,7 +1559,7 @@ async function doManagedAction(it, action) {
   busy.value = true
   try {
     const result = await manageApp(it.id, action)
-    toast(result.ok !== false ? `✅ ${action}` : '❌ ' + (result.message || ''))
+    toast(result.ok !== false ? `✅ ${action}` : '❌ ' + softText(result))
     await loadManaged(true)
     if (detail.value?.id === it.id) await openDetail(it)
   } catch (e) {
@@ -1549,7 +1576,7 @@ async function doManagedUninstall(it) {
   busy.value = true
   try {
     const result = await manageApp(it.id, 'uninstall', removeData)
-    toast(result.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + (result.message || ''))
+    toast(result.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + softText(result))
     detail.value = null
     await Promise.all([loadManaged(true), loadCatalog()])
   } catch (e) {
@@ -1809,7 +1836,7 @@ async function run(s, action) {
   busy.value = true
   try {
     const r = await runStack(s.id, action)
-    toast('🚀 ' + (r.message || 'ok'))
+    toast('🚀 ' + (r.message || t('common.ok')))
     if (r.job_id) openJob(r.job_id, s.name)
     refresh()
   } catch (e) {
@@ -2189,7 +2216,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 /* Modal */
 .install-modal {
   max-height: 85vh;
-  max-width: min(560px, 94vw);
+  max-width: min(560px, 100%);
   overflow: auto;
   color: var(--txt);
   background: var(--card);
@@ -2482,7 +2509,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 }
 
 .drawer {
-  width: min(480px, 100vw);
+  width: min(480px, 100%);
   max-width: 100%;
   height: 100%;
   background: var(--card);
@@ -2596,7 +2623,8 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   margin: 0;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 640px) {
+  .act-row { flex-wrap: wrap; }
   .app-grid {
     grid-template-columns: 1fr;
   }
@@ -2609,6 +2637,11 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   .drawer {
     width: 100%;
   }
+  .apps-toolbar .search { min-width: 0; flex: 1 1 140px; max-width: none; }
+  .cat-select { min-width: 0; }
+  .actions-cell { min-width: 0; max-width: none; }
+  .managed-table th, .managed-table td { white-space: normal; overflow-wrap: anywhere; }
+  .install-modal { max-width: 100%; }
   .credential-grid { grid-template-columns: 1fr; gap: 4px; }
   .credential-grid label { margin-top: 4px; }
   .credential-password-input { grid-template-columns: 1fr 1fr; }

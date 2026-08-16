@@ -4,11 +4,11 @@ from __future__ import annotations
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 from hub import __version__
 from hub.adaptive import discover_orphan_listeners, nginx_sites, scan_new_compose_projects
 from hub.config import cfg
+from hub.resource_mode import resource_mode
 from hub.host_address import resolve_value
 from hub.discovery import (
     collect_apps,
@@ -18,10 +18,17 @@ from hub.discovery import (
     discover_vms,
 )
 from hub.system import collect_system
+from hub.util import LazyPool
 
-# Hot path: 20s TTL + single-flight. The shell polls /api/status every 15s,
-# so a 10s TTL missed on almost every tick and re-ran docker+launchctl+lsof.
-_STATUS_TTL = 20.0
+# Hot path: 35s TTL + single-flight in low mode. Sidebar and menubar poll
+# every 30s; a 20s TTL missed on every one of those ticks.
+_STATUS_TTL = 35.0
+_STATUS_TTL_HIGH = 20.0
+
+
+def _status_ttl() -> float:
+    from hub.resource_mode import is_high
+    return _STATUS_TTL_HIGH if is_high() else _STATUS_TTL
 _status_cache = {"t": 0.0, "v": None}
 _lock = threading.Lock()
 # Single-flight: only one full refresh at a time; waiters reuse the result.
@@ -32,6 +39,16 @@ _ADAPTIVE_TTL = 60.0
 #: Separate from `_refresh_lock`: the adaptive scans and the status build are
 #: independent refreshes, and sharing one lock would make each wait on the other.
 _adaptive_refresh_lock = threading.Lock()
+_pool = LazyPool(6, "hub-status")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
+
+
+def peek_status() -> dict | None:
+    """Last built status snapshot, or None. Does not trigger discovery."""
+    return cached_status()
 
 
 def invalidate_status():
@@ -97,11 +114,10 @@ def _adaptive_info() -> dict:
                     "nginx_sites": _adaptive_cache["nginx"],
                 }
         # Two unrelated filesystem scans (compose project tree, nginx sites dir).
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            f_compose = ex.submit(scan_new_compose_projects)
-            f_nginx = ex.submit(nginx_sites)
-            compose = f_compose.result()
-            nginx = f_nginx.result()
+        f_compose = _pool.submit(scan_new_compose_projects)
+        f_nginx = _pool.submit(nginx_sites)
+        compose = f_compose.result()
+        nginx = f_nginx.result()
         with _lock:
             _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
         return {"compose_projects": compose, "nginx_sites": nginx}
@@ -109,17 +125,16 @@ def _adaptive_info() -> dict:
 
 def _build_status() -> dict:
     adaptive_on = (cfg().get("settings") or {}).get("adaptive", True)
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        f_l = ex.submit(discover_launchd)
-        f_d = ex.submit(discover_containers)
-        f_v = ex.submit(discover_vms)
-        f_s = ex.submit(collect_system)
-        f_sc = ex.submit(collect_scripts)
-        launchd = f_l.result()
-        containers, engine_up = f_d.result()
-        vms = f_v.result()
-        system = f_s.result()
-        scripts = f_sc.result()
+    f_l = _pool.submit(discover_launchd)
+    f_d = _pool.submit(discover_containers)
+    f_v = _pool.submit(discover_vms)
+    f_s = _pool.submit(collect_system)
+    f_sc = _pool.submit(collect_scripts)
+    launchd = f_l.result()
+    containers, engine_up = f_d.result()
+    vms = f_v.result()
+    system = f_s.result()
+    scripts = f_sc.result()
     services = collect_apps(engine_up) + scripts + launchd + containers + vms
 
     # Adaptive: orphan listeners not covered by known services
@@ -183,6 +198,7 @@ def _build_status() -> dict:
         "problems": problems[:30],
         "service_total": len(services),
         "adaptive": adaptive_info,
+        "resource_mode": resource_mode(),
     }
 
 
@@ -244,6 +260,7 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
         ][:30],
         "service_total": len(services),
         "adaptive": {},
+        "resource_mode": status.get("resource_mode") or "low",
     }
 
 
@@ -261,14 +278,14 @@ def full_status(force=False):
     """Return aggregated status. Cached for _STATUS_TTL; single-flight refresh."""
     now = time.time()
     with _lock:
-        if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _STATUS_TTL:
+        if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
             return _status_cache["v"]
 
     with _refresh_lock:
         # Double-check after acquiring single-flight lock
         now = time.time()
         with _lock:
-            if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _STATUS_TTL:
+            if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
                 return _status_cache["v"]
         try:
             v = _build_status()

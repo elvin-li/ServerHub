@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import {
   clearStaleChunkFlag, isChunkLoadError, recoverFromStaleChunk,
 } from './lib/chunkRecovery'
-import { applyAuthStatus, MEMBER_ROUTE_NAMES } from './lib/authState'
+import { applyAuthStatus, authState, MEMBER_ROUTE_NAMES } from './lib/authState'
 
 // Every page, including the two entry points, is an on-demand chunk.
 //
@@ -84,7 +84,7 @@ const routes = [
   { path: '/modules', name: 'modules', component: Modules },
   { path: '/maintenance', name: 'maintenance', component: Maintenance },
   { path: '/photoshub', name: 'photoshub', component: PhotosHub },
-  { path: '/power', redirect: '/' },
+  { path: '/power', redirect: { path: '/', hash: '#remote' } },
   { path: '/settings', name: 'settings', component: Settings },
   // Per-account self-service (password, 2FA).  Reachable by every signed-in
   // role; it is the only management surface a member session can use.

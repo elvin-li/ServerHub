@@ -493,7 +493,7 @@ class DeviceTypeSingleFlightTests(unittest.TestCase):
 
 class HealthCheckTests(unittest.TestCase):
     ORDERED_PREFIXES = ["disk_root", "orbstack", "nginx", "nginx_conf",
-                        "port_8086", "port_8123", "port_8281"]
+                        "port_8086", "port_8443", "port_8123", "port_8281"]
 
     def setUp(self):
         health_svc._cache.update(t=0.0, v=None)
@@ -593,6 +593,7 @@ class HealthCheckTests(unittest.TestCase):
         data, _ = self._run()
         by_id = {c["id"]: c for c in data["checks"]}
         self.assertTrue(by_id["port_8086"]["ok"], "the open port lost its result")
+        self.assertFalse(by_id["port_8443"]["ok"])
         self.assertFalse(by_id["port_8123"]["ok"])
         self.assertFalse(by_id["port_8281"]["ok"])
 

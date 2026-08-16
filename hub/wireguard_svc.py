@@ -1507,7 +1507,7 @@ def apply_live() -> dict:
     staged = DATA_DIR / f"{interface}.sync.conf"
     write_secret_text(staged, stripped)
 
-    rc, _, err = sh(["sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30)
+    rc, _, err = sh(["/usr/bin/sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30)
     if rc == 0:
         return {"ok": True, "applied": True, "device": device}
     result = run_admin([WG, "syncconf", device, str(staged)], timeout=120)
@@ -1597,7 +1597,7 @@ def interface_action(action: str) -> dict:
     # itself -- no password can fix a bad config, and saying "password required"
     # sent operators looking in the wrong place entirely.
     for command in commands:
-        rc, out, err = sh(["sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
+        rc, out, err = sh(["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
         if rc == 0:
             continue
         if sudo_refused(err):
@@ -1610,8 +1610,8 @@ def interface_action(action: str) -> dict:
             fresh = runtime_state(settings()["interface"])
             if fresh["live"]:
                 return {"ok": True, "action": verb, "already_running": True}
-            sh(["sudo", "-n", RM, "-f", fresh["name_file"]], timeout=20)
-            rc, out, err = sh(["sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
+            sh(["/usr/bin/sudo", "-n", RM, "-f", fresh["name_file"]], timeout=20)
+            rc, out, err = sh(["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
             if rc == 0:
                 continue
             combined = ((err or "") + "\n" + (out or "")).strip()

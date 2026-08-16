@@ -4,13 +4,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from fastapi import HTTPException
-
 from hub.adaptive import nginx_sites
+from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd, listing as launchd_listing
+from hub.paths import NGINX as NGINX_BIN
 from hub.status import invalidate_status
-
-NGINX_BIN = "/opt/homebrew/bin/nginx"
 NGINX_ROOT = Path.home() / "Services" / "nginx"
 NGINX_CONF = NGINX_ROOT / "nginx.conf"
 CONF_D = NGINX_ROOT / "conf.d"
@@ -42,7 +40,7 @@ def overview() -> dict:
 
 def test_config() -> dict:
     if not NGINX_CONF.is_file():
-        raise HTTPException(404, "nginx.conf missing")
+        raise api_error("nginx.conf_missing")
     p = subprocess.run(
         [NGINX_BIN, "-t", "-c", str(NGINX_CONF)],
         capture_output=True, text=True, timeout=15,

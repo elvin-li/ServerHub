@@ -41,14 +41,33 @@ def _ncpu() -> int:
     return n
 
 
-def _cpu_used_quick() -> float | None:
-    """Lightweight CPU used % without full top if sensors cache warm."""
+def _sensors_snapshot() -> dict | None:
+    """Reuse a warm full sample, otherwise a light one — never spawn ``top``.
+
+    ``collect_sensors()`` on a cold cache measured 0.85–1.6s here, almost all
+    of it ``top -l 1``.  The sampler runs with nobody looking; a jsonl point
+    only needs load, pressure, and Mach CPU ticks.
+    """
     try:
         from hub import sensors_svc
-        s = sensors_svc.collect_sensors(force=False)
-        if s.get("cpu_used_pct") is not None:
-            return float(s["cpu_used_pct"])
+        hit = sensors_svc.peek_sensors()
+        if hit is not None:
+            return hit
+        from hub.resource_mode import is_high
+        if is_high():
+            return sensors_svc.collect_sensors()
+        return sensors_svc.collect_light()
     except Exception:
+        return None
+
+
+def _cpu_used_quick(sensors: dict | None = None) -> float | None:
+    """Lightweight CPU used % without full top if sensors cache warm."""
+    s = sensors if sensors is not None else _sensors_snapshot()
+    try:
+        if s and s.get("cpu_used_pct") is not None:
+            return float(s["cpu_used_pct"])
+    except (TypeError, ValueError):
         pass
     try:
         load1 = os.getloadavg()[0]
@@ -63,16 +82,14 @@ def _sample() -> dict:
     du = shutil.disk_usage("/")
     mem_free = None
     ncpu = _ncpu()
-    cpu_used = _cpu_used_quick()
+    s = _sensors_snapshot()
+    cpu_used = _cpu_used_quick(s)
     mem_used_pct = None
     load_pct = round(min(200.0, load1 / ncpu * 100), 1) if ncpu else None
 
     net_rx = net_tx = None
-    sensors_hit = False
-    try:
-        from hub import sensors_svc
-        s = sensors_svc.collect_sensors(force=False)
-        sensors_hit = bool(s)
+    sensors_hit = bool(s)
+    if s:
         net = s.get("network") or {}
         net_rx = net.get("rx_bps")
         net_tx = net.get("tx_bps")
@@ -84,12 +101,13 @@ def _sample() -> dict:
             mem_used_pct = m["used_pct"]
             mem_free = m.get("free_pct", mem_free)
         if s.get("cpu_used_pct") is not None:
-            cpu_used = s["cpu_used_pct"]
-    except Exception:
-        pass
+            try:
+                cpu_used = min(100.0, max(0.0, float(s["cpu_used_pct"])))
+            except (TypeError, ValueError):
+                pass
 
     if not sensors_hit or mem_free is None:
-        rc, out, _ = sh(["memory_pressure", "-Q"], timeout=4)
+        rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
         if rc == 0:
             for line in out.splitlines():
                 if "free percentage" in line:
@@ -256,12 +274,6 @@ def _loop(interval: int = 90):
         try:
             worker_health.beat("metrics-sampler")
             tick += 1
-            try:
-                from hub import sensors_svc
-                # Force sensors less often: every 3rd sample (~4.5 min at 90s)
-                sensors_svc.collect_sensors(force=(tick % 3 == 1))
-            except Exception:
-                pass
             # The first pass flushes rather than buffering, which is what
             # start_sampler used to do on the caller's thread.  Taking it here
             # keeps a data point on disk promptly without the startup path

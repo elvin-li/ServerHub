@@ -66,6 +66,18 @@ class EngineProbeCacheTests(unittest.TestCase):
             docker_cli.engine_up()
         self.assertEqual(self.probes, 2)
 
+    def test_peek_does_not_probe(self):
+        with patch.object(docker_cli, "docker", side_effect=self._probe):
+            docker_cli.engine_up()
+            self.assertTrue(docker_cli.peek_engine())
+        self.assertEqual(self.probes, 1)
+        with patch.object(docker_cli, "docker", side_effect=self._probe):
+            self.assertTrue(docker_cli.peek_engine())
+        self.assertEqual(self.probes, 1)
+
+    def test_peek_is_none_before_any_probe(self):
+        self.assertIsNone(docker_cli.peek_engine())
+
     def test_the_window_is_short_enough_to_reflect_a_restart(self):
         # A long TTL would leave the UI claiming Docker is up after it died.
         self.assertLessEqual(docker_cli._ENGINE_TTL, 10.0)

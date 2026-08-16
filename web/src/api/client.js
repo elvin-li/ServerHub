@@ -69,12 +69,20 @@ function errorText(payload, statusText) {
 async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
   const isGet = !opts?.method || opts.method === 'GET'
   const attempts = isGet ? MAX_RETRIES + 1 : 1
+  const userSignal = opts?.signal
+  const fetchOpts = { ...opts }
+  delete fetchOpts.signal
 
   for (let i = 0; i < attempts; i++) {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeout)
+    const onUserAbort = () => ctrl.abort()
+    if (userSignal) {
+      if (userSignal.aborted) ctrl.abort()
+      else userSignal.addEventListener('abort', onUserAbort, { once: true })
+    }
     try {
-      const r = await fetch(url, { ...opts, signal: ctrl.signal })
+      const r = await fetch(url, { ...fetchOpts, signal: ctrl.signal })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) {
         const err = new Error(errorText(j, r.statusText))
@@ -116,14 +124,16 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
       return j
     } catch (e) {
       const isLast = i === attempts - 1
+      const userAborted = Boolean(userSignal?.aborted)
       // Retry on network errors / timeouts for GET requests
-      if (!isLast && isGet && (e.name === 'AbortError' || e.message === 'Failed to fetch' || e.status === 0)) {
+      if (!isLast && isGet && !userAborted && (e.name === 'AbortError' || e.message === 'Failed to fetch' || e.status === 0)) {
         await new Promise(r => setTimeout(r, RETRY_DELAY * (i + 1)))
         continue
       }
       if (e.name === 'AbortError') {
-        const err = new Error(t('err.timeout'))
+        const err = new Error(t(userAborted ? 'err.cancelled' : 'err.timeout'))
         err.status = 0
+        err.code = userAborted ? 'cancelled' : 'timeout'
         throw err
       }
       if (!e.status && e.message === 'Failed to fetch') {
@@ -134,6 +144,7 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
       throw e
     } finally {
       clearTimeout(timer)
+      if (userSignal) userSignal.removeEventListener('abort', onUserAbort)
     }
   }
 }
@@ -339,6 +350,15 @@ export const setServiceHidden = (id, hide = true) =>
 // Promote an auto-discovered listener into a managed services.yaml entry.
 export const adoptService = (id, body = {}) =>
   json(`/api/services/${encodeURIComponent(id)}/adopt`, jsonBody('POST', body))
+export const updateServiceScript = (id, body) =>
+  json(`/api/services/${encodeURIComponent(id)}/script`, jsonBody('PUT', body))
+export const forgetServiceScript = (id) =>
+  json(`/api/services/${encodeURIComponent(id)}/script`, { method: 'DELETE' })
+export const getServiceSignatures = () => json('/api/services/signatures')
+export const upsertServiceSignature = (body) =>
+  json('/api/services/signatures', jsonBody('PUT', body))
+export const forgetServiceSignature = (slug) =>
+  json(`/api/services/signatures/${encodeURIComponent(slug)}`, { method: 'DELETE' })
 
 // Network configuration and diagnostics
 export const getSystemNetwork = (force = false) =>
@@ -576,8 +596,6 @@ export const getStorage = (light = false) => json(`/api/storage${light ? '?light
 export const getSmartOverview = () => json('/api/smart')
 export const startSmartTest = (device, kind = 'short') =>
   json('/api/smart/test', jsonBody('POST', { device, kind }))
-export const abortSmartTest = (device) =>
-  json('/api/smart/abort', jsonBody('POST', { device }))
 
 /* Storage pool (JBOD union, deliberately not RAID).
  *
@@ -656,7 +674,6 @@ export const putSettings = (body) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-export const getMetrics = (minutes = 60) => json(`/api/metrics?minutes=${minutes}`)
 // Tiered history: backend picks the layer (raw 90s / 5m / 1h) for the span and
 // caps the point count; response adds { tier, since, until } next to points.
 export const getMetricsRange = (range) => json(`/api/metrics?range=${encodeURIComponent(range)}`)
@@ -714,16 +731,43 @@ export const rsyncPreview = (body) =>
 export const getCatalog = () => json('/api/catalog')
 const CATALOG_INSTALL_TIMEOUT = 900000 // brew cask / pull can exceed 30s
 
-export const installCatalog = (id, variables = {}) =>
-  json(
-    `/api/catalog/${encodeURIComponent(id)}/install`,
+export async function installCatalog(id, variables = {}) {
+  const url = `/api/catalog/${encodeURIComponent(id)}/install`
+  const body = JSON.stringify({ confirm: true, variables })
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await json(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...adminPasswordHeaders(),
+        },
+        body,
+      },
+      CATALOG_INSTALL_TIMEOUT,
+    )
+    if (r.error !== 'password_required' && r.error !== 'password_incorrect') return r
+    const incorrect = r.error === 'password_incorrect'
+    if (incorrect) clearAdminPassword()
+    let password = incorrect ? '' : getAdminPassword()
+    if (!password) password = await promptAdminPassword(incorrect)
+    if (!password) return r
+    setAdminPassword(password)
+  }
+  return json(
+    url,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true, variables }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...adminPasswordHeaders(),
+      },
+      body,
     },
     CATALOG_INSTALL_TIMEOUT,
   )
+}
 export const uninstallCatalog = (id, { remove_data = true } = {}) =>
   json(
     `/api/catalog/${encodeURIComponent(id)}/uninstall`,
@@ -775,8 +819,8 @@ export const getHost = () => json('/api/system/host')
 // Dashboard used to call these three with a bare fetch().then(r => r.json()),
 // which skips the r.ok check: a 401/500 JSON body was written straight into the
 // view as if it were live data, and the session-lost event never fired.
-export const getSensors = (force = false) =>
-  json(`/api/system/sensors?force=${force ? 'true' : 'false'}`)
+export const getSensors = (force = false, { light = false } = {}) =>
+  json(`/api/system/sensors?force=${force ? 'true' : 'false'}${light ? '&light=true' : ''}`)
 // Cheap listening-port summary (one lsof call).  This is deliberately the only
 // network helper here: the full /api/system/network overview fans out
 // networksetup per service, netstat and a docker network inspect per network,
@@ -858,6 +902,12 @@ export const powerAction = (action, confirm = true) =>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, confirm }),
+  })
+export const setWol = (enabled) =>
+  json('/api/system/power/wol', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
   })
 export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
   const q = new URLSearchParams({
@@ -981,3 +1031,11 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
     if (signal) signal.removeEventListener('abort', onAbort)
   }
 }
+
+// ── In-panel assistant (hub/routers/assistant_api.py) ────────────────────────
+// Find is a catalog match. Brief/ask may wait on the resident model the same
+// way /api/ollama/chat does, so they share that 130s ceiling.
+export const getAssistantCatalog = (locale = 'zh-CN') =>
+  json(`/api/assistant/catalog?locale=${encodeURIComponent(locale)}`)
+export const askAssistant = (query, { locale = 'zh-CN', action = 'auto', history = [], path = '', signal } = {}) =>
+  json('/api/assistant/ask', { ...jsonBody('POST', { query, locale, action, history, path }), signal }, OLLAMA_TEST_TIMEOUT)

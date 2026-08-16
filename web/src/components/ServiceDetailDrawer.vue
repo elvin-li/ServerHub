@@ -1,14 +1,16 @@
 <!--
   Detail drawer for one service: identity badges, info KV, mounts/env,
-  the adopt form (auto-discovered listeners), the admin override editor,
-  and the inline logs section.
+  the adopt form (auto-discovered listeners), the managed-script editor,
+  the admin override editor, and the inline logs section.
 
-  The drawer owns only its two form models; every mutation is emitted so the
+  The drawer owns only its form models; every mutation is emitted so the
   parent keeps the single busy flag, the confirm prompts and the list refresh:
     close          — dismiss the drawer
     act(action)    — run a control action on this service
     load-logs      — (re)load the inline logs section
     adopt(body)    — write the adopt payload to services.yaml
+    save-script(body) — rewrite the services.yaml scripts entry
+    forget         — drop the managed scripts entry (parent confirms)
     save-override(body) — save the display override
     hide           — hide the service from the list
     uninstall      — open the uninstall confirmation (launch agents only)
@@ -27,8 +29,8 @@
             <span class="chip">{{ kindLabel(service.kind) }}</span>
             <span class="chip" :class="stateChipClass(service.state)">{{ stateLabel(service.state) }}</span>
             <span v-if="service.auto" class="chip chip-muted">auto</span>
-            <span v-if="service.signature" class="chip chip-sig" :title="service.signature.category">
-              {{ service.signature.confidence === 'high' ? service.signature.name : `${service.signature.name}?` }}
+            <span v-if="sig" class="chip chip-sig" :title="sig.category">
+              {{ sig.confidence === 'high' ? sig.name : `${sig.name}?` }}
             </span>
           </div>
           <div class="mono sub-id">{{ service.id }}</div>
@@ -86,14 +88,18 @@
       <section class="drawer-sec" v-if="service.can_adopt">
         <h3>{{ t('services.sec_adopt') }}</h3>
         <p class="hint-line">{{ t('services.adopt_hint') }}</p>
-        <div v-if="service.signature" class="hint-line">
+        <div v-if="sig" class="hint-line">
           {{ t('services.identified_as', {
-            name: service.signature.name,
-            category: service.signature.category,
+            name: sig.name,
+            category: sig.category,
           }) }}
-          <span v-if="service.signature.confidence !== 'high'">({{ t('services.identified_guess') }})</span>
+          <span v-if="sig.confidence !== 'high'">({{ t('services.identified_guess') }})</span>
         </div>
-        <div class="form-grid">
+        <div v-if="adoptForm.control_via === 'brew'" class="hint-line">
+          {{ t('services.adopt_control_brew', { formula: adoptForm.formula }) }}
+        </div>
+        <div v-else class="hint-line">{{ t('services.adopt_control_none') }}</div>
+        <div class="form-grid adopt-form">
           <label>{{ t('common.name') }}
             <input v-model="adoptForm.name" type="text" />
           </label>
@@ -106,10 +112,51 @@
           <label>{{ t('services.adopt_ports') }}
             <input v-model="adoptForm.ports" type="text" placeholder="8080, 8443" />
           </label>
+          <label>{{ t('services.adopt_start') }}
+            <input v-model="adoptForm.start" type="text" class="mono" placeholder="brew services start …" />
+          </label>
+          <label>{{ t('services.adopt_stop') }}
+            <input v-model="adoptForm.stop" type="text" class="mono" placeholder="brew services stop …" />
+          </label>
         </div>
+        <label class="chk-line">
+          <input v-model="adoptForm.remember" type="checkbox" />
+          {{ t('services.adopt_remember') }}
+        </label>
+        <p class="hint-line">{{ t('services.adopt_remember_hint') }}</p>
         <div class="mono sub-id" style="margin-top:4px">id: {{ adoptForm.id }}</div>
         <div class="drawer-actions" style="margin-top:8px">
           <button type="button" class="primary" :disabled="busy" @click="submitAdopt">{{ t('services.adopt') }}</button>
+        </div>
+      </section>
+
+      <!-- Rewrite the services.yaml scripts entry (adopted or hand-written) -->
+      <section class="drawer-sec" v-if="canManage && service.can_edit_script">
+        <h3>{{ t('services.sec_script') }}</h3>
+        <p class="hint-line">{{ t('services.script_hint') }}</p>
+        <div class="form-grid script-form">
+          <label>{{ t('common.name') }}
+            <input v-model="scriptForm.name" type="text" />
+          </label>
+          <label>{{ t('services.group') }}
+            <input v-model="scriptForm.group" type="text" />
+          </label>
+          <label>URL
+            <input v-model="scriptForm.url" type="text" placeholder="http://…" />
+          </label>
+          <label>{{ t('services.adopt_ports') }}
+            <input v-model="scriptForm.ports" type="text" placeholder="8080, 8443" />
+          </label>
+          <label>{{ t('services.adopt_start') }}
+            <input v-model="scriptForm.start" type="text" class="mono" placeholder="brew services start …" />
+          </label>
+          <label>{{ t('services.adopt_stop') }}
+            <input v-model="scriptForm.stop" type="text" class="mono" placeholder="brew services stop …" />
+          </label>
+        </div>
+        <div class="drawer-actions" style="margin-top:8px">
+          <button type="button" class="primary" :disabled="busy" @click="submitScript">{{ t('common.save') }}</button>
+          <button v-if="service.can_forget" type="button" class="danger" :disabled="busy" @click="emit('forget')">{{ t('services.forget') }}</button>
         </div>
       </section>
 
@@ -151,10 +198,10 @@
 </template>
 
 <script setup>
-import { inject, reactive, ref, watch } from 'vue'
+import { computed, inject, reactive, ref, watch } from 'vue'
 import { injectI18n } from '../i18n'
 import { useDismissable } from '../composables/useDismissable'
-import { portOf, serviceLabels, stateChipClass } from '../lib/serviceActions'
+import { portOf, serviceLabels, signatureOf, stateChipClass } from '../lib/serviceActions'
 import ServiceActions from './ServiceActions.vue'
 
 const toast = inject('toast')
@@ -176,11 +223,25 @@ const props = defineProps({
   logSource: { type: String, default: '' },
 })
 
-const emit = defineEmits(['close', 'act', 'load-logs', 'adopt', 'save-override', 'hide', 'uninstall'])
+const emit = defineEmits(['close', 'act', 'load-logs', 'adopt', 'save-script', 'forget', 'save-override', 'hide', 'uninstall'])
 
 const panel = ref(null)
 const editForm = reactive({ name: '', group: '', url: '', port: null })
-const adoptForm = reactive({ id: '', name: '', group: '', url: '', ports: '' })
+const adoptForm = reactive({
+  id: '', name: '', group: '', url: '', ports: '',
+  start: '', stop: '', control_via: '', formula: '', remember: false,
+})
+const scriptForm = reactive({
+  name: '', group: '', url: '', ports: '', start: '', stop: '',
+})
+const sig = computed(() => signatureOf(props.service))
+
+function parsePorts(raw) {
+  return String(raw || '')
+    .split(/[\s,]+/)
+    .map((p) => parseInt(p, 10))
+    .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535)
+}
 
 function resetForms() {
   const d = props.service || {}
@@ -195,22 +256,46 @@ function resetForms() {
   adoptForm.group = ad.group || ''
   adoptForm.url = ad.url || ''
   adoptForm.ports = (ad.ports || []).join(', ')
+  adoptForm.start = ad.start || ''
+  adoptForm.stop = ad.stop || ''
+  adoptForm.control_via = ad.control_via || ''
+  adoptForm.formula = ad.formula || ''
+  adoptForm.remember = Boolean(ad.remember)
+  const sc = d.script_defaults || {}
+  scriptForm.name = sc.name || d.name || ''
+  scriptForm.group = sc.group || d.group || ''
+  scriptForm.url = sc.url || d.url || ''
+  scriptForm.ports = (sc.ports || []).join(', ')
+  scriptForm.start = sc.start || ''
+  scriptForm.stop = sc.stop || ''
 }
 
 // Every detail (re-)read hands down a fresh object; the forms follow it.
 watch(() => props.service, resetForms, { immediate: true })
 
 function submitAdopt() {
-  const ports = adoptForm.ports
-    .split(/[\s,]+/)
-    .map((p) => parseInt(p, 10))
-    .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535)
+  const ports = parsePorts(adoptForm.ports)
   emit('adopt', {
     id: adoptForm.id || null,
     name: adoptForm.name || null,
     group: adoptForm.group || null,
     url: adoptForm.url || null,
     ports: ports.length ? ports : null,
+    start: adoptForm.start,
+    stop: adoptForm.stop,
+    remember: Boolean(adoptForm.remember),
+  })
+}
+
+function submitScript() {
+  const ports = parsePorts(scriptForm.ports)
+  emit('save-script', {
+    name: scriptForm.name || null,
+    group: scriptForm.group || null,
+    url: scriptForm.url || null,
+    ports: ports.length ? ports : null,
+    start: scriptForm.start,
+    stop: scriptForm.stop,
   })
 }
 
@@ -241,7 +326,7 @@ useDismissable(() => props.service, () => emit('close'), panel)
 </script>
 
 <style scoped>
-.svc-drawer { overflow: auto; width: min(640px, 100vw); }
+.svc-drawer { overflow: auto; width: min(640px, 100%); }
 .drawer-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
 .drawer-title { margin: 0; font-size: 18px; font-weight: 700; }
 .drawer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
@@ -258,6 +343,10 @@ useDismissable(() => props.service, () => emit('close'), panel)
   display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--sub);
 }
 .form-grid input { width: 100%; }
+.chk-line {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--txt); margin: 10px 0 4px;
+}
 .break { word-break: break-all; }
 .ports-list { font-size: 11px; color: var(--sub); margin-top: 6px; }
 .plain-list { margin: 0; padding-left: 18px; font-size: 11px; }
@@ -272,7 +361,7 @@ useDismissable(() => props.service, () => emit('close'), panel)
 .chip-muted { opacity: .85; }
 .chip-sig { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; }
 
-@media (max-width: 700px) {
+@media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
 }
 </style>

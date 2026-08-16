@@ -11,13 +11,13 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
     <div v-else class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th></th>
             <th>{{ t('brew.service') }}</th>
             <th>{{ t('common.status') }}</th>
-            <th>{{ t('brew.user') }}</th>
+            <th class="col-hide-m">{{ t('brew.user') }}</th>
             <th>{{ t('common.actions') }}</th>
           </tr>
         </thead>
@@ -27,17 +27,18 @@
             <td>
               <strong>{{ s.name }}</strong>
               <div v-if="s.file" class="mono" style="color:var(--sub);font-size:10px">{{ s.file }}</div>
+              <div v-if="s.user" class="show-m sub">{{ s.user }}</div>
             </td>
             <td>
               <span class="badge" :class="s.state==='ok'?'ok':(s.state==='warn'?'warn':'')">{{ s.status }}</span>
             </td>
-            <td class="mono">{{ s.user || '—' }}</td>
+            <td class="mono col-hide-m">{{ s.user || '—' }}</td>
             <td class="ops">
               <button
                 v-for="a in s.actions || []"
                 :key="a"
                 class="tiny"
-                :class="{ primary: a==='start', danger: a==='stop' }"
+                :class="{ primary: a==='start', danger: a==='stop', 'hide-m': a==='restart' }"
                 :disabled="busy"
                 @click="act(s, a)"
               >{{ labels[a] || a }}</button>

@@ -179,5 +179,86 @@ class BrewCacheInvalidationTests(unittest.TestCase):
                 )
 
 
+class BrewCacheStaleWhileRevalidateTests(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(brew_cache.invalidate_brew_services)
+        brew_cache.invalidate_brew_services()
+
+    def test_an_expired_snapshot_is_served_without_waiting_for_brew(self):
+        with brew_cache._lock:
+            brew_cache._cache["t"] = 1.0
+            brew_cache._cache["v"] = [{"name": "syncthing", "status": "started"}]
+        with patch.object(brew_cache, "_load", return_value=[{"name": "syncthing", "status": "stopped"}]):
+            got = brew_cache.brew_services()
+        self.assertEqual(got[0]["status"], "started")
+
+    def test_invalidate_does_not_reuse_the_on_disk_snapshot(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "brew-services.cache.json"
+            path.write_text('[{"name":"x","status":"started"}]', encoding="utf-8")
+            with (
+                patch.object(brew_cache, "_DISK", path),
+                patch.object(
+                    brew_cache, "_load",
+                    return_value=[{"name": "x", "status": "fresh"}],
+                ) as load,
+            ):
+                brew_cache.invalidate_brew_services()
+                got = brew_cache.brew_services()
+        self.assertEqual(got[0]["status"], "fresh")
+        load.assert_called()
+
+
+class BrewCacheTimeoutKeepsSnapshotTests(unittest.TestCase):
+    """A hung `brew services list` must not wipe the last good snapshot.
+
+    `_load` used to treat a timeout as "zero services" and write `[]` to
+    disk.  Health then rendered no brew rows for the whole TTL, and the
+    next refresh logged another timeout into serverhub.err.log.
+    """
+
+    def setUp(self):
+        self.addCleanup(brew_cache.invalidate_brew_services)
+        brew_cache.invalidate_brew_services()
+
+    def test_timeout_keeps_the_in_memory_snapshot(self):
+        with brew_cache._lock:
+            brew_cache._cache["t"] = 1.0
+            brew_cache._cache["v"] = [{"name": "syncthing", "status": "started"}]
+        with patch.object(brew_cache, "sh", return_value=(-1, "", "timeout")):
+            got = brew_cache._load()
+        self.assertEqual(got, [{"name": "syncthing", "status": "started"}])
+
+    def test_timeout_does_not_replace_disk_with_an_empty_list(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "brew-services.cache.json"
+            path.write_text('[{"name":"x","status":"started"}]', encoding="utf-8")
+            with (
+                patch.object(brew_cache, "_DISK", path),
+                patch.object(brew_cache, "sh", return_value=(-1, "", "timeout")),
+            ):
+                brew_cache._disk_ok = True
+                got = brew_cache._load()
+            self.assertEqual(got[0]["status"], "started")
+            on_disk = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(on_disk[0]["status"], "started")
+
+    def test_busy_brew_keeps_the_snapshot_without_spawning(self):
+        with brew_cache._lock:
+            brew_cache._cache["t"] = 1.0
+            brew_cache._cache["v"] = [{"name": "syncthing", "status": "started"}]
+        with (
+            patch.object(brew_cache, "_brew_busy", return_value=True),
+            patch.object(brew_cache, "sh", side_effect=AssertionError("brew must not start")),
+        ):
+            got = brew_cache._load()
+        self.assertEqual(got, [{"name": "syncthing", "status": "started"}])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,7 @@
 """PhotosHub API — family photo pipeline management (admin-only via whitelist)."""
 from __future__ import annotations
 
-from typing import Any, Optional
-
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from hub import audit, photoshub_svc
@@ -27,6 +25,8 @@ class IdsBody(BaseModel):
 def get_status():
     try:
         return photoshub_svc.status()
+    except HTTPException:
+        raise
     except Exception as e:
         raise api_error("photoshub.status_failed", detail=str(e)[:200])
 
@@ -35,6 +35,8 @@ def get_status():
 def pending_delete(limit: int = 60):
     try:
         return photoshub_svc.pending_delete_assets(limit=max(1, min(limit, 200)))
+    except HTTPException:
+        raise
     except Exception as e:
         raise api_error("photoshub.pending_failed", detail=str(e)[:200])
 
@@ -46,6 +48,8 @@ def pending_remove(body: IdsBody, request: Request):
         raise api_error("photoshub.bad_ids")
     try:
         result = photoshub_svc.remove_from_pending(ids)
+    except HTTPException:
+        raise
     except Exception as e:
         raise api_error("photoshub.remove_failed", detail=str(e)[:200])
     audit.record(
@@ -64,6 +68,8 @@ def run_action(body: ActionBody, request: Request):
     # Dangerous unlocks stay explicit
     try:
         result = photoshub_svc.run_action(action)
+    except HTTPException:
+        raise
     except Exception as e:
         raise api_error("photoshub.action_failed", detail=str(e)[:200])
     audit.record(

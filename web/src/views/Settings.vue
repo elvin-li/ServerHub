@@ -321,24 +321,28 @@
         </div>
 
         <div class="table-wrap" v-if="(apiKeys || []).length" style="margin-bottom:12px">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('common.name') }}</th>
               <th>{{ t('apikeys.role') }}</th>
-              <th>{{ t('apikeys.created') }}</th>
-              <th>{{ t('apikeys.last_used') }}</th>
-              <th>{{ t('apikeys.expires') }}</th>
+              <th class="col-hide-m">{{ t('apikeys.created') }}</th>
+              <th class="col-hide-m">{{ t('apikeys.last_used') }}</th>
+              <th class="col-hide-m">{{ t('apikeys.expires') }}</th>
               <th class="ops"></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="key in apiKeys" :key="key.id">
-              <td>{{ key.name }}</td>
+              <td>
+                {{ key.name }}
+                <div class="show-m sub">{{ fmtEpoch(key.created) }} · {{ key.last_used ? fmtEpoch(key.last_used) : t('apikeys.never_used') }}</div>
+                <div class="show-m sub">{{ key.expires ? fmtEpoch(key.expires) : t('apikeys.no_expiry') }}</div>
+              </td>
               <td><span class="badge" :class="key.role === 'admin' ? 'warn' : 'ok'">{{ key.role === 'admin' ? t('apikeys.role_admin') : t('apikeys.role_member') }}</span></td>
-              <td class="mono">{{ fmtEpoch(key.created) }}</td>
-              <td class="mono">{{ key.last_used ? fmtEpoch(key.last_used) : t('apikeys.never_used') }}</td>
-              <td class="mono">{{ key.expires ? fmtEpoch(key.expires) : t('apikeys.no_expiry') }}</td>
+              <td class="mono col-hide-m">{{ fmtEpoch(key.created) }}</td>
+              <td class="mono col-hide-m">{{ key.last_used ? fmtEpoch(key.last_used) : t('apikeys.never_used') }}</td>
+              <td class="mono col-hide-m">{{ key.expires ? fmtEpoch(key.expires) : t('apikeys.no_expiry') }}</td>
               <td class="ops">
                 <button class="danger" :disabled="apiKeyBusy" @click="revokeKey(key)">{{ t('apikeys.revoke') }}</button>
               </td>
@@ -369,11 +373,17 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.intervals') }}</h2>
         <div class="form-grid">
+          <label>{{ t('settings.resource_mode') }}</label>
+          <select v-model="form.resource_mode" :aria-label="t('settings.resource_mode')">
+            <option value="low">{{ t('settings.resource_mode_low') }}</option>
+            <option value="high">{{ t('settings.resource_mode_high') }}</option>
+          </select>
           <label>{{ t('settings.metrics_interval') }}</label>
           <input v-model.number="form.metrics_interval" type="number" min="15" max="600" :aria-label="t('settings.metrics_interval')" />
           <label>{{ t('settings.alert_interval') }}</label>
           <input v-model.number="form.alert_interval" type="number" min="15" max="600" :aria-label="t('settings.alert_interval')" />
         </div>
+        <p class="hint">{{ t('settings.resource_mode_hint') }}</p>
         <p class="hint">{{ t('settings.intervals_hint') }}</p>
       </div>
     </div>
@@ -493,10 +503,9 @@
                 <option value="custom">{{ t('settings.ups_shutdown_stacks_custom') }}</option>
               </select>
               <div v-if="upsForm.shutdown.stacksMode === 'custom'" style="margin-top:6px">
-                <div v-for="(row, i) in upsStackRows" :key="row.id"
-                     style="display:flex;align-items:center;gap:6px;padding:2px 0">
+                <div v-for="(row, i) in upsStackRows" :key="row.id" class="ups-pick-row">
                   <input type="checkbox" v-model="row.selected" :aria-label="row.id" />
-                  <span class="mono" style="flex:1">
+                  <span class="mono">
                     {{ row.name }}
                     <span class="sub" v-if="row.missing">· {{ t('settings.ups_shutdown_stack_missing') }}</span>
                   </span>
@@ -510,8 +519,7 @@
             </div>
             <label v-if="upsScriptChoices.length">{{ t('settings.ups_shutdown_scripts') }}</label>
             <div v-if="upsScriptChoices.length">
-              <div v-for="s in upsScriptChoices" :key="s.id"
-                   style="display:flex;align-items:center;gap:6px;padding:2px 0">
+              <div v-for="s in upsScriptChoices" :key="s.id" class="ups-pick-row">
                 <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="s.id" />
                 <span class="mono">{{ s.name }}</span>
               </div>
@@ -639,7 +647,7 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_list') }}</h2>
         <div class="table-wrap" v-if="(sysBundle?.vms?.items||[]).length">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th>Backend</th></tr></thead>
           <tbody>
             <tr v-for="v in sysBundle.vms.items" :key="v.id">
@@ -779,7 +787,7 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk_power') }}</h2>
         <div class="table-wrap" v-if="(sysBundle?.disk?.power_disks||[]).length">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead><tr><th>{{ t('settings.disk') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
             <tr v-for="d in sysBundle.disk.power_disks" :key="d.id">
@@ -866,7 +874,7 @@
           <div>{{ sysBundle.scheduler.count ?? 0 }}</div>
         </div>
         <div class="table-wrap" style="margin-top:10px" v-if="(sysBundle?.scheduler?.timers||[]).length">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>Interval</th></tr></thead>
           <tbody>
             <tr v-for="(tm, i) in sysBundle.scheduler.timers.slice(0, 15)" :key="i">
@@ -929,7 +937,8 @@
     </div>
 
     <!-- Advanced / Other -->
-    <div v-else-if="tab==='advanced' && form" class="two-col">
+    <div v-else-if="tab==='advanced' && form">
+    <div class="two-col">
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.advanced') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.advanced_hint') }}</p>
@@ -944,11 +953,17 @@
           <!-- Backend is IpAliasesPatch.interval = Field(ge=30, le=600); a lower
                bound of 15 here made the whole Advanced save 422 silently. -->
           <input v-model.number="form.ip_aliases.interval" type="number" min="30" max="600" :aria-label="t('settings.alias_interval')" />
+          <label>{{ t('settings.resource_mode') }}</label>
+          <select v-model="form.resource_mode" :aria-label="t('settings.resource_mode')">
+            <option value="low">{{ t('settings.resource_mode_low') }}</option>
+            <option value="high">{{ t('settings.resource_mode_high') }}</option>
+          </select>
           <label>{{ t('settings.metrics_interval') }}</label>
           <input v-model.number="form.metrics_interval" type="number" min="15" max="600" :aria-label="t('settings.metrics_interval')" />
           <label>{{ t('settings.alert_interval') }}</label>
           <input v-model.number="form.alert_interval" type="number" min="15" max="600" :aria-label="t('settings.alert_interval')" />
         </div>
+        <p class="hint">{{ t('settings.resource_mode_hint') }}</p>
         <p class="hint">{{ t('settings.adaptive_hint') }}</p>
         <div class="btns" style="margin-top:12px">
           <button class="primary" :disabled="saving" @click="saveAdvanced">{{ t('settings.save_settings') }}</button>
@@ -966,6 +981,25 @@
           <button class="primary" :disabled="saving" @click="saveTerminal">{{ t('settings.save_settings') }}</button>
         </div>
       </div>
+      <div class="card" data-test="settings-ollama">
+        <h2 class="section-title" style="margin-top:0">{{ t('settings.ollama_title') }}</h2>
+        <p class="hint" style="margin-top:0">{{ t('settings.ollama_hint') }}</p>
+        <div class="form-grid">
+          <label>{{ t('settings.ollama_url') }}</label>
+          <input v-model="form.ollama.url" type="text" :aria-label="t('settings.ollama_url')" />
+          <label>{{ t('settings.ollama_label') }}</label>
+          <input
+            v-model="form.ollama.label"
+            type="text"
+            :placeholder="t('settings.ollama_label_ph')"
+            :aria-label="t('settings.ollama_label')"
+          />
+        </div>
+        <div class="btns" style="margin-top:12px">
+          <button class="primary" :disabled="saving" @click="saveOllama">{{ t('settings.save_settings') }}</button>
+          <router-link class="btn" to="/ollama">{{ t('nav.ollama') }}</router-link>
+        </div>
+      </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.ssd_friendly') }}</h2>
         <p class="hint" style="margin-top:0">{{ sysBundle?.other?.ssd_friendly?.hint || t('settings.ssd_hint') }}</p>
@@ -976,6 +1010,8 @@
           <li>default metrics/alert interval 90s</li>
         </ul>
       </div>
+    </div>
+    <ServiceSignatures />
     </div>
 
     <!-- Diagnostics -->
@@ -1028,6 +1064,7 @@ import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
 import LoadFailure from '../components/LoadFailure.vue'
 import NotifyChannels from '../components/NotifyChannels.vue'
+import ServiceSignatures from '../components/ServiceSignatures.vue'
 
 const toast = inject('toast')
 const { t, locale, locales, setLocale } = injectI18n()
@@ -1196,12 +1233,21 @@ async function loadSysBundle() {
   }
 }
 
+function softText(j, fallbackKey = 'common.fail') {
+  if (j?.code) {
+    const key = `err.${j.code}`
+    const translated = t(key, j.params || {})
+    if (translated !== key) return translated
+  }
+  return j?.message || t(fallbackKey)
+}
+
 async function applyPower(key) {
   saving.value = true
   try {
     const value = powerForm.value[key]
     const result = await setPowerSetting(key, value)
-    toast(result.ok ? `✅ ${key}=${value}` : `❌ ${result.message}`)
+    toast(result.ok ? `✅ ${key}=${value}` : `❌ ${softText(result)}`)
     await loadSysBundle()
   } catch (e) {
     toast('❌ ' + e.message)
@@ -1214,7 +1260,7 @@ async function runAliasAlign() {
   saving.value = true
   try {
     const result = await runAliasAutoBind()
-    toast(result.ok ? `✅ ${result.message || 'ok'}` : `❌ ${result.message || 'fail'}`)
+    toast(result.ok ? `✅ ${result.message || t('common.ok')}` : `❌ ${result.message || t('common.fail')}`)
     await loadSysBundle()
   } catch (e) {
     toast('❌ ' + e.message)
@@ -1398,7 +1444,7 @@ async function runLauncher(action) {
     if (action === 'open') result = await openLauncherApp()
     else if (action === 'login') result = await setLauncherLogin(!launcher.value?.login_enabled)
     else result = await controlPanelService(action)
-    if (!result?.ok) throw new Error(result?.message || t('common.fail'))
+    if (!result?.ok) throw new Error(softText(result))
     toast('✅ ' + (result.message || t('common.ok')))
     if (action === 'stop') {
       // The API intentionally disappears after accepting this command, so do
@@ -1487,12 +1533,17 @@ async function load() {
       },
       metrics_interval: s.metrics_interval || 90,
       alert_interval: s.alert_interval || 90,
+      resource_mode: s.resource_mode === 'high' ? 'high' : 'low',
       // Host shell is opt-in: default to OFF whenever the server does not
       // explicitly say it is on, so a missing field can never read as enabled.
       terminal: {
         host_enabled: s.terminal?.host_enabled === true,
         shell: s.terminal?.shell || '',
         cwd: s.terminal?.cwd || '',
+      },
+      ollama: {
+        url: s.ollama?.url || 'http://127.0.0.1:11434',
+        label: s.ollama?.label || '',
       },
     }
     accountForm.value.username = form.value.auth.username
@@ -1508,6 +1559,7 @@ async function save() {
       host_ip: form.value.host_ip,
       metrics_interval: form.value.metrics_interval,
       alert_interval: form.value.alert_interval,
+      resource_mode: form.value.resource_mode,
       auth: {
         enabled: form.value.auth.enabled,
         allow_localhost: form.value.auth.allow_localhost,
@@ -1767,6 +1819,7 @@ async function saveAdvanced() {
       adaptive: form.value.adaptive,
       metrics_interval: form.value.metrics_interval,
       alert_interval: form.value.alert_interval,
+      resource_mode: form.value.resource_mode,
       ip_aliases: {
         auto_bind: form.value.ip_aliases.auto_bind,
         prefer_wired: form.value.ip_aliases.prefer_wired,
@@ -1777,6 +1830,23 @@ async function saveAdvanced() {
     // Disjoint targets: load() rewrites `form`/`host`, loadSysBundle() rewrites
     // `sysBundle`/`powerForm`. Neither reads what the other writes.
     await Promise.all([load(), loadSysBundle()])
+  } catch (e) {
+    toast('❌ ' + e.message)
+  }
+  saving.value = false
+}
+
+async function saveOllama() {
+  saving.value = true
+  try {
+    await putSettings({
+      ollama: {
+        url: form.value.ollama.url.trim(),
+        label: form.value.ollama.label.trim(),
+      },
+    })
+    toast('✅ ' + t('common.save'))
+    await load()
   } catch (e) {
     toast('❌ ' + e.message)
   }
@@ -1926,6 +1996,8 @@ async function forceCheck() {
 onMounted(() => {
   load()
   loadIdentity()
+  const wanted = new URLSearchParams(window.location.search).get('tab') || ''
+  if (tabs.some((tb) => tb.id === wanted)) switchTab(wanted)
   // Don't load full system bundle until a tab needs it (saves ~1.5s shell storm)
 })
 </script>
@@ -2068,7 +2140,9 @@ onMounted(() => {
 }
 .twofa-recovery-grid code { padding: 4px 8px; background: var(--card); border-radius: 5px; border: 1px solid var(--line); user-select: all; }
 .apikey-value-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.apikey-value-row code { flex: 1; padding: 6px 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--line); }
+.apikey-value-row code { flex: 1; min-width: 0; padding: 6px 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--line); overflow-wrap: anywhere; }
+.ups-pick-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; flex-wrap: wrap; }
+.ups-pick-row .mono { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .tabs {
   display: flex;
   flex-wrap: wrap;
@@ -2086,7 +2160,7 @@ onMounted(() => {
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; gap: 5px; }
   .form-grid label { margin-top: 5px; }
-  .launcher-header { align-items: center; gap: 12px; }
+  .launcher-header { flex-wrap: wrap; align-items: center; gap: 12px; }
   .launcher-status-grid { grid-template-columns: 1fr; }
   .launcher-path { grid-template-columns: 1fr; gap: 5px; }
   .launcher-path-value { overflow: visible; text-overflow: clip; white-space: normal; word-break: break-all; }
@@ -2094,5 +2168,7 @@ onMounted(() => {
   .launcher-actions button:last-child { grid-column: 1 / -1; }
   .password-footer { flex-direction: column; align-items: stretch; }
   .password-footer button { width: 100%; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .apikey-value-row { flex-direction: column; align-items: stretch; }
 }
 </style>

@@ -39,10 +39,13 @@ vi.mock('../api/client', () => ({
   testOllamaModel: vi.fn(),
   chatOllamaModel: vi.fn(),
   doAction: vi.fn(),
+  getSettings: vi.fn(),
+  putSettings: vi.fn(),
 }))
 
 const {
   getOllamaStatus, getOllamaPullLog, startOllamaPull, chatOllamaModel,
+  getSettings, putSettings,
 } = await import('../api/client')
 const Ollama = (await import('./Ollama.vue')).default
 
@@ -50,6 +53,7 @@ const Ollama = (await import('./Ollama.vue')).default
 const STATUS = {
   ts: '2026-08-14 04:20:00',
   url: 'http://127.0.0.1:11434',
+  url_rejected: false,
   installed: true,
   binary: '/opt/homebrew/bin/ollama',
   reachable: true,
@@ -100,6 +104,12 @@ beforeEach(() => {
   getOllamaPullLog.mockReset()
   startOllamaPull.mockReset()
   chatOllamaModel.mockReset()
+  getSettings.mockReset()
+  putSettings.mockReset()
+  getSettings.mockResolvedValue({
+    ollama: { url: 'http://127.0.0.1:11434', label: 'com.kiro.ollama' },
+  })
+  putSettings.mockResolvedValue({ ok: true })
 })
 
 describe('loaded page', () => {
@@ -132,6 +142,10 @@ describe('loaded page', () => {
     expect(html).toContain('ollama.pull_title')
     expect(html).toContain('ollama.chat_title')
     expect(html).toContain('ollama.test_title')
+    expect(html).toContain('http://127.0.0.1:11434/v1')
+    expect(html).toContain('ollama.settings_title')
+    expect(html).toContain('ollama.clients_title')
+    expect(html).toContain('ollama.clients_cursor')
     // no false claims while everything answered
     expect(html).not.toContain('ollama.absent_title')
     expect(html).not.toContain('ollama.daemon_unreachable')
@@ -156,6 +170,17 @@ describe('loaded page', () => {
     await flushPromises()
     expect(wrapper.html()).toContain('ollama.duplicate_agents')
     expect(wrapper.find('.notice.warn').exists()).toBe(true)
+  })
+
+  it('warns when the configured daemon URL was rejected as non-local', async () => {
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS,
+      url_rejected: true,
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('[data-test="ollama-url-rejected"]').exists()).toBe(true)
+    expect(wrapper.html()).toContain('ollama.url_rejected')
   })
 
   it('notes when running was inferred because launchd missed the job', async () => {
@@ -210,6 +235,20 @@ describe('loaded page', () => {
     expect(html).toContain('pondering the greeting…')
     expect(html).toContain('ollama.test_thinking_note')
   })
+
+  it('saves API settings through PUT /api/settings', async () => {
+    getOllamaStatus.mockResolvedValue(STATUS)
+    wrapper = mountPage()
+    await flushPromises()
+    const url = wrapper.find('input[aria-label="ollama.settings_url"]')
+    await url.setValue('http://192.168.1.10:11434')
+    const save = wrapper.findAll('button').find(b => b.text() === 'common.save')
+    await save.trigger('click')
+    await flushPromises()
+    expect(putSettings).toHaveBeenCalledWith({
+      ollama: { url: 'http://192.168.1.10:11434', label: 'com.kiro.ollama' },
+    })
+  })
 })
 
 describe('degraded states', () => {
@@ -234,6 +273,8 @@ describe('degraded states', () => {
     expect(html).toContain('ollama.absent_title')
     expect(html).toContain('to="/apps"')
     expect(html).not.toContain('ollama.models_empty')
+    expect(html).toContain('ollama.settings_title')
+    expect(html).toContain('ollama.clients_title')
   })
 
   it('blames the daemon when unreachable instead of claiming "no models"', async () => {
@@ -268,6 +309,17 @@ describe('poll lifecycle', () => {
     await flushPromises()
     expect(polls.callbacks.length).toBe(1)
     expect(await polls.callbacks[0]()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('background poll does not disable the refresh button', async () => {
+    getOllamaStatus.mockResolvedValue(STATUS)
+    const wrapper = mountPage()
+    await flushPromises()
+    getOllamaStatus.mockReturnValue(new Promise(() => {}))
+    void polls.callbacks[0]()
+    await flushPromises()
+    expect(wrapper.get('button.primary').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 

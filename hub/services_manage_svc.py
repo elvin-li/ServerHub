@@ -6,14 +6,23 @@ import os
 import plistlib
 from pathlib import Path
 
-from fastapi import HTTPException
-
 from hub import cli_args, config
 from hub.config import cfg, override, set_override
 from hub.errors import api_error
 from hub.host_address import host_ip, normalize_local_url, resolve_value
 from hub.paths import AGENTS_DIR, DOCKER, UID
-from hub.service_signatures import suggest_id
+from hub.service_signatures import (
+    builtin_count,
+    configured_signatures,
+    identify,
+    infer_control,
+    is_generic_runtime,
+    parse_signature,
+    remember_into,
+    remove_from,
+    suggest_id,
+    yaml_signature,
+)
 from hub.status import full_status, invalidate_status
 from hub.util import sh
 
@@ -129,9 +138,10 @@ def _url_from_inspect(insp: dict) -> str | None:
 
 
 def service_detail(sid: str) -> dict:
+    sid = cli_args.require_positional(sid, label="service id")
     svc = find_service(sid, force=True)
     if not svc:
-        raise HTTPException(404, f"service not found: {sid}")
+        raise api_error("services.not_found", id=sid)
     ov = resolve_value(override(sid))
     kind = svc.get("kind") or ""
     detail: dict = {
@@ -285,6 +295,18 @@ def service_detail(sid: str) -> dict:
                 detail["stop_cmd"] = s.get("stop")
                 detail["check"] = s.get("check") or s.get("ports")
                 detail["config"] = s
+                detail["can_edit_script"] = True
+                detail["can_forget"] = True
+                detail["script_defaults"] = {
+                    "name": s.get("name") or sid,
+                    "group": s.get("group") or "Custom",
+                    "url": s.get("url") or "",
+                    "ports": list(s.get("ports") or []),
+                    "start": s.get("start") or "",
+                    "stop": s.get("stop") or "",
+                    "adopted": bool(s.get("adopted_from")),
+                }
+                detail["actions"] = sorted(set(detail["actions"]) | {"forget"})
                 break
 
     elif kind == "auto":
@@ -308,6 +330,7 @@ def service_detail(sid: str) -> dict:
 
 
 def service_logs(sid: str, lines: int = 150) -> dict:
+    sid = cli_args.require_positional(sid, label="service id")
     svc = find_service(sid, force=False) or find_service(sid, force=True)
     kind = (svc or {}).get("kind") or ""
     lines = max(10, min(int(lines), 2000))
@@ -410,7 +433,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
                 "log": "\n\n".join(chunks),
                 "lines": lines,
             }
-        raise HTTPException(404, f"no logs for {sid}")
+        raise api_error("services.no_logs", id=sid)
 
     return {
         "id": sid,
@@ -424,8 +447,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
 
 def update_override(sid: str, patch: dict) -> dict:
     """Update display override: name, group, url, port, hide."""
-    if not sid:
-        raise HTTPException(400, "sid required")
+    sid = cli_args.require_positional(sid, label="service id")
     allowed = {"name", "group", "url", "port", "hide"}
     clean = {}
     for k, v in (patch or {}).items():
@@ -438,7 +460,7 @@ def update_override(sid: str, patch: dict) -> dict:
                 try:
                     clean[k] = int(v)
                 except (TypeError, ValueError):
-                    raise HTTPException(400, "port must be int")
+                    raise api_error("services.bad_port")
         elif k == "hide":
             clean[k] = bool(v) if v is not None else None
         elif k in ("name", "group", "url"):
@@ -473,6 +495,43 @@ def _full_process_name(pid) -> str:
     return Path(out.strip().splitlines()[0]).name
 
 
+def _process_command_path(pid) -> str:
+    """First argv token of the live process — the binary, never the rest.
+
+    The remainder of ``ps -o command=`` often carries tokens and passwords,
+    and this value is shown on the Services page and written into
+    services.yaml provenance.  The path alone is enough to recover a
+    Homebrew formula (``…/opt/postgresql@17/bin/postgres``).
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    if pid <= 0:
+        return ""
+    rc, out, _ = sh(["/bin/ps", "-p", str(pid), "-o", "command="], timeout=5)
+    if rc != 0 or not out.strip():
+        return ""
+    line = out.strip().splitlines()[0]
+    try:
+        import shlex
+
+        parts = shlex.split(line)
+    except ValueError:
+        parts = line.split()
+    return parts[0] if parts else ""
+
+
+def _clean_cmd(value) -> str | None:
+    """A single-line command, or None. Newlines would become extra argv later."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or "\n" in text or "\r" in text:
+        return None
+    return text
+
+
 def _taken_service_ids() -> set[str]:
     data = cfg()
     taken = set()
@@ -490,23 +549,46 @@ def adopt_defaults(svc: dict) -> dict:
     caller adopts without overriding anything.
     """
     meta = svc.get("meta") or {}
-    sig = meta.get("signature") or {}
     process = _full_process_name(meta.get("pid")) or meta.get("process") or ""
+    command_path = _process_command_path(meta.get("pid"))
+    ports = []
+    for p in meta.get("ports") or ([meta["port"]] if meta.get("port") else []):
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 65535 and n not in ports:
+            ports.append(n)
+    # Re-identify at adopt time so brew/http follow the current library and
+    # any operator signatures in services.yaml, not a stale list snapshot.
+    sig = identify(
+        process or meta.get("process") or "",
+        ports[0] if ports else None,
+        extras=configured_signatures(),
+    ) or meta.get("signature") or svc.get("signature") or {}
     recognised = sig.get("confidence") == "high"
     name = sig["name"] if recognised else (process or svc.get("name") or "")
     group = sig.get("category") if recognised else None
+    control = infer_control(sig, command_path)
     return {
         "id": suggest_id(
             sig.get("slug") if recognised else "",
             process,
-            f"port-{meta.get('port')}" if meta.get("port") else "",
+            f"port-{ports[0]}" if ports else "",
             taken=_taken_service_ids(),
         ),
         "name": name,
         "group": group or "Adopted",
-        "ports": [meta["port"]] if meta.get("port") else [],
+        "ports": ports,
         "url": svc.get("url"),
         "process": process,
+        "command": command_path,
+        "start": control.get("start"),
+        "stop": control.get("stop"),
+        "control_via": control.get("via"),
+        "formula": control.get("formula"),
+        # Already-recognised daemons do not need another rule; unknowns do.
+        "remember": not recognised,
     }
 
 
@@ -550,23 +632,243 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
     url = str(patch.get("url") or "").strip() or defaults.get("url")
     if url:
         entry["url"] = normalize_local_url(url)
+    # start/stop: an explicit key (even empty) wins so the operator can
+    # clear an inferred brew command; an omitted key keeps the inference.
+    if "start" in patch:
+        start = _clean_cmd(patch.get("start"))
+    else:
+        start = defaults.get("start")
+    if "stop" in patch:
+        stop = _clean_cmd(patch.get("stop"))
+    else:
+        stop = defaults.get("stop")
+    if start:
+        entry["start"] = start
+    if stop:
+        entry["stop"] = stop
     # Provenance, so the operator can later tell adopted entries from
     # hand-written ones when editing services.yaml.
-    entry["adopted_from"] = {
+    adopted_from = {
         "process": defaults.get("process") or (svc.get("meta") or {}).get("process"),
         "auto_id": sid,
     }
+    if defaults.get("formula"):
+        adopted_from["brew"] = defaults["formula"]
+    if defaults.get("command"):
+        adopted_from["command"] = defaults["command"]
+    entry["adopted_from"] = adopted_from
+
+    remember = patch.get("remember")
+    if remember is None:
+        remember = defaults.get("remember")
+    learned = None
+    if remember:
+        learned = _signature_from_adopt(
+            slug=new_id,
+            name=entry["name"],
+            category=entry["group"],
+            process=defaults.get("process"),
+            ports=ports,
+            url=entry.get("url"),
+            formula=defaults.get("formula"),
+        )
+        if learned is not None and not entry.get("url"):
+            live = identify(
+                defaults.get("process") or "",
+                ports[0] if ports else None,
+                extras=configured_signatures(),
+            )
+            if live and live.get("http") is False:
+                learned["http"] = False
+
+    stored_sig = None
 
     def apply(data: dict) -> None:
+        nonlocal stored_sig
         scripts = data.setdefault("scripts", [])
         scripts.append(entry)
         # The auto row disappears on its own once the port is claimed, but a
         # stale hide/override for it would silently apply to nothing forever.
         (data.get("overrides") or {}).pop(sid, None)
+        if learned:
+            stored_sig = remember_into(data, learned)
 
     config.mutate(apply)
     invalidate_status()
-    return {"ok": True, "id": new_id, "entry": entry}
+    result = {"ok": True, "id": new_id, "entry": entry}
+    if stored_sig:
+        result["signature"] = stored_sig
+    return result
+
+
+def _signature_from_adopt(
+    *,
+    slug: str,
+    name: str,
+    category: str,
+    process: str | None,
+    ports: list[int],
+    url: str | None,
+    formula: str | None,
+) -> dict | None:
+    """A learnable signature from an adopt form, or None if it would be noise.
+
+    Generic runtimes (node, python, …) are omitted from ``procs`` so remembering
+    "My API" running on node does not rename every other node listener.
+    """
+    procs = []
+    if process and not is_generic_runtime(process):
+        procs.append(process)
+    http = True if url else None
+    return parse_signature({
+        "slug": slug,
+        "name": name,
+        "category": category,
+        "procs": procs,
+        "ports": ports,
+        "http": http,
+        "brew": formula,
+    })
+
+
+def _parse_ports(raw) -> list[int]:
+    ports: list[int] = []
+    for p in raw or []:
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 65535 and n not in ports:
+            ports.append(n)
+    return ports
+
+
+def update_script(sid: str, patch: dict | None = None) -> dict:
+    """Rewrite a services.yaml ``scripts`` entry (adopted or hand-written)."""
+    sid = cli_args.require_positional(sid, label="service id")
+    patch = patch or {}
+    if not any(
+        isinstance(s, dict) and s.get("id") == sid
+        for s in (cfg().get("scripts") or [])
+    ):
+        raise api_error("services.script_not_found", id=sid)
+    if "ports" in patch:
+        ports = _parse_ports(patch.get("ports"))
+        if not ports:
+            raise api_error("services.adopt_no_port", id=sid)
+        patch = {**patch, "ports": ports}
+
+    updated: dict = {}
+
+    def apply(data: dict) -> None:
+        for entry in data.get("scripts") or []:
+            if not isinstance(entry, dict) or entry.get("id") != sid:
+                continue
+            if "name" in patch:
+                name = str(patch.get("name") or "").strip()
+                if name:
+                    entry["name"] = name
+            if "group" in patch:
+                group = str(patch.get("group") or "").strip()
+                if group:
+                    entry["group"] = group
+            if "url" in patch:
+                url = str(patch.get("url") or "").strip()
+                if url:
+                    entry["url"] = normalize_local_url(url)
+                else:
+                    entry.pop("url", None)
+            if "ports" in patch:
+                entry["ports"] = list(patch["ports"])
+            if "start" in patch:
+                start = _clean_cmd(patch.get("start"))
+                if start:
+                    entry["start"] = start
+                else:
+                    entry.pop("start", None)
+            if "stop" in patch:
+                stop = _clean_cmd(patch.get("stop"))
+                if stop:
+                    entry["stop"] = stop
+                else:
+                    entry.pop("stop", None)
+            updated.update(entry)
+            return
+
+    config.mutate(apply)
+    if not updated:
+        raise api_error("services.script_not_found", id=sid)
+    invalidate_status()
+    return {"ok": True, "id": sid, "entry": updated}
+
+
+def forget_script(sid: str) -> dict:
+    """Remove a ``scripts`` entry so a still-listening port can be rediscovered.
+
+    The learned ``service_signatures`` rule is kept: forgetting the managed
+    card should not make the next discovery anonymous again.
+    """
+    sid = cli_args.require_positional(sid, label="service id")
+    removed: dict = {}
+
+    def apply(data: dict) -> None:
+        scripts = data.get("scripts") or []
+        keep = []
+        for entry in scripts:
+            if isinstance(entry, dict) and entry.get("id") == sid:
+                removed.update(entry)
+                continue
+            keep.append(entry)
+        data["scripts"] = keep
+        (data.get("overrides") or {}).pop(sid, None)
+
+    config.mutate(apply)
+    if not removed:
+        raise api_error("services.script_not_found", id=sid)
+    invalidate_status()
+    return {"ok": True, "id": sid, "removed": removed}
+
+
+def list_signatures() -> dict:
+    """Operator-defined recognition rules, plus how many builtins exist."""
+    return {
+        "signatures": [yaml_signature(s) for s in configured_signatures()],
+        "builtin_count": builtin_count(),
+    }
+
+
+def upsert_signature(patch: dict | None = None) -> dict:
+    """Write or replace one operator recognition rule in services.yaml."""
+    parsed = parse_signature(patch or {})
+    if not parsed:
+        raise api_error("services.signature_invalid")
+    stored: dict = {}
+
+    def apply(data: dict) -> None:
+        stored.update(remember_into(data, parsed))
+
+    config.mutate(apply)
+    invalidate_status()
+    return {"ok": True, "signature": stored}
+
+
+def forget_signature(slug: str) -> dict:
+    """Drop one operator recognition rule. Built-in signatures are untouched."""
+    parsed = parse_signature({"slug": slug, "name": slug})
+    if not parsed:
+        raise api_error("services.signature_invalid")
+    removed: dict = {}
+
+    def apply(data: dict) -> None:
+        row = remove_from(data, parsed["slug"])
+        if row:
+            removed.update(row)
+
+    config.mutate(apply)
+    if not removed:
+        raise api_error("services.signature_not_found", slug=parsed["slug"])
+    invalidate_status()
+    return {"ok": True, "slug": parsed["slug"], "removed": removed}
 
 
 def enrich_service_list_item(s: dict) -> dict:

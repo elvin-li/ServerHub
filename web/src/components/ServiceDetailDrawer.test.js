@@ -23,8 +23,22 @@ const autoService = {
   id: 'auto:8080', name: 'listener 8080', kind: 'auto', state: 'ok',
   actions: ['detail'],
   can_adopt: true,
-  adopt_defaults: { id: 'web-app', name: 'Web app', group: 'Apps', url: '', ports: [8080] },
+  adopt_defaults: {
+    id: 'web-app', name: 'Web app', group: 'Apps', url: '', ports: [8080],
+    remember: true,
+  },
   signature: { name: 'Grafana', category: 'monitoring', confidence: 'high' },
+}
+
+const scriptService = {
+  id: 'redis', name: 'Redis', kind: 'script', state: 'ok',
+  actions: ['restart', 'stop', 'detail'],
+  can_edit_script: true,
+  can_forget: true,
+  script_defaults: {
+    name: 'Redis', group: 'Databases', url: '', ports: [6379],
+    start: 'brew services start redis', stop: 'brew services stop redis',
+  },
 }
 
 const launchdService = {
@@ -58,15 +72,54 @@ describe('adopt form', () => {
 
   it('prefills from adopt_defaults and emits the parsed payload', async () => {
     const w = mountDrawer({ service: autoService })
-    const inputs = w.findAll('.form-grid input')
+    const inputs = w.findAll('.adopt-form input')
     expect(inputs[0].element.value).toBe('Web app')
     expect(inputs[3].element.value).toBe('8080')
+    expect(w.find('.chk-line input').element.checked).toBe(true)
 
     await inputs[3].setValue('8080, 9090, junk, 99999')
+    await w.find('.chk-line input').setValue(false)
     await w.findAll('button').find((b) => b.text() === 'services.adopt').trigger('click')
     expect(w.emitted('adopt')).toEqual([[{
       id: 'web-app', name: 'Web app', group: 'Apps', url: null, ports: [8080, 9090],
+      start: '', stop: '', remember: false,
     }]])
+    w.unmount()
+  })
+})
+
+describe('managed script editor', () => {
+  it('renders only for editable scripts and emits the rewritten entry', async () => {
+    const hidden = mountDrawer({ service: launchdService, canManage: true })
+    expect(hidden.text()).not.toContain('services.sec_script')
+    hidden.unmount()
+
+    const member = mountDrawer({ service: scriptService, canManage: false })
+    expect(member.text()).not.toContain('services.sec_script')
+    member.unmount()
+
+    const w = mountDrawer({ service: scriptService, canManage: true })
+    expect(w.text()).toContain('services.sec_script')
+    const inputs = w.findAll('.script-form input')
+    expect(inputs[0].element.value).toBe('Redis')
+    expect(inputs[3].element.value).toBe('6379')
+    expect(inputs[4].element.value).toBe('brew services start redis')
+
+    await inputs[0].setValue('Cache')
+    await inputs[3].setValue('6379, 6380')
+    await inputs[4].setValue('')
+    await w.findAll('button').find((b) => b.text() === 'common.save').trigger('click')
+    expect(w.emitted('save-script')).toEqual([[{
+      name: 'Cache', group: 'Databases', url: null, ports: [6379, 6380],
+      start: '', stop: 'brew services stop redis',
+    }]])
+    w.unmount()
+  })
+
+  it('emits forget instead of deleting the entry itself', async () => {
+    const w = mountDrawer({ service: scriptService, canManage: true })
+    await w.findAll('button').find((b) => b.text() === 'services.forget').trigger('click')
+    expect(w.emitted('forget')).toHaveLength(1)
     w.unmount()
   })
 })

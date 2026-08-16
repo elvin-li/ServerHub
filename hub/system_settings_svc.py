@@ -13,13 +13,18 @@ import json
 import platform
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
-
 from hub import __version__
 from hub.config import cfg
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
-from hub.util import cached_snapshot, fan_out, sh, ttl_memo
+from hub.errors import soft_fail
+from hub.util import LazyPool, cached_snapshot, fan_out, sh, ttl_memo
+
+_pool = LazyPool(12, "hub-syssettings")
+
+
+def shutdown_executor() -> None:
+    _pool.shutdown()
 DEFAULT_THRESHOLDS = {
     "enabled": True,
     "cpu_pct": 90,
@@ -204,16 +209,16 @@ def set_power_pref(key: str, value: int) -> dict:
         "networkoversleep", "ttyskeepawake", "lowpowermode",
     }
     if key not in allowed:
-        return {"ok": False, "message": f"key not allowed: {key}"}
+        return soft_fail("power.bad_key", key=key)
     try:
         value = int(value)
     except (TypeError, ValueError):
-        return {"ok": False, "message": "value must be an integer"}
+        return soft_fail("power.bad_value")
     if value < 0 or value > 180:
-        return {"ok": False, "message": "value is out of range 0–180"}
+        return soft_fail("power.value_range")
     rc, out, err = sh(["/usr/bin/pmset", "-a", key, str(value)], timeout=8)
     if rc != 0:
-        rc, out, err = sh(["sudo", "-n", "/usr/bin/pmset", "-a", key, str(value)], timeout=8)
+        rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", key, str(value)], timeout=8)
     msg = out or err or ""
     if rc != 0:
         msg = (msg or "failed") + f" · run manually: sudo pmset -a {key} {value}"
@@ -326,6 +331,9 @@ def get_other_settings() -> dict:
         "adaptive": s.get("adaptive", True),
         "metrics_interval": s.get("metrics_interval", 90),
         "alert_interval": s.get("alert_interval", 90),
+        "resource_mode": (
+            s.get("resource_mode") if s.get("resource_mode") in ("low", "high") else "low"
+        ),
         "ip_aliases": {
             "auto_bind": alias.get("auto_bind", True),
             "prefer_wired": alias.get("prefer_wired", True),
@@ -623,39 +631,38 @@ def unraid_settings_bundle(force: bool = False) -> dict:
     # Failure semantics are preserved exactly: the five collectors that had a
     # try/except keep their specific fallback, and the rest still propagate, since
     # .result() re-raises in this thread just as a direct call would have.
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        f_identity = ex.submit(identity_svc.get_identity)
-        f_alias = ex.submit(network_svc.alias_auto_status)
-        f_shares = ex.submit(get_share_globals)
-        f_sched = ex.submit(get_scheduler_summary)
-        f_vms = ex.submit(get_vm_settings)
-        f_datetime = ex.submit(get_datetime_info)
-        f_power = ex.submit(get_power_info)
-        f_disk = ex.submit(get_disk_settings)
-        f_mgmt = ex.submit(get_management_access)
-        f_other = ex.submit(get_other_settings)
-        f_thresholds = ex.submit(get_thresholds)
+    f_identity = _pool.submit(identity_svc.get_identity)
+    f_alias = _pool.submit(network_svc.alias_auto_status)
+    f_shares = _pool.submit(get_share_globals)
+    f_sched = _pool.submit(get_scheduler_summary)
+    f_vms = _pool.submit(get_vm_settings)
+    f_datetime = _pool.submit(get_datetime_info)
+    f_power = _pool.submit(get_power_info)
+    f_disk = _pool.submit(get_disk_settings)
+    f_mgmt = _pool.submit(get_management_access)
+    f_other = _pool.submit(get_other_settings)
+    f_thresholds = _pool.submit(get_thresholds)
 
-        try:
-            identity = f_identity.result()
-        except Exception as e:
-            identity = {"error": str(e)}
-        try:
-            alias = f_alias.result()
-        except Exception:
-            alias = None
-        try:
-            shares = f_shares.result()
-        except Exception as e:
-            shares = {"error": str(e), "smb_running": False, "share_count": 0}
-        try:
-            sched = f_sched.result()
-        except Exception as e:
-            sched = {"timers": [], "count": 0, "error": str(e)}
-        try:
-            vms = f_vms.result()
-        except Exception as e:
-            vms = {"total": 0, "running": 0, "items": [], "error": str(e)}
+    try:
+        identity = f_identity.result()
+    except Exception as e:
+        identity = {"error": str(e)}
+    try:
+        alias = f_alias.result()
+    except Exception:
+        alias = None
+    try:
+        shares = f_shares.result()
+    except Exception as e:
+        shares = {"error": str(e), "smb_running": False, "share_count": 0}
+    try:
+        sched = f_sched.result()
+    except Exception as e:
+        sched = {"timers": [], "count": 0, "error": str(e)}
+    try:
+        vms = f_vms.result()
+    except Exception as e:
+        vms = {"total": 0, "running": 0, "items": [], "error": str(e)}
 
     v = {
         "ts": time.strftime("%H:%M:%S"),

@@ -643,7 +643,8 @@ button:disabled { opacity:.48; cursor:not-allowed; }
   .host-overview { grid-template-columns:1fr; gap:12px; }
   .host-stats { justify-content:space-between; }
   .host-links { display:grid; grid-template-columns:1fr 1fr; }
-  .section-bar { align-items:flex-end; }
+  .section-bar, .card-heading { flex-wrap:wrap; align-items:flex-start; }
+  .section-bar > div:first-child, .card-heading > div:first-child { min-width:0; flex:1 1 160px; }
   .share-row { grid-template-columns:auto minmax(0,1fr); }
   .share-badges,.share-actions { grid-column:2; justify-content:flex-start; }
   .share-actions button { min-height:36px; }
@@ -652,6 +653,7 @@ button:disabled { opacity:.48; cursor:not-allowed; }
   .service-action { grid-column:2; justify-content:space-between; }
   .file-service-row { grid-template-columns:auto minmax(0,1fr) auto; }
   .file-service-row .btn { grid-column:2/4; justify-self:start; }
+  .option-row > span { flex:1; min-width:0; }
   .share-sheet-backdrop { padding:0; }
   .share-sheet { width:100%; max-height:94vh; border-radius:var(--radius) var(--radius) 0 0; }
 }

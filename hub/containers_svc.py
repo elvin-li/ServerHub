@@ -155,9 +155,11 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
     return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
 UPDATE_STATUS_PATH = DATA_DIR / "docker-update-status.json"
 
-# docker stats --no-stream is ~2s; cache aggressively for snappy UI
-_LIST_TTL = 5.0
-_STATS_TTL = 15.0
+# docker stats --no-stream is ~2s; cache aggressively for snappy UI.
+# Containers page polls every 20s. A 5s list / 15s stats window missed on
+# every sit tick (list ~470ms, stats ~2.1s). 22s / 25s lets the poll hit.
+_LIST_TTL = 22.0
+_STATS_TTL = 25.0
 
 
 #: Both reads go through ``ttl_memo`` rather than a hand-rolled TTL dict.
@@ -441,7 +443,7 @@ def list_containers(with_stats: bool = True) -> dict:
 def container_action(name: str, action: str) -> dict:
     allowed = {"start", "stop", "restart", "remove", "kill", "pause", "unpause"}
     if action not in allowed:
-        raise HTTPException(400, f"bad action {action}")
+        raise api_error("container.bad_action", action=action)
     # Without this, POST /api/containers/batch with {"names": ["--all"]} became
     # `docker stop --all` and stopped every container on the host.  The name is a
     # bare positional, so an option-like value is read by docker as a flag.
@@ -457,7 +459,7 @@ def container_action(name: str, action: str) -> dict:
 
 def batch_action(names: list[str], action: str) -> dict:
     if not names:
-        raise HTTPException(400, "empty names")
+        raise api_error("container.empty_names")
     results = []
     ok_n = 0
     for n in names:
@@ -536,7 +538,7 @@ def check_image_update(image: str) -> dict:
 def start_check_updates_job(images: list[str] | None = None) -> dict:
     """Background: check updates for all (or given) images used by containers."""
     if not engine_up():
-        raise HTTPException(503, "engine down")
+        raise api_error("container.engine_down")
     if not images:
         info = list_containers(with_stats=False)
         images = sorted({c["image"] for c in info.get("containers") or [] if c.get("image")})
@@ -654,7 +656,7 @@ def start_update_container_job(name: str) -> dict:
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
-        raise HTTPException(404, err or "container not found")
+        raise api_error("container.not_found")
     data = json.loads(out)[0]
     image = (data.get("Config") or {}).get("Image") or ""
     # Prefer compose project update if labeled
@@ -760,7 +762,7 @@ _ALLOWED_EXEC_SHELLS = frozenset({
 def exec_in_container(name: str, command: str, shell: str = "/bin/sh") -> dict:
     """One-shot exec (Unraid console simplified)."""
     if not command or not command.strip():
-        raise HTTPException(400, "empty command")
+        raise api_error("container.empty_command")
     # A bare positional: an option-shaped container name (`-e…`, `--privileged`)
     # would otherwise be read by docker as a flag, not a container. Same guard
     # the action/restart paths already apply.
@@ -783,7 +785,7 @@ def set_restart_policy(name: str, policy: str = "unless-stopped") -> dict:
     """Toggle Unraid-style Autostart via restart policy."""
     allowed = {"no", "always", "unless-stopped", "on-failure"}
     if policy not in allowed:
-        raise HTTPException(400, f"bad policy {policy}")
+        raise api_error("container.bad_policy", policy=policy)
     # `name` is a bare positional, so an option-shaped value would be read by
     # docker as a flag instead of as a container. The autostart route derives it
     # from a caller-supplied "docker-ctr:<name>" id, so it needs the same guard
@@ -798,7 +800,7 @@ def inspect_container(name: str) -> dict:
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
-        raise HTTPException(404, err or out or "not found")
+        raise api_error("container.not_found")
     data = json.loads(out)[0]
     # redact env
     if "Config" in data and "Env" in data["Config"]:
@@ -844,7 +846,7 @@ def list_images() -> list:
     data, rc, err = docker_json(
         ["images", "--format", "{{json .}}"], timeout=15)
     if rc != 0:
-        raise HTTPException(500, err or "images failed")
+        raise api_error("container.list_failed", kind="images")
     if not isinstance(data, list):
         data = [data] if data else []
     return data
@@ -853,7 +855,7 @@ def list_images() -> list:
 def list_volumes() -> list:
     rc, out, err = docker("volume", "ls", "--format", "{{.Name}}\t{{.Driver}}\t{{.Mountpoint}}", timeout=12)
     if rc != 0:
-        raise HTTPException(500, err or out)
+        raise api_error("container.list_failed", kind="volumes")
     items = []
     for line in out.splitlines():
         p = line.split("\t")
@@ -865,7 +867,7 @@ def list_volumes() -> list:
 def list_networks() -> list:
     rc, out, err = docker("network", "ls", "--format", "{{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}", timeout=12)
     if rc != 0:
-        raise HTTPException(500, err or out)
+        raise api_error("container.list_failed", kind="networks")
     items = []
     for line in out.splitlines():
         p = line.split("\t")
@@ -883,8 +885,10 @@ def prune(kind: str = "system") -> dict:
         rc, out, err = docker("network", "prune", "-f", timeout=60)
     elif kind == "containers":
         rc, out, err = docker("container", "prune", "-f", timeout=120)
-    else:
+    elif kind == "system":
         rc, out, err = docker("system", "prune", "-af", timeout=300)
+    else:
+        raise api_error("container.bad_action", action=kind)
     invalidate_status()
     return {"ok": rc == 0, "message": out or err}
 
@@ -963,7 +967,10 @@ def create_run_container(body: dict) -> dict:
     if name:
         args += ["--name", name]
     restart = (body.get("restart") or "unless-stopped").strip()
-    if restart and restart != "no":
+    allowed_restart = {"no", "always", "unless-stopped", "on-failure"}
+    if restart not in allowed_restart:
+        raise api_error("container.bad_policy", policy=restart)
+    if restart != "no":
         args += ["--restart", restart]
     if body.get("privileged"):
         args.append("--privileged")
@@ -989,6 +996,8 @@ def create_run_container(body: dict) -> dict:
         if e and "=" in e:
             args += ["-e", e]
     # extra args carefully not allowed for safety
+    # `--` so a later command token cannot be read as a docker-run option.
+    args.append("--")
     args.append(image)
     cmd = body.get("command")
     if isinstance(cmd, str) and cmd.strip():
@@ -1011,8 +1020,11 @@ def create_volume(name: str, driver: str = "local") -> dict:
     import re
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", name or ""):
         raise api_error("container.bad_volume_name")
+    name = cli_args.require_positional(name, label="volume name")
     args = ["volume", "create"]
-    if driver and driver != "local":
+    driver = (driver or "local").strip()
+    if driver != "local":
+        driver = cli_args.require_positional(driver, label="volume driver")
         args += ["--driver", driver]
     args.append(name)
     rc, out, err = docker(*args, timeout=30)
@@ -1023,8 +1035,13 @@ def create_network(name: str, driver: str = "bridge") -> dict:
     import re
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", name or ""):
         raise api_error("container.bad_network_name")
+    name = cli_args.require_positional(name, label="network name")
+    allowed_drivers = {"bridge", "host", "overlay", "macvlan", "ipvlan", "none"}
+    driver = (driver or "bridge").strip()
+    if driver not in allowed_drivers:
+        raise api_error("container.bad_network_name")
     args = ["network", "create"]
-    if driver:
+    if driver != "bridge":
         args += ["--driver", driver]
     args.append(name)
     rc, out, err = docker(*args, timeout=30)
@@ -1117,7 +1134,7 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
     stacks = {s["id"]: s for s in _stack_paths()}
     stack = stacks.get(stack_id)
     if not stack:
-        raise HTTPException(404, "unknown stack")
+        raise api_error("container.unknown_stack", stack=stack_id)
     if not stack.get("compose_path"):
         raise api_error("container.no_compose_file")
 

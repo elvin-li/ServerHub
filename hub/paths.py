@@ -115,6 +115,17 @@ _brew_candidates = [
     "/usr/local/bin/brew",
 ]
 BREW = next((p for p in _brew_candidates if p and Path(p).is_file()), "/opt/homebrew/bin/brew")
+# Known prefixes first: nginx -t / -s reload must not pick a PATH hijack.
+# which() is last so Intel Homebrew (/usr/local) and a custom prefix still work.
+_nginx_candidates = [
+    "/opt/homebrew/bin/nginx",
+    "/usr/local/bin/nginx",
+    shutil.which("nginx") or "",
+]
+NGINX = next(
+    (p for p in _nginx_candidates if p and Path(p).is_file()),
+    "/opt/homebrew/bin/nginx",
+)
 UID = os.getuid()
 #: A Path, not a str: every consumer immediately wrapped it in Path() anyway, and
 #: two modules kept their own `Path.home() / "Library" / "LaunchAgents"` because of

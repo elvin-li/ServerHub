@@ -81,7 +81,7 @@ def _kickstart_panel():
     uid = os.getuid()
     for label in _PANEL_LABELS:
         result = subprocess.run(
-            ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
+            ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
             capture_output=True,
         )
         if result.returncode == 0:
@@ -294,7 +294,7 @@ class ServerHubBar(rumps.App):
 
         for grp in d["groups"]:
             items = grp["services"]
-            bad = [s for s in items if s["state"] != "ok"]
+            bad = [s for s in items if s["state"] not in ("ok", "stopped")]
             if len(items) == 1:
                 menu.append(self.svc_item(items[0]))
                 continue

@@ -164,6 +164,105 @@ class ContainerActionTests(unittest.TestCase):
                 actions.run_action("--all", "stop")
         self.assertEqual(caught.exception.status_code, 400)
 
+    def test_create_run_rejects_an_option_like_restart_policy(self):
+        from hub import containers_svc
+
+        with mock.patch.object(containers_svc, "engine_up", return_value=True):
+            with self.assertRaises(HTTPException) as caught:
+                containers_svc.create_run_container(
+                    {"image": "nginx:latest", "restart": "--privileged"}
+                )
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_create_volume_rejects_an_option_like_driver(self):
+        from hub import containers_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            containers_svc.create_volume("data", "--opt")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_create_network_rejects_an_option_like_driver(self):
+        from hub import containers_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            containers_svc.create_network("net1", "--all")
+        self.assertEqual(caught.exception.status_code, 400)
+
+
+class AppSourceCatalogAndServiceIdTests(unittest.TestCase):
+    def test_apps_detail_rejects_option_like_and_path_shaped_source(self):
+        from hub import apps_manage_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            apps_manage_svc.detail("docker:--all")
+        self.assertEqual(caught.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as caught:
+            apps_manage_svc.detail("docker:../etc")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_apps_logs_rejects_option_like_source(self):
+        from hub import apps_manage_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            apps_manage_svc.logs("docker:--all")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_catalog_install_rejects_path_shaped_id(self):
+        from hub import catalog
+
+        with self.assertRaises(HTTPException) as caught:
+            catalog.install_template("../etc/passwd")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_catalog_uninstall_rejects_option_like_id(self):
+        from hub import catalog
+
+        with self.assertRaises(HTTPException) as caught:
+            catalog.uninstall_template("--all", confirm=True)
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_service_logs_and_detail_reject_option_like_id(self):
+        from hub import services_manage_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            services_manage_svc.service_logs("--all")
+        self.assertEqual(caught.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as caught:
+            services_manage_svc.service_detail("--all")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_docker_network_connect_rejects_option_like_names(self):
+        from hub import network_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            network_svc.docker_network_connect("--all", "nginx")
+        self.assertEqual(caught.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as caught:
+            network_svc.docker_network_connect("mynet", "--all")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_launchd_autostart_rejects_option_like_label(self):
+        from hub import autostart_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            autostart_svc.set_launchd_autostart("--all", True)
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_network_service_rejects_option_like_name(self):
+        from hub import network_svc
+
+        with self.assertRaises(HTTPException) as caught:
+            network_svc.set_service_dhcp("--getinfo")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_container_logs_sse_rejects_option_like_name(self):
+        import asyncio
+        from hub.routers.containers import logs_sse
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(logs_sse("--all"))
+        self.assertEqual(caught.exception.status_code, 400)
+
 
 class BrewServiceNameTests(unittest.TestCase):
     """``brew services stop --all`` would stop every service on the host."""
@@ -247,6 +346,7 @@ class ToolsNetworkTests(unittest.TestCase):
                 )
                 # No lookup may have run: a refusal must not carry results.
                 self.assertNotIn("dig", out)
+                self.assertEqual(out.get("code"), "tools.bad_host")
 
     def test_ping_rejects_option_like_host(self):
         from hub import tools_svc
@@ -256,6 +356,7 @@ class ToolsNetworkTests(unittest.TestCase):
                 out = tools_svc.net_ping(value, 1)
                 self.assertFalse(out.get("ok"), f"{value!r} reached ping's argv")
                 self.assertNotIn("output", out)
+                self.assertEqual(out.get("code"), "tools.bad_host")
 
     def test_dns_lookup_still_accepts_a_real_name(self):
         """The guard must not have closed the endpoint to legitimate input."""

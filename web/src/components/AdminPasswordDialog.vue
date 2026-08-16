@@ -77,14 +77,18 @@ onUnmounted(() => unregisterAdminPromptHandler(handler))
 </script>
 
 <style scoped>
-.admin-prompt { width: min(400px, 94vw); max-height: none; gap: 10px; }
+.admin-prompt { width: min(400px, 100%); max-height: none; gap: 10px; }
 .admin-prompt h3 { margin: 0; font-size: 15px; }
 .admin-prompt .hint { margin: 0; font-size: 12px; color: var(--sub); line-height: 1.5; }
 .admin-prompt .warn { margin: 0; font-size: 12px; color: var(--danger, #d33); }
 .admin-prompt input {
-  width: 100%; box-sizing: border-box; padding: 9px 10px; font-size: 14px;
+  width: 100%; box-sizing: border-box; padding: 9px 10px; font-size: 16px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
   color: var(--text, inherit);
 }
 .admin-prompt .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+@media (max-width: 640px) {
+  .admin-prompt .actions { flex-wrap: wrap; }
+  .admin-prompt .actions button { flex: 1 1 120px; min-height: 44px; }
+}
 </style>

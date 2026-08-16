@@ -98,22 +98,24 @@
 
       <h2 class="section-title">{{ t('network.prio_title') }}</h2>
       <div class="table-wrap" style="margin-bottom:14px">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
-            <tr><th>#</th><th>{{ t('network.th_service') }}</th><th>{{ t('network.th_device') }}</th><th>{{ t('network.th_status') }}</th><th>{{ t('network.th_mode_ip') }}</th><th>{{ t('network.th_ops') }}</th></tr>
+            <tr><th class="col-hide-m">#</th><th>{{ t('network.th_service') }}</th><th class="col-hide-m">{{ t('network.th_device') }}</th><th class="col-hide-m">{{ t('network.th_status') }}</th><th class="col-hide-m">{{ t('network.th_mode_ip') }}</th><th>{{ t('network.th_ops') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="(s, idx) in orderList" :key="s.name">
-              <td class="mono">{{ idx + 1 }}</td>
+              <td class="mono col-hide-m">{{ idx + 1 }}</td>
               <td>
                 <strong>{{ s.name }}</strong>
                 <span v-if="s.disabled" class="badge down">{{ t('network.act_disable') }}</span>
                 <span v-if="isWifi(s)" class="badge accent">Wi‑Fi</span>
                 <span v-else-if="looksEthernet(s)" class="badge ok">{{ t('network.badge_wired') }}</span>
+                <div class="show-m sub mono">{{ s.device || '—' }} · {{ s.disabled ? 'off' : 'on' }}</div>
+                <div class="show-m sub mono">{{ s.mode }} {{ s.ip || '' }}</div>
               </td>
-              <td class="mono">{{ s.device || '—' }}</td>
-              <td>{{ s.disabled ? 'off' : 'on' }}</td>
-              <td class="mono" style="font-size:11px">{{ s.mode }} {{ s.ip || '' }}</td>
+              <td class="mono col-hide-m">{{ s.device || '—' }}</td>
+              <td class="col-hide-m">{{ s.disabled ? 'off' : 'on' }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ s.mode }} {{ s.ip || '' }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || idx===0" @click="moveService(idx, -1)">↑</button>
                 <button class="tiny" :disabled="busy || idx===orderList.length-1" @click="moveService(idx, 1)">↓</button>
@@ -179,9 +181,9 @@
         </div>
       </div>
       <div class="table-wrap" style="margin-bottom:12px">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
-            <tr><th>{{ t('network.th_nic') }}</th><th>{{ t('network.th_status') }}</th><th>IP</th><th>{{ t('network.th_mask') }}</th><th>{{ t('network.th_type') }}</th><th>{{ t('network.th_ops') }}</th></tr>
+            <tr><th>{{ t('network.th_nic') }}</th><th>{{ t('network.th_status') }}</th><th>IP</th><th class="col-hide-m">{{ t('network.th_mask') }}</th><th class="col-hide-m">{{ t('network.th_type') }}</th><th>{{ t('network.th_ops') }}</th></tr>
           </thead>
           <tbody>
             <template v-for="iface in (data?.interface_addresses || [])" :key="iface.device">
@@ -192,9 +194,12 @@
                 <td v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
                   <span class="led" :class="iface.up ? 'on' : 'off'"></span>
                 </td>
-                <td class="mono"><strong>{{ a.ip }}</strong></td>
-                <td class="mono">{{ a.netmask }}</td>
-                <td>
+                <td class="mono">
+                  <strong>{{ a.ip }}</strong>
+                  <div class="show-m sub">{{ a.netmask }} · {{ a.alias ? t('network.badge_alias') : t('network.badge_primary') }}</div>
+                </td>
+                <td class="mono col-hide-m">{{ a.netmask }}</td>
+                <td class="col-hide-m">
                   <span class="badge" :class="a.alias ? 'warn' : 'ok'">{{ a.alias ? t('network.badge_alias') : t('network.badge_primary') }}</span>
                 </td>
                 <td class="ops">
@@ -248,27 +253,31 @@
     <!-- Interfaces -->
     <template v-else-if="tab==='ifaces'">
       <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
-              <th></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th>{{ t('network.mask') }}</th><th>IPv6</th><th>MAC</th><th>MTU</th>
+              <th></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">IPv6</th><th class="col-hide-m">MAC</th><th class="col-hide-m">MTU</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="i in data?.interfaces || []" :key="i.name">
               <td><span class="led" :class="i.up ? 'on' : 'off'"></span></td>
-              <td><strong>{{ i.name }}</strong></td>
+              <td>
+                <strong>{{ i.name }}</strong>
+                <div class="show-m sub mono">{{ i.mac || '—' }}{{ i.mtu ? ' · MTU ' + i.mtu : '' }}</div>
+                <div v-if="(i.ipv6 || []).length" class="show-m sub mono">{{ (i.ipv6 || []).slice(0,2).join(', ') }}</div>
+              </td>
               <td><span class="badge" :class="i.up ? 'ok' : ''">{{ i.status || (i.up ? 'up' : 'down') }}</span></td>
               <td class="mono">
                 <div v-for="(a,idx) in i.ipv4 || []" :key="idx">{{ a.ip }}</div>
                 <span v-if="!(i.ipv4||[]).length">—</span>
               </td>
-              <td class="mono">
+              <td class="mono col-hide-m">
                 <div v-for="(a,idx) in i.ipv4 || []" :key="'m'+idx">{{ a.netmask || '—' }}</div>
               </td>
-              <td class="mono" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).join(', ') || '—' }}</td>
-              <td class="mono">{{ i.mac || '—' }}</td>
-              <td class="mono">{{ i.mtu || '—' }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).join(', ') || '—' }}</td>
+              <td class="mono col-hide-m">{{ i.mac || '—' }}</td>
+              <td class="mono col-hide-m">{{ i.mtu || '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -283,10 +292,10 @@
         </p>
       </div>
       <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
-              <th>{{ t('network.service') }}</th><th>{{ t('network.device') }}</th><th>{{ t('network.mode') }}</th><th>IP</th><th>{{ t('network.mask') }}</th><th>{{ t('network.gateway') }}</th><th>DNS</th><th>{{ t('network.ops') }}</th>
+              <th>{{ t('network.service') }}</th><th class="col-hide-m">{{ t('network.device') }}</th><th class="col-hide-m">{{ t('network.mode') }}</th><th>IP</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">{{ t('network.gateway') }}</th><th class="col-hide-m">DNS</th><th>{{ t('network.ops') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -294,13 +303,15 @@
               <td>
                 <strong>{{ s.name }}</strong>
                 <span v-if="s.disabled" class="badge down">{{ t('network.disabled') }}</span>
+                <div class="show-m sub">{{ s.mode }}{{ s.device ? ' · ' + s.device : '' }}{{ s.router ? ' · ' + s.router : '' }}</div>
+                <div v-if="(s.dns||[]).length" class="show-m sub mono">{{ (s.dns||[]).join(', ') }}</div>
               </td>
-              <td class="mono">{{ s.device || '—' }}</td>
-              <td><span class="badge" :class="s.mode==='manual'?'warn':(s.mode==='dhcp'?'ok':'')">{{ s.mode }}</span></td>
+              <td class="mono col-hide-m">{{ s.device || '—' }}</td>
+              <td class="col-hide-m"><span class="badge" :class="s.mode==='manual'?'warn':(s.mode==='dhcp'?'ok':'')">{{ s.mode }}</span></td>
               <td class="mono">{{ s.ip || '—' }}</td>
-              <td class="mono">{{ s.subnet || '—' }}</td>
-              <td class="mono">{{ s.router || '—' }}</td>
-              <td class="mono" style="font-size:11px">{{ (s.dns||[]).join(', ') || '—' }}</td>
+              <td class="mono col-hide-m">{{ s.subnet || '—' }}</td>
+              <td class="mono col-hide-m">{{ s.router || '—' }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ (s.dns||[]).join(', ') || '—' }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || s.disabled" @click="openManual(s)">{{ t('network.edit_ip') }}</button>
                 <button class="tiny" :disabled="busy || s.disabled" @click="setDhcp(s)">DHCP</button>
@@ -327,20 +338,23 @@
       </div>
       <div class="tile" v-if="lookupResult">
         <div><strong>{{ lookupResult.host }}</strong>
-          <span class="badge" :class="lookupResult.ok?'ok':'down'">{{ lookupResult.ok?'OK':'FAIL' }}</span>
+          <span class="badge" :class="lookupResult.ok?'ok':'down'">{{ lookupResult.ok ? t('common.ok') : t('common.fail') }}</span>
         </div>
         <div class="mono" style="margin-top:8px" v-for="(a,i) in lookupResult.answers||[]" :key="i">{{ a }}</div>
         <pre v-if="!lookupResult.answers?.length" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ lookupResult.message }}</pre>
       </div>
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
       <div class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th>{{ t('network.search_domains') }}</th><th></th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th></th></tr></thead>
           <tbody>
             <tr v-for="s in data?.services || []" :key="s.name">
-              <td><strong>{{ s.name }}</strong></td>
+              <td>
+                <strong>{{ s.name }}</strong>
+                <div v-if="(s.search_domains||[]).length" class="show-m sub mono">{{ (s.search_domains||[]).join(', ') }}</div>
+              </td>
               <td class="mono">{{ (s.dns||[]).join(', ') || t('network.system_default') }}</td>
-              <td class="mono">{{ (s.search_domains||[]).join(', ') || '—' }}</td>
+              <td class="mono col-hide-m">{{ (s.search_domains||[]).join(', ') || '—' }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
           </tbody>
@@ -354,14 +368,17 @@
         <input v-model="portQ" type="text" :placeholder="t('network.filter_port')" style="min-width:160px"  :aria-label="t('network.filter_port')"/>
       </div>
       <div class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('network.process') }}</th><th>PID</th><th>{{ t('tools.user') }}</th><th>{{ t('network.address') }}</th><th>{{ t('network.port') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('network.process') }}</th><th class="col-hide-m">PID</th><th class="col-hide-m">{{ t('tools.user') }}</th><th class="col-hide-m">{{ t('network.address') }}</th><th>{{ t('network.port') }}</th></tr></thead>
           <tbody>
             <tr v-for="(p,i) in filteredListen" :key="i">
-              <td><strong>{{ p.process }}</strong></td>
-              <td class="mono">{{ p.pid }}</td>
-              <td>{{ p.user }}</td>
-              <td class="mono">{{ p.address }}</td>
+              <td>
+                <strong>{{ p.process }}</strong>
+                <div class="show-m sub">{{ p.user }} · {{ p.pid }} · {{ p.address }}</div>
+              </td>
+              <td class="mono col-hide-m">{{ p.pid }}</td>
+              <td class="col-hide-m">{{ p.user }}</td>
+              <td class="mono col-hide-m">{{ p.address }}</td>
               <td class="mono">{{ p.port }}</td>
             </tr>
           </tbody>
@@ -372,13 +389,16 @@
     <!-- Routes -->
     <template v-else-if="tab==='routes'">
       <div class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('network.destination') }}</th><th>{{ t('network.gateway') }}</th><th>Flags</th><th>{{ t('network.iface') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('network.destination') }}</th><th>{{ t('network.gateway') }}</th><th class="col-hide-m">Flags</th><th>{{ t('network.iface') }}</th></tr></thead>
           <tbody>
             <tr v-for="(r,i) in data?.routes || []" :key="i">
-              <td class="mono">{{ r.destination }}</td>
+              <td class="mono">
+                {{ r.destination }}
+                <div v-if="r.flags" class="show-m sub">{{ r.flags }}</div>
+              </td>
               <td class="mono">{{ r.gateway }}</td>
-              <td class="mono">{{ r.flags }}</td>
+              <td class="mono col-hide-m">{{ r.flags }}</td>
               <td>{{ r.netif }}</td>
             </tr>
           </tbody>
@@ -396,18 +416,21 @@
           <button @click="openPortEdit()" :disabled="busy">{{ t('network.edit_map') }}</button>
         </div>
         <div class="table-wrap" style="margin-bottom:14px">
-          <table class="dense">
+          <table class="dense fit-m">
             <thead>
-              <tr><th>{{ t('network.container') }}</th><th>{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th>→</th><th>{{ t('network.cport') }}</th><th>{{ t('network.proto') }}</th><th></th></tr>
+              <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="(p,i) in filteredDockerPorts" :key="i">
-                <td><strong>{{ p.container }}</strong></td>
-                <td style="font-size:11px">{{ p.status }}</td>
+                <td>
+                  <strong>{{ p.container }}</strong>
+                  <div class="show-m sub">{{ p.status }} · {{ p.protocol || '—' }}</div>
+                </td>
+                <td class="col-hide-m" style="font-size:11px">{{ p.status }}</td>
                 <td class="mono">{{ p.host_ip }}:{{ p.host_port || '—' }}</td>
-                <td>→</td>
+                <td class="col-hide-m">→</td>
                 <td class="mono">{{ p.container_port || '—' }}</td>
-                <td>{{ p.protocol || '—' }}</td>
+                <td class="col-hide-m">{{ p.protocol || '—' }}</td>
                 <td class="ops">
                   <button class="tiny" :disabled="busy" @click="openPortEdit(p.container)">{{ t('network.change_port') }}</button>
                 </td>
@@ -421,20 +444,21 @@
 
         <h2 class="section-title">{{ t('network.docker_nets') }}</h2>
         <div class="table-wrap" style="margin-bottom:14px">
-          <table class="dense">
+          <table class="dense fit-m">
             <thead>
-              <tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th>{{ t('network.subnet') }}</th><th>{{ t('network.gateway') }}</th><th>{{ t('network.container') }}</th><th>{{ t('network.ops') }}</th></tr>
+              <tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('docker.driver') }}</th><th>{{ t('network.subnet') }}</th><th class="col-hide-m">{{ t('network.gateway') }}</th><th class="col-hide-m">{{ t('network.container') }}</th><th>{{ t('network.ops') }}</th></tr>
             </thead>
             <tbody>
               <tr v-for="n in data?.docker_networks || []" :key="n.id">
                 <td>
                   <strong>{{ n.name }}</strong>
+                  <div class="show-m sub">{{ n.driver }}{{ n.gateway ? ' · ' + n.gateway : '' }}</div>
                   <span v-if="n.builtin" class="badge">{{ t('network.builtin') }}</span>
                 </td>
-                <td>{{ n.driver }}</td>
+                <td class="col-hide-m">{{ n.driver }}</td>
                 <td class="mono">{{ n.subnet || '—' }}</td>
-                <td class="mono">{{ n.gateway || '—' }}</td>
-                <td style="font-size:11px">
+                <td class="mono col-hide-m">{{ n.gateway || '—' }}</td>
+                <td class="col-hide-m" style="font-size:11px">
                   <div v-for="c in (n.containers||[]).slice(0,6)" :key="c.id">
                     {{ c.name || c.id }} <span class="mono" style="color:var(--sub)">{{ c.ipv4 }}</span>
                   </div>
@@ -800,7 +824,7 @@ async function toggleService(s) {
   busy.value = true
   try {
     const j = await setNetworkServiceEnabled(s.name, en)
-    toast(j.ok ? '✅' : `❌ ${j.message}`)
+    toast(j.ok ? '✅ ' + t('common.ok') : `❌ ${j.message}`)
     if (j.ok) scheduleRefresh(1200)
   } catch (e) {
     toast('❌ ' + e.message)
@@ -861,7 +885,7 @@ async function setDhcp(s) {
   busy.value = true
   try {
     const j = await setNetworkDhcp(s.name)
-    toast(j.ok ? '✅ DHCP' : `❌ ${j.message}`)
+    toast(j.ok ? '✅ ' + t('network.dhcp_applied') : `❌ ${j.message}`)
     msg.value = j.message || ''
     if (j.ok) scheduleRefresh(1500)
   } catch (e) {
@@ -937,7 +961,7 @@ async function wifi(state) {
   busy.value = true
   try {
     const j = await setWifiPower(state)
-    toast(j.ok ? `✅ Wi‑Fi ${label}` : `❌ ${j.message}`)
+    toast(j.ok ? '✅ ' + t('network.wifi_set', { state: label }) : `❌ ${j.message}`)
     if (j.ok) scheduleRefresh(1500)
   } catch (e) {
     toast('❌ ' + e.message)
@@ -1092,7 +1116,7 @@ useDismissable(connectNet, () => { connectNet.value = null }, connectPanel)
 @media (max-width: 640px) {
   .net-summary { grid-template-columns: repeat(2, 1fr); gap: 6px; }
   .net-summary-item { padding: 6px 8px; }
-  .net-summary-value { font-size: 12px; }
+  .net-summary-value { font-size: 12px; overflow-wrap: anywhere; }
   .msg-box { font-size: 10px; max-height: 80px; }
 }
 </style>

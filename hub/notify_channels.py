@@ -38,8 +38,11 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 
 from hub import config, secure_io
-from hub.errors import api_error
+from hub.errors import api_error, soft_fail
+from hub.http_guard import RedirectRefused, no_redirect_opener
 from hub.paths import DATA_DIR
+
+_OPENER = no_redirect_opener()
 
 _log = logging.getLogger("serverhub.notify")
 
@@ -351,7 +354,7 @@ def public_channel(ch: dict) -> dict:
 
 def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
     if not _http_url_ok(url):
-        return {"ok": False, "message": "URL must be http(s)"}
+        return soft_fail("notify.bad_url", field="url")
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         url,
@@ -360,12 +363,14 @@ def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
         headers={"Content-Type": "application/json", **(headers or {})},
     )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with _OPENER.open(req, timeout=TIMEOUT) as r:
             return {
                 "ok": True,
                 "status": r.status,
                 "body": r.read()[:200].decode(errors="replace"),
             }
+    except RedirectRefused as e:
+        return {"ok": False, "message": str(e)}
     except urllib.error.HTTPError as e:
         detail = e.read()[:200].decode(errors="replace")
         return {"ok": False, "message": f"HTTP {e.code}: {detail}"}
@@ -389,7 +394,7 @@ def _send_email(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
     host = str(ch.get("host") or "").strip()
     to = _recipients(ch.get("to"))
     if not host or not to:
-        return {"ok": False, "message": "SMTP host and recipients are required"}
+        return soft_fail("notify.missing_field", field="host" if not host else "to")
     mode = str(ch.get("tls") or "starttls").lower()
     try:
         port = int(ch.get("port") or 0)
@@ -434,7 +439,7 @@ def _send_ntfy(ch: dict, secrets: dict, title: str, message: str, *, level=None,
     server = str(ch.get("server") or "https://ntfy.sh").strip().rstrip("/")
     topic = str(ch.get("topic") or "").strip()
     if not topic:
-        return {"ok": False, "message": "ntfy topic is required"}
+        return soft_fail("notify.missing_field", field="topic")
     headers = {}
     token = str(secrets.get("token") or "")
     if token:
@@ -454,7 +459,7 @@ def _send_telegram(ch: dict, secrets: dict, title: str, message: str, **_) -> di
     token = str(secrets.get("bot_token") or "").strip()
     chat_id = str(ch.get("chat_id") or "").strip()
     if not token or not chat_id:
-        return {"ok": False, "message": "Telegram bot token and chat id are required"}
+        return soft_fail("notify.missing_field", field="bot_token" if not token else "chat_id")
     return _post(f"https://api.telegram.org/bot{token}/sendMessage", {
         "chat_id": chat_id,
         "text": f"{title}\n{message}"[:4000],
@@ -464,7 +469,7 @@ def _send_telegram(ch: dict, secrets: dict, title: str, message: str, **_) -> di
 def _send_discord(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
     url = str(secrets.get("webhook_url") or "").strip()
     if not url:
-        return {"ok": False, "message": "Discord webhook URL is required"}
+        return soft_fail("notify.missing_field", field="webhook_url")
     # Discord caps content at 2000 characters.
     return _post(url, {"content": f"**{title}**\n{message}"[:1900]})
 
@@ -472,14 +477,14 @@ def _send_discord(ch: dict, secrets: dict, title: str, message: str, **_) -> dic
 def _send_slack(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
     url = str(secrets.get("webhook_url") or "").strip()
     if not url:
-        return {"ok": False, "message": "Slack webhook URL is required"}
+        return soft_fail("notify.missing_field", field="webhook_url")
     return _post(url, {"text": f"*{title}*\n{message}"})
 
 
 def _send_webhook(ch: dict, secrets: dict, title: str, message: str, *, level=None, event=None, **_) -> dict:
     url = str(secrets.get("url") or "").strip()
     if not url:
-        return {"ok": False, "message": "webhook URL is required"}
+        return soft_fail("notify.missing_field", field="url")
     # Superset of the historical HA-webhook payload, so anything that parsed
     # the old {title, message, text} keeps working when pointed at this type.
     return _post(url, {
@@ -502,10 +507,10 @@ def _send_home_assistant(ch: dict, secrets: dict, title: str, message: str, **_)
         })
     token = str(secrets.get("ha_token") or "")
     if not token:
-        return {"ok": False, "message": "no webhook or token configured"}
+        return soft_fail("notify.missing_field", field="ha_webhook_url")
     base = str(ch.get("ha_url") or "http://localhost:8123").rstrip("/")
     if not _http_url_ok(base):
-        return {"ok": False, "message": "URL must be http(s)"}
+        return soft_fail("notify.bad_url", field="ha_url")
     service = str(ch.get("ha_service") or "notify.notify")
     parts = service.split(".", 1)
     domain = parts[0] if len(parts) == 2 else "notify"
@@ -628,7 +633,9 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
                 )
 
     if not results:
-        return {"ok": False, "message": "no notification channel matched", "results": []}
+        out = soft_fail("notify.no_match")
+        out["results"] = []
+        return out
     failed = [r for r in results if not r["ok"]]
     return {
         "ok": not failed,

@@ -302,7 +302,7 @@
   --font-size: 15px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+html, body { height: 100%; overflow-x: clip; }
 /* color-scheme: native form controls & scrollbars follow theme */
 [data-color-mode="dark"] { color-scheme: dark; }
 [data-color-mode="light"] { color-scheme: light; }
@@ -407,13 +407,14 @@ button.primary.loading::after { color: #fff; }
   flex-direction: column;
   justify-content: center;
   gap: 4px;
-  width: 36px; height: 36px;
-  padding: 8px 6px;
+  width: 44px; height: 44px;
+  padding: 10px 8px;
   background: transparent;
   border: none;
   cursor: pointer;
   border-radius: var(--radius);
   transition: background .15s;
+  flex-shrink: 0;
 }
 .hamburger:hover { background: var(--nav-hover); }
 .hamburger span {
@@ -461,7 +462,7 @@ button.primary.loading::after { color: #fff; }
 }
 .top-controls {
   display: flex; align-items: center; gap: 6px;
-  margin-left: 4px;
+  margin-left: auto;
 }
 .top-controls select {
   background: rgba(255,255,255,.08);
@@ -473,6 +474,23 @@ button.primary.loading::after { color: #fff; }
   max-width: 110px;
 }
 .top-controls select option { color: #111; background: #fff; }
+/* The label wrapper is display:contents on desktop so the selects stay in the
+   header row. The mobile drawer restyles it into a stacked field. */
+.nav-tool { display: contents; }
+.nav-tool-label, .nav-drawer-title, .top-status-m { display: none; }
+.logout-btn {
+  background: rgba(255,255,255,.08);
+  color: var(--header-txt);
+  border-color: rgba(255,255,255,.15);
+  padding: 3px 8px;
+  font-size: 11px;
+}
+.top-controls .logout-btn:hover {
+  filter: none;
+  background: var(--nav-hover);
+  color: #fff;
+  border-color: rgba(255,255,255,.3);
+}
 
 /* Secondary nav under merged top tabs */
 .subchrome {
@@ -482,11 +500,16 @@ button.primary.loading::after { color: #fff; }
 .subchrome-inner {
   max-width: 1600px; margin: 0 auto;
   padding: 0 12px;
-  display: flex; flex-wrap: wrap; gap: 2px; align-items: center;
+  display: flex; flex-wrap: nowrap; gap: 2px; align-items: center;
   min-height: 34px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+.subchrome-inner::-webkit-scrollbar { display: none; }
 .subchrome-inner a {
   display: flex; align-items: center; gap: 5px;
+  flex-shrink: 0;
   color: var(--header-muted);
   font-size: 12px; font-weight: 600;
   padding: 7px 12px;
@@ -559,7 +582,7 @@ button.primary.loading::after { color: #fff; }
 }
 
 /* tiles / cards — Unraid flat style */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 10px; }
 .sys { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .dash-grid {
   display: grid;
@@ -596,89 +619,125 @@ button.primary.loading::after { color: #fff; }
 }
 @media (max-width: 640px) {
   .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
-  .topchrome-inner { gap: 4px; padding: 0 10px; flex-wrap: nowrap; }
+  .layout { overflow-x: clip; max-width: 100%; }
+  .topchrome-inner {
+    gap: 6px;
+    padding: 0 10px;
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+    flex-wrap: nowrap;
+  }
   .top-status { display: none; }
-  .main { padding: 10px 10px 40px; }
+  .top-status-m { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+  .top-status-m .pill { padding: 3px 8px; font-size: 10px; }
+  .main { padding: 10px 10px max(28px, calc(env(safe-area-inset-bottom) + 12px)); }
+  .page-title { flex-direction: column; align-items: flex-start; gap: 4px; }
   .page-title h1 { font-size: 17px; white-space: normal; }
-  .page-title .meta { text-align: left; }
+  .page-title .meta { text-align: left; width: 100%; }
   .toolbar { gap: 5px; }
   .dash-grid { gap: 8px; }
- /* Mobile hamburger nav */
- .hamburger { display: flex; }
- .brand-text { font-size: 14px; }
- .brand { padding: 8px 6px 8px 0; }
-/* The drawer is a `position: fixed` descendant of .topchrome, so ANY property
-   on the header that creates a containing block (backdrop-filter, transform,
-   filter, perspective, contain) makes it resolve against the 46px header box
-   instead of the viewport — it then renders as a small clipped strip.  Drop the
-   blur here; it is decorative and the drawer is opaque anyway. */
-.topchrome {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-.top-nav {
-  position: fixed;
-   top: 0; left: 0; bottom: 0;
-   height: 100dvh;
-   /* Adaptive but compact: 200px on narrow phones, about half the viewport on
-      normal phones, and never wider than 300px. The dimmed page remains visible
-      so the off-canvas interaction is obvious. */
-   width: clamp(200px, 52vw, 300px);
-   background: var(--header);
-   flex: none;
-   flex-direction: column;
-   align-items: stretch;
-   /* No top padding: the sticky ::before title occupies the top of the drawer,
-      so reserving header height here just left a dead gap above it. */
-   padding: 0 0 24px;
-   padding-top: env(safe-area-inset-top);
-   padding-left: max(12px, env(safe-area-inset-left));
-   padding-right: max(12px, env(safe-area-inset-right));
-   transform: translateX(-100%);
-   transition: transform .28s cubic-bezier(.4,0,.2,1);
-   z-index: 38;
-  overflow-y: auto;
-  box-shadow: 4px 0 16px rgba(0,0,0,.3);
-  flex-wrap: nowrap;
-  overscroll-behavior: contain;
-}
-.top-nav::before {
-  content: 'ServerHub';
-  position: sticky; top: 0; z-index: 1;
-  display: block;
-   padding: 12px 0 16px;
-  font-size: 15px; font-weight: 700; color: #fff;
-  letter-spacing: .3px;
-  background: var(--header);
-  border-bottom: 1px solid rgba(255,255,255,.08);
-}
- .top-nav.open { transform: translateX(0); }
-.top-nav a {
-  display: flex; align-items: center; gap: 7px;
-  /* 16px sides (not 24px) so the narrow drawer still fits the widest label on
-     one line; 14px vertical keeps the row a comfortable ~44px touch target. */
-  padding: 14px 16px;
-  font-size: 15px;
-  border-bottom: none;
-  border-left: 3px solid transparent;
-  letter-spacing: .3px;
-  line-height: 1;
-  /* If a translation ever does overflow, ellipsis beats a reflowed two-line
-     row that breaks the touch-target rhythm. */
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
- .top-nav a.active {
-   border-left-color: var(--accent);
-   border-bottom: none;
- }
- .nav-overlay {
-   display: block;
-   z-index: 37;
- }
- .top-controls { margin-left: auto; gap: 4px; }
-  .top-controls select { max-width: 80px; font-size: 10px; padding: 2px 4px; }
+  .hamburger { display: flex; }
+  .brand-text { font-size: 14px; }
+  .brand { padding: 8px 6px 8px 0; min-width: 0; }
+  /* The drawer is a `position: fixed` descendant of .topchrome, so ANY property
+     on the header that creates a containing block (backdrop-filter, transform,
+     filter, perspective, contain) makes it resolve against the 46px header box
+     instead of the viewport — it then renders as a small clipped strip.  Drop the
+     blur here; it is decorative and the drawer is opaque anyway. */
+  .topchrome {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .top-nav {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    height: 100dvh;
+    /* Adaptive but compact: 200px on narrow phones, about half the viewport on
+       normal phones, and never wider than 300px. The dimmed page remains visible
+       so the off-canvas interaction is obvious. */
+    width: clamp(200px, 52vw, 300px);
+    background: var(--header);
+    flex: none;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+    padding-top: env(safe-area-inset-top);
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    transform: translateX(-100%);
+    transition: transform .28s cubic-bezier(.4,0,.2,1);
+    z-index: 38;
+    overflow-y: auto;
+    box-shadow: 4px 0 16px rgba(0,0,0,.3);
+    flex-wrap: nowrap;
+    overscroll-behavior: contain;
+  }
+  .nav-drawer-title {
+    display: block;
+    position: sticky; top: 0; z-index: 1;
+    padding: 14px 16px 12px;
+    font-size: 15px; font-weight: 700; color: #fff;
+    letter-spacing: .3px;
+    background: var(--header);
+    border-bottom: 1px solid rgba(255,255,255,.08);
+  }
+  .top-nav.open { transform: translateX(0); }
+  .top-nav a {
+    display: flex; align-items: center; gap: 7px;
+    /* 16px sides (not 24px) so the narrow drawer still fits the widest label on
+       one line; 14px vertical keeps the row a comfortable ~44px touch target. */
+    padding: 14px 16px;
+    font-size: 15px;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+    letter-spacing: .3px;
+    line-height: 1;
+    /* If a translation ever does overflow, ellipsis beats a reflowed two-line
+       row that breaks the touch-target rhythm. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .top-nav a.active {
+    border-left-color: var(--accent);
+    border-bottom: none;
+  }
+  .nav-overlay {
+    display: block;
+    z-index: 37;
+  }
+  .top-controls {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0 0;
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    padding: 6px 10px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+    background: var(--header);
+    border-top: 1px solid rgba(255,255,255,.08);
+  }
+  .nav-tool { display: flex; flex: 1 1 0; min-width: 0; }
+  .nav-tool-label { display: none; }
+  .top-controls select {
+    max-width: none;
+    width: 100%;
+    font-size: 16px;
+    padding: 4px 6px;
+    height: 32px;
+  }
+  .logout-btn {
+    width: auto;
+    min-height: 32px;
+    flex: 0 0 auto;
+    font-size: 13px;
+    padding: 4px 10px;
+    white-space: nowrap;
+  }
   .subchrome-inner { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
   .subchrome-inner a { flex-shrink: 0; }
   /* Tables: horizontal scroll */
@@ -686,9 +745,39 @@ button.primary.loading::after { color: #fff; }
   table.dense { min-width: 560px; }
   /* Hide low-priority columns on mobile */
   .col-hide-m { display: none; }
+  /* After those columns drop, do not keep a 560px floor — that is what made a
+     three-column health/alerts table still sideways-scroll on a 390px phone. */
+  table.dense.fit-m { min-width: 0; }
+  table.dense.fit-m td { overflow-wrap: anywhere; }
+  .show-m {
+    display: block;
+    margin-top: 3px;
+    font-size: 11px;
+    color: var(--sub);
+    word-break: break-word;
+  }
+  /* Action clusters were the leftover page-stretcher after columns dropped:
+     eight nowrap tiny buttons still force a 560px-wide table. */
+  table.dense .ops,
+  table.dense .actions,
+  table.dense .actions-cell {
+    white-space: normal;
+  }
+  table.dense .ops,
+  table.dense .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+  table.dense .ops button,
+  table.dense .ops .btn { margin-right: 0; margin-bottom: 0; }
+  /* Secondary controls that already have a detail/drawer home. */
+  .hide-m { display: none; }
+  .name { white-space: normal; overflow-wrap: anywhere; }
   /* Tiles */
-  .tile { padding: 10px 12px; }
-  .tile h3 { font-size: 10px; margin-bottom: 8px; }
+  .tile { padding: 10px 12px; min-width: 0; }
+  .tile h3 { font-size: 10px; margin-bottom: 8px; flex-wrap: wrap; gap: 6px; }
   .tile .v { font-size: 18px; }
   /* Buttons */
   button, .btn { padding: 7px 12px; font-size: 13px; }
@@ -709,12 +798,20 @@ button.primary.loading::after { color: #fff; }
   }
   .toolbar::-webkit-scrollbar { display: none; }
   .toolbar > * { flex-shrink: 0; }
-  /* Touch-friendly inputs */
-  select, input[type=text], input[type=number], input[type=password] { padding: 9px 12px; font-size: 14px; }
-  /* Modal full-width on mobile */
-  .modal { width: 100vw; max-height: 92vh; border-radius: 12px 12px 0 0; }
+  /* 16px prevents iOS from zooming the page when a field is focused. */
+  select, input[type=text], input[type=number], input[type=password], textarea {
+    padding: 9px 12px; font-size: 16px;
+  }
+  /* 100% not 100vw: vw includes the scrollbar and stretches the page sideways. */
+  .modal { width: 100%; max-width: 100%; max-height: 92vh; border-radius: 12px 12px 0 0; }
   .modal-bg { padding: 0; align-items: flex-end; }
-  .drawer { width: 100vw; }
+  .drawer { width: 100%; }
+  .section-title { flex-wrap: wrap; row-gap: 4px; }
+  .alert-item { flex-wrap: wrap; }
+  .row { flex-wrap: wrap; }
+  .kv { grid-template-columns: minmax(0, 90px) minmax(0, 1fr); }
+  .kv > * { min-width: 0; overflow-wrap: anywhere; }
+  .tile .sub, .tile .mono { overflow-wrap: anywhere; word-break: break-word; }
 }
 
 
@@ -883,10 +980,10 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
   display: none;
   position: fixed;
   bottom: max(20px, env(safe-area-inset-bottom));
-  right: 16px;
+  right: max(16px, env(safe-area-inset-right));
   z-index: 100;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: 1px solid var(--line);
   background: var(--card);
@@ -950,7 +1047,7 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .drawer-bg { justify-content: flex-end; align-items: stretch; padding: 0; }
 .modal {
-  width: min(820px, 96vw); max-height: 85vh; background: var(--card);
+  width: min(820px, 100%); max-height: 85vh; background: var(--card);
   border: 1px solid var(--line); border-radius: 10px; padding: 18px;
   display: flex; flex-direction: column; overflow: hidden;
   box-shadow: 0 12px 40px rgba(0,0,0,.25);
@@ -963,7 +1060,7 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
   font-family: ui-monospace, Menlo, monospace;
 }
 .drawer {
-  width: min(580px, 100vw); height: 100%; background: var(--card);
+  width: min(580px, 100%); height: 100%; background: var(--card);
   border-left: 1px solid var(--line); padding: 18px; display: flex; flex-direction: column;
   box-shadow: -6px 0 24px rgba(0,0,0,.12);
   animation: slideIn .2s ease;
@@ -1167,6 +1264,9 @@ img[loading="lazy"][complete] {
   .subchrome-inner { padding: 0 8px; }
   .subchrome-inner a { padding: 6px 9px; font-size: 11px; }
 }
+@media (max-width: 360px) {
+  .brand-text { display: none; }
+}
 
 /* Unraid-style key-value display */
 .kv-mini {
@@ -1244,7 +1344,7 @@ img[loading="lazy"][complete] {
   padding-top: 15vh;
 }
 .cmd-palette {
-  width: min(520px, 92vw);
+  width: min(520px, 100%);
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1304,6 +1404,162 @@ img[loading="lazy"][complete] {
   padding: 20px !important;
   cursor: default !important;
 }
+.cmd-list li.cmd-ai {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  color: var(--accent);
+}
+
+.assist-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  flex-shrink: 0;
+  background: rgba(255,255,255,.08);
+  color: var(--header-txt);
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.assist-launch:hover {
+  background: var(--nav-hover);
+  color: #fff;
+  border-color: rgba(255,255,255,.3);
+}
+.assist-launch.assist-page { margin-left: 4px; }
+.assist-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 310;
+  background: rgba(0,0,0,.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+}
+.assist-panel {
+  width: min(640px, 100%);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.3);
+  overflow: hidden;
+  animation: cmdIn .15s ease;
+}
+.assist-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 8px;
+}
+.assist-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.assist-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--sub);
+}
+.assist-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 10px;
+}
+.assist-ollama {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.assist-log {
+  flex: 1;
+  min-height: 180px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 8px 16px 12px;
+  border-top: 1px solid var(--line);
+}
+.assist-empty {
+  color: var(--sub);
+  font-size: 13px;
+  text-align: center;
+  padding: 28px 8px;
+}
+.assist-turn {
+  margin: 0 0 12px;
+}
+.assist-turn.user .assist-text {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.assist-who {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  color: var(--sub);
+  margin-bottom: 4px;
+}
+.assist-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 13px/1.45 ui-sans-serif, system-ui, sans-serif;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bar-track);
+}
+.assist-panels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.assist-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--sub);
+}
+.assist-form {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--line);
+}
+.assist-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--txt);
+  font-size: 14px;
+}
+.assist-form input:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+@media (max-width: 640px) {
+  .assist-launch-label { display: none; }
+  .assist-launch { margin-left: 4px; padding: 6px 8px; }
+  .assist-bg { padding-top: 6vh; }
+  .assist-panel { max-height: 88vh; width: 100%; }
+  .cmd-palette-bg { padding: 0; align-items: stretch; }
+  .cmd-palette { width: 100%; max-width: 100%; border-radius: 0 0 12px 12px; }
+  .cmd-palette input { font-size: 16px; }
+  .assist-form { flex-wrap: nowrap; padding: 8px 12px; }
+  .assist-form input { font-size: 16px; }
+  .assist-form button { min-height: 36px; flex: 0 0 auto; }
+}
 
 /* Skeleton loading placeholders */
 @keyframes shimmer {
@@ -1334,6 +1590,12 @@ img[loading="lazy"][complete] {
 .card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
 .stat .k { font-size: 10px; color: var(--sub); text-transform: uppercase; letter-spacing: .4px; }
 .stat .v { font-size: 18px; font-weight: 700; margin-top: 2px; }
+
+/* Visible only on the phone layout. Pair with .col-hide-m so a dropped
+   table column still appears under the primary cell. */
+@media (min-width: 641px) {
+  .show-m { display: none; }
+}
 
 /* Visually hidden but still announced — table captions, live-region status text.
    Global because it is a utility, not a page style: it was previously copied

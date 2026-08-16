@@ -1,22 +1,33 @@
 from __future__ import annotations
 
 import platform
-from concurrent.futures import ThreadPoolExecutor
-
-from fastapi import APIRouter, Query, Request
-
-from hub import network_svc, tools_svc
-from hub.host_address import default_interface, host_ip, interface_address
 from typing import Optional
 from urllib.parse import quote
 
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from hub import auth, vm_console, vms_svc
-from hub.docker_cli import engine_up
+from hub import auth, network_svc, tools_svc, vm_console, vms_svc
+from hub.docker_cli import engine_up, peek_engine
 from hub.errors import api_error
+from hub.resource_mode import is_high
+from hub.host_address import default_interface, host_ip, interface_address
 from hub.paths import DOCKER, ORB
-from hub.util import fan_out, sh
+from hub.util import LazyPool, cached_snapshot, fan_out, sh
+
+#: Dashboard heavy tick is 90s in low mode. A 20s snapshot expired before
+#: every sit tick, so each one re-ran engine_up (~800ms) plus the iface
+#: sweep. 100s lets the 90s poll hit; Settings reopen and first paint still
+#: share the same snapshot. Mutations that change engine/iface invalidate.
+_HOST_TTL = 100.0
+
+#: Dedicated width for /api/system/host.  The interface sweep itself fans
+#: out on the shared probe pool; a shared-pool composer would nest.
+_HOST_POOL = LazyPool(5, "system-host")
+
+
+def shutdown_executor() -> None:
+    _HOST_POOL.shutdown()
 
 router = APIRouter(tags=["system"])
 
@@ -108,26 +119,32 @@ def _iface_addresses(route_iface: str) -> list[dict]:
     ]
 
 
-@router.get("/api/system/host")
-def host_info():
+@cached_snapshot(_HOST_TTL)
+def _host_snapshot() -> dict:
     # The dashboard re-reads this on every heavy tick and Settings on every open.
     # It was nine subprocess spawns in a row: hostname, a route lookup, up to five
     # sequential `ipconfig getifaddr` calls, and two sysctls. Only the interface
     # sweep depends on anything (it needs the default interface name first), so
     # everything else overlaps with it.
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        f_hostname = ex.submit(sh, ["/bin/hostname"], timeout=3)
-        f_model = ex.submit(sh, ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
-        f_ncpu = ex.submit(sh, ["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
-        f_engine = ex.submit(engine_up)
-        # route lookup → per-interface lookups, kept together in one branch.
-        f_ifaces = ex.submit(lambda: _iface_addresses(default_interface()))
+    def _ncpu_and_memsize():
+        rc_n, ncpu, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
+        rc_m, memsize, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=3)
+        return rc_n, ncpu, rc_m, memsize
 
-        rc, hostname, _ = f_hostname.result()
-        rc3, model, _ = f_model.result()
-        rc4, ncpu, _ = f_ncpu.result()
-        orbstack = f_engine.result()
-        ifaces = f_ifaces.result()
+    f_hostname = _HOST_POOL.submit(sh, ["/bin/hostname"], timeout=3)
+    f_model = _HOST_POOL.submit(sh, ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
+    f_hw = _HOST_POOL.submit(_ncpu_and_memsize)
+    # Low mode: host identity does not need a live docker info (272–946ms
+    # on this machine). Reuse the last probe; high mode still asks.
+    f_engine = _HOST_POOL.submit(engine_up) if is_high() else None
+    # route lookup → per-interface lookups, kept together in one branch.
+    f_ifaces = _HOST_POOL.submit(lambda: _iface_addresses(default_interface()))
+
+    rc, hostname, _ = f_hostname.result()
+    rc3, model, _ = f_model.result()
+    rc4, ncpu, rc_m, memsize = f_hw.result()
+    orbstack = f_engine.result() if f_engine is not None else bool(peek_engine())
+    ifaces = f_ifaces.result()
 
     # Was called twice (once as `lan`, once inline); it is the same value both
     # times and both fields are documented to carry it.
@@ -139,6 +156,9 @@ def host_info():
         "python": platform.python_version(),
         "cpu": model if rc3 == 0 else "",
         "ncpu": int(ncpu) if rc4 == 0 and ncpu.isdigit() else None,
+        "mem_total_gb": (
+            round(int(memsize) / 2**30, 1) if rc_m == 0 and memsize.isdigit() else None
+        ),
         "host_ip": ip,
         "lan_ip": ip,
         "interfaces": ifaces,
@@ -146,6 +166,11 @@ def host_info():
         "docker_cli": DOCKER,
         "orb_cli": ORB,
     }
+
+
+@router.get("/api/system/host")
+def host_info(force: bool = False):
+    return _host_snapshot(force)
 
 
 @router.get("/api/system/network")
@@ -186,8 +211,7 @@ def network_set_dns(service_name: str, body: NetDnsBody):
 @router.post("/api/system/network/wifi/{state}")
 def network_wifi(state: str):
     if state not in ("on", "off"):
-        from fastapi import HTTPException
-        raise HTTPException(400, "state must be on|off")
+        raise api_error("network.bad_wifi_state")
     return network_svc.set_wifi_power(state == "on")
 
 
@@ -371,6 +395,11 @@ def tools_hardware():
 
 @router.get("/api/tools/updates")
 def tools_updates():
+    # First Tools visit pays the probe; later visits and the warmer share it.
+    try:
+        tools_svc.start_updates_warmer()
+    except Exception:
+        pass
     return tools_svc.check_updates()
 
 

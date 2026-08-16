@@ -139,7 +139,7 @@ def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     if rc not in (0, 4) and any(
         token in blob for token in ("permission", "operation not permitted", "access denied")
     ):
-        rc, out, err = sh(["sudo", "-n", SMARTCTL, *argv], timeout=timeout)
+        rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, *argv], timeout=timeout)
     return rc, out, err
 
 
@@ -195,7 +195,7 @@ def _smartctl(args: list[str], *, timeout: int = 20) -> tuple[int, str, str]:
 
 def passwordless_available() -> bool:
     """Whether ``sudo -n smartctl`` works, i.e. scheduled tests can run headless."""
-    rc, _, _ = sh(["sudo", "-n", SMARTCTL, "-V"], timeout=6)
+    rc, _, _ = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-V"], timeout=6)
     return rc == 0
 
 
@@ -480,7 +480,7 @@ def run_due_tests() -> dict:
             continue
         flags = list(device_type(device))
         rc, out, err = sh(
-            ["sudo", "-n", SMARTCTL, "-t", schedule["kind"], *flags, device], timeout=60
+            ["/usr/bin/sudo", "-n", SMARTCTL, "-t", schedule["kind"], *flags, device], timeout=60
         )
         ok = rc in (0, 4)
         started += 1 if ok else 0
@@ -556,7 +556,7 @@ def start_test(device: str, kind: str) -> dict:
         return {"ok": False, "error": "kind_unsupported", "supported": caps["supported"], "device": node}
 
     flags = list(device_type(node))
-    rc, out, err = sh(["sudo", "-n", SMARTCTL, "-t", test, *flags, node], timeout=60)
+    rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-t", test, *flags, node], timeout=60)
     if rc not in (0, 4):
         # No passwordless rule: ask macOS for one-shot authorization instead.
         admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
@@ -590,7 +590,7 @@ def abort_test(device: str) -> dict:
     if not _DEV_RE.match(node) or node not in set(_device_nodes()):
         return {"ok": False, "error": "bad_device"}
     flags = list(device_type(node))
-    rc, out, err = sh(["sudo", "-n", SMARTCTL, "-X", *flags, node], timeout=30)
+    rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-X", *flags, node], timeout=30)
     if rc not in (0, 4):
         result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
         invalidate()

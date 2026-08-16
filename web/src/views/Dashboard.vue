@@ -100,6 +100,28 @@
             <span v-if="ups.battery_percent != null" class="ups-pct">{{ ups.battery_percent }}%</span>
             <span v-if="upsStateLabel">{{ upsStateLabel }}</span>
           </span>
+          <router-link
+            v-if="ollamaChipVisible"
+            class="host-ups host-ollama"
+            :class="ollamaChipClass"
+            :title="ollamaTooltip"
+            data-test="ollama-indicator"
+            to="/ollama"
+          >
+            <Bot :size="13" />
+            <span class="ups-pct">{{ ollamaChipLabel }}</span>
+          </router-link>
+          <button
+            v-if="authState.canManage"
+            class="host-ups host-assist"
+            type="button"
+            data-test="assistant-brief-dash"
+            :title="t('assistant.brief')"
+            @click="openAssistBrief"
+          >
+            <Sparkles :size="13" />
+            <span class="ups-pct">{{ t('assistant.short') }}</span>
+          </button>
         </div>
         <div class="host-meta">
           <span>{{ host?.cpu || 'CPU' }}</span>
@@ -122,7 +144,7 @@
         </span>
         <span class="pill">{{ sensors?.ts || status?.ts || '…' }}</span>
        <button class="tiny" @click="refreshAll" :disabled="loading">{{ t('common.refresh') }}</button>
-      <span class="pwr-group">
+      <span id="remote" class="pwr-group">
          <a class="tiny primary"
            :class="{ disabled: !ss.running }"
            :href="ss.running ? ss.vnc_url : undefined"
@@ -134,7 +156,7 @@
          <button v-if="powerLoaded && !ss.running" class="tiny primary" :disabled="ssBusy || loading" @click="enableSS" :title="t('power.enable_ss')"><Play :size="13" /></button>
          <button v-else-if="powerLoaded" class="tiny danger" :disabled="ssBusy" @click="disableSS" :title="t('power.disable_ss')"><Square :size="13" /></button>
          <button v-else class="tiny" disabled :title="t('power.state_unknown')"><Play :size="13" /></button>
-         <button class="tiny" :disabled="!ss.vnc_url" @click="copyVnc" :title="t('power.copy')"><Copy :size="13" /></button>
+         <button class="tiny hide-m" :disabled="!ss.vnc_url" @click="copyVnc" :title="t('power.copy')"><Copy :size="13" /></button>
       </span>
       <span class="pwr-group">
           <button class="tiny" @click="doPower('sleep')" :disabled="pwrBusy" title="Sleep"><Moon :size="13" /></button>
@@ -149,7 +171,7 @@
       <div class="tile span-4 res-card">
         <h3>
           {{ t('dashboard.cpu') }}
-          <span style="display:inline-flex;align-items:center;gap:6px;margin-left:auto">
+          <span class="tile-tools">
             <span class="badge" :class="cpuBadge">{{ cpuUsed }}%</span>
             <span class="range-btns">
               <button
@@ -311,21 +333,56 @@
             <div class="v2">{{ cpu.proc_total ?? '—' }} <small class="sub">run {{ cpu.proc_running ?? '—' }}</small></div>
           </div>
         </div>
-        <h2 class="section-title" style="margin-top:10px">{{ t('dashboard.top_cpu') }}</h2>
+        <h2 class="section-title top-cpu-head">
+          <span>{{ t('dashboard.top_cpu') }}</span>
+          <span class="ollama-api-wrap">
+            <router-link
+              class="ollama-api"
+              to="/ollama"
+              data-test="ollama-api"
+              :title="ollamaApiTitle"
+            >
+              <Bot :size="12" />
+              <span>{{ t('dashboard.ollama_api') }}</span>
+              <span class="mono">{{ ollamaApiHost }}</span>
+            </router-link>
+            <button
+              class="tiny"
+              type="button"
+              data-test="ollama-api-copy"
+              :title="t('common.copy')"
+              @click="copyOllamaApi"
+            ><Copy :size="12" /></button>
+          </span>
+        </h2>
         <div class="table-wrap">
-          <table class="dense">
+          <table class="dense top-cpu fit-m">
+            <colgroup>
+              <col class="col-proc">
+              <col class="col-cpu">
+              <col class="col-mem">
+              <col class="col-rss col-hide-m">
+            </colgroup>
             <thead>
-              <tr><th>{{ t('dashboard.col_process') }}</th><th>CPU%</th><th>MEM%</th><th>RSS</th></tr>
+              <tr>
+                <th>{{ t('dashboard.col_process') }}</th>
+                <th class="num">CPU%</th>
+                <th class="num">MEM%</th>
+                <th class="num col-hide-m">RSS</th>
+              </tr>
             </thead>
             <tbody>
               <tr v-for="p in topProcs" :key="p.pid">
-                <td :title="'pid '+p.pid"><strong>{{ p.name }}</strong></td>
-                <td class="mono">
-                  {{ p.cpu }}
-                  <span class="mini-bar"><i :style="{ width: Math.min(100, p.cpu) + '%' }"></i></span>
+                <td class="proc" :title="'pid '+p.pid">
+                  <strong>{{ p.name }}</strong>
+                  <div class="show-m sub">{{ p.rss_mb }}M</div>
                 </td>
-                <td class="mono">{{ p.mem }}</td>
-                <td class="mono">{{ p.rss_mb }}M</td>
+                <td class="num cpu-cell">
+                  <span class="cpu-n">{{ p.cpu }}</span>
+                  <span class="mini-bar"><i :style="{ width: Math.min(100, Number(p.cpu) || 0) + '%' }"></i></span>
+                </td>
+                <td class="num">{{ p.mem }}</td>
+                <td class="num col-hide-m">{{ p.rss_mb }}M</td>
               </tr>
               <tr v-if="!topProcs.length">
                 <td colspan="4" style="color:var(--sub)">{{ t('common.loading') }}</td>
@@ -342,24 +399,27 @@
           <router-link class="btn tiny" to="/main">{{ t('common.open') }}</router-link>
         </h3>
         <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('dashboard.col_mount') }}</th>
-              <th>{{ t('dashboard.col_type') }}</th>
-              <th>{{ t('dashboard.col_capacity') }}</th>
-              <th>{{ t('dashboard.col_used') }}</th>
-              <th>{{ t('dashboard.col_free') }}</th>
+              <th class="col-hide-m">{{ t('dashboard.col_type') }}</th>
+              <th class="col-hide-m">{{ t('dashboard.col_capacity') }}</th>
+              <th class="col-hide-m">{{ t('dashboard.col_used') }}</th>
+              <th class="col-hide-m">{{ t('dashboard.col_free') }}</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="v in (storage?.volumes || []).slice(0, 8)" :key="v.mount">
-              <td class="mono">{{ shortMount(v) }}</td>
-              <td><span class="badge accent">{{ v.kind }}</span></td>
-              <td>{{ v.total_gb }} GB</td>
-              <td>{{ v.used_gb }} GB</td>
-              <td>{{ v.avail_gb }} GB</td>
+              <td class="mono">
+                {{ shortMount(v) }}
+                <div class="show-m sub">{{ v.kind }} · {{ v.used_gb }} / {{ v.avail_gb }} GB</div>
+              </td>
+              <td class="col-hide-m"><span class="badge accent">{{ v.kind }}</span></td>
+              <td class="col-hide-m">{{ v.total_gb }} GB</td>
+              <td class="col-hide-m">{{ v.used_gb }} GB</td>
+              <td class="col-hide-m">{{ v.avail_gb }} GB</td>
               <td style="min-width:100px">
                 <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ v.pct }}%</strong>
                 <div class="pct-bar" :class="barClass(v.pct)" style="margin-top:3px">
@@ -383,9 +443,9 @@
           <router-link class="btn tiny" to="/containers">{{ t('common.manage') }}</router-link>
         </h3>
         <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
-            <tr><th></th><th>{{ t('dashboard.col_name') }}</th><th>{{ t('dashboard.col_status') }}</th><th>{{ t('dashboard.col_cpu') }}</th><th>{{ t('dashboard.col_mem') }}</th><th></th></tr>
+            <tr><th></th><th>{{ t('dashboard.col_name') }}</th><th class="col-hide-m">{{ t('dashboard.col_status') }}</th><th>{{ t('dashboard.col_cpu') }}</th><th>{{ t('dashboard.col_mem') }}</th><th></th></tr>
           </thead>
           <tbody>
             <tr v-for="c in containers.slice(0, 10)" :key="c.id">
@@ -393,8 +453,9 @@
               <td>
                 <strong>{{ c.name }}</strong>
                 <div class="mono" style="color:var(--sub);font-size:10px">{{ shortImage(c.image) }}</div>
+                <div v-if="c.status" class="show-m sub">{{ c.status }}</div>
               </td>
-              <td style="font-size:11px">{{ c.status }}</td>
+              <td class="col-hide-m" style="font-size:11px">{{ c.status }}</td>
               <td class="mono">
                 {{ cstats[c.id]?.cpu || '—' }}
                 <span v-if="cpuNum(cstats[c.id]?.cpu)!=null" class="mini-bar">
@@ -458,13 +519,16 @@
           <router-link class="btn tiny" to="/network">{{ t('nav.network') }}</router-link>
         </h3>
         <div class="table-wrap">
-        <table class="dense">
-          <thead><tr><th>{{ t('dashboard.col_process') }}</th><th>{{ t('dashboard.col_port') }}</th><th>{{ t('dashboard.col_addr') }}</th></tr></thead>
+        <table class="dense fit-m">
+          <thead><tr><th>{{ t('dashboard.col_process') }}</th><th>{{ t('dashboard.col_port') }}</th><th class="col-hide-m">{{ t('dashboard.col_addr') }}</th></tr></thead>
           <tbody>
             <tr v-for="(p,i) in ports.slice(0, 12)" :key="i">
-              <td>{{ p.process }}</td>
+              <td>
+                {{ p.process }}
+                <div v-if="p.address" class="show-m sub mono">{{ p.address }}</div>
+              </td>
               <td class="mono">{{ p.port }}</td>
-              <td class="mono" style="font-size:10px">{{ p.address }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ p.address }}</td>
             </tr>
             <tr v-if="!ports.length"><td colspan="3" style="color:var(--sub)">—</td></tr>
           </tbody>
@@ -525,20 +589,23 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, defineAsyncComponent, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Battery, BatteryCharging, BatteryFull, BatteryLow, BatteryMedium,
-  Monitor, Play, Square, Copy, Moon, RefreshCw, Power,
+  Bot, Monitor, Play, Square, Copy, Moon, RefreshCw, Power, Sparkles,
 } from '@lucide/vue'
 import { startVisibleInterval } from '../lib/poll'
 import { authState } from '../lib/authState'
-import LineChart from '../components/LineChart.vue'
-import StackBar from '../components/StackBar.vue'
+// Charts are first-screen but not first-paint: keep them out of the entry
+// chunk so the 150 KiB budget stays on the shell + dashboard chrome.
+const LineChart = defineAsyncComponent(() => import('../components/LineChart.vue'))
+const StackBar = defineAsyncComponent(() => import('../components/StackBar.vue'))
 import {
   doAction, getAlerts, getBookmarks, getContainers, getHealthChecks, getHost,
   getListeningPorts, getMetricsRange, getPower, getSensors, getStatus,
-  getStorage, getUps, powerAction, setSystemSharing,
+  getOllamaStatus, getStorage, getUps, powerAction, setSystemSharing,
 } from '../api/client'
+import { openAssistant } from '../lib/assistant'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -561,7 +628,7 @@ const cstats = ref({})
 // the operator that they are no longer live.
 const cstatsAt = ref(0)
 //: True once the displayed CPU/MEM figures are older than two heavy ticks.
-// Ticked by the 12s light interval.  Date.now() on its own is not a reactive
+// Ticked by the 20s light interval.  Date.now() on its own is not a reactive
 // dependency, so without this ref the staleness badge would be computed once
 // and then never re-evaluated.
 const clock = ref(Date.now())
@@ -572,6 +639,7 @@ const ports = ref([])
 // UPS / battery snapshot; the tile renders only when `present` is true, so a
 // desktop with no UPS never shows an empty card.
 const ups = ref(null)
+const ollama = ref(null)
 const sensors = ref(null)
 const bookmarks = ref([])
 const health = ref(null)
@@ -692,7 +760,7 @@ const cpuStack = computed(() => [
   { label: 'sys', value: cpu.value.sys || 0, color: 'var(--warn)' },
   { label: 'idle', value: cpu.value.idle || 0, color: 'var(--bar-track)' },
 ])
-const memTotal = computed(() => mem.value.total_gb ?? '—')
+const memTotal = computed(() => mem.value.total_gb ?? sys.value.mem_total_gb ?? host.value?.mem_total_gb ?? '—')
 // pressure-based (macOS); NOT PhysMem cache-inflated used%
 const memUsedPct = computed(() => {
   if (mem.value.pressure_used_pct != null) return mem.value.pressure_used_pct
@@ -766,6 +834,46 @@ const upsStateLabel = computed(() => {
   return ''
 })
 // Everything the removed tile said, one hover away.
+const ollamaChipVisible = computed(() => {
+  const o = ollama.value
+  return Boolean(o && (o.installed || o.reachable || o.service?.label))
+})
+const ollamaResidentName = computed(() => {
+  const first = (ollama.value?.resident || [])[0]
+  return first?.name || ''
+})
+const ollamaChipClass = computed(() => {
+  if (!ollama.value) return ''
+  if (ollama.value.reachable) return 'ok'
+  if (ollama.value.installed || ollama.value.service?.label) return 'warn'
+  return ''
+})
+const ollamaChipLabel = computed(() => {
+  if (ollamaResidentName.value) return ollamaResidentName.value
+  if (ollama.value?.reachable) return t('dashboard.ollama_up')
+  return t('dashboard.ollama_down')
+})
+const ollamaApiHost = computed(() => {
+  const raw = ollama.value?.url || 'http://127.0.0.1:11434'
+  try {
+    return new URL(raw).host
+  } catch {
+    return '127.0.0.1:11434'
+  }
+})
+const ollamaApiTitle = computed(() => ollamaTooltip.value || 'http://127.0.0.1:11434')
+const ollamaTooltip = computed(() => {
+  const o = ollama.value
+  if (!o) return ''
+  const lines = [t('dashboard.ollama_title')]
+  if (o.url) lines.push(o.url)
+  if (o.version) lines.push(`v${o.version}`)
+  if (ollamaResidentName.value) lines.push(t('dashboard.ollama_resident', { name: ollamaResidentName.value }))
+  else if (o.reachable) lines.push(t('dashboard.ollama_none_resident'))
+  else lines.push(t('dashboard.ollama_down'))
+  return lines.join('\n')
+})
+
 const upsTooltip = computed(() => {
   const u = ups.value
   if (!u?.present) return ''
@@ -976,6 +1084,15 @@ function copyVnc() {
     toast('❌ ' + text)
   }
 }
+function copyOllamaApi() {
+  const text = ollama.value?.url || 'http://127.0.0.1:11434'
+  try {
+    navigator.clipboard.writeText(text)
+    toast('✅ ' + t('common.copied'))
+  } catch {
+    toast('❌ ' + t('common.copy_failed'))
+  }
+}
 function barClass(pct) {
   if (pct >= 90) return 'danger'
   if (pct >= 75) return 'warn'
@@ -1030,10 +1147,11 @@ async function refresh() {
     return false
   }
 }
-async function loadSensors(force = false) {
+async function loadSensors(force = false, { light = false } = {}) {
   try {
-    // Prefer cache (server TTL ~6s); force only on manual refresh
-    sensors.value = await getSensors(force)
+    // Prefer cache; force only on manual refresh.  The 20s tick uses
+    // light=true so a sitting dashboard does not spawn ``top``.
+    sensors.value = await getSensors(force, { light })
     loadError.value = ''
   } catch (e) {
     loadError.value = e.message || String(e)
@@ -1050,17 +1168,30 @@ async function loadMetrics() {
   } catch {}
 }
 async function refreshHeavy(forceSensors = false, withDockerStats = false) {
-  loading.value = true
   // Secondary tiles keep their previous snapshot on failure (their catches stay
   // deliberately silent), so they cannot decide whether this tick "failed". The
   // host read is the canonical liveness probe — it already drives the failure
   // banner — so it alone reports the tick failed and lets the 90s heavy poll
   // back off through lib/poll.js while the server is unreachable.
   let hostOk = true
-  // stats=false avoids ~2s docker stats on every heavy tick; cache on server is 15s when true
+  // Same contract as the skeleton (`!host && !sensors`): a 90s poll must
+  // not disable Refresh or look like a first-paint reload.
+  if (!host.value && !sensors.value) loading.value = true
+  // None of these may sit in the skeleton Promise.all: on this host they
+  // measured 1.1–3.4s and, when awaited next to docker stats, the cheap
+  // list call queued behind it and put the 3s wait back on first paint.
+  void getContainers(withDockerStats).then(c => {
+    containers.value = c.containers || []
+    if (c.stats && Object.keys(c.stats).length) {
+      cstats.value = c.stats
+      cstatsAt.value = Date.now()
+    }
+  }).catch(() => {})
+  void getHealthChecks().then(h => { health.value = h }).catch(() => {})
+  void loadSensors(forceSensors)
+  void getBookmarks().then(b => { bookmarks.value = b.bookmarks || [] }).catch(() => {})
   await Promise.all([
     loadMetrics(),
-    loadSensors(forceSensors),
     getStorage(true).then(s => { storage.value = s }).catch(() => {}),
     // host drives the skeleton gate, so its failure has to be visible rather
     // than leaving the page on placeholders.
@@ -1069,31 +1200,18 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
       hostOk = false
     }),
     getAlerts(12).then(a => { alerts.value = a.alerts || [] }).catch(() => {}),
-    getContainers(withDockerStats).then(c => {
-      containers.value = c.containers || []
-      // The 90s tick asks for stats=false (docker stats costs ~2s), so the
-      // response carries an empty map and the previous numbers are kept.
-      // Record when they were actually measured: otherwise the CPU/MEM columns
-      // silently show minutes-old values with nothing marking them stale.
-      if (c.stats && Object.keys(c.stats).length) {
-        cstats.value = c.stats
-        cstatsAt.value = Date.now()
-      }
-    }).catch(() => {}),
-    // Cheap lsof-only endpoint: the full /api/system/network overview fans out
-    // networksetup per service plus docker network inspect per network, which
-    // is far too much work for one tile that renders 12 rows.
     getListeningPorts(40).then(p => { ports.value = p.ports || [] }).catch(() => {}),
-    getBookmarks().then(b => { bookmarks.value = b.bookmarks || [] }).catch(() => {}),
-    getHealthChecks().then(h => { health.value = h }).catch(() => {}),
-    // Secondary tile: a failed probe keeps the previous snapshot rather than
-    // hiding a UPS that was there a minute ago.
     getUps().then(u => { ups.value = u }).catch(() => {}),
+    getOllamaStatus().then(o => { ollama.value = o }).catch(() => {}),
     loadPower(),
   ])
   loading.value = false
   if (!hostOk) return false
 }
+function openAssistBrief() {
+  openAssistant({ action: 'brief' })
+}
+
 async function refreshAll() {
   await Promise.all([refresh(), refreshHeavy(true, true)])
 }
@@ -1117,33 +1235,55 @@ async function act(svc, action) {
   }
 }
 
-onMounted(() => {
-  void refresh()
+const highMode = computed(() => status.value?.resource_mode === 'high')
+
+function stopDashTimers() {
+  if (typeof timer === 'function') timer()
+  if (typeof heavyTimer === 'function') heavyTimer()
+  timer = null
+  heavyTimer = null
+}
+
+function startDashTimers() {
+  stopDashTimers()
+  const lightMs = highMode.value ? 12000 : 20000
   if (isMemberView.value) {
-    // Members only have /api/status; every heavy loader below reads admin
-    // endpoints and would produce nothing but 401s for this session.
     timer = startVisibleInterval(async () => {
       const ok = await refresh()
       clock.value = Date.now()
       return ok
-    }, 12000)
+    }, lightMs)
     return
   }
-  // first paint: include docker stats once
-  void refreshHeavy(true, true)
-  // light: status + sensors from cache; pause when tab hidden
+  // Low: light sensors, no docker stats on the 90s tick.
+  // High: full sensors every 12s and docker stats every 60s.
   timer = startVisibleInterval(async () => {
-    const results = await Promise.all([refresh(), loadSensors(false)])
+    const results = await Promise.all([
+      refresh(),
+      loadSensors(false, { light: !highMode.value }),
+    ])
     clock.value = Date.now()
-    // Either sub-read failing marks the tick failed, engaging poll.js backoff.
     if (results.includes(false)) return false
-  }, 12000)
-  // heavy: no docker stats; manual refresh still pulls stats
-  heavyTimer = startVisibleInterval(() => refreshHeavy(false, false), 90000)
+  }, lightMs)
+  heavyTimer = startVisibleInterval(
+    () => refreshHeavy(false, highMode.value),
+    highMode.value ? 60000 : 90000,
+  )
+}
+
+onMounted(() => {
+  void (async () => {
+    await refresh()
+    if (!isMemberView.value) {
+      // Low: names/state only. High: docker stats fill CPU/MEM.
+      void refreshHeavy(false, highMode.value)
+    }
+    startDashTimers()
+  })()
 })
+watch(highMode, () => startDashTimers())
 onUnmounted(() => {
-  if (typeof timer === 'function') timer()
-  if (typeof heavyTimer === 'function') heavyTimer()
+  stopDashTimers()
   if (actionRefreshTimer) clearTimeout(actionRefreshTimer)
   actionRefreshTimer = null
 })
@@ -1181,7 +1321,10 @@ onUnmounted(() => {
 }
 .host-ups .ups-pct { font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
 .host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: transparent; }
+.host-ups.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
 .host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+a.host-ollama { text-decoration: none; }
+button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .host-meta { color: var(--sub); font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 5px; }
 .host-meta .dot { opacity: .35; }
 .host-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -1244,6 +1387,42 @@ onUnmounted(() => {
 .disk-temp { color: var(--txt); font-weight: 700; font-family: ui-monospace, Menlo, monospace; }
 .disk-unavailable, .disk-empty { margin-top: 2px; color: var(--sub); font-size: 10px; line-height: 1.25; }
 
+.top-cpu-head { justify-content: space-between; margin-top: 10px; }
+.ollama-api-wrap { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.ollama-api {
+  display: inline-flex; align-items: center; gap: 5px;
+  text-decoration: none; color: var(--sub);
+  font-size: 10px; font-weight: 700; letter-spacing: .3px;
+  text-transform: uppercase; min-width: 0;
+}
+.ollama-api .mono {
+  text-transform: none; letter-spacing: 0; color: var(--txt);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ollama-api:hover { color: var(--accent); }
+table.top-cpu { table-layout: fixed; }
+table.top-cpu .col-cpu { width: 112px; }
+table.top-cpu .col-mem { width: 52px; }
+table.top-cpu .col-rss { width: 58px; }
+table.top-cpu th.num,
+table.top-cpu td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-family: ui-monospace, Menlo, monospace;
+}
+table.top-cpu td.proc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+table.top-cpu .cpu-n {
+  display: inline-block;
+  min-width: 4.2ch;
+  text-align: right;
+}
+table.top-cpu .mini-bar { margin-left: 6px; }
+
 .net-stats {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
 }
@@ -1258,6 +1437,7 @@ onUnmounted(() => {
   font-size: 12px; color: var(--sub);
 }
 .chart-intro b { color: var(--txt); font-family: ui-monospace, Menlo, monospace; }
+.tile-tools { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
 .range-btns { display: inline-flex; gap: 3px; }
 .pwr-group { display: inline-flex; align-items: center; gap: 3px; margin-left: 4px; }
 .pwr-group .tiny { font-size: 12px; padding: 2px 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
@@ -1332,8 +1512,15 @@ onUnmounted(() => {
   .host-strip { flex-direction: column; align-items: flex-start; padding: 10px 12px; gap: 8px; }
   .host-name { font-size: 15px; }
   .host-meta { font-size: 11px; }
-  .host-pills { gap: 4px; }
+  .host-pills { width: 100%; gap: 6px; }
   .host-pills .pill { padding: 3px 8px; font-size: 10px; }
+  .pwr-group { margin-left: 0; }
+  .pwr-group .tiny { min-width: 40px; min-height: 36px; padding: 6px 8px; }
+  .tile-tools { margin-left: 0; width: 100%; justify-content: flex-start; }
+  .res-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .disk-head .sub { white-space: normal; }
+  .top-cpu-head { flex-wrap: wrap; gap: 6px; }
+  .range-btns { flex-wrap: wrap; }
   .cpu-facts { grid-template-columns: repeat(2, 1fr); }
   .mem-break { grid-template-columns: repeat(2, 1fr); }
   .net-stats { grid-template-columns: 1fr 1fr; }
@@ -1345,7 +1532,7 @@ onUnmounted(() => {
   .disk-facts { font-size: 9px; }
   .load-row { grid-template-columns: 24px 1fr 36px; font-size: 10px; }
   .chart-intro { font-size: 11px; gap: 8px; }
-  .range-btns { margin-top: 4px; }
+  .range-btns { margin-top: 0; }
 }
 @media (max-width: 380px) {
   .cpu-facts { grid-template-columns: 1fr 1fr; gap: 4px; }

@@ -91,7 +91,16 @@ def bookmarks(force: bool = False):
 
 # ---- sensors ----
 @router.get("/api/system/sensors")
-def sensors(force: bool = False):
+def sensors(force: bool = False, light: bool = False):
+    # Dashboard's 20s tick only needs CPU/mem/load.  Full collect still
+    # runs ``top`` (1.6s here) plus ps/netstat; the 90s heavy tick and
+    # the manual refresh button keep that path.
+    from hub.resource_mode import is_high
+    if light and not force and not is_high():
+        hit = sensors_svc.peek_sensors()
+        if hit is not None:
+            return hit
+        return sensors_svc.collect_light()
     return sensors_svc.collect_sensors(force=force)
 
 

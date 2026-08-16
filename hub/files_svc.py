@@ -436,7 +436,7 @@ def filebrowser_status() -> dict:
                 except ValueError:
                     pass
     if not running:
-        rc2, out2, _ = sh(["/bin/pgrep", "-f", "filebrowser-bin"], timeout=5)
+        rc2, out2, _ = sh(["/usr/bin/pgrep", "-f", "filebrowser-bin"], timeout=5)
         if rc2 == 0 and out2.strip():
             running = True
             try:

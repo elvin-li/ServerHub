@@ -4,12 +4,12 @@
     <p class="hint" style="margin-top:0">{{ t('notifych.hint') }}</p>
 
     <div class="table-wrap" v-if="channels.length">
-    <table class="dense">
+    <table class="dense fit-m">
       <thead>
         <tr>
           <th>{{ t('common.name') }}</th>
-          <th>{{ t('common.type') }}</th>
-          <th>{{ t('notifych.min_level') }}</th>
+          <th class="col-hide-m">{{ t('common.type') }}</th>
+          <th class="col-hide-m">{{ t('notifych.min_level') }}</th>
           <th>{{ t('common.status') }}</th>
           <th></th>
         </tr>
@@ -19,9 +19,10 @@
           <td>
             <strong>{{ c.name }}</strong>
             <div class="mono sub-line">{{ c.id }}</div>
+            <div class="show-m sub">{{ typeLabel(c.type) }} · {{ t(`notifych.level_${c.min_level}`) }}</div>
           </td>
-          <td>{{ typeLabel(c.type) }}</td>
-          <td>
+          <td class="col-hide-m">{{ typeLabel(c.type) }}</td>
+          <td class="col-hide-m">
             <span class="badge" :class="levelBadge(c.min_level)">{{ t(`notifych.level_${c.min_level}`) }}</span>
             <span v-if="c.notify_resolve" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
           </td>
@@ -32,7 +33,7 @@
           </td>
           <td class="row-btns">
             <button class="tiny" :disabled="busy" @click="startEdit(c)">{{ t('common.edit') }}</button>
-            <button class="tiny" :disabled="busy" @click="testChannel(c)">{{ t('common.test') }}</button>
+            <button class="tiny hide-m" :disabled="busy" @click="testChannel(c)">{{ t('common.test') }}</button>
             <button class="tiny danger" :disabled="busy" @click="removeChannel(c)">{{ t('common.delete') }}</button>
           </td>
         </tr>
@@ -162,6 +163,15 @@ function levelBadge(level) {
   return 'ok'
 }
 
+function softText(j, fallbackKey = 'common.fail') {
+  if (j?.code) {
+    const key = `err.${j.code}`
+    const translated = t(key, j.params || {})
+    if (translated !== key) return translated
+  }
+  return j?.message || t(fallbackKey)
+}
+
 function fieldsFor(ty) {
   return types.value[ty]?.fields || []
 }
@@ -248,7 +258,7 @@ async function testChannel(c) {
   busy.value = true
   try {
     const r = await testNotifyChannel(c.id)
-    toast(r.ok ? '✅ ' + t('notifych.test_sent') : '❌ ' + (r.message || t('common.fail')))
+    toast(r.ok ? '✅ ' + t('notifych.test_sent') : '❌ ' + softText(r))
   } catch (e) {
     toast('❌ ' + e.message)
   } finally {

@@ -158,6 +158,46 @@ def run_admin(command: Sequence[str], *, timeout: int = 120) -> dict:
     return run_admin_sequence([command], timeout=timeout)
 
 
+def prime_sudo_ticket(*, timeout: int = 30) -> dict:
+    """Validate the web-entered password and cache a sudo ticket for this user.
+
+    Homebrew cask installs that wrap ``/usr/sbin/installer`` call ``sudo`` from
+    the panel's own UID.  Priming with ``sudo -v`` lets those inner calls reuse
+    the ticket without a tty — the same pattern an operator would use after
+    typing ``sudo -v`` once in Terminal.
+    """
+    password = _admin_password.get()
+    if not password:
+        return {"ok": False, "error": "password_required"}
+    try:
+        proc = subprocess.run(
+            [SUDO, "-S", "-p", "", "-v"],
+            input=password + "\n",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "failed", "message": "sudo timeout"}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": "unavailable", "message": str(exc)[:200]}
+
+    error = (proc.stderr or "").strip()
+    if proc.returncode == 0:
+        return {"ok": True}
+    lowered = error.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "sorry, try again",
+            "incorrect password",
+            "authentication failure",
+        )
+    ):
+        return {"ok": False, "error": "password_incorrect"}
+    return {"ok": False, "error": "failed", "message": error[-500:]}
+
+
 #: What sudo says when it declines to run something at all, as opposed to running
 #: it and having it fail.  Everything here is printed by sudo itself, before the
 #: command is executed.

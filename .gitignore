@@ -96,3 +96,5 @@ data/pf-anchor-*
 data/catalog-remote/
 # Rollup watermark for the tiered metrics history.
 data/metrics-rollup-state.json
+# Homebrew services probe cache written by hub/brew_cache.py.
+data/brew-services.cache.json

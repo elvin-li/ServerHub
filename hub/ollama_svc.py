@@ -45,9 +45,12 @@ from urllib.parse import urlsplit
 
 from hub.config import cfg
 from hub.errors import CODES, api_error
+from hub.http_guard import RedirectRefused, is_local_http_origin, no_redirect_opener
 from hub.jobs import run_watchdog
 from hub.paths import AGENTS_DIR
 from hub.util import cached_snapshot
+
+_OPENER = no_redirect_opener()
 
 _TTL = 30.0
 
@@ -105,27 +108,70 @@ CODES.setdefault("ollama.prompt_required", (400, "a prompt is required"))
 CODES.setdefault("ollama.messages_required", (400, "at least one chat message is required"))
 CODES.setdefault("ollama.bad_message", (400, "each chat message needs a role of user, assistant or system"))
 CODES.setdefault("ollama.status_failed", (500, "the Ollama status could not be read"))
+CODES.setdefault("ollama.bad_url", (
+    400, "Ollama URL must be a local or private HTTP origin",
+))
+CODES.setdefault("ollama.bad_label", (400, "invalid launchd label: {label}"))
+
+#: launchd Label: reverse-DNS, no spaces or shell metacharacters.
+LABEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
 def _settings() -> dict:
     return (cfg().get("settings") or {}).get("ollama") or {}
 
 
-def base_url() -> str:
-    """The daemon base URL (hand-edited ``settings.ollama.url``), no trailing /."""
+def configured_url() -> str:
+    """The operator-edited URL, unvalidated."""
     return str(_settings().get("url") or DEFAULT_URL).rstrip("/")
 
 
+def base_url() -> str:
+    """The daemon URL the panel is allowed to contact.
+
+    ``settings.ollama.url`` is operator-edited (Settings UI or YAML).  A
+    public or metadata origin would turn every status poll and chat POST
+    into SSRF, so a rejected override falls back to the loopback default
+    rather than being fetched.
+    """
+    raw = configured_url()
+    return raw if is_local_http_origin(raw) else DEFAULT_URL
+
+
+def url_was_rejected() -> bool:
+    return configured_url() != base_url()
+
+
+def validate_settings_url(url: str) -> str:
+    """Normalize a settings write; refuse anything the panel must not fetch."""
+    text = str(url or "").strip().rstrip("/")
+    if not text:
+        return DEFAULT_URL
+    if not is_local_http_origin(text):
+        raise api_error("ollama.bad_url")
+    return text
+
+
+def validate_settings_label(label: str) -> str:
+    """Empty means auto-discover; anything else must look like a launchd Label."""
+    text = str(label or "").strip()
+    if text and not LABEL_RE.match(text):
+        raise api_error("ollama.bad_label", label=text[:80])
+    return text
+
+
 def binary_path() -> str | None:
-    """The ollama CLI, or None.  PATH first, then the Homebrew prefixes."""
-    found = shutil.which("ollama")
-    if found:
-        return found
+    """The ollama CLI, or None. Known prefixes first, then PATH.
+
+    pull/rm run this binary; a PATH hijack would replace the model store
+    operations the panel attributes to the installed ollama.
+    """
     for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
         p = Path(prefix) / "ollama"
         if p.is_file():
             return str(p)
-    return None
+    found = shutil.which("ollama")
+    return found if found and Path(found).is_absolute() else None
 
 
 def _cli_env() -> dict:
@@ -159,8 +205,11 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
         method="GET" if payload is None else "POST",
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read(MAX_BODY_BYTES)
+    try:
+        with _OPENER.open(req, timeout=timeout) as r:
+            raw = r.read(MAX_BODY_BYTES)
+    except RedirectRefused as e:
+        raise ValueError(str(e)) from e
     if len(raw) >= MAX_BODY_BYTES:
         raise ValueError("response body exceeds the parse cap")
     return json.loads(raw) if raw else {}
@@ -352,9 +401,10 @@ def status() -> dict:
             error = str(e)[:200]
     binary = binary_path()
     service = _service_state(reachable=reachable)
-    return {
+    snap = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "url": base_url(),
+        "url_rejected": url_was_rejected(),
         "installed": bool(binary or service.get("label")),
         "binary": binary,
         "reachable": reachable,
@@ -365,6 +415,7 @@ def status() -> dict:
         "resident": resident,
         "pull": pull_state(),
     }
+    return snap
 
 
 # ── model name validation ────────────────────────────────────────────────────
@@ -602,7 +653,7 @@ def _open_chat_http(payload: dict):
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
     try:
-        return urllib.request.urlopen(req, timeout=GENERATE_TIMEOUT)
+        return _OPENER.open(req, timeout=GENERATE_TIMEOUT)
     except urllib.error.HTTPError as e:
         err = ""
         try:

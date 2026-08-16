@@ -333,7 +333,7 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(3px);
 }
 .terminal-dialog {
-  width: min(1180px, 96vw); height: min(760px, 92dvh);
+  width: min(1180px, 100%); height: min(760px, 92dvh);
   display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid #333942; border-radius: 9px;
@@ -366,7 +366,7 @@ onBeforeUnmount(() => {
   .terminal-picker > * { width: 100%; }
   .tsel select, .tsel input { width: 100%; min-width: 0; font-size: 16px; }
   .terminal-backdrop { padding: 0; }
-  .terminal-dialog { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .terminal-dialog { width: 100%; height: 100dvh; border: 0; border-radius: 0; }
   .terminal-head { padding-top: max(7px, env(safe-area-inset-top)); }
   .session-id, .terminal-foot span:last-child { display: none; }
   .xterm-host { padding: 8px 4px 4px 8px; }

@@ -175,6 +175,7 @@ describe('router auth guard', () => {
       expect(router.currentRoute.value.name).toBe('main')
       await router.push('/power')
       expect(router.currentRoute.value.path).toBe('/')
+      expect(router.currentRoute.value.hash).toBe('#remote')
     })
   })
 })

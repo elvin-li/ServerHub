@@ -9,7 +9,7 @@
       </select>
       <div class="k">{{ t('sched.cron') }}</div>
       <div>
-        <div class="row" style="gap:6px;flex-wrap:nowrap">
+        <div class="row cron-row">
           <select v-model="preset" :aria-label="t('sched.preset_label')" @change="applyPreset">
             <option value="custom">{{ t('sched.preset_custom') }}</option>
             <option value="hourly">{{ t('sched.preset_hourly') }}</option>
@@ -260,3 +260,10 @@ onMounted(async () => {
   }
 })
 </script>
+
+<style scoped>
+.cron-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+@media (max-width: 640px) {
+  .cron-row input { min-width: 0; width: 100%; }
+}
+</style>

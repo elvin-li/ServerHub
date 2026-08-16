@@ -4,10 +4,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import HTTPException
-
+from hub import cli_args, files_svc
 from hub.config import cfg
-from hub import files_svc
+from hub.errors import api_error
 
 
 def _log_path_allowed(path: Path) -> bool:
@@ -44,22 +43,24 @@ def log_sources() -> list:
 
 
 def tail_log(source_id: str, lines: int = 200) -> dict:
+    source_id = cli_args.require_positional(source_id, label="log source")
     sources = {s["id"]: s for s in log_sources()}
     if source_id not in sources:
-        raise HTTPException(404, "unknown log source")
+        raise api_error("logs.unknown_source")
     meta = sources[source_id]
     p = Path(meta["path"])
     if not _log_path_allowed(p):
-        raise HTTPException(403, "protected log path")
+        raise api_error("logs.protected")
     if not p.is_file():
         return {"id": source_id, "name": meta["name"], "path": meta["path"],
-                "exists": False, "log": "(file does not exist)", "lines": 0}
+                "exists": False, "size": 0, "log": "(file does not exist)", "lines": 0}
     lines = max(10, min(int(lines), 2000))
     # efficient tail
     try:
         with open(p, "rb") as f:
             f.seek(0, 2)
-            size = f.tell()
+            file_size = f.tell()
+            size = file_size
             block = 4096
             data = b""
             while size > 0 and data.count(b"\n") <= lines:
@@ -70,6 +71,7 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
             text = data.decode("utf-8", errors="replace")
             parts = text.splitlines()[-lines:]
             return {"id": source_id, "name": meta["name"], "path": meta["path"],
-                    "exists": True, "log": "\n".join(parts), "lines": len(parts)}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+                    "exists": True, "size": file_size, "log": "\n".join(parts),
+                    "lines": len(parts)}
+    except Exception:
+        raise api_error("logs.read_failed")

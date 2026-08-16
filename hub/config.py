@@ -74,6 +74,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "host_ip": "",
         "metrics_interval": 90,
         "alert_interval": 90,
+        "resource_mode": "low",
         "adaptive": True,
         "auth": {"enabled": True, "allow_localhost": False},
         # VM consoles are disabled until an operator maps a UTM VM to a

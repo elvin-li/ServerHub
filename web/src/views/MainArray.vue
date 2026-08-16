@@ -57,24 +57,24 @@
 
     <h2 class="section-title">{{ t('main.array_devices') }}</h2>
     <div class="table-wrap" style="margin-bottom:12px">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th></th>
-            <th>{{ t('main_extra.role') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.role') }}</th>
             <th>{{ t('dashboard.col_mount') }}</th>
-            <th>{{ t('main_extra.th_kind') }}</th>
-            <th>{{ t('main_extra.th_fs') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_fs') }}</th>
             <th>{{ t('main_extra.th_total') }}</th>
-            <th>{{ t('main_extra.th_used') }}</th>
-            <th>{{ t('main_extra.th_avail') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_used') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_avail') }}</th>
             <th>{{ t('main_extra.th_pct') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="d in arrayDevices" :key="d.mount">
             <td><span class="led on"></span></td>
-            <td>
+            <td class="col-hide-m">
               <span class="badge" :class="d.kind === 'system' ? 'accent' : 'ok'">
                 {{ d.kind === 'system' ? 'Cache/System' : 'Data' }}
               </span>
@@ -85,12 +85,13 @@
                 {{ d.disk_id }}
                 <span v-if="d.shared_pool" class="badge warn" style="margin-left:4px">{{ t('main_extra.shared_pool') }}</span>
               </div>
+              <div class="show-m sub">{{ d.kind }} · {{ d.filesystem }} · {{ d.used_gb }} / {{ d.avail_gb }} GB</div>
             </td>
-            <td>{{ d.kind }}</td>
-            <td class="mono">{{ d.filesystem }}</td>
+            <td class="col-hide-m">{{ d.kind }}</td>
+            <td class="mono col-hide-m">{{ d.filesystem }}</td>
             <td>{{ d.total_gb }} GB</td>
-            <td>{{ d.used_gb }} GB</td>
-            <td>{{ d.avail_gb }} GB</td>
+            <td class="col-hide-m">{{ d.used_gb }} GB</td>
+            <td class="col-hide-m">{{ d.avail_gb }} GB</td>
             <td style="min-width:100px">
               {{ d.pct }}%
               <div class="pct-bar" :class="d.pct>=90?'danger':d.pct>=75?'warn':''" style="margin-top:3px">
@@ -107,15 +108,15 @@
 
     <h2 class="section-title">{{ t('main.unassigned_devices') }}</h2>
     <div class="table-wrap" style="margin-bottom:12px">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('common.name') }}</th>
-            <th>{{ t('main_extra.th_kind') }}</th>
-            <th>{{ t('main_extra.th_power') }}</th>
-            <th>{{ t('main_extra.th_mount') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_power') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_mount') }}</th>
             <th>{{ t('common.actions') }}</th>
           </tr>
         </thead>
@@ -123,10 +124,16 @@
           <tr v-for="d in unassigned" :key="d.id">
             <td><span class="led" :class="powerLed(d)"></span></td>
             <td class="mono">{{ d.device }}</td>
-            <td><strong>{{ d.name }}</strong></td>
-            <td><span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span></td>
-            <td><span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span></td>
-            <td class="mono" style="font-size:11px">
+            <td>
+              <strong>{{ d.name }}</strong>
+              <div class="show-m sub">{{ kindLabel(d) }} · {{ powerLabel(d.power_state) }}</div>
+              <div v-if="(d.volumes||[]).length" class="show-m sub mono">
+                <div v-for="v in d.volumes || []" :key="v.mount">{{ v.mount }}</div>
+              </div>
+            </td>
+            <td class="col-hide-m"><span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span></td>
+            <td class="col-hide-m"><span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span></td>
+            <td class="mono col-hide-m" style="font-size:11px">
               <span v-if="!(d.volumes||[]).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
               <div v-for="v in d.volumes || []" :key="v.mount">{{ v.mount }}</div>
             </td>
@@ -152,17 +159,17 @@
 
     <h2 class="section-title">{{ t('main.power') }}</h2>
     <div class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('common.name') }}</th>
-            <th>{{ t('main_extra.th_kind') }}</th>
-            <th>{{ t('main_extra.protocol') }}</th>
-            <th>{{ t('dashboard.col_capacity') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.protocol') }}</th>
+            <th class="col-hide-m">{{ t('dashboard.col_capacity') }}</th>
             <th>{{ t('main_extra.power_state') }}</th>
-            <th>{{ t('main_extra.mounted_vols') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.mounted_vols') }}</th>
             <th>{{ t('common.actions') }}</th>
           </tr>
         </thead>
@@ -179,16 +186,20 @@
             <td>
               <strong>{{ d.name }}</strong>
               <div class="sub" style="font-size:11px">{{ d.hint }}</div>
+              <div class="show-m sub">{{ kindLabel(d) }} · {{ d.protocol || '—' }}{{ d.size_gb != null ? ' · ' + d.size_gb + ' GB' : '' }}</div>
+              <div v-if="(d.volumes||[]).length" class="show-m sub mono">
+                <div v-for="v in d.volumes || []" :key="'m-'+v.mount">{{ v.mount }}</div>
+              </div>
             </td>
-            <td>
+            <td class="col-hide-m">
               <span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span>
             </td>
-            <td>{{ d.protocol || '—' }}</td>
-            <td>{{ d.size_gb != null ? d.size_gb + ' GB' : '—' }}</td>
+            <td class="col-hide-m">{{ d.protocol || '—' }}</td>
+            <td class="col-hide-m">{{ d.size_gb != null ? d.size_gb + ' GB' : '—' }}</td>
             <td>
               <span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span>
             </td>
-            <td class="mono" style="font-size:11px">
+            <td class="mono col-hide-m" style="font-size:11px">
               <div v-for="v in d.volumes || []" :key="v.mount">{{ v.mount }}</div>
               <span v-if="!(d.volumes||[]).length" style="color:var(--sub)">—</span>
             </td>
@@ -266,19 +277,19 @@
     </div>
 
     <div class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('main_extra.model') }}</th>
-            <th>{{ t('main_extra.protocol') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.protocol') }}</th>
             <th>{{ t('main_extra.temp') }}</th>
             <th>{{ t('main_extra.health') }}</th>
-            <th>{{ t('main_extra.wear') }}</th>
-            <th>{{ t('main_extra.written') }}</th>
-            <th>{{ t('main_extra.power_on') }}</th>
-            <th>{{ t('dashboard.col_capacity') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.wear') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.written') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.power_on') }}</th>
+            <th class="col-hide-m">{{ t('dashboard.col_capacity') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -292,18 +303,22 @@
             <td>
               <strong>{{ d.name || d.id }}</strong>
               <div class="mono" style="color:var(--sub)">{{ d.smart?.model || d.smart?.serial || '' }}</div>
+              <div class="show-m sub">{{ d.protocol || '—' }}{{ d.ssd ? ' · SSD' : '' }}{{ d.size ? ' · ' + d.size : '' }}</div>
+              <div v-if="d.smart?.wear || d.smart?.written || d.smart?.power_on" class="show-m sub">
+                {{ [d.smart?.wear, d.smart?.written, d.smart?.power_on].filter(Boolean).join(' · ') }}
+              </div>
             </td>
-            <td>{{ d.protocol || '—' }}{{ d.ssd ? ' · SSD' : '' }}</td>
+            <td class="col-hide-m">{{ d.protocol || '—' }}{{ d.ssd ? ' · SSD' : '' }}</td>
             <td>{{ d.smart?.temp || '—' }}</td>
             <td>
               <span class="badge" :class="smartBadge(d)">
                 {{ d.smart?.health || (d.error ? 'N/A' : '—') }}
               </span>
             </td>
-            <td>{{ d.smart?.wear || '—' }}</td>
-            <td>{{ d.smart?.written || '—' }}</td>
-            <td class="mono">{{ d.smart?.power_on || '—' }}</td>
-            <td>{{ d.size || '—' }}</td>
+            <td class="col-hide-m">{{ d.smart?.wear || '—' }}</td>
+            <td class="col-hide-m">{{ d.smart?.written || '—' }}</td>
+            <td class="mono col-hide-m">{{ d.smart?.power_on || '—' }}</td>
+            <td class="col-hide-m">{{ d.size || '—' }}</td>
           </tr>
         </tbody>
       </table>
@@ -311,31 +326,35 @@
 
     <h2 class="section-title">{{ t('main.volumes') }}</h2>
     <div class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th>{{ t('dashboard.col_mount') }}</th>
-            <th>{{ t('main_extra.disk') }}</th>
-            <th>{{ t('main_extra.th_fs') }}</th>
-            <th>{{ t('main_extra.th_kind') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.disk') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_fs') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
             <th>{{ t('main_extra.th_total') }}</th>
-            <th>{{ t('main_extra.th_used') }}</th>
-            <th>{{ t('main_extra.th_avail') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_used') }}</th>
+            <th class="col-hide-m">{{ t('main_extra.th_avail') }}</th>
             <th>{{ t('main_extra.th_pct') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="v in data?.volumes || []" :key="v.mount">
-            <td class="mono"><strong>{{ v.mount }}</strong></td>
-            <td class="mono">{{ v.disk_id || '—' }}</td>
-            <td class="mono">{{ v.filesystem }}</td>
-            <td>
+            <td class="mono">
+              <strong>{{ v.mount }}</strong>
+              <div class="show-m sub">{{ v.kind }} · {{ v.filesystem }}{{ v.disk_id ? ' · ' + v.disk_id : '' }}</div>
+              <div class="show-m sub">{{ v.used_gb }} / {{ v.avail_gb }} GB</div>
+            </td>
+            <td class="mono col-hide-m">{{ v.disk_id || '—' }}</td>
+            <td class="mono col-hide-m">{{ v.filesystem }}</td>
+            <td class="col-hide-m">
               <span class="badge accent">{{ v.kind }}</span>
               <span v-if="v.disk_id && sharedDiskIds.has(v.disk_id)" class="badge warn">{{ t('main_extra.shared') }}</span>
             </td>
             <td>{{ v.total_gb }} GB</td>
-            <td>{{ v.used_gb }} GB</td>
-            <td>{{ v.avail_gb }} GB</td>
+            <td class="col-hide-m">{{ v.used_gb }} GB</td>
+            <td class="col-hide-m">{{ v.avail_gb }} GB</td>
             <td style="min-width:120px">
               <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ v.pct }}%</strong>
               <div class="pct-bar" :class="v.pct>=90?'danger':v.pct>=75?'warn':''" style="margin-top:3px">
@@ -361,14 +380,14 @@
       <button @click="refresh" :disabled="loading || busy">{{ t('main_extra.refresh_list') }}</button>
     </div>
     <div class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('common.name') }}</th>
-            <th>FS</th>
-            <th>{{ t('dashboard.col_capacity') }}</th>
-            <th>{{ t('dashboard.col_mount') }}</th>
+            <th class="col-hide-m">FS</th>
+            <th class="col-hide-m">{{ t('dashboard.col_capacity') }}</th>
+            <th class="col-hide-m">{{ t('dashboard.col_mount') }}</th>
             <th>{{ t('common.actions') }}</th>
           </tr>
         </thead>
@@ -382,10 +401,12 @@
             <td>
               {{ v.volume_name || v.name }}
               <span v-if="v.system" class="badge down">{{ t('main_extra.system') }}</span>
+              <div class="show-m sub">{{ v.fs || '—' }}{{ v.size_gb != null ? ' · ' + v.size_gb + ' GB' : '' }}</div>
+              <div v-if="v.mount" class="show-m sub mono">{{ v.mount }}</div>
             </td>
-            <td class="mono">{{ v.fs || '—' }}</td>
-            <td>{{ v.size_gb != null ? v.size_gb + ' GB' : '—' }}</td>
-            <td class="mono" style="font-size:11px">
+            <td class="mono col-hide-m">{{ v.fs || '—' }}</td>
+            <td class="col-hide-m">{{ v.size_gb != null ? v.size_gb + ' GB' : '—' }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">
               <span v-if="v.mount">{{ v.mount }}</span>
               <span v-else style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
             </td>
@@ -477,17 +498,17 @@
         <div v-else>
           <div v-if="!smartMerged.length" style="color:var(--sub)">{{ t('main_extra.smart_no_devices') }}</div>
           <div v-else class="table-wrap" style="max-height:400px;overflow:auto">
-            <table class="dense">
+            <table class="dense fit-m">
               <thead>
                 <tr>
                   <th>{{ t('main_extra.device') }}</th>
                   <th>{{ t('main_extra.model') }}</th>
-                  <th>{{ t('main_extra.protocol') }}</th>
+                  <th class="col-hide-m">{{ t('main_extra.protocol') }}</th>
                   <th>{{ t('main_extra.temp') }}</th>
                   <th>{{ t('main_extra.health') }}</th>
-                  <th>{{ t('main_extra.wear') }}</th>
-                  <th>{{ t('main_extra.power_on') }}</th>
-                  <th>{{ t('main_extra.smart_caps') }}</th>
+                  <th class="col-hide-m">{{ t('main_extra.wear') }}</th>
+                  <th class="col-hide-m">{{ t('main_extra.power_on') }}</th>
+                  <th class="col-hide-m">{{ t('main_extra.smart_caps') }}</th>
                   <th>{{ t('common.actions') }}</th>
                 </tr>
               </thead>
@@ -501,17 +522,18 @@
                   <td>
                     <strong>{{ m.smart?.model || m.smart?.serial || '—' }}</strong>
                     <div class="sub mono" style="font-size:10px">{{ m.size || '—' }}</div>
+                    <div class="show-m sub">{{ m.protocol || '—' }}{{ m.ssd ? ' · SSD' : '' }}{{ m.smart?.wear ? ' · ' + m.smart.wear : '' }}</div>
                   </td>
-                  <td style="font-size:11px">{{ m.protocol || '—' }}{{ m.ssd ? ' · SSD' : '' }}</td>
+                  <td class="col-hide-m" style="font-size:11px">{{ m.protocol || '—' }}{{ m.ssd ? ' · SSD' : '' }}</td>
                   <td>{{ m.smart?.temp || '—' }}</td>
                   <td>
                     <span class="badge" :class="m.smart?.health === 'PASSED' ? 'ok' : (m.smart?.health ? 'warn' : '')">
                       {{ m.smart?.health || '—' }}
                     </span>
                   </td>
-                  <td>{{ m.smart?.wear || '—' }}</td>
-                  <td class="mono">{{ m.smart?.power_on || '—' }}</td>
-                  <td style="font-size:11px">
+                  <td class="col-hide-m">{{ m.smart?.wear || '—' }}</td>
+                  <td class="mono col-hide-m">{{ m.smart?.power_on || '—' }}</td>
+                  <td class="col-hide-m" style="font-size:11px">
                     <span v-if="m.caps?.supported?.length">{{ m.caps.supported.join(', ') }}</span>
                     <span v-else style="color:var(--sub)">{{ t('main_extra.smart_unsupported') }}</span>
                     <div v-if="m.caps?.reason" class="sub" style="font-size:10px;color:var(--warn)">{{ m.caps.reason }}</div>
@@ -535,26 +557,29 @@
                 <tr v-if="smartExpanded.has(m.id) && m.smart?.attrs?.length">
                   <td :colspan="9" style="padding:0;background:var(--bg2,#f6f6f6)">
                     <div style="padding:6px 10px;max-height:300px;overflow:auto">
-                      <table class="dense" style="width:100%">
+                      <table class="dense fit-m" style="width:100%">
                         <thead>
                           <tr>
                             <th style="font-size:10px;width:40px">ID</th>
                             <th style="font-size:10px">{{ t('common.name') }}</th>
                             <th style="font-size:10px" v-if="m.smart.attrs[0]?.raw !== undefined">{{ t('main_extra.smart_value') }}</th>
-                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
-                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
-                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="m.smart.attrs[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="m.smart.attrs[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="m.smart.attrs[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
                             <th style="font-size:10px">{{ m.smart.attrs[0]?.raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr v-for="a in m.smart.attrs" :key="a.id">
                             <td class="mono" style="font-size:10px">{{ a.id }}</td>
-                            <td style="font-size:11px">{{ a.name }}</td>
+                            <td style="font-size:11px">
+                              {{ a.name }}
+                              <div v-if="a.type" class="show-m sub">{{ a.type }}{{ a.worst !== undefined ? ' · W' + a.worst : '' }}{{ a.thresh !== undefined ? ' · T' + a.thresh : '' }}</div>
+                            </td>
                             <td v-if="a.raw !== undefined" class="mono" style="font-size:10px">{{ a.value }}</td>
-                            <td v-if="a.worst !== undefined" class="mono" style="font-size:10px">{{ a.worst }}</td>
-                            <td v-if="a.thresh !== undefined" class="mono" style="font-size:10px">{{ a.thresh }}</td>
-                            <td v-if="a.type !== undefined" style="font-size:10px">
+                            <td class="mono col-hide-m" v-if="a.worst !== undefined" style="font-size:10px">{{ a.worst }}</td>
+                            <td class="mono col-hide-m" v-if="a.thresh !== undefined" style="font-size:10px">{{ a.thresh }}</td>
+                            <td class="col-hide-m" v-if="a.type !== undefined" style="font-size:10px">
                               <span class="badge" :class="a.type === 'Pre-fail' ? 'warn' : ''" style="font-size:9px">{{ a.type }}</span>
                             </td>
                             <td class="mono" style="font-size:10px">{{ a.raw !== undefined ? a.raw : a.value }}</td>
@@ -571,23 +596,26 @@
           <div v-if="smartData?.history?.length" style="margin-top:12px">
             <h4 style="font-size:12px;margin-bottom:6px">{{ t('main_extra.smart_history') }}</h4>
             <div class="table-wrap" style="max-height:160px;overflow:auto">
-              <table class="dense">
+              <table class="dense fit-m">
                 <thead>
                   <tr>
                     <th style="font-size:10px">{{ t('common.time') }}</th>
                     <th style="font-size:10px">{{ t('main_extra.device') }}</th>
-                    <th style="font-size:10px">{{ t('main_extra.th_type') }}</th>
+                    <th class="col-hide-m" style="font-size:10px">{{ t('main_extra.th_type') }}</th>
                     <th style="font-size:10px">{{ t('common.status') }}</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="(h, i) in smartData.history.slice(0, 15)" :key="i">
                     <td class="mono" style="font-size:10px">{{ h.ts ? new Date(h.ts * 1000).toLocaleString() : '—' }}</td>
-                    <td class="mono" style="font-size:10px">{{ h.device || '—' }}</td>
-                    <td style="font-size:10px">{{ h.kind || '—' }}</td>
+                    <td class="mono" style="font-size:10px">
+                      {{ h.device || '—' }}
+                      <div v-if="h.kind" class="show-m sub">{{ h.kind }}</div>
+                    </td>
+                    <td class="col-hide-m" style="font-size:10px">{{ h.kind || '—' }}</td>
                     <td>
                       <span class="badge" :class="h.ok ? 'ok' : 'warn'" style="font-size:10px">
-                        {{ h.ok ? 'OK' : (h.error || h.message || 'Error') }}
+                        {{ h.ok ? t('common.ok') : (h.error || h.message || t('common.error')) }}
                       </span>
                     </td>
                   </tr>

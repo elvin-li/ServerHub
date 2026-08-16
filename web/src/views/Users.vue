@@ -52,31 +52,39 @@
       </form>
 
       <div class="table-wrap" style="margin-top:10px">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th>{{ t('users.username') }}</th>
               <th>{{ t('users.role') }}</th>
-              <th>2FA</th>
-              <th>{{ t('accounts.resources') }}</th>
+              <th class="col-hide-m">2FA</th>
+              <th class="col-hide-m">{{ t('accounts.resources') }}</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             <template v-for="acct in accounts" :key="acct.username">
               <tr>
-                <td><strong>{{ acct.username }}</strong></td>
+                <td>
+                  <strong>{{ acct.username }}</strong>
+                  <div class="show-m sub">2FA {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}</div>
+                  <div class="show-m sub">
+                    <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
+                    <template v-else-if="acct.resources.length">{{ acct.resources.join(', ') }}</template>
+                    <template v-else>{{ t('accounts.no_resources') }}</template>
+                  </div>
+                </td>
                 <td>
                   <span class="badge" :class="acct.role === 'admin' ? 'ok' : ''">
                     {{ acct.role === 'admin' ? t('common.admin') : t('accounts.member') }}
                   </span>
                 </td>
-                <td>
+                <td class="col-hide-m">
                   <span class="badge" :class="acct.twofa_enabled ? 'ok' : ''">
                     {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}
                   </span>
                 </td>
-                <td class="mono" style="font-size:11px">
+                <td class="mono col-hide-m" style="font-size:11px">
                   <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
                   <template v-else-if="acct.resources.length">{{ acct.resources.join(', ') }}</template>
                   <template v-else><span style="color:var(--sub)">{{ t('accounts.no_resources') }}</span></template>
@@ -168,31 +176,35 @@
 
     <SkeletonLoader v-if="!loaded" :cols="8" :rows="6" />
     <div v-else class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th></th>
             <th>{{ t('users.username') }}</th>
-            <th>{{ t('users.display') }}</th>
+            <th class="col-hide-m">{{ t('users.display') }}</th>
             <th>UID</th>
-            <th>{{ t('users.home') }}</th>
-            <th>{{ t('users.shell') }}</th>
+            <th class="col-hide-m">{{ t('users.home') }}</th>
+            <th class="col-hide-m">{{ t('users.shell') }}</th>
             <th>{{ t('users.role') }}</th>
-            <th>{{ t('users.groups') }}</th>
+            <th class="col-hide-m">{{ t('users.groups') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="u in data?.users || []" :key="u.uid">
             <td><span class="led" :class="u.admin ? 'on' : 'off'"></span></td>
-            <td><strong>{{ u.name }}</strong></td>
-            <td>{{ u.gecos || '—' }}</td>
+            <td>
+              <strong>{{ u.name }}</strong>
+              <div v-if="u.gecos" class="show-m sub">{{ u.gecos }}</div>
+              <div class="show-m sub mono">{{ u.home }} · {{ u.shell }}</div>
+            </td>
+            <td class="col-hide-m">{{ u.gecos || '—' }}</td>
             <td class="mono">{{ u.uid }}</td>
-            <td class="mono">{{ u.home }}</td>
-            <td class="mono">{{ u.shell }}</td>
+            <td class="mono col-hide-m">{{ u.home }}</td>
+            <td class="mono col-hide-m">{{ u.shell }}</td>
             <td>
               <span class="badge" :class="u.admin ? 'ok' : ''">{{ u.admin ? t('common.admin') : t('common.standard') }}</span>
             </td>
-            <td class="mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:10px" :title="(u.groups||[]).join(', ')">
+            <td class="mono col-hide-m" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:10px" :title="(u.groups||[]).join(', ')">
               {{ (u.groups || []).slice(0, 6).join(', ') }}{{ (u.groups||[]).length > 6 ? '…' : '' }}
             </td>
           </tr>
@@ -364,13 +376,14 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.accounts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.accounts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .hint { color: var(--sub); font-size: 12px; line-height: 1.5; }
 .accounts-create { margin-top: 10px; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
 .form-grid { display: grid; grid-template-columns: 150px 1fr; gap: 8px 12px; align-items: start; }
 .form-grid > label { color: var(--sub); font-size: 12px; font-weight: 600; padding-top: 8px; }
 .resource-picker { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; }
-.resource-option { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.resource-option { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; flex-wrap: wrap; }
+.resource-option span, .resource-option code { min-width: 0; overflow-wrap: anywhere; }
 .resource-option input { margin: 0; }
 .resource-option code { color: var(--sub); font-size: 10px; }
 .btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -378,7 +391,7 @@ onMounted(() => {
 .editor-section { padding: 8px 4px; }
 .editor-section + .editor-section { border-top: 1px dashed var(--line); }
 button.tiny { font-size: 11px; padding: 3px 10px; }
-@media (max-width: 560px) {
+@media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
   .form-grid > label { padding-top: 0; }
 }

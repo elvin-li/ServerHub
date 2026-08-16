@@ -215,7 +215,7 @@ useDismissable(computed(() => true), () => { close() }, panelEl)
 
 <style scoped>
 .vnc-modal {
-  width: min(1120px, calc(100vw - 28px));
+  width: min(1120px, calc(100% - 28px));
   max-width: none;
   padding: 12px;
   overflow: hidden;

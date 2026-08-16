@@ -5,7 +5,6 @@ import json
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from hub import cli_args
@@ -13,7 +12,7 @@ from hub.docker_cli import docker, engine_up
 from hub.errors import api_error
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
-from hub.util import fan_out, sh, ttl_memo
+from hub.util import LazyPool, fan_out, sh, ttl_memo
 
 _cache = {"t": 0.0, "v": None}
 _CACHE_TTL = 6.0
@@ -21,6 +20,11 @@ _cache_lock = threading.Lock()
 _refresh_lock = threading.Lock()
 _cache_generation = 0
 _cache_refresh_serial = 0
+_overview_pool = LazyPool(11, "hub-network")
+
+
+def shutdown_executor() -> None:
+    _overview_pool.shutdown()
 
 _services_cache = {"t": 0.0, "v": None}
 _SERVICES_CACHE_TTL = 6.0
@@ -414,7 +418,7 @@ def wifi_power_status() -> dict:
     device = devices[0]
     rc, out, err = sh([NS, "-getairportpower", device], timeout=8)
     if rc != 0:
-        rc, out, err = sh(["sudo", "-n", NS, "-getairportpower", device], timeout=8)
+        rc, out, err = sh(["/usr/bin/sudo", "-n", NS, "-getairportpower", device], timeout=8)
     message = out or err or ""
     match = re.search(r":\s*(On|Off)\s*$", message, re.I)
     return {
@@ -434,7 +438,7 @@ def set_wifi_power(on: bool) -> dict:
     rc, out, err = sh([NS, "-setairportpower", device, arg], timeout=10)
     if rc != 0:
         rc, out, err = sh(
-            ["sudo", "-n", NS, "-setairportpower", device, arg], timeout=10
+            ["/usr/bin/sudo", "-n", NS, "-setairportpower", device, arg], timeout=10
         )
     _bust()
     return {
@@ -657,7 +661,7 @@ def add_ip_alias(device: str, ip: str, netmask: str = "255.255.255.255") -> dict
     rc, out, err = sh(["/sbin/ifconfig", device, "alias", ip, "netmask", netmask], timeout=10)
     if rc != 0:
         rc, out, err = sh(
-            ["sudo", "-n", "/sbin/ifconfig", device, "alias", ip, "netmask", netmask],
+            ["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "alias", ip, "netmask", netmask],
             timeout=10,
         )
     _bust()
@@ -674,7 +678,7 @@ def remove_ip_alias(device: str, ip: str) -> dict:
         raise api_error("network.invalid_ip")
     rc, out, err = sh(["/sbin/ifconfig", device, "-alias", ip], timeout=10)
     if rc != 0:
-        rc, out, err = sh(["sudo", "-n", "/sbin/ifconfig", device, "-alias", ip], timeout=10)
+        rc, out, err = sh(["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "-alias", ip], timeout=10)
     _bust()
     msg = out or err
     if rc != 0:
@@ -1338,7 +1342,7 @@ def _validate_device(device: str) -> str:
 
 def _validate_service(service: str) -> str:
     service = (service or "").strip()
-    if not service or len(service) > 80:
+    if not service or len(service) > 80 or service.startswith("-"):
         raise api_error("network.invalid_service_name")
     # must exist
     names = {s["name"] for s in network_services()}
@@ -1600,11 +1604,15 @@ def docker_network_connect(network: str, container: str) -> dict:
         raise api_error("network.docker_args_required")
     if network in ("host", "none"):
         raise api_error("network.builtin_network_connect")
+    network = cli_args.require_positional(network, label="network name")
+    container = cli_args.require_positional(container, label="container name")
     rc, out, err = docker("network", "connect", network, container, timeout=30)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
 def docker_network_disconnect(network: str, container: str, force: bool = False) -> dict:
+    network = cli_args.require_positional(network, label="network name")
+    container = cli_args.require_positional(container, label="container name")
     args = ["network", "disconnect"]
     if force:
         args.append("-f")
@@ -1618,6 +1626,7 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
     from hub import containers_svc
     if not engine_up():
         raise api_error("container.engine_down")
+    container = cli_args.require_positional(container, label="container name")
     rc, out, err = docker("inspect", container, timeout=15)
     if rc != 0:
         raise api_error("network.container_not_found", name=container)
@@ -1699,27 +1708,26 @@ def _build_overview(force_services: bool = False) -> dict:
         except Exception:
             return default
 
-    with ThreadPoolExecutor(max_workers=11) as ex:
-        f_ifaces = ex.submit(interfaces)
-        f_services = ex.submit(network_services, force_services)
-        f_hwports = ex.submit(hardware_ports)
-        f_addrs = ex.submit(_safe, interface_addresses, [])
-        f_listen = ex.submit(_safe, listening_ports, [])
-        f_routes = ex.submit(_safe, routes, [])
-        f_defroute = ex.submit(_safe, default_route, {})
-        f_dports = ex.submit(_safe, docker_published_ports, [])
-        f_dnets = ex.submit(_safe, docker_networks_detail, [])
-        f_alias = ex.submit(_safe, alias_auto_status, None)
-        f_failover = ex.submit(_safe, network_failover_status, None)
-        f_engine = ex.submit(engine_up)
+    f_ifaces = _overview_pool.submit(interfaces)
+    f_services = _overview_pool.submit(network_services, force_services)
+    f_hwports = _overview_pool.submit(hardware_ports)
+    f_addrs = _overview_pool.submit(_safe, interface_addresses, [])
+    f_listen = _overview_pool.submit(_safe, listening_ports, [])
+    f_routes = _overview_pool.submit(_safe, routes, [])
+    f_defroute = _overview_pool.submit(_safe, default_route, {})
+    f_dports = _overview_pool.submit(_safe, docker_published_ports, [])
+    f_dnets = _overview_pool.submit(_safe, docker_networks_detail, [])
+    f_alias = _overview_pool.submit(_safe, alias_auto_status, None)
+    f_failover = _overview_pool.submit(_safe, network_failover_status, None)
+    f_engine = _overview_pool.submit(engine_up)
 
-        ifaces = _safe(f_ifaces.result, [])
-        try:
-            services = f_services.result()
-            svc_error = None
-        except Exception as e:
-            services = []
-            svc_error = str(e)
+    ifaces = _safe(f_ifaces.result, [])
+    try:
+        services = f_services.result()
+        svc_error = None
+    except Exception as e:
+        services = []
+        svc_error = str(e)
 
     primary = None
     for i in ifaces:

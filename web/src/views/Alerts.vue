@@ -7,20 +7,26 @@
     <div class="toolbar">
       <button class="primary" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
       <button :disabled="busy" @click="check">{{ t('alerts.check_now') }}</button>
-      <button :disabled="busy" @click="test">{{ t('alerts.test_notify') }}</button>
+      <button class="hide-m" :disabled="busy" @click="test">{{ t('alerts.test_notify') }}</button>
       <router-link class="btn" to="/settings">{{ t('alerts.notify_settings') }}</router-link>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
     <div v-else-if="!alerts.length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
     <div v-else class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
-          <tr><th>{{ t('alerts.time') }}</th><th>{{ t('alerts.level') }}</th><th>{{ t('alerts.service') }}</th><th>{{ t('alerts.event') }}</th><th>{{ t('alerts.detail') }}</th></tr>
+          <tr>
+            <th class="col-hide-m">{{ t('alerts.time') }}</th>
+            <th>{{ t('alerts.level') }}</th>
+            <th>{{ t('alerts.service') }}</th>
+            <th class="col-hide-m">{{ t('alerts.event') }}</th>
+            <th class="col-hide-m">{{ t('alerts.detail') }}</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="(a,i) in alerts" :key="i">
-            <td class="mono">{{ fmt(a.t) }}</td>
+            <td class="mono col-hide-m">{{ fmt(a.t) }}</td>
             <!-- Keyed on `level` alone, deliberately: a disk that is dying has to
                  read as urgently as a service that is down, so `smart` + `down`
                  lands on the same red .badge.down as a service down. The kind tag
@@ -29,9 +35,12 @@
             <td>
               <span v-if="kindLabel(a)" class="badge" style="margin-right:4px">{{ kindLabel(a) }}</span>
               <strong>{{ a.name }}</strong>
+              <div class="show-m sub">{{ fmt(a.t) }}</div>
+              <div v-if="a.event" class="show-m sub">{{ a.event }}</div>
+              <div v-if="a.message" class="show-m sub">{{ a.message }}</div>
             </td>
-            <td>{{ a.event }}</td>
-            <td style="max-width:320px;font-size:11px">{{ a.message }}</td>
+            <td class="col-hide-m">{{ a.event }}</td>
+            <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ a.message }}</td>
           </tr>
         </tbody>
       </table>

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -111,11 +112,34 @@ class UpdatesWarmerTests(unittest.TestCase):
         self.assertTrue(tools_svc._updates_warmer_thread.daemon)
 
 
+class BrewBusySkipTests(unittest.TestCase):
+    def tearDown(self):
+        tools_svc._updates_cache.update(t=0.0, v=None)
+        tools_svc._brew_retry_at = 0.0
+
+    def test_outdated_does_not_spawn_when_brew_is_busy(self):
+        tools_svc._updates_cache.update(t=time.time(), v={
+            "brew": {"ok": True, "outdated": ["wget"], "count": 1, "raw": ""},
+        })
+        with (
+            patch.object(tools_svc, "_brew_busy", return_value=True),
+            patch.object(tools_svc, "sh", side_effect=AssertionError("brew must not start")),
+        ):
+            got = tools_svc._brew_outdated()
+        self.assertEqual(got["outdated"], ["wget"])
+
+
 class LifespanWiringTests(unittest.TestCase):
-    def test_app_factory_starts_and_stops_the_warmer(self):
+    def test_app_factory_starts_the_warmer_only_in_high_mode(self):
+        """Low mode must not pay softwareupdate on boot; high mode may warm Tools."""
         source = (BASE / "hub" / "app_factory.py").read_text()
         self.assertIn("start_updates_warmer()", source)
+        self.assertIn("is_high()", source)
         self.assertIn("stop_updates_warmer()", source)
+
+    def test_tools_page_starts_the_warmer_on_first_visit(self):
+        extra = (BASE / "hub" / "routers" / "system_extra.py").read_text()
+        self.assertIn("start_updates_warmer()", extra)
 
 
 if __name__ == "__main__":

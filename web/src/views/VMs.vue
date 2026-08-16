@@ -391,7 +391,7 @@ useDismissable(renameTarget, () => { renameTarget.value = null }, renamePanel)
 <style scoped>
 .vm-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr));
   gap: 10px;
 }
 .vm-card {
@@ -413,10 +413,11 @@ useDismissable(renameTarget, () => { renameTarget.value = null }, renamePanel)
   align-items: center;
   gap: 10px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 .vm-titles { flex: 1; min-width: 0; }
-.vm-name { font-weight: 700; font-size: 14px; }
-.vm-sub { font-size: 11px; color: var(--sub); margin-top: 2px; }
+.vm-name { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+.vm-sub { font-size: 11px; color: var(--sub); margin-top: 2px; overflow-wrap: anywhere; }
 .vm-detail { font-size: 12px; color: var(--sub); margin-bottom: 8px; }
 .console-note { color: var(--sub); font-size: 11px; margin: 0 0 8px; }
 .log-pre {

@@ -96,6 +96,7 @@ describe('canLogs', () => {
 describe('formatters', () => {
   it('reads the port from the field, the ports list, or the detail line', () => {
     expect(portOf({ port: 8096 })).toBe(':8096')
+    expect(portOf({ port: 6379, ports: [6379, 6380] })).toBe(':6379 :6380')
     expect(portOf({ ports: ['0.0.0.0:80->80/tcp'] })).toBe('0.0.0.0:80->80/tcp')
     expect(portOf({ ports: [{ port: 53 }] })).toBe('{"port":53}')
     expect(portOf({ detail: 'listening on :8443 ok' })).toBe(':8443')

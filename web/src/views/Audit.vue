@@ -15,27 +15,32 @@
     <div v-else-if="!entries.length && !loadError" class="placeholder">{{ t('audit.empty') }}</div>
     <template v-else>
       <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
-              <th>{{ t('audit.time') }}</th>
+              <th class="col-hide-m">{{ t('audit.time') }}</th>
               <th>{{ t('audit.event') }}</th>
               <th>{{ t('audit.account') }}</th>
-              <th>{{ t('audit.client') }}</th>
+              <th class="col-hide-m">{{ t('audit.client') }}</th>
               <th>{{ t('audit.outcome') }}</th>
-              <th>{{ t('audit.detail') }}</th>
+              <th class="col-hide-m">{{ t('audit.detail') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(e, i) in rows" :key="i">
-              <td class="mono">{{ fmt(e.ts) }}</td>
-              <td class="mono">{{ e.event }}</td>
+              <td class="mono col-hide-m">{{ fmt(e.ts) }}</td>
+              <td class="mono">
+                {{ e.event }}
+                <div class="show-m sub">{{ fmt(e.ts) }}</div>
+                <div v-if="e.client" class="show-m sub">{{ e.client }}</div>
+                <div v-if="detail(e)" class="show-m sub">{{ detail(e) }}</div>
+              </td>
               <td><strong>{{ e.username || '—' }}</strong></td>
-              <td class="mono">{{ e.client || '—' }}</td>
+              <td class="mono col-hide-m">{{ e.client || '—' }}</td>
               <td>
                 <span class="badge" :class="badgeClass(e.outcome)">{{ e.outcome || '—' }}</span>
               </td>
-              <td style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
+              <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
             </tr>
           </tbody>
         </table>

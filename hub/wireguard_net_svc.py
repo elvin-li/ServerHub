@@ -898,7 +898,7 @@ def set_forwarding(enabled: bool) -> dict:
     boot job is what keeps it fixed.
     """
     value = "1" if enabled else "0"
-    rc, _, _ = sh(["sudo", "-n", SYSCTL, "-w", f"net.inet.ip.forwarding={value}"], timeout=10)
+    rc, _, _ = sh(["/usr/bin/sudo", "-n", SYSCTL, "-w", f"net.inet.ip.forwarding={value}"], timeout=10)
     if rc == 0:
         return {"ok": True, "enabled": bool(enabled), "persisted": False}
     result = run_admin_sequence(

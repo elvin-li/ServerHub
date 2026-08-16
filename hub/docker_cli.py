@@ -110,6 +110,15 @@ def engine_up(force: bool = False) -> bool:
         return up
 
 
+def peek_engine() -> bool | None:
+    """Last observed engine state, or None if nothing has probed yet.
+
+    Does not spawn ``docker info``. Host identity in low mode only needs a
+    badge; the 5s probe TTL is for callers that must reflect a restart.
+    """
+    return _engine_cache["v"]
+
+
 def redact_env(env_list: list[str] | None) -> list[str]:
     out = []
     for e in env_list or []:

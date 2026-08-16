@@ -603,7 +603,7 @@ class ChatStream(_NoRealConfig):
             b'{"message":{"role":"assistant","content":""},"done":true}\n',
         ]
         fake = _FakeHttp(chunks)
-        with mock.patch.object(ollama_svc.urllib.request, "urlopen", return_value=fake):
+        with mock.patch.object(ollama_svc._OPENER, "open", return_value=fake):
             lines = list(ollama_svc.start_chat_stream(
                 "qwen3.5:4b", [{"role": "user", "content": "hi"}],
             ))
@@ -619,7 +619,7 @@ class ChatStream(_NoRealConfig):
             seen["body"] = json.loads(req.data.decode("utf-8"))
             return fake
 
-        with mock.patch.object(ollama_svc.urllib.request, "urlopen", side_effect=fake_open):
+        with mock.patch.object(ollama_svc._OPENER, "open", side_effect=fake_open):
             list(ollama_svc.start_chat_stream("m:1", [{"role": "user", "content": "hi"}]))
         self.assertTrue(seen["url"].endswith("/api/chat"))
         self.assertIs(seen["body"]["stream"], True)
@@ -627,7 +627,7 @@ class ChatStream(_NoRealConfig):
 
     def test_connect_failure_is_a_coded_502_before_any_bytes(self):
         with mock.patch.object(
-            ollama_svc.urllib.request, "urlopen",
+            ollama_svc._OPENER, "open",
             side_effect=OSError("connection refused"),
         ):
             with self.assertRaises(HTTPException) as ctx:
@@ -637,7 +637,7 @@ class ChatStream(_NoRealConfig):
     def test_bad_name_never_opens_a_socket(self):
         opened = []
         with mock.patch.object(
-            ollama_svc.urllib.request, "urlopen",
+            ollama_svc._OPENER, "open",
             side_effect=lambda *a, **k: opened.append(True),
         ):
             with self.assertRaises(HTTPException):
@@ -1063,6 +1063,134 @@ class NativeOllamaBrewSkip(_NoRealConfig):
         self.assertIn("services", argv)
         self.assertIn("start", argv)
         self.assertIn("ollama", argv)
+
+
+class TestOllamaLaunchdAnnotation(unittest.TestCase):
+    def test_launchd_row_for_an_ollama_agent_gets_port_and_tag(self):
+        from hub.discovery.launchd import _annotate_ollama_agent
+
+        item = {"id": "com.kiro.ollama", "detail": "Running · pid 1", "port": None}
+        with mock.patch(
+            "hub.ollama_svc._candidate_labels",
+            return_value=["com.kiro.ollama"],
+        ):
+            _annotate_ollama_agent(item)
+        self.assertEqual(item["port"], 11434)
+        self.assertIn("Ollama", item["detail"])
+
+    def test_launchd_row_for_unrelated_agent_is_untouched(self):
+        from hub.discovery.launchd import _annotate_ollama_agent
+
+        item = {"id": "com.example.other", "detail": "Running · pid 2"}
+        _annotate_ollama_agent(item)
+        self.assertNotIn("Ollama", item["detail"])
+        self.assertIsNone(item.get("port"))
+
+
+class SettingsWrite(_NoRealConfig):
+    """PUT /api/settings ollama.* is validated before it is stored."""
+
+    def test_empty_url_becomes_the_loopback_default(self):
+        self.assertEqual(ollama_svc.validate_settings_url(""), ollama_svc.DEFAULT_URL)
+        self.assertEqual(ollama_svc.validate_settings_url("  "), ollama_svc.DEFAULT_URL)
+
+    def test_lan_url_is_kept(self):
+        self.assertEqual(
+            ollama_svc.validate_settings_url("http://192.168.1.10:11434/"),
+            "http://192.168.1.10:11434",
+        )
+
+    def test_public_url_is_refused(self):
+        with self.assertRaises(HTTPException) as ctx:
+            ollama_svc.validate_settings_url("https://ollama.example.com")
+        self.assertEqual(_code(ctx.exception), "ollama.bad_url")
+
+    def test_empty_label_means_auto_discover(self):
+        self.assertEqual(ollama_svc.validate_settings_label(""), "")
+        self.assertEqual(ollama_svc.validate_settings_label("  "), "")
+
+    def test_launchd_label_is_kept(self):
+        self.assertEqual(
+            ollama_svc.validate_settings_label("com.kiro.ollama"),
+            "com.kiro.ollama",
+        )
+
+    def test_shellish_label_is_refused(self):
+        with self.assertRaises(HTTPException) as ctx:
+            ollama_svc.validate_settings_label("-rf")
+        self.assertEqual(_code(ctx.exception), "ollama.bad_label")
+
+
+class SettingsApi(_NoRealConfig):
+    def test_public_settings_defaults(self):
+        from hub.routers.settings_api import _public_settings
+
+        with mock.patch("hub.routers.settings_api.cfg", return_value={"settings": {}}):
+            pub = _public_settings()
+        self.assertEqual(pub["ollama"]["url"], ollama_svc.DEFAULT_URL)
+        self.assertEqual(pub["ollama"]["label"], "")
+
+    def test_put_saves_url_and_invalidates_status(self):
+        from hub.routers.settings_api import OllamaPatch, SettingsPatch, put_settings
+
+        with mock.patch("hub.routers.settings_api.cfg", return_value={"settings": {}}), \
+             mock.patch("hub.routers.settings_api.update_settings") as update, \
+             mock.patch("hub.routers.settings_api._public_settings", return_value={}), \
+             mock.patch.object(ollama_svc.status, "invalidate") as inv:
+            put_settings(SettingsPatch(ollama=OllamaPatch(url="http://192.168.1.10:11434")))
+        update.assert_called_once()
+        self.assertEqual(
+            update.call_args[0][0]["ollama"]["url"],
+            "http://192.168.1.10:11434",
+        )
+        inv.assert_called_once()
+
+    def test_put_refuses_a_public_url(self):
+        from hub.routers.settings_api import OllamaPatch, SettingsPatch, put_settings
+
+        with self.assertRaises(HTTPException) as ctx:
+            put_settings(SettingsPatch(ollama=OllamaPatch(url="https://evil.example")))
+        self.assertEqual(_code(ctx.exception), "ollama.bad_url")
+
+
+class OriginGuard(_NoRealConfig):
+    """settings.ollama.url is operator-edited; a public origin must not be fetched."""
+
+    def test_default_and_lan_urls_are_used(self):
+        self.assertEqual(ollama_svc.base_url(), ollama_svc.DEFAULT_URL)
+        self.assertFalse(ollama_svc.url_was_rejected())
+        with mock.patch.object(
+            ollama_svc, "_settings",
+            return_value={"url": "http://192.168.1.10:11434"},
+        ):
+            self.assertEqual(ollama_svc.base_url(), "http://192.168.1.10:11434")
+            self.assertFalse(ollama_svc.url_was_rejected())
+
+    def test_public_url_falls_back_to_loopback(self):
+        with mock.patch.object(
+            ollama_svc, "_settings",
+            return_value={"url": "https://ollama.example.com"},
+        ):
+            self.assertEqual(ollama_svc.base_url(), ollama_svc.DEFAULT_URL)
+            self.assertTrue(ollama_svc.url_was_rejected())
+
+    def test_metadata_url_falls_back_to_loopback(self):
+        with mock.patch.object(
+            ollama_svc, "_settings",
+            return_value={"url": "http://169.254.169.254/"},
+        ):
+            self.assertEqual(ollama_svc.base_url(), ollama_svc.DEFAULT_URL)
+            self.assertTrue(ollama_svc.url_was_rejected())
+
+    def test_api_refuses_redirects(self):
+        from hub.http_guard import RedirectRefused
+
+        with mock.patch.object(
+            ollama_svc._OPENER, "open",
+            side_effect=RedirectRefused("redirect to http://evil/ refused"),
+        ):
+            with self.assertRaises(ValueError):
+                ollama_svc._api("/api/version")
 
 
 if __name__ == "__main__":

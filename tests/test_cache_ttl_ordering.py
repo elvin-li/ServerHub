@@ -49,6 +49,40 @@ class TtlOrderingTests(unittest.TestCase):
         self.assertLessEqual(cloudflared_svc._TUNNELS_TTL, 900.0)
 
 
+class PollIntervalOrderingTests(unittest.TestCase):
+    """A cache shorter than the page that polls it misses on every sit tick."""
+
+    def test_host_ttl_outlives_dashboard_heavy_low(self):
+        from hub.routers import system_extra
+
+        self.assertGreater(
+            system_extra._HOST_TTL,
+            90.0,
+            "host snapshot expires before the 90s dashboard heavy tick",
+        )
+
+    def test_inventory_ttl_outlives_apps_poll(self):
+        self.assertGreater(
+            apps_manage_svc._INV_TTL,
+            15.0,
+            "app inventory expires before the 15s Apps page poll",
+        )
+
+    def test_container_caches_outlive_containers_poll(self):
+        from hub import containers_svc
+
+        self.assertGreater(
+            containers_svc._LIST_TTL,
+            20.0,
+            "container list expires before the 20s Containers page poll",
+        )
+        self.assertGreater(
+            containers_svc._STATS_TTL,
+            20.0,
+            "docker stats expire before the 20s Containers page poll",
+        )
+
+
 class InvalidationMakesLongerWindowsSafeTests(unittest.TestCase):
     """A longer TTL is only acceptable because every mutation drops the cache."""
 

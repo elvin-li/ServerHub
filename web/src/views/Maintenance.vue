@@ -16,11 +16,11 @@
       {{ loadError }}
     </div>
     <div class="table-wrap">
-      <table class="dense">
+      <table class="dense fit-m">
         <thead>
           <tr>
             <th>{{ t('maintenance.task') }}</th>
-            <th>{{ t('maintenance.desc') }}</th>
+            <th class="col-hide-m">{{ t('maintenance.desc') }}</th>
             <th>{{ t('common.status') }}</th>
             <th>{{ t('common.actions') }}</th>
           </tr>
@@ -30,8 +30,9 @@
             <td>
               <strong>{{ task.name }}</strong>
               <div class="mono" style="color:var(--sub)">{{ task.id }}</div>
+              <div v-if="task.desc" class="show-m sub">{{ task.desc }}</div>
             </td>
-            <td style="max-width:360px">{{ task.desc }}</td>
+            <td class="col-hide-m" style="max-width:360px">{{ task.desc }}</td>
             <td>
               <span v-if="task.running" class="badge warn">{{ t('maintenance.running') }}</span>
               <span v-else-if="task.rc === 0" class="badge ok">✅ {{ task.finished }}</span>

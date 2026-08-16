@@ -24,7 +24,7 @@ import { APP_ERROR_EVENT } from './lib/appError.js'
 
 const Blank = defineComponent({ render: () => h('div') })
 
-const POLL_MS = 15000
+const POLL_MS = 30000
 
 function makeRouter() {
   return createRouter({

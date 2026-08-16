@@ -13,6 +13,7 @@ from hub.routers import (
     nas_storage,
     notify_api,
     ollama_api,
+    assistant_api,
     power,
     scheduler_api,
     services_api,
@@ -52,5 +53,6 @@ router.include_router(ups_api.router)
 router.include_router(wireguard_api.router)
 router.include_router(photoshub_api.router)
 router.include_router(ollama_api.router)
+router.include_router(assistant_api.router)
 
 __all__ = ["router"]

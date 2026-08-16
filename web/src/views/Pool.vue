@@ -96,28 +96,32 @@
 
     <h2 class="section-title">{{ t('pool.members_title') }}</h2>
     <div class="table-wrap" style="margin-bottom:12px">
-      <table class="dense">
+      <table class="dense fit-m">
         <caption class="sr-only">{{ t('pool.members_caption') }}</caption>
         <thead>
           <tr>
             <th scope="col">{{ t('pool.th_mount') }}</th>
-            <th scope="col">{{ t('pool.th_disk') }}</th>
-            <th scope="col">{{ t('pool.th_fs') }}</th>
-            <th scope="col">{{ t('pool.th_total') }}</th>
-            <th scope="col">{{ t('pool.th_used') }}</th>
-            <th scope="col">{{ t('pool.th_avail') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_disk') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_fs') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_total') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_used') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_avail') }}</th>
             <th scope="col">{{ t('pool.th_pct') }}</th>
             <th scope="col">{{ t('common.actions') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="m in selectedMembers" :key="m.mount">
-            <td class="mono"><strong>{{ m.mount }}</strong></td>
-            <td class="mono">{{ m.disk_id || '—' }}</td>
-            <td class="mono">{{ m.filesystem || '—' }}</td>
-            <td>{{ m.total_gb }} GB</td>
-            <td>{{ m.used_gb }} GB</td>
-            <td>{{ m.avail_gb }} GB</td>
+            <td class="mono">
+              <strong>{{ m.mount }}</strong>
+              <div class="show-m sub">{{ m.disk_id || '—' }} · {{ m.filesystem || '—' }}</div>
+              <div class="show-m sub">{{ m.used_gb }} / {{ m.avail_gb }} GB</div>
+            </td>
+            <td class="mono col-hide-m">{{ m.disk_id || '—' }}</td>
+            <td class="mono col-hide-m">{{ m.filesystem || '—' }}</td>
+            <td class="col-hide-m">{{ m.total_gb }} GB</td>
+            <td class="col-hide-m">{{ m.used_gb }} GB</td>
+            <td class="col-hide-m">{{ m.avail_gb }} GB</td>
             <td style="min-width:100px">
               {{ m.pct }}%
               <div class="pct-bar" :class="barClass(m.pct)" style="margin-top:3px">
@@ -143,24 +147,28 @@
 
     <h2 class="section-title">{{ t('pool.candidates_title') }}</h2>
     <div class="table-wrap" style="margin-bottom:12px">
-      <table class="dense">
+      <table class="dense fit-m">
         <caption class="sr-only">{{ t('pool.candidates_caption') }}</caption>
         <thead>
           <tr>
             <th scope="col">{{ t('pool.th_mount') }}</th>
-            <th scope="col">{{ t('pool.th_disk') }}</th>
-            <th scope="col">{{ t('pool.th_fs') }}</th>
-            <th scope="col">{{ t('pool.th_total') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_disk') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_fs') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_total') }}</th>
             <th scope="col">{{ t('pool.th_avail') }}</th>
             <th scope="col">{{ t('common.actions') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="c in availableCandidates" :key="c.mount">
-            <td class="mono"><strong>{{ c.mount }}</strong></td>
-            <td class="mono">{{ c.disk_id || '—' }}</td>
-            <td class="mono">{{ c.filesystem || '—' }}</td>
-            <td>{{ c.total_gb }} GB</td>
+            <td class="mono">
+              <strong>{{ c.mount }}</strong>
+              <div class="show-m sub">{{ c.disk_id || '—' }} · {{ c.filesystem || '—' }}</div>
+              <div class="show-m sub">{{ c.total_gb }} GB</div>
+            </td>
+            <td class="mono col-hide-m">{{ c.disk_id || '—' }}</td>
+            <td class="mono col-hide-m">{{ c.filesystem || '—' }}</td>
+            <td class="col-hide-m">{{ c.total_gb }} GB</td>
             <td>{{ c.avail_gb }} GB</td>
             <td class="ops">
               <button
@@ -183,24 +191,27 @@
       <p class="note">{{ t('pool.fault_body') }}</p>
     </div>
     <div class="table-wrap" style="margin-bottom:12px">
-      <table class="dense">
+      <table class="dense fit-m">
         <caption class="sr-only">{{ t('pool.fault_caption') }}</caption>
         <thead>
           <tr>
             <th scope="col">{{ t('pool.th_mount') }}</th>
-            <th scope="col">{{ t('pool.th_disk') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_disk') }}</th>
             <th scope="col">{{ t('pool.th_at_risk') }}</th>
             <th scope="col">{{ t('pool.th_survives') }}</th>
-            <th scope="col">{{ t('pool.th_others') }}</th>
+            <th class="col-hide-m" scope="col">{{ t('pool.th_others') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="r in shownFaults" :key="r.mount">
-            <td class="mono"><strong>{{ r.mount }}</strong></td>
-            <td class="mono">{{ r.disk_id || '—' }}</td>
+            <td class="mono">
+              <strong>{{ r.mount }}</strong>
+              <div class="show-m sub">{{ r.disk_id || '—' }}</div>
+            </td>
+            <td class="mono col-hide-m">{{ r.disk_id || '—' }}</td>
             <td style="color:var(--warn)">{{ r.at_risk_gb }} GB</td>
             <td style="color:var(--ok)">{{ r.survives_gb }} GB</td>
-            <td>
+            <td class="col-hide-m">
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
           </tr>

@@ -16,8 +16,6 @@ import subprocess
 import time
 from pathlib import Path
 
-from fastapi import HTTPException
-
 from hub.disk_manage_svc import invalidate_disk_info
 from hub.errors import api_error
 from hub.disk_snapshot import (
@@ -163,7 +161,7 @@ def _power_state(disk_id: str, volumes: list, info: dict, probe: bool = True) ->
         # Unmounted but present, no spin state to discover.
         return "idle"
     # smartctl check power mode
-    rc, out, err = sh(["sudo", "-n", SMARTCTL, "-n", "standby", node], timeout=_DISKUTIL_TIMEOUT)
+    rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-n", "standby", node], timeout=_DISKUTIL_TIMEOUT)
     text = (out or "") + (err or "")
     if "STANDBY" in text.upper() or "Device is in STANDBY" in text:
         return "spun_down"
@@ -402,11 +400,11 @@ def _hint(system, ssd, can_sleep, state) -> str:
 def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     """Sleep or eject a disk. mode: sleep | eject"""
     if not DISK_RE.match(disk_id):
-        raise HTTPException(400, "invalid disk id")
+        raise api_error("disk_power.invalid_id")
     disks = {d["id"]: d for d in list_power_disks()}
     d = disks.get(disk_id)
     if not d:
-        raise HTTPException(404, f"disk not found: {disk_id}")
+        raise api_error("disk_power.not_found", disk=disk_id)
     if d["system"] or not d["can_sleep"]:
         raise api_error("disk_power.protected")
     node = d["device"]
@@ -455,7 +453,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
 
     # 3) ATA/SATA/USB HDD: try SMART standby (spin down, keep device)
     rc3, out3, err3 = sh(
-        ["sudo", "-n", SMARTCTL, "-s", "standby,now", node],
+        ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,now", node],
         timeout=20,
     )
     log.append(f"smartctl standby: rc={rc3} {(out3 or err3)[:200]}")
@@ -484,7 +482,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
 
 def wake_disk(disk_id: str) -> dict:
     if not DISK_RE.match(disk_id):
-        raise HTTPException(400, "invalid disk id")
+        raise api_error("disk_power.invalid_id")
     node = f"/dev/{disk_id}"
     log = []
 
@@ -511,7 +509,7 @@ def wake_disk(disk_id: str) -> dict:
 
     # exit standby via smartctl if possible
     rc1, out1, err1 = sh(
-        ["sudo", "-n", SMARTCTL, "-s", "standby,off", node],
+        ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,off", node],
         timeout=15,
     )
     log.append(f"smartctl standby off: rc={rc1} {(out1 or err1)[:120]}")
@@ -541,4 +539,4 @@ def disk_power_action(disk_id: str, action: str) -> dict:
         return sleep_disk(disk_id, mode="eject")
     if action in ("wake", "spinup", "mount"):
         return wake_disk(disk_id)
-    raise HTTPException(400, f"unknown action: {action}")
+    raise api_error("disk_power.unknown_action", action=action)

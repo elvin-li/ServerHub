@@ -37,12 +37,13 @@ function vueFiles() {
  * via useDismissable, so they behaved correctly for a keyboard user while
  * telling a screen reader nothing about what had opened.
  *
- * `cmd-palette-bg` is a third spelling, used once, for the Cmd+K palette. It is
- * listed explicitly rather than matched by a `-bg$` suffix rule: several
- * unrelated classes end in -bg, and a pattern loose enough to catch them would
- * demand a dialog role from things that are not dialogs.
+ * `cmd-palette-bg` is a third spelling, used once, for the Cmd+K palette.
+ * `assist-bg` is the AI assistant drawer. Both are listed explicitly rather
+ * than matched by a `-bg$` suffix rule: several unrelated classes end in -bg,
+ * and a pattern loose enough to catch them would demand a dialog role from
+ * things that are not dialogs.
  */
-const OVERLAY = /class="(?:[^"]*\s)?(?:modal-bg|drawer-bg|cmd-palette-bg)(?:\s[^"]*)?"/g
+const OVERLAY = /class="(?:[^"]*\s)?(?:modal-bg|drawer-bg|cmd-palette-bg|assist-bg)(?:\s[^"]*)?"/g
 
 describe('modal dialogs', () => {
   it('pair every overlay with a dialog role', () => {
@@ -151,7 +152,10 @@ describe('timer lifecycle', () => {
           new RegExp(`\\b${handle}\\s*\\(\\s*\\)`).test(tail)
         const clearedByHelper = [...src.matchAll(/function\s+(\w+)\s*\([^)]*\)\s*\{([\s\S]*?)\n\}/g)]
           .some(([, fn, body]) =>
-            new RegExp(`clear(?:Interval|Timeout)\\s*\\(\\s*${handle}\\b`).test(body) &&
+            (
+              new RegExp(`clear(?:Interval|Timeout)\\s*\\(\\s*${handle}\\b`).test(body) ||
+              new RegExp(`\\b${handle}\\s*\\(\\s*\\)`).test(body)
+            ) &&
             new RegExp(`\\b${fn}\\s*\\(\\s*\\)`).test(tail),
           )
         if (!clearedDirectly && !clearedByHelper) {
@@ -187,6 +191,76 @@ describe('dialog keyboard contract', () => {
       }
     })
   }
+})
+
+describe('mobile chrome', () => {
+  const css = readFileSync(resolve(SRC, 'styles.css'), 'utf8')
+  const app = readFileSync(resolve(SRC, 'App.vue'), 'utf8')
+
+  it('moves header tools into the drawer instead of shrinking them in the top bar', () => {
+    expect(app).toMatch(/<nav[\s\S]*class="top-controls"/)
+    expect(css).toMatch(/\.nav-drawer-title\s*\{/)
+    expect(css).toMatch(/\.top-status-m\s*\{/)
+  })
+
+  it('does not use 100vw for full-bleed sheets (that includes the scrollbar)', () => {
+    expect(css).toMatch(/\.modal \{ width: 100%; max-width: 100%/)
+    expect(css).toMatch(/\.drawer \{ width: 100%; \}/)
+    expect(css).toMatch(/\.cmd-palette \{\s*width: min\(520px, 100%\)/)
+    expect(css).toMatch(/\.assist-panel \{\s*width: min\(640px, 100%\)/)
+  })
+
+  it('keeps a one-line page footer instead of a reserved FAB well', () => {
+    expect(css).toMatch(/\.main \{ padding: 10px 10px max\(28px/)
+  })
+
+  it('keeps the drawer tool strip on a single row', () => {
+    expect(css).toMatch(/\.top-controls \{[\s\S]*?flex-direction: row/)
+    expect(css).toMatch(/\.top-controls \{[\s\S]*?flex-wrap: nowrap/)
+  })
+
+  it('keeps the section nav on one scrolling row instead of wrapping', () => {
+    expect(css).toMatch(/\.subchrome-inner \{\s*[\s\S]*?flex-wrap: nowrap/)
+  })
+
+  it('sizes page sheets with % not vw (except fullscreen VNC)', () => {
+    const skip = new Set(['components/VncConsole.vue'])
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      if (skip.has(name)) continue
+      if (/width:\s*min\([^;]*vw/.test(src) || /(?:^|[^\d])width:\s*\d+vw/.test(src)) {
+        offenders.push(name)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('lets common flex rows wrap instead of stretching the page', () => {
+    expect(css).toMatch(/\.section-title \{ flex-wrap: wrap/)
+    expect(css).toMatch(/\.alert-item \{ flex-wrap: wrap/)
+    expect(css).toMatch(/\.row \{ flex-wrap: wrap/)
+    expect(css).toMatch(/\.kv \{ grid-template-columns: minmax\(0, 90px\)/)
+  })
+
+  it('drops low-priority table columns on the phone without keeping a 560px floor', () => {
+    expect(css).toMatch(/\.col-hide-m \{ display: none/)
+    expect(css).toMatch(/table\.dense\.fit-m \{ min-width: 0/)
+    expect(css).toMatch(/@media \(min-width: 641px\)[\s\S]*?\.show-m \{ display: none/)
+  })
+
+  it('lets table action clusters wrap instead of stretching a thinned table', () => {
+    expect(css).toMatch(/table\.dense \.ops,\s*table\.dense \.actions,\s*table\.dense \.actions-cell \{\s*white-space: normal/)
+    expect(css).toMatch(/\.hide-m \{ display: none/)
+    expect(css).toMatch(/\.cmd-palette input \{ font-size: 16px/)
+  })
+
+  it('collapses page form grids at the phone breakpoint, not a wider 700px cut', () => {
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      if (/@media \(max-width: 700px\)/.test(src)) offenders.push(name)
+    }
+    expect(offenders).toEqual([])
+  })
 })
 
 describe('mobile table overflow', () => {
@@ -393,7 +467,8 @@ describe('operations polling and submission guards', () => {
     expect(dashboard).toMatch(/async function act\(svc, action\)[\s\S]*if \(busy\.value\) return[\s\S]*finally/)
     expect(dashboard).toContain('if (r.ok) scheduleActionRefresh()')
     expect(dashboard).not.toContain('setTimeout(refresh, 1000)')
-    expect(dashboard).toContain('await Promise.all([refresh(), loadSensors(false)])')
+    expect(dashboard).toContain('loadSensors(false, { light: !highMode.value })')
+    expect(dashboard).toContain('refreshHeavy(false, highMode.value)')
     expect(dashboard).toMatch(/onUnmounted\([\s\S]*clearTimeout\(actionRefreshTimer\)/)
   })
 

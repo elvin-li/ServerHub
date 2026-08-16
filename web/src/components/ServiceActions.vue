@@ -88,7 +88,8 @@ const plainClass = computed(() => (
 ))
 
 function actClass(a) {
-  if (props.variant === 'table') return ['act-btn', { primary: a === 'start' }]
+  const hide = props.variant === 'table' && ['restart', 'pause', 'unpause'].includes(a)
+  if (props.variant === 'table') return ['act-btn', { primary: a === 'start', 'hide-m': hide }]
   if (props.variant === 'card') return ['tiny', { danger: a === 'stop', primary: a === 'start' }]
   return [{ primary: a === 'start' }]
 }

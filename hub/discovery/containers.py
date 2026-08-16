@@ -7,6 +7,7 @@ import time
 from hub.config import override
 from hub.host_address import resolve_value
 from hub.paths import DOCKER
+from hub.service_signatures import configured_signatures, identify, image_basename
 from hub.util import sh
 
 _TTL = 4.0
@@ -28,6 +29,24 @@ _refresh_lock = threading.Lock()
 _TIMEOUT_TOLERANCE = 3
 #: Consecutive timeout count.  Only touched under `_refresh_lock`.
 _timeouts = 0
+
+
+def _aligned_container_name(name: str, image: str, sig: dict) -> bool:
+    """True when the container id is just the image/slug, so renaming is safe.
+
+    ``grafana`` or ``redis-1`` can become "Grafana" / "Redis".  A custom name
+    like ``cache`` keeps its name and only gets the signature chip.
+    """
+    n = (name or "").lower().replace("_", "-")
+    if not n:
+        return False
+    base = image_basename(image)
+    slug = str(sig.get("slug") or "").lower()
+    if base and n == base:
+        return True
+    if slug and (n == slug or n.startswith(f"{slug}-") or n.endswith(f"-{slug}")):
+        return True
+    return False
 
 
 def invalidate_containers():
@@ -78,7 +97,7 @@ def _refresh():
             "ps",
             "-a",
             "--format",
-            '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}',
+            '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Image}}\t{{.Label "com.docker.compose.project"}}',
         ],
         timeout=8,
     )
@@ -97,19 +116,20 @@ def _refresh():
     else:
         _timeouts = 0
     items, engine_up = [], rc == 0
+    extras = configured_signatures() if rc == 0 else []
     if rc == 0:
         for line in out.splitlines():
-            # maxsplit=3: the last field is a Docker *label*, which is an
+            # maxsplit=4: the last field is a Docker *label*, which is an
             # arbitrary string.  A plain split() turned a label containing a tab
-            # into five fields, and the four-way unpack below then raised
-            # ValueError -- uncaught, straight out of discover_containers() and
-            # into /api/status, so one crafted `docker run --label` broke the
+            # into extra fields, and the unpack below then raised ValueError --
+            # uncaught, straight out of discover_containers() and into
+            # /api/status, so one crafted `docker run --label` broke the
             # dashboard for everyone.  Capping the split keeps any extra tabs
             # inside the project field where they are harmless.
-            p = line.split("\t", 3)
-            if len(p) < 4:
+            p = line.split("\t", 4)
+            if len(p) < 5:
                 continue
-            name, st, status, project = p
+            name, st, status, image, project = p
             ov = resolve_value(override(name))
             if ov.get("hide"):
                 continue
@@ -130,19 +150,36 @@ def _refresh():
                 acts = ["start", "logs"]
             if ov.get("url"):
                 acts = list(acts) + ["open"]
-            items.append(
-                {
-                    "id": name,
-                    "kind": "container",
-                    "name": ov.get("name", name),
-                    "state": state,
-                    "detail": status,
-                    "url": ov.get("url"),
-                    "group": ov.get("group", f"Containers · {project or 'other'}"),
-                    "actions": acts,
-                    "compose_project": project or None,
-                }
-            )
+            sig = identify(image=image, extras=extras)
+            if sig and sig.get("confidence") != "high":
+                sig = None
+            display = ov.get("name") or name
+            if sig and not ov.get("name") and _aligned_container_name(name, image, sig):
+                display = sig["name"]
+            group = ov.get("group")
+            if not group:
+                if project:
+                    group = f"Containers · {project}"
+                elif sig:
+                    group = sig["category"]
+                else:
+                    group = "Containers · other"
+            item = {
+                "id": name,
+                "kind": "container",
+                "name": display,
+                "state": state,
+                "detail": status,
+                "url": ov.get("url"),
+                "group": group,
+                "actions": acts,
+                "compose_project": project or None,
+                "image": image or None,
+            }
+            if sig:
+                item["signature"] = sig
+                item.setdefault("meta", {})["signature"] = sig
+            items.append(item)
     with _lock:
         _cache.update(t=time.time(), v=(items, engine_up))
     return list(items), engine_up

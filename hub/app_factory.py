@@ -77,6 +77,45 @@ def _configure_logging() -> None:
     logger.propagate = False
 
 
+def _warm_hotpath() -> None:
+    """Fill the request-path caches so the first dashboard/apps paint is a hit.
+
+    Measured cold on this host: brew services list 1.2s, sensors 1.6s,
+    utmctl list 0.3s, host engine_up 0.3s.  Each is already TTL-cached; none
+    of that helps the first visitor after a LaunchAgent restart.
+    """
+    try:
+        from hub.brew_cache import brew_services
+        brew_services()
+    except Exception:
+        pass
+    try:
+        from hub.sensors_svc import collect_sensors
+        collect_sensors()
+    except Exception:
+        pass
+    try:
+        from hub.routers.system_extra import _host_snapshot
+        _host_snapshot()
+    except Exception:
+        pass
+    try:
+        from hub.vms_svc import list_all_vms
+        list_all_vms()
+    except Exception:
+        pass
+    try:
+        from hub.status import full_status
+        full_status()
+    except Exception:
+        pass
+    try:
+        from hub.apps_manage_svc import inventory
+        inventory()
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import threading
@@ -115,11 +154,20 @@ async def lifespan(app: FastAPI):
         ).start()
     except Exception:
         pass
-    # `brew outdated` + `softwareupdate -l` is ~11.5s. Warm it in the background
-    # so the first visitor to the Tools page reads a cache instead of waiting.
+    # First visitor after a panel restart used to pay the cold hot-path:
+    # brew services list --json ~1.2s, sensors ~1.6s, utmctl list ~0.3s,
+    # host engine_up ~0.3s.  Warm them off the request path.
+    try:
+        threading.Thread(target=_warm_hotpath, daemon=True, name="hotpath-warmer").start()
+    except Exception:
+        pass
+    # Low mode: do not run `brew outdated` + `softwareupdate -l` (~11.5s) on
+    # every boot. High mode warms Tools; the Tools page also starts it on visit.
     log = logging.getLogger("serverhub.lifespan")
     try:
-        tools_svc.start_updates_warmer()
+        from hub.resource_mode import is_high
+        if is_high():
+            tools_svc.start_updates_warmer()
     except Exception:
         log.exception("updates warmer failed to start")
     # Keep managed IP aliases on the highest-priority active NIC
@@ -137,6 +185,26 @@ async def lifespan(app: FastAPI):
         tools_svc.stop_updates_warmer()
         scheduler_svc.stop_scheduler()
         smart_test_svc.stop_scheduler()
+        from hub import bookmarks_svc, identity_svc, launcher_svc, native_catalog
+        from hub import power_svc, sensors_svc, status, storage_svc, system
+        from hub import system_settings_svc
+        from hub import util as hub_util
+        from hub.routers import storage as storage_router, system_extra
+        status.shutdown_executor()
+        sensors_svc.shutdown_executor()
+        network_svc.shutdown_executor()
+        bookmarks_svc.shutdown_executor()
+        system.shutdown_executor()
+        identity_svc.shutdown_executor()
+        tools_svc.shutdown_executor()
+        power_svc.shutdown_executor()
+        launcher_svc.shutdown_executor()
+        native_catalog.shutdown_executor()
+        system_settings_svc.shutdown_executor()
+        storage_svc.shutdown_executor()
+        storage_router.shutdown_executor()
+        system_extra.shutdown_executor()
+        hub_util.shutdown_pools()
 
 
 async def admin_password_scope(request: Request):
@@ -243,6 +311,10 @@ def create_app() -> FastAPI:
             elif request.url.path == "/" or not request.url.path.startswith("/api/"):
                 # SPA shell/routes must revalidate so a new build is picked up.
                 resp.headers.setdefault("Cache-Control", "no-cache")
+            elif request.url.path.startswith("/api/auth"):
+                # Session and setup-token responses must never be stored by a
+                # shared cache or the browser's bfcache-adjacent HTTP cache.
+                resp.headers.setdefault("Cache-Control", "no-store")
             elif request.method == "GET" and request.url.path.startswith("/api/"):
                 # Do not consume body_iterator here.  File downloads, SSE, and other
                 # streaming API responses must retain their incremental delivery and

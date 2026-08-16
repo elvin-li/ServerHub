@@ -7,7 +7,7 @@
     <div class="toolbar">
       <select v-model="sourceId" @change="load">
         <option v-for="s in sources" :key="s.id" :value="s.id">
-          {{ s.name }}{{ s.exists ? '' : t('logs.missing') }}
+          {{ s.name }}{{ s.exists ? ' · ' + fmtSize(s.size) : t('logs.missing') }}
         </option>
       </select>
       <select v-model.number="lines" @change="load">
@@ -22,11 +22,12 @@
       <label style="font-size:12px;color:var(--sub);display:flex;align-items:center;gap:6px">
         <input type="checkbox" v-model="auto" /> {{ t('logs.auto') }}
       </label>
-      <button class="tiny" @click="copyLog">{{ t('logs.copy') }}</button>
-      <button class="tiny" @click="downloadLog">{{ t('logs.download') }}</button>
+      <button class="tiny hide-m" @click="copyLog">{{ t('logs.copy') }}</button>
+      <button class="tiny hide-m" @click="downloadLog">{{ t('logs.download') }}</button>
     </div>
     <div v-if="meta" class="detail" style="margin-bottom:8px;white-space:normal">
       <span class="mono">{{ meta.path }}</span>
+      · {{ fmtSize(meta.size) }}
       · {{ t('logs.lines_n', { n: meta.lines }) }}
       <span v-if="filter"> · {{ t('logs.matched', { n: displayLines.length }) }}</span>
     </div>
@@ -60,6 +61,15 @@ const displayLines = computed(() => {
   return all.filter(l => l.toLowerCase().includes(f))
 })
 const displayText = computed(() => displayLines.value.join('\n'))
+
+function fmtSize(n) {
+  if (n == null || n === 0) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let v = Number(n)
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`
+}
 
 async function loadSources() {
   try {

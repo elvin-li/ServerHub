@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 
-from fastapi import HTTPException
+from hub.errors import api_error
 
 # A positional must start with an alphanumeric.  That single anchor is what
 # makes an option-like value unrepresentable, regardless of what the rest of the
@@ -76,7 +76,7 @@ def require_positional(
 ) -> str:
     """Return the argv-safe value, or raise HTTP 400 naming ``label``."""
     if not is_safe_positional(value, max_len=max_len):
-        raise HTTPException(400, f"invalid {label}")
+        raise api_error("cli.invalid_value", label=label)
     return _normalise(value)  # type: ignore[return-value]
 
 
@@ -90,3 +90,9 @@ def is_safe_hostname(value: object, *, max_len: int = MAX_HOSTNAME_LEN) -> bool:
     if text is None or not text or len(text) > max_len:
         return False
     return bool(_SAFE_HOSTNAME.match(text))
+
+
+def require_hostname(value: object, *, label: str = "host") -> str:
+    if not is_safe_hostname(value):
+        raise api_error("cli.invalid_value", label=label)
+    return _normalise(value)  # type: ignore[return-value]

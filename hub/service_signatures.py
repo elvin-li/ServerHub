@@ -14,6 +14,9 @@ reported with low confidence so callers can keep the raw process name visible.
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+from hub import cli_args
 
 #: One signature per known service.
 #:   procs: lowercase process-name tokens.  Matched exact or by prefix in
@@ -23,6 +26,9 @@ import re
 #:   http:  True  → serves a browser UI, link it even off the webish list;
 #:          False → never HTTP (linking it only makes the daemon log attacks);
 #:          None  → unknown, fall back to the port heuristics.
+#:   brew:  Homebrew formula name when it is unambiguous (used to infer
+#:          start/stop as ``brew services …``).  Versioned formulae such as
+#:          postgresql@17 are left unset and recovered from the binary path.
 _SIGNATURES: list[dict] = [
     # Databases
     {"slug": "postgres", "name": "PostgreSQL", "category": "Databases",
@@ -32,9 +38,10 @@ _SIGNATURES: list[dict] = [
     {"slug": "mongodb", "name": "MongoDB", "category": "Databases",
      "procs": ("mongod",), "ports": (27017,), "http": False},
     {"slug": "redis", "name": "Redis", "category": "Databases",
-     "procs": ("redis-server", "redis-serv"), "ports": (6379, 6380), "http": False},
+     "procs": ("redis-server", "redis-serv"), "ports": (6379, 6380), "http": False,
+     "brew": "redis"},
     {"slug": "memcached", "name": "Memcached", "category": "Databases",
-     "procs": ("memcached",), "ports": (11211,), "http": False},
+     "procs": ("memcached",), "ports": (11211,), "http": False, "brew": "memcached"},
     {"slug": "clickhouse", "name": "ClickHouse", "category": "Databases",
      "procs": ("clickhouse",), "ports": (8123, 9000), "http": None},
     {"slug": "influxdb", "name": "InfluxDB", "category": "Databases",
@@ -44,7 +51,7 @@ _SIGNATURES: list[dict] = [
 
     # Message brokers / queues
     {"slug": "mosquitto", "name": "Mosquitto MQTT", "category": "Messaging",
-     "procs": ("mosquitto",), "ports": (1883, 8883), "http": False},
+     "procs": ("mosquitto",), "ports": (1883, 8883), "http": False, "brew": "mosquitto"},
     {"slug": "rabbitmq", "name": "RabbitMQ", "category": "Messaging",
      "procs": ("beam.smp", "rabbitmq"), "ports": (5672,), "http": False},
     {"slug": "nats", "name": "NATS", "category": "Messaging",
@@ -54,9 +61,9 @@ _SIGNATURES: list[dict] = [
 
     # Web servers / proxies
     {"slug": "nginx", "name": "nginx", "category": "Web Servers",
-     "procs": ("nginx",), "ports": (), "http": True},
+     "procs": ("nginx",), "ports": (), "http": True, "brew": "nginx"},
     {"slug": "caddy", "name": "Caddy", "category": "Web Servers",
-     "procs": ("caddy",), "ports": (2019,), "http": True},
+     "procs": ("caddy",), "ports": (2019,), "http": True, "brew": "caddy"},
     {"slug": "apache", "name": "Apache httpd", "category": "Web Servers",
      "procs": ("httpd", "apache2"), "ports": (), "http": True},
     {"slug": "traefik", "name": "Traefik", "category": "Web Servers",
@@ -126,7 +133,7 @@ _SIGNATURES: list[dict] = [
     {"slug": "minio", "name": "MinIO", "category": "Storage",
      "procs": ("minio",), "ports": (9001,), "http": True},
     {"slug": "syncthing", "name": "Syncthing", "category": "Storage",
-     "procs": ("syncthing",), "ports": (8384,), "http": True},
+     "procs": ("syncthing",), "ports": (8384,), "http": True, "brew": "syncthing"},
     {"slug": "filebrowser", "name": "File Browser", "category": "Storage",
      "procs": ("filebrowse",), "ports": (), "http": True},
     {"slug": "smb", "name": "SMB File Sharing", "category": "Storage",
@@ -154,7 +161,7 @@ _SIGNATURES: list[dict] = [
 
     # AI
     {"slug": "ollama", "name": "Ollama", "category": "AI",
-     "procs": ("ollama",), "ports": (11434,), "http": False},
+     "procs": ("ollama",), "ports": (11434,), "http": False, "brew": "ollama"},
     {"slug": "open-webui", "name": "Open WebUI", "category": "AI",
      "procs": ("open-webui", "open_webui"), "ports": (), "http": True},
 
@@ -196,40 +203,200 @@ def _proc_matches(proc: str, token: str) -> bool:
     return False
 
 
-def identify(proc: str = "", port: int | None = None) -> dict | None:
-    """Recognise a service from its process name and/or listen port.
+def _hit(sig: dict, confidence: str) -> dict:
+    out = {
+        "slug": sig["slug"], "name": sig["name"],
+        "category": sig["category"], "http": sig.get("http"),
+        "confidence": confidence,
+    }
+    if sig.get("brew"):
+        out["brew"] = sig["brew"]
+    return out
 
-    Returns ``{"slug", "name", "category", "http", "confidence"}`` or None.
-    Confidence is "high" for a process-name match (optionally corroborated by
-    the port) and "low" for a port-only match, which callers should treat as a
-    hint rather than an identity.
+
+def _iter_signatures(extras: list[dict] | None):
+    """Operator-defined signatures first, so they override a built-in slug."""
+    seen: set[str] = set()
+    for sig in extras or []:
+        slug = sig.get("slug")
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        yield sig
+    for sig in _SIGNATURES:
+        if sig["slug"] not in seen:
+            yield sig
+
+
+def image_basename(image: str) -> str:
+    """Last path component of a container image, without tag or digest.
+
+    ``grafana/grafana:latest`` → ``grafana``, ``redis:7`` → ``redis``,
+    ``sha256:abc…`` → ``""``.  The empty string means "do not match".
+    """
+    text = (image or "").strip()
+    if not text or text.startswith("sha256:"):
+        return ""
+    text = text.split("@", 1)[0]
+    name = text.rsplit("/", 1)[-1]
+    if ":" in name:
+        name = name.rsplit(":", 1)[0]
+    name = name.strip().lower()
+    return name if name and name != "sha256" else ""
+
+
+def identify(
+    proc: str = "",
+    port: int | None = None,
+    extras: list[dict] | None = None,
+    image: str = "",
+) -> dict | None:
+    """Recognise a service from its process name, image, and/or listen port.
+
+    Returns ``{"slug", "name", "category", "http", "confidence"}`` (and
+    ``brew`` when known) or None.  Confidence is "high" for a process-name
+    or image match and "low" for a port-only match, which callers should
+    treat as a hint rather than an identity.  ``extras`` are operator-defined
+    signatures from services.yaml; a matching slug replaces the built-in entry.
     """
     low = (proc or "").strip().lower()
+    img = image_basename(image)
     port_only: dict | None = None
-    for sig in _SIGNATURES:
-        by_proc = any(_proc_matches(low, t) for t in sig["procs"])
-        by_port = port is not None and port in sig["ports"]
+    image_hit: dict | None = None
+    for sig in _iter_signatures(extras):
+        tokens = tuple(sig.get("procs") or ())
+        by_proc = any(_proc_matches(low, t) for t in tokens)
+        by_image = bool(img) and (
+            any(_proc_matches(img, t) for t in tokens)
+            or _proc_matches(img, sig["slug"])
+        )
+        by_port = port is not None and port in (sig.get("ports") or ())
         if by_proc:
-            return {
-                "slug": sig["slug"], "name": sig["name"],
-                "category": sig["category"], "http": sig["http"],
-                "confidence": "high",
-            }
+            return _hit(sig, "high")
+        if by_image and image_hit is None:
+            image_hit = _hit(sig, "high")
         if by_port and port_only is None:
-            port_only = {
-                "slug": sig["slug"], "name": sig["name"],
-                "category": sig["category"], "http": sig["http"],
-                "confidence": "low",
-            }
+            port_only = _hit(sig, "low")
+    if image_hit:
+        return image_hit
     if port_only:
         return port_only
-    runtime = _RUNTIMES.get(low)
+    runtime = _RUNTIMES.get(low) or _RUNTIMES.get(img)
     if runtime:
+        slug = low if low in _RUNTIMES else img
         return {
-            "slug": low, "name": runtime, "category": "Runtimes",
+            "slug": slug, "name": runtime, "category": "Runtimes",
             "http": None, "confidence": "runtime",
         }
     return None
+
+
+def parse_signature(raw) -> dict | None:
+    """Normalise one operator-defined signature, or None if it is unusable."""
+    if not isinstance(raw, dict):
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "-", str(raw.get("slug") or "").lower()).strip("-")
+    if not slug:
+        return None
+    procs = tuple(
+        str(p).strip().lower()
+        for p in (raw.get("procs") or [])
+        if str(p).strip()
+    )
+    ports: list[int] = []
+    for p in raw.get("ports") or []:
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 65535 and n not in ports:
+            ports.append(n)
+    http = raw.get("http")
+    if http not in (True, False, None):
+        http = None
+    brew = str(raw.get("brew") or "").strip()
+    if brew and not cli_args.is_safe_positional(brew):
+        brew = ""
+    return {
+        "slug": slug,
+        "name": str(raw.get("name") or slug).strip() or slug,
+        "category": str(raw.get("category") or "Custom").strip() or "Custom",
+        "procs": procs,
+        "ports": tuple(ports),
+        "http": http,
+        "brew": brew or None,
+    }
+
+
+def configured_signatures() -> list[dict]:
+    """Operator-defined signatures from services.yaml, already normalised."""
+    try:
+        from hub.config import cfg
+
+        raw = cfg().get("service_signatures") or []
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        sig = parse_signature(item)
+        if not sig or sig["slug"] in seen:
+            continue
+        seen.add(sig["slug"])
+        out.append(sig)
+    return out
+
+
+#: Homebrew cellar / opt layout: …/opt/redis/bin/… or …/Cellar/postgresql@17/…
+_BREW_PATH = re.compile(
+    r"(?:/opt/homebrew|/usr/local)/(?:opt|Cellar)/([^/]+)"
+)
+
+
+def brew_formula_from_path(path: str) -> str | None:
+    """Formula name encoded in a Homebrew binary path, if the name is argv-safe."""
+    m = _BREW_PATH.search(path or "")
+    if not m:
+        return None
+    formula = m.group(1)
+    return formula if cli_args.is_safe_positional(formula) else None
+
+
+def control_commands(formula: str | None) -> dict:
+    """``brew services`` start/stop for *formula*, or {} if it is not usable.
+
+    The absolute brew path is preferred so a LaunchAgent panel (which often
+    has no Homebrew on PATH) can still run the commands later.
+    """
+    if not formula or not cli_args.is_safe_positional(formula):
+        return {}
+    try:
+        from hub.paths import BREW
+
+        brew = BREW if Path(BREW).is_file() else "brew"
+    except Exception:
+        brew = "brew"
+    return {
+        "via": "brew",
+        "formula": formula,
+        "start": f"{brew} services start {formula}",
+        "stop": f"{brew} services stop {formula}",
+    }
+
+
+def infer_control(sig: dict | None, command_path: str = "") -> dict:
+    """Best start/stop we can infer from a signature and/or the live binary.
+
+    A path under the Homebrew prefix wins: it knows the versioned formula
+    (``postgresql@17``) that a static signature cannot.  A high-confidence
+    signature's ``brew`` field is the fallback.
+    """
+    formula = brew_formula_from_path(command_path)
+    if not formula and sig and sig.get("confidence") == "high":
+        formula = sig.get("brew")
+    return control_commands(formula)
 
 
 def suggest_id(*candidates: str, taken: set[str] | None = None) -> str:
@@ -249,3 +416,72 @@ def suggest_id(*candidates: str, taken: set[str] | None = None) -> str:
     while f"{base}-{n}" in taken:
         n += 1
     return f"{base}-{n}"
+
+
+def is_generic_runtime(proc: str) -> bool:
+    """True when *proc* is a language runtime, not a specific service."""
+    return (proc or "").strip().lower() in _RUNTIMES
+
+
+def yaml_signature(sig: dict) -> dict:
+    """The services.yaml shape of a normalised signature (no empty keys)."""
+    row: dict = {
+        "slug": sig["slug"],
+        "name": sig["name"],
+        "category": sig["category"],
+    }
+    if sig.get("procs"):
+        row["procs"] = list(sig["procs"])
+    if sig.get("ports"):
+        row["ports"] = list(sig["ports"])
+    if sig.get("http") is not None:
+        row["http"] = sig["http"]
+    if sig.get("brew"):
+        row["brew"] = sig["brew"]
+    return row
+
+
+def remember_into(data: dict, sig: dict) -> dict:
+    """Upsert *sig* into ``data['service_signatures']``. Returns the stored row.
+
+    Same slug replaces the previous operator rule so renaming on adopt
+    updates the learned identity instead of accumulating duplicates.
+    """
+    row = yaml_signature(sig)
+    rows = data.get("service_signatures")
+    if not isinstance(rows, list):
+        rows = []
+        data["service_signatures"] = rows
+    slug = row["slug"]
+    for i, existing in enumerate(rows):
+        parsed = parse_signature(existing)
+        if parsed and parsed["slug"] == slug:
+            rows[i] = row
+            return row
+    rows.append(row)
+    return row
+
+
+def remove_from(data: dict, slug: str) -> dict | None:
+    """Drop the operator rule with *slug*. Returns the removed row, or None."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(slug or "").lower()).strip("-")
+    if not slug:
+        return None
+    rows = data.get("service_signatures")
+    if not isinstance(rows, list):
+        return None
+    keep = []
+    removed = None
+    for existing in rows:
+        parsed = parse_signature(existing)
+        if parsed and parsed["slug"] == slug and removed is None:
+            removed = yaml_signature(parsed)
+            continue
+        keep.append(existing)
+    if removed is not None:
+        data["service_signatures"] = keep
+    return removed
+
+
+def builtin_count() -> int:
+    return len(_SIGNATURES)

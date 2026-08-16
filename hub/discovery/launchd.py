@@ -16,6 +16,7 @@ from hub.config import override
 from hub.host_address import resolve_template
 from hub.launchd_cache import listing as launchd_listing
 from hub.paths import AGENTS_DIR
+from hub.service_signatures import configured_signatures, identify
 from hub.util import fan_out, port_open
 
 
@@ -51,6 +52,29 @@ def _enrich(entry):
         return item
 
 
+def _annotate_ollama_agent(item: dict) -> None:
+    """Tag LaunchAgents that actually start Ollama so the services table can find them.
+
+    Cheap: a plist glob already cached by ``ollama_svc._candidate_labels``.  Does
+    not probe :11434 — that belongs on the Ollama page, not on every status poll.
+    """
+    label = str(item.get("id") or "")
+    if "ollama" not in label.lower():
+        return
+    try:
+        from hub.ollama_svc import _candidate_labels
+
+        if label not in _candidate_labels():
+            return
+    except Exception:
+        return
+    if not item.get("port"):
+        item["port"] = 11434
+    detail = item.get("detail") or ""
+    if "Ollama" not in detail:
+        item["detail"] = f"{detail} · Ollama" if detail else "Ollama"
+
+
 def discover_launchd():
     table = launchctl_table()
     # Two network waits used to sit inside this loop, once per installed
@@ -63,6 +87,7 @@ def discover_launchd():
     # decide state from the answers, then fan the enrichment out.  Plist reads and
     # override lookups stay on this thread -- they are local and cheap, and
     # ports_for_pid already answers from a shared lsof snapshot.
+    extras = configured_signatures()
     contexts = []
     for path in sorted(glob.glob(f"{AGENTS_DIR}/*.plist")):
         label = Path(path).stem
@@ -101,12 +126,28 @@ def discover_launchd():
         url = resolve_template(ov.get("url") or url_from_plist(pl))
         name = ov.get("name") or friendly_name(label)
         group = ov.get("group") or guess_group(label, pl, interval)
+        # Signature library: a recognised binary gets its real name, and a
+        # generic "Native Services" group yields to the signature category.
+        # Overrides and more specific groups (Gateway, Homebrew, …) win.
+        prog = ""
+        if pl.get("Program"):
+            prog = Path(str(pl["Program"])).name
+        elif arguments:
+            prog = Path(str(arguments[0])).name
+        sig = identify(prog, port, extras=extras)
+        if not (sig and sig.get("confidence") == "high"):
+            sig = None
+        elif not ov.get("name"):
+            name = sig["name"]
+        if sig and not ov.get("group") and group == "Native Services":
+            group = sig["category"]
 
         contexts.append({
             "label": label, "ov": ov, "pl": pl, "interval": interval,
             "launchservices_open": launchservices_open, "pid": pid, "last": last,
             "loaded": loaded, "running": running, "port": port,
             "detected": detected, "url": url, "name": name, "group": group,
+            "sig": sig,
         })
 
     # None where no port was resolved, matching the previous conditional.
@@ -124,12 +165,23 @@ def discover_launchd():
         port, detected = ctx["port"], ctx["detected"]
         url, name, group = ctx["url"], ctx["name"], ctx["group"]
 
-        if interval:
-            state = "ok" if loaded and last in ("0", None) else ("down" if not loaded else "warn")
-            detail = (
-                ("Loaded · scheduled task" + (f" · last exit code {last}" if last not in (None, "0") else ""))
-                if loaded else "Not loaded"
-            )
+        plist_disabled = bool(pl.get("Disabled"))
+        if not running and plist_disabled:
+            # Operator-disabled jobs are stopped, not crashed.  Interval
+            # PhotosHub agents ship with Disabled=true and are absent from
+            # `launchctl list`; calling that "down" filled Needs Attention.
+            state, detail, actions = "stopped", "Disabled", ["start", "logs"]
+        elif interval:
+            if not loaded:
+                state, detail = "down", "Not loaded"
+            elif last not in ("0", None):
+                # Calendar/interval jobs keep the last exit code until the
+                # next run.  A 3:30 timeout would otherwise sit in 需关注
+                # all day; freshness_svc already watches the artifact.
+                state = "ok"
+                detail = f"Loaded · scheduled task · last exit code {last}"
+            else:
+                state, detail = "ok", "Loaded · scheduled task"
             actions = ["run", "logs"] + (["stop"] if loaded else ["start"])
         elif launchservices_open and loaded:
             if last in ("0", None):
@@ -165,6 +217,10 @@ def discover_launchd():
             item["meta"] = {"detected_ports": detected, "adaptive": not bool(ov.get("port"))}
             if not ov.get("port") or not ov.get("url") or not ov.get("name"):
                 item["auto"] = True
+        if ctx.get("sig"):
+            item.setdefault("meta", {})["signature"] = ctx["sig"]
+            item["signature"] = ctx["sig"]
+        _annotate_ollama_agent(item)
         items.append((item, pl, pid if running else None))
 
     # keep enrich for any remaining gaps.  Independent per service, and it can

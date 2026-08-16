@@ -1,9 +1,9 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-const CACHE_NAME = 'serverhub-fde1eb3510a28787'
+const CACHE_NAME = 'serverhub-d51e4e502242a3fd'
 // Vite replaces the placeholder with the first-paint assets (entry + vendor
 // chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Account-Bybzo2vd.css","/assets/Apps-WjtE4X6x.css","/assets/Bookmarks-CmO1-9tu.css","/assets/Compose-Xwt2I3WS.css","/assets/Dashboard-DnnalXhE.css","/assets/Files-BmSpWPVS.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-CufDTflA.css","/assets/Logs-BQ6oAIpl.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-MCrVcGgE.css","/assets/Ollama-BhhAQvGW.css","/assets/PhotosHub-BwkfI9Pl.css","/assets/Pool-WTeE8dOI.css","/assets/Services-CGQAilrp.css","/assets/Settings-DE6PXInu.css","/assets/Shares-CtP2VtOe.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-zqGm35wn.css","/assets/Tools-Dq0rX2ew.css","/assets/Users-DsyV07kA.css","/assets/VMs-DBd73pIy.css","/assets/WireGuard-CFo2zPrX.css","/assets/en-Dgsgg-H_.js","/assets/index-B12m2YTV.css","/assets/index-n4TF-r9y.js","/assets/vendor-DsKQQMlc.js"]
+const PRECACHE_ASSETS = ["/assets/Account-KGvMr2ki.css","/assets/Apps-m-97Mgdy.css","/assets/Bookmarks-7puGVeLg.css","/assets/Compose-YTjKniP0.css","/assets/Dashboard-X3mGkswr.css","/assets/Files-A_jp4-Ui.css","/assets/LineChart-DH0qnAGV.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-Ddv1ZII_.css","/assets/Logs-D4zGnGqB.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-CdQFuIwV.css","/assets/Ollama-B_YivI2H.css","/assets/PhotosHub-y-J_H0-J.css","/assets/Pool-CsRJ6hDS.css","/assets/ScheduleJobForm-Dmls8G56.css","/assets/Services-Be_IP4XO.css","/assets/Settings-BnwCuhzk.css","/assets/Shares-CumIWhxt.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/StackBar-dHXReq1Y.css","/assets/Terminal-BdrxAkUJ.css","/assets/Tools-BwqItP48.css","/assets/Users-CRFEYuIr.css","/assets/VMs-DyXf0bZX.css","/assets/WireGuard-C6-_8RoW.css","/assets/en-s7_YIatx.js","/assets/index-CPe7xBrJ.js","/assets/index-DbGHx7fv.css","/assets/vendor-DVlS_6Kg.js"]
 const SHELL_ASSETS = [
   '/',
   '/index.html',

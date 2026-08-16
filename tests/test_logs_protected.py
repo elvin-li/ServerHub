@@ -44,6 +44,29 @@ class ProtectedLogSourceTests(unittest.TestCase):
                 logs_svc.tail_log("secret")
         self.assertEqual(raised.exception.status_code, 403)
 
+    def test_tail_reports_the_file_size(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "app.log"
+            path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+            expected = path.stat().st_size
+            with patch.object(
+                logs_svc,
+                "log_sources",
+                return_value=[{
+                    "id": "app",
+                    "name": "app",
+                    "path": str(path),
+                    "exists": True,
+                    "size": expected,
+                }],
+            ):
+                got = logs_svc.tail_log("app", lines=10)
+        self.assertEqual(got["size"], expected)
+        self.assertEqual(got["lines"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+

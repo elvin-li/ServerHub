@@ -114,5 +114,85 @@ class BrewRootRefusalTests(unittest.TestCase):
         self.assertEqual(len(caught), 1, "the detector stopped detecting the call")
 
 
+class BrewSudoPrimeTests(unittest.TestCase):
+    """Pkg cask installs retry brew after priming a sudo ticket from the web password."""
+
+    def test_retries_brew_when_admin_password_primes_sudo(self):
+        from hub import native_catalog
+        from hub.macos_admin import use_admin_password
+        from unittest import mock
+
+        calls: list[list] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if len(calls) == 1:
+                return {
+                    "ok": False,
+                    "rc": 1,
+                    "message": "sudo: a password is required",
+                }
+            return {"ok": True, "rc": 0, "message": "installed"}
+
+        with (
+            mock.patch.object(native_catalog, "_run", side_effect=fake_run),
+            mock.patch("hub.macos_admin.prime_sudo_ticket", return_value={"ok": True}),
+            use_admin_password("secret"),
+        ):
+            result = native_catalog._run_brew(["install", "--cask", "tailscale-app"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 2)
+
+
+class NativeRedisBrewSkip(unittest.TestCase):
+    """Install/start must not spawn Homebrew Redis when :6379 is Immich Valkey."""
+
+    def test_helper_reports_the_probed_port(self):
+        from hub import native_catalog
+        from unittest import mock
+
+        with mock.patch("hub.util.port_open", return_value=True) as poked:
+            self.assertTrue(native_catalog.redis_port_already_served())
+        poked.assert_called_once_with(native_catalog.REDIS_PORT, host="127.0.0.1")
+        with mock.patch("hub.util.port_open", return_value=False):
+            self.assertFalse(native_catalog.redis_port_already_served())
+
+    def test_install_skips_brew_services_start_when_the_port_is_open(self):
+        from hub import native_catalog
+        from unittest import mock
+
+        ran: list[list] = []
+
+        def fake_run(argv, **kwargs):
+            ran.append(list(argv))
+            return {"ok": True, "message": "started", "rc": 0}
+
+        app = next(a for a in native_catalog.NATIVE_APPS if a["id"] == "native-redis")
+        with (
+            mock.patch.object(native_catalog, "_is_installed", return_value=True),
+            mock.patch.object(native_catalog, "redis_port_already_served", return_value=True),
+            mock.patch.object(native_catalog, "_run", side_effect=fake_run),
+            mock.patch.object(native_catalog, "_run_brew", side_effect=fake_run),
+        ):
+            result = native_catalog._install_native(app, "native-redis")
+        self.assertTrue(result["ok"])
+        self.assertIn("already served", result["message"])
+        self.assertFalse(any("services" in cmd and "start" in cmd for cmd in ran))
+
+    def test_apps_start_skips_a_second_daemon_when_the_port_is_open(self):
+        from hub import apps_manage_svc, native_catalog
+        from unittest import mock
+
+        with (
+            mock.patch.object(native_catalog, "redis_port_already_served", return_value=True),
+            mock.patch.object(native_catalog, "_run") as run,
+            mock.patch.object(apps_manage_svc, "invalidate_inventory"),
+        ):
+            result = apps_manage_svc.action("native-redis", "start")
+        self.assertTrue(result["ok"])
+        self.assertIn("already serving", result["message"])
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

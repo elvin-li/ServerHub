@@ -8,6 +8,7 @@
     <div class="toolbar">
       <button class="primary" :disabled="loading" @click="refreshNow">{{ t('common.refresh') }}</button>
       <router-link class="btn-link" to="/logs">{{ t('ollama.logs_link') }}</router-link>
+      <router-link class="btn-link" to="/settings?tab=advanced">{{ t('ollama.settings_link') }}</router-link>
     </div>
 
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refreshNow" :busy="loading" />
@@ -30,6 +31,9 @@
         <div v-if="duplicateLabels.length" class="notice warn" role="alert">
           {{ t('ollama.duplicate_agents', { labels: duplicateLabels.join(', ') }) }}
         </div>
+        <div v-if="data.url_rejected" class="notice warn" role="alert" data-test="ollama-url-rejected">
+          {{ t('ollama.url_rejected', { url: data.url }) }}
+        </div>
         <div class="svc-grid">
           <div>
             <div class="meta">{{ t('ollama.service_label') }}</div>
@@ -40,11 +44,21 @@
             <div class="mono">{{ data.version || '—' }}</div>
           </div>
           <div>
-            <div class="meta">API</div>
-            <div class="mono">{{ data.url }}</div>
+            <div class="meta">{{ t('ollama.api') }}</div>
+            <div class="mono api-line">
+              <span>{{ data.url }}</span>
+              <button class="tiny" type="button" @click="copyText(data.url)">{{ t('common.copy') }}</button>
+            </div>
+          </div>
+          <div>
+            <div class="meta">{{ t('ollama.openai_api') }}</div>
+            <div class="mono api-line">
+              <span>{{ openaiCompatUrl }}</span>
+              <button class="tiny" type="button" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
+            </div>
           </div>
           <div v-if="data.service?.pid">
-            <div class="meta">PID</div>
+            <div class="meta">{{ t('ollama.pid') }}</div>
             <div class="mono">{{ data.service.pid }}</div>
           </div>
         </div>
@@ -65,22 +79,25 @@
           <span class="meta">{{ t('ollama.resident_hint') }}</span>
         </div>
         <div class="table-wrap">
-          <table class="dense">
+          <table class="dense fit-m">
             <thead>
               <tr>
                 <th>{{ t('ollama.col_model') }}</th>
                 <th>{{ t('ollama.col_vram') }}</th>
-                <th>{{ t('ollama.col_context') }}</th>
-                <th>{{ t('ollama.col_expires') }}</th>
+                <th class="col-hide-m">{{ t('ollama.col_context') }}</th>
+                <th class="col-hide-m">{{ t('ollama.col_expires') }}</th>
                 <th>{{ t('common.actions') }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="m in resident" :key="m.name">
-                <td class="mono">{{ m.name }}</td>
+                <td class="mono">
+                  {{ m.name }}
+                  <div class="show-m sub">{{ m.context_length || '—' }} · {{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</div>
+                </td>
                 <td>{{ fmtSize(m.size_vram || m.size) }}</td>
-                <td class="mono">{{ m.context_length || '—' }}</td>
-                <td>{{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</td>
+                <td class="mono col-hide-m">{{ m.context_length || '—' }}</td>
+                <td class="col-hide-m">{{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</td>
                 <td class="ops">
                   <button class="tiny" :disabled="unloading" @click="unload(m)">{{ t('ollama.act_unload') }}</button>
                 </td>
@@ -102,29 +119,33 @@
           <span class="meta">{{ models.length ? t('ollama.models_count', { n: models.length }) : '' }}</span>
         </div>
         <div class="table-wrap">
-          <table class="dense">
+          <table class="dense fit-m">
             <thead>
               <tr>
                 <th>{{ t('ollama.col_model') }}</th>
                 <th>{{ t('ollama.col_size') }}</th>
-                <th>{{ t('ollama.col_family') }}</th>
-                <th>{{ t('ollama.col_quant') }}</th>
-                <th>{{ t('ollama.col_caps') }}</th>
-                <th>{{ t('ollama.col_modified') }}</th>
+                <th class="col-hide-m">{{ t('ollama.col_family') }}</th>
+                <th class="col-hide-m">{{ t('ollama.col_quant') }}</th>
+                <th class="col-hide-m">{{ t('ollama.col_caps') }}</th>
+                <th class="col-hide-m">{{ t('ollama.col_modified') }}</th>
                 <th>{{ t('common.actions') }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="m in models" :key="m.name">
-                <td class="mono">{{ m.name }}</td>
+                <td class="mono">
+                  {{ m.name }}
+                  <div class="show-m sub">{{ m.family || '—' }}{{ m.parameter_size ? ' ' + m.parameter_size : '' }} · {{ m.quantization || '—' }}</div>
+                  <div v-if="(m.capabilities || []).length" class="show-m sub">{{ (m.capabilities || []).join(', ') }}</div>
+                </td>
                 <td>{{ fmtSize(m.size) }}</td>
-                <td>{{ m.family || '—' }} <span v-if="m.parameter_size" class="meta">{{ m.parameter_size }}</span></td>
-                <td class="mono">{{ m.quantization || '—' }}</td>
-                <td>
+                <td class="col-hide-m">{{ m.family || '—' }} <span v-if="m.parameter_size" class="meta">{{ m.parameter_size }}</span></td>
+                <td class="mono col-hide-m">{{ m.quantization || '—' }}</td>
+                <td class="col-hide-m">
                   <span v-for="c in m.capabilities" :key="c" class="badge cap">{{ c }}</span>
                   <span v-if="!(m.capabilities || []).length">—</span>
                 </td>
-                <td class="meta">{{ fmtDate(m.modified) }}</td>
+                <td class="meta col-hide-m">{{ fmtDate(m.modified) }}</td>
                 <td class="ops">
                   <button class="tiny danger" @click="openDelete(m)">{{ t('ollama.act_delete') }}</button>
                 </td>
@@ -149,8 +170,7 @@
           <input
             v-model="pullName"
             type="text"
-            class="mono"
-            style="min-width:220px"
+            class="mono pull-name"
             :placeholder="t('ollama.pull_ph')"
             :aria-label="t('ollama.pull_name_label')"
             @keydown.enter="startPull"
@@ -231,7 +251,7 @@
           <input
             v-model="testPrompt"
             type="text"
-            style="flex:1;min-width:200px"
+            class="test-prompt"
             :placeholder="t('ollama.test_prompt_ph')"
             :aria-label="t('ollama.test_prompt_label')"
             maxlength="2000"
@@ -250,6 +270,45 @@
           <span v-else>❌ {{ t('ollama.test_failed') }}</span>
         </div>
         <pre v-if="testResult || testBusy" class="logbox" aria-live="polite">{{ testText }}</pre>
+      </div>
+    </template>
+
+    <template v-if="data">
+      <div class="card-block" style="margin-bottom:14px" data-test="ollama-settings">
+        <div class="section-head">
+          <h2>{{ t('ollama.settings_title') }}</h2>
+          <span class="meta">{{ t('ollama.settings_hint') }}</span>
+        </div>
+        <div class="settings-grid">
+          <label>{{ t('ollama.settings_url') }}</label>
+          <input
+            v-model="ollamaForm.url"
+            type="text"
+            :aria-label="t('ollama.settings_url')"
+          />
+          <label>{{ t('ollama.settings_label') }}</label>
+          <input
+            v-model="ollamaForm.label"
+            type="text"
+            :placeholder="t('ollama.settings_label_ph')"
+            :aria-label="t('ollama.settings_label')"
+          />
+        </div>
+        <div class="toolbar" style="margin:10px 0 0">
+          <button class="tiny primary" :disabled="ollamaSaving" @click="saveOllamaSettings">
+            {{ t('common.save') }}
+          </button>
+        </div>
+      </div>
+      <div class="card-block" data-test="ollama-clients">
+        <div class="section-head">
+          <h2>{{ t('ollama.clients_title') }}</h2>
+          <span class="meta">{{ t('ollama.clients_hint') }}</span>
+        </div>
+        <ul class="clients-list">
+          <li>{{ t('ollama.clients_cursor') }}</li>
+          <li>{{ t('ollama.clients_lan') }}</li>
+        </ul>
       </div>
     </template>
 
@@ -292,6 +351,8 @@ import {
   doAction,
   getOllamaPullLog,
   getOllamaStatus,
+  getSettings,
+  putSettings,
   startOllamaPull,
   testOllamaModel,
   unloadOllamaModel,
@@ -334,6 +395,9 @@ const deleteText = ref('')
 const deleting = ref(false)
 const deletePanel = ref(null)
 
+const ollamaForm = ref({ url: 'http://127.0.0.1:11434', label: '' })
+const ollamaSaving = ref(false)
+
 let statusTimer = null
 let actionTimer = null
 let pullTimer = null
@@ -344,6 +408,11 @@ const resident = computed(() => (Array.isArray(data.value?.resident) ? data.valu
 const duplicateLabels = computed(() => {
   const c = data.value?.service?.candidates
   return Array.isArray(c) && c.length > 1 ? c : []
+})
+
+const openaiCompatUrl = computed(() => {
+  const base = String(data.value?.url || 'http://127.0.0.1:11434').replace(/\/$/, '')
+  return `${base}/v1`
 })
 
 const serviceBadge = computed(() => {
@@ -396,9 +465,53 @@ function fmtDate(s) {
   return (s || '').slice(0, 16).replace('T', ' ') || '—'
 }
 
+function copyText(text) {
+  if (!text) return
+  navigator.clipboard.writeText(text).then(
+    () => toast('✅ ' + t('common.copied')),
+    () => toast('❌ ' + t('common.copy_failed')),
+  )
+}
+
+async function loadOllamaSettings() {
+  try {
+    const s = await getSettings()
+    ollamaForm.value = {
+      url: s.ollama?.url || data.value?.url || 'http://127.0.0.1:11434',
+      label: s.ollama?.label || '',
+    }
+  } catch {
+    ollamaForm.value = {
+      url: data.value?.url || 'http://127.0.0.1:11434',
+      label: ollamaForm.value.label || '',
+    }
+  }
+}
+
+async function saveOllamaSettings() {
+  ollamaSaving.value = true
+  try {
+    await putSettings({
+      ollama: {
+        url: ollamaForm.value.url.trim(),
+        label: ollamaForm.value.label.trim(),
+      },
+    })
+    toast('✅ ' + t('ollama.settings_saved'))
+    await refresh(true)
+    await loadOllamaSettings()
+  } catch (e) {
+    toast('❌ ' + (e.message || e))
+  } finally {
+    ollamaSaving.value = false
+  }
+}
+
 /** One status read. Returns false on failure so lib/poll.js backs off. */
 async function refresh(force = false) {
-  loading.value = true
+  // Background 10s polls must not flip `loading`: that disables Refresh and
+  // made the page feel like it was reloading on every tick.
+  if (!loaded.value || force) loading.value = true
   try {
     const j = await getOllamaStatus(force)
     data.value = j
@@ -616,6 +729,7 @@ async function runTest() {
 
 onMounted(() => {
   void refresh()
+  void loadOllamaSettings()
   void resumePullTail()
   statusTimer = startVisibleInterval(refresh, 10000)
 })
@@ -650,8 +764,28 @@ onUnmounted(() => {
 }
 .svc-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
   gap: 10px;
+}
+.api-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+.settings-grid label { color: var(--sub); font-size: 12px; }
+.clients-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--txt);
+  font-size: 13px;
+  line-height: 1.55;
 }
 .absent {
   text-align: center;
@@ -741,5 +875,12 @@ onUnmounted(() => {
   min-width: 200px;
   min-height: 42px;
   resize: vertical;
+}
+.test-prompt { flex: 1; min-width: 200px; }
+.pull-name { min-width: 220px; flex: 1 1 180px; }
+@media (max-width: 640px) {
+  .section-head { flex-wrap: wrap; }
+  .settings-grid { grid-template-columns: 1fr; }
+  .chat-input, .test-prompt, .pull-name { min-width: 0; width: 100%; }
 }
 </style>

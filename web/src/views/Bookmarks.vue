@@ -122,7 +122,7 @@ onMounted(() => refresh(false))
 <style scoped>
 .bm-page-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
   gap: 8px;
 }
 .bm-page-card {

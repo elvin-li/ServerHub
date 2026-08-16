@@ -58,13 +58,17 @@
           {{ t('wg.not_ready_hint') }}
         </p>
         <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <tbody>
             <tr v-for="c in blockingChecks" :key="c.id">
               <td style="width:28px"><span class="led err"></span></td>
-              <td><strong>{{ checkLabel(c.id) }}</strong></td>
-              <td style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
-              <td class="mono" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
+              <td>
+                <strong>{{ checkLabel(c.id) }}</strong>
+                <div class="show-m sub">{{ checkFix(c.id) }}</div>
+                <div v-if="c.detail" class="show-m sub mono">{{ c.detail }}</div>
+              </td>
+              <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
               <td style="text-align:right">
                 <button
                   v-if="c.id === 'forwarding'"
@@ -109,13 +113,17 @@
           {{ t('wg.warnings_hint') }}
         </p>
         <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <tbody>
             <tr v-for="c in warningChecks" :key="c.id">
               <td style="width:28px"><span class="led warn"></span></td>
-              <td><strong>{{ checkLabel(c.id) }}</strong></td>
-              <td style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
-              <td class="mono" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
+              <td>
+                <strong>{{ checkLabel(c.id) }}</strong>
+                <div class="show-m sub">{{ checkFix(c.id) }}</div>
+                <div v-if="c.detail" class="show-m sub mono">{{ c.detail }}</div>
+              </td>
+              <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
               <td style="text-align:right">
                 <button
                   v-if="c.id === 'boot'"
@@ -188,16 +196,16 @@
       <!-- Peers -->
       <h2 class="section-title">{{ t('wg.peers') }} ({{ data?.peer_count || 0 }})</h2>
       <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <thead>
             <tr>
               <th style="width:28px"></th>
               <th>{{ t('wg.peer_name') }}</th>
               <th>{{ t('wg.address') }}</th>
-              <th>{{ t('wg.remote_endpoint') }}</th>
-              <th>{{ t('wg.handshake') }}</th>
-              <th>{{ t('wg.keepalive') }}</th>
-              <th>{{ t('wg.traffic') }}</th>
+              <th class="col-hide-m">{{ t('wg.remote_endpoint') }}</th>
+              <th class="col-hide-m">{{ t('wg.handshake') }}</th>
+              <th class="col-hide-m">{{ t('wg.keepalive') }}</th>
+              <th class="col-hide-m">{{ t('wg.traffic') }}</th>
               <th class="actions">{{ t('common.actions') }}</th>
             </tr>
           </thead>
@@ -213,26 +221,33 @@
                 <div class="mono" style="font-size:9px;color:var(--sub)" :title="p.pubkey">
                   {{ p.pubkey.slice(0, 16) }}…
                 </div>
+                <div v-if="p.endpoint" class="show-m sub mono">{{ p.endpoint }}</div>
+                <div class="show-m sub mono">↑{{ p.tx_human }} ↓{{ p.rx_human }}</div>
+                <div class="show-m sub">
+                  <span v-if="p.active">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
+                  <span v-else-if="p.stale">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
+                  <span v-else-if="p.last_handshake">{{ relativeAge(p.handshake_age) }}</span>
+                </div>
               </td>
               <td class="mono">{{ p.allowed_ips }}</td>
-              <td class="mono" style="font-size:10px">{{ p.endpoint || '—' }}</td>
-              <td style="font-size:11px">
+              <td class="mono col-hide-m" style="font-size:10px">{{ p.endpoint || '—' }}</td>
+              <td class="col-hide-m" style="font-size:11px">
                 <span v-if="p.active" class="badge ok">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
                 <span v-else-if="p.stale" class="badge warn">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
                 <span v-else-if="p.last_handshake" class="badge">{{ relativeAge(p.handshake_age) }}</span>
                 <span v-else style="color:var(--sub)">{{ t('wg.never') }}</span>
               </td>
-              <td>
+              <td class="col-hide-m">
                 <span class="badge" :class="p.keepalive && p.keepalive !== 'off' && p.keepalive !== '0' ? 'ok' : 'warn'">
                   {{ p.keepalive || 'off' }}
                 </span>
               </td>
-              <td class="mono" style="font-size:10px">↑{{ p.tx_human }} ↓{{ p.rx_human }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">↑{{ p.tx_human }} ↓{{ p.rx_human }}</td>
               <td class="actions">
                 <button class="tiny primary" @click="showPeer(p)" :disabled="busy || !p.reissuable">
                   {{ t('wg.config') }}
                 </button>
-                <button class="tiny" @click="togglePsk(p)" :disabled="busy">
+                <button class="tiny hide-m" @click="togglePsk(p)" :disabled="busy">
                   {{ p.psk ? t('wg.psk_remove') : t('wg.psk_add') }}
                 </button>
                 <button class="tiny danger" @click="removePeer(p)" :disabled="busy">{{ t('common.delete') }}</button>
@@ -327,7 +342,7 @@
       <div v-if="pingResult" class="tile" style="margin-top:12px">
         <h3>{{ t('wg.ping_result', { ok: pingResult.reachable, total: pingResult.total }) }}</h3>
         <div class="table-wrap">
-        <table class="dense">
+        <table class="dense fit-m">
           <tbody>
             <tr v-for="r in pingResult.results" :key="r.pubkey">
               <td style="width:28px"><span class="led" :class="r.reachable ? 'on' : 'err'"></span></td>
@@ -851,6 +866,11 @@ onUnmounted(() => {
 }
 .wg-status-text { font-weight: 700; font-size: 14px; }
 .wg-status-meta { font-size: 11px; color: var(--sub); margin-left: auto; }
+@media (max-width: 640px) {
+  .wg-status-bar { flex-wrap: wrap; }
+  .wg-status-meta { margin-left: 0; width: 100%; }
+  .toolbar-grow, .toolbar-sep { display: none; }
+}
 
 /* ── Toolbar refinements ────────────────────────────────────────────────── */
 .toolbar-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }

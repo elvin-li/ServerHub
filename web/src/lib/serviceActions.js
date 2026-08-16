@@ -67,15 +67,29 @@ export function stateChipClass(state) {
   return 'chip-muted'
 }
 
-/** Compact port readout: explicit port, first ports[] entry, or one scraped from the detail line. */
+/** Compact port readout: explicit port, numeric ports[], first ports[] entry, or one scraped from the detail line. */
 export function portOf(s) {
-  if (s.port != null) return `:${s.port}`
-  if (Array.isArray(s.ports) && s.ports.length) {
-    const first = s.ports[0]
-    return typeof first === 'object' ? JSON.stringify(first) : String(first)
+  const nums = []
+  const push = (p) => {
+    const n = typeof p === 'number' ? p : (typeof p === 'string' && /^\d+$/.test(p) ? Number(p) : null)
+    if (n != null && !nums.includes(n)) nums.push(n)
   }
-  const m = (s.detail || '').match(/:(\d{2,5})\b/)
+  if (s?.port != null) push(s.port)
+  if (Array.isArray(s?.ports)) {
+    for (const p of s.ports) push(p)
+    if (!nums.length && s.ports.length) {
+      const first = s.ports[0]
+      return typeof first === 'object' ? JSON.stringify(first) : String(first)
+    }
+  }
+  if (nums.length) return nums.map((p) => `:${p}`).join(' ')
+  const m = (s?.detail || '').match(/:(\d{2,5})\b/)
   return m ? `:${m[1]}` : '—'
+}
+
+/** Recognition payload lives on the row or under meta, depending on the endpoint. */
+export function signatureOf(s) {
+  return s?.signature || s?.meta?.signature || null
 }
 
 const ACT_LABEL_KEYS = {

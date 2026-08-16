@@ -131,6 +131,38 @@ class FanOutContractTests(unittest.TestCase):
     def test_a_generator_input_is_accepted(self):
         self.assertEqual(fan_out(lambda x: x, (i for i in range(3))), [0, 1, 2])
 
+    def test_nested_fan_out_from_a_worker_does_not_deadlock(self):
+        from hub.util import MAX_PROBE_WORKERS
+
+        def inner(n):
+            return n * 2
+
+        def outer(n):
+            # Saturating the shared pool in the outer wave used to hang
+            # here: the worker waited for map() on the same executor.
+            return sum(fan_out(inner, [n, n + 1]))
+
+        got = fan_out(outer, list(range(MAX_PROBE_WORKERS)))
+        self.assertEqual(got, [4 * n + 2 for n in range(MAX_PROBE_WORKERS)])
+
+    def test_nested_fan_out_still_overlaps(self):
+        def inner(_):
+            time.sleep(PROBE_DELAY)
+            return 1
+
+        def outer(_):
+            return sum(fan_out(inner, [0, 1, 2, 3]))
+
+        started = time.time()
+        got = fan_out(outer, [0, 1])
+        elapsed = time.time() - started
+        self.assertEqual(got, [4, 4])
+        self.assertLess(
+            elapsed,
+            4 * PROBE_DELAY * 0.7,
+            f"nested batch took {elapsed:.2f}s; inner items ran serially",
+        )
+
 
 APP_CONFIG = {
     "apps": [
@@ -823,10 +855,11 @@ class PeerPingTests(unittest.TestCase):
 
 
 class HealthPortTests(unittest.TestCase):
-    def test_the_three_key_ports_are_probed_together(self):
+    def test_the_key_ports_are_probed_together(self):
         from hub import health_svc
 
         calls = []
+        ports = [port for port, _, _ in health_svc._KEY_PORTS]
 
         def slow_port(port, **kwargs):
             calls.append(port)
@@ -835,12 +868,12 @@ class HealthPortTests(unittest.TestCase):
 
         with mock.patch.object(health_svc, "port_open", slow_port):
             started = time.time()
-            probed = fan_out(health_svc._probe_port, [8086, 8123, 8281])
+            probed = fan_out(health_svc._probe_port, ports)
             elapsed = time.time() - started
 
-        self.assertEqual(probed, [True, False, False], "order or result changed")
-        self.assertEqual(sorted(calls), [8086, 8123, 8281])
-        self.assertLess(elapsed, 3 * PROBE_DELAY * 0.8, f"took {elapsed:.2f}s")
+        self.assertEqual(probed, [port == 8086 for port in ports], "order or result changed")
+        self.assertEqual(sorted(calls), sorted(ports))
+        self.assertLess(elapsed, len(ports) * PROBE_DELAY * 0.8, f"took {elapsed:.2f}s")
 
     def test_a_raising_probe_reads_as_closed(self):
         from hub import health_svc
@@ -2158,8 +2191,9 @@ class HealthCheckSingleFlightTests(unittest.TestCase):
                     f"{self.calls[listing]} times",
                 )
                 self.assertEqual(
-                    self.calls["sudo -n"], 1,
-                    f"{readers} readers ran `sudo -n smartctl` {self.calls['sudo -n']} times",
+                    self.calls["/usr/bin/sudo -n"], 1,
+                    f"{readers} readers ran `/usr/bin/sudo -n smartctl` "
+                    f"{self.calls['/usr/bin/sudo -n']} times",
                 )
 
     def test_every_reader_gets_the_one_collected_snapshot(self):
