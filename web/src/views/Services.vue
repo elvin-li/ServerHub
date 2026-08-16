@@ -115,7 +115,7 @@
               <td><span class="led" :class="ledOf(s.state)"></span></td>
               <td>
                 <strong>{{ s.name }}</strong>
-                <span v-if="signatureOf(s)" class="chip chip-sig chip-inline" :title="signatureOf(s).category">
+                <span v-if="signatureOf(s)" class="chip chip-sig chip-inline" :title="signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?`">
                   {{ signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?` }}
                 </span>
                 <div class="mono sub-id">{{ s.id }}</div>
@@ -155,7 +155,7 @@
               <span class="led" :class="ledOf(s.state)"></span>
               <span class="name" :title="s.id">{{ s.name }}</span>
               <span class="badge">{{ kindLabel(s.kind) }}</span>
-              <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).category">
+              <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?`">
                 {{ signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?` }}
               </span>
             </div>
@@ -655,7 +655,11 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .chip-warn.active { border-color: var(--warn); }
 .chip-down.active { border-color: var(--down); }
 .chip-muted { opacity: .85; }
-.chip-sig { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; cursor: default; }
+.chip-sig {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; cursor: default;
+  display: inline-block; white-space: nowrap; overflow-wrap: normal; word-break: normal;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+}
 .chip-inline { margin-left: 6px; padding: 1px 7px; font-size: 10px; vertical-align: middle; }
 .chk { font-size: 12px; color: var(--sub); display: inline-flex; align-items: center; gap: 5px; }
 

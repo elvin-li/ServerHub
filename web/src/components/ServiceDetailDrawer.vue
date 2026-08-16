@@ -29,7 +29,7 @@
             <span class="chip">{{ kindLabel(service.kind) }}</span>
             <span class="chip" :class="stateChipClass(service.state)">{{ stateLabel(service.state) }}</span>
             <span v-if="service.auto" class="chip chip-muted">auto</span>
-            <span v-if="sig" class="chip chip-sig" :title="sig.category">
+            <span v-if="sig" class="chip chip-sig" :title="sig.confidence === 'high' ? sig.name : `${sig.name}?`">
               {{ sig.confidence === 'high' ? sig.name : `${sig.name}?` }}
             </span>
           </div>
@@ -200,6 +200,7 @@
 <script setup>
 import { computed, inject, reactive, ref, watch } from 'vue'
 import { injectI18n } from '../i18n'
+import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
 import { portOf, serviceLabels, signatureOf, stateChipClass } from '../lib/serviceActions'
 import ServiceActions from './ServiceActions.vue'
@@ -309,12 +310,7 @@ function submitOverride() {
 }
 
 async function copyLog() {
-  try {
-    await navigator.clipboard.writeText(props.log || '')
-    toast('✅')
-  } catch {
-    toast('❌')
-  }
+  toast(await copyToClipboard(props.log) ? '✅' : '❌')
 }
 
 // Escape dismisses, focus moves in on open and back to the trigger on close,
@@ -359,7 +355,11 @@ useDismissable(() => props.service, () => emit('close'), panel)
 }
 .chip-ok { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
 .chip-muted { opacity: .85; }
-.chip-sig { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; }
+.chip-sig {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600;
+  display: inline-block; white-space: nowrap; overflow-wrap: normal; word-break: normal;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
 
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }

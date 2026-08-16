@@ -184,6 +184,34 @@ _RUNTIMES = {
     "java": "Java", "ruby": "Ruby", "php": "PHP",
 }
 
+#: lsof/ps encode a space in COMMAND as ``\x20`` (hex) or ``\040`` (octal)
+#: because the field is whitespace-delimited.  Leaving those sequences literal
+#: is what made the Services list show ``Plex\x20M`` instead of ``Plex M``.
+_C_HEX_ESC = re.compile(r"\\x([0-9a-fA-F]{2})")
+_C_OCT_ESC = re.compile(r"\\([0-7]{3})")
+
+
+def unescape_proc_name(name: str) -> str:
+    """Decode C-style byte escapes that lsof and ps leave in a process name."""
+    raw = str(name or "")
+    if "\\" not in raw:
+        return raw
+
+    def _byte(value: int, original: str) -> str:
+        if value == 0:
+            return original
+        if value < 32 or value == 127:
+            return " "
+        return chr(value)
+
+    def _hex(match: re.Match[str]) -> str:
+        return _byte(int(match.group(1), 16), match.group(0))
+
+    def _oct(match: re.Match[str]) -> str:
+        return _byte(int(match.group(1), 8), match.group(0))
+
+    return _C_OCT_ESC.sub(_oct, _C_HEX_ESC.sub(_hex, raw))
+
 
 def _proc_matches(proc: str, token: str) -> bool:
     """Whether a live process name matches a signature token.
@@ -259,7 +287,7 @@ def identify(
     treat as a hint rather than an identity.  ``extras`` are operator-defined
     signatures from services.yaml; a matching slug replaces the built-in entry.
     """
-    low = (proc or "").strip().lower()
+    low = unescape_proc_name(proc or "").strip().lower()
     img = image_basename(image)
     port_only: dict | None = None
     image_hit: dict | None = None

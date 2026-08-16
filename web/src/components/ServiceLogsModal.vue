@@ -27,6 +27,7 @@
 <script setup>
 import { inject, ref } from 'vue'
 import { injectI18n } from '../i18n'
+import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
 
 const toast = inject('toast')
@@ -42,12 +43,7 @@ const emit = defineEmits(['close', 'refresh'])
 const panel = ref(null)
 
 async function copyLog() {
-  try {
-    await navigator.clipboard.writeText(props.entry?.log || '')
-    toast('✅')
-  } catch {
-    toast('❌')
-  }
+  toast(await copyToClipboard(props.entry?.log) ? '✅' : '❌')
 }
 
 // The parent v-ifs this component, so its lifetime is the dialog's open

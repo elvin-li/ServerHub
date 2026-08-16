@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.host_address import host_ip as resolved_host_ip
-from hub.service_signatures import configured_signatures, identify
+from hub.service_signatures import configured_signatures, identify, unescape_proc_name
 from hub.util import port_open, sh
 
 # Common flags that take a port as next argument
@@ -130,7 +130,12 @@ def _parse_lsof_listen(out: str) -> list[dict[str, Any]]:
             port = int(m.group(1))
         except ValueError:
             continue
-        rows.append({"proc": parts[0], "pid": parts[1], "bind": bind, "port": port})
+        rows.append({
+            "proc": unescape_proc_name(parts[0]),
+            "pid": parts[1],
+            "bind": bind,
+            "port": port,
+        })
     return rows
 
 
@@ -447,7 +452,7 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
         "WeChat", "QQ", "Spotify", "Music", "Zoom", "Slack",
     }
     for row in rows:
-        proc, pid, name = row["proc"], row["pid"], row["bind"]
+        proc, pid, name = unescape_proc_name(row["proc"]), row["pid"], row["bind"]
         if any(proc.startswith(s) for s in skip_proc):
             continue
         port = row["port"]
@@ -463,7 +468,7 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
         # skip browser / IDE high ports often ephemeral
         if port > 49000:
             continue
-        by_port[port] = {"proc": proc, "pid": pid, "bind": name}
+        by_port[port] = {"proc": unescape_proc_name(proc), "pid": pid, "bind": name}
 
     # Same process, several ports (Redis 6379+6380, a UI plus its metrics
     # port) used to become one card each.  Group by pid so adopt writes one

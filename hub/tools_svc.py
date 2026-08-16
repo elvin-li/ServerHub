@@ -22,6 +22,7 @@ from hub import __version__, metrics
 from hub import cli_args
 from hub.errors import soft_fail
 from hub.host_address import host_ip
+from hub.service_signatures import unescape_proc_name
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
@@ -798,14 +799,15 @@ def parse_lsof_listen_line(line: str) -> dict | None:
     address, _, port_s = name.rpartition(":")
     if not address or not port_s.isdigit():
         return None
+    command = unescape_proc_name(parts[0])[:40]
     return {
         # existing keys the Tools view already renders
-        "command": parts[0][:40],
+        "command": command,
         "pid": parts[1],
         "user": parts[2],
         "name": name[:80],
         # added: structured fields for the port-conflict pre-check
-        "process": parts[0][:40],
+        "process": command,
         "address": address[:64],
         "port": int(port_s),
     }

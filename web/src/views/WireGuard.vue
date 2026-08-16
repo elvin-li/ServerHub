@@ -586,6 +586,7 @@ import {
 } from '../api/client'
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
+import { copyToClipboard } from '../lib/clipboard'
 import { startVisibleInterval } from '../lib/poll'
 
 const toast = inject('toast')
@@ -830,12 +831,8 @@ const removeWstunnel = () => {
 async function copyWstunnelCommand() {
   const command = data.value?.wstunnel?.client_command
   if (!command) return
-  try {
-    await navigator.clipboard.writeText(command)
-    toast('✅ ' + t('common.copied'))
-  } catch {
-    toast('❌ ' + t('common.copy_failed'))
-  }
+  const ok = await copyToClipboard(command)
+  toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
 async function createPeer() {
@@ -910,12 +907,8 @@ async function selectFormat(fmt) {
 }
 
 async function copyPeer() {
-  try {
-    await navigator.clipboard.writeText(peerContent.value)
-    toast('✅ ' + t('common.copied'))
-  } catch {
-    toast('❌ ' + t('common.copy_failed'))
-  }
+  const ok = await copyToClipboard(peerContent.value)
+  toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
 async function openConf(reveal = false) {

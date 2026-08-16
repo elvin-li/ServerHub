@@ -67,6 +67,20 @@ class IdentifyTests(unittest.TestCase):
     def test_unknown_process_yields_none(self):
         self.assertIsNone(service_signatures.identify("totally-unknown", 47123))
 
+    def test_lsof_hex_escape_in_process_name_is_unescaped(self):
+        # macOS lsof encodes a space in COMMAND as \x20 (the field cannot
+        # contain a literal space).  "Plex Media Server" therefore arrives as
+        # "Plex\x20M" after the usual ~9-char truncation.
+        self.assertEqual(service_signatures.unescape_proc_name(r"Plex\x20M"), "Plex M")
+        self.assertEqual(service_signatures.unescape_proc_name(r"Plex\040T"), "Plex T")
+        self.assertEqual(service_signatures.unescape_proc_name("redis-ser"), "redis-ser")
+
+    def test_escaped_process_name_still_port_matches(self):
+        sig = service_signatures.identify(r"Plex\x20M", 32400)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig["slug"], "plex")
+        self.assertEqual(sig["confidence"], "low")
+
     def test_suggest_id_slugs_and_deduplicates(self):
         self.assertEqual(service_signatures.suggest_id("Redis Server!"), "redis-server")
         self.assertEqual(
@@ -213,6 +227,30 @@ class OrphanSignatureTests(unittest.TestCase):
         self.assertEqual(redis["name"], "Redis :6379 :6380")
         self.assertIsNone(redis["url"])
         self.assertEqual(redis["id"], "auto.port.6379")
+
+    def test_hex_escaped_lsof_name_is_shown_unescaped(self):
+        # Captured shape: lsof COMMAND for "Plex Media Server" is Plex\x20M.
+        rows = [
+            {"proc": r"Plex\x20M", "pid": "900", "bind": "*:32400", "port": 32400},
+            {"proc": r"Plex\x20M", "pid": "900", "bind": "*:32401", "port": 32401},
+            {"proc": r"Plex\x20T", "pid": "901", "bind": "*:32600", "port": 32600},
+        ]
+        items = self._orphans(rows)
+        plex = items[32400]
+        self.assertEqual(plex["name"], "Plex M :32400 :32401")
+        self.assertNotIn(r"\x20", plex["name"])
+        self.assertEqual(plex["meta"]["process"], "Plex M")
+        self.assertEqual(items[32600]["name"], "Plex T :32600")
+
+    def test_parse_lsof_unescapes_command_field(self):
+        line = (
+            r"Plex\x20M   900 exampleuser   13u  IPv4 0xabc      0t0  "
+            "TCP *:32400 (LISTEN)"
+        )
+        rows = adaptive._parse_lsof_listen("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n" + line)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["proc"], "Plex M")
+        self.assertEqual(rows[0]["port"], 32400)
 
 
 def _auto_service(port=8079, sig=True):

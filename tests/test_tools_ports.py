@@ -94,6 +94,15 @@ class TestParseLsofListenLine(unittest.TestCase):
         ):
             self.assertIsNone(parse_lsof_listen_line(bad), bad)
 
+    def test_hex_escaped_command_is_unescaped(self):
+        row = parse_lsof_listen_line(
+            r"Plex\x20M    900 exampleuser   13u  IPv4 0xabc      0t0  "
+            "TCP *:32400 (LISTEN)"
+        )
+        self.assertEqual(row["command"], "Plex M")
+        self.assertEqual(row["process"], "Plex M")
+        self.assertEqual(row["port"], 32400)
+
     def test_conflict_precheck_shape(self):
         """A caller can now detect a port conflict by integer compare."""
         rows = [parse_lsof_listen_line(x) for x in SAMPLE]

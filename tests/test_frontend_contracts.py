@@ -185,6 +185,33 @@ class TestVmConsoleFrontendContract(unittest.TestCase):
         self.assertNotIn("reconnect", component.lower().replace("automatic reconnect", ""))
 
 
+class TestClipboardHelperContract(unittest.TestCase):
+    def test_views_do_not_call_navigator_clipboard_directly(self):
+        """Copy on a plain-http LAN must go through lib/clipboard.js.
+
+        ``navigator.clipboard`` is undefined off https, so a direct
+        ``navigator.clipboard.writeText(...)`` throws on the property access
+        before any catch attached to the promise can run.
+        """
+        offenders: list[str] = []
+        allowed = {WEB_SRC / "lib" / "clipboard.js"}
+        for path in sorted(WEB_SRC.rglob("*")):
+            if path.suffix not in {".vue", ".js"} or path in allowed:
+                continue
+            if ".test.js" in path.name:
+                continue
+            for n, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                line = re.sub(r"//.*$", "", raw)
+                if "navigator.clipboard" in line:
+                    offenders.append(f"{path.relative_to(BASE)}:{n}")
+        self.assertEqual(
+            offenders,
+            [],
+            "use copyToClipboard() from lib/clipboard.js instead of "
+            "navigator.clipboard:\n  " + "\n  ".join(offenders),
+        )
+
+
 class TestI18nKeysResolve(unittest.TestCase):
     def test_every_referenced_key_exists_in_every_locale(self):
         referenced: set[str] = set()

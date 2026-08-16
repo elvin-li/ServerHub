@@ -21,6 +21,7 @@ from hub.service_signatures import (
     remember_into,
     remove_from,
     suggest_id,
+    unescape_proc_name,
     yaml_signature,
 )
 from hub.status import full_status, invalidate_status
@@ -492,7 +493,7 @@ def _full_process_name(pid) -> str:
     rc, out, _ = sh(["/bin/ps", "-p", str(pid), "-o", "comm="], timeout=5)
     if rc != 0 or not out.strip():
         return ""
-    return Path(out.strip().splitlines()[0]).name
+    return unescape_proc_name(Path(out.strip().splitlines()[0]).name)
 
 
 def _process_command_path(pid) -> str:

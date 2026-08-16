@@ -33,9 +33,9 @@
                 </td>
                 <td><span class="badge" :class="s.status==='ok'?'ok':''">{{ s.status }}</span></td>
                 <td class="ops">
-                  <button class="tiny" :disabled="!s.compose_path || busy" @click.stop="run(s,'up')">Up</button>
+                  <button class="tiny" :disabled="!s.compose_path || busy" @click.stop="run(s,'up')">{{ t('compose.up') }}</button>
                   <button class="tiny hide-m" :disabled="!s.compose_path || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
-                  <button class="tiny danger" :disabled="!s.compose_path || busy" @click.stop="run(s,'down')">Down</button>
+                  <button class="tiny danger" :disabled="!s.compose_path || busy" @click.stop="run(s,'down')">{{ t('compose.down') }}</button>
                 </td>
               </tr>
             </tbody>
@@ -58,7 +58,7 @@
             <button class="primary" :disabled="busy" @click="save">{{ t('common.save') }}</button>
             <button :disabled="busy" @click="validate">{{ t('compose.validate') }}</button>
             <button :disabled="busy" @click="reloadCompose">{{ t('compose.reload_file') }}</button>
-            <button :disabled="busy" @click="run({id:selected},'up')">Compose Up</button>
+            <button :disabled="busy" @click="run({id:selected},'up')">{{ t('compose.up_full') }}</button>
           </div>
           <pre v-if="msg" style="margin-top:8px;font-size:11px;white-space:pre-wrap;max-height:140px;overflow:auto;background:var(--bg);padding:8px;border-radius:4px" role="status" aria-live="polite">{{ msg }}</pre>
         </template>

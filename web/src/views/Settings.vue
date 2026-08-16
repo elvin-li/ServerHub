@@ -1005,10 +1005,10 @@
         <h2 class="section-title" style="margin-top:0">{{ t('settings.ssd_friendly') }}</h2>
         <p class="hint" style="margin-top:0">{{ sysBundle?.other?.ssd_friendly?.hint || t('settings.ssd_hint') }}</p>
         <ul class="hint" style="margin:0;padding-left:18px;line-height:1.7">
-          <li>metrics batch flush</li>
-          <li>alert state write-if-changed</li>
-          <li>services.yaml bak keep ≤ 5</li>
-          <li>default metrics/alert interval 90s</li>
+          <li>{{ t('settings.ssd_item_metrics') }}</li>
+          <li>{{ t('settings.ssd_item_alerts') }}</li>
+          <li>{{ t('settings.ssd_item_bak') }}</li>
+          <li>{{ t('settings.ssd_item_interval') }}</li>
         </ul>
       </div>
     </div>

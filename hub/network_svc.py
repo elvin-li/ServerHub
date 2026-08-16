@@ -12,6 +12,7 @@ from hub.docker_cli import docker, engine_up
 from hub.errors import api_error
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
+from hub.service_signatures import unescape_proc_name
 from hub.util import LazyPool, fan_out, sh, ttl_memo
 
 _cache = {"t": 0.0, "v": None}
@@ -1382,7 +1383,7 @@ def listening_ports(limit: int = 100) -> list:
         parts = line.split()
         if len(parts) < 9:
             continue
-        proc, pid, user, name = parts[0], parts[1], parts[2], parts[8]
+        proc, pid, user, name = unescape_proc_name(parts[0]), parts[1], parts[2], parts[8]
         port = name.rsplit(":", 1)[-1]
         key = (proc, pid, port, name)
         if key in seen:
