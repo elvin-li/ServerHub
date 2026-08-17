@@ -13,6 +13,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "macos" / "ServerHubLauncher.swift"
 
 
+def _menubar_js(locale: str) -> dict[str, str]:
+    text = (ROOT / "web" / "src" / "i18n" / f"{locale}.js").read_text(encoding="utf-8")
+    block = re.search(r"\n  menubar: \{([\s\S]*?)\n  \},", text)
+    if block is None:
+        raise AssertionError(f"web/src/i18n/{locale}.js has no menubar block")
+    return dict(re.findall(r"(\w+): '([^']*)'", block.group(1)))
+
+
 class MacOSLauncherContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -124,7 +132,7 @@ class MacOSLauncherContractTests(unittest.TestCase):
         self.assertIn('action.id == "logs"', self.source)
         self.assertIn("#selector(openPanelLogs)", self.source)
         self.assertIn('panelURL.appendingPathComponent("logs")', self.source)
-        self.assertIn('localized("📄 查看日志", "📄 View Logs")', self.source)
+        self.assertIn('localized("📄 查看日志", "📄 View Logs", "📄 ログを見る")', self.source)
         self.assertNotIn(
             'ServiceActionPayload(\n                    target: target,\n                    action: "logs"',
             self.source,
@@ -138,7 +146,7 @@ class MacOSLauncherContractTests(unittest.TestCase):
                 f"{action} must have a localized confirmation message",
             )
         self.assertIn("serviceConfirmation(action: payload.action, name: payload.name)", self.source)
-        self.assertIn('localized("确认操作", "Confirm Action")', self.source)
+        self.assertIn('localized("确认操作", "Confirm Action", "操作の確認")', self.source)
 
     def test_menu_signature_tracks_service_and_quick_links(self):
         self.assertIn("service.links ?? []", self.source)
@@ -191,7 +199,7 @@ class MacOSLauncherContractTests(unittest.TestCase):
     def test_snapshot_lists_the_same_visible_actions(self):
         self.assertGreaterEqual(self.source.count("visibleActions(service)"), 2)
         self.assertIn('print("ACTION\\t', self.source)
-        self.assertIn('localized("📄 查看日志", "📄 View Logs")', self.source)
+        self.assertIn('localized("📄 查看日志", "📄 View Logs", "📄 ログを見る")', self.source)
 
     def test_external_links_are_limited_to_http_and_https(self):
         self.assertIn('scheme == "http" || scheme == "https"', self.source)
@@ -231,19 +239,20 @@ class MacOSLauncherContractTests(unittest.TestCase):
 
     def test_launch_failures_are_actionable(self):
         self.assertIn("private func showLaunchFailure(_ result: CommandResult)", self.source)
-        self.assertIn('localized("打开日志", "Open Logs")', self.source)
+        self.assertIn('localized("打开日志", "Open Logs", "ログを開く")', self.source)
         self.assertIn('manager.home.appendingPathComponent("Library/Logs")', self.source)
         self.assertIn("String(detail.prefix(2_000))", self.source)
 
     def test_simplified_chinese_localization_snapshot(self):
         snapshot = self.localization_snapshot("zh-Hans")
 
-        self.assertIn("LANG\tzh-Hans", snapshot)
+        self.assertIn("LANG\tzh-CN", snapshot)
         self.assertIn("SUMMARY\t2 正常 · 1 警告 · 1 故障 · 1 已停止", snapshot)
         self.assertIn("GROUP\t⚪️ 样例服务（1 已停止）", snapshot)
         self.assertIn("ACTION\trestart\t🔄 重启", snapshot)
         self.assertIn("ACTION\tlogs\t📄 查看日志", snapshot)
         self.assertIn("MENU\t打开 ServerHub 面板", snapshot)
+        self.assertIn("ATTENTION\t⚠️ 需处理（1）", snapshot)
         self.assertIn("CONFIRM\t重启 Sample？服务会短暂中断。", snapshot)
 
     def test_english_localization_snapshot(self):
@@ -255,6 +264,7 @@ class MacOSLauncherContractTests(unittest.TestCase):
         self.assertIn("ACTION\trestart\t🔄 Restart", snapshot)
         self.assertIn("ACTION\tlogs\t📄 View Logs", snapshot)
         self.assertIn("MENU\tOpen ServerHub Panel", snapshot)
+        self.assertIn("ATTENTION\t⚠️ Needs Attention (1)", snapshot)
         self.assertIn(
             "CONFIRM\tRestart Sample? The service will be briefly unavailable.",
             snapshot,
@@ -264,8 +274,20 @@ class MacOSLauncherContractTests(unittest.TestCase):
             "English menu snapshots must not contain Chinese text",
         )
 
-    def test_non_chinese_locale_falls_back_to_english(self):
+    def test_japanese_locale_uses_japanese_menu(self):
         snapshot = self.localization_snapshot("ja-JP")
+
+        self.assertIn("LANG\tja", snapshot)
+        self.assertIn("MENU\tServerHub パネルを開く", snapshot)
+        self.assertIn("ATTENTION\t⚠️ 要確認（1）", snapshot)
+        self.assertIn("ACTION\tlogs\t📄 ログを見る", snapshot)
+        self.assertIn(
+            "CONFIRM\tSample を再起動しますか？サービスは一時的に中断します。",
+            snapshot,
+        )
+
+    def test_unknown_locale_falls_back_to_english(self):
+        snapshot = self.localization_snapshot("de-DE")
 
         self.assertIn("LANG\ten", snapshot)
         self.assertIn("MENU\tOpen ServerHub Panel", snapshot)
@@ -275,14 +297,14 @@ class MacOSLauncherContractTests(unittest.TestCase):
     def test_traditional_chinese_locale_uses_chinese_menu(self):
         snapshot = self.localization_snapshot("zh-Hant-TW")
 
-        self.assertIn("LANG\tzh-Hans", snapshot)
+        self.assertIn("LANG\tzh-CN", snapshot)
         self.assertIn("MENU\t打开 ServerHub 面板", snapshot)
         self.assertIn("SUMMARY\t2 正常 · 1 警告 · 1 故障 · 1 已停止", snapshot)
 
     def test_apple_languages_selects_simplified_chinese_without_override(self):
         snapshot = self.localization_snapshot(apple_language="zh-Hans")
 
-        self.assertIn("LANG\tzh-Hans", snapshot)
+        self.assertIn("LANG\tzh-CN", snapshot)
         self.assertIn("MENU\t打开 ServerHub 面板", snapshot)
         self.assertIn("ACTION\tlogs\t📄 查看日志", snapshot)
 
@@ -297,14 +319,42 @@ class MacOSLauncherContractTests(unittest.TestCase):
     def test_empty_override_falls_back_to_preferred_language(self):
         snapshot = self.localization_snapshot("", apple_language="zh-Hans")
 
-        self.assertIn("LANG\tzh-Hans", snapshot)
+        self.assertIn("LANG\tzh-CN", snapshot)
         self.assertIn("MENU\t打开 ServerHub 面板", snapshot)
 
     def test_override_ignores_surrounding_whitespace_and_case(self):
         snapshot = self.localization_snapshot("  ZH-hant-TW  ")
 
-        self.assertIn("LANG\tzh-Hans", snapshot)
+        self.assertIn("LANG\tzh-CN", snapshot)
         self.assertIn("ACTION\tlogs\t📄 查看日志", snapshot)
+
+    def test_menu_follows_status_locale_from_the_panel(self):
+        self.assertIn("L10n.apply(status.locale)", self.source)
+        self.assertIn("let locale: String?", self.source)
+        self.assertIn("parts.append(status.locale ?? \"\")", self.source)
+
+    def test_menu_chrome_matches_web_i18n_dictionaries(self):
+        """Native menu chrome must stay in lockstep with web/src/i18n."""
+        for locale, language in (("zh-CN", "zh-CN"), ("en", "en-US"), ("ja", "ja-JP")):
+            with self.subTest(locale=locale):
+                strings = _menubar_js(locale)
+                snapshot = self.localization_snapshot(language)
+                self.assertIn(f"MENU\t{strings['open_panel']}", snapshot)
+                self.assertIn(
+                    f"ATTENTION\t{strings['needs_attention'].format(n=1)}",
+                    snapshot,
+                )
+                self.assertIn(
+                    "SUMMARY\t"
+                    + strings["summary"].format(ok=2, warnings=1, down=1, stopped=1),
+                    snapshot,
+                )
+                self.assertIn(f"ACTION\tlogs\t{strings['view_logs']}", snapshot)
+                self.assertIn(f"ACTION\trestart\t{strings['restart']}", snapshot)
+                self.assertIn(
+                    "CONFIRM\t" + strings["confirm_restart"].format(name="Sample"),
+                    snapshot,
+                )
 
 
 if __name__ == "__main__":

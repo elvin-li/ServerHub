@@ -3,30 +3,57 @@ import Darwin
 import Foundation
 
 private enum MenuLanguage: String {
-    case simplifiedChinese = "zh-Hans"
+    case zhCN = "zh-CN"
     case english = "en"
-}
+    case japanese = "ja"
 
-private enum L10n {
-    static let language: MenuLanguage = {
-        let override = ProcessInfo.processInfo.environment["SERVERHUB_LANGUAGE"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let requested: String
-        if let override, !override.isEmpty {
-            requested = override
-        } else {
-            requested = Locale.preferredLanguages.first ?? "en"
-        }
-        return requested.lowercased().hasPrefix("zh") ? .simplifiedChinese : .english
-    }()
-
-    static func text(_ simplifiedChinese: String, _ english: String) -> String {
-        language == .simplifiedChinese ? simplifiedChinese : english
+    static func resolve(_ raw: String) -> MenuLanguage {
+        let requested = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if requested.hasPrefix("zh") { return .zhCN }
+        if requested.hasPrefix("ja") { return .japanese }
+        return .english
     }
 }
 
-private func localized(_ simplifiedChinese: String, _ english: String) -> String {
-    L10n.text(simplifiedChinese, english)
+private enum L10n {
+    private static let lock = NSLock()
+    private static var current: MenuLanguage = MenuLanguage.resolve(initialRequested())
+
+    static var language: MenuLanguage {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    static func apply(_ raw: String?) {
+        let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return }
+        let next = MenuLanguage.resolve(text)
+        lock.lock()
+        current = next
+        lock.unlock()
+    }
+
+    private static func initialRequested() -> String {
+        let override = ProcessInfo.processInfo.environment["SERVERHUB_LANGUAGE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let override, !override.isEmpty {
+            return override
+        }
+        return Locale.preferredLanguages.first ?? "en"
+    }
+
+    static func text(_ simplifiedChinese: String, _ english: String, _ japanese: String) -> String {
+        switch language {
+        case .zhCN: return simplifiedChinese
+        case .japanese: return japanese
+        case .english: return english
+        }
+    }
+}
+
+private func localized(_ simplifiedChinese: String, _ english: String, _ japanese: String) -> String {
+    L10n.text(simplifiedChinese, english, japanese)
 }
 
 private enum Labels {
@@ -73,6 +100,7 @@ private struct PanelStatus: Decodable {
     let groups: [ServiceGroup]?
     let problems: [PanelService]?
     let links: [ServiceLink]?
+    let locale: String?
 }
 
 private struct ServiceActionRequest: Encodable {
@@ -114,7 +142,7 @@ private func stateDot(_ state: String?) -> String {
 }
 
 private func serviceTitle(_ service: PanelService) -> String {
-    let fallback = localized("服务", "Service")
+    let fallback = localized("服务", "Service", "サービス")
     var title = "\(stateDot(service.state)) \(service.name ?? service.id ?? fallback)"
     if let port = service.port ?? inferredPort(service.url) {
         title += "  :\(port)"
@@ -130,20 +158,22 @@ private func groupTitle(_ group: ServiceGroup) -> String {
     let problemStates = active.map { $0.state ?? "unknown" }.filter { $0 != "ok" }
     let dot = problemStates.contains("down") ? "🔴"
         : (!problemStates.isEmpty ? "🟡" : (active.isEmpty ? "⚪️" : "🟢"))
-    let name = group.group ?? localized("服务", "Services")
+    let name = group.group ?? localized("服务", "Services", "サービス")
     if active.isEmpty {
         return localized(
             "\(dot) \(name)（\(stopped) 已停止）",
-            "\(dot) \(name) (\(stopped) stopped)"
+            "\(dot) \(name) (\(stopped) stopped)",
+            "\(dot) \(name)（\(stopped) 停止中）"
         )
     }
     let stoppedSuffix = stopped > 0
-        ? localized(" · \(stopped) 已停止", " · \(stopped) stopped")
+        ? localized(" · \(stopped) 已停止", " · \(stopped) stopped", " · \(stopped) 停止中")
         : ""
     return localized(
         "\(dot) \(name)（\(healthy)/\(active.count) 运行\(stoppedSuffix)）",
-        "\(dot) \(name) (\(healthy)/\(active.count) running\(stoppedSuffix))"
-    )
+        "\(dot) \(name) (\(healthy)/\(active.count) running\(stoppedSuffix))",
+        "\(dot) \(name)（\(healthy)/\(active.count) 実行中\(stoppedSuffix)）"
+        )
 }
 
 private func statusSummary(_ status: PanelStatus) -> String {
@@ -151,20 +181,21 @@ private func statusSummary(_ status: PanelStatus) -> String {
     let warnings = (counts?.warn ?? 0) + (counts?.unknown ?? 0)
     return localized(
         "\(counts?.ok ?? 0) 正常 · \(warnings) 警告 · \(counts?.down ?? 0) 故障 · \(counts?.stopped ?? 0) 已停止",
-        "\(counts?.ok ?? 0) OK · \(warnings) warnings · \(counts?.down ?? 0) down · \(counts?.stopped ?? 0) stopped"
-    )
+        "\(counts?.ok ?? 0) OK · \(warnings) warnings · \(counts?.down ?? 0) down · \(counts?.stopped ?? 0) stopped",
+        "\(counts?.ok ?? 0) 正常 · \(warnings) 警告 · \(counts?.down ?? 0) 障害 · \(counts?.stopped ?? 0) 停止"
+        )
 }
 
 private var serviceActionLabels: [String: String] {
     [
-        "restart": localized("🔄 重启", "🔄 Restart"),
-        "stop": localized("⏹ 停止", "⏹ Stop"),
-        "start": localized("▶️ 启动", "▶️ Start"),
-        "run": localized("⚡ 立即运行", "⚡ Run Now"),
-        "pause": localized("⏸ 暂停", "⏸ Pause"),
-        "unpause": localized("▶️ 继续", "▶️ Resume"),
-        "resume": localized("▶️ 继续", "▶️ Resume"),
-        "suspend": localized("💤 挂起", "💤 Suspend"),
+        "restart": localized("🔄 重启", "🔄 Restart", "🔄 再起動"),
+        "stop": localized("⏹ 停止", "⏹ Stop", "⏹ 停止"),
+        "start": localized("▶️ 启动", "▶️ Start", "▶️ 開始"),
+        "run": localized("⚡ 立即运行", "⚡ Run Now", "⚡ 今すぐ実行"),
+        "pause": localized("⏸ 暂停", "⏸ Pause", "⏸ 一時停止"),
+        "unpause": localized("▶️ 继续", "▶️ Resume", "▶️ 再開"),
+        "resume": localized("▶️ 继续", "▶️ Resume", "▶️ 再開"),
+        "suspend": localized("💤 挂起", "💤 Suspend", "💤 サスペンド"),
     ]
 }
 
@@ -172,7 +203,7 @@ private func visibleActions(_ service: PanelService) -> [(id: String, title: Str
     var actions: [(id: String, title: String)] = []
     for action in service.actions ?? [] {
         if action == "logs" {
-            actions.append((id: action, title: localized("📄 查看日志", "📄 View Logs")))
+            actions.append((id: action, title: localized("📄 查看日志", "📄 View Logs", "📄 ログを見る")))
         } else if let title = serviceActionLabels[action] {
             actions.append((id: action, title: title))
         }
@@ -201,6 +232,7 @@ private func dumpMenuSnapshot() -> Int32 {
         FileHandle.standardError.write(Data("ServerHub menu snapshot failed: \(error.localizedDescription)\n".utf8))
         return 1
     case let .success(status):
+        L10n.apply(status.locale)
         print("SUMMARY\t\(statusSummary(status))")
         let problems = status.problems ?? []
         print("ATTENTION\t\(problems.count)")
@@ -676,8 +708,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private let manager = ServiceManager()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
-    private let statusRow = NSMenuItem(title: localized("正在启动…", "Starting…"), action: nil, keyEquivalent: "")
-    private let loginItem = NSMenuItem(title: localized("登录时启动", "Start at Login"), action: #selector(toggleLogin), keyEquivalent: "")
+    private let statusRow = NSMenuItem(title: localized("正在启动…", "Starting…", "起動中…"), action: nil, keyEquivalent: "")
+    private let loginItem = NSMenuItem(title: localized("登录时启动", "Start at Login", "ログイン時に起動"), action: #selector(toggleLogin), keyEquivalent: "")
     private var timer: Timer?
     private var menuSignature = ""
     private var refreshInFlight = false
@@ -717,8 +749,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                         status: 1,
                         output: localized(
                             "后台未能在 20 秒内响应。",
-                            "The backend did not respond within 20 seconds."
-                        )
+                            "The backend did not respond within 20 seconds.",
+                            "バックエンドが 20 秒以内に応答しませんでした。"
+        )
                     ))
                 }
                 return
@@ -775,14 +808,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         statusRow.isEnabled = false
         menu.addItem(statusRow)
         menu.addItem(.separator())
-        menu.addItem(item(localized("打开 ServerHub 面板", "Open ServerHub Panel"), action: #selector(openPanel), key: "o"))
+        menu.addItem(item(localized("打开 ServerHub 面板", "Open ServerHub Panel", "ServerHub パネルを開く"), action: #selector(openPanel), key: "o"))
 
         if let status {
             let problems = status.problems ?? []
             if !problems.isEmpty {
                 menu.addItem(.separator())
                 let attention = NSMenuItem(
-                    title: localized("⚠️ 需处理（\(problems.count)）", "⚠️ Needs Attention (\(problems.count))"),
+                    title: localized("⚠️ 需处理（\(problems.count)）", "⚠️ Needs Attention (\(problems.count))", "⚠️ 要確認（\(problems.count)）"),
                     action: nil,
                     keyEquivalent: ""
                 )
@@ -817,24 +850,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             if !links.isEmpty {
                 menu.addItem(.separator())
                 for link in links.prefix(8) {
-                    menu.addItem(linkItem("🔗 \(link.name ?? localized("链接", "Link"))", url: link.url))
+                    menu.addItem(linkItem("🔗 \(link.name ?? localized("链接", "Link", "リンク"))", url: link.url))
                 }
             }
         }
 
         menu.addItem(.separator())
-        menu.addItem(item(localized("启动 ServerHub", "Start ServerHub"), action: #selector(startPanel)))
-        menu.addItem(item(localized("停止 ServerHub", "Stop ServerHub"), action: #selector(stopPanel)))
-        menu.addItem(item(localized("重启 ServerHub", "Restart ServerHub"), action: #selector(restartPanel)))
+        menu.addItem(item(localized("启动 ServerHub", "Start ServerHub", "ServerHub を起動"), action: #selector(startPanel)))
+        menu.addItem(item(localized("停止 ServerHub", "Stop ServerHub", "ServerHub を停止"), action: #selector(stopPanel)))
+        menu.addItem(item(localized("重启 ServerHub", "Restart ServerHub", "ServerHub を再起動"), action: #selector(restartPanel)))
         menu.addItem(.separator())
-        loginItem.title = localized("登录时启动", "Start at Login")
+        loginItem.title = localized("登录时启动", "Start at Login", "ログイン時に起動")
         loginItem.target = self
         loginItem.action = #selector(toggleLogin)
         loginItem.state = manager.isLoginEnabled() ? .on : .off
         menu.addItem(loginItem)
-        menu.addItem(item(localized("打开日志文件夹", "Open Logs Folder"), action: #selector(openLogs)))
+        menu.addItem(item(localized("打开日志文件夹", "Open Logs Folder", "ログフォルダを開く"), action: #selector(openLogs)))
         menu.addItem(.separator())
-        menu.addItem(item(localized("退出菜单栏应用", "Quit Menu Bar App"), action: #selector(quitApp), key: "q"))
+        menu.addItem(item(localized("退出菜单栏应用", "Quit Menu Bar App", "メニューバーアプリを終了"), action: #selector(quitApp), key: "q"))
     }
 
     private func serviceItem(_ service: PanelService) -> NSMenuItem {
@@ -842,11 +875,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let submenu = managedSubmenu()
 
         if let url = service.url {
-            submenu.addItem(linkItem(localized("🌐 打开 \(url)", "🌐 Open \(url)"), url: url))
+            submenu.addItem(linkItem(localized("🌐 打开 \(url)", "🌐 Open \(url)", "🌐 \(url) を開く"), url: url))
         }
         for link in service.links ?? [] {
             if let url = link.url {
-                submenu.addItem(linkItem("🌐 \(link.name ?? localized("打开", "Open"))", url: url))
+                submenu.addItem(linkItem("🌐 \(link.name ?? localized("打开", "Open", "開く"))", url: url))
             }
         }
         for action in visibleActions(service) {
@@ -910,6 +943,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                 ].joined(separator: "|"))
             }
         }
+        parts.append(status.locale ?? "")
         parts.append(contentsOf: (status.problems ?? []).compactMap(\.id))
         parts.append(contentsOf: (status.links ?? []).map {
             "quick:\($0.name ?? "")=\($0.url ?? "")"
@@ -952,20 +986,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = localized("完成 ServerHub 首次设置", "Finish Setting Up ServerHub")
+        alert.messageText = localized("完成 ServerHub 首次设置", "Finish Setting Up ServerHub", "ServerHub の初期設定を完了")
         alert.informativeText = localized(
             "一次性设置令牌如下所示，可在框中选中复制。请在即将打开的本机设置页面中粘贴；完成设置后令牌会自动删除。",
-            "The one-time setup token is shown below — select it in the field to copy. Paste it into the local setup page that opens next; the token is deleted after setup."
+            "The one-time setup token is shown below — select it in the field to copy. Paste it into the local setup page that opens next; the token is deleted after setup.",
+            "以下のワンタイム設定トークンを選択してコピーし、次に開く本機のセットアップページへ貼り付けてください。設定完了後にトークンは削除されます。"
         )
         alert.alertStyle = .informational
         alert.accessoryView = tokenField
-        alert.addButton(withTitle: localized("打开设置", "Open Setup"))
+        alert.addButton(withTitle: localized("打开设置", "Open Setup", "セットアップを開く"))
         _ = alert.runModal()
         NSWorkspace.shared.open(manager.panelURL.appendingPathComponent("settings"))
     }
 
     private func showLaunchFailure(_ result: CommandResult) {
-        let unavailable = localized("⚠️ ServerHub 启动失败", "⚠️ ServerHub Failed to Start")
+        let unavailable = localized("⚠️ ServerHub 启动失败", "⚠️ ServerHub Failed to Start", "⚠️ ServerHub の起動に失敗")
         statusRow.title = unavailable
         statusItem.button?.image = makeStatusImage(warning: true)
         statusItem.button?.toolTip = unavailable
@@ -974,17 +1009,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
         let detail = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         let reason = detail.isEmpty
-            ? localized("后台进程未能启动。", "The backend process could not start.")
+            ? localized("后台进程未能启动。", "The backend process could not start.", "バックエンドプロセスを起動できませんでした。")
             : String(detail.prefix(2_000))
         let alert = NSAlert()
-        alert.messageText = localized("无法启动 ServerHub", "Unable to Start ServerHub")
+        alert.messageText = localized("无法启动 ServerHub", "Unable to Start ServerHub", "ServerHub を起動できません")
         alert.informativeText = reason + "\n\n" + localized(
             "请查看日志后，从菜单栏选择“启动 ServerHub”重试。",
-            "Check the logs, then choose “Start ServerHub” from the menu bar to retry."
+            "Check the logs, then choose “Start ServerHub” from the menu bar to retry.",
+            "ログを確認してから、メニューバーで「ServerHub を起動」を選んで再試行してください。"
         )
         alert.alertStyle = .warning
-        alert.addButton(withTitle: localized("打开日志", "Open Logs"))
-        alert.addButton(withTitle: localized("关闭", "Close"))
+        alert.addButton(withTitle: localized("打开日志", "Open Logs", "ログを開く"))
+        alert.addButton(withTitle: localized("关闭", "Close", "閉じる"))
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             NSWorkspace.shared.open(manager.home.appendingPathComponent("Library/Logs"))
@@ -1003,8 +1039,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         notify(
             title,
             message: result.status == 0
-                ? localized("已完成", "Completed")
-                : (result.output.isEmpty ? localized("操作失败", "Operation failed") : result.output),
+                ? localized("已完成", "Completed", "完了")
+                : (result.output.isEmpty ? localized("操作失败", "Operation failed", "操作に失敗しました") : result.output),
             failure: result.status != 0
         )
     }
@@ -1032,13 +1068,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                 guard let self else { return }
                 switch result {
                 case let .success(status):
+                    L10n.apply(status.locale)
                     let counts = status.counts
                     let warning = (counts?.warn ?? 0) > 0 || (counts?.down ?? 0) > 0 || (counts?.unknown ?? 0) > 0
                     self.statusRow.title = self.summary(status)
                     self.statusItem.button?.image = self.makeStatusImage(warning: warning)
                     self.statusItem.button?.toolTip = warning
-                        ? localized("ServerHub — 需要处理", "ServerHub — Needs Attention")
-                        : localized("ServerHub — 正常", "ServerHub — Healthy")
+                        ? localized("ServerHub — 需要处理", "ServerHub — Needs Attention", "ServerHub — 要確認")
+                        : localized("ServerHub — 正常", "ServerHub — Healthy", "ServerHub — 正常")
                     let signature = self.signature(status)
                     if forceMenu || signature != self.menuSignature {
                         self.menuSignature = signature
@@ -1046,14 +1083,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                         self.statusRow.title = self.summary(status)
                     }
                 case .failure:
-                    let unavailable = localized("⚠️ ServerHub 后台无响应", "⚠️ ServerHub Backend Unavailable")
+                    let unavailable = localized("⚠️ ServerHub 后台无响应", "⚠️ ServerHub Backend Unavailable", "⚠️ ServerHub バックエンドが応答しません")
                     self.menuSignature = ""
                     self.statusRow.title = unavailable
                     self.statusItem.button?.image = self.makeStatusImage(warning: true)
                     self.statusItem.button?.toolTip = localized(
                         "ServerHub — 后台无响应",
-                        "ServerHub — Backend Unavailable"
-                    )
+                        "ServerHub — Backend Unavailable",
+                        "ServerHub — バックエンドが応答しません"
+        )
                     self.rebuildMenu(status: nil)
                     self.statusRow.title = unavailable
                 }
@@ -1072,8 +1110,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.addButton(withTitle: localized("继续", "Continue"))
-        alert.addButton(withTitle: localized("取消", "Cancel"))
+        alert.addButton(withTitle: localized("继续", "Continue", "続ける"))
+        alert.addButton(withTitle: localized("取消", "Cancel", "キャンセル"))
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -1096,14 +1134,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let actionKey = serviceActionKey(target: payload.target, action: payload.action)
         guard !serviceActionsInFlight.contains(actionKey) else { return }
         if let message = serviceConfirmation(action: payload.action, name: payload.name),
-           !confirmAction(localized("确认操作", "Confirm Action"), message: message) {
+           !confirmAction(localized("确认操作", "Confirm Action", "操作の確認"), message: message) {
             return
         }
         serviceActionsInFlight.insert(actionKey)
         sender.isEnabled = false
         statusRow.title = localized(
             "正在\(sender.title.replacingOccurrences(of: " ", with: "")) \(payload.name)…",
-            "Running \(sender.title.replacingOccurrences(of: " ", with: "")) for \(payload.name)…"
+            "Running \(sender.title.replacingOccurrences(of: " ", with: "")) for \(payload.name)…",
+            "\(sender.title.replacingOccurrences(of: " ", with: "")) を \(payload.name) に実行中…"
         )
         manager.serviceAction(target: payload.target, action: payload.action) { [weak self] result in
             DispatchQueue.main.async {
@@ -1114,7 +1153,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                     if response.ok == false {
                         self.notify(
                             payload.name,
-                            message: response.message ?? localized("操作失败", "Operation failed"),
+                            message: response.message ?? localized("操作失败", "Operation failed", "操作に失敗しました"),
                             failure: true
                         )
                     }
@@ -1131,31 +1170,32 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func openPanel() { NSWorkspace.shared.open(manager.panelURL) }
     @objc private func startPanel() {
-        perform(localized("正在启动 ServerHub", "Starting ServerHub")) { self.manager.startPanel() }
+        perform(localized("正在启动 ServerHub", "Starting ServerHub", "ServerHub を起動しています")) { self.manager.startPanel() }
     }
     @objc private func stopPanel() {
         guard confirmAction(
-            localized("停止 ServerHub？", "Stop ServerHub?"),
+            localized("停止 ServerHub？", "Stop ServerHub?", "ServerHub を停止しますか？"),
             message: localized(
                 "管理面板和菜单栏服务数据将暂时不可用。",
-                "The admin panel and menu bar service data will be temporarily unavailable."
-            )
+                "The admin panel and menu bar service data will be temporarily unavailable.",
+                "管理パネルとメニューバーのサービスデータは一時的に利用できなくなります。"
+        )
         ) else { return }
-        perform(localized("正在停止 ServerHub", "Stopping ServerHub")) { self.manager.stopPanel() }
+        perform(localized("正在停止 ServerHub", "Stopping ServerHub", "ServerHub を停止しています")) { self.manager.stopPanel() }
     }
     @objc private func restartPanel() {
         guard confirmAction(
-            localized("重启 ServerHub？", "Restart ServerHub?"),
-            message: localized("管理面板会短暂中断。", "The admin panel will be briefly unavailable.")
+            localized("重启 ServerHub？", "Restart ServerHub?", "ServerHub を再起動しますか？"),
+            message: localized("管理面板会短暂中断。", "The admin panel will be briefly unavailable.", "管理パネルは一時的に利用できなくなります。")
         ) else { return }
-        perform(localized("正在重启 ServerHub", "Restarting ServerHub")) { self.manager.restartPanel() }
+        perform(localized("正在重启 ServerHub", "Restarting ServerHub", "ServerHub を再起動しています")) { self.manager.restartPanel() }
     }
     @objc private func toggleLogin() {
         let enabled = !manager.isLoginEnabled()
         perform(
             enabled
-                ? localized("正在启用登录自启", "Enabling Start at Login")
-                : localized("正在关闭登录自启", "Disabling Start at Login")
+                ? localized("正在启用登录自启", "Enabling Start at Login", "ログイン時起動を有効にしています")
+                : localized("正在关闭登录自启", "Disabling Start at Login", "ログイン時起動を無効にしています")
         ) {
             self.manager.setLoginEnabled(enabled)
         }
@@ -1169,22 +1209,26 @@ private func serviceConfirmation(action: String, name: String) -> String? {
     case "stop":
         return localized(
             "停止 \(name)？服务将不可用，直到再次启动。",
-            "Stop \(name)? The service will be unavailable until it is started again."
+            "Stop \(name)? The service will be unavailable until it is started again.",
+            "\(name) を停止しますか？再起動するまで利用できなくなります。"
         )
     case "restart":
         return localized(
             "重启 \(name)？服务会短暂中断。",
-            "Restart \(name)? The service will be briefly unavailable."
+            "Restart \(name)? The service will be briefly unavailable.",
+            "\(name) を再起動しますか？サービスは一時的に中断します。"
         )
     case "pause":
         return localized(
             "暂停 \(name)？服务在继续前将不可用。",
-            "Pause \(name)? The service will be unavailable until it is resumed."
+            "Pause \(name)? The service will be unavailable until it is resumed.",
+            "\(name) を一時停止しますか？再開するまで利用できなくなります。"
         )
     case "suspend":
         return localized(
             "挂起 \(name)？虚拟机会暂停运行。",
-            "Suspend \(name)? The virtual machine will pause."
+            "Suspend \(name)? The virtual machine will pause.",
+            "\(name) をサスペンドしますか？仮想マシンは一時停止します。"
         )
     default:
         return nil
@@ -1196,14 +1240,15 @@ private func dumpLocalizationSnapshot() {
         counts: ServiceCounts(ok: 2, warn: 1, down: 1, stopped: 1, unknown: 0),
         groups: nil,
         problems: nil,
-        links: nil
+        links: nil,
+        locale: nil
     )
     let group = ServiceGroup(
-        group: localized("样例服务", "Sample Services"),
+        group: localized("样例服务", "Sample Services", "サンプルサービス"),
         services: [
             PanelService(
                 id: "sample",
-                name: localized("样例", "Sample"),
+                name: localized("样例", "Sample", "サンプル"),
                 state: "stopped",
                 url: nil,
                 port: nil,
@@ -1215,13 +1260,14 @@ private func dumpLocalizationSnapshot() {
     )
     print("LANG\t\(L10n.language.rawValue)")
     print("SUMMARY\t\(statusSummary(status))")
+    print("ATTENTION\t\(localized("⚠️ 需处理（1）", "⚠️ Needs Attention (1)", "⚠️ 要確認（1）"))")
     print("GROUP\t\(groupTitle(group))")
     for action in visibleActions(group.services?[0] ?? PanelService(
         id: nil, name: nil, state: nil, url: nil, port: nil, actions: nil, links: nil, detail: nil
     )) {
         print("ACTION\t\(action.id)\t\(action.title)")
     }
-    print("MENU\t\(localized("打开 ServerHub 面板", "Open ServerHub Panel"))")
+    print("MENU\t\(localized("打开 ServerHub 面板", "Open ServerHub Panel", "ServerHub パネルを開く"))")
     print("CONFIRM\t\(serviceConfirmation(action: "restart", name: "Sample") ?? "")")
 }
 

@@ -7,7 +7,7 @@ import time
 
 from hub import __version__
 from hub.adaptive import discover_orphan_listeners, nginx_sites, scan_new_compose_projects
-from hub.config import cfg
+from hub.config import cfg, panel_locale
 from hub.resource_mode import resource_mode
 from hub.host_address import resolve_value
 from hub.discovery import (
@@ -199,6 +199,7 @@ def _build_status() -> dict:
         "service_total": len(services),
         "adaptive": adaptive_info,
         "resource_mode": resource_mode(),
+        "locale": panel_locale(),
     }
 
 
@@ -261,6 +262,7 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
         "service_total": len(services),
         "adaptive": {},
         "resource_mode": status.get("resource_mode") or "low",
+        "locale": status.get("locale") or panel_locale(),
     }
 
 
@@ -279,22 +281,38 @@ def full_status(force=False):
     now = time.time()
     with _lock:
         if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
-            return _status_cache["v"]
+            return _stamp_locale(_status_cache["v"])
 
     with _refresh_lock:
         # Double-check after acquiring single-flight lock
         now = time.time()
         with _lock:
             if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
-                return _status_cache["v"]
+                return _stamp_locale(_status_cache["v"])
         try:
             v = _build_status()
         except Exception:
             # On failure, serve last good snapshot if available
             with _lock:
                 if _status_cache["v"] is not None:
-                    return _status_cache["v"]
+                    return _stamp_locale(_status_cache["v"])
             raise
         with _lock:
             _status_cache.update(t=time.time(), v=v)
-        return v
+        return _stamp_locale(v)
+
+
+def _stamp_locale(status: dict) -> dict:
+    """Keep ``locale`` current even when the discovery snapshot is cached.
+
+    Changing the panel language must not wait for the 35s status TTL: the
+    menu-bar client polls /api/status and rebuilds when this field moves.
+    """
+    try:
+        loc = panel_locale()
+    except Exception:
+        loc = status.get("locale") or "zh-CN"
+    if status.get("locale") == loc:
+        return status
+    status["locale"] = loc
+    return status

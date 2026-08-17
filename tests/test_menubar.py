@@ -48,6 +48,12 @@ class MenuBarSignatureTests(unittest.TestCase):
         after["counts"] = {"ok": 0, "warn": 0, "down": 1}
         self.assertNotEqual(_menu_signature(before, []), _menu_signature(after, []))
 
+    def test_locale_change_rebuilds_native_menu(self):
+        before = self._status()
+        after = copy.deepcopy(before)
+        after["locale"] = "en"
+        self.assertNotEqual(_menu_signature(before, []), _menu_signature(after, []))
+
 
 if __name__ == "__main__":
     unittest.main()

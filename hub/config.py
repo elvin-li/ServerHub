@@ -280,6 +280,34 @@ def deep_merge(base: dict, patch: dict) -> dict:
     return out
 
 
+#: Panel / menu-bar UI languages.  Must stay in lockstep with web/src/i18n
+#: and macos/ServerHubLauncher.swift.
+UI_LOCALES = ("zh-CN", "en", "ja")
+DEFAULT_UI_LOCALE = "zh-CN"
+
+
+def panel_locale() -> str:
+    """Locale the web panel last saved, defaulting like GET /api/settings.
+
+    The native menu-bar client follows this rather than macOS
+    ``AppleLanguages``: this host's preferred list is ``en-CN`` then
+    ``zh-Hans-CN``, so a first-match would keep the menu in English while
+    the panel is zh-CN.
+    """
+    ui = (cfg().get("settings") or {}).get("ui") or {}
+    raw = str(ui.get("locale") or DEFAULT_UI_LOCALE).strip()
+    if raw in UI_LOCALES:
+        return raw
+    low = raw.lower()
+    if low.startswith("zh"):
+        return "zh-CN"
+    if low.startswith("ja"):
+        return "ja"
+    if low.startswith("en"):
+        return "en"
+    return DEFAULT_UI_LOCALE
+
+
 def update_settings(patch: dict[str, Any]) -> dict:
     """Merge into settings key and return new settings.
 

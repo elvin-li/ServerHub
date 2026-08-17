@@ -24,8 +24,75 @@ _PANEL_LABELS = (
 LOCAL_TOKEN_FILE = Path(__file__).resolve().parent / "data" / ".local-client-token"
 REFRESH_SECONDS = 30
 DOT = {"ok": "🟢", "warn": "🟡", "down": "🔴"}
-ACT = {"restart": "🔄 重启", "stop": "⏹ 停止", "start": "▶️ 启动", "run": "⚡ 立即运行"}
 _SCHEME_PORTS = {"http": 80, "https": 443}
+
+_MENU = {
+    "zh-CN": {
+        "open_panel": "打开 ServerHub 面板",
+        "needs_attention": "⚠️ 需处理（{n}）",
+        "summary": "{ok} 正常 · {warn} 警告 · {down} 停止",
+        "backend_down": "⚠️ 面板后端 (8086) 无响应",
+        "start_panel": "▶️ 启动面板服务",
+        "quit": "❌ 退出图标",
+        "open_url": "🌐 打开 {url}",
+        "restart": "🔄 重启",
+        "stop": "⏹ 停止",
+        "start": "▶️ 启动",
+        "run": "⚡ 立即运行",
+    },
+    "en": {
+        "open_panel": "Open ServerHub Panel",
+        "needs_attention": "⚠️ Needs Attention ({n})",
+        "summary": "{ok} OK · {warn} warnings · {down} down",
+        "backend_down": "⚠️ ServerHub Backend Unavailable",
+        "start_panel": "▶️ Start ServerHub",
+        "quit": "❌ Quit Menu Bar App",
+        "open_url": "🌐 Open {url}",
+        "restart": "🔄 Restart",
+        "stop": "⏹ Stop",
+        "start": "▶️ Start",
+        "run": "⚡ Run Now",
+    },
+    "ja": {
+        "open_panel": "ServerHub パネルを開く",
+        "needs_attention": "⚠️ 要確認（{n}）",
+        "summary": "{ok} 正常 · {warn} 警告 · {down} 障害",
+        "backend_down": "⚠️ ServerHub バックエンドが応答しません",
+        "start_panel": "▶️ ServerHub を起動",
+        "quit": "❌ メニューバーアプリを終了",
+        "open_url": "🌐 {url} を開く",
+        "restart": "🔄 再起動",
+        "stop": "⏹ 停止",
+        "start": "▶️ 開始",
+        "run": "⚡ 今すぐ実行",
+    },
+}
+
+
+def _normalize_locale(raw):
+    text = str(raw or "").strip().lower()
+    if text.startswith("zh"):
+        return "zh-CN"
+    if text.startswith("ja"):
+        return "ja"
+    if text.startswith("en"):
+        return "en"
+    return "zh-CN"
+
+
+def _t(locale, key, **params):
+    table = _MENU.get(locale) or _MENU["zh-CN"]
+    template = table.get(key) or _MENU["en"].get(key) or key
+    return template.format(**params) if params else template
+
+
+def _act(locale):
+    return {
+        "restart": _t(locale, "restart"),
+        "stop": _t(locale, "stop"),
+        "start": _t(locale, "start"),
+        "run": _t(locale, "run"),
+    }
 
 
 def _port_of(url):
@@ -110,6 +177,7 @@ def _menu_signature(status, tasks):
             })
         groups.append({"group": group.get("group"), "services": services})
     shape = {
+        "locale": _normalize_locale(status.get("locale")),
         "counts": status.get("counts") or {},
         "groups": groups,
         "problems": [p.get("id") for p in (status.get("problems") or [])],
@@ -147,6 +215,7 @@ class ServerHubBar(rumps.App):
         super().__init__(name="ServerHub", title="🖥", quit_button=None)
         self._menu_state = None
         self._summary_item = None
+        self._locale = "zh-CN"
         self.timer = rumps.Timer(self.tick, REFRESH_SECONDS)
         self.timer.start()
         self.tick(None)
@@ -220,11 +289,12 @@ class ServerHubBar(rumps.App):
         if port:
             title += f"  :{port}"
         item = rumps.MenuItem(title)
+        act = _act(self._locale)
         if s.get("url"):
             # Spell out the target so the click is predictable, and so the LAN
             # address can be read off (and typed into a phone) directly.
             item.add(rumps.MenuItem(
-                f"🌐 打开 {s['url']}",
+                _t(self._locale, "open_url", url=s["url"]),
                 callback=lambda _, u=s["url"]: webbrowser.open(u),
             ))
         for l in s.get("links") or []:
@@ -233,10 +303,10 @@ class ServerHubBar(rumps.App):
                 callback=lambda _, u=l["url"]: webbrowser.open(u),
             ))
         for a in s.get("actions") or []:
-            if a not in ACT:
+            if a not in act:
                 continue
             item.add(rumps.MenuItem(
-                ACT[a], callback=self.make_action(s["id"], a, s["name"]),
+                act[a], callback=self.make_action(s["id"], a, s["name"]),
             ))
         return item
 
@@ -244,16 +314,19 @@ class ServerHubBar(rumps.App):
         try:
             d = api_status()
         except Exception:
+            loc = self._locale
             self.title = "🖥⚠️"
             if self._menu_state != "offline":
                 self.replace_menu([
-                    rumps.MenuItem("⚠️ 面板后端 (8086) 无响应"),
-                    rumps.MenuItem("▶️ 启动面板服务", callback=lambda _: _kickstart_panel()),
+                    rumps.MenuItem(_t(loc, "backend_down")),
+                    rumps.MenuItem(_t(loc, "start_panel"), callback=lambda _: _kickstart_panel()),
                     None,
-                    rumps.MenuItem("❌ 退出图标", callback=lambda _: rumps.quit_application()),
+                    rumps.MenuItem(_t(loc, "quit"), callback=lambda _: rumps.quit_application()),
                 ], "offline")
             return
 
+        self._locale = _normalize_locale(d.get("locale"))
+        loc = self._locale
         c = d["counts"]
         self.title = (
             "🖥" if not (c["down"] or c["warn"])
@@ -265,10 +338,9 @@ class ServerHubBar(rumps.App):
         except Exception:
             tasks = []
 
-        summary_title = (
-            f"{c['ok']} 正常 · {c['warn']} 警告 · {c['down']} 停止"
-            + (f" · load {d.get('system', {}).get('load1', '')}" if d.get("system") else "")
-        )
+        summary_title = _t(loc, "summary", ok=c["ok"], warn=c["warn"], down=c["down"])
+        if d.get("system"):
+            summary_title += f" · load {d.get('system', {}).get('load1', '')}"
         state = _menu_signature(d, tasks)
         if state == self._menu_state and self._summary_item is not None:
             self._summary_item.title = summary_title
@@ -277,7 +349,7 @@ class ServerHubBar(rumps.App):
         summary_item = rumps.MenuItem(summary_title, callback=lambda _: webbrowser.open(API))
         menu = [
             summary_item,
-            rumps.MenuItem("📊 打开管理面板", callback=lambda _: webbrowser.open(API)),
+            rumps.MenuItem(_t(loc, "open_panel"), callback=lambda _: webbrowser.open(API)),
             rumps.MenuItem("📦 Docker 页", callback=lambda _: webbrowser.open(API + "/containers")),
             rumps.MenuItem("💾 存储阵列", callback=lambda _: webbrowser.open(API + "/main")),
             None,
@@ -286,7 +358,7 @@ class ServerHubBar(rumps.App):
         # Problems first (Unraid-style attention)
         problems = d.get("problems") or []
         if problems:
-            pi = rumps.MenuItem(f"⚠️ 需处理（{len(problems)}）")
+            pi = rumps.MenuItem(_t(loc, "needs_attention", n=len(problems)))
             for s in problems[:12]:
                 pi.add(self.svc_item(s))
             menu.append(pi)
@@ -329,7 +401,7 @@ class ServerHubBar(rumps.App):
             ))
         menu += [
             None,
-            rumps.MenuItem("❌ 退出图标", callback=lambda _: rumps.quit_application()),
+            rumps.MenuItem(_t(self._locale, "quit"), callback=lambda _: rumps.quit_application()),
         ]
         self.replace_menu(menu, state, summary_item)
 
