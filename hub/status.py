@@ -116,11 +116,25 @@ def _adaptive_info() -> dict:
         # Two unrelated filesystem scans (compose project tree, nginx sites dir).
         f_compose = _pool.submit(scan_new_compose_projects)
         f_nginx = _pool.submit(nginx_sites)
-        compose = f_compose.result()
-        nginx = f_nginx.result()
+        try:
+            compose = f_compose.result()
+        except Exception:
+            compose = []
+        try:
+            nginx = f_nginx.result()
+        except Exception:
+            nginx = []
         with _lock:
             _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
         return {"compose_projects": compose, "nginx_sites": nginx}
+
+
+def _future_result(fut, fallback):
+    """``.result()`` re-raises; one collector must not 500 /api/status."""
+    try:
+        return fut.result()
+    except Exception:
+        return fallback
 
 
 def _build_status() -> dict:
@@ -130,11 +144,11 @@ def _build_status() -> dict:
     f_v = _pool.submit(discover_vms)
     f_s = _pool.submit(collect_system)
     f_sc = _pool.submit(collect_scripts)
-    launchd = f_l.result()
-    containers, engine_up = f_d.result()
-    vms = f_v.result()
-    system = f_s.result()
-    scripts = f_sc.result()
+    launchd = _future_result(f_l, [])
+    containers, engine_up = _future_result(f_d, ([], False))
+    vms = _future_result(f_v, [])
+    system = _future_result(f_s, {})
+    scripts = _future_result(f_sc, [])
     services = collect_apps(engine_up) + scripts + launchd + containers + vms
 
     # Adaptive: orphan listeners not covered by known services

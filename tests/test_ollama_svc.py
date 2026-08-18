@@ -1192,6 +1192,24 @@ class OriginGuard(_NoRealConfig):
             with self.assertRaises(ValueError):
                 ollama_svc._api("/api/version")
 
+    def test_api_refuses_a_json_array(self):
+        """``payload.get`` on a list 500'd generate/chat."""
+
+        class _Resp:
+            def read(self, n):
+                return b'["not", "an", "object"]'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        with mock.patch.object(ollama_svc._OPENER, "open", return_value=_Resp()):
+            with self.assertRaises(ValueError) as raised:
+                ollama_svc._api("/api/version")
+        self.assertIn("object", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

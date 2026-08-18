@@ -212,7 +212,13 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
         raise ValueError(str(e)) from e
     if len(raw) >= MAX_BODY_BYTES:
         raise ValueError("response body exceeds the parse cap")
-    return json.loads(raw) if raw else {}
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        raise ValueError("response is not json")
+    if not isinstance(parsed, dict):
+        raise ValueError("response is not an object")
+    return parsed
 
 
 # ── parsing (pure, unit-tested against captured payloads) ────────────────────

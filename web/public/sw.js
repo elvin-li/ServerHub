@@ -14,6 +14,16 @@ const SHELL_ASSETS = [
 // A hung backend must not hang a navigation; fall back to the cached shell.
 const NAV_TIMEOUT_MS = 2500
 
+// Only successful responses belong in the cache. A rebuild replaces hashed
+// `/assets/*` files; a tab that fetches during that window used to store the
+// 404, and cache-first then served that 404 forever — the SPA cannot load a
+// locale dictionary and refuses to mount.
+function cacheIfOk(request, response) {
+  if (!response || !response.ok) return
+  const clone = response.clone()
+  caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS.concat(PRECACHE_ASSETS)))
@@ -57,23 +67,24 @@ self.addEventListener('fetch', (event) => {
       const timer = setTimeout(() => controller.abort(), NAV_TIMEOUT_MS)
       try {
         const response = await fetch(request, { signal: controller.signal })
-        const clone = response.clone()
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+        cacheIfOk(request, response)
         return response
       } catch {
-        return (await caches.match(request)) || (await caches.match('/'))
+        const cached = await caches.match(request)
+        if (cached && cached.ok) return cached
+        const shell = await caches.match('/')
+        return (shell && shell.ok) ? shell : undefined
       } finally {
         clearTimeout(timer)
       }
     })())
   } else if (url.pathname.startsWith('/assets/')) {
-    // Immutable hashed assets — cache-first
+    // Immutable hashed assets — cache-first, but never reuse a stored miss.
     event.respondWith(
       caches.match(request).then((cached) => {
-        if (cached) return cached
+        if (cached && cached.ok) return cached
         return fetch(request).then((response) => {
-          const clone = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+          cacheIfOk(request, response)
           return response
         })
       })
@@ -83,13 +94,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.match(request).then((cached) => {
         const fetchPromise = fetch(request).then((response) => {
-          if (response.ok) {
-            const clone = response.clone()
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
-          }
+          cacheIfOk(request, response)
           return response
-        }).catch(() => cached)
-        return cached || fetchPromise
+        }).catch(() => cached && cached.ok ? cached : undefined)
+        return (cached && cached.ok ? cached : null) || fetchPromise
       })
     )
   }

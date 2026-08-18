@@ -855,7 +855,23 @@ const cfDnsHost = ref('')
 const cfMsg = ref('')
 const cfBusy = ref(false)
 let timer = null
-let logTimer = null
+let jobTimer = null
+let jobPollGeneration = 0
+const refreshTimers = new Set()
+
+function later(fn, ms) {
+  const id = setTimeout(() => {
+    refreshTimers.delete(id)
+    fn()
+  }, ms)
+  refreshTimers.add(id)
+}
+
+function stopJobPolling() {
+  jobPollGeneration += 1
+  if (jobTimer) clearTimeout(jobTimer)
+  jobTimer = null
+}
 let cfPollTimer = null
 let cfPollGeneration = 0
 
@@ -1103,8 +1119,7 @@ async function launchOpenInner(it, u) {
 function goManage(tpl) {
   tab.value = 'managed'
   loadManaged(true)
-  // try open detail after load
-  setTimeout(() => {
+  later(() => {
     const id = tpl.kind === 'native'
       ? `native:${tpl.id}`
       : `docker:${tpl.id}`
@@ -1857,39 +1872,41 @@ async function run(s, action) {
 }
 
 function openJob(jobId, title) {
+  stopJobPolling()
   curJob.value = jobId
   logTitle.value = title || jobId
   logOpen.value = true
   logText.value = t('common.loading')
-  poll()
-  if (logTimer) clearInterval(logTimer)
-  logTimer = setInterval(poll, 1500)
+  const generation = jobPollGeneration
+  const poll = async () => {
+    jobTimer = null
+    if (!curJob.value) return
+    if (typeof document !== 'undefined' && document.hidden) {
+      if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
+      return
+    }
+    try {
+      const j = await getStackJob(curJob.value)
+      if (generation !== jobPollGeneration) return
+      logText.value = j.log + (j.running ? '\n⏳…' : '')
+      if (!j.running) {
+        stopJobPolling()
+        refresh()
+        return
+      }
+    } catch (e) {
+      if (generation !== jobPollGeneration) return
+      logText.value = `${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${e.message || e}`.trim()
+    }
+    if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
+  }
+  void poll()
 }
 
-// Tear the poll down with the modal. Clearing curJob as well makes poll() a no-op
-// even if one call was already in flight when the modal closed.
 function closeJobLog() {
   logOpen.value = false
   curJob.value = null
-  if (logTimer) clearInterval(logTimer)
-  logTimer = null
-}
-
-async function poll() {
-  if (!curJob.value) return
-  try {
-    const j = await getStackJob(curJob.value)
-    logText.value = j.log + (j.running ? '\n⏳…' : '')
-    if (!j.running) {
-      clearInterval(logTimer)
-      logTimer = null
-      refresh()
-    }
-  } catch (e) {
-    // Append rather than swallow: a failing poll used to leave the modal on
-    // "Loading…" forever with no indication that the job status was unreadable.
-    logText.value = `${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${e.message || e}`.trim()
-  }
+  stopJobPolling()
 }
 
 onMounted(() => {
@@ -1904,7 +1921,9 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (timer) timer()
-  if (logTimer) clearInterval(logTimer)
+  stopJobPolling()
+  for (const id of refreshTimers) clearTimeout(id)
+  refreshTimers.clear()
   // Stop the scheduled poll and invalidate any request already in flight so a
   // late response cannot update this unmounted page or schedule another poll.
   stopCfLoginPolling()

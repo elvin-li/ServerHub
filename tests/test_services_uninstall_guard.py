@@ -154,6 +154,40 @@ class ProtectedLabelTests(unittest.TestCase):
         self.assertTrue(argv[2].endswith("/com.example.worker"))
         svc._forget_override.assert_called_with("com.example.worker")
 
+    def test_a_renamed_plist_is_found_by_label(self):
+        """Filename stem is not the launchd job id."""
+        path = self.agents / "com.file.name.plist"
+        path.write_bytes(plistlib.dumps({
+            "Label": "com.example.worker",
+            "ProgramArguments": ["/usr/bin/true"],
+        }))
+
+        info = svc.preview("com.example.worker")
+        self.assertEqual(Path(info["plist"]).resolve(), path.resolve())
+
+        with patch.object(svc, "sh", return_value=(0, "", "")):
+            result = svc.uninstall("com.example.worker")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(path.is_file())
+        self.assertTrue(Path(result["backup"]).is_file())
+
+    def test_filename_matching_a_different_label_is_not_uninstalled(self):
+        path = self.agents / "com.example.worker.plist"
+        path.write_bytes(plistlib.dumps({
+            "Label": "com.other.job",
+            "ProgramArguments": ["/usr/bin/true"],
+        }))
+        before = path.read_bytes()
+
+        with self.assertRaises(HTTPException) as caught:
+            svc.preview("com.example.worker")
+        detail = caught.exception.detail
+        code = detail.get("code") if isinstance(detail, dict) else detail
+        self.assertEqual(code, "services.uninstall_unknown")
+        self.assertTrue(path.is_file())
+        self.assertEqual(path.read_bytes(), before)
+
     def test_a_label_that_merely_contains_a_protected_name_is_allowed(self):
         """Substring similarity is not protection: only the label itself is."""
         write_agent(self.agents, "local.serverhub.panel.helper")

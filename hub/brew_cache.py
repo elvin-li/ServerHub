@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -122,24 +123,39 @@ def _publish(items: list[dict], *, write_disk: bool) -> list[dict]:
     return [dict(x) for x in items]
 
 
+def _brew_argv_patterns() -> tuple[str, str]:
+    """pgrep -f regexes that match a live brew, not a mention of its path.
+
+    Homebrew's wrapper execs ruby ``Library/Homebrew/brew.rb``, so a
+    substring match on ``BREW`` both misses the lock holder and matches
+    ``vim /opt/homebrew/bin/brew`` / ``cat …/brew``.
+    """
+    brew = re.escape(str(BREW))
+    return (
+        rf"^{brew}($| )",
+        r"(^|/)ruby[0-9.]* .*Library/Homebrew/brew\.rb($| )",
+    )
+
+
 def _brew_busy() -> bool:
     """True when another Homebrew process already holds the lock.
 
     `brew outdated` and `brew services list --json` then sit on flock
     until they hit our timeout, which is how the err log filled up.
-    Match the brew binary path so a Python file named brew_cache.py
-    does not count as busy.
     """
-    try:
-        proc = subprocess.run(
-            ["/usr/bin/pgrep", "-f", BREW],
-            capture_output=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return proc.returncode == 0 and bool(proc.stdout.strip())
+    for pattern in _brew_argv_patterns():
+        try:
+            proc = subprocess.run(
+                ["/usr/bin/pgrep", "-f", pattern],
+                capture_output=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0 and bool(proc.stdout.strip()):
+            return True
+    return False
 
 
 def _load() -> list[dict]:

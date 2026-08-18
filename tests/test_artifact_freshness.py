@@ -307,7 +307,8 @@ class WiringTests(_Harness):
         with mock.patch.object(alerts, "full_status", lambda force=False: {"groups": []}), \
              mock.patch.object(alerts, "_check_resource_thresholds", quiet), \
              mock.patch.object(alerts, "_check_smart_health", quiet), \
-             mock.patch.object(alerts, "_check_ups", quiet):
+             mock.patch.object(alerts, "_check_ups", quiet), \
+             mock.patch("hub.stale_runtime.remediate", lambda now=None: []):
             return alerts.check_once()
 
     def test_check_once_runs_the_freshness_check_and_persists_state(self):

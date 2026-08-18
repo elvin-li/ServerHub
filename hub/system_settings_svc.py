@@ -77,9 +77,21 @@ def get_datetime_info() -> dict:
     """
     from hub.identity_svc import time_zone
 
+    def _safe(item):
+        probe, fallback = item
+        try:
+            return probe()
+        except Exception:
+            return fallback
+
     now, tz, ntp_on, ntp_server = fan_out(
-        lambda probe: probe(),
-        [_clock_now, time_zone, _ntp_enabled, _ntp_server],
+        _safe,
+        [
+            (_clock_now, time.strftime("%Y-%m-%d %H:%M:%S")),
+            (time_zone, ""),
+            (_ntp_enabled, None),
+            (_ntp_server, None),
+        ],
         max_workers=4,
     )
     return {
@@ -182,9 +194,20 @@ def get_power_info() -> dict:
     wait out a long cache. :func:`set_power_pref` drops it explicitly, because after
     changing pmset the re-read must see the new value and not the memo.
     """
+    def _safe(item):
+        probe, fallback = item
+        try:
+            return probe()
+        except Exception:
+            return fallback
+
     settings, sleep_prevented_by, ups = fan_out(
-        lambda probe: probe(),
-        [_pmset_settings, _pmset_assertions, get_ups_info],
+        _safe,
+        [
+            (_pmset_settings, {}),
+            (_pmset_assertions, []),
+            (get_ups_info, {"source": "unknown", "on_ac": False}),
+        ],
         max_workers=3,
     )
     return {
@@ -628,9 +651,8 @@ def unraid_settings_bundle(force: bool = False) -> dict:
     # the Settings page paid for the whole chain in sequence on every cache miss.
     # Nothing here reads another's output, so the sequence bought nothing.
     #
-    # Failure semantics are preserved exactly: the five collectors that had a
-    # try/except keep their specific fallback, and the rest still propagate, since
-    # .result() re-raises in this thread just as a direct call would have.
+    # Every collector is absorbed: `.result()` re-raises, and one wedged
+    # ``pmset`` / ``systemsetup`` used to 500 the whole Settings page.
     f_identity = _pool.submit(identity_svc.get_identity)
     f_alias = _pool.submit(network_svc.alias_auto_status)
     f_shares = _pool.submit(get_share_globals)
@@ -663,20 +685,44 @@ def unraid_settings_bundle(force: bool = False) -> dict:
         vms = f_vms.result()
     except Exception as e:
         vms = {"total": 0, "running": 0, "items": [], "error": str(e)}
+    try:
+        datetime_info = f_datetime.result()
+    except Exception as e:
+        datetime_info = {"error": str(e)}
+    try:
+        power = f_power.result()
+    except Exception as e:
+        power = {"error": str(e)}
+    try:
+        disk = f_disk.result()
+    except Exception as e:
+        disk = {"error": str(e)}
+    try:
+        mgmt = f_mgmt.result()
+    except Exception as e:
+        mgmt = {"error": str(e)}
+    try:
+        other = f_other.result()
+    except Exception as e:
+        other = {"error": str(e)}
+    try:
+        thresholds = f_thresholds.result()
+    except Exception as e:
+        thresholds = {**DEFAULT_THRESHOLDS, "error": str(e)}
 
     v = {
         "ts": time.strftime("%H:%M:%S"),
         "identity": identity,
-        "datetime": f_datetime.result(),
-        "power": f_power.result(),
-        "disk": f_disk.result(),
-        "management": f_mgmt.result(),
+        "datetime": datetime_info,
+        "power": power,
+        "disk": disk,
+        "management": mgmt,
         "shares": shares,
         "alias_auto": alias,
-        "other": f_other.result(),
+        "other": other,
         "scheduler": sched,
         "vms": vms,
-        "thresholds": f_thresholds.result(),
+        "thresholds": thresholds,
         "sections": [
             {"id": "appearance", "label": "Display", "unraid": "Display Settings"},
             {"id": "identity", "label": "Identification", "unraid": "Identification"},

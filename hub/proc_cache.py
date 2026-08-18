@@ -72,6 +72,32 @@ def ps_lines(force: bool = False) -> tuple[str, ...]:
 invalidate_processes = _ps_table.invalidate  # type: ignore[attr-defined]
 
 
+def ps_pid_commands(force: bool = False) -> tuple[tuple[int, str], ...]:
+    """``(pid, command)`` rows from the shared ``ps aux`` table.
+
+    ``sensors_svc``, ``wireguard_wstunnel`` and ``cloudflared_svc.stop`` each
+    used to spawn their own ``ps -A`` / ``ps -ax`` / ``ps axo``.  Those
+    timed out on this host (serverhub.err.log) while ``ps aux`` was already
+    cached for the same request.  The 11-column ``aux`` layout is the
+    contract: a short fixture that is only ``USER PID COMMAND`` is not a
+    process table.
+    """
+    lines = ps_lines(force=force)
+    if len(lines) < 2:
+        return ()
+    rows: list[tuple[int, str]] = []
+    for line in lines[1:]:
+        parts = line.split(None, 10)
+        if len(parts) < 11:
+            continue
+        try:
+            pid = int(parts[1])
+        except ValueError:
+            continue
+        rows.append((pid, parts[10]))
+    return tuple(rows)
+
+
 def process_matches(needle: str, *, force: bool = False) -> bool:
     """True if any process command line contains *needle* (case-insensitive).
 

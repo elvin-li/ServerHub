@@ -129,6 +129,9 @@ class SmartAlertCase(unittest.TestCase):
                 alerts, "send_ha_notify",
                 mock.Mock(side_effect=AssertionError("a test must never notify")),
             ),
+            # check_once also kickstarts LaunchAgents on a deleted Homebrew
+            # python; this suite must not restart the operator's daemons.
+            mock.patch("hub.stale_runtime.remediate", lambda now=None: []),
         ]
         for patch in patches:
             patch.start()

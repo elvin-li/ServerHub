@@ -1151,9 +1151,11 @@ async function runSmartTest(dev, kind) {
     const j = await startSmartTest(dev.device, kind)
     toast(j.ok ? `✅ ${t('main_extra.smart_started')}` : `❌ ${j.message || j.error}`)
     if (j.ok) {
-      setTimeout(async () => {
+      const id = setTimeout(async () => {
+        refreshTimers.delete(id)
         try { smartData.value = await getSmartOverview() } catch {}
       }, 3000)
+      refreshTimers.add(id)
     }
   } catch (e) {
     toast('❌ ' + e.message)

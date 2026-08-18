@@ -43,13 +43,24 @@ def collect_system():
         else None
     )
 
-    rc, out, _ = f_boot.result()
+    def _result(fut, fallback):
+        try:
+            return fut.result()
+        except Exception:
+            return fallback
+
+    # `.result()` re-raises; memory_pressure must not drop load/disk from /api/status.
+    rc, out, _ = _result(f_boot, (1, "", ""))
     uptime_h = 0.0
     if rc == 0 and "sec =" in out:
-        boot = int(out.split("sec =")[1].split(",")[0].strip())
-        uptime_h = (time.time() - boot) / 3600
+        try:
+            boot = int(out.split("sec =")[1].split(",")[0].strip())
+        except (IndexError, ValueError):
+            boot = 0
+        if boot:
+            uptime_h = (time.time() - boot) / 3600
 
-    rc, out, _ = f_mem.result()
+    rc, out, _ = _result(f_mem, (1, "", ""))
     mem_free = None
     for line in out.splitlines():
         if "free percentage" in line:
@@ -58,7 +69,7 @@ def collect_system():
             except ValueError:
                 mem_free = None
 
-    rc_n, ncpu, rc_m, memsize = f_hw.result()
+    rc_n, ncpu, rc_m, memsize = _result(f_hw, (1, "", 1, ""))
     ncpu_i = int(ncpu) if rc_n == 0 and ncpu.isdigit() else None
     mem_total_gb = (
         round(int(memsize) / 2**30, 1) if rc_m == 0 and memsize.isdigit() else None
@@ -66,7 +77,7 @@ def collect_system():
 
     smart = _smart_cache["v"]
     if f_smart is not None:
-        rc, out, _ = f_smart.result()
+        rc, out, _ = _result(f_smart, (1, "", ""))
         if rc in (0, 4):
             smart = {}
             for line in out.splitlines():

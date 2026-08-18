@@ -14,6 +14,7 @@ guarding setup-token disclosure and the menu-bar token still read the socket.
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -96,6 +97,13 @@ class RequestClientTests(unittest.TestCase):
             auth.record_login_failure(flaky)
         self.assertFalse(auth.login_allowed(flaky)[0])
         self.assertTrue(auth.login_allowed(healthy)[0])
+
+    def test_expired_attempts_drop_the_key(self):
+        auth._login_attempts.clear()
+        self.addCleanup(auth._login_attempts.clear)
+        auth._login_attempts["gone"] = [time.time() - 400]
+        auth.login_allowed("gone")
+        self.assertNotIn("gone", auth._login_attempts)
 
 
 class _PanelSandbox(unittest.TestCase):
@@ -191,6 +199,17 @@ class LoopbackProxyTests(_PanelSandbox):
         failures = [r for r in records if r.get("event") == audit.LOGIN_FAILED]
         self.assertTrue(failures)
         self.assertEqual(failures[-1]["client"], "198.51.100.7")
+
+
+class SharedBudgetTests(unittest.TestCase):
+    def test_password_and_totp_use_the_same_client_function(self):
+        from hub.routers import auth_api, twofa_api
+        self.assertEqual(
+            auth_api._client.__code__.co_names,
+            twofa_api._client.__code__.co_names,
+        )
+        self.assertIn("request_client_id", auth_api._client.__code__.co_names)
+        self.assertIn("request_client_id", twofa_api._client.__code__.co_names)
 
 
 if __name__ == "__main__":

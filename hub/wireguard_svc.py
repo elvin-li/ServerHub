@@ -50,7 +50,7 @@ from hub.macos_admin import (
     sudo_refused,
 )
 from hub.paths import DATA_DIR, pinned_or
-from hub.secure_io import write_secret_text
+from hub.secure_io import replace_secret_text, write_secret_text
 from hub.util import fan_out, sh
 
 WG = pinned_or("wg", "/opt/homebrew/bin/wg")
@@ -539,7 +539,7 @@ def _load_registry() -> dict:
 
 
 def _save_registry(data: dict) -> None:
-    write_secret_text(REGISTRY_PATH, json.dumps(data, indent=2, ensure_ascii=False))
+    replace_secret_text(REGISTRY_PATH, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def _registry_peers() -> dict:
@@ -1063,11 +1063,13 @@ def _write_conf(peers: list[dict]) -> Path:
     if path.exists():
         try:
             backup = path.with_suffix(".conf.bak")
-            write_secret_text(backup, path.read_text())
+            replace_secret_text(backup, path.read_text())
         except OSError:
             # A missing backup must not block a legitimate change.
             pass
-    write_secret_text(path, body)
+    # Atomic publish: write_secret_text O_TRUNC'd the live file (private
+    # key included) if the process died mid-write.
+    replace_secret_text(path, body)
     return path
 
 

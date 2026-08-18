@@ -274,6 +274,8 @@ class TestDenylistShape(unittest.TestCase):
 
     def test_overwrite_guard_is_present(self):
         self.assertIn("files.upload_would_overwrite", self.source)
+        self.assertIn("O_NOFOLLOW", self.source)
+        self.assertIn("O_EXCL", self.source)
 
 
 if __name__ == "__main__":

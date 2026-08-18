@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from hub import cli_args
 from hub.config import cfg, override
 from hub.errors import api_error
-from hub.docker_cli import docker, docker_json, engine_up, redact_env
+from hub.docker_cli import docker, docker_json, engine_up, inspect_object, redact_env
 from hub.paths import DATA_DIR, DOCKER
 from hub.host_address import resolve_value
 from hub.status import invalidate_status
@@ -202,7 +202,8 @@ def invalidate_container_lists():
 def _load_update_status() -> dict:
     if UPDATE_STATUS_PATH.exists():
         try:
-            return json.loads(UPDATE_STATUS_PATH.read_text())
+            data = json.loads(UPDATE_STATUS_PATH.read_text())
+            return data if isinstance(data, dict) else {}
         except Exception:
             pass
     return {}
@@ -344,7 +345,14 @@ def _build_container_list() -> tuple[bool, list]:
         if rc2 == 0:
             try:
                 arr = json.loads(jout)
-                by = {a.get("Name", "").lstrip("/"): a for a in arr}
+                if isinstance(arr, dict):
+                    arr = [arr]
+                if not isinstance(arr, list):
+                    arr = []
+                by = {
+                    a.get("Name", "").lstrip("/"): a
+                    for a in arr if isinstance(a, dict)
+                }
                 for it in items:
                     a = by.get(it["id"])
                     if not a:
@@ -589,7 +597,10 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
         # might already be renamed
         j["log"].append(err or "inspect failed")
         return False
-    data = json.loads(out)[0]
+    data = inspect_object(out)
+    if data is None:
+        j["log"].append("inspect returned unusable JSON")
+        return False
     host = data.get("HostConfig") or {}
     cfg_ = data.get("Config") or {}
     args = [DOCKER, "run", "-d", "--name", name]
@@ -657,7 +668,9 @@ def start_update_container_job(name: str) -> dict:
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
         raise api_error("container.not_found")
-    data = json.loads(out)[0]
+    data = inspect_object(out)
+    if data is None:
+        raise api_error("container.not_found")
     image = (data.get("Config") or {}).get("Image") or ""
     # Prefer compose project update if labeled
     labels = (data.get("Config") or {}).get("Labels") or {}
@@ -801,7 +814,9 @@ def inspect_container(name: str) -> dict:
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
         raise api_error("container.not_found")
-    data = json.loads(out)[0]
+    data = inspect_object(out)
+    if data is None:
+        raise api_error("container.not_found")
     # redact env
     if "Config" in data and "Env" in data["Config"]:
         data["Config"]["Env"] = redact_env(data["Config"]["Env"])

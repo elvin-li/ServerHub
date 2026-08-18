@@ -141,7 +141,8 @@ def live(ps_text: str | None = None) -> dict[str, Any]:
     both call this in the same few seconds, share one ``ps``.
     """
     if ps_text is None:
-        _rc, ps_text, _err = sh(["/bin/ps", "-ax", "-o", "pid=,command="], timeout=5)
+        from hub.proc_cache import ps_pid_commands
+        ps_text = "\n".join(f"{pid} {cmd}" for pid, cmd in ps_pid_commands())
     found = parse_process_table(ps_text or "")
     plist = read_plist()
     if not found.get("listen"):

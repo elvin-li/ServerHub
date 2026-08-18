@@ -260,5 +260,24 @@ class TestI18nKeysResolve(unittest.TestCase):
             )
 
 
+class ServiceWorkerCacheTests(unittest.TestCase):
+    def test_runtime_fetches_do_not_cache_failed_responses(self):
+        text = (BASE / "web" / "public" / "sw.js").read_text()
+        self.assertIn("function cacheIfOk(", text)
+        self.assertIn("if (!response || !response.ok) return", text)
+        self.assertIn("cacheIfOk(request, response)", text)
+        self.assertNotRegex(
+            text,
+            r"fetch\(request\)\.then\(\(response\) => \{\s*const clone = response\.clone\(\)",
+            "hashed /assets/ fetches must not cacheIfOk-bypass a 404 into Cache Storage",
+        )
+        self.assertIn("cached && cached.ok", text)
+        self.assertIn("shell && shell.ok", text)
+        self.assertNotIn(
+            "return (await caches.match(request)) || (await caches.match('/'))",
+            text,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -12,11 +12,11 @@ import time
 from pathlib import Path
 
 from hub import cli_args
-from hub.docker_cli import docker, engine_up
+from hub.docker_cli import docker, engine_up, inspect_object
 from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import DOCKER
-from hub.util import cached_snapshot, fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh, tail_file_lines
 
 SERVICES_ROOT = Path.home() / "Services"
 #: Apps page polls every 15s. An 8s snapshot missed on every sit tick
@@ -299,9 +299,8 @@ def _docker_detail(source_id: str) -> dict:
             if c.get("ports"):
                 ports.append({"container": name, "published": c.get("ports"), "target": ""})
             continue
-        try:
-            data = json.loads(out)[0]
-        except Exception:
+        data = inspect_object(out)
+        if data is None:
             continue
         net_settings = data.get("NetworkSettings") or {}
         for m in (data.get("Mounts") or []):
@@ -701,8 +700,9 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
     ):
         if logp and logp.exists():
             try:
-                text = logp.read_text(errors="replace").splitlines()
-                chunks.append(f"===== {logp} =====\n" + "\n".join(text[-lines:]))
+                chunks.append(
+                    f"===== {logp} =====\n" + "\n".join(tail_file_lines(logp, lines))
+                )
             except Exception as e:
                 chunks.append(f"{logp}: {e}")
     # launchctl print for brew services
@@ -857,8 +857,9 @@ def _launchd_logs(label: str, lines: int = 120) -> dict:
             chunks.append(f"===== {p} =====\n(missing)")
             continue
         try:
-            text = p.read_text(errors="replace").splitlines()
-            chunks.append(f"===== {p} =====\n" + "\n".join(text[-lines:]))
+            chunks.append(
+                f"===== {p} =====\n" + "\n".join(tail_file_lines(p, lines))
+            )
         except OSError as exc:
             chunks.append(f"{p}: {exc}")
     if not chunks:

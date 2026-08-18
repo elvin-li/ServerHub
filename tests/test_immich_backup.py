@@ -312,6 +312,11 @@ class ImmichDumpTests(unittest.TestCase):
         self.assertEqual(conn["port"], 5433)
         self.assertEqual(conn["password"], "s3cret")
 
+    def test_stderr_read_is_capped(self):
+        src = Path(backups.__file__).read_text(encoding="utf-8")
+        self.assertIn("errfile.read(2048)", src)
+        self.assertNotIn("errfile.read().decode", src)
+
 
 if __name__ == "__main__":
     unittest.main()

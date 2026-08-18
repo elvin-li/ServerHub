@@ -45,6 +45,22 @@ class MacOSBuildRollbackTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def _reap(self, process: subprocess.Popen, *, sig=signal.SIGKILL) -> None:
+        """Kill leftover children and close the text pipes.
+
+        ``wait()`` without ``communicate()`` left the stdout/stderr
+        TextIOWrappers open and the suite warned about them.
+        """
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        try:
+            process.communicate(timeout=5)
+        except Exception:
+            pass
+
     def test_bundle_versions_match_product_version(self):
         source = BUILD_SCRIPT.read_text(encoding="utf-8")
         product_version = (ROOT / "hub" / "__init__.py").read_text(encoding="utf-8")
@@ -548,9 +564,7 @@ class MacOSBuildRollbackTests(unittest.TestCase):
             os.killpg(process.pid, signal.SIGTERM)
             stdout, stderr = process.communicate(timeout=5)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
+            self._reap(process)
 
         self.assertNotEqual(process.returncode, 0, stdout + stderr)
         self.assertEqual(
@@ -589,9 +603,7 @@ class MacOSBuildRollbackTests(unittest.TestCase):
             os.killpg(process.pid, signal.SIGTERM)
             stdout, stderr = process.communicate(timeout=5)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
+            self._reap(process)
 
         self.assertNotEqual(process.returncode, 0, stdout + stderr)
         self.assertEqual(

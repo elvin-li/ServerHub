@@ -307,12 +307,16 @@ def trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
     return tuple(nets)
 
 
+def _addr_in_trusted_proxy(addr) -> bool:
+    return any(addr in net for net in trusted_proxy_networks())
+
+
 def _peer_in_trusted_proxy(peer: str) -> bool:
     try:
         addr = ipaddress.ip_address(peer)
     except ValueError:
         return False
-    return any(addr in net for net in trusted_proxy_networks())
+    return _addr_in_trusted_proxy(addr)
 
 
 def _as_ip(value: str) -> str:
@@ -334,24 +338,52 @@ def _as_ip(value: str) -> str:
     return ""
 
 
+def _forwarded_hops(request: Request) -> list[str]:
+    hops: list[str] = []
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        hops.extend(part.strip() for part in xff.split(",") if part.strip())
+    for element in (request.headers.get("forwarded") or "").split(","):
+        for param in element.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "for" and value.strip():
+                hops.append(value.strip())
+    return hops
+
+
+def _rightmost_untrusted_ip(hops: list[str]) -> str:
+    """The hop the trusted proxy actually accepted.
+
+    ``203.0.113.9, 127.0.0.1`` is nginx appending itself — skip the
+    trusted tail.  ``6.6.6.6, 198.51.100.7`` is a spoofed prefix plus
+    the address the proxy saw; the first hop is attacker-controlled.
+    """
+    for hop in reversed(hops):
+        parsed = _as_ip(hop)
+        if not parsed:
+            continue
+        try:
+            addr = ipaddress.ip_address(parsed)
+        except ValueError:
+            continue
+        # Classify hops against the configured CIDRs, not the TCP-peer
+        # helper: tests (and callers) mock ``_peer_in_trusted_proxy`` to
+        # stand in for a non-IP transport peer such as TestClient.
+        if _addr_in_trusted_proxy(addr):
+            continue
+        return parsed
+    return ""
+
+
 def _parse_forwarded_client(request: Request) -> str:
     """Original client from proxy headers. Empty when none are a valid IP."""
     cf = (request.headers.get("cf-connecting-ip") or "").strip()
     parsed = _as_ip(cf)
     if parsed:
         return parsed
-    xff = (request.headers.get("x-forwarded-for") or "").strip()
-    if xff:
-        parsed = _as_ip(xff.split(",")[0].strip())
-        if parsed:
-            return parsed
-    for element in (request.headers.get("forwarded") or "").split(","):
-        for param in element.split(";"):
-            key, _, value = param.partition("=")
-            if key.strip().lower() == "for":
-                parsed = _as_ip(value)
-                if parsed:
-                    return parsed
+    parsed = _rightmost_untrusted_ip(_forwarded_hops(request))
+    if parsed:
+        return parsed
     return _as_ip(request.headers.get("x-real-ip") or "")
 
 
@@ -588,6 +620,8 @@ def set_password(password: str, username: str = "admin", *, enable: bool = True)
     # only ever adds the credential to the current on-disk config.
     digest = hash_password(password)
     resolved = (username or "admin").strip() or "admin"
+    if ":" in resolved or not _valid_username(resolved):
+        raise ValueError("bad_username")
 
     def apply(data: dict) -> None:
         settings = data.setdefault("settings", {})
@@ -637,13 +671,6 @@ def create_account(
         raise ValueError("bad_role")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError("password_too_short")
-    existing = accounts()
-    # Case-insensitive collision check: two accounts differing only by case
-    # would be indistinguishable in every audit line and login form.
-    if any(name.lower() == taken.lower() for taken in existing):
-        raise ValueError("exists")
-    if len(existing) >= MAX_ACCOUNTS:
-        raise ValueError("too_many")
     digest = hash_password(password)
     clean_resources = [str(r).strip() for r in (resources or []) if str(r).strip()]
 
@@ -651,6 +678,12 @@ def create_account(
         settings = data.setdefault("settings", {})
         auth_cfg = dict(settings.get("auth") or {})
         entries = [dict(e) for e in (auth_cfg.get("accounts") or []) if isinstance(e, dict)]
+        taken = {str(e.get("username") or "").strip().lower() for e in entries}
+        legacy = str(auth_cfg.get("username") or "").strip().lower()
+        if name.lower() in taken or (legacy and name.lower() == legacy):
+            raise ValueError("exists")
+        if len(entries) >= MAX_ACCOUNTS:
+            raise ValueError("too_many")
         entries.append({
             "username": name,
             "password_hash": digest,
@@ -1047,7 +1080,10 @@ def login_allowed(client: str) -> tuple[bool, int]:
     now = time.time()
     with _login_lock:
         attempts = [t for t in _login_attempts.get(client, []) if now - t < 300]
-        _login_attempts[client] = attempts
+        if attempts:
+            _login_attempts[client] = attempts
+        else:
+            _login_attempts.pop(client, None)
         if len(attempts) >= 5:
             return False, max(1, int(300 - (now - attempts[0])))
         return True, 0

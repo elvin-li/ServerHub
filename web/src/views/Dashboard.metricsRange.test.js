@@ -53,9 +53,23 @@ async function render() {
   const wrapper = mount(Dashboard, {
     global: {
       provide: { toast: () => {} },
-      stubs: { RouterLink: true },
+      stubs: {
+        RouterLink: true,
+        // Async LineChart chunk flakes under suite load. Peak assertions
+        // only need the series names Dashboard computed.
+        LineChart: {
+          props: ['series'],
+          computed: {
+            visible() {
+              return (this.series || []).filter((s) => (s.values || []).some((v) => v != null))
+            },
+          },
+          template: '<div class="lc-stub"><span v-for="s in visible" :key="s.name">{{ s.name }}</span></div>',
+        },
+      },
     },
   })
+  await flushPromises()
   await flushPromises()
   return wrapper
 }

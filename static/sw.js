@@ -1,9 +1,9 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-const CACHE_NAME = 'serverhub-0c85a8afafe1d2a1'
+const CACHE_NAME = 'serverhub-f4c3ec0789469ff8'
 // Vite replaces the placeholder with the first-paint assets (entry + vendor
 // chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Account-CO1ggNv0.css","/assets/Apps-Dom3Trhu.css","/assets/Backups-B-wnW77f.css","/assets/Bookmarks-7puGVeLg.css","/assets/Compose-Bu50gwJ4.css","/assets/Dashboard-DhodEP8X.css","/assets/Files-A_jp4-Ui.css","/assets/LineChart-DH0qnAGV.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-2cH-DV5c.css","/assets/Logs-CSFS16_r.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-Cd4TqOqq.css","/assets/Ollama-CBDY8_YR.css","/assets/PhotosHub-DsPXjEmw.css","/assets/Pool-CsRJ6hDS.css","/assets/ScheduleJobForm-Dmls8G56.css","/assets/Services-BVsLyRKg.css","/assets/Settings-Bt7pHAg2.css","/assets/Shares-CumIWhxt.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/StackBar-dHXReq1Y.css","/assets/Terminal-BdrxAkUJ.css","/assets/Tools-BwqItP48.css","/assets/Users-CRFEYuIr.css","/assets/VMs-DyXf0bZX.css","/assets/WireGuard-B4EZP_wo.css","/assets/en-D87YKR7Y.js","/assets/index-DbGHx7fv.css","/assets/index-wJYGPUrw.js","/assets/vendor-DVlS_6Kg.js"]
+const PRECACHE_ASSETS = ["/assets/Account-CO1ggNv0.css","/assets/Apps-BuTVjVtz.css","/assets/Backups-B-wnW77f.css","/assets/Bookmarks-7puGVeLg.css","/assets/Compose-Bu50gwJ4.css","/assets/Dashboard-DhodEP8X.css","/assets/Files-A_jp4-Ui.css","/assets/LineChart-DH0qnAGV.css","/assets/LoadFailure-BEQ7p-Tv.css","/assets/Login-2cH-DV5c.css","/assets/Logs-CSFS16_r.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-Cd4TqOqq.css","/assets/Ollama-CBDY8_YR.css","/assets/PhotosHub-DsPXjEmw.css","/assets/Pool-CsRJ6hDS.css","/assets/ScheduleJobForm-Dmls8G56.css","/assets/Services-DcipRvZV.css","/assets/Settings-Bt7pHAg2.css","/assets/Shares-CumIWhxt.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/StackBar-dHXReq1Y.css","/assets/Terminal-BdrxAkUJ.css","/assets/Tools-BwqItP48.css","/assets/Users-CRFEYuIr.css","/assets/VMs-DyXf0bZX.css","/assets/WireGuard-B4EZP_wo.css","/assets/en-Br71c7Ge.js","/assets/index-DbGHx7fv.css","/assets/index-Dt4CcYK9.js","/assets/vendor-DVlS_6Kg.js"]
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -13,6 +13,16 @@ const SHELL_ASSETS = [
 ]
 // A hung backend must not hang a navigation; fall back to the cached shell.
 const NAV_TIMEOUT_MS = 2500
+
+// Only successful responses belong in the cache. A rebuild replaces hashed
+// `/assets/*` files; a tab that fetches during that window used to store the
+// 404, and cache-first then served that 404 forever — the SPA cannot load a
+// locale dictionary and refuses to mount.
+function cacheIfOk(request, response) {
+  if (!response || !response.ok) return
+  const clone = response.clone()
+  caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -57,23 +67,24 @@ self.addEventListener('fetch', (event) => {
       const timer = setTimeout(() => controller.abort(), NAV_TIMEOUT_MS)
       try {
         const response = await fetch(request, { signal: controller.signal })
-        const clone = response.clone()
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+        cacheIfOk(request, response)
         return response
       } catch {
-        return (await caches.match(request)) || (await caches.match('/'))
+        const cached = await caches.match(request)
+        if (cached && cached.ok) return cached
+        const shell = await caches.match('/')
+        return (shell && shell.ok) ? shell : undefined
       } finally {
         clearTimeout(timer)
       }
     })())
   } else if (url.pathname.startsWith('/assets/')) {
-    // Immutable hashed assets — cache-first
+    // Immutable hashed assets — cache-first, but never reuse a stored miss.
     event.respondWith(
       caches.match(request).then((cached) => {
-        if (cached) return cached
+        if (cached && cached.ok) return cached
         return fetch(request).then((response) => {
-          const clone = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
+          cacheIfOk(request, response)
           return response
         })
       })
@@ -83,13 +94,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.match(request).then((cached) => {
         const fetchPromise = fetch(request).then((response) => {
-          if (response.ok) {
-            const clone = response.clone()
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone))
-          }
+          cacheIfOk(request, response)
           return response
-        }).catch(() => cached)
-        return cached || fetchPromise
+        }).catch(() => cached && cached.ok ? cached : undefined)
+        return (cached && cached.ok ? cached : null) || fetchPromise
       })
     )
   }

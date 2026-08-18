@@ -6,6 +6,7 @@ built-in browser works without it and uses no extra process memory when idle.
 from __future__ import annotations
 
 import asyncio
+import errno
 import mimetypes
 import os
 import shutil
@@ -52,12 +53,21 @@ PROTECTED_DIRS: tuple[Path, ...] = (
 PROTECTED_NAMES: frozenset[str] = frozenset({
     ".session-secret",
     "service-credentials.json",
+    "backup-credentials.json",
+    "twofa.json",
+    "api-keys.json",
+    "wireguard-peers.json",
+    ".local-client-token",
+    ".setup-token",
     "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
 })
 
 #: Filename prefixes that are never exposed (covers services.yaml.bak.<ts>
 #: and private-integration credential/session artefacts copied elsewhere).
 PROTECTED_PREFIXES: tuple[str, ...] = ("services.yaml", ".env", ".private_")
+#: ``db.env`` does not start with ``.env``; Immich stores the Postgres
+#: password there under the default ~/Services root.
+PROTECTED_SUFFIXES: tuple[str, ...] = (".env",)
 
 
 def _fold(value: str) -> str:
@@ -100,7 +110,9 @@ def is_protected(p: Path) -> bool:
     name = _fold(p.name)
     if name in {_fold(n) for n in PROTECTED_NAMES}:
         return True
-    return any(name.startswith(_fold(pre)) for pre in PROTECTED_PREFIXES)
+    if any(name.startswith(_fold(pre)) for pre in PROTECTED_PREFIXES):
+        return True
+    return any(name.endswith(_fold(suf)) for suf in PROTECTED_SUFFIXES)
 
 
 FB_LABEL = "local.filebrowser"
@@ -374,31 +386,35 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
     # drives under power management: a stat() or open() against a spun-down
     # HDD blocks for the whole spin-up, and inline on the event loop that
     # freezes every other request in the process for 5-15 seconds.
-    def _prepare() -> tuple[Path, str]:
+    def _prepare() -> tuple[Path, str, int]:
         parent = _resolve_safe(path, root_id)
         if not parent.is_dir():
             raise api_error("files.dest_not_a_dir")
-        name = Path(file.filename or "upload.bin").name
+        name = _clean_component(Path(file.filename or "upload.bin").name)
         if not name or name in (".", ".."):
             raise api_error("files.bad_filename")
-        dest = (parent / name).resolve()
+        dest = parent / name
         _resolve_safe(str(dest), root_id)
-        # Refuse to clobber an existing file.  rename() already guards this
-        # way, and the error code was defined for upload from the start but
-        # never raised, so an upload silently overwrote whatever was there.
-        # Combined with a deny-list bypass that turns a read hole into
-        # arbitrary code execution: overwrite any .py under the install dir
-        # and the next restart runs it.
-        if dest.exists():
+        # Create the last component ourselves.  exists()+open("wb") followed
+        # a symlink planted in the gap; O_EXCL|O_NOFOLLOW is one syscall.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        try:
+            fd = os.open(dest, flags, 0o644)
+        except FileExistsError:
             raise api_error("files.upload_would_overwrite", name=name)
-        return dest, name
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.EEXIST}:
+                raise api_error("files.upload_would_overwrite", name=name)
+            raise
+        return dest, name, fd
 
-    dest, name = await asyncio.to_thread(_prepare)
+    dest, name, fd = await asyncio.to_thread(_prepare)
     max_mb = int(_settings().get("max_upload_mb") or 512)
     max_bytes = max_mb * 1024 * 1024
     written = 0
     try:
-        f = await asyncio.to_thread(open, dest, "wb")
+        f = os.fdopen(fd, "wb")
+        fd = -1
         try:
             while True:
                 chunk = await file.read(1024 * 1024)
@@ -416,6 +432,13 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
                 pass
             raise
         await asyncio.to_thread(f.close)
+    except BaseException:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
     finally:
         await file.close()
     return {"ok": True, "path": str(dest), "size": written, "name": name}
@@ -436,7 +459,7 @@ def filebrowser_status() -> dict:
                 except ValueError:
                     pass
     if not running:
-        rc2, out2, _ = sh(["/usr/bin/pgrep", "-f", "filebrowser-bin"], timeout=5)
+        rc2, out2, _ = sh(["/usr/bin/pgrep", "-x", "filebrowser-bin"], timeout=5)
         if rc2 == 0 and out2.strip():
             running = True
             try:
@@ -465,7 +488,7 @@ def _plist_keepalive() -> bool | None:
         import plistlib
         with open(FB_PLIST, "rb") as f:
             pl = plistlib.load(f)
-        return bool(pl.get("KeepAlive"))
+        return bool(isinstance(pl, dict) and pl.get("KeepAlive"))
     except Exception:
         return None
 
@@ -537,8 +560,9 @@ def stop_filebrowser() -> dict:
     dom = f"gui/{UID}"
     if FB_PLIST.exists():
         sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=10)
-    # kill leftover
-    sh(["/usr/bin/pkill", "-f", "filebrowser-bin"], timeout=5)
+    # Exact comm, not ``-f``: an editor or ``tail`` whose argv mentions the
+    # binary must not be SIGTERM'd.
+    sh(["/usr/bin/pkill", "-x", "filebrowser-bin"], timeout=5)
     _started_by_hub = False
     time.sleep(0.3)
     st = filebrowser_status()
@@ -554,16 +578,18 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     if not FB_PLIST.exists():
         raise api_error("files.fb_no_plist")
     import plistlib
+    from hub import secure_io
     with open(FB_PLIST, "rb") as f:
         pl = plistlib.load(f)
+    if not isinstance(pl, dict):
+        raise api_error("files.fb_bad_plist")
     if enabled:
         pl["RunAtLoad"] = False
         pl["KeepAlive"] = False
     else:
         pl["RunAtLoad"] = True
         pl["KeepAlive"] = True
-    with open(FB_PLIST, "wb") as f:
-        plistlib.dump(pl, f)
+    secure_io.replace_bytes(FB_PLIST, plistlib.dumps(pl))
     # reload definition if loaded
     dom = f"gui/{UID}"
     sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=8)

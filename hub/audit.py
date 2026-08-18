@@ -32,6 +32,7 @@ from typing import Any
 
 from hub import secure_io
 from hub.paths import DATA_DIR
+from hub.util import tail_file_lines
 
 AUDIT_PATH = DATA_DIR / "auth-audit.jsonl"
 
@@ -199,19 +200,22 @@ def _trim(path: Path) -> None:
     """Drop the oldest lines once the log exceeds :data:`MAX_LINES`.
 
     A cheap size check avoids reading and rewriting the file on every
-    sign-in while it is still far below the cap.
+    sign-in while it is still far below the cap.  The keep-set is tailed
+    rather than slurped so a trail that grew well past the cap cannot
+    pin the login path.  Publish through ``replace_secret_text``: an
+    in-place ``write_secret_text`` (O_TRUNC) emptied the history if the
+    process died mid-rewrite.
     """
     try:
         if path.stat().st_size <= _TRIM_SOFT_BYTES:
             return
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = tail_file_lines(path, MAX_LINES, max_bytes=MAX_LINES * 1024)
     except OSError:
         return
-    if len(lines) <= MAX_LINES:
+    if not lines:
         return
-    keep = lines[-MAX_LINES:]
     try:
-        secure_io.write_secret_text(path, "\n".join(keep) + "\n")
+        secure_io.replace_secret_text(path, "\n".join(lines) + "\n")
     except OSError:
         pass
 
@@ -261,11 +265,15 @@ def recent(limit: int = 100) -> list[dict]:
     if not AUDIT_PATH.exists():
         return []
     try:
-        lines = AUDIT_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+        n = max(1, min(int(limit), 1000))
+    except (TypeError, ValueError):
+        n = 100
+    try:
+        lines = tail_file_lines(AUDIT_PATH, n)
     except OSError:
         return []
     out: list[dict] = []
-    for raw in lines[-max(1, min(int(limit), 1000)):]:
+    for raw in lines:
         try:
             parsed = json.loads(raw)
         except ValueError:

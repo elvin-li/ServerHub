@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
@@ -100,6 +101,12 @@ class TestCatalogOverviewIsIdempotent(unittest.TestCase):
             (card.get("notes") or "").count(marker), 1,
             "the native-CLI hint was appended more than once",
         )
+
+    def test_a_template_parse_raise_does_not_empty_the_overview(self):
+        with mock.patch.object(catalog, "list_templates", side_effect=RuntimeError("bad yml")):
+            data = catalog.catalog_overview()
+        self.assertIn("templates", data)
+        self.assertIsInstance(data["templates"], list)
 
 
 if __name__ == "__main__":

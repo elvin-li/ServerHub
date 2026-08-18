@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from hub import actions
+from hub import actions, autostart_svc, services_manage_svc
 from hub.paths import UID
 
 
@@ -50,6 +50,17 @@ class PlistDisabled(unittest.TestCase):
             actions._set_plist_disabled(path, False)
             self.assertFalse(actions._plist_disabled(path))
             self.assertFalse(plistlib.loads(Path(path).read_bytes()).get("Disabled"))
+            residue = [p.name for p in Path(tmp).iterdir() if p.suffix == ".tmp"]
+            self.assertEqual(residue, [], "atomic write left a temp file")
+
+    def test_non_dict_plist_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "job.plist")
+            raw = plistlib.dumps(["not", "a", "dict"])
+            Path(path).write_bytes(raw)
+            self.assertFalse(actions._plist_disabled(path))
+            actions._set_plist_disabled(path, True)
+            self.assertEqual(Path(path).read_bytes(), raw)
 
 
 class LaunchdStart(unittest.TestCase):
@@ -126,3 +137,68 @@ class LaunchdStart(unittest.TestCase):
                 mock.call(["kickstart", f"gui/{UID}/{self.TARGET}"]),
             ],
         )
+
+
+class PlistPathUsesLabel(unittest.TestCase):
+    """Detail / logs must find a plist by Label when the file was renamed."""
+
+    def test_renamed_plist_is_found_by_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "com.file.name.plist"
+            path.write_bytes(plistlib.dumps({
+                "Label": "com.real.job",
+                "ProgramArguments": ["/usr/bin/true"],
+                "StandardErrorPath": "/tmp/x.err",
+            }))
+            with mock.patch.object(services_manage_svc, "AGENTS_DIR", tmp):
+                self.assertEqual(
+                    services_manage_svc._plist_path("com.real.job"),
+                    path,
+                )
+                self.assertIsNone(services_manage_svc._plist_path("com.file.name"))
+                pl = services_manage_svc._load_plist("com.real.job")
+        self.assertEqual(pl.get("StandardErrorPath"), "/tmp/x.err")
+
+    def test_matching_filename_still_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "com.real.job.plist"
+            path.write_bytes(plistlib.dumps({
+                "Label": "com.real.job",
+                "ProgramArguments": ["/usr/bin/true"],
+            }))
+            with mock.patch.object(services_manage_svc, "AGENTS_DIR", tmp):
+                self.assertEqual(
+                    services_manage_svc._plist_path("com.real.job"),
+                    path,
+                )
+
+    def test_registry_keys_the_job_by_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "com.file.name.plist"
+            path.write_bytes(plistlib.dumps({
+                "Label": "com.real.job",
+                "ProgramArguments": ["/usr/bin/true"],
+            }))
+            with (
+                mock.patch.object(actions, "AGENTS_DIR", tmp),
+                mock.patch.object(actions, "cfg", return_value={}),
+                mock.patch.object(actions, "sh", return_value=(0, "", "")),
+            ):
+                reg = actions.registry()
+        self.assertEqual(reg["com.real.job"][0], "launchd")
+        self.assertEqual(reg["com.real.job"][1]["label"], "com.real.job")
+        self.assertEqual(Path(reg["com.real.job"][1]["path"]), path)
+        self.assertEqual(reg["com.file.name"][1]["label"], "com.real.job")
+
+    def test_autostart_read_rejects_a_non_dict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.plist"
+            path.write_bytes(plistlib.dumps(["not", "a", "dict"]))
+            self.assertEqual(autostart_svc._read_plist(path), {})
+
+    def test_load_plist_rejects_a_non_dict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "com.real.job.plist"
+            path.write_bytes(plistlib.dumps(["not", "a", "dict"]))
+            with mock.patch.object(services_manage_svc, "AGENTS_DIR", tmp):
+                self.assertEqual(services_manage_svc._load_plist("com.real.job"), {})

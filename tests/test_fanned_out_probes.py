@@ -718,6 +718,16 @@ class NativeCatalogListingTests(unittest.TestCase):
         self.assertTrue(items[0]["running"])
         self.assertEqual(probed, [], "a known brew service state should not be re-probed")
 
+    def test_a_brew_services_raise_does_not_empty_the_catalog(self):
+        with self._enter(
+            self.APPS,
+            brew_services_list=mock.Mock(side_effect=RuntimeError("brew timeout")),
+            _launchd_or_process_running=lambda *a: False,
+        ):
+            items = native_catalog.list_native_apps(force=True)
+        self.assertEqual(len(items), len(self.APPS))
+        self.assertTrue(all(i.get("id") for i in items))
+
 
 class WireGuardPingTests(unittest.TestCase):
     """One ICMP probe per peer, each waiting out its own deadline."""
@@ -859,7 +869,7 @@ class HealthPortTests(unittest.TestCase):
         from hub import health_svc
 
         calls = []
-        ports = [port for port, _, _ in health_svc._KEY_PORTS]
+        ports = [port for port, _, _ in health_svc._key_ports()]
 
         def slow_port(port, **kwargs):
             calls.append(port)
@@ -880,6 +890,22 @@ class HealthPortTests(unittest.TestCase):
 
         with mock.patch.object(health_svc, "port_open", side_effect=OSError("down")):
             self.assertFalse(health_svc._probe_port(8086))
+
+    def test_collect_checks_absorbs_a_raising_probe(self):
+        from hub import health_svc
+
+        source = Path(health_svc.__file__).read_text()
+        self.assertIn("def _safe(item):", source)
+        self.assertIn("(_engine_up, False)", source)
+        self.assertIn("(_immich_checks, [])", source)
+
+    def test_panel_port_follows_the_bind_env(self):
+        from hub import health_svc
+
+        with mock.patch.dict("os.environ", {"SERVERHUB_PORT": "9099"}):
+            ports = [port for port, _, _ in health_svc._key_ports()]
+        self.assertIn(9099, ports)
+        self.assertNotIn(8086, ports)
 
 
 class LaunchdDiscoveryTests(unittest.TestCase):
@@ -940,6 +966,8 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 self.launchd, "enrich_service", enrich_impl or default_enrich
             ),
             mock.patch.object(self.launchd, "resolve_template", lambda u: u),
+            mock.patch.object(self.launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
+            mock.patch.object(self.launchd, "_http_alive", lambda port: True),
         ):
             started = time.time()
             items = self.launchd.discover_launchd()

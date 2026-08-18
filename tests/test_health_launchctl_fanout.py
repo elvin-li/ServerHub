@@ -129,5 +129,50 @@ class KeepAliveWatchTests(unittest.TestCase):
             ))
 
 
+class FanOutIsolationTests(unittest.TestCase):
+    def setUp(self):
+        health_svc._cache.update(t=0.0, v=None)
+        self.addCleanup(lambda: health_svc._cache.update(t=0.0, v=None))
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
+
+    def test_one_probe_raise_does_not_empty_checks(self):
+        with (
+            patch.object(health_svc, "sh", return_value=(1, "", "")),
+            patch.object(launchd_cache, "sh", return_value=(0, LAUNCHCTL_LIST, "")),
+            patch.object(health_svc, "brew_services_list", return_value=[]),
+            patch.object(health_svc, "_immich_checks", side_effect=RuntimeError("boom")),
+        ):
+            result = health_svc.run_checks(force=True)
+        checks = result.get("checks") if isinstance(result, dict) else result
+        ids = [c["id"] for c in checks]
+        self.assertIn("disk_root", ids)
+        self.assertGreater(len(checks), 1)
+
+    def test_non_dict_plist_does_not_empty_checks(self):
+        import plistlib
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "garbage.plist").write_bytes(plistlib.dumps(["not", "a", "dict"]))
+            (Path(tmp) / "keep.plist").write_bytes(plistlib.dumps({
+                "Label": "local.keep",
+                "KeepAlive": True,
+            }))
+            with (
+                patch.object(health_svc, "AGENTS_DIR", Path(tmp)),
+                patch.object(health_svc, "sh", return_value=(1, "", "")),
+                patch.object(launchd_cache, "sh", return_value=(0, LAUNCHCTL_LIST, "")),
+                patch.object(health_svc, "brew_services_list", return_value=[]),
+            ):
+                result = health_svc.run_checks(force=True)
+        checks = result.get("checks") if isinstance(result, dict) else result
+        ids = [c["id"] for c in checks]
+        self.assertIn("disk_root", ids)
+        self.assertIn("la_local.keep", ids)
+        self.assertGreater(len(checks), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

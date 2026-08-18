@@ -446,6 +446,15 @@ describe('operations polling and submission guards', () => {
     expect(backups).toContain('if (r.ok) await refresh()')
   })
 
+  it('tears down action timers on Services and Apps job polls', () => {
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(services).toContain('for (const id of refreshTimers) clearTimeout(id)')
+    expect(apps).toContain('function stopJobPolling()')
+    expect(apps).toContain('jobPollGeneration')
+    expect(apps).not.toContain('setInterval(poll')
+  })
+
   it('prevents duplicate alert checks and notification tests', () => {
     expect(alerts).toContain('const busy = ref(false)')
     expect(alerts).toMatch(/async function check\(\)[\s\S]*if \(busy\.value\) return[\s\S]*finally/)

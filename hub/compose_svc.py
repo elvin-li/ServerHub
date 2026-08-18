@@ -122,8 +122,10 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     (root / "data").mkdir(exist_ok=True)
     compose = root / "docker-compose.yml"
-    # 0600 from creation: the content routinely contains generated credentials.
-    secure_io.write_secret_text(compose, content)
+    # 0600 from the first byte, O_EXCL so exists() losing a race cannot
+    # truncate an operator-edited compose.
+    if not secure_io.create_secret_text(compose, content):
+        raise api_error("compose.exists", path=str(root))
     # Register in services.yaml stacks if not present, through config.mutate: it
     # re-reads inside the write lock, so this only ever *adds* the stack.  The old
     # save_full(deepcopy(cfg())) wrote a snapshot taken before the lock was held,

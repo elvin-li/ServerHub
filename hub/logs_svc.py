@@ -7,6 +7,7 @@ from pathlib import Path
 from hub import cli_args, files_svc
 from hub.config import cfg
 from hub.errors import api_error
+from hub.util import tail_file_lines
 
 
 def _log_path_allowed(path: Path) -> bool:
@@ -55,23 +56,11 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
         return {"id": source_id, "name": meta["name"], "path": meta["path"],
                 "exists": False, "size": 0, "log": "(file does not exist)", "lines": 0}
     lines = max(10, min(int(lines), 2000))
-    # efficient tail
     try:
-        with open(p, "rb") as f:
-            f.seek(0, 2)
-            file_size = f.tell()
-            size = file_size
-            block = 4096
-            data = b""
-            while size > 0 and data.count(b"\n") <= lines:
-                step = min(block, size)
-                size -= step
-                f.seek(size)
-                data = f.read(step) + data
-            text = data.decode("utf-8", errors="replace")
-            parts = text.splitlines()[-lines:]
-            return {"id": source_id, "name": meta["name"], "path": meta["path"],
-                    "exists": True, "size": file_size, "log": "\n".join(parts),
-                    "lines": len(parts)}
+        file_size = p.stat().st_size
+        parts = tail_file_lines(p, lines)
+        return {"id": source_id, "name": meta["name"], "path": meta["path"],
+                "exists": True, "size": file_size, "log": "\n".join(parts),
+                "lines": len(parts)}
     except Exception:
         raise api_error("logs.read_failed")

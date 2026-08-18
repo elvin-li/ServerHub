@@ -123,6 +123,10 @@ def _callable_names(node: ast.AST) -> list[str]:
         return [node.attr]
     if isinstance(node, ast.Lambda):
         return sorted(_called_names(node.body))
+    # ``fan_out(_safe, [(probe, fallback), ...])`` — the worker is the first
+    # element; ignoring the tuple would hide every probe in that shape.
+    if isinstance(node, (ast.Tuple, ast.List)) and node.elts:
+        return _callable_names(node.elts[0])
     return []
 
 
@@ -231,11 +235,14 @@ class TheRuleTests(unittest.TestCase):
             "    return fan_out(lambda p: p(), [a, b])\n"
             "def wrapped():\n"
             "    return fan_out(lambda p: p(), [lambda: _helper(1)])\n"
+            "def as_pairs():\n"
+            "    return fan_out(_safe, [(a, []), (lambda: _helper(1), None)])\n"
         )
         seen = set(_submitted_callables(shapes))
         self.assertIn("a", seen, "fan_out(probe, items) was not seen")
         self.assertIn("b", seen, "callables passed as fan_out items were not seen")
         self.assertIn("_helper", seen, "a lambda wrapper hid the real callable")
+        self.assertIn("a", seen, "fan_out(_safe, [(probe, fallback)]) hid the probe")
 
     def test_the_analysis_would_catch_a_privileged_helper_in_a_fan_out(self):
         """Positive control for the shape this file now guards.

@@ -147,10 +147,14 @@ def _kickstart_panel():
     """Start whichever panel launchd label is actually installed."""
     uid = os.getuid()
     for label in _PANEL_LABELS:
-        result = subprocess.run(
-            ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            continue
         if result.returncode == 0:
             return
 

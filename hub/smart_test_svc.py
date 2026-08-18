@@ -525,13 +525,16 @@ def start_scheduler(check_interval: int = 900) -> None:
     _scheduler_thread.start()
 
 
-def stop_scheduler() -> None:
+def stop_scheduler(timeout: float = 3.0) -> None:
     global _scheduler_stop, _scheduler_thread
     if _scheduler_stop is not None:
         _scheduler_stop.set()
     # A deliberately stopped worker must not be reported as a dead one.
     from hub import worker_health
     worker_health.unregister("smart-schedule")
+    thread = _scheduler_thread
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=timeout)
     _scheduler_stop = None
     _scheduler_thread = None
 

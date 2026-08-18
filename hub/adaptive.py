@@ -306,12 +306,11 @@ def guess_http_url(port: int) -> str | None:
         return None
     proto, head = _probe_protocol(port)
     if not proto:
-        # Accepts connections but speaks neither HTTP nor TLS.  No URL, and no
-        # second timeout spent confirming it.  Remembered so that a service on a
-        # non-default port is probed once rather than once per refresh: the probe
-        # sends a real `GET / ... Host:` line, which a non-HTTP daemon may log as
-        # an attack.
-        _mark_not_http(port)
+        # Remember only a speaking non-web peer (Redis ``-ERR``, SSH).  A
+        # timeout or empty close is not a verdict — caching those for
+        # 30 minutes hid a restarting TLS UI after one slow poll.
+        if head:
+            _mark_not_http(port)
         return None
     hip = host_ip()
     if proto == "http":
@@ -591,8 +590,15 @@ def nginx_sites() -> list[dict]:
     sites = []
     if not conf_d.is_dir():
         return sites
-    for f in sorted(conf_d.glob("*.conf")):
-        text = f.read_text(errors="replace")
+    try:
+        files = sorted(conf_d.glob("*.conf"))
+    except OSError:
+        return sites
+    for f in files:
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
         listens = re.findall(r"listen\s+(\d+)", text)
         servers = re.findall(r"server_name\s+([^;]+);", text)
         proxies = re.findall(r"proxy_pass\s+([^;]+);", text)

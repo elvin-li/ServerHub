@@ -13,6 +13,7 @@ import urllib.request
 from hub.config import cfg
 from hub.paths import DATA_DIR
 from hub.status import full_status
+from hub.util import tail_file_lines
 
 ALERTS_FILE = DATA_DIR / "alerts.jsonl"
 STATE_FILE = DATA_DIR / "alert_state.json"
@@ -35,9 +36,14 @@ _TRIM_EVERY = 50
 def _load_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text())
+            data = json.loads(STATE_FILE.read_text())
         except Exception:
-            pass
+            return {}
+        # A list/string leftover from a torn write used to raise
+        # ``prev.get(...)`` on every sweep and silence the alerter,
+        # UPS policy, and stale-runtime kickstarts for good.
+        if isinstance(data, dict):
+            return data
     return {}
 
 
@@ -99,20 +105,23 @@ def list_alerts(limit: int = 50) -> list:
     if not ALERTS_FILE.exists():
         return []
     try:
-        # errors="replace", same reason as the trim above: a torn write must
-        # degrade to skipped lines, not a 500 from the alerts endpoint.
-        lines = [
-            ln for ln in ALERTS_FILE.read_text(errors="replace").splitlines()
-            if ln.strip()
-        ]
+        n = max(1, min(int(limit), MAX_ALERTS))
+    except (TypeError, ValueError):
+        n = 50
+    try:
+        # Tail rather than slurp: ``lines[-limit:]`` after a full read loaded
+        # the whole journal, and ``limit=0`` is ``[-0:]`` — the entire file.
+        lines = [ln for ln in tail_file_lines(ALERTS_FILE, n) if ln.strip()]
     except OSError:
         return []
     out = []
-    for ln in lines[-limit:]:
+    for ln in lines:
         try:
-            out.append(json.loads(ln))
+            parsed = json.loads(ln)
         except json.JSONDecodeError:
             continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
     out.reverse()
     return out
 
@@ -950,6 +959,15 @@ def check_once(force_status: bool = False) -> list:
     try:
         from hub import freshness_svc
         emitted.extend(freshness_svc.check_freshness(prev, new_state, now))
+    except Exception:
+        pass
+    # Homebrew python upgrades leave KeepAlive PIDs running on a deleted
+    # Cellar path; TCP still answers so the service sweep above stays green.
+    # Health checks are side-effect free — kickstart lives here, like
+    # ups_policy, and a bug must not kill the alerter thread.
+    try:
+        from hub import stale_runtime
+        emitted.extend(stale_runtime.remediate(now))
     except Exception:
         pass
     # Only rewrite state file when map actually changed (huge SSD win)

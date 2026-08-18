@@ -2829,6 +2829,7 @@ export default {
       dest_not_a_dir: '宛先がディレクトリではありません',
       exists: '既に存在します',
       fb_no_plist: 'local.filebrowser.plist が見つかりません',
+      fb_bad_plist: 'local.filebrowser.plist は有効な LaunchAgent ではありません',
       fb_not_installed: 'FileBrowser がインストールされていません（~/Services/filebrowser）',
       fb_start_failed: 'FileBrowser を起動できませんでした',
       file_only: 'ダウンロードできるのはファイルのみです',
@@ -2989,6 +2990,7 @@ export default {
       bad_person: 'ここで編集できるのは元宝と二宝だけです',
       bad_link_url: 'リンクはホスト名付きの http(s) URL である必要があります',
       thumb_failed: 'Immich から写真プレビューを取得できませんでした: {detail}',
+      immich_response: 'Immich が利用できない応答を返しました: {detail}',
     },
     jobs: {
       already_running: 'メンテナンスタスクが既に実行中です。完了までお待ちください',

@@ -49,6 +49,16 @@ class ScriptActionTests(unittest.TestCase):
         self.assertEqual(sh.call_args.args[0], ["/usr/bin/true"])
         self.assertNotIn("shell", sh.call_args.kwargs)
 
+    def test_unknown_option_shaped_target_is_not_a_utm_name(self):
+        with (
+            patch.object(actions, "registry", return_value={}),
+            patch("hub.vms_svc.vm_action") as vm_action,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                actions.run_action("--help", "delete")
+        self.assertEqual(raised.exception.status_code, 404)
+        vm_action.assert_not_called()
+
     def test_actions_module_has_no_shell_true(self):
         from pathlib import Path
 

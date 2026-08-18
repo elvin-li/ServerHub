@@ -41,6 +41,33 @@ class TestStatusPeek(unittest.TestCase):
             status._status_cache.update(saved)
 
 
+class TestStatusFanoutIsolation(unittest.TestCase):
+    def test_one_collector_raise_does_not_empty_status(self):
+        with (
+            patch.object(status, "discover_launchd", side_effect=RuntimeError("boom")),
+            patch.object(status, "discover_containers", return_value=([], True)),
+            patch.object(status, "discover_vms", return_value=[]),
+            patch.object(status, "collect_system", return_value={"load1": 0.2}),
+            patch.object(status, "collect_scripts", return_value=[]),
+            patch.object(status, "collect_apps", return_value=[]),
+            patch.object(status, "cfg", return_value={"settings": {"adaptive": False}}),
+        ):
+            data = status._build_status()
+        self.assertEqual(data["system"]["load1"], 0.2)
+        self.assertEqual(data["engine_up"], True)
+        self.assertEqual(data["service_total"], 0)
+
+    def test_adaptive_scan_raise_does_not_empty_status(self):
+        status._adaptive_cache.update(t=0.0, compose=None, nginx=None)
+        with (
+            patch.object(status, "scan_new_compose_projects", return_value=[{"id": "x"}]),
+            patch.object(status, "nginx_sites", side_effect=RuntimeError("bad conf")),
+        ):
+            info = status._adaptive_info()
+        self.assertEqual(info["compose_projects"], [{"id": "x"}])
+        self.assertEqual(info["nginx_sites"], [])
+
+
 class TestMetricsSampleReadsSensorsOnce(unittest.TestCase):
     def test_sample_reuses_a_warm_full_snapshot(self):
         warm = {
@@ -610,6 +637,85 @@ class TestPoolsShutDown(unittest.TestCase):
         system_extra.shutdown_executor()
 
 
+class TestDashboardCollectorIsolation(unittest.TestCase):
+    def test_sensors_thermal_raise_does_not_drop_disk(self):
+        with (
+            patch.object(sensors_svc, "_thermal", side_effect=RuntimeError("pmset")),
+            patch.object(sensors_svc, "_disk", return_value={"root_pct": 11}),
+            patch.object(sensors_svc, "_memory_base", return_value={
+                "ncpu": 8, "load1": 0.1, "load5": 0.1, "load15": 0.1,
+            }),
+            patch.object(sensors_svc, "_cpu_and_mem_from_top_cached", return_value={}),
+            patch.object(sensors_svc, "_cpu_from_ticks", return_value={"used_pct": 4}),
+            patch.object(sensors_svc, "_network_rates", return_value={}),
+            patch.object(sensors_svc, "_top_processes", return_value=[]),
+            patch.object(sensors_svc, "_uptime", return_value={"uptime_text": "1h"}),
+        ):
+            data = sensors_svc._collect_sensors_uncached()
+        self.assertEqual(data["disk"]["root_pct"], 11)
+        self.assertIsNone(data["cpu"]["thermal"])
+
+    def test_uptime_tolerates_a_malformed_boottime(self):
+        with patch.object(sensors_svc, "sh", return_value=(0, "sec = not-a-number, usec = 0", "")):
+            data = sensors_svc._uptime()
+        self.assertEqual(data["uptime_hours"], 0.0)
+
+    def test_storage_smart_raise_does_not_drop_volumes(self):
+        from hub import storage_svc
+
+        vols = [{
+            "kind": "system", "mount": "/", "disk_id": "disk3",
+            "total_gb": 100, "used_gb": 40, "avail_gb": 60, "pct": 40,
+            "filesystem": "apfs",
+        }]
+        with (
+            patch.object(storage_svc, "list_volumes", return_value=vols),
+            patch.object(storage_svc, "smart_devices", side_effect=RuntimeError("smartctl")),
+        ):
+            data = storage_svc.storage_overview()
+        self.assertEqual(data["volumes"], vols)
+        self.assertEqual(data["disks"], [])
+        self.assertEqual(data["array"]["system_count"], 1)
+
+    def test_probe_disk_raise_returns_an_error_row(self):
+        from hub import storage_svc
+
+        with patch.object(storage_svc, "sh", side_effect=RuntimeError("diskutil wedged")):
+            row = storage_svc._probe_disk("disk9")
+        self.assertEqual(row["id"], "disk9")
+        self.assertIn("diskutil", row["error"])
+
+    def test_power_womp_raise_does_not_drop_screen_sharing(self):
+        from hub import power_svc
+
+        with (
+            patch.object(power_svc, "_nic", return_value=("en0", "aa:bb:cc:dd:ee:ff")),
+            patch.object(power_svc, "_womp_enabled", side_effect=RuntimeError("pmset")),
+            patch.object(power_svc, "screensharing_status", return_value={
+                "running": True, "host": "192.168.1.9",
+            }),
+        ):
+            data = power_svc.power_overview()
+        self.assertEqual(data["wol"]["iface"], "en0")
+        self.assertIsNone(data["wol"]["enabled"])
+        self.assertTrue(data["screen_sharing"]["running"])
+
+    def test_host_snapshot_iface_raise_still_returns_hostname(self):
+        from hub.routers import system_extra
+
+        with (
+            patch.object(system_extra, "is_high", return_value=False),
+            patch.object(system_extra, "sh", return_value=(0, "nas.local", "")),
+            patch.object(system_extra, "default_interface", side_effect=RuntimeError("no route")),
+            patch.object(system_extra, "host_ip", return_value="10.0.0.2"),
+            patch.object(system_extra, "peek_engine", return_value=True),
+        ):
+            snap = system_extra._host_snapshot(True)
+        self.assertEqual(snap["hostname"], "nas.local")
+        self.assertEqual(snap["interfaces"], [])
+        self.assertTrue(snap["orbstack"])
+
+
 class TestStatusCarriesRamTotal(unittest.TestCase):
     def test_collect_system_reads_hw_memsize(self):
         from hub import system
@@ -631,6 +737,29 @@ class TestStatusCarriesRamTotal(unittest.TestCase):
                 snap = system.collect_system()
         self.assertEqual(snap["mem_total_gb"], 32.0)
         self.assertEqual(snap["ncpu"], 8)
+
+    def test_collect_system_memory_pressure_raise_still_returns_load(self):
+        from hub import system
+
+        def fake_sh(argv, **kwargs):
+            if argv[0].endswith("memory_pressure"):
+                raise RuntimeError("memory_pressure gone")
+            last = argv[-1]
+            if last == "hw.ncpu":
+                return 0, "8", ""
+            if last == "hw.memsize":
+                return 0, str(16 * 2**30), ""
+            if last == "kern.boottime":
+                return 0, "sec = not-a-number,", ""
+            return 1, "", ""
+
+        with patch.object(system, "sh", side_effect=fake_sh):
+            with patch.object(system, "_smart_cache", {"t": 9e9, "v": None}):
+                snap = system.collect_system()
+        self.assertEqual(snap["ncpu"], 8)
+        self.assertEqual(snap["mem_total_gb"], 16.0)
+        self.assertEqual(snap["uptime_hours"], 0.0)
+        self.assertIsNone(snap["mem_free_pct"])
 
     def test_lifespan_starts_the_hotpath_warmer(self):
         from pathlib import Path

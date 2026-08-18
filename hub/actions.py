@@ -70,7 +70,8 @@ def _bootstrap_ok_to_kickstart(rc: int, out: str = "", err: str = "") -> bool:
 def _plist_disabled(path: str) -> bool:
     try:
         with open(path, "rb") as f:
-            return bool(plistlib.load(f).get("Disabled"))
+            pl = plistlib.load(f)
+        return bool(isinstance(pl, dict) and pl.get("Disabled"))
     except Exception:
         return False
 
@@ -79,11 +80,13 @@ def _set_plist_disabled(path: str, disabled: bool) -> None:
     """Persist the Disabled key so the services page matches launchctl."""
     with open(path, "rb") as f:
         pl = plistlib.load(f)
+    if not isinstance(pl, dict):
+        return
     if bool(pl.get("Disabled")) == bool(disabled):
         return
     pl["Disabled"] = bool(disabled)
-    with open(path, "wb") as f:
-        plistlib.dump(pl, f)
+    from hub import secure_io
+    secure_io.replace_bytes(path, plistlib.dumps(pl))
 
 
 def registry():
@@ -96,7 +99,19 @@ def registry():
     for s in cfg().get("scripts") or []:
         reg[s["id"]] = ("script", s)
     for path in glob.glob(f"{AGENTS_DIR}/*.plist"):
-        reg.setdefault(Path(path).stem, ("launchd", {"label": Path(path).stem, "path": path}))
+        stem = Path(path).stem
+        label = stem
+        try:
+            with open(path, "rb") as fh:
+                pl = plistlib.load(fh) or {}
+            if isinstance(pl, dict) and pl.get("Label"):
+                label = str(pl["Label"])
+        except Exception:
+            pass
+        meta = ("launchd", {"label": label, "path": path})
+        reg.setdefault(label, meta)
+        if stem != label:
+            reg.setdefault(stem, meta)
     rc, out, _ = sh([DOCKER, "ps", "-a", "--format", "{{.Names}}"], timeout=8)
     if rc == 0:
         for n in out.splitlines():
@@ -143,6 +158,11 @@ def run_action(target, action):
     if target not in reg:
         # allow orb:name / direct vm action via vms_svc
         if target.startswith("orb:") or action in ("start", "stop", "restart", "suspend", "delete"):
+            raw = target[4:] if target.startswith("orb:") else target
+            try:
+                cli_args.require_positional(raw, label="vm")
+            except HTTPException:
+                raise api_error("actions.unknown_target", target=target)
             try:
                 from hub import vms_svc
                 r = vms_svc.vm_action(target, action)

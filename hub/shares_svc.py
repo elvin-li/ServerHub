@@ -301,6 +301,12 @@ def _dns_sd_advertised(service_type: str, *, wait: float = 2.5) -> bool | None:
     except (OSError, subprocess.TimeoutExpired):
         pass
     reader.join(timeout=1)
+    close = getattr(proc.stdout, "close", None)
+    if close is not None:
+        try:
+            close()
+        except OSError:
+            pass
     return bool(found.is_set())
 
 
@@ -704,6 +710,14 @@ def system_services() -> list[dict]:
     reads and the content-cache status. `systemsetup` in particular is slow enough
     to notice on its own, and asking these in turn made the page cost their sum.
     """
+    def _safe(item):
+        probe, fallback = item
+        try:
+            return probe()
+        except Exception:
+            return fallback
+
+    # fan_out re-raises on iteration; one probe must not blank Sharing.
     (
         (screen_launchd, screen_detail),
         screen_port,
@@ -711,13 +725,13 @@ def system_services() -> list[dict]:
         (apple_events, apple_events_detail),
         (content_cache, content_detail),
     ) = fan_out(
-        lambda probe: probe(),
+        _safe,
         [
-            lambda: _launchd_state("com.apple.screensharing"),
-            lambda: bool(port_open(VNC_PORT, host="localhost", timeout=0.4)),
-            lambda: _systemsetup_state("-getremotelogin", "com.openssh.sshd"),
-            lambda: _systemsetup_state("-getremoteappleevents", "com.apple.AEServer"),
-            _content_cache_state,
+            (lambda: _launchd_state("com.apple.screensharing"), (None, "unknown")),
+            (lambda: bool(port_open(VNC_PORT, host="localhost", timeout=0.4)), False),
+            (lambda: _systemsetup_state("-getremotelogin", "com.openssh.sshd"), (None, "unknown")),
+            (lambda: _systemsetup_state("-getremoteappleevents", "com.apple.AEServer"), (None, "unknown")),
+            (_content_cache_state, (None, "unknown")),
         ],
         max_workers=5,
     )
@@ -810,9 +824,22 @@ def shares_overview() -> dict:
         hostname = socket.gethostname()
     except OSError:
         hostname = ""
+    def _safe(item):
+        probe, fallback = item
+        try:
+            return probe()
+        except Exception:
+            return fallback
+
+    # fan_out re-raises on iteration; one collector must not 500 the page.
     host, services, smb, files = fan_out(
-        lambda probe: probe(),
-        [host_ip, system_services, list_smb_shares, file_services],
+        _safe,
+        [
+            (host_ip, ""),
+            (system_services, []),
+            (list_smb_shares, []),
+            (file_services, []),
+        ],
         max_workers=4,
     )
     return {

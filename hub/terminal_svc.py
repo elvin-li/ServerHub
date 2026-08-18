@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ from hub import cli_args, secure_io
 from hub.config import cfg
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR, DOCKER
+from hub.util import iter_capped_lines, tail_file_lines
 
 AUDIT_PATH = DATA_DIR / "terminal-audit.jsonl"
 
@@ -194,9 +197,14 @@ def _audit(entry: dict[str, Any]) -> None:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
         os.chmod(AUDIT_PATH, 0o600)
         if AUDIT_PATH.stat().st_size > _AUDIT_MAX_BYTES:
-            lines = AUDIT_PATH.read_text(errors="replace").splitlines(keepends=True)
-            secure_io.write_secret_text(
-                AUDIT_PATH, "".join(lines[-_AUDIT_KEEP_LINES:])
+            # Tail + atomic replace: a full slurp of a 512KB+ trail was
+            # pointless, and write_secret_text (O_TRUNC) emptied the log
+            # if the process died mid-rewrite.
+            lines = tail_file_lines(
+                AUDIT_PATH, _AUDIT_KEEP_LINES, max_bytes=_AUDIT_MAX_BYTES
+            )
+            secure_io.replace_secret_text(
+                AUDIT_PATH, "\n".join(lines) + ("\n" if lines else "")
             )
     except OSError:
         pass
@@ -208,32 +216,119 @@ def _clip(text: str) -> tuple[str, bool]:
     return text[:MAX_OUTPUT], True
 
 
+def _reap_group(proc: subprocess.Popen) -> None:
+    for sig, grace in ((signal.SIGTERM, 2), (signal.SIGKILL, 2)):
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _drain_capped(stream, limit: int) -> tuple[str, bool]:
+    """Read *stream* line-capped, keep at most *limit* characters."""
+    parts: list[str] = []
+    total = 0
+    clipped = False
+    try:
+        for line in iter_capped_lines(stream, 4096):
+            if total >= limit:
+                clipped = True
+                continue
+            room = limit - total
+            if len(line) > room:
+                parts.append(line[:room])
+                total = limit
+                clipped = True
+            else:
+                parts.append(line)
+                total += len(line)
+                if total < limit:
+                    parts.append("\n")
+                    total += 1
+    except (OSError, ValueError):
+        pass
+    return "".join(parts), clipped
+
+
 def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
+    """Run *argv* with a byte cap and a process-group watchdog.
+
+    ``subprocess.run(capture_output=True)`` buffered the whole pipe until
+    exit.  ``yes`` / ``find /`` / ``cat`` of a huge file could RSS-bomb the
+    panel for up to :data:`MAX_TIMEOUT` seconds before ``_clip`` ran.
+    """
     started = time.time()
     try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
+        proc = subprocess.Popen(
+            list(argv),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            errors="replace",
             cwd=cwd or None,
             env=_color_env(),
-            # A console command must never inherit an interactive stdin.
             stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        raise api_error("terminal.timeout", seconds=timeout)
     except FileNotFoundError:
-        # e.g. docker missing entirely
         return {
             "ok": False, "rc": 127, "stdout": "", "stderr": f"not found: {argv[0]}",
             "truncated": False, "duration_ms": 0,
         }
-    out, out_clipped = _clip(proc.stdout or "")
-    err, err_clipped = _clip(proc.stderr or "")
+    timed_out = threading.Event()
+
+    def _on_deadline():
+        if proc.poll() is None:
+            timed_out.set()
+            _reap_group(proc)
+
+    watchdog = threading.Timer(max(1, int(timeout)), _on_deadline)
+    watchdog.daemon = True
+    watchdog.start()
+    out_box: list[tuple[str, bool]] = []
+    err_box: list[tuple[str, bool]] = []
+
+    def _read_out():
+        out_box.append(_drain_capped(proc.stdout, MAX_OUTPUT))
+
+    def _read_err():
+        err_box.append(_drain_capped(proc.stderr, MAX_OUTPUT))
+
+    readers = [
+        threading.Thread(target=_read_out, daemon=True),
+        threading.Thread(target=_read_err, daemon=True),
+    ]
+    for t in readers:
+        t.start()
+    try:
+        proc.wait()
+    finally:
+        watchdog.cancel()
+        if timed_out.is_set() or proc.poll() is None:
+            _reap_group(proc)
+        for t in readers:
+            t.join(timeout=2)
+        for stream in (proc.stdout, proc.stderr):
+            close = getattr(stream, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except OSError:
+                    pass
+    if timed_out.is_set():
+        raise api_error("terminal.timeout", seconds=timeout)
+    out, out_clipped = out_box[0] if out_box else ("", False)
+    err, err_clipped = err_box[0] if err_box else ("", False)
     return {
         "ok": proc.returncode == 0,
-        "rc": proc.returncode,
+        "rc": proc.returncode if proc.returncode is not None else -1,
         "stdout": out,
         "stderr": err,
         "truncated": out_clipped or err_clipped,
@@ -380,13 +475,15 @@ def recent_audit(limit: int = 50) -> list[dict]:
     if not AUDIT_PATH.exists():
         return []
     try:
-        lines = AUDIT_PATH.read_text(errors="replace").splitlines()
+        lines = tail_file_lines(AUDIT_PATH, max(1, min(limit, 500)))
     except OSError:
         return []
     out: list[dict] = []
-    for raw in lines[-max(1, min(limit, 500)):]:
+    for raw in lines:
         try:
-            out.append(json.loads(raw))
+            parsed = json.loads(raw)
         except ValueError:
             continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
     return out

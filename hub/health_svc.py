@@ -10,7 +10,7 @@ from hub.config import override
 from hub.docker_cli import engine_up
 from hub.launchd_cache import running_labels as launchd_running_labels
 from hub.nginx_svc import overview as nginx_overview, test_config as nginx_test
-from hub.paths import SMARTCTL
+from hub.paths import AGENTS_DIR, SMARTCTL
 from hub.util import fan_out, port_open, sh
 from hub.brew_cache import brew_services_list
 from pathlib import Path
@@ -41,13 +41,23 @@ def _probe_port(port) -> bool | None:
         return False
 
 
-#: Ports whose reachability is reported, in the order the page renders them.
-_KEY_PORTS = (
-    (8086, "ServerHub panel :8086", "launchctl kickstart local.serverhub.panel"),
-    (8443, "ServerHub HTTPS :8443", "Check system Nginx / 35-serverhub.conf"),
-    (8123, "Home Assistant :8123", "Check com.homeassistant.core"),
-    (8281, "Nginx HTTPS :8281", "Check system Nginx / certificates"),
-)
+def _panel_port() -> int:
+    try:
+        n = int(os.environ.get("SERVERHUB_PORT", "8086"))
+    except (TypeError, ValueError):
+        return 8086
+    return n if 1 <= n <= 65535 else 8086
+
+
+def _key_ports() -> tuple:
+    """Ports whose reachability is reported, in the order the page renders them."""
+    port = _panel_port()
+    return (
+        (port, f"ServerHub panel :{port}", "launchctl kickstart local.serverhub.panel"),
+        (8443, "ServerHub HTTPS :8443", "Check system Nginx / 35-serverhub.conf"),
+        (8123, "Home Assistant :8123", "Check com.homeassistant.core"),
+        (8281, "Nginx HTTPS :8281", "Check system Nginx / certificates"),
+    )
 
 
 def _engine_up() -> bool:
@@ -97,6 +107,7 @@ def _port_checks() -> list[dict]:
     Each connect waits out its full timeout when nothing is listening, so three
     dead ports charged the health page that wait three times in a row.
     """
+    ports = _key_ports()
     return [
         _check(
             f"port_{port}", name,
@@ -105,7 +116,7 @@ def _port_checks() -> list[dict]:
             fix if not up else "",
         )
         for (port, name, fix), up in zip(
-            _KEY_PORTS, fan_out(_probe_port, [port for port, _, _ in _KEY_PORTS])
+            ports, fan_out(_probe_port, [port for port, _, _ in ports])
         )
     ]
 
@@ -123,6 +134,23 @@ def _skip_keepalive_watch(pl: dict, label: str) -> bool:
         return bool(override(label).get("hide"))
     except Exception:
         return False
+
+
+def _stale_runtime_checks() -> list:
+    """LaunchAgents whose interpreter was deleted under them.
+
+    Side-effect free: the alerter kickstarts.  Must not raise — this runs
+    inside the health fan-out, where one escaping exception drops the wave.
+    """
+    try:
+        from hub import stale_runtime
+        return stale_runtime.health_checks()
+    except Exception as e:
+        return [_check(
+            "stale_runtime", "LaunchAgents on missing interpreter",
+            "warn", False, str(e)[:160],
+            "Check LaunchAgents after a Homebrew Python upgrade",
+        )]
 
 
 def _running_labels() -> frozenset[str]:
@@ -409,21 +437,31 @@ def _collect_checks() -> dict:
     # Order is restored below, not taken from completion: `fan_out` returns results in
     # submission order, and each probe returns its checks already assembled, so the
     # rendered sequence is identical to when this ran top to bottom.
-    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich, wg, tm, ollama = fan_out(
-        lambda probe: probe(),
+    def _safe(item):
+        probe, fallback = item
+        try:
+            return probe()
+        except Exception:
+            return fallback
+
+    # fan_out re-raises on iteration.  One probe that escapes would empty
+    # /api/health/checks instead of dropping only its own rows.
+    eng, nginx_checks, port_checks, running_labels, brew_states, smart, immich, wg, tm, ollama, stale_checks = fan_out(
+        _safe,
         [
-            _engine_up,
-            _nginx_pair,
-            _port_checks,
-            _running_labels,
-            _brew_snapshot,
-            _smart_checks,
-            _immich_checks,
-            _wireguard_checks,
-            _time_machine_checks,
-            _ollama_checks,
+            (_engine_up, False),
+            (_nginx_pair, []),
+            (_port_checks, []),
+            (_running_labels, frozenset()),
+            (_brew_snapshot, []),
+            (_smart_checks, []),
+            (_immich_checks, []),
+            (_wireguard_checks, []),
+            (_time_machine_checks, []),
+            (_ollama_checks, []),
+            (_stale_runtime_checks, []),
         ],
-        max_workers=10,
+        max_workers=11,
     )
 
     # OrbStack / docker
@@ -469,31 +507,43 @@ def _collect_checks() -> dict:
         except Exception:
             pass
 
+    # Homebrew python upgrades delete Cellar paths while KeepAlive PIDs
+    # keep listening; TCP still answers so the services table looks green.
+    # Joins the same fan-out as `_running_labels` so both share one listing.
+    checks.extend(stale_checks)
+
     # LaunchAgents with KeepAlive that are not running.
     # running_labels was built once at the top of this function.
+    # One bad plist (array payload, .get on a list) used to raise here
+    # after the fan-out and empty the whole /api/health/checks payload.
     import glob, plistlib
-    agents = Path.home() / "Library/LaunchAgents"
-    for path in glob.glob(str(agents / "*.plist")):
+    try:
+        agent_paths = glob.glob(str(Path(AGENTS_DIR) / "*.plist"))
+    except OSError:
+        agent_paths = []
+    for path in agent_paths:
         try:
             with open(path, "rb") as f:
                 pl = plistlib.load(f)
-        except Exception:
-            continue
-        label = pl.get("Label") or Path(path).stem
-        if _skip_keepalive_watch(pl, label):
-            continue
-        if not pl.get("KeepAlive"):
-            continue
-        if pl.get("StartInterval") or pl.get("StartCalendarInterval"):
-            continue
-        ok = label in running_labels
-        if not ok:
+            if not isinstance(pl, dict):
+                continue
+            label = str(pl.get("Label") or Path(path).stem)
+            if _skip_keepalive_watch(pl, label):
+                continue
+            if not pl.get("KeepAlive"):
+                continue
+            if pl.get("StartInterval") or pl.get("StartCalendarInterval"):
+                continue
+            if label in running_labels:
+                continue
             checks.append(_check(
                 f"la_{label}", f"KeepAlive not running: {label}",
                 "warn", False,
                 "LaunchAgent has KeepAlive configured but is not running",
                 f"launchctl kickstart -k gui/$(id -u)/{label}",
             ))
+        except Exception:
+            continue
 
     # SMART quick (cached style) — probed in the wave above.
     checks.extend(smart)

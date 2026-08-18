@@ -4,6 +4,7 @@ These cover the security blocker where ~/Services and ~ were browsable roots,
 so the panel would serve its own session-signing key, credential store and
 admin password hash — and accept delete/rename on them.
 """
+import plistlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,9 +43,48 @@ class TestIsProtected(unittest.TestCase):
     def test_dotenv_anywhere(self):
         self.assertTrue(files_svc.is_protected(Path("/tmp/whatever/.env")))
 
+    def test_named_env_files_are_protected(self):
+        self.assertTrue(files_svc.is_protected(Path.home() / "Services" / "immich" / "db.env"))
+        self.assertTrue(files_svc.is_protected(Path("/tmp/twofa.json")))
+
+    def test_filebrowser_stop_does_not_pkill_by_argv_substring(self):
+        source = Path(files_svc.__file__).read_text()
+        self.assertNotIn('pkill", "-f"', source)
+        self.assertIn('pkill", "-x", "filebrowser-bin"', source)
+
     def test_ordinary_media_file_is_allowed(self):
         p = files_svc.SERVICES_ROOT / "media" / "movie.mkv"
         self.assertFalse(files_svc.is_protected(p))
+
+    def test_ondemand_rejects_a_non_dict_plist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist = Path(tmp) / "fb.plist"
+            plist.write_bytes(plistlib.dumps(["not", "a", "dict"]))
+            with patch.object(files_svc, "FB_PLIST", plist):
+                with self.assertRaises(HTTPException) as ctx:
+                    files_svc.set_filebrowser_ondemand(True)
+            self.assertEqual(ctx.exception.detail["code"], "files.fb_bad_plist")
+
+    def test_ondemand_write_is_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist = Path(tmp) / "fb.plist"
+            plist.write_bytes(plistlib.dumps({
+                "Label": "local.filebrowser",
+                "RunAtLoad": True,
+                "KeepAlive": True,
+            }))
+            with (
+                patch.object(files_svc, "FB_PLIST", plist),
+                patch.object(files_svc, "UID", 502),
+                patch.object(files_svc, "sh", return_value=(0, "", "")),
+            ):
+                result = files_svc.set_filebrowser_ondemand(True)
+            self.assertTrue(result["ok"])
+            loaded = plistlib.loads(plist.read_bytes())
+            self.assertFalse(loaded["RunAtLoad"])
+            self.assertFalse(loaded["KeepAlive"])
+            residue = [p.name for p in Path(tmp).iterdir() if ".tmp" in p.name]
+            self.assertEqual(residue, [])
 
 
 class TestResolveSafeRejects(unittest.TestCase):

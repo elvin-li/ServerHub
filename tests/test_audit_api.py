@@ -87,6 +87,16 @@ class AuditReadEndpointTests(unittest.TestCase):
         names = [e["username"] for e in body["entries"]]
         self.assertEqual(names, ["good", "also-good"])
 
+    def test_a_json_array_line_does_not_break_the_reader(self):
+        with AuditSink() as sink:
+            audit.record(audit.LOGIN_OK, username="good", outcome="success")
+            with sink.path.open("a", encoding="utf-8") as fh:
+                fh.write("[]\n")
+            body = audit_api.auth_audit(limit=50)
+
+        names = [e["username"] for e in body["entries"]]
+        self.assertEqual(names, ["good"])
+
 
 class AuditReadRedactionTests(unittest.TestCase):
     """No secret may reach the client through this endpoint."""

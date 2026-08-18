@@ -229,8 +229,10 @@ def latest_sample() -> dict | None:
                 chunk = f.read().decode(errors="replace")
             lines = [ln for ln in chunk.splitlines() if ln.strip()]
             if lines:
-                _last_sample = json.loads(lines[-1])
-                return _last_sample
+                parsed = json.loads(lines[-1])
+                if isinstance(parsed, dict):
+                    _last_sample = parsed
+                    return _last_sample
     except Exception:
         pass
     return None
@@ -251,7 +253,7 @@ def history(minutes: int = 60) -> list:
                     o = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if o.get("t", 0) >= cutoff:
+                if isinstance(o, dict) and o.get("t", 0) >= cutoff:
                     out.append(o)
     except OSError:
         pass
@@ -261,7 +263,7 @@ def history(minutes: int = 60) -> list:
                 o = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if o.get("t", 0) >= cutoff:
+            if isinstance(o, dict) and o.get("t", 0) >= cutoff:
                 out.append(o)
     return out
 

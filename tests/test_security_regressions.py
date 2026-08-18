@@ -368,9 +368,19 @@ class BookmarkProbeTests(unittest.TestCase):
         for host in (
             "localhost", "127.0.0.1", "::1", "169.254.169.254",
             "metadata.google.internal", "metadata", "0.0.0.0",
+            "2852039166",                 # 169.254.169.254
+            "0xa9fea9fe",                 # 169.254.169.254
+            "::ffff:169.254.169.254",
         ):
             with self.subTest(host=host):
                 self.assertTrue(bookmarks_svc._is_blocked_probe_host(host))
+                self.assertFalse(bookmarks_svc._is_private_host(host))
+
+    def test_encoded_public_ips_are_not_treated_as_lan(self):
+        """Decimal/hex public IPs used to match the dotless-LAN branch."""
+        for host in ("134744072", "0x08080808"):  # 8.8.8.8
+            with self.subTest(host=host):
+                self.assertFalse(bookmarks_svc._is_blocked_probe_host(host))
                 self.assertFalse(bookmarks_svc._is_private_host(host))
 
     def test_a_blocked_host_is_not_opened(self):
@@ -379,6 +389,8 @@ class BookmarkProbeTests(unittest.TestCase):
             "http://169.254.169.254/latest/meta-data",
             "http://localhost/admin",
             "http://metadata.google.internal/",
+            "http://2852039166/",
+            "http://[::ffff:169.254.169.254]/",
         ):
             with self.subTest(url=url):
                 with mock.patch.object(

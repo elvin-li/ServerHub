@@ -291,6 +291,34 @@ class AutostartOverviewTests(unittest.TestCase):
             "it should be taken once and handed to both",
         )
 
+    def test_one_inventory_raise_does_not_empty_the_page(self):
+        launchd_cache.invalidate_launchd()
+        self.addCleanup(launchd_cache.invalidate_launchd)
+        with (
+            mock.patch.object(
+                autostart_svc, "_docker_autostart_items",
+                side_effect=RuntimeError("docker down"),
+            ),
+            mock.patch.object(
+                autostart_svc, "_brew_service_items",
+                lambda: [{"id": "brew:redis", "name": "redis"}],
+            ),
+            mock.patch.object(
+                autostart_svc, "_launchd_items",
+                lambda *a, **kw: [{"id": "launchd:local.alpha", "name": "alpha"}],
+            ),
+            mock.patch.object(
+                autostart_svc, "_script_status",
+                lambda *a, **kw: {"id": "script:autostart", "name": "script"},
+            ),
+        ):
+            data = autostart_svc.overview(force=True)
+        ids = [i["id"] for i in data["items"]]
+        self.assertIn("script:autostart", ids)
+        self.assertIn("brew:redis", ids)
+        self.assertIn("launchd:local.alpha", ids)
+        self.assertNotIn("docker:web", ids)
+
 
 # ── /api/smart ───────────────────────────────────────────────────────────────
 
@@ -817,6 +845,17 @@ class DockerEngineInfoTests(unittest.TestCase):
         self.assertIsNone(data["info"]["ServerVersion"])
         self.assertEqual(data["version"]["Server"]["Version"], "27.1")
         self.assertEqual(data["orb_version"], "Version 1.9\n")
+
+    def test_a_json_array_from_docker_info_does_not_raise(self):
+        def docker_impl(*args, **kwargs):
+            argv = list(args)
+            if "info" in argv:
+                return 0, "[1, 2, 3]", ""
+            return 0, self.VERSION, ""
+
+        data, _ = self._info(docker_impl=docker_impl)
+        self.assertIsNone(data["info"]["ServerVersion"])
+        self.assertEqual(data["version"]["Server"]["Version"], "27.1")
 
     def test_a_failing_orb_binary_leaves_the_docker_halves_intact(self):
         data, _ = self._info(orb=lambda argv, **kw: (127, "", "not found"))

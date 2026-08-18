@@ -140,11 +140,21 @@ def _host_snapshot() -> dict:
     # route lookup → per-interface lookups, kept together in one branch.
     f_ifaces = _HOST_POOL.submit(lambda: _iface_addresses(default_interface()))
 
-    rc, hostname, _ = f_hostname.result()
-    rc3, model, _ = f_model.result()
-    rc4, ncpu, rc_m, memsize = f_hw.result()
-    orbstack = f_engine.result() if f_engine is not None else bool(peek_engine())
-    ifaces = f_ifaces.result()
+    def _result(fut, fallback):
+        try:
+            return fut.result()
+        except Exception:
+            return fallback
+
+    # `.result()` re-raises; one sysctl/docker timeout must not 500 /api/system/host.
+    rc, hostname, _ = _result(f_hostname, (1, "", ""))
+    rc3, model, _ = _result(f_model, (1, "", ""))
+    rc4, ncpu, rc_m, memsize = _result(f_hw, (1, "", 1, ""))
+    if f_engine is not None:
+        orbstack = _result(f_engine, bool(peek_engine()))
+    else:
+        orbstack = bool(peek_engine())
+    ifaces = _result(f_ifaces, []) or []
 
     # Was called twice (once as `lan`, once inline); it is the same value both
     # times and both fields are documented to carry it.

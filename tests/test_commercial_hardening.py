@@ -130,6 +130,14 @@ class ProxyClientIdentityTests(unittest.TestCase):
         )
         self.assertEqual(auth.request_client_id(req), "203.0.113.9")
 
+    def test_a_spoofed_prefix_is_not_the_bucket(self):
+        """nginx appends; the first hop is whatever the visitor wrote."""
+        req = request(
+            client="127.0.0.1",
+            headers=[(b"x-forwarded-for", b"6.6.6.6, 198.51.100.7")],
+        )
+        self.assertEqual(auth.request_client_id(req), "198.51.100.7")
+
     def test_cf_connecting_ip_is_preferred(self):
         req = request(
             client="127.0.0.1",
@@ -187,9 +195,14 @@ class ReadyProbeTests(unittest.TestCase):
 class CatalogSecretWriteTests(unittest.TestCase):
     def test_install_writes_compose_through_secure_io(self):
         src = (Path(__file__).resolve().parent.parent / "hub" / "catalog.py").read_text()
-        self.assertIn("secure_io.write_secret_text(dest, rendered)", src)
+        self.assertIn("secure_io.create_secret_text(dest, rendered)", src)
         self.assertNotIn("dest.write_text(rendered)", src)
         self.assertNotIn("vars_file.write_text", src)
+
+    def test_compose_create_is_excl(self):
+        src = (Path(__file__).resolve().parent.parent / "hub" / "compose_svc.py").read_text()
+        self.assertIn("secure_io.create_secret_text(compose, content)", src)
+        self.assertNotIn("secure_io.write_secret_text(compose, content)", src)
 
 
 class FilesRootFilterTests(unittest.TestCase):

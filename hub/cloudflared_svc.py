@@ -20,8 +20,8 @@ from hub.errors import api_error
 from hub.paths import AGENTS_DIR, BREW
 from hub import secure_io
 from hub.launchd_cache import invalidate_launchd
-from hub.proc_cache import invalidate_processes, ps_lines
-from hub.util import fan_out, sh
+from hub.proc_cache import invalidate_processes, ps_lines, ps_pid_commands
+from hub.util import fan_out, sh, tail_file_lines
 
 CF_BIN = "/opt/homebrew/bin/cloudflared"
 if not Path(CF_BIN).is_file():
@@ -39,6 +39,10 @@ PLIST = Path(AGENTS_DIR) / f"{LABEL}.plist"
 LOGIN_PID = STATE_DIR / "login.pid"
 LOGIN_LOG = STATE_DIR / "login.log"
 LOGIN_URL_FILE = STATE_DIR / "login.url"
+#: Held so login_start can close the text pipes.  Discarding the Popen
+#: after reading the URL left an unclosed TextIOWrapper (ResourceWarning
+#: in the suite, leaked fd in the panel until GC).
+_login_proc: subprocess.Popen | None = None
 
 
 #: Cloudflare's documented tunnel edge range (198.41.192.0/20).  A subset is
@@ -146,9 +150,10 @@ def _load_state() -> dict:
     _ensure_dirs()
     if STATE_FILE.is_file():
         try:
-            return json.loads(STATE_FILE.read_text() or "{}")
+            data = json.loads(STATE_FILE.read_text() or "{}")
         except Exception:
             return {}
+        return data if isinstance(data, dict) else {}
     return {}
 
 
@@ -156,7 +161,7 @@ def _save_state(data: dict) -> None:
     _ensure_dirs()
     # Created 0600 through the open() mode: write-then-chmod left the state
     # readable by every local user for the duration of the write.
-    secure_io.write_secret_text(
+    secure_io.replace_secret_text(
         STATE_FILE, json.dumps(data, ensure_ascii=False, indent=2)
     )
 
@@ -226,6 +231,22 @@ def _login_process_pending() -> bool:
         return False
 
 
+def _close_login_proc() -> None:
+    """Drop the Popen held by :func:`login_start` and close its pipes."""
+    global _login_proc
+    proc = _login_proc
+    _login_proc = None
+    if proc is None:
+        return
+    for stream in (proc.stdout, proc.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
 def _terminate_login_process(*, term_timeout: float = 2.0,
                              kill_timeout: float = 1.0) -> bool:
     """Stop and reap the login waiter recorded in ``LOGIN_PID``.
@@ -238,6 +259,7 @@ def _terminate_login_process(*, term_timeout: float = 2.0,
     """
     pid = _read_login_pid()
     if pid is None:
+        _close_login_proc()
         return True
 
     try:
@@ -260,6 +282,7 @@ def _terminate_login_process(*, term_timeout: float = 2.0,
 
     if stopped:
         LOGIN_PID.unlink(missing_ok=True)
+        _close_login_proc()
     return stopped
 
 
@@ -415,7 +438,7 @@ def _write_token(token: str) -> Path:
         raise api_error("cloudflared.invalid_token")
     # The tunnel token grants ingress to this LAN, so it must never exist with
     # default permissions, not even for the moment before a chmod.
-    secure_io.write_secret_text(TOKEN_FILE, token + "\n")
+    secure_io.replace_secret_text(TOKEN_FILE, token + "\n")
     return TOKEN_FILE
 
 
@@ -628,6 +651,8 @@ def login_start() -> dict:
     LOGIN_URL_FILE.unlink(missing_ok=True)
     LOGIN_LOG.write_text("")
     # Run login; cloudflared prints a URL then waits for callback
+    global _login_proc
+    _close_login_proc()
     proc = subprocess.Popen(
         [_bin(), "tunnel", "login"],
         stdout=subprocess.PIPE,
@@ -636,6 +661,7 @@ def login_start() -> dict:
         cwd=str(CF_HOME),
         env={**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": str(Path.home())},
     )
+    _login_proc = proc
     LOGIN_PID.write_text(str(proc.pid))
     url = None
     # read up to ~8s for URL line
@@ -670,6 +696,7 @@ def login_start() -> dict:
                 "login_pending": True,
                 "log": buf[-1500:],
             }
+        _close_login_proc()
         return {"ok": False, "message": "Login failed\n" + buf[-1500:]}
     return {
         "ok": True,
@@ -757,16 +784,13 @@ def start_with_token(token: str, label: str | None = None) -> dict:
 def stop() -> dict:
     _launchctl_bootout()
     # kill leftover tunnel processes (not ddns scripts)
-    rc, out, _ = sh(["/bin/ps", "axo", "pid=,command="], timeout=5)
-    if rc == 0 and out:
-        for line in out.splitlines():
-            low = line.lower()
-            if "cloudflared" in low and ("tunnel" in low or "token" in low):
-                try:
-                    pid = int(line.strip().split(None, 1)[0])
-                    os.kill(pid, signal.SIGTERM)
-                except Exception:
-                    pass
+    for pid, cmd in ps_pid_commands(force=True):
+        low = cmd.lower()
+        if "cloudflared" in low and ("tunnel" in low or "token" in low):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
     time.sleep(0.5)
     return {
         "ok": not _is_running(),
@@ -814,8 +838,7 @@ def logs(lines: int = 120) -> dict:
     for p in (LOG_FILE, Path("/opt/homebrew/var/log/cloudflared.log"), LOGIN_LOG):
         if p.is_file():
             try:
-                text = p.read_text(errors="replace")
-                tail = "\n".join(text.splitlines()[-lines:])
+                tail = "\n".join(tail_file_lines(p, lines))
                 chunks.append(f"===== {p} =====\n{tail}")
             except Exception as e:
                 chunks.append(f"===== {p} =====\n(read error: {e})")

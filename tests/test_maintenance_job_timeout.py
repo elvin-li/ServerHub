@@ -29,6 +29,28 @@ def _alive(pid: int) -> bool:
     return True
 
 
+class StartJobGuardTests(unittest.TestCase):
+    def tearDown(self):
+        jobs._jobs.clear()
+
+    def test_missing_command_clears_the_running_flag(self):
+        jobs._jobs.clear()
+        jobs.start_job({"id": "broken", "timeout": 10})
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and jobs._jobs["broken"].get("running"):
+            time.sleep(0.02)
+        self.assertFalse(jobs._jobs["broken"]["running"])
+        self.assertEqual(jobs._jobs["broken"]["rc"], -1)
+
+    def test_null_timeout_does_not_stick_the_mutex(self):
+        jobs._jobs.clear()
+        jobs.start_job({"id": "null-to", "command": "true", "timeout": None})
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and jobs._jobs["null-to"].get("running"):
+            time.sleep(0.02)
+        self.assertFalse(jobs._jobs["null-to"]["running"])
+
+
 def _run(command: str, timeout: int, tid: str, wait: float = 25.0) -> dict:
     jobs._jobs.clear()
     jobs.start_job({"id": tid, "command": command, "timeout": timeout})

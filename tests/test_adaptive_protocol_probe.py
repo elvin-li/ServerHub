@@ -277,6 +277,15 @@ class NonWebPortTests(unittest.TestCase):
             "paid for a port that does not speak TLS",
         )
 
+    def test_a_timeout_is_not_remembered_as_not_http(self):
+        """A slow or restarting UI must be probed again next refresh."""
+        with _FakeServer(_silent) as srv:
+            self.assertIsNone(adaptive.guess_http_url(srv.port))
+            self.assertFalse(
+                adaptive._recently_not_http(srv.port),
+                "an empty/timeout reply was cached as 'not HTTP' for 30 minutes",
+            )
+
     def test_silent_port_is_not_probed_as_https(self):
         """A port that accepts TCP but never replies yields no URL, fast."""
         with _FakeServer(_silent) as srv:

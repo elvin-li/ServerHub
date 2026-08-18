@@ -87,7 +87,7 @@ class AuditAppendTests(unittest.TestCase):
     def test_trim_is_skipped_while_the_file_is_small(self):
         """A sign-in must not read-and-rewrite a trail still under the cap."""
         with mock.patch.object(audit, "_TRIM_SOFT_BYTES", 10**9):
-            with mock.patch.object(audit.secure_io, "write_secret_text") as write:
+            with mock.patch.object(audit.secure_io, "replace_secret_text") as write:
                 audit.record("auth.login", user="elvin")
         write.assert_not_called()
 
@@ -110,6 +110,8 @@ class SourceShapeTests(unittest.TestCase):
             "appending to the audit log must not go through an O_TRUNC write",
         )
         self.assertIn("create_secret_text(AUDIT_PATH", src)
+        self.assertIn("replace_secret_text", src)
+        self.assertIn("tail_file_lines", src)
 
 
 if __name__ == "__main__":

@@ -170,14 +170,15 @@ router.onError((error) => {
 
 router.beforeEach(async (to) => {
   let state
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 5000)
   try {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 5000)
     const r = await fetch('/api/auth/status', { cache: 'no-store', signal: ctrl.signal })
-    clearTimeout(timer)
     state = await r.json()
   } catch {
     return true
+  } finally {
+    clearTimeout(timer)
   }
   // Every navigation already pays for this status probe; publishing the answer
   // is what lets App.vue tailor the nav to the session's role.

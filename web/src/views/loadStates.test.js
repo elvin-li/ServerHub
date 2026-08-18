@@ -127,6 +127,10 @@ describe('pending is distinguishable from empty (source)', () => {
 vi.mock('../i18n', () => ({
   injectI18n: () => ({ t: (k) => k, locale: { value: 'en' }, setLocale: vi.fn() }),
 }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRoute: () => ({ path: '/', query: {}, params: {}, name: 'home' }),
+}))
 vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
 
 function withFailingApi(failing) {

@@ -260,5 +260,42 @@ class BrewCacheTimeoutKeepsSnapshotTests(unittest.TestCase):
         self.assertEqual(got, [{"name": "syncthing", "status": "started"}])
 
 
+class BrewBusyPatternTests(unittest.TestCase):
+    """``pgrep -f /opt/homebrew/bin/brew`` matches any argv that mentions brew."""
+
+    def test_patterns_anchor_argv0_and_include_brew_rb(self):
+        wrapper, ruby = brew_cache._brew_argv_patterns()
+        self.assertTrue(wrapper.startswith("^"), wrapper)
+        self.assertIn("Homebrew/brew", ruby)
+        self.assertNotEqual(wrapper, brew_cache.BREW)
+
+    def test_busy_check_does_not_pass_the_bare_brew_path(self):
+        seen = []
+
+        def fake_run(argv, **kwargs):
+            seen.append(list(argv))
+            return _FakeProc(returncode=1, stdout="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            self.assertFalse(brew_cache._brew_busy())
+        self.assertTrue(seen)
+        for argv in seen:
+            self.assertEqual(argv[:2], ["/usr/bin/pgrep", "-f"])
+            self.assertNotEqual(argv[2], brew_cache.BREW)
+
+    def test_a_hit_on_either_pattern_is_busy(self):
+        calls = {"n": 0}
+
+        def fake_run(argv, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _FakeProc(returncode=1, stdout="")
+            return _FakeProc(returncode=0, stdout="12345\n")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            self.assertTrue(brew_cache._brew_busy())
+        self.assertEqual(calls["n"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

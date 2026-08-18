@@ -30,7 +30,7 @@ from hub import secure_io
 from hub.errors import api_error
 from hub.jobs import run_watchdog
 from hub.paths import DATA_DIR
-from hub.util import cached_snapshot, sh
+from hub.util import cached_snapshot, iter_capped_lines, sh
 
 #: Probe order: brew's rsync 3.x first (both prefixes), Apple's last.
 CANDIDATES = (
@@ -330,7 +330,7 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
+            text=True, errors="replace", start_new_session=True,
         )
     except OSError as e:
         summary = counter.result()
@@ -341,8 +341,8 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
 
     def _drain_stderr():
         try:
-            for line in proc.stderr:
-                stderr_tail.append(line.rstrip())
+            for line in iter_capped_lines(proc.stderr, 4096):
+                stderr_tail.append(line)
                 del stderr_tail[:-20]
         except (OSError, ValueError):
             pass
@@ -359,13 +359,26 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
     watchdog.daemon = True
     watchdog.start()
     try:
-        for line in proc.stdout:
+        for line in iter_capped_lines(proc.stdout, 4096):
             counter.feed(line)
     finally:
         watchdog.cancel()
         _kill_group(proc)
-    proc.wait()
-    drainer.join(timeout=2)
+        try:
+            proc.wait()
+        except Exception:
+            pass
+        drainer.join(timeout=2)
+        # text=True wraps the pipes; leaving them open is the unittest
+        # ResourceWarning and a leaked fd in the panel process.
+        for stream in (proc.stdout, proc.stderr):
+            close = getattr(stream, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except OSError:
+                pass
 
     rc = 124 if timed_out.is_set() else (proc.returncode if proc.returncode is not None else -1)
     summary = counter.result()

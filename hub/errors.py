@@ -144,6 +144,7 @@ CODES: dict[str, tuple[int, str]] = {
     "storage_pool.no_members": (400, "select at least one volume for the pool"),
     "storage_pool.not_poolable": (400, "{mount} cannot join a pool (system or unmounted)"),
     "files.fb_no_plist": (404, "local.filebrowser.plist not found"),
+    "files.fb_bad_plist": (500, "local.filebrowser.plist is not a valid LaunchAgent"),
     # ── macOS administrator authorization ───────────────────────────────────
     # Shared by every endpoint that runs a privileged command through
     # hub/macos_admin.py.  One set of codes rather than a per-feature copy: the
@@ -461,6 +462,7 @@ CODES: dict[str, tuple[int, str]] = {
     "photoshub.bad_person": (400, "only yuanbao and erbao can be edited here"),
     "photoshub.bad_link_url": (400, "that link must be an http(s) URL with a hostname"),
     "photoshub.thumb_failed": (502, "the photo preview could not be fetched from Immich: {detail}"),
+    "photoshub.immich_response": (502, "Immich returned a response that could not be used: {detail}"),
 }
 
 

@@ -510,7 +510,10 @@ def catalog_overview() -> dict:
     # Both halves reach `host_ip()`, which is single-flight: the second arrival waits
     # for the first rather than paying for its own two spawns.
     def docker_templates() -> list:
-        return list_templates()
+        try:
+            return list_templates()
+        except Exception:
+            return []
 
     def native_apps() -> list:
         try:
@@ -925,9 +928,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
         # Compose commonly contains generated database/admin secrets.
-        # write_text()+chmod() leaves a umask window; secure_io is 0600 from
-        # the first byte.
-        secure_io.write_secret_text(dest, rendered)
+        # write_text()+chmod() leaves a umask window; O_EXCL so a lost
+        # exists() race cannot O_TRUNC an operator-edited compose.
+        if not secure_io.create_secret_text(dest, rendered):
+            raise api_error("catalog.already_installed", path=str(dest))
         (dest_dir / "data").mkdir(exist_ok=True)
         # extra dirs often used
         for d in ("config", "media", "downloads", "uploads", "library", "pgdata", "model-cache"):

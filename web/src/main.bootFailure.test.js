@@ -26,7 +26,12 @@ vi.mock('./router', () => ({
 vi.mock('./App.vue', () => ({ default: { name: 'AppStub', render: () => null } }))
 vi.mock('./theme', () => ({ provideTheme: vi.fn() }))
 vi.mock('./serviceWorker', () => ({ registerServiceWorker: vi.fn() }))
-vi.mock('./lib/chunkRecovery', () => ({ installChunkRecovery: vi.fn() }))
+const chunkRecovery = vi.hoisted(() => ({
+  installChunkRecovery: vi.fn(),
+  recoverFromStaleChunk: vi.fn(() => false),
+}))
+
+vi.mock('./lib/chunkRecovery', () => chunkRecovery)
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -50,6 +55,7 @@ async function boot() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  chunkRecovery.recoverFromStaleChunk.mockReturnValue(false)
   shell()
 })
 
@@ -65,6 +71,16 @@ describe('bootstrap with every dictionary failed', () => {
     // provider was installed.
     expect(i18n.provideI18n).not.toHaveBeenCalled()
     expect(document.getElementById('app').innerHTML).toBe('')
+  })
+
+  it('reloads once instead of showing the notice when the shell is stale', async () => {
+    i18n.initializeI18n.mockResolvedValue(false)
+    chunkRecovery.recoverFromStaleChunk.mockReturnValue(true)
+    await boot()
+
+    expect(chunkRecovery.recoverFromStaleChunk).toHaveBeenCalled()
+    expect(document.getElementById('i18n-failure').hidden).toBe(true)
+    expect(i18n.provideI18n).not.toHaveBeenCalled()
   })
 
   it('mounts normally and keeps the notice hidden when a dictionary loaded', async () => {

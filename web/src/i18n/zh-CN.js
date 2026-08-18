@@ -2831,6 +2831,7 @@ export default {
       dest_not_a_dir: '目标不是目录',
       exists: '已存在',
       fb_no_plist: '未找到 local.filebrowser.plist',
+      fb_bad_plist: 'local.filebrowser.plist 不是有效的 LaunchAgent',
       fb_not_installed: '未安装 FileBrowser（~/Services/filebrowser）',
       fb_start_failed: '无法启动 FileBrowser',
       file_only: '只能下载文件',
@@ -2991,6 +2992,7 @@ export default {
       bad_person: '这里只能改元宝和二宝',
       bad_link_url: '链接必须是带主机名的 http(s) 地址',
       thumb_failed: '无法从 Immich 取回照片预览：{detail}',
+      immich_response: 'Immich 返回了无法使用的响应：{detail}',
     },
     jobs: {
       already_running: '已有维护任务在运行，请等它结束',

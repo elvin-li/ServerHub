@@ -2830,6 +2830,7 @@ export default {
       dest_not_a_dir: 'Destination is not a directory',
       exists: 'Already exists',
       fb_no_plist: 'local.filebrowser.plist not found',
+      fb_bad_plist: 'local.filebrowser.plist is not a valid LaunchAgent',
       fb_not_installed: 'FileBrowser is not installed (~/Services/filebrowser)',
       fb_start_failed: 'Could not start FileBrowser',
       file_only: 'Only files can be downloaded',
@@ -2990,6 +2991,7 @@ export default {
       bad_person: 'only yuanbao and erbao can be edited here',
       bad_link_url: 'that link must be an http(s) URL with a hostname',
       thumb_failed: 'the photo preview could not be fetched from Immich: {detail}',
+      immich_response: 'Immich returned a response that could not be used: {detail}',
     },
     jobs: {
       already_running: 'a maintenance task is already running; wait for it to finish',

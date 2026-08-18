@@ -7,7 +7,6 @@ health:
 """
 from __future__ import annotations
 
-import ipaddress
 import ssl
 import time
 import urllib.error
@@ -15,6 +14,7 @@ import urllib.parse
 import urllib.request
 from hub.config import cfg
 from hub.host_address import resolve_value
+from hub.http_guard import _ip_from_host
 from hub.util import LazyPool, cached_snapshot, fan_out
 
 _TTL = 120.0
@@ -54,11 +54,18 @@ def _is_blocked_probe_host(host: str) -> bool:
     name = (host or "").strip().strip("[]").lower()
     if not name or name in _BLOCKED_PROBE_NAMES:
         return True
-    try:
-        addr = ipaddress.ip_address(name)
-    except ValueError:
+    # Same decimal / hex / IPv4-mapped parse as notify and Immich: ipaddress
+    # rejects ``2852039166``, which is 169.254.169.254, and used to pass as
+    # a single-label LAN name (TLS off, then a connect to IMDS).
+    addr = _ip_from_host(name)
+    if addr is None:
         return False
-    return bool(addr.is_loopback or addr.is_link_local or addr.is_unspecified)
+    return bool(
+        addr.is_loopback
+        or addr.is_link_local
+        or addr.is_unspecified
+        or addr.is_multicast
+    )
 
 
 def _is_private_host(host: str) -> bool:
@@ -80,14 +87,14 @@ def _is_private_host(host: str) -> bool:
         return False
     if name.endswith(_PRIVATE_SUFFIXES):
         return True
-    try:
-        addr = ipaddress.ip_address(name)
-    except ValueError:
-        # Not a literal address.  A dotless short name is a LAN name in
-        # practice ("nas", "pi"); anything with a dot is treated as a real
-        # public DNS name and gets verified.
-        return "." not in name
-    return bool(addr.is_private)
+    addr = _ip_from_host(name)
+    if addr is not None:
+        return bool(addr.is_private)
+    # Not a literal address.  A dotless short name is a LAN name in
+    # practice ("nas", "pi"); anything with a dot is treated as a real
+    # public DNS name and gets verified.  Integer/hex IPs are handled
+    # above so ``134744072`` (8.8.8.8) is not a LAN name.
+    return "." not in name
 
 
 class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
@@ -405,7 +412,12 @@ def list_bookmarks() -> dict:
                     "service": sid,
                 })
 
-    idx = f_idx.result()
+    try:
+        idx = f_idx.result()
+    except Exception:
+        # `_backend_index` already absorbs per-CLI failures; this is the
+        # last net so a raise there still leaves the bookmark list.
+        idx = {}
 
     # decide which need probe
     to_probe = []

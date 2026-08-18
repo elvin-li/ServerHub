@@ -30,7 +30,10 @@ def storage(light: bool = False):
     f_overview = _PAGE_POOL.submit(storage_svc.storage_overview)
     f_power = _PAGE_POOL.submit(disk_power_svc.list_power_disks)
     f_managed = _PAGE_POOL.submit(disk_manage_svc.overview)
-    data = f_overview.result()
+    try:
+        data = f_overview.result()
+    except Exception as e:
+        data = {"volumes": [], "disks": [], "error": str(e)}
     try:
         data["power_disks"] = f_power.result()
     except Exception as e:

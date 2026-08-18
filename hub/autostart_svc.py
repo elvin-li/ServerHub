@@ -96,15 +96,15 @@ def _uid_domain() -> str:
 def _read_plist(path: Path) -> dict:
     try:
         with open(path, "rb") as f:
-            return plistlib.load(f) or {}
+            pl = plistlib.load(f)
+        return pl if isinstance(pl, dict) else {}
     except Exception:
         return {}
 
 
 def _write_plist(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        plistlib.dump(data, f)
+    from hub import secure_io
+    secure_io.replace_bytes(path, plistlib.dumps(data))
 
 
 def _loaded_labels() -> frozenset[str]:
@@ -508,13 +508,35 @@ def overview(force: bool = False) -> dict:
     # the last two both read. Taking the snapshot first means it is fetched once
     # rather than once per collector, and the collectors then overlap.
     loaded_snapshot = _loaded_labels()
+
+    def _safe(item):
+        probe, fallback = item
+        try:
+            return probe()
+        except Exception:
+            return fallback
+
+    # fan_out re-raises on iteration; a dead Docker socket must not
+    # empty brew / LaunchAgent / login-script rows too.
     docker_items, brew_items, launchd_items, script = fan_out(
-        lambda fn: fn(),
+        _safe,
         [
-            _docker_autostart_items,
-            _brew_service_items,
-            lambda: _launchd_items(loaded_snapshot),
-            lambda: _script_status(loaded_snapshot),
+            (_docker_autostart_items, []),
+            (_brew_service_items, []),
+            (lambda: _launchd_items(loaded_snapshot), []),
+            (lambda: _script_status(loaded_snapshot), {
+                "id": "script:",
+                "kind": "script",
+                "name": "Login autostart script (autostart.sh)",
+                "label": "",
+                "autostart": False,
+                "running": False,
+                "plist": None,
+                "script": None,
+                "detail": "status unavailable",
+                "actions": [],
+                "group": "Login script",
+            }),
         ],
         max_workers=4,
     )

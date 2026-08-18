@@ -32,14 +32,13 @@ import logging
 import re
 import threading
 import urllib.error
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 
 from hub import config, secure_io
 from hub.errors import api_error, soft_fail
-from hub.http_guard import RedirectRefused, no_redirect_opener
+from hub.http_guard import RedirectRefused, is_allowed_webhook_url, no_redirect_opener
 from hub.paths import DATA_DIR
 
 _OPENER = no_redirect_opener()
@@ -142,16 +141,12 @@ LEGACY_ID = "__legacy_home_assistant__"
 
 
 def _http_url_ok(url: str) -> bool:
-    """Same rule as alerts._http_url_ok: only http(s) may leave the box.
+    """http(s) only, and never cloud metadata or link-local.
 
-    Duplicated rather than imported so this module never has to import the
-    (much heavier) alert engine.
+    Discord/Slack/ntfy are public, so this is not the local-origin guard.
+    Scheme-only used to let ``http://169.254.169.254/`` through.
     """
-    try:
-        scheme = urllib.parse.urlsplit(url).scheme.lower()
-    except ValueError:
-        return False
-    return scheme in ("http", "https")
+    return is_allowed_webhook_url(url)
 
 
 def valid_channel_id(cid) -> bool:
@@ -367,12 +362,18 @@ def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
             return {
                 "ok": True,
                 "status": r.status,
-                "body": r.read()[:200].decode(errors="replace"),
+                "body": r.read(200).decode(errors="replace"),
             }
     except RedirectRefused as e:
         return {"ok": False, "message": str(e)}
     except urllib.error.HTTPError as e:
-        detail = e.read()[:200].decode(errors="replace")
+        try:
+            detail = e.read(200).decode(errors="replace")
+        finally:
+            try:
+                e.close()
+            except Exception:
+                pass
         return {"ok": False, "message": f"HTTP {e.code}: {detail}"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
@@ -617,7 +618,15 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
         pool.shutdown(wait=False)
         for (ch, _secrets, _sender), fut in zip(wanted, futures):
             if fut.done():
-                results.append(fut.result())
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    results.append({
+                        "id": str(ch.get("id") or ""),
+                        "type": ch.get("type"),
+                        "ok": False,
+                        "message": str(e),
+                    })
             else:
                 results.append({
                     "id": str(ch.get("id") or ""),

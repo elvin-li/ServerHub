@@ -133,15 +133,25 @@ def start_job(task):
 
     def run():
         j = _jobs[tid]
-        env = dict(os.environ)
-        env.update({k: str(v) for k, v in
-                    ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()})
-        timeout = int(task.get("timeout", 600))
         try:
+            env = dict(os.environ)
+            env.update({k: str(v) for k, v in
+                        ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()})
+            try:
+                timeout = int(task.get("timeout") or 600)
+            except (TypeError, ValueError):
+                timeout = 600
+            timeout = max(1, min(timeout, 24 * 3600))
+            command = task.get("command")
+            if not command:
+                j["rc"] = -1
+                return
             j["rc"] = run_watchdog(
-                ["/bin/bash", "-c", task["command"]],
+                ["/bin/bash", "-c", command],
                 timeout=timeout, log=j["log"], env=env,
             )
+        except Exception:
+            j["rc"] = -1
         finally:
             j["running"] = False
             j["finished"] = time.strftime("%H:%M:%S")

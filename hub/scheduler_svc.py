@@ -44,6 +44,7 @@ from datetime import datetime, timedelta
 from hub.config import cfg, mutate
 from hub.jobs import run_watchdog
 from hub.paths import DATA_DIR
+from hub.util import tail_file_lines
 
 RUNS_PATH = DATA_DIR / "schedule-runs.jsonl"
 
@@ -302,10 +303,12 @@ def _record_run(entry: dict) -> None:
         try:
             if RUNS_PATH.stat().st_size <= _TRIM_SOFT_BYTES:
                 return
-            lines = RUNS_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
-            if len(lines) <= MAX_RUNS:
+            lines = tail_file_lines(
+                RUNS_PATH, MAX_RUNS, max_bytes=max(_TRIM_SOFT_BYTES * 2, 256 * 1024)
+            )
+            if not lines:
                 return
-            payload = "\n".join(lines[-MAX_RUNS:]) + "\n"
+            payload = "\n".join(lines) + "\n"
             tmp = RUNS_PATH.with_name(f"{RUNS_PATH.name}.{os.getpid()}.tmp")
             try:
                 tmp.write_text(payload)
@@ -319,14 +322,24 @@ def _record_run(entry: dict) -> None:
             pass
 
 
+def _journal_lines() -> list[str]:
+    """Last :data:`MAX_RUNS` journal rows without slurping the whole file."""
+    try:
+        return tail_file_lines(
+            RUNS_PATH, MAX_RUNS, max_bytes=max(_TRIM_SOFT_BYTES, 256 * 1024)
+        )
+    except OSError:
+        return []
+
+
 def runs(job_id: str | None = None, limit: int = 50) -> list[dict]:
     """Newest-first run records, optionally filtered to one job."""
     try:
-        lines = RUNS_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
+        cap = max(1, min(int(limit), MAX_RUNS))
+    except (TypeError, ValueError):
+        cap = 50
     out: list[dict] = []
-    for raw in reversed(lines):
+    for raw in reversed(_journal_lines()):
         try:
             rec = json.loads(raw)
         except ValueError:
@@ -336,7 +349,7 @@ def runs(job_id: str | None = None, limit: int = 50) -> list[dict]:
         if job_id and rec.get("job") != job_id:
             continue
         out.append(rec)
-        if len(out) >= max(1, min(int(limit), MAX_RUNS)):
+        if len(out) >= cap:
             break
     return out
 
@@ -354,12 +367,8 @@ def last_runs_by_job() -> dict[str, dict]:
     row, so the list endpoint cost jobs × MAX_RUNS json loads.  One reversed
     pass keeps the first (newest) record per id and skips the rest.
     """
-    try:
-        lines = RUNS_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return {}
     out: dict[str, dict] = {}
-    for raw in reversed(lines):
+    for raw in reversed(_journal_lines()):
         try:
             rec = json.loads(raw)
         except ValueError:
@@ -631,10 +640,15 @@ def start_scheduler() -> None:
     _thread.start()
 
 
-def stop_scheduler() -> None:
+def stop_scheduler(timeout: float = 3.0) -> None:
     global _thread
     _stop.set()
     # A deliberately stopped worker must not be reported as a dead one.
     from hub import worker_health
     worker_health.unregister("panel-scheduler")
+    thread = _thread
+    # Join before start_scheduler() clears ``_stop``: otherwise the old
+    # loop wakes, sees the event clear, and ticks beside the new thread.
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=timeout)
     _thread = None

@@ -26,7 +26,7 @@ from hub.service_signatures import unescape_proc_name
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
-from hub.util import LazyPool, fan_out, sh, ttl_memo
+from hub.util import LazyPool, fan_out, sh, tail_file_lines, ttl_memo
 from hub.brew_cache import _brew_busy
 
 _pool = LazyPool(2, "hub-tools")
@@ -405,8 +405,7 @@ def _syslog_tail_uncached(minutes: int, limit: int, level: str) -> dict:
         syslog_path = Path("/var/log/system.log")
         if syslog_path.exists():
             try:
-                raw = syslog_path.read_text(errors="replace").splitlines()
-                lines = raw[-limit:]
+                lines = tail_file_lines(syslog_path, limit)
                 err = "fallback:/var/log/system.log"
                 rc = 0
             except OSError as e:
@@ -702,8 +701,18 @@ def _check_updates_uncached() -> dict:
     # becomes the slower of the two.
     brew_future = _pool.submit(_brew_outdated)
     macos_future = _pool.submit(_macos_updates)
-    brew_result = brew_future.result()
-    macos_result = macos_future.result()
+
+    def _result(fut, fallback):
+        try:
+            return fut.result()
+        except Exception:
+            return fallback
+
+    brew_result = _result(brew_future, {"ok": False, "outdated": [], "count": 0, "raw": ""})
+    macos_result = _result(
+        macos_future,
+        {"ok": False, "lines": [], "raw": "", "has_updates": False},
+    )
 
     result = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -875,6 +884,8 @@ def launchd_timers() -> list:
                 pl = plistlib.load(f)
         except Exception:
             continue
+        if not isinstance(pl, dict):
+            continue
         label = pl.get("Label") or Path(path).stem
         interval = pl.get("StartInterval")
         calendar = pl.get("StartCalendarInterval")
@@ -900,6 +911,9 @@ def launchd_agents_summary() -> dict:
             with open(path, "rb") as f:
                 pl = plistlib.load(f)
         except Exception:
+            items.append({"label": path.stem, "path": str(path), "error": "parse"})
+            continue
+        if not isinstance(pl, dict):
             items.append({"label": path.stem, "path": str(path), "error": "parse"})
             continue
         label = pl.get("Label") or path.stem

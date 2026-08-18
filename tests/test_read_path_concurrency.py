@@ -407,9 +407,6 @@ class DiagnosticsBundleTests(unittest.TestCase):
 
         bundle, _ = self._collect(get_power_info=boom)
         self.assertEqual(bundle["power"], {"error": "pmset gone"})
-        self.assertNotIn(
-            "assertions", bundle["power"], "the raw assertion list leaked on failure"
-        )
 
     def test_a_failing_vm_read_leaves_the_key_out_entirely(self):
         """Not ``{"vms": None}``.
@@ -428,6 +425,61 @@ class DiagnosticsBundleTests(unittest.TestCase):
         bundle, _ = self._collect()
         self.assertEqual(bundle["saved_path"], "/tmp/x.json")
         self.assertIsNone(bundle["save_error"])
+
+
+class SettingsBundleIsolationTests(unittest.TestCase):
+    """Settings used to 500 when datetime/power/disk/management/other raised."""
+
+    def setUp(self):
+        system_settings_svc.unraid_settings_bundle.invalidate()
+        self.addCleanup(system_settings_svc.unraid_settings_bundle.invalidate)
+
+    def test_datetime_raise_leaves_the_other_sections(self):
+        with (
+            mock.patch.object(
+                system_settings_svc, "get_datetime_info",
+                side_effect=RuntimeError("systemsetup wedged"),
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_power_info",
+                return_value={"disksleep": 0},
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_disk_settings",
+                return_value={"disk_count": 1},
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_management_access",
+                return_value={"panel_port": 8086},
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_other_settings",
+                return_value={"adaptive": True},
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_thresholds",
+                return_value={"cpu_pct": 90},
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_share_globals",
+                return_value={"smb_running": False, "share_count": 0},
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_scheduler_summary",
+                return_value={"timers": [], "count": 0},
+            ),
+            mock.patch.object(
+                system_settings_svc, "get_vm_settings",
+                return_value={"total": 0, "running": 0, "items": []},
+            ),
+            mock.patch("hub.identity_svc.get_identity", return_value={"hostname": "box"}),
+            mock.patch("hub.network_svc.alias_auto_status", return_value={"ips": []}),
+        ):
+            bundle = system_settings_svc.unraid_settings_bundle(force=True)
+        self.assertEqual(bundle["datetime"], {"error": "systemsetup wedged"})
+        self.assertEqual(bundle["identity"]["hostname"], "box")
+        self.assertEqual(bundle["power"]["disksleep"], 0)
+        self.assertEqual(bundle["thresholds"]["cpu_pct"], 90)
 
 
 # ── /api/settings/{datetime,power,disk} ──────────────────────────────────────
@@ -452,6 +504,18 @@ class SettingsReadTests(unittest.TestCase):
         self.assertTrue(info["ntp_enabled"])
         self.assertEqual(info["ntp_server"], "time.apple.com")
 
+    def test_a_timezone_raise_does_not_empty_datetime(self):
+        with (
+            mock.patch.object(system_settings_svc, "_clock_now", return_value="2026-08-18 12:00:00"),
+            mock.patch("hub.identity_svc.time_zone", side_effect=RuntimeError("no zone")),
+            mock.patch.object(system_settings_svc, "_ntp_enabled", return_value=True),
+            mock.patch.object(system_settings_svc, "_ntp_server", return_value="time.apple.com"),
+        ):
+            info = system_settings_svc.get_datetime_info()
+        self.assertEqual(info["now"], "2026-08-18 12:00:00")
+        self.assertEqual(info["timezone"], "")
+        self.assertTrue(info["ntp_enabled"])
+
     def test_an_unavailable_systemsetup_still_reports_unknown_not_false(self):
         """``None`` and ``False`` mean different things to the page."""
         with mock.patch.object(system_settings_svc, "sh", lambda *a, **k: (1, "", "denied")):
@@ -463,6 +527,8 @@ class SettingsReadTests(unittest.TestCase):
             self.assertTrue(system_settings_svc._clock_now())
 
     def test_the_power_reads_overlap(self):
+        system_settings_svc.get_power_info.invalidate()
+        self.addCleanup(system_settings_svc.get_power_info.invalidate)
         tracker = Concurrency()
         with (
             mock.patch.object(system_settings_svc, "_pmset_settings",
@@ -477,6 +543,22 @@ class SettingsReadTests(unittest.TestCase):
         self.assertEqual(info["disksleep"], 0)
         self.assertEqual(info["assertions"], ["held by x"])
         self.assertEqual(info["ups"], {"source": "ac"})
+
+    def test_a_pmset_raise_does_not_empty_power(self):
+        system_settings_svc.get_power_info.invalidate()
+        self.addCleanup(system_settings_svc.get_power_info.invalidate)
+        with (
+            mock.patch.object(system_settings_svc, "_pmset_settings",
+                              side_effect=RuntimeError("pmset gone")),
+            mock.patch.object(system_settings_svc, "_pmset_assertions",
+                              return_value=["held by x"]),
+            mock.patch.object(system_settings_svc, "get_ups_info",
+                              return_value={"source": "ac"}),
+        ):
+            info = system_settings_svc.get_power_info()
+        self.assertIsNone(info["disksleep"])
+        self.assertEqual(info["assertions"], ["held by x"])
+        self.assertEqual(info["ups"]["source"], "ac")
 
     def test_the_disk_settings_reads_overlap(self):
         tracker = Concurrency()
@@ -537,6 +619,24 @@ class SharesOverviewTests(unittest.TestCase):
         self.assertEqual(data["host"]["smb_url"], "smb://192.168.1.9")
         self.assertEqual(data["smb"], [{"name": "Public"}])
         self.assertEqual(data["system_services"], [{"id": "screen_sharing"}])
+
+    def test_one_collector_raise_does_not_empty_the_page(self):
+        tracker = Concurrency()
+        with (
+            mock.patch.object(shares_svc, "host_ip",
+                              lambda: tracker.run("host", "192.168.1.9")),
+            mock.patch.object(shares_svc, "system_services",
+                              side_effect=RuntimeError("boom")),
+            mock.patch.object(shares_svc, "list_smb_shares",
+                              lambda: tracker.run("smb", [{"name": "Public"}])),
+            mock.patch.object(shares_svc, "file_services",
+                              lambda: tracker.run("files", [{"id": "filebrowser"}])),
+        ):
+            data = shares_svc.shares_overview()
+        self.assertEqual(data["host"]["address"], "192.168.1.9")
+        self.assertEqual(data["smb"], [{"name": "Public"}])
+        self.assertEqual(data["system_services"], [])
+        self.assertEqual(data["file_services"], [{"id": "filebrowser"}])
         self.assertTrue(data["capabilities"]["smb_management"])
 
 
@@ -1222,6 +1322,27 @@ class SharedHostReadTests(unittest.TestCase):
         )
         self.assertEqual(data["host_ip"], "192.168.1.9")
         self.assertEqual(data["platform"], "macOS-15.0-arm64")
+
+    def test_a_timezone_raise_does_not_empty_identity(self):
+        from hub import identity_svc
+
+        identity_svc.time_zone.invalidate()
+        identity_svc.platform_string.invalidate()
+        self.addCleanup(identity_svc.time_zone.invalidate)
+        self.addCleanup(identity_svc.platform_string.invalidate)
+
+        with (
+            mock.patch.object(identity_svc, "sh", return_value=(0, "nas", "")),
+            mock.patch.object(identity_svc, "time_zone", side_effect=RuntimeError("no zone")),
+            mock.patch.object(identity_svc, "effective_host_ip", return_value="10.0.0.2"),
+            mock.patch.object(identity_svc, "platform_string", return_value="macOS"),
+            mock.patch.object(identity_svc, "configured_host", return_value="auto"),
+            mock.patch.object(identity_svc, "cfg", return_value={}),
+        ):
+            data = identity_svc.get_identity()
+        self.assertEqual(data["hostname"], "nas")
+        self.assertEqual(data["timezone"], "")
+        self.assertEqual(data["host_ip"], "10.0.0.2")
 
 
 class PowerInfoMemoTests(unittest.TestCase):

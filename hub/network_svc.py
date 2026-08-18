@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from hub import cli_args
-from hub.docker_cli import docker, engine_up
+from hub.docker_cli import docker, engine_up, inspect_object
 from hub.errors import api_error
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
@@ -1631,7 +1631,9 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
     rc, out, err = docker("inspect", container, timeout=15)
     if rc != 0:
         raise api_error("network.container_not_found", name=container)
-    data = json.loads(out)[0]
+    data = inspect_object(out)
+    if data is None:
+        raise api_error("network.container_not_found", name=container)
     image = ((data.get("Config") or {}).get("Image")) or ""
     if not image:
         raise api_error("network.image_unresolvable")
@@ -1764,16 +1766,18 @@ def _build_overview(force_services: bool = False) -> dict:
         "services": services,
         "services_error": svc_error,
         "hardware_ports": _safe(f_hwports.result, []),
-        "interface_addresses": f_addrs.result(),
-        "listening": _with_wstunnel_listener(f_listen.result(), f_wstunnel.result()),
-        "routes": f_routes.result(),
-        "default_route": f_defroute.result(),
-        "docker_ports": f_dports.result(),
-        "docker_networks": f_dnets.result(),
+        "interface_addresses": _safe(f_addrs.result, []),
+        "listening": _with_wstunnel_listener(
+            _safe(f_listen.result, []), _safe(f_wstunnel.result, None),
+        ),
+        "routes": _safe(f_routes.result, []),
+        "default_route": _safe(f_defroute.result, {}),
+        "docker_ports": _safe(f_dports.result, []),
+        "docker_networks": _safe(f_dnets.result, []),
         "engine_up": _safe(f_engine.result, False),
-        "alias_auto": f_alias.result(),
-        "network_failover": f_failover.result(),
-        "wstunnel": f_wstunnel.result(),
+        "alias_auto": _safe(f_alias.result, None),
+        "network_failover": _safe(f_failover.result, None),
+        "wstunnel": _safe(f_wstunnel.result, None),
         "ts": time.strftime("%H:%M:%S"),
         "profiles": [
             {"id": "wifi", "label": "Prefer Wi-Fi (wired as fallback)"},

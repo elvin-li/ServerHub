@@ -24,6 +24,7 @@ from hub.http_guard import (
     no_redirect_opener,
 )
 from hub.jobs import run_watchdog
+from hub.util import tail_file_lines
 
 HUB = Path.home() / "PhotosHub"
 CFG_PATH = HUB / "config" / "config.json"
@@ -61,6 +62,8 @@ _ALBUM_KEYS = {
 }
 ALLOWED_LOGS = frozenset({"bridge", "delete", "cleanup", "external", "backup", "errors"})
 _THUMB_MAX = 512 * 1024
+#: Album JSON can be large; unbounded ``resp.read()`` would OOM the panel.
+_API_MAX = 4 * 1024 * 1024
 #: Raster types only.  ``image/*`` would also admit ``image/svg+xml``, and an
 #: SVG is a script document: harmless in an ``<img>``, not harmless in the tab
 #: an operator opens when a thumbnail looks wrong.  Immich serves JPEG or WebP.
@@ -81,6 +84,12 @@ def _load_json(path: Path, default: Any = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def _load_json_obj(path: Path) -> dict:
+    """Status JSON the UI indexes with ``.get``; a list/string must not 500."""
+    data = _load_json(path, {}) or {}
+    return data if isinstance(data, dict) else {}
 
 
 def _cfg() -> dict:
@@ -255,10 +264,18 @@ def _immich_api(method: str, path: str, body: Any = None) -> Any:
     )
     try:
         with _IMMICH_OPENER.open(req, timeout=30) as resp:
-            raw = resp.read()
+            raw = resp.read(_API_MAX + 1)
     except _ImmichRedirect:
         raise api_error("photoshub.bad_immich_url")
-    return json.loads(raw) if raw else None
+    if not raw:
+        return None
+    if len(raw) > _API_MAX:
+        raise api_error("photoshub.immich_response", detail="payload too large")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise api_error("photoshub.immich_response", detail="not JSON")
+    return parsed
 
 
 def asset_thumbnail(asset_id: str) -> tuple[bytes, str]:
@@ -295,13 +312,13 @@ def asset_thumbnail(asset_id: str) -> tuple[bytes, str]:
 
 def status() -> dict:
     cfg = _cfg()
-    originals = _load_json(STATE / "originals_status.json", {}) or {}
-    bridge = _load_json(STATE / "bridge_status.json", {}) or {}
-    delete = _load_json(STATE / "delete_review_status.json", {}) or {}
-    cleanup = _load_json(STATE / "cleanup_status.json", {}) or {}
-    backup = _load_json(STATE / "backup_status.json", {}) or {}
-    external = _load_json(STATE / "external_backup_status.json", {}) or {}
-    inventory = _load_json(STATE / "inventory_report.json", {}) or {}
+    originals = _load_json_obj(STATE / "originals_status.json")
+    bridge = _load_json_obj(STATE / "bridge_status.json")
+    delete = _load_json_obj(STATE / "delete_review_status.json")
+    cleanup = _load_json_obj(STATE / "cleanup_status.json")
+    backup = _load_json_obj(STATE / "backup_status.json")
+    external = _load_json_obj(STATE / "external_backup_status.json")
+    inventory = _load_json_obj(STATE / "inventory_report.json")
     gates = cfg.get("gates") or {}
     gate_ready = bool(originals.get("gate_ready"))
     immich = cfg.get("immich") or {}
@@ -459,7 +476,7 @@ def update_config(patch: dict) -> dict:
 def _delete_gated() -> bool:
     """True when the pending-delete channel is frozen (or originals are not ready)."""
     cfg = _cfg()
-    originals = _load_json(STATE / "originals_status.json", {}) or {}
+    originals = _load_json_obj(STATE / "originals_status.json")
     gates = cfg.get("gates") or {}
     ready = bool(originals.get("gate_ready"))
     return not (bool(gates.get("allow_delete_channel")) and ready)
@@ -471,7 +488,12 @@ def _pending_album_name() -> str:
 
 def _pending_album_id(name: str) -> str | None:
     albums = _immich_api("GET", "/api/albums") or []
-    album = next((a for a in albums if a.get("albumName") == name), None)
+    if not isinstance(albums, list):
+        albums = []
+    album = next(
+        (a for a in albums if isinstance(a, dict) and a.get("albumName") == name),
+        None,
+    )
     if not album:
         return None
     return _safe_id(album.get("id"))
@@ -492,7 +514,11 @@ def pending_delete_assets(limit: int = 60) -> dict:
             "gated": _delete_gated(),
         }
     detail = _immich_api("GET", f"/api/albums/{album_id}") or {}
+    if not isinstance(detail, dict):
+        detail = {}
     assets = detail.get("assets") or []
+    if not isinstance(assets, list):
+        assets = []
     out = []
     for a in assets[:limit]:
         asset_id = a.get("id")
@@ -588,7 +614,7 @@ def recent_logs(name: str = "bridge", lines: int = 40) -> dict:
         return {"name": name, "path": None, "lines": []}
     rel = _log_relpath(path)
     try:
-        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        content = tail_file_lines(path, lines)
     except Exception as e:
         return {"name": name, "path": rel, "lines": [str(e)]}
-    return {"name": name, "path": rel, "lines": content[-lines:]}
+    return {"name": name, "path": rel, "lines": content}

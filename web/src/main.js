@@ -4,7 +4,7 @@ import router, { warmLandingChunk } from './router'
 import { initializeI18n, provideI18n } from './i18n'
 import { provideTheme } from './theme'
 import { registerServiceWorker } from './serviceWorker'
-import { installChunkRecovery } from './lib/chunkRecovery'
+import { installChunkRecovery, recoverFromStaleChunk } from './lib/chunkRecovery'
 import { installGlobalErrorHandlers } from './lib/appError'
 import './styles.css'
 
@@ -47,10 +47,14 @@ async function bootstrap() {
   //
   // When not even one dictionary made it (offline mid-deploy, storage failure),
   // do not mount at all: an app whose every label is a raw key path is worse
-  // than a one-line notice with a refresh button. A stale-chunk failure after
-  // a redeploy is already handled by lib/chunkRecovery.js with one reload; this
-  // covers the case where the reload did not help either.
+  // than a one-line notice with a refresh button. Locale files are hashed and
+  // code-split, so a tab that still holds the previous shell asks for chunks
+  // the new service-worker cache has already dropped — recoverFromStaleChunk
+  // reloads once onto the current index.html. The notice is only for the case
+  // where that reload did not help either (vite:preloadError does not fire for
+  // these imports: initializeI18n() swallows the rejection).
   if (!await initializeI18n()) {
+    if (recoverFromStaleChunk()) return
     showI18nFailure()
     return
   }
@@ -78,9 +82,9 @@ if ('vibrate' in navigator && 'ontouchstart' in window) {
   }, { passive: true })
 }
 
-// Register service worker for PWA offline support. Existing tabs reload once
-// when a newly activated worker takes control, so they cannot keep running an
-// obsolete hashed bundle after a deployment.
+// Register the service worker. controllerchange does not reload the tab
+// (see serviceWorker.js); a stale hashed chunk recovers via
+// recoverFromStaleChunk() instead.
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
     registerServiceWorker().catch(() => {})

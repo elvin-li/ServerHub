@@ -70,6 +70,12 @@ vi.mock('../i18n', () => ({
     setLocale: vi.fn(),
   }),
 }))
+// Apps, Login and Tools call useRouter/useRoute. A stubbed RouterLink is
+// not a router, and Vue 3 logs an inject miss on every smoke mount.
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRoute: () => ({ path: '/', query: {}, params: {}, name: 'home' }),
+}))
 // Real timers in a smoke test would leave 28 pollers running.
 vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
 

@@ -151,8 +151,11 @@ def _brew_list_installed() -> set[str]:
         return set()
 
     def listing(flag: str) -> set[str]:
-        rc, out, _ = sh([BREW, "list", flag, "-1"], timeout=30)
-        return set(out.split()) if rc == 0 else set()
+        try:
+            rc, out, _ = sh([BREW, "list", flag, "-1"], timeout=30)
+            return set(out.split()) if rc == 0 else set()
+        except Exception:
+            return set()
 
     formulas, casks = fan_out(listing, ["--formula", "--cask"], max_workers=2)
     return formulas | casks
@@ -692,9 +695,17 @@ def list_native_apps(force: bool = False) -> list[dict]:
     f_installed = _pool.submit(_brew_list_installed)
     f_services = _pool.submit(brew_services_list)
     f_host = _pool.submit(host_ip)
-    brew_inst = f_installed.result()
-    service_rows = f_services.result()
-    host = f_host.result()
+
+    def _result(fut, fallback):
+        try:
+            return fut.result()
+        except Exception:
+            return fallback
+
+    # `.result()` re-raises; a dead brew must not empty the Apps catalog.
+    brew_inst = _result(f_installed, set()) or set()
+    service_rows = _result(f_services, []) or []
+    host = _result(f_host, "") or ""
 
     service_states: dict[str, str] = {}
     for s in service_rows:
@@ -1014,8 +1025,8 @@ def _write_launchagent(label: str, program_args: list[str], *,
         pl["StandardErrorPath"] = stderr
     if env:
         pl["EnvironmentVariables"] = env
-    with open(pl_path, "wb") as f:
-        plistlib.dump(pl, f)
+    from hub import secure_io
+    secure_io.replace_bytes(pl_path, plistlib.dumps(pl))
     return pl_path
 
 

@@ -94,5 +94,22 @@ class TestLoginTerminationEscalation(LoginProcessTestBase):
         self.assert_reaped(proc)
 
 
+class LoginPipeClose(LoginProcessTestBase):
+    def test_terminate_closes_the_held_stdout_wrapper(self):
+        proc = self.child(
+            "import time; time.sleep(60)",
+            stdout=subprocess.PIPE,
+        )
+        cloudflared_svc._login_proc = proc
+        self.addCleanup(lambda: setattr(cloudflared_svc, "_login_proc", None))
+
+        self.assertTrue(cloudflared_svc._terminate_login_process(
+            term_timeout=0.4,
+            kill_timeout=1.0,
+        ))
+        self.assertIsNone(cloudflared_svc._login_proc)
+        self.assertTrue(proc.stdout.closed)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

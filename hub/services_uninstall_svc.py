@@ -156,11 +156,33 @@ def _plist_path(label: str) -> Path:
 
     The path is resolved and re-checked against the agents directory so a label
     can never traverse out of it, even if the regex is later loosened.
+
+    launchd registers the job under the plist's ``Label``, which can differ
+    from the filename.  Matching only ``<label>.plist`` made uninstall report
+    "unknown" for a job the services page had just shown.
     """
     agents = Path(AGENTS_DIR).resolve()
     candidate = (agents / f"{label}.plist").resolve()
     if candidate.parent != agents:
         raise api_error("services.uninstall_not_supported", id=label)
+    if candidate.is_file():
+        declared, _, _ = _agent_paths(candidate)
+        if declared == label or declared.lower() == label.lower():
+            return candidate
+    try:
+        for path in sorted(agents.glob("*.plist")):
+            resolved = path.resolve()
+            if resolved.parent != agents:
+                continue
+            declared, _, _ = _agent_paths(resolved)
+            if declared == label or declared.lower() == label.lower():
+                return resolved
+    except OSError:
+        pass
+    # A leftover ``<label>.plist`` whose Label is some other job must not
+    # be archived under this name.
+    if candidate.is_file():
+        raise api_error("services.uninstall_unknown", id=label)
     return candidate
 
 

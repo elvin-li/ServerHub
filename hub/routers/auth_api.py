@@ -115,7 +115,9 @@ def auth_setup(body: SetupBody, request: Request, response: Response):
             body.username.strip() or "admin",
             require_token=auth.setup_token_required(request),
         )
-    except ValueError:
+    except ValueError as exc:
+        if str(exc) == "bad_username":
+            raise api_error("accounts.bad_username")
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
     if not completed:
         # Re-check after the atomic claim: a competing valid request may have won.
@@ -264,7 +266,9 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
             # Admin-only rename path (guarded above): rewrites the legacy
             # administrator pair, exactly as this endpoint always has.
             auth.set_password(body.new_password, username, enable=True)
-    except ValueError:
+    except ValueError as exc:
+        if str(exc) == "bad_username":
+            raise api_error("accounts.bad_username")
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
     session_name = username
     auth.clear_login_failures(client)

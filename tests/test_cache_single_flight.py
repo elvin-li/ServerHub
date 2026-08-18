@@ -280,6 +280,26 @@ class ConvertedSnapshotTests(unittest.TestCase):
         self.assertEqual(by_name["Two"]["health"], "error")
         self.assertEqual(by_name["One"]["health"], "ok")
 
+    def test_a_backend_index_raise_still_lists_bookmarks(self):
+        from hub import bookmarks_svc
+
+        links = [{"name": "One", "url": "http://10.0.0.1:8001", "id": "a"}]
+        bookmarks_svc.list_bookmarks.invalidate()
+        self.addCleanup(bookmarks_svc.list_bookmarks.invalidate)
+
+        with contextlib.ExitStack() as stack:
+            for target, value in {
+                "cfg": lambda: {"quick_links": list(links), "overrides": {}},
+                "resolve_value": lambda v: v,
+                "_backend_index": mock.Mock(side_effect=RuntimeError("utmctl timeout")),
+                "_resolve_backend": lambda link, idx: None,
+                "_probe": lambda url, timeout=3.0: {"ok": True, "status": 200, "ms": 1},
+            }.items():
+                stack.enter_context(mock.patch.object(bookmarks_svc, target, value))
+            data = bookmarks_svc.list_bookmarks()
+        self.assertEqual(len(data["bookmarks"]), 1)
+        self.assertEqual(data["bookmarks"][0]["name"], "One")
+
     def test_every_converted_reader_exposes_invalidation(self):
         """Mutation paths call these; a missing attribute would be an AttributeError
         at the moment a setting is changed, which is the worst time to find out."""

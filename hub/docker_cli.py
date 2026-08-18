@@ -17,6 +17,22 @@ def docker(*args, timeout=30) -> tuple[int, str, str]:
     return sh([DOCKER, *args], timeout=timeout)
 
 
+def inspect_object(out: str) -> dict | None:
+    """First object from ``docker inspect`` JSON, or None if unusable.
+
+    ``docker inspect`` prints a list.  A torn/empty/non-object payload used
+    to raise ``IndexError``/``AttributeError`` on ``json.loads(out)[0]``
+    and 500 the inspect and recreate routes.
+    """
+    try:
+        parsed = json.loads(out)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(parsed, list):
+        parsed = parsed[0] if parsed else None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def docker_json(args: list[str], timeout=30) -> Any:
     rc, out, err = docker(*args, timeout=timeout)
     if rc != 0:

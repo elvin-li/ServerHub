@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from hub.proc_cache import ps_lines
 from hub.util import LazyPool, sh
 
 # ── Mach host CPU ticks — accurate, non-blocking CPU% via cumulative deltas ──
@@ -298,28 +299,30 @@ def _disk() -> dict:
 
 
 def _top_processes(limit: int = 8) -> list:
-    rc, out, _ = sh(
-        ["/bin/ps", "-A", "-o", "pid,%cpu,%mem,rss,comm", "-r"],
-        timeout=5,
-    )
-    if rc != 0:
+    """Top CPU rows from the shared ``ps aux`` table.
+
+    A dedicated ``ps -A -o … -r`` used to run on every full sensors sample
+    and timed out on this host while ``proc_cache`` already held the same
+    table for the request.  ``aux`` is not CPU-sorted, so we sort here.
+    """
+    lines = ps_lines()
+    if len(lines) < 2:
         return []
     rows = []
-    for line in out.splitlines()[1:]:
-        parts = line.split(None, 4)
-        if len(parts) < 5:
+    for line in lines[1:]:
+        parts = line.split(None, 10)
+        if len(parts) < 11:
             continue
         try:
-            pid = int(parts[0])
-            cpu = float(parts[1])
-            mem = float(parts[2])
-            rss_kb = int(parts[3])
+            pid = int(parts[1])
+            cpu = float(parts[2])
+            mem = float(parts[3])
+            rss_kb = int(parts[5])
         except ValueError:
             continue
-        name = parts[4].strip()
-        # shorten path
+        name = parts[10].strip()
         if "/" in name:
-            name = name.rsplit("/", 1)[-1]
+            name = name.split(None, 1)[0].rsplit("/", 1)[-1]
         rows.append({
             "pid": pid,
             "cpu": round(cpu, 1),
@@ -327,9 +330,8 @@ def _top_processes(limit: int = 8) -> list:
             "rss_mb": round(rss_kb / 1024, 1),
             "name": name[:40],
         })
-        if len(rows) >= limit:
-            break
-    return rows
+    rows.sort(key=lambda r: (r["cpu"], r["mem"]), reverse=True)
+    return rows[: max(1, int(limit))]
 
 
 def _network_rates() -> dict:
@@ -440,8 +442,12 @@ def _uptime() -> dict:
     rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
     hours = 0.0
     if rc == 0 and "sec =" in out:
-        boot = int(out.split("sec =")[1].split(",")[0].strip())
-        hours = (time.time() - boot) / 3600
+        try:
+            boot = int(out.split("sec =")[1].split(",")[0].strip())
+        except (IndexError, ValueError):
+            boot = 0
+        if boot:
+            hours = (time.time() - boot) / 3600
     days = int(hours // 24)
     h = int(hours % 24)
     m = int((hours * 60) % 60)
@@ -553,14 +559,22 @@ def _collect_sensors_uncached() -> dict:
     f_net = _pool.submit(_network_rates)
     f_procs = _pool.submit(_top_processes, 8)
     f_up = _pool.submit(_uptime)
-    mem = f_mem.result()
-    disk = f_disk.result()
-    top = f_top.result() or {}
-    cpu_ticks = f_cpu.result() or {}
-    thermal = f_thermal.result()
-    net = f_net.result() or {}
-    procs = f_procs.result() or []
-    up = f_up.result()
+
+    def _result(fut, fallback):
+        try:
+            return fut.result()
+        except Exception:
+            return fallback
+
+    # `.result()` re-raises; one wedged `top`/`pmset` must not 500 the dashboard.
+    mem = _result(f_mem, {}) or {}
+    disk = _result(f_disk, {}) or {}
+    top = _result(f_top, {}) or {}
+    cpu_ticks = _result(f_cpu, {}) or {}
+    thermal = _result(f_thermal, None)
+    net = _result(f_net, {}) or {}
+    procs = _result(f_procs, []) or []
+    up = _result(f_up, {}) or {}
 
     ncpu = mem.get("ncpu") or 1
     load1 = top.get("load1", mem.get("load1"))

@@ -43,13 +43,21 @@ def get_identity() -> dict:
     f_tz = _pool.submit(time_zone)
     f_platform = _pool.submit(platform_string)
     f_ip = _pool.submit(effective_host_ip)
-    rc, hostname, _ = f_host.result()
-    rc2, comp, _ = f_comp.result()
-    rc3, local, _ = f_local.result()
-    rc4, model, _ = f_model.result()
-    tz = f_tz.result()
-    platform_name = f_platform.result()
-    host_ip = f_ip.result()
+
+    def _result(fut, fallback):
+        try:
+            return fut.result()
+        except Exception:
+            return fallback
+
+    # `.result()` re-raises; one scutil/sysctl miss must not 500 Settings.
+    rc, hostname, _ = _result(f_host, (1, "", ""))
+    rc2, comp, _ = _result(f_comp, (1, "", ""))
+    rc3, local, _ = _result(f_local, (1, "", ""))
+    rc4, model, _ = _result(f_model, (1, "", ""))
+    tz = _result(f_tz, "") or ""
+    platform_name = _result(f_platform, "") or ""
+    host_ip = _result(f_ip, "") or ""
     s = cfg().get("settings") or {}
     return {
         "hostname": hostname if rc == 0 else platform.node(),

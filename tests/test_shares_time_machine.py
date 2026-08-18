@@ -433,6 +433,25 @@ class DiscoveryProbeTests(unittest.TestCase):
             answer = shares_svc._dns_sd_advertised("_adisk._tcp", wait=0.1)
         self.assertIs(answer, False)
 
+    def test_browse_closes_the_pipe(self):
+        closed = []
+
+        class _PipeDnsSd:
+            def __init__(self):
+                self.stdout = type("S", (), {
+                    "__iter__": lambda self: iter(["Browsing\n"]),
+                    "close": lambda self: closed.append(True),
+                })()
+                self.pid = 7
+            def kill(self):
+                pass
+            def wait(self, timeout=None):
+                return 0
+
+        with patch("hub.shares_svc.subprocess.Popen", lambda *a, **kw: _PipeDnsSd()):
+            shares_svc._dns_sd_advertised("_adisk._tcp", wait=0.05)
+        self.assertTrue(closed, "dns-sd stdout was left open")
+
     def test_browse_spawn_failure_reports_none_not_false(self):
         with patch("hub.shares_svc.subprocess.Popen", side_effect=OSError("no dns-sd")):
             self.assertIsNone(shares_svc._dns_sd_advertised("_adisk._tcp", wait=0.1))

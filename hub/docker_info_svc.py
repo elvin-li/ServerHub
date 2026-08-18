@@ -13,9 +13,11 @@ def _slim_info() -> dict:
     info = {}
     if rc == 0 and out.strip():
         try:
-            info = json.loads(out)
+            parsed = json.loads(out)
         except json.JSONDecodeError:
             info = {"raw": out[:2000]}
+        else:
+            info = parsed if isinstance(parsed, dict) else {"raw": out[:2000]}
     # slim fields like Unraid docker settings summary
     slim = {
         "ServerVersion": info.get("ServerVersion"),
@@ -46,9 +48,10 @@ def _version() -> dict:
     rc, ver, _ = docker("version", "--format", "{{json .}}", timeout=10)
     if rc == 0 and ver.strip():
         try:
-            return json.loads(ver)
+            parsed = json.loads(ver)
         except json.JSONDecodeError:
-            pass
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
     return {}
 
 
@@ -71,8 +74,17 @@ def engine_info() -> dict:
     # (15s + 10s + 5s worst case) to render one panel. None of them reads the others'
     # output. Each helper swallows its own failure and returns an empty value, which
     # is what fan_out requires, so one slow engine no longer holds up the other two.
+    def _safe(item):
+        probe, fallback = item
+        try:
+            return probe()
+        except Exception:
+            return fallback
+
     slim, version, orb_v = fan_out(
-        lambda probe: probe(), [_slim_info, _version, _orb_version], max_workers=3
+        _safe,
+        [(_slim_info, {}), (_version, {}), (_orb_version, "")],
+        max_workers=3,
     )
     return {
         "engine_up": True,

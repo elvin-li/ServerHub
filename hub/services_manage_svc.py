@@ -25,7 +25,7 @@ from hub.service_signatures import (
     yaml_signature,
 )
 from hub.status import full_status, invalidate_status
-from hub.util import sh
+from hub.util import sh, tail_file_lines
 
 
 def _flat_services(force: bool = False) -> list[dict]:
@@ -47,13 +47,38 @@ def find_service(sid: str, force: bool = False) -> dict | None:
     return None
 
 
+def _plist_label(path: Path) -> str:
+    """The job launchd registered, not the filename stem."""
+    try:
+        with open(path, "rb") as f:
+            pl = plistlib.load(f) or {}
+    except Exception:
+        return path.stem
+    if isinstance(pl, dict) and pl.get("Label"):
+        return str(pl["Label"])
+    return path.stem
+
+
 def _plist_path(label: str) -> Path | None:
-    p = Path(AGENTS_DIR) / f"{label}.plist"
-    if p.is_file():
+    """Resolve a launchd job to its plist by Label, then filename stem.
+
+    Discovery keys rows on ``Label``.  A renamed file used to make detail
+    and logs look for ``<label>.plist`` and miss the job.
+    """
+    wanted = str(label or "")
+    if not wanted:
+        return None
+    p = Path(AGENTS_DIR) / f"{wanted}.plist"
+    if p.is_file() and _plist_label(p) == wanted:
         return p
-    for path in glob.glob(f"{AGENTS_DIR}/*.plist"):
-        if Path(path).stem == label:
-            return Path(path)
+    try:
+        paths = sorted(glob.glob(f"{AGENTS_DIR}/*.plist"))
+    except OSError:
+        return None
+    for path in paths:
+        candidate = Path(path)
+        if _plist_label(candidate) == wanted:
+            return candidate
     return None
 
 
@@ -63,7 +88,8 @@ def _load_plist(label: str) -> dict:
         return {}
     try:
         with open(p, "rb") as f:
-            return plistlib.load(f) or {}
+            pl = plistlib.load(f)
+        return pl if isinstance(pl, dict) else {}
     except Exception:
         return {}
 
@@ -74,18 +100,7 @@ def _tail_file(path: str | Path, lines: int = 150) -> str:
         return f"(log file does not exist: {p})"
     lines = max(10, min(int(lines), 2000))
     try:
-        with open(p, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            data = b""
-            block = 4096
-            while size > 0 and data.count(b"\n") <= lines:
-                step = min(block, size)
-                size -= step
-                f.seek(size)
-                data = f.read(step) + data
-            text = data.decode("utf-8", errors="replace")
-            return "\n".join(text.splitlines()[-lines:])
+        return "\n".join(tail_file_lines(p, lines))
     except Exception as e:
         return f"(read failed: {e})"
 
@@ -102,9 +117,10 @@ def _docker_inspect(name: str) -> dict:
         return {}
     try:
         import json
-        return json.loads(out)
+        parsed = json.loads(out)
     except Exception:
         return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _docker_ports_summary(insp: dict) -> list[str]:

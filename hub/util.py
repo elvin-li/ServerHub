@@ -269,19 +269,57 @@ def iter_capped_lines(stream, cap):
     ``readline(cap)`` bounds every read; the remainder of an over-long line is
     read and *discarded* in cap-sized chunks, and the kept prefix is marked.
     Trailing whitespace is stripped, matching what the log loops did inline.
+
+    Iterators without ``readline`` (test fakes, already-split lists) still
+    get a per-line cap so callers can share one helper.
     """
+    readline = getattr(stream, "readline", None)
+    if readline is None:
+        for line in stream:
+            text = line.rstrip() if isinstance(line, str) else str(line).rstrip()
+            if len(text) >= cap:
+                yield text[:cap] + " …[line truncated]"
+            elif text:
+                yield text
+        return
     while True:
-        line = stream.readline(cap)
+        line = readline(cap)
         if line == "":
             return
         if len(line) >= cap and not line.endswith("\n"):
             while True:
-                rest = stream.readline(cap)
+                rest = readline(cap)
                 if rest == "" or rest.endswith("\n"):
                     break
             yield line.rstrip() + " …[line truncated]"
             continue
         yield line.rstrip()
+
+
+def tail_file_lines(path, n: int, *, max_bytes: int = 256 * 1024) -> list[str]:
+    """Last *n* lines of *path*, reading at most *max_bytes* from the end.
+
+    Callers that used ``Path.read_text().splitlines()[-n:]`` loaded the whole
+    file — a PhotosHub backup log or a LaunchAgent stdout that grew for months
+    — just to show a 40-line tail.  A prefix byte is dropped so a mid-line
+    seek does not return a torn first row.
+    """
+    n = max(1, int(n))
+    cap = max(1, int(max_bytes))
+    with open(path, "rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        take = min(size, cap)
+        if take <= 0:
+            return []
+        fh.seek(size - take)
+        data = fh.read(take)
+    text = data.decode("utf-8", errors="replace")
+    if take < size:
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1 :]
+    return text.splitlines()[-n:]
 
 
 #: Same argv timing out on every dashboard tick used to reprint the warning

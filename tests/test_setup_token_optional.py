@@ -182,5 +182,12 @@ class StatusPayloadTests(unittest.TestCase):
         self.assertIn("state.setup_token_required !== false", view)
 
 
+class SetupUsernameTests(unittest.TestCase):
+    def test_a_colon_username_cannot_claim_the_panel(self):
+        with self.assertRaises(ValueError) as ctx:
+            auth.set_password("a-long-enough-password", "admin:evil")
+        self.assertEqual(str(ctx.exception), "bad_username")
+
+
 if __name__ == "__main__":
     unittest.main()

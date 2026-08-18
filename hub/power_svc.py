@@ -174,9 +174,17 @@ def power_overview() -> dict:
     f_nic = _pool.submit(_nic)
     f_womp = _pool.submit(_womp_enabled)
     f_ss = _pool.submit(screensharing_status)
-    dev, mac = f_nic.result()
-    womp = f_womp.result()
-    screen_sharing = f_ss.result()
+
+    def _result(fut, fallback):
+        try:
+            return fut.result()
+        except Exception:
+            return fallback
+
+    # `.result()` re-raises; a wedged `pmset` must not drop the power tile.
+    dev, mac = _result(f_nic, ("", ""))
+    womp = _result(f_womp, None)
+    screen_sharing = _result(f_ss, {}) or {}
     return {
         "actions": list(_ACTIONS),
         "wol": {

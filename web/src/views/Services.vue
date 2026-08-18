@@ -295,6 +295,15 @@ const logModal = ref(null)
 const uninstallModal = ref(null)
 const uninstallPanel = ref(null)
 let timer = null
+const refreshTimers = new Set()
+
+function later(fn, ms) {
+  const id = setTimeout(() => {
+    refreshTimers.delete(id)
+    fn()
+  }, ms)
+  refreshTimers.add(id)
+}
 
 const flat = computed(() => {
   const list = []
@@ -404,8 +413,8 @@ async function onAction(svc, action) {
     toast(`❌ ${e.message || e}`)
   } finally {
     busy.value = false
-    setTimeout(() => refresh(true), 1000)
-    if (detail.value?.id === svc.id) setTimeout(() => openDetail(svc, true), 1200)
+    later(() => refresh(true), 1000)
+    if (detail.value?.id === svc.id) later(() => openDetail(svc, true), 1200)
   }
 }
 
@@ -427,7 +436,7 @@ async function bulkAction(ids, action) {
     busy.value = false
   }
   selected.value = new Set()
-  setTimeout(() => refresh(true), 1200)
+  later(() => refresh(true), 1200)
 }
 
 async function openDetail(svc, silent = false) {
@@ -604,7 +613,11 @@ onMounted(() => {
   refresh()
   timer = startVisibleInterval(() => refresh(false), 15000)
 })
-onUnmounted(() => { if (typeof timer === 'function') timer() })
+onUnmounted(() => {
+  if (typeof timer === 'function') timer()
+  for (const id of refreshTimers) clearTimeout(id)
+  refreshTimers.clear()
+})
 
 
 // Escape dismisses the uninstall dialog, focus returns to whatever opened it,

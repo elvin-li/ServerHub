@@ -22,6 +22,10 @@ const polls = vi.hoisted(() => ({ callbacks: [] }))
 vi.mock('../i18n', () => ({
   injectI18n: () => ({ t: (k) => k, locale: { value: 'en' }, setLocale: vi.fn() }),
 }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRoute: () => ({ path: '/', query: {}, params: {}, name: 'home' }),
+}))
 // Capture every poll callback a view registers instead of running timers.
 vi.mock('../lib/poll', () => ({
   startVisibleInterval: (fn) => {

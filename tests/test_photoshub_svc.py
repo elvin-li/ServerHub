@@ -36,6 +36,16 @@ class PhotosHubStatus(unittest.TestCase):
         bin_dir.mkdir()
         (bin_dir / "photoctl").write_text("#!/bin/sh\n", encoding="utf-8")
 
+    def test_array_status_files_do_not_500_the_page(self):
+        """A torn write leaving ``[]`` used to raise ``list.get`` on /api/photoshub."""
+        self._install_photoctl()
+        (self.hub / "state" / "originals_status.json").write_text("[]", encoding="utf-8")
+        (self.hub / "state" / "inventory_report.json").write_text('"oops"', encoding="utf-8")
+        snap = photoshub_svc.status()
+        self.assertTrue(snap["photoshub_ok"])
+        self.assertFalse(snap["gates"]["originals_ready"])
+        self.assertEqual(photoshub_svc._delete_gated(), True)
+
     def test_missing_tree_is_not_ok(self):
         snap = photoshub_svc.status()
         self.assertFalse(snap["photoshub_ok"])
@@ -300,6 +310,17 @@ class PhotosHubStatus(unittest.TestCase):
         self.assertEqual(snap["path"], "logs/backup-2026.log")
         self.assertNotIn(str(self.hub), json.dumps(snap))
 
+    def test_backup_log_tail_does_not_load_the_prefix(self):
+        self._install_photoctl()
+        (self.hub / "logs").mkdir()
+        path = self.hub / "logs" / "backup-2026.log"
+        # More than max_bytes of prefix, then a unique last line.
+        path.write_bytes(b"OLD\n" + b"x" * 4000 + b"\nTAIL\n")
+        from hub.util import tail_file_lines
+        lines = tail_file_lines(path, 2, max_bytes=16)
+        self.assertEqual(lines[-1], "TAIL")
+        self.assertNotIn("OLD", lines)
+
     def test_pending_missing_album_is_still_gated(self):
         self._install_photoctl()
         with mock.patch.object(photoshub_svc, "_pending_album_id", return_value=None):
@@ -394,6 +415,15 @@ class PhotosHubThumbnails(PhotosHubStatus):
             photoshub_svc.asset_thumbnail(self.ASSET)
         self.assertEqual(raised.exception.detail["code"], "photoshub.not_installed")
 
+    def test_immich_json_is_capped(self):
+        self._install_photoctl()
+        self._with_key()
+        huge = b"[" + b"0," * (photoshub_svc._API_MAX) + b"0]"
+        with self._serve(huge, "application/json"):
+            with self.assertRaises(HTTPException) as raised:
+                photoshub_svc._immich_api("GET", "/api/albums")
+        self.assertEqual(raised.exception.detail["code"], "photoshub.immich_response")
+
     def test_every_thumb_failure_code_is_registered(self):
         """A code the SPA cannot translate surfaces as a bare identifier."""
         from hub import errors
@@ -463,3 +493,20 @@ class PhotosHubThumbnailRoute(unittest.TestCase):
                 photoshub_api.pending_delete_thumb("abc-123")
         self.assertEqual(raised.exception.status_code, 502)
         self.assertEqual(raised.exception.detail["code"], "photoshub.thumb_failed")
+
+
+class PhotosHubAlbumJson(unittest.TestCase):
+    def test_pending_album_id_tolerates_an_object_payload(self):
+        with mock.patch.object(
+            photoshub_svc, "_immich_api", return_value={"error": "nope"}
+        ):
+            self.assertIsNone(photoshub_svc._pending_album_id("Pending Delete"))
+
+    def test_pending_assets_tolerates_a_list_detail(self):
+        with mock.patch.object(photoshub_svc, "installed", return_value=True), \
+             mock.patch.object(photoshub_svc, "_pending_album_id", return_value="a" * 32), \
+             mock.patch.object(photoshub_svc, "_immich_api", return_value=["not", "an", "object"]), \
+             mock.patch.object(photoshub_svc, "_delete_gated", return_value=False):
+            got = photoshub_svc.pending_delete_assets()
+        self.assertEqual(got["assets"], [])
+        self.assertEqual(got["count"], 0)

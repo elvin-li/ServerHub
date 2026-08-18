@@ -297,6 +297,54 @@ class ProcessTableTests(unittest.TestCase):
         self.assertEqual(rows[0]["command"], "/usr/bin/busy --flag")
         self.assertEqual(len(counting.calls), 1)
 
+    def test_pid_commands_need_the_eleven_column_aux_layout(self):
+        with mock.patch.object(proc_cache, "sh", lambda *a, **k: (0, PS, "")):
+            self.assertEqual(proc_cache.ps_pid_commands(), ())
+        # The short fixture is still a non-empty table, so the snapshot
+        # keeps it.  Drop it before the well-formed rows can be seen.
+        proc_cache.invalidate_processes()
+        table = (
+            "USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND\n"
+            "me 11 9.5 1.5 100 200 ?? S 1:00PM 0:01.00 /opt/homebrew/bin/wstunnel server\n"
+        )
+        with mock.patch.object(proc_cache, "sh", lambda *a, **k: (0, table, "")):
+            self.assertEqual(
+                proc_cache.ps_pid_commands(),
+                ((11, "/opt/homebrew/bin/wstunnel server"),),
+            )
+
+    def test_sensors_and_wstunnel_share_the_table(self):
+        from hub import sensors_svc, wireguard_wstunnel as wst
+
+        table = (
+            "USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND\n"
+            "me 11 9.5 1.5 100 2048 ?? S 1:00PM 0:01.00 /opt/homebrew/bin/wstunnel server "
+            "--restrict-to 10.0.0.1:51821 ws://0.0.0.0:8444\n"
+            "me 12 1.0 0.5 100 512 ?? S 1:00PM 0:00.10 /usr/bin/idle\n"
+        )
+        counting = _CountingSh(table)
+        wst.live.invalidate()
+        self.addCleanup(wst.live.invalidate)
+        with mock.patch.object(proc_cache, "sh", counting):
+            rows = sensors_svc._top_processes(8)
+            live = wst.live()
+        self.assertEqual(len(counting.calls), 1, counting.calls)
+        self.assertEqual(rows[0]["pid"], 11)
+        self.assertEqual(rows[0]["name"], "wstunnel")
+        self.assertTrue(live["running"])
+        self.assertEqual(live["pid"], 11)
+
+    def test_callers_do_not_spawn_a_second_ps_flavor(self):
+        from pathlib import Path
+
+        from hub import cloudflared_svc, sensors_svc, wireguard_wstunnel
+
+        for module in (cloudflared_svc, sensors_svc, wireguard_wstunnel):
+            source = Path(module.__file__).read_text()
+            self.assertNotIn("ps\", \"-A\"", source, module.__name__)
+            self.assertNotIn("ps\", \"-ax\"", source, module.__name__)
+            self.assertNotIn("ps\", \"axo\"", source, module.__name__)
+
 
 if __name__ == "__main__":
     unittest.main()

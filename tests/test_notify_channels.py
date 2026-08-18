@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -122,6 +123,18 @@ class DispatchRoutingTests(_Sandbox):
         self.assertFalse(boom["ok"])
         self.assertIn("exploded", boom["message"])
 
+    def test_a_send_via_raise_does_not_sink_dispatch(self):
+        self.use_cfg({"channels": [
+            {"id": "fine", "type": "slack"},
+        ]})
+        with mock.patch.object(
+            notify_channels, "_send_via", side_effect=RuntimeError("future boom"),
+        ):
+            result = notify_channels.dispatch("T", "m", level="down")
+        self.assertEqual(result["failed"], 1)
+        self.assertFalse(result["results"][0]["ok"])
+        self.assertIn("future boom", result["results"][0]["message"])
+
     def test_no_matching_channel_reports_instead_of_raising(self):
         self.use_cfg({})
         result = notify_channels.dispatch("T", "m", level="down")
@@ -197,7 +210,7 @@ class LegacyHomeAssistantTests(_Sandbox):
     def _urlopen_recorder(self, requests: list):
         class _Resp:
             status = 200
-            def read(self):
+            def read(self, n=-1):
                 return b"ok"
             def __enter__(self):
                 return self
@@ -361,6 +374,52 @@ class SenderTests(_Sandbox):
         self.assertFalse(res["ok"])
         opener.assert_not_called()
 
+    def test_post_refuses_metadata_and_link_local(self):
+        with mock.patch.object(notify_channels._OPENER, "open") as opener:
+            for url in (
+                "http://169.254.169.254/latest/meta-data",
+                "http://2852039166/",
+                "http://[fe80::1]/hook",
+                "http://metadata/latest/meta-data",
+            ):
+                res = notify_channels._post(url, {"a": 1})
+                self.assertFalse(res["ok"], url)
+        opener.assert_not_called()
+
+    def test_post_caps_the_response_body(self):
+        class _Huge:
+            status = 200
+            def __init__(self):
+                self.asked = None
+            def read(self, n=-1):
+                self.asked = n
+                return b"x" * (n if n and n > 0 else 10_000_000)
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+
+        huge = _Huge()
+        with mock.patch.object(notify_channels._OPENER, "open", return_value=huge):
+            res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(huge.asked, 200)
+        self.assertEqual(res["body"], "x" * 200)
+
+    def test_post_caps_http_error_bodies(self):
+        err = urllib.error.HTTPError(
+            "https://hooks.example.com/x", 500, "boom", hdrs={}, fp=None,
+        )
+        err.read = lambda n=-1: b"y" * (n if n and n > 0 else 10_000_000)
+        closed = []
+        err.close = lambda: closed.append(True)
+        with mock.patch.object(notify_channels._OPENER, "open", side_effect=err):
+            res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
+        self.assertFalse(res["ok"])
+        self.assertIn("HTTP 500", res["message"])
+        self.assertNotIn("y" * 201, res["message"])
+        self.assertTrue(closed)
+
     def test_post_refuses_redirects(self):
         from hub.http_guard import RedirectRefused
 
@@ -483,6 +542,13 @@ class ChannelApiTests(_Sandbox):
         r = self.client.post("/api/alerts/channels", json={
             "type": "webhook", "name": "w",
             "secrets": {"url": "file:///etc/passwd"},
+        })
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["detail"]["code"], "notify.bad_url")
+
+        r = self.client.post("/api/alerts/channels", json={
+            "type": "webhook", "name": "meta",
+            "secrets": {"url": "http://169.254.169.254/latest/meta-data"},
         })
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()["detail"]["code"], "notify.bad_url")

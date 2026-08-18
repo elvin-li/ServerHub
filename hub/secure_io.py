@@ -118,6 +118,33 @@ def replace_secret_text(
     return p
 
 
+def replace_bytes(path: Path | str, data: bytes, *, mode: int = 0o644) -> Path:
+    """Atomically install *data* at *path* (plists, caches — not secrets).
+
+    ``open(path, \"wb\")`` + dump tears the file if the process dies mid-write;
+    launchd then refuses to load the agent.  Same tmp+replace as
+    :func:`replace_secret_text`, but the default mode is 0644.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return p
+
+
 def copy_secret_file(src: Path | str, dst: Path | str) -> Path:
     """Copy ``src`` to ``dst`` without ever publishing the copy.
 

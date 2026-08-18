@@ -332,5 +332,14 @@ class StartupRecoveryTests(_Harness):
         self.assertFalse(backups._inflight_marker("photoprism").exists())
 
 
+class StackMountsJsonTests(unittest.TestCase):
+    def test_a_json_array_is_not_an_object(self):
+        with mock.patch.object(backups, "_run_argv", return_value=(0, "[1, 2]", "")):
+            binds, volumes, err = backups._stack_mounts("compose.yml", None)
+        self.assertEqual(binds, [])
+        self.assertEqual(volumes, [])
+        self.assertIn("not an object", err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

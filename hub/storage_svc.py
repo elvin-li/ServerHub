@@ -239,6 +239,14 @@ def _probe_disk(d: str) -> dict:
         "size": None, "size_bytes": None, "size_gb": None,
         "smart": None, "error": None,
     }
+    try:
+        return _probe_disk_uncached(dev, info)
+    except Exception as exc:
+        info["error"] = str(exc)[:160]
+        return info
+
+
+def _probe_disk_uncached(dev: str, info: dict) -> dict:
     rc, iout, _ = sh(["/usr/sbin/diskutil", "info", dev], timeout=8)
     if rc == 0:
         for line in iout.splitlines():
@@ -428,8 +436,15 @@ def storage_overview() -> dict:
     # "df, then every disk" to "df alongside every disk".
     f_vols = _OVERVIEW_POOL.submit(list_volumes)
     f_disks = _OVERVIEW_POOL.submit(smart_devices)
-    vols = f_vols.result()
-    disks = f_disks.result()
+    # `.result()` re-raises; SMART must not blank the volume table.
+    try:
+        vols = f_vols.result()
+    except Exception:
+        vols = []
+    try:
+        disks = f_disks.result()
+    except Exception:
+        disks = []
     system_vols = [v for v in vols if v["kind"] == "system"]
     external_vols = [v for v in vols if v["kind"] == "external"]
     other_vols = [v for v in vols if v["kind"] not in ("system", "external")]

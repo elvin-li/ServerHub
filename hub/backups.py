@@ -785,7 +785,9 @@ def _backup_immich_native() -> dict:
             finally:
                 watchdog.cancel()
                 errfile.seek(0)
-                err_text = errfile.read().decode("utf-8", "replace")
+                # Callers only surface [:500]; an unbounded read of a
+                # chatty pg_dump stderr used to RSS-bomb the panel.
+                err_text = errfile.read(2048).decode("utf-8", "replace")
     except Exception as exc:
         _discard(dest)
         return {"ok": False, "message": (err_text or str(exc))[:500]}
@@ -1010,6 +1012,8 @@ def _stack_mounts(compose_path: str, workdir: str | None) -> tuple[list[str], li
         resolved = json.loads(out)
     except ValueError as e:
         return [], [], f"unparsable compose config: {e}"
+    if not isinstance(resolved, dict):
+        return [], [], "compose config is not an object"
 
     volume_names: dict[str, str] = {}
     for key, spec in (resolved.get("volumes") or {}).items():

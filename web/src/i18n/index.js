@@ -159,8 +159,9 @@ export async function initializeI18n() {
   // A failed English fetch is deliberately non-fatal when the selected locale
   // did load: the page still renders fully translated, and the key-alignment
   // tests in i18n.test.js keep the fallback path unreachable in practice. If
-  // the failure was a stale chunk hash after a redeploy, lib/chunkRecovery.js
-  // reloads the shell once anyway.
+  // neither dictionary loaded (typically a stale hashed chunk after a
+  // redeploy), main.js calls recoverFromStaleChunk() and reloads the shell
+  // once before showing the bilingual failure notice.
   const fallbackReady = loadMessages(FALLBACK_LOCALE).catch(() => null)
   const requested = locale.value
   const selectedOk = await setLocale(requested)
