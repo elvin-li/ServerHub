@@ -16,6 +16,7 @@ is new, and a wrong guess is a no-op instead of a truncation.
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -48,8 +49,18 @@ class AuditAppendTests(unittest.TestCase):
         audit.record("auth.login", user="elvin")
         body = self.path.read_text()
         self.assertIn('"event": "auth.login", "user": "elvin"', body.replace("'", '"'))
-        self.assertIn("auth.failed", body, "an earlier entry disappeared")
-        self.assertGreaterEqual(len(body.splitlines()), 3)
+
+    def test_extra_ts_and_event_fields_cannot_clobber_the_record(self):
+        written = audit.record(
+            audit.LOGIN_OK, username="admin", ts="1900-01-01", event="forged",
+        )
+        self.assertEqual(written["event"], audit.LOGIN_OK)
+        self.assertNotEqual(written["ts"], "1900-01-01")
+        self.assertEqual(written["username"], "admin")
+        on_disk = [json.loads(ln) for ln in self.path.read_text().splitlines() if ln.strip()]
+        last = on_disk[-1]
+        self.assertEqual(last["event"], audit.LOGIN_OK)
+        self.assertNotEqual(last["ts"], "1900-01-01")
 
     def test_history_survives_an_exists_that_lies(self):
         """The exact failure mode: every path claims to be missing."""

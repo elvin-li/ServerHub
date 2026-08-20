@@ -1052,6 +1052,33 @@ class LauncherServiceTests(unittest.TestCase):
         self.assertTrue(result["launcher_registered"])
         self.assertFalse(result["legacy_menubar_registered"])
 
+    def test_job_state_accepts_bytes_and_none_output(self):
+        output = b"\n".join((
+            b"gui/501/local.serverhub.panel = {",
+            b"\tstate = running",
+            b"}",
+        ))
+        with patch.object(launcher_svc, "sh", return_value=(0, output, "")):
+            self.assertEqual(launcher_svc._job_state(launcher_svc.PANEL_LABEL), "running")
+        with patch.object(launcher_svc, "sh", return_value=(0, None, "")):
+            self.assertEqual(launcher_svc._job_state(launcher_svc.PANEL_LABEL), "unknown")
+
+    def test_status_survives_a_shutdown_pool(self):
+        """Lifespan shutdown used to RuntimeError on the next /api/launcher GET."""
+        executor = launcher_svc._pool._executor()
+        executor.shutdown(wait=True)
+        self.addCleanup(launcher_svc.shutdown_executor)
+        with (
+            patch.object(launcher_svc, "_app_path", return_value=None),
+            patch.object(launcher_svc, "_job_state", return_value="running"),
+            patch.object(launcher_svc, "_loaded", return_value=False),
+        ):
+            result = launcher_svc.status()
+        self.assertFalse(result["app_running"])
+        self.assertTrue(result["panel_running"])
+        self.assertEqual(result["panel_job_state"], "running")
+        self.assertFalse(result["launcher_registered"])
+
     def test_job_state_uses_top_level_launchd_state(self):
         output = "\n".join((
             "gui/501/local.serverhub.panel = {",

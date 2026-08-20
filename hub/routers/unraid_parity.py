@@ -119,11 +119,22 @@ def api_diagnostics():
 @router.get("/api/diagnostics/download")
 def api_diagnostics_download():
     import json
-    import time
 
-    data = system_settings_svc.collect_diagnostics()
-    body = json.dumps(data, ensure_ascii=False, indent=2, default=str)
-    name = f"serverhub-diagnostics-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    from hub.util import strftime_now
+
+    data = system_settings_svc._json_tree(
+        system_settings_svc.collect_diagnostics()
+    )
+    try:
+        body = json.dumps(
+            data, ensure_ascii=False, indent=2, default=str, allow_nan=False,
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover nested diagnostics after _json_tree is not ValueError.
+        body = "{}"
+    if isinstance(body, str):
+        body = body.encode("utf-8", "replace").decode("utf-8")
+    name = f"serverhub-diagnostics-{strftime_now('%Y%m%d-%H%M%S')}.json"
     return PlainTextResponse(
         body,
         media_type="application/json; charset=utf-8",

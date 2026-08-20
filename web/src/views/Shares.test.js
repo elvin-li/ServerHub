@@ -393,4 +393,21 @@ describe('integrated sharing panel', () => {
     expect(api.openSharingSettings).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
+
+  it('does not toast a share removal that returns after leave', async () => {
+    const share = {
+      record_name: 'Media Record', name: 'Media Record', smb_name: 'Media',
+      path: '/Users/test/Media', url: 'smb://host/Media', guest: false,
+      readonly: false, encrypted: false,
+    }
+    let resolveRemove
+    api.removeShare.mockImplementation(() => new Promise((resolve) => { resolveRemove = resolve }))
+    const { wrapper, toast } = await mountShares(payload({ smb: [share] }))
+    await wrapper.find('button[aria-label="shares.remove_named"]').trigger('click')
+    wrapper.unmount()
+    resolveRemove({ ok: true })
+    await flushPromises()
+    expect(toast).not.toHaveBeenCalled()
+  })
 })
+

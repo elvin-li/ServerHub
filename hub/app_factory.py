@@ -37,6 +37,18 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 _REQUEST_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 
 
+def _health_ts() -> int:
+    """Finite unix timestamp for the public liveness probe.
+
+    Leftover ``time.time() = inf`` OverflowError'd ``int()`` and 500'd
+    GET /api/health (watchdog / install.sh).
+    """
+    try:
+        return int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 #: Handlers are attached to the "serverhub" parent, not to the root logger.
 #: Nothing in this project configured logging at all, so every
 #: ``logging.getLogger("serverhub.…").info(…)`` in the codebase was discarded:
@@ -126,9 +138,34 @@ async def lifespan(app: FastAPI):
     )
 
     s = cfg().get("settings") or {}
-    # SSD-friendly defaults: 90s metrics / 90s alerts (was 30/30)
-    metrics.start_sampler(int(s.get("metrics_interval") or 90))
-    alerts.start_alerter(int(s.get("alert_interval") or 90))
+    # SSD-friendly defaults: 90s metrics / 90s alerts (was 30/30).
+    # A hand-edit like ``metrics_interval: 90s`` used to raise here and
+    # the LaunchAgent never came up.  YAML ``.inf`` / ``1e999`` is OverflowError
+    # (not ValueError); ``true`` is a bool subclass of int and used to sample
+    # every 1s.
+    def _interval(raw, default=90):
+        if isinstance(raw, bool) or raw is None:
+            return default
+        if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+            return default
+        try:
+            n = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        # Leftover YAML ``1e308`` is finite; ``int(1e308)`` succeeds and
+        # ``Event.wait`` then OverflowError's the worker on the first tick.
+        return n if 0 < n <= 86400 else default
+
+    # Unguarded: leftover interval types that slip _interval used to abort
+    # the LaunchAgent before uvicorn bound the port.
+    try:
+        metrics.start_sampler(_interval(s.get("metrics_interval"), 90))
+    except Exception:
+        pass
+    try:
+        alerts.start_alerter(_interval(s.get("alert_interval"), 90))
+    except Exception:
+        pass
     # User-defined cron jobs (see hub/scheduler_svc.py for the semantics).
     try:
         scheduler_svc.start_scheduler()
@@ -274,13 +311,14 @@ def create_app() -> FastAPI:
                     host = request.headers.get("host")
                     resp = None
                     if origin and host:
-                        from urllib.parse import urlsplit
+                        from hub.websocket_security import origin_allowed
 
-                        try:
-                            if urlsplit(origin).netloc.lower() != host.lower():
-                                resp = reject("auth.cross_site_denied")
-                        except ValueError:
-                            resp = reject("auth.bad_origin")
+                        # Same rule as privileged WebSockets.  Comparing only
+                        # netloc to Host let ``javascript://<host>`` through
+                        # because urlsplit stores the host in netloc for any
+                        # scheme with a ``//`` authority.
+                        if not origin_allowed(origin, host):
+                            resp = reject("auth.cross_site_denied")
                     if resp is None:
                         resp = await call_next(request)
             else:
@@ -332,7 +370,7 @@ def create_app() -> FastAPI:
         Registering this first means probes (watchdog, install.sh, curl)
         get 200 without a session. Privileged data stays on /api/status.
         """
-        return {"ok": True, "ts": int(time.time())}
+        return {"ok": True, "ts": _health_ts()}
 
     app.include_router(auth_router)
     # Self-guarded like auth_router, deliberately outside require_auth: the
@@ -358,16 +396,27 @@ def create_app() -> FastAPI:
         "/api/vms/{console_id}/console/ws", console_websocket
     )
 
-    if STATIC_DIR.is_dir() and (STATIC_DIR / "index.html").exists():
+    try:
+        spa_ready = STATIC_DIR.is_dir() and (STATIC_DIR / "index.html").exists()
+    except OSError:
+        spa_ready = False
+    if spa_ready:
         assets = STATIC_DIR / "assets"
-        if assets.is_dir():
+        try:
+            mount_assets = assets.is_dir()
+        except OSError:
+            mount_assets = False
+        if mount_assets:
             app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
         @app.get("/")
         def index_spa():
             return FileResponse(STATIC_DIR / "index.html")
 
-        static_root = STATIC_DIR.resolve()
+        try:
+            static_root = STATIC_DIR.resolve()
+        except (OSError, ValueError, RuntimeError):
+            static_root = STATIC_DIR
         index_file = static_root / "index.html"
 
         @app.get("/{full_path:path}")
@@ -376,12 +425,13 @@ def create_app() -> FastAPI:
                 return HTMLResponse("Not Found", status_code=404)
             try:
                 candidate = (static_root / full_path).resolve()
-            except (OSError, ValueError):
+            except (OSError, ValueError, RuntimeError):
                 # A path the filesystem cannot even represent is, by definition,
                 # not a static file, so the SPA shell is the right answer. This
                 # used to raise and return 500: a request path of a few thousand
                 # characters gives OSError "File name too long", and %00 decodes to
-                # an embedded null which Path rejects with ValueError. Any scanner
+                # an embedded null which Path rejects with ValueError. A leftover
+                # symlink loop raises RuntimeError, not OSError. Any scanner
                 # or stale link hitting the panel produced a 500 and a traceback in
                 # the log, which reads like a broken server rather than a bad URL.
                 return FileResponse(index_file)
@@ -396,8 +446,16 @@ def create_app() -> FastAPI:
             return FileResponse(index_file)
     else:
 
-        @app.get("/", response_class=HTMLResponse)
+        @app.get("/")
         def index_legacy():
-            return LEGACY_INDEX.read_text()
+            # Loading the whole leftover multi-MB index.html used to OOM
+            # GET /.  Stream like the SPA branch; a missing/unreadable
+            # node is a 404, not a 500.
+            try:
+                if LEGACY_INDEX.is_file():
+                    return FileResponse(LEGACY_INDEX)
+            except OSError:
+                pass
+            return HTMLResponse("Not Found", status_code=404)
 
     return app

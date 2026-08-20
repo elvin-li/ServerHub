@@ -1,22 +1,61 @@
 """System nginx reverse proxy management."""
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from hub.adaptive import nginx_sites
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd, listing as launchd_listing
 from hub.paths import NGINX as NGINX_BIN
+from hub.paths import user_home
 from hub.status import invalidate_status
-NGINX_ROOT = Path.home() / "Services" / "nginx"
+from hub.util import sh
+
+
+def _default_root() -> Path:
+    """Nginx tree under ``~/Services/nginx``.  ``Path.home()`` leftover must not 500 import."""
+    home = user_home()
+    return (home / "Services" / "nginx") if home is not None else Path("/var/empty/serverhub-nginx")
+
+
+NGINX_ROOT = _default_root()
 NGINX_CONF = NGINX_ROOT / "nginx.conf"
 CONF_D = NGINX_ROOT / "conf.d"
 LABEL = "local.system-nginx"
 
 
+def _as_text(value) -> str:
+    """Leftover ``\\ud800`` in ``nginx -t`` used to 500 Settings → Test/Reload."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _sh_message(err, out, fallback: str = "") -> str:
+    return (_as_text(err) or _as_text(out) or fallback).strip()
+
+
 def overview() -> dict:
-    sites = nginx_sites()
+    # GET /api/nginx used to 500 when one unreadable ``*.conf`` raised inside
+    # ``nginx_sites`` (MemoryError / ValueError are not OSError).
+    try:
+        sites = nginx_sites()
+    except Exception:
+        sites = []
+    if not isinstance(sites, list):
+        sites = []
     # The shared listing (hub/launchd_cache.py) rather than this module's own
     # `launchctl list`: the health page calls this *and* two other readers of the
     # same listing, so the bundle used to spawn three of them.
@@ -24,7 +63,10 @@ def overview() -> dict:
     # Exact label match now, where this scanned for `LABEL in line` -- a substring
     # test that would have matched a different job whose label merely contains
     # `local.system-nginx`.
-    pid = launchd_listing().pid_for(LABEL)
+    try:
+        pid = launchd_listing().pid_for(LABEL)
+    except Exception:
+        pid = None
     running = pid is not None
     return {
         "label": LABEL,
@@ -39,40 +81,43 @@ def overview() -> dict:
 
 
 def test_config() -> dict:
-    if not NGINX_CONF.is_file():
+    try:
+        present = NGINX_CONF.is_file()
+    except (OSError, ValueError):
+        # Dying mount EIO / a NUL leftover used to 500 Settings → Test/Reload.
+        present = False
+    if not present:
         raise api_error("nginx.conf_missing")
-    p = subprocess.run(
-        [NGINX_BIN, "-t", "-c", str(NGINX_CONF)],
-        capture_output=True, text=True, timeout=15,
-    )
-    msg = (p.stderr or p.stdout or "").strip()
-    return {"ok": p.returncode == 0, "message": msg}
+    # ``sh`` swallows FileNotFoundError / TimeoutExpired; a missing binary
+    # used to 500 Settings → Reload instead of returning a coded failure.
+    rc, out, err = sh([NGINX_BIN, "-t", "-c", str(NGINX_CONF)], timeout=15)
+    # bytes/None from a patched or odd `sh` used to TypeError when Reload
+    # concatenated the probe text onto a str prefix.
+    return {"ok": rc == 0, "message": _sh_message(err, out)}
 
 
 def reload_nginx() -> dict:
     t = test_config()
     if not t["ok"]:
-        return {"ok": False, "message": "Invalid configuration; not reloaded\n" + t["message"]}
-    # Prefer signal via nginx -s reload with same conf
-    p = subprocess.run(
-        [NGINX_BIN, "-c", str(NGINX_CONF), "-s", "reload"],
-        capture_output=True, text=True, timeout=15,
+        return {
+            "ok": False,
+            "message": "Invalid configuration; not reloaded\n" + _as_text(t.get("message")),
+        }
+    rc, out, err = sh(
+        [NGINX_BIN, "-c", str(NGINX_CONF), "-s", "reload"], timeout=15,
     )
-    if p.returncode != 0:
-        # kickstart launchd
+    if rc != 0:
         import os as _os
         uid = _os.getuid()
-        p2 = subprocess.run(
+        rc2, out2, err2 = sh(
             ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"],
-            capture_output=True, text=True, timeout=30,
+            timeout=30,
         )
-        # A kickstart replaces the process, so the pid in the shared listing is now
-        # the previous one.
         invalidate_launchd()
         invalidate_status()
         return {
-            "ok": p2.returncode == 0,
-            "message": (p2.stderr or p2.stdout or t["message"] or "kickstart").strip(),
+            "ok": rc2 == 0,
+            "message": _sh_message(err2, out2, _as_text(t.get("message")) or "kickstart"),
         }
     invalidate_status()
-    return {"ok": True, "message": "Reloaded\n" + t["message"]}
+    return {"ok": True, "message": "Reloaded\n" + _as_text(t.get("message"))}

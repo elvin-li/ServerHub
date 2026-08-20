@@ -87,9 +87,15 @@ describe('canLogs', () => {
 
   it('accepts a served logs action, then falls back to the kind whitelist', () => {
     expect(canLogs({ kind: 'vm', actions: ['logs'] })).toBe(true)
-    expect(canLogs({ kind: 'launchd', actions: [] })).toBe(true)
-    expect(canLogs({ kind: 'vm', actions: [] })).toBe(false)
+    expect(canLogs({ kind: 'launchd' })).toBe(true)
+    expect(canLogs({ kind: 'vm' })).toBe(false)
     expect(canLogs(null)).toBe(false)
+  })
+
+  it('does not guess Logs when the server omitted that action', () => {
+    // Member rows are stripped to open/detail and omit can_logs.
+    expect(canLogs({ kind: 'launchd', actions: ['open', 'detail'] })).toBe(false)
+    expect(canLogs({ kind: 'container', actions: [] })).toBe(false)
   })
 })
 
@@ -101,6 +107,8 @@ describe('formatters', () => {
     expect(portOf({ ports: [{ port: 53 }] })).toBe('{"port":53}')
     expect(portOf({ detail: 'listening on :8443 ok' })).toBe(':8443')
     expect(portOf({ detail: 'no port here' })).toBe('—')
+    expect(portOf({ port: Number.POSITIVE_INFINITY })).toBe('—')
+    expect(portOf({ ports: [Number.POSITIVE_INFINITY] })).toBe('—')
   })
 
   it('maps states onto LED and chip classes', () => {
@@ -121,7 +129,10 @@ describe('formatters', () => {
     expect(kindLabel('launchd')).toBe('L:services.kind_launchd')
     expect(kindLabel('weird-kind')).toBe('weird-kind')
     expect(kindLabel('')).toBe('—')
+    expect(kindLabel(Number.POSITIVE_INFINITY)).toBe('—')
     expect(stateLabel('warn')).toBe('L:services.state_warn')
     expect(stateLabel(undefined)).toBe('—')
+    expect(stateLabel(Number.POSITIVE_INFINITY)).toBe('—')
+    expect(actLabel(Number.POSITIVE_INFINITY)).toBe('—')
   })
 })

@@ -271,6 +271,22 @@ describe('login page', () => {
     expect(routing.replace).not.toHaveBeenCalled()
   })
 
+  it('does not redirect a sign-in that finishes after leave', async () => {
+    let resolveLogin
+    api.loginAuth.mockImplementation(() => new Promise((resolve) => { resolveLogin = resolve }))
+    const wrapper = await mountLogin({ status: { setup_required: false } })
+
+    await fill(wrapper, { 'auth.password': 'correct-horse-battery' })
+    await wrapper.find('form').trigger('submit')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+    resolveLogin({ ok: true, username: 'ops' })
+    await flushPromises()
+
+    expect(routing.replace).not.toHaveBeenCalled()
+    expect(api.resetAuthLost).not.toHaveBeenCalled()
+  })
+
   it('still renders the form when the status probe fails', async () => {
     api.getAuthStatus.mockRejectedValue(new Error('Service unavailable'))
     routing.query = {}

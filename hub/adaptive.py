@@ -16,8 +16,28 @@ from pathlib import Path
 from typing import Any
 
 from hub.host_address import host_ip as resolved_host_ip
+from hub.paths import user_home
 from hub.service_signatures import configured_signatures, identify, unescape_proc_name
-from hub.util import port_open, sh
+from hub.util import port_open, read_text_capped, sh
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover ``\\ud800`` so GET /api/nginx cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
 
 # Common flags that take a port as next argument
 _PORT_FLAGS = {
@@ -35,15 +55,40 @@ def host_ip() -> str:
     return resolved_host_ip()
 
 
+def _tcp_port(raw) -> int | None:
+    """A TCP port, or None.
+
+    Bool is a subclass of int (``int(True) == 1``) so leftover YAML ``true``
+    used to become listen port 1. ``int(inf)`` OverflowError is not
+    ValueError; leftover bytes ``int(b"80")`` is 80.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, (bytes, bytearray)):
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if 1 <= n <= 65535:
+        return n
+    return None
+
+
 def ports_from_plist(pl: dict) -> list[int]:
     """Extract listen ports from LaunchAgent plist structure."""
+    if not isinstance(pl, dict):
+        return []
     ports: list[int] = []
-    args = [str(a) for a in (pl.get("ProgramArguments") or [])]
+    raw_args = pl.get("ProgramArguments")
+    if not isinstance(raw_args, list):
+        raw_args = []
+    args = [str(a) for a in raw_args]
     for i, a in enumerate(args):
         if a in _PORT_FLAGS and i + 1 < len(args):
             try:
                 ports.append(int(args[i + 1]))
-            except ValueError:
+            except (ValueError, OverflowError):
                 pass
         # -p8200 or --port=8200
         m = re.match(r"^(?:-p|--port=)(\d{2,5})$", a)
@@ -56,24 +101,29 @@ def ports_from_plist(pl: dict) -> list[int]:
                 ports.append(int(m.group(1)))
             except ValueError:
                 pass
-    env = pl.get("EnvironmentVariables") or {}
+    env = pl.get("EnvironmentVariables")
+    if not isinstance(env, dict):
+        env = {}
     for k, v in env.items():
         if _ENV_PORT_KEYS.match(str(k)):
             try:
                 ports.append(int(str(v).strip()))
-            except ValueError:
+            except (ValueError, OverflowError, TypeError):
                 pass
         if _URL_ENV_KEYS.match(str(k)):
             m = re.search(r":(\d{2,5})(?:/|$)", str(v))
             if m:
                 ports.append(int(m.group(1)))
     # Sockets in plist (rare)
-    for sock in (pl.get("Sockets") or {}).values():
+    sockets = pl.get("Sockets")
+    if not isinstance(sockets, dict):
+        sockets = {}
+    for sock in sockets.values():
         if isinstance(sock, dict):
             for key in ("SockServiceName", "SockPortName"):
                 try:
                     ports.append(int(sock[key]))
-                except (KeyError, ValueError, TypeError):
+                except (KeyError, ValueError, TypeError, OverflowError):
                     pass
     # unique valid
     out = []
@@ -84,10 +134,14 @@ def ports_from_plist(pl: dict) -> list[int]:
 
 
 def url_from_plist(pl: dict) -> str | None:
-    env = pl.get("EnvironmentVariables") or {}
+    if not isinstance(pl, dict):
+        return None
+    env = pl.get("EnvironmentVariables")
+    if not isinstance(env, dict):
+        env = {}
     for k, v in env.items():
         if _URL_ENV_KEYS.match(str(k)) and str(v).startswith("http"):
-            return str(v).strip()
+            return _utf8_text(str(v).strip())
     return None
 
 
@@ -116,6 +170,10 @@ def invalidate_lsof_snapshot() -> None:
 
 def _parse_lsof_listen(out: str) -> list[dict[str, Any]]:
     """Rows of {proc, pid, bind, port} from `lsof -nP -iTCP -sTCP:LISTEN` text."""
+    if isinstance(out, (bytes, bytearray)):
+        out = out.decode("utf-8", "replace")
+    elif not isinstance(out, str):
+        return []
     rows: list[dict[str, Any]] = []
     for line in out.splitlines()[1:]:
         parts = line.split()
@@ -123,16 +181,21 @@ def _parse_lsof_listen(out: str) -> list[dict[str, Any]]:
             continue
         # NAME is the last field, unless lsof appended the (LISTEN) state token.
         bind = parts[-2] if parts[-1] == "(LISTEN)" else parts[-1]
-        m = re.search(r":(\d+)$", bind)
+        # A rare `addr:port->peer:port` NAME would make `:(\d+)$` take the
+        # remote port; the listen we care about is the local side.
+        local = bind.split("->", 1)[0]
+        m = re.search(r":(\d+)$", local)
         if not m:
             continue
         try:
             port = int(m.group(1))
         except ValueError:
             continue
+        if not 1 <= port <= 65535:
+            continue
         rows.append({
             "proc": unescape_proc_name(parts[0]),
-            "pid": parts[1],
+            "pid": str(parts[1]),
             "bind": bind,
             "port": port,
         })
@@ -151,11 +214,14 @@ def lsof_listen_snapshot() -> list[dict[str, Any]]:
         with _lsof_lock:
             if _lsof_cache["v"] is not None and now - _lsof_cache["t"] < _LSOF_TTL:
                 return _lsof_cache["v"]
-        rc, out, _ = sh(
-            ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
-            timeout=10,
-        )
-        rows = _parse_lsof_listen(out) if rc == 0 else []
+        try:
+            rc, out, _ = sh(
+                ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
+                timeout=10,
+            )
+            rows = _parse_lsof_listen(out) if rc == 0 else []
+        except Exception:
+            rows = []
         with _lsof_lock:
             _lsof_cache["t"] = time.time()
             _lsof_cache["v"] = rows
@@ -172,17 +238,26 @@ def ports_for_pid(pid: str | int) -> list[int]:
     """
     try:
         pid = int(pid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return []
     if pid <= 0:
         return []
     want = str(pid)
     ports: list[int] = []
-    for row in lsof_listen_snapshot():
-        if row["pid"] != want:
+    snapshot = lsof_listen_snapshot()
+    if not isinstance(snapshot, list):
+        return []
+    for row in snapshot:
+        if not isinstance(row, dict):
             continue
-        if row["port"] not in ports:
-            ports.append(row["port"])
+        if str(row.get("pid") or "") != want:
+            continue
+        try:
+            port = int(row["port"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if 1 <= port <= 65535 and port not in ports:
+            ports.append(port)
     return ports
 
 
@@ -298,11 +373,20 @@ def guess_http_url(port: int) -> str | None:
     is the wrong last line of defence, so a port that classifies as neither
     protocol is also remembered and not probed again for `_NOT_HTTP_TTL`.
     """
+    try:
+        port = int(port)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not 1 <= port <= 65535:
+        return None
     if port in _NON_HTTP_PORTS:
         return None
     if _recently_not_http(port):
         return None
-    if not port_open(port, host="localhost", timeout=0.35):
+    try:
+        if not port_open(port, host="localhost", timeout=0.35):
+            return None
+    except Exception:
         return None
     proto, head = _probe_protocol(port)
     if not proto:
@@ -339,6 +423,8 @@ def _https_url(port: int, hip: str) -> str | None:
     import urllib.error
     import urllib.request
 
+    from hub.http_guard import NoRedirect, RedirectRefused
+
     try:
         req = urllib.request.Request(
             f"https://localhost:{port}/",
@@ -346,12 +432,29 @@ def _https_url(port: int, hip: str) -> str | None:
             headers={"User-Agent": "ServerHub/adapt"},
         )
         ctx = ssl._create_unverified_context()
-        with urllib.request.urlopen(req, timeout=0.8, context=ctx) as r:
+        # Default urlopen follows 30x and honours HTTP_PROXY: a container that
+        # answers TLS then 302s to IMDS made this probe an SSRF client.
+        opener = urllib.request.build_opener(
+            NoRedirect,
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=ctx),
+        )
+        with opener.open(req, timeout=0.8) as r:
             if 200 <= r.status < 500:
+                # Status is enough; drain a bounded prefix so a huge body
+                # cannot sit on the socket until the context manager closes.
+                try:
+                    r.read(256)
+                except Exception:
+                    pass
                 return f"https://{hip}:{port}"
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 401, 403, 404, 421):
             return f"https://{hip}:{port}"
+    except RedirectRefused:
+        # Peer spoke HTTPS and tried to 302.  That is enough to call it HTTPS
+        # without fetching the Location (which may be metadata).
+        return f"https://{hip}:{port}"
     except Exception:
         return None
     return None
@@ -359,6 +462,8 @@ def _https_url(port: int, hip: str) -> str | None:
 
 def friendly_name(label: str) -> str:
     """Humanize launchd label when no override name."""
+    if not isinstance(label, str):
+        label = str(label or "")
     name = label
     for prefix in (
         "local.serverhub.", "local.", "com.homeassistant.",
@@ -371,20 +476,25 @@ def friendly_name(label: str) -> str:
     name = name.replace("@", " ").replace("-", " ").replace("_", " ").replace(".", " ")
     parts = [p for p in name.split() if p]
     if not parts:
-        return label
+        return _utf8_text(label)
     # Title-case short tokens
     pretty = " ".join(
         p.upper() if p.lower() in ("ha", "api", "ddns", "vm", "ssd") else p.capitalize()
         for p in parts
     )
-    return pretty
+    return _utf8_text(pretty)
 
 
 def guess_group(label: str, pl: dict, interval: bool) -> str:
     if interval:
         return "Scheduled Tasks"
+    if not isinstance(label, str):
+        label = str(label or "")
+    if not isinstance(pl, dict):
+        pl = {}
     low = label.lower()
-    path = " ".join(str(a) for a in (pl.get("ProgramArguments") or [])).lower()
+    raw_args = pl.get("ProgramArguments")
+    path = " ".join(str(a) for a in raw_args).lower() if isinstance(raw_args, list) else ""
     if "nginx" in low or "nginx" in path:
         return "Gateway"
     if "homeassistant" in low or "home-assistant" in path:
@@ -393,18 +503,20 @@ def guess_group(label: str, pl: dict, interval: bool) -> str:
         return "Homebrew Services"
     if "docker" in low or "orb" in low:
         return "Apps"
-    if any(x in path for x in ("/services/", "services/")):
-        return "Native Services"
     return "Native Services"
 
 
 def enrich_service(item: dict, *, pl: dict | None = None, pid: str | None = None) -> dict:
     """Fill missing port/url/name/group using adaptive heuristics. Respects overrides already applied."""
+    if not isinstance(item, dict):
+        return {}
+    if not isinstance(pl, dict):
+        pl = None
     # name already from override or label
     if not item.get("url") and pl:
         u = url_from_plist(pl)
         if u:
-            item["url"] = u
+            item["url"] = _utf8_text(u)
             item["auto"] = True
     ports = []
     if pl:
@@ -416,24 +528,37 @@ def enrich_service(item: dict, *, pl: dict | None = None, pid: str | None = None
     if ports:
         primary = ports[0]
         item["ports"] = ports
-        item.setdefault("meta", {})
-        item["meta"]["detected_ports"] = ports
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+            item["meta"] = meta
+        meta["detected_ports"] = ports
         item["auto"] = True
     # re-evaluate port open if we detected
     if primary and not item.get("url"):
         url = guess_http_url(primary)
         if url:
-            item["url"] = url
+            item["url"] = _utf8_text(url)
     # improve detail with ports if missing
-    if primary and item.get("detail") and f":{primary}" not in item["detail"]:
+    detail = item.get("detail")
+    if primary and isinstance(detail, str) and f":{primary}" not in detail:
         # "运行中" kept alongside "Running": the detail text is produced by
         # hub/discovery/*, which is migrating from Chinese to English prose.
-        if item.get("state") == "ok" and ("Running" in item["detail"] or "运行中" in item["detail"]):  # cjk-input: matches detail prose from hub/discovery/*
-            item["detail"] = item["detail"] + f" · :{primary}"
+        if item.get("state") == "ok" and ("Running" in detail or "运行中" in detail):  # cjk-input: matches detail prose from hub/discovery/*
+            item["detail"] = _utf8_text(detail + f" · :{primary}")
     # mark adaptive
     if item.get("auto"):
-        item.setdefault("meta", {})
-        item["meta"]["adaptive"] = True
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+            item["meta"] = meta
+        meta["adaptive"] = True
+    # FUSE leftover ``\ud800`` in a name / URL / detail used to 500
+    # GET /api/status when this row was encoded without a later sanitizer.
+    for key in ("url", "detail", "name", "id", "group"):
+        val = item.get(key) if key in item else None
+        if isinstance(val, (str, bytes, bytearray)):
+            item[key] = _utf8_text(val)
     return item
 
 
@@ -443,6 +568,10 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
     # lsof running after the status thread pool had already joined, adding
     # ~106ms of pure serial tail latency to every refresh.
     rows = lsof_listen_snapshot()
+    if not isinstance(rows, list):
+        rows = []
+    if not isinstance(known_ports, (set, list, tuple, frozenset)):
+        known_ports = ()
     # group by port
     by_port: dict[int, dict] = {}
     skip_proc = {
@@ -451,10 +580,17 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
         "WeChat", "QQ", "Spotify", "Music", "Zoom", "Slack",
     }
     for row in rows:
-        proc, pid, name = unescape_proc_name(row["proc"]), row["pid"], row["bind"]
+        if not isinstance(row, dict):
+            continue
+        try:
+            port = int(row["port"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        proc = _utf8_text(unescape_proc_name(row.get("proc")))
+        pid = _utf8_text(row.get("pid") or "")
+        name = _utf8_text(row.get("bind") or "")
         if any(proc.startswith(s) for s in skip_proc):
             continue
-        port = row["port"]
         if port < 1024 and port not in (80, 443):  # skip privileged noise except web
             if port not in (22,):  # skip ssh
                 pass
@@ -473,8 +609,10 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
     # port) used to become one card each.  Group by pid so adopt writes one
     # managed entry that health-checks every listen the process owns.
     by_pid: dict[str, list[tuple[int, dict]]] = {}
+    names = known_names if isinstance(known_names, (set, list, tuple, frozenset)) else ()
     for port, info in by_port.items():
-        if any(info["proc"].lower() in n.lower() for n in known_names):
+        proc_l = info["proc"].lower()
+        if any(isinstance(n, str) and proc_l in n.lower() for n in names):
             continue
         by_pid.setdefault(info["pid"], []).append((port, info))
 
@@ -496,25 +634,33 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
             if url:
                 break
         port_label = " ".join(f":{p}" for p in ports)
-        if sig and sig.get("confidence") == "high":
-            name = f"{sig['name']} {port_label}"
-            detail = f"Auto-discovered · {sig['name']} · pid {pid} · {info['bind']}"
-        elif sig:
+        if isinstance(sig, dict) and sig.get("confidence") == "high":
+            sig_name = _utf8_text(sig.get("name") or info["proc"])
+            name = _utf8_text(f"{sig_name} {port_label}")
+            detail = _utf8_text(
+                f"Auto-discovered · {sig_name} · pid {pid} · {info['bind']}"
+            )
+        elif isinstance(sig, dict):
             # Port-only or runtime match is a hint, so the raw process name
             # stays visible; the guess rides along in the detail line.
-            name = f"{info['proc']} {port_label}"
-            detail = f"Auto-discovered · {sig['name']}? · pid {pid} · {info['bind']}"
+            name = _utf8_text(f"{info['proc']} {port_label}")
+            hint = _utf8_text(sig.get("name") or info["proc"])
+            detail = _utf8_text(
+                f"Auto-discovered · {hint}? · pid {pid} · {info['bind']}"
+            )
         else:
-            name = f"{info['proc']} {port_label}"
-            detail = f"Auto-discovered · pid {pid} · {info['bind']}"
+            name = _utf8_text(f"{info['proc']} {port_label}")
+            detail = _utf8_text(
+                f"Auto-discovered · pid {pid} · {info['bind']}"
+            )
         primary = ports[0]
         meta = {
             "port": primary,
             "ports": ports,
             "pid": pid,
-            "process": info["proc"],
+            "process": _utf8_text(info["proc"]),
         }
-        if sig:
+        if isinstance(sig, dict):
             meta["signature"] = sig
         items.append({
             "id": f"auto.port.{primary}",
@@ -528,7 +674,7 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
             "group": "Auto-discovered",
             "actions": ["adopt"],
             "auto": True,
-            "signature": sig,
+            "signature": sig if isinstance(sig, dict) else None,
             "meta": meta,
         })
     return items[:40]
@@ -540,15 +686,15 @@ _SIG_RANK = {"high": 3, "low": 2, "runtime": 1}
 def _best_signature(proc: str, ports: list[int], extras: list[dict] | None):
     """Process-name match first; otherwise the strongest port hint among *ports*."""
     best = identify(proc, None, extras=extras)
-    rank = _SIG_RANK.get((best or {}).get("confidence"), 0)
+    rank = _SIG_RANK.get(best.get("confidence"), 0) if isinstance(best, dict) else 0
     if rank >= 3:
         return best
     for port in ports:
         cand = identify(proc, port, extras=extras)
-        cand_rank = _SIG_RANK.get((cand or {}).get("confidence"), 0)
+        cand_rank = _SIG_RANK.get(cand.get("confidence"), 0) if isinstance(cand, dict) else 0
         if cand_rank > rank:
             best, rank = cand, cand_rank
-    return best
+    return best if isinstance(best, dict) else None
 
 
 def _orphan_url(port: int, sig: dict | None, hip: str, webish: set[int]) -> str | None:
@@ -557,7 +703,8 @@ def _orphan_url(port: int, sig: dict | None, hip: str, webish: set[int]) -> str 
     A signature's ``http`` flag beats the port-number guess in both directions
     — Redis on 8079 gets no link, Syncthing's GUI on 8384 gets one.
     """
-    sig_http = sig.get("http") if sig else None
+    sig_http = sig.get("http") if isinstance(sig, dict) else None
+    hip = _utf8_text(hip)
     if sig_http is False:
         return None
     if sig_http is True and (sig or {}).get("confidence") == "high":
@@ -571,42 +718,108 @@ def _orphan_url(port: int, sig: dict | None, hip: str, webish: set[int]) -> str 
 
 def scan_new_compose_projects() -> list[dict]:
     """Hint-only list of compose projects under ~/Services (for adaptive stacks)."""
-    root = Path.home() / "Services"
-    found = []
-    if not root.is_dir():
+    found: list[dict] = []
+    try:
+        home = user_home()
+        if home is None:
+            return found
+        root = home / "Services"
+        if not root.is_dir():
+            return found
+    except (OSError, ValueError):
+        # Dying mount EIO; leftover NUL in a path is ValueError, not OSError.
         return found
-    for comp in sorted(root.glob("*/docker-compose.y*ml")) + sorted(root.glob("*/compose.y*ml")):
+    comps: list[Path] = []
+    for pattern in ("*/docker-compose.y*ml", "*/compose.y*ml"):
+        try:
+            comps.extend(root.glob(pattern))
+        except (OSError, ValueError):
+            continue
+    for comp in sorted(comps):
+        # FUSE leftover ``\ud800`` in a stack dir used to 500 GET /api/adaptive/compose-scan.
         found.append({
-            "id": comp.parent.name,
-            "path": str(comp.parent),
-            "compose": str(comp),
+            "id": _utf8_text(comp.parent.name),
+            "path": _utf8_text(comp.parent),
+            "compose": _utf8_text(comp),
         })
     return found
 
 
+#: `listen 80;` / `listen 127.0.0.1:8080;` / `listen [::]:443 ssl;`
+#: Leading `#` comments are excluded by the `^` + MULTILINE start.
+_NGINX_LISTEN_RE = re.compile(r"^\s*listen\s+(\S+)", re.MULTILINE)
+
+
+def _nginx_listen_ports(text: str) -> list[int]:
+    """Ports from nginx `listen` directives; skip comments and unix sockets."""
+    if isinstance(text, (bytes, bytearray)):
+        text = text.decode("utf-8", "replace")
+    elif not isinstance(text, str):
+        return []
+    ports: list[int] = []
+    for raw in _NGINX_LISTEN_RE.findall(text):
+        token = raw.split(";", 1)[0]
+        if token.startswith("unix:"):
+            continue
+        if token.startswith("[") and "]:" in token:
+            token = token.split("]:", 1)[1]
+        elif ":" in token:
+            token = token.rsplit(":", 1)[-1]
+        m = re.match(r"(\d+)", token)
+        if not m:
+            continue
+        try:
+            port = int(m.group(1))
+        except ValueError:
+            continue
+        if 1 <= port <= 65535:
+            ports.append(port)
+    return ports
+
+
+#: Leftover multi-MB ``*.conf`` used to OOM GET /api/nginx.
+_NGINX_CONF_CAP = 256 * 1024
+
+
 def nginx_sites() -> list[dict]:
     """Parse system nginx conf.d for adaptive site inventory."""
-    conf_d = Path.home() / "Services" / "nginx" / "conf.d"
-    sites = []
-    if not conf_d.is_dir():
-        return sites
+    sites: list[dict] = []
     try:
+        home = user_home()
+        if home is None:
+            return sites
+        conf_d = home / "Services" / "nginx" / "conf.d"
+        if not conf_d.is_dir():
+            return sites
         files = sorted(conf_d.glob("*.conf"))
-    except OSError:
+    except (OSError, ValueError):
+        # Dying mount EIO; leftover NUL in conf.d is ValueError, not OSError.
         return sites
     for f in files:
         try:
-            text = f.read_text(errors="replace")
-        except OSError:
+            # Directories named ``*.conf`` and character devices are not sites.
+            # MemoryError / ValueError (huge file, embedded NUL) used to 500
+            # GET /api/nginx because only OSError was caught.
+            if not f.is_file():
+                continue
+            text = read_text_capped(f, _NGINX_CONF_CAP, errors="replace")
+            if isinstance(text, (bytes, bytearray)):
+                text = text.decode("utf-8", "replace")
+            elif not isinstance(text, str):
+                continue
+            sites.append({
+                "file": _utf8_text(f.name),
+                "path": _utf8_text(f),
+                "listens": _nginx_listen_ports(text),
+                "server_names": [
+                    _utf8_text(s.strip())
+                    for s in re.findall(r"server_name\s+([^;]+);", text)
+                ],
+                "upstreams": [
+                    _utf8_text(p.strip())
+                    for p in re.findall(r"proxy_pass\s+([^;]+);", text)[:8]
+                ],
+            })
+        except (OSError, ValueError, TypeError, MemoryError, UnicodeError):
             continue
-        listens = re.findall(r"listen\s+(\d+)", text)
-        servers = re.findall(r"server_name\s+([^;]+);", text)
-        proxies = re.findall(r"proxy_pass\s+([^;]+);", text)
-        sites.append({
-            "file": f.name,
-            "path": str(f),
-            "listens": [int(x) for x in listens],
-            "server_names": [s.strip() for s in servers],
-            "upstreams": [p.strip() for p in proxies[:8]],
-        })
     return sites

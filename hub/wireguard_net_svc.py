@@ -38,8 +38,23 @@ from hub.host_address import default_interface
 from hub.launchd_cache import loaded_labels
 from hub.macos_admin import run_admin_sequence, sudo_capture
 from hub.paths import DATA_DIR
-from hub.secure_io import write_secret_text
-from hub.util import fan_out, sh
+from hub.secure_io import replace_secret_text
+from hub.util import fan_out, read_text_capped, sh
+
+#: Leftover multi-MB ``/etc/pf.conf`` / LaunchDaemon plist used to OOM
+#: GET /api/wireguard.
+_PF_CONF_CAP = 256 * 1024
+_ANCHOR_CAP = 8 * 1024
+_PLIST_CAP = 256 * 1024
+
+
+def _path_exists(path) -> bool:
+    """``Path.exists()`` re-raises EIO/ESTALE; that used to 500 GET /api/wireguard."""
+    try:
+        return Path(path).exists()
+    except (OSError, ValueError, TypeError):
+        return False
+
 
 SYSCTL = "/usr/sbin/sysctl"
 PFCTL = "/sbin/pfctl"
@@ -61,6 +76,25 @@ LAUNCH_DAEMON_DIR = Path("/Library/LaunchDaemons")
 PF_MARKER = "# ServerHub WireGuard NAT"
 
 _STAGE_DIR = DATA_DIR
+
+
+def _as_text(value) -> str:
+    """Drop leftover ``\\ud800`` so GET /api/wireguard/readiness cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
 
 
 def _default_wan_interface() -> str:
@@ -87,7 +121,7 @@ def forwarding_enabled() -> bool | None:
     rc, out, _ = sh([SYSCTL, "-n", "net.inet.ip.forwarding"], timeout=5)
     if rc != 0:
         return None
-    return out.strip() == "1"
+    return _as_text(out).strip() == "1"
 
 
 def pf_enabled() -> bool | None:
@@ -95,7 +129,7 @@ def pf_enabled() -> bool | None:
     rc, out, err = sh([PFCTL, "-s", "info"], timeout=6)
     if rc != 0:
         rc, out, err = sudo_capture([PFCTL, "-s", "info"], timeout=6)
-    blob = f"{out}\n{err}"
+    blob = f"{_as_text(out)}\n{_as_text(err)}"
     if rc != 0 and not blob.strip():
         return None
     return "Status: Enabled" in blob
@@ -121,7 +155,11 @@ def pf_conf_valid() -> dict:
         return {"ok": True, "message": ""}
     # pfctl always prints a "Use of -f option" caution to stderr; the diagnosis is
     # whichever line names a file and a line number.
-    lines = [line.strip() for line in f"{err}\n{out}".splitlines() if line.strip()]
+    lines = [
+        line.strip()
+        for line in f"{_as_text(err)}\n{_as_text(out)}".splitlines()
+        if line.strip()
+    ]
     faults = [line for line in lines if re.search(r":\d+:", line)]
     return {"ok": False, "message": " ".join(faults or lines)[:300]}
 
@@ -136,14 +174,14 @@ def nat_active() -> bool | None:
     if rc != 0:
         return None
     del err
-    return bool(re.search(r"^\s*nat\b", out or "", re.MULTILINE))
+    return bool(re.search(r"^\s*nat\b", _as_text(out), re.MULTILINE))
 
 
 def nat_installed() -> dict:
     """Whether the NAT anchor file exists, pf.conf wires it in, and pf holds it."""
-    anchor_exists = PF_ANCHOR_PATH.exists()
+    anchor_exists = _path_exists(PF_ANCHOR_PATH)
     try:
-        conf_text = PF_CONF.read_text(errors="replace")
+        conf_text = read_text_capped(PF_CONF, _PF_CONF_CAP, errors="replace")
     except OSError:
         conf_text = ""
     # Detection keys off a reference to the anchor rather than off this panel's
@@ -153,7 +191,9 @@ def nat_installed() -> dict:
     anchor_body = ""
     if anchor_exists:
         try:
-            anchor_body = PF_ANCHOR_PATH.read_text(errors="replace")[:600]
+            anchor_body = read_text_capped(
+                PF_ANCHOR_PATH, _ANCHOR_CAP, errors="replace"
+            )[:600]
         except OSError:
             anchor_body = ""
     parses = pf_conf_valid()
@@ -315,6 +355,7 @@ def _daemon_defects(text: str) -> list[str]:
     still be perfectly good, and saying otherwise would nag on every host that
     installed the daemon by hand.  Only behaviour that demonstrably fails is listed.
     """
+    text = _as_text(text)
     if not text:
         return []
     try:
@@ -329,7 +370,8 @@ def _daemon_defects(text: str) -> list[str]:
     if not isinstance(payload, dict):
         return ["unreadable"]
 
-    command = " ".join(str(a) for a in (payload.get("ProgramArguments") or []))
+    argv = payload.get("ProgramArguments")
+    command = " ".join(str(a) for a in (argv if isinstance(argv, list) else []))
     keep_alive = bool(payload.get("KeepAlive"))
     defects: list[str] = []
 
@@ -359,10 +401,16 @@ def _defects_of(daemon: dict) -> list[str]:
     that flag when the key is missing keeps both shapes meaningful, instead of
     silently reading a hand-built dict as defect-free.
     """
+    if not isinstance(daemon, dict):
+        return []
     defects = daemon.get("defects")
     if defects is None:
         return ["respawn_loop"] if daemon.get("respawn_loop") else []
-    return list(defects)
+    if isinstance(defects, str):
+        return [defects] if defects else []
+    if not isinstance(defects, (list, tuple)):
+        return []
+    return [str(d) for d in defects]
 
 
 def daemon_state() -> dict:
@@ -370,7 +418,7 @@ def daemon_state() -> dict:
     interface = wireguard_svc.settings()["interface"]
     label = f"com.wireguard.{interface}"
     target = LAUNCH_DAEMON_DIR / f"{label}.plist"
-    installed = target.exists()
+    installed = _path_exists(target)
     rc, out, _ = sh([LAUNCHCTL, "print", f"system/{label}"], timeout=6)
     if rc != 0:
         # The system domain only answers to root; reuse the web password when
@@ -392,12 +440,16 @@ def daemon_state() -> dict:
     # at all, so whether the file on disk is the one this panel would write is
     # part of the state, not an implementation detail.
     current = ""
+    read_failed = False
     if installed:
         try:
-            current = target.read_text(errors="replace")
+            current = read_text_capped(target, _PLIST_CAP, errors="replace")
         except OSError:
             current = ""
-    defects = _daemon_defects(current)
+            read_failed = True
+    # Empty file vs unreadable leftover: ``_daemon_defects("")`` is clean,
+    # which used to mark a 2MB junk plist as a healthy boot job.
+    defects = ["unreadable"] if read_failed else _daemon_defects(current)
     return {
         "label": label,
         "plist_path": str(target),
@@ -435,7 +487,7 @@ def _local_address_lines() -> list[tuple[str, str]]:
     if rc != 0:
         return []
     found = []
-    for line in out.splitlines():
+    for line in _as_text(out).splitlines():
         match = re.match(r"\s*(inet6?)\s+([0-9a-fA-F:.]+)(.*)$", line)
         if not match:
             continue
@@ -516,7 +568,7 @@ def endpoint_resolution() -> dict:
     # Shared splitting: an IPv6 literal endpoint is mostly colons, so stripping
     # "everything after the last colon" would resolve a truncated address.
     host, _ = wireguard_svc.split_endpoint(
-        str(wireguard_svc.settings().get("endpoint") or "")
+        _as_text(wireguard_svc.settings().get("endpoint") or "")
     )
     result = {
         "endpoint": host,
@@ -549,7 +601,9 @@ def endpoint_resolution() -> dict:
 
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_DGRAM)
-    except OSError:
+    except (OSError, UnicodeError, ValueError):
+        # Leftover ``\\ud800`` in the endpoint is UnicodeError, not OSError;
+        # GET /api/wireguard/readiness used to 500.
         result.update(ok=False, reason="dns_failed")
         return result
 
@@ -589,17 +643,18 @@ def peer_origin_conflict() -> dict:
     pinned to some other server's public key and none of them can ever complete a
     handshake here.
     """
-    records = wireguard_svc.peer_records()
+    raw = wireguard_svc.peer_records()
+    records = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
     if not records:
         return {"conflict": False, "reason": "no_peers", "foreign": 0, "total": 0}
-    foreign = [r for r in records if not r["known"] and not r["reissuable"]]
+    foreign = [r for r in records if not r.get("known") and not r.get("reissuable")]
     conflict = len(foreign) == len(records)
     return {
         "conflict": conflict,
         "reason": "all_peers_foreign" if conflict else "",
         "foreign": len(foreign),
         "total": len(records),
-        "foreign_keys": [r["public_key"][:16] for r in foreign[:10]],
+        "foreign_keys": [_as_text(r.get("public_key"))[:16] for r in foreign[:10]],
     }
 
 
@@ -615,9 +670,11 @@ def _daemon_detail(daemon: dict) -> str:
     It does bring the tunnel up at boot, so this is not a failure -- but reporting
     only the path gave the operator no way to tell the two apart.
     """
-    if not daemon["installed"]:
-        return daemon["plist_path"]
-    path = daemon["plist_path"]
+    if not isinstance(daemon, dict):
+        return ""
+    path = daemon.get("plist_path") or ""
+    if not daemon.get("installed"):
+        return path
     # Ordered by what the operator should fix first, not by how the state dict is
     # laid out.  A defect is always more actionable than "someone else wrote this",
     # so every one of them outranks the managed notice.
@@ -633,32 +690,41 @@ def _daemon_detail(daemon: dict) -> str:
     ):
         if defect in _defects_of(daemon):
             return f"{path} {reason}"
-    if not daemon["managed"]:
+    if not daemon.get("managed"):
         return f"{path} (not the job this panel manages)"
     return path
 
 
+def _addr_list(value) -> list[str]:
+    """Addresses for a readiness sentence; leftover non-lists used to TypeError."""
+    if isinstance(value, str):
+        return [value] if value else []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [_as_text(item) for item in value if item is not None and _as_text(item)]
+
+
 def _resolution_detail(resolution: dict) -> str:
     """Name the addresses that cannot work, not merely that something cannot."""
-    reason = resolution["reason"]
+    if not isinstance(resolution, dict):
+        return ""
+    reason = resolution.get("reason") or ""
+    endpoint = _as_text(resolution.get("endpoint"))
     if reason == "not_set":
         return ""
     if reason == "dns_failed":
-        return f"{resolution['endpoint']} does not resolve"
-    if resolution["unreachable"]:
-        detail = (
-            f"{resolution['endpoint']} -> "
-            + ", ".join(resolution["unreachable"])
-            + " (not this host)"
-        )
+        return f"{endpoint} does not resolve"
+    unreachable = _addr_list(resolution.get("unreachable"))
+    if unreachable:
+        detail = f"{endpoint} -> " + ", ".join(unreachable) + " (not this host)"
         # `.get`: the suggestion is genuinely optional -- there is often no
         # routable address of our own to name -- so a dict without one is
         # describing a real state rather than being malformed.
-        suggest = resolution.get("suggest") or []
+        suggest = _addr_list(resolution.get("suggest"))
         if suggest:
             detail += "; this host is " + ", ".join(suggest)
         return detail
-    return f"{resolution['endpoint']} -> " + ", ".join(resolution["resolved"])
+    return f"{endpoint} -> " + ", ".join(_addr_list(resolution.get("resolved")))
 
 
 def _nat_detail(nat: dict, egress: str) -> str:
@@ -668,15 +734,18 @@ def _nat_detail(nat: dict, egress: str) -> str:
     absent, present but not referenced, or referenced in a file pf could no longer
     load -- three different repairs behind one label.
     """
-    if not nat["anchor_exists"]:
-        return f"{nat['anchor_path']} missing"
-    if not nat["referenced"]:
+    if not isinstance(nat, dict):
+        return ""
+    path = nat.get("anchor_path") or str(PF_ANCHOR_PATH)
+    if not nat.get("anchor_exists"):
+        return f"{path} missing"
+    if not nat.get("referenced"):
         return f"{PF_CONF} does not reference {ANCHOR_NAME}"
-    if not nat["conf_parses"]:
-        return nat["conf_error"] or f"{PF_CONF} does not parse"
-    if nat["loaded"] is False:
+    if not nat.get("conf_parses"):
+        return _as_text(nat.get("conf_error")) or f"{PF_CONF} does not parse"
+    if nat.get("loaded") is False:
         return f"rule not loaded into pf ({ANCHOR_NAME})"
-    return f"{nat['anchor_path']} -> {egress or 'unknown egress'}"
+    return f"{path} -> {egress or 'unknown egress'}"
 
 
 def readiness() -> dict:
@@ -726,6 +795,14 @@ def readiness() -> dict:
     state = wireguard_svc.status()
     nat = nat_installed()
     daemon = daemon_state()
+    if not isinstance(daemon, dict):
+        daemon = {}
+    if not isinstance(nat, dict):
+        nat = {}
+    if not isinstance(state, dict):
+        state = {}
+    if not isinstance(runtime, dict):
+        runtime = {}
     pf_on = pf_enabled()
 
     endpoint = str(cfg_.get("endpoint") or "").strip()
@@ -745,15 +822,15 @@ def readiness() -> dict:
         },
         {
             "id": "running",
-            "ok": bool(state["running"]),
+            "ok": bool(state.get("running")),
             "level": "warn",
             # The device is worth stating when it differs from the configured
             # name: on macOS the tunnel runs as some utun, and an operator
             # comparing the panel against `ifconfig` has no other way to tell
             # which one is theirs.
             "detail": state.get("state_error")
-            or runtime["real_interface"]
-            or cfg_["interface"],
+            or runtime.get("real_interface")
+            or cfg_.get("interface"),
         },
         {
             "id": "endpoint",
@@ -785,13 +862,13 @@ def readiness() -> dict:
             # both with the same parser error next to them -- which is what
             # happened -- reads as the panel repeating itself.
             "id": "pf_conf",
-            "ok": bool(nat["conf_parses"]),
+            "ok": bool(nat.get("conf_parses")),
             "level": "error",
-            "detail": nat["conf_error"] or str(PF_CONF),
+            "detail": nat.get("conf_error") or str(PF_CONF),
         },
         {
             "id": "nat",
-            "ok": bool(nat["complete"]),
+            "ok": bool(nat.get("complete")),
             "level": "error",
             "detail": _nat_detail(nat, egress),
             "superseded_by": "pf_conf",
@@ -811,7 +888,7 @@ def readiness() -> dict:
             # present on the host -- a sleep argument macOS rejects, and no
             # KeepAlive -- read as green while WireGuard was dead after every boot.
             "id": "boot",
-            "ok": bool(daemon["installed"]) and not _defects_of(daemon),
+            "ok": bool(daemon.get("installed")) and not _defects_of(daemon),
             "level": "warn",
             "detail": _daemon_detail(daemon),
         },
@@ -826,9 +903,9 @@ def readiness() -> dict:
             # start with a message about the interface "already existing", which
             # sends the operator looking in entirely the wrong place.
             "id": "stale_runtime",
-            "ok": not runtime["stale"],
-            "level": "error" if runtime["stale"] else "warn",
-            "detail": runtime["name_file"] if runtime["stale"] else "",
+            "ok": not runtime.get("stale"),
+            "level": "error" if runtime.get("stale") else "warn",
+            "detail": runtime.get("name_file") if runtime.get("stale") else "",
         },
         *_wstunnel_readiness_checks(cfg_),
     ]
@@ -1014,11 +1091,15 @@ def _validate_pf_conf(body: str, anchor_path: Path) -> dict:
     """
     probe_body = body.replace(f'from "{PF_ANCHOR_PATH}"', f'from "{anchor_path}"')
     probe = _STAGE_DIR / "pf.conf.check"
-    write_secret_text(probe, probe_body)
+    replace_secret_text(probe, probe_body)
     rc, out, err = sh([PFCTL, "-n", "-f", str(probe)], timeout=15)
     if rc == 0:
         return {"ok": True, "message": ""}
-    lines = [line.strip() for line in f"{err}\n{out}".splitlines() if line.strip()]
+    lines = [
+        line.strip()
+        for line in f"{_as_text(err)}\n{_as_text(out)}".splitlines()
+        if line.strip()
+    ]
     faults = [line for line in lines if re.search(r":\d+:", line)]
     return {"ok": False, "message": " ".join(faults or lines)[:300]}
 
@@ -1040,10 +1121,10 @@ def install_nat() -> dict:
 
     anchor_body = render_anchor(subnet, egress)
     staged_anchor = _STAGE_DIR / "pf-anchor-wireguard"
-    write_secret_text(staged_anchor, anchor_body)
+    replace_secret_text(staged_anchor, anchor_body)
 
     try:
-        current = PF_CONF.read_text(errors="replace")
+        current = read_text_capped(PF_CONF, _PF_CONF_CAP, errors="replace")
     except OSError:
         return {"ok": False, "error": "pf_conf_unreadable"}
 
@@ -1053,7 +1134,7 @@ def install_nat() -> dict:
         return {"ok": False, "error": "pf_conf_invalid", "message": check["message"]}
 
     staged_conf = _STAGE_DIR / "pf.conf.staged"
-    write_secret_text(staged_conf, desired)
+    replace_secret_text(staged_conf, desired)
 
     commands = [
         ["/bin/mkdir", "-p", str(PF_ANCHOR_DIR)],
@@ -1083,7 +1164,7 @@ def install_nat() -> dict:
 def remove_nat() -> dict:
     """Remove the anchor file and every line wiring the anchor into ``pf.conf``."""
     try:
-        current = PF_CONF.read_text(errors="replace")
+        current = read_text_capped(PF_CONF, _PF_CONF_CAP, errors="replace")
     except OSError:
         return {"ok": False, "error": "pf_conf_unreadable"}
 
@@ -1098,14 +1179,14 @@ def remove_nat() -> dict:
                 "message": check["message"],
             }
         staged = _STAGE_DIR / "pf.conf.staged"
-        write_secret_text(staged, desired)
+        replace_secret_text(staged, desired)
         commands += [
             [CP, str(PF_CONF), f"{PF_CONF}.serverhub.bak"],
             [CP, str(staged), str(PF_CONF)],
             [CHOWN, "root:wheel", str(PF_CONF)],
             [CHMOD, "644", str(PF_CONF)],
         ]
-    if PF_ANCHOR_PATH.exists():
+    if _path_exists(PF_ANCHOR_PATH):
         commands.append([RM, "-f", str(PF_ANCHOR_PATH)])
     if not commands:
         return {"ok": True, "removed": False}
@@ -1128,7 +1209,7 @@ def install_daemon() -> dict:
     daemon = daemon_state()
     target = Path(daemon["plist_path"])
     staged = _STAGE_DIR / f"{daemon['label']}.plist"
-    write_secret_text(staged, _daemon_plist_body())
+    replace_secret_text(staged, _daemon_plist_body())
 
     commands: list[list[str]] = []
     if daemon["loaded"] or daemon["installed"]:
@@ -1149,7 +1230,7 @@ def uninstall_daemon() -> dict:
     """Unload and delete the boot-time LaunchDaemon.  The tunnel keeps running."""
     daemon = daemon_state()
     target = Path(daemon["plist_path"])
-    if not target.exists():
+    if not _path_exists(target):
         return {"ok": True, "removed": False}
     result = run_admin_sequence(
         [
@@ -1238,7 +1319,7 @@ def install_wstunnel(*, restrict_to: str | None = None) -> dict:
         return {"ok": False, "error": "bad_wstunnel_target", "target": dest[:60]}
 
     staged = _STAGE_DIR / f"{wireguard_wstunnel.LABEL}.plist"
-    write_secret_text(staged, body)
+    replace_secret_text(staged, body)
     target = wireguard_wstunnel.PLIST_PATH
     result = run_admin_sequence(
         [
@@ -1277,7 +1358,7 @@ def install_wstunnel(*, restrict_to: str | None = None) -> dict:
 def uninstall_wstunnel() -> dict:
     """Unload the obfuscation daemon.  The WireGuard tunnel itself stays up."""
     target = wireguard_wstunnel.PLIST_PATH
-    if not target.exists():
+    if not _path_exists(target):
         found = wireguard_wstunnel.live()
         if not found.get("running"):
             wireguard_svc.save_settings({"wstunnel_enabled": False})

@@ -8,32 +8,69 @@ Inspired by Cockpit (logs/services), OMV (SMART/updates), CasaOS (simple tiles).
 """
 from __future__ import annotations
 
+import glob
+import json
+import math
 import os
 import platform
 import re
+import shlex
 import shutil
 import socket
 import threading
 import time
-import glob
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from hub import __version__, metrics
 from hub import cli_args
-from hub.errors import soft_fail
+from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.service_signatures import unescape_proc_name
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
-from hub.util import LazyPool, fan_out, sh, tail_file_lines, ttl_memo
+from hub.util import LazyPool, fan_out, read_bytes_capped, sh, strftime_now, tail_file_lines, ttl_memo
 from hub.brew_cache import _brew_busy
 
 _pool = LazyPool(2, "hub-tools")
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/tools launchd views.
+_PLIST_CAP = 256 * 1024
 
 
 def shutdown_executor() -> None:
     _pool.shutdown()
+
+
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 Tools JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _sh(cmd, timeout=10, **kwargs):
+    # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
+    rc, out, err = sh(cmd, timeout=timeout, **kwargs)
+    return rc, _as_text(out), _as_text(err)
+
+
+def _docker(*args, **kwargs):
+    rc, out, err = docker(*args, **kwargs)
+    return rc, _as_text(out), _as_text(err)
 
 
 # ─── Catalog (Unraid Tools home tiles) ───────────────────────────────────────
@@ -70,9 +107,21 @@ _proc_cache: dict = {"t": 0.0, "v": None, "limit": 0}
 _PROC_TTL = 5.0
 
 
+def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
+    # JSON ``1e309`` is inf; ``int(inf)`` OverflowError.  Bool is an int.
+    if isinstance(raw, bool) or raw is None:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            value = default
+    return max(lo, min(value, hi))
+
+
 def top_processes(limit: int = 25) -> list:
     now = time.time()
-    limit = max(5, min(int(limit or 25), 100))
+    limit = _clamp_int(limit, 25, 5, 100)
     if (
         _proc_cache["v"] is not None
         and _proc_cache["limit"] >= limit
@@ -86,13 +135,16 @@ def top_processes(limit: int = 25) -> list:
         return []
     rows = []
     for line in lines[1:]:
+        line = _as_text(line)
         parts = line.split(None, 10)
         if len(parts) < 11:
             continue
         try:
             cpu = float(parts[2])
             mem = float(parts[3])
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(cpu) and math.isfinite(mem)):
             continue
         rows.append({
             "user": parts[0],
@@ -127,9 +179,9 @@ _DOCKER_DF_TTL = 30.0
 def docker_disk_usage() -> dict:
     if not engine_up():
         return {"engine_up": False, "raw": "", "lines": []}
-    rc, out, err = docker("system", "df", timeout=30)
+    rc, out, err = _docker("system", "df", timeout=30)
     lines = []
-    for line in (out or "").splitlines():
+    for line in out.splitlines():
         if not line.strip() or line.startswith("TYPE"):
             continue
         m = re.match(
@@ -154,7 +206,7 @@ def container_sizes() -> list:
     # anyway, but stock Docker Engine leaves the column empty without it, so the
     # size table would render blank on any other host.  It costs nothing here
     # (measured: same 0.06s with and without on 4 containers).
-    rc, out, _ = docker(
+    rc, out, _ = _docker(
         "ps", "-a", "-s",
         "--format", "{{.Names}}\t{{.Size}}\t{{.Image}}\t{{.Status}}",
         timeout=60,
@@ -182,18 +234,22 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
         return soft_fail("tools.confirm_required")
     if not engine_up():
         return soft_fail("container.engine_down")
-    what = (what or "dangling").strip().lower()
     cmds = {
         "dangling": ["image", "prune", "-f"],
         "build": ["builder", "prune", "-f"],
         "volumes": ["volume", "prune", "-f"],
         "all_unused": ["system", "prune", "-f"],  # unused images/networks/stopped containers
     }
+    if not isinstance(what, str):
+        out = soft_fail("tools.bad_prune", what="")
+        out["allowed"] = list(cmds.keys())
+        return out
+    what = (what or "dangling").strip().lower()
     if what not in cmds:
         out = soft_fail("tools.bad_prune", what=what)
         out["allowed"] = list(cmds.keys())
         return out
-    rc, out, err = docker(*cmds[what], timeout=180)
+    rc, out, err = _docker(*cmds[what], timeout=180)
     # A prune is exactly the event the cached totals describe, so the cached copy is
     # wrong the moment this returns.  Drop it before reporting the new figures.
     docker_disk_usage.invalidate()
@@ -215,28 +271,39 @@ def diagnostics() -> dict:
     # reason.  Each probe absorbs its own failure and returns the same fallback the
     # serial version used, which is what `fan_out` requires.
     def probe_hostname() -> str:
-        rc, out, _ = sh(["/bin/hostname"], timeout=3)
-        return out if rc == 0 else platform.node()
+        rc, out, _ = _sh(["/bin/hostname"], timeout=3)
+        return out if rc == 0 else _as_text(platform.node())
 
     def probe_cpu() -> str:
-        rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
+        rc, out, _ = _sh(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], timeout=3)
         return out if rc == 0 else ""
 
     def probe_ncpu() -> int | None:
-        rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
+        rc, out, _ = _sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
         return int(out) if rc == 0 and out.isdigit() else None
 
     def probe_mem_gb() -> float | None:
-        rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=3)
-        return round(int(out) / 2**30, 1) if rc == 0 and out.isdigit() else None
+        rc, out, _ = _sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=3)
+        if rc != 0 or not out.isdigit():
+            return None
+        # A leftover 400-digit ``hw.memsize`` OverflowError'd GET /api/diagnostics.
+        try:
+            gb = round(int(out) / 2**30, 1)
+        except OverflowError:
+            return None
+        return gb if math.isfinite(gb) else None
 
     def probe_uptime() -> int | None:
         try:
-            rc, boot, _ = sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
+            rc, boot, _ = _sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
             if rc == 0 and "sec =" in boot:
                 m = re.search(r"sec\s*=\s*(\d+)", boot)
                 if m:
-                    return int(time.time()) - int(m.group(1))
+                    try:
+                        return int(time.time()) - int(m.group(1))
+                    except (TypeError, ValueError, OverflowError):
+                        # Leftover ``time.time() = inf`` OverflowError'd GET /api/diagnostics.
+                        return None
         except Exception:
             pass
         return None
@@ -259,7 +326,7 @@ def diagnostics() -> dict:
             from hub.identity_svc import platform_string
             return platform_string()
         except Exception:
-            return platform.platform()
+            return _as_text(platform.platform())
 
     def probe_host_ip() -> str:
         try:
@@ -267,7 +334,11 @@ def diagnostics() -> dict:
         except Exception:
             return ""
 
-    load1, load5, load15 = os.getloadavg()
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except OSError:
+        load1 = load5 = load15 = 0.0
+    load1, load5, load15 = _finite_load(load1), _finite_load(load5), _finite_load(load15)
     # The last two used to be inlined in the return dict below, so they ran *after*
     # this wave rather than in it -- `platform.platform()` two spawns deep and
     # `host_ip()` another two, four spawns of pure tail on an endpoint whose whole
@@ -283,35 +354,60 @@ def diagnostics() -> dict:
         ],
     )
 
-    du = shutil.disk_usage("/")
+    try:
+        du = shutil.disk_usage("/")
+        total = du.total or 0
+        root_disk_pct = round(du.used / total * 100, 1) if total else 0.0
+        root_disk_free_gb = round(du.free / 2**30, 1)
+    except (OSError, OverflowError, ValueError, TypeError):
+        root_disk_pct = 0.0
+        root_disk_free_gb = 0.0
+    if not math.isfinite(root_disk_pct):
+        root_disk_pct = 0.0
+    if not math.isfinite(root_disk_free_gb):
+        root_disk_free_gb = 0.0
     return {
-        "hostname": hostname,
-        "platform": plat,
-        "arch": platform.machine(),
+        "hostname": _as_text(hostname),
+        "platform": _as_text(plat),
+        "arch": _as_text(platform.machine()),
         "cpu": model,
         "ncpu": ncpu,
         "mem_gb": mem_gb,
-        "load": [round(load1, 2), round(load5, 2), round(load15, 2)],
+        "load": [load1, load5, load15],
         "uptime_sec": uptime_s,
         "uptime_human": _fmt_uptime(uptime_s) if uptime_s else None,
-        "root_disk_pct": round(du.used / du.total * 100, 1),
-        "root_disk_free_gb": round(du.free / 2**30, 1),
+        "root_disk_pct": root_disk_pct,
+        "root_disk_free_gb": root_disk_free_gb,
         "orbstack": eng,
         "docker_cli": DOCKER,
         "orb_cli": ORB,
-        "python": platform.python_version(),
+        "python": _as_text(platform.python_version()),
         "host_ip": ip,
         "docker_df": df,
         "metrics_points": len(metrics.history(60)),
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "version": __version__,
     }
 
 
+def _finite_load(value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return round(number, 2) if math.isfinite(number) else 0.0
+
+
 def _fmt_uptime(sec: int | None) -> str:
-    if not sec or sec < 0:
+    if isinstance(sec, bool) or sec is None:
         return "—"
-    d, r = divmod(int(sec), 86400)
+    try:
+        value = int(sec)
+    except (TypeError, ValueError, OverflowError):
+        return "—"
+    if value <= 0:
+        return "—"
+    d, r = divmod(value, 86400)
     h, r = divmod(r, 3600)
     m, _ = divmod(r, 60)
     if d:
@@ -347,9 +443,9 @@ def syslog_tail(
 
     level: error | fault | default (broader) | all
     """
-    minutes = max(5, min(int(minutes or 60), 24 * 60))
-    limit = max(10, min(int(limit or 80), 300))
-    level = (level or "error").lower()
+    minutes = _clamp_int(minutes, 60, 5, 24 * 60)
+    limit = _clamp_int(limit, 80, 10, 300)
+    level = (str(level or "error")).lower()
 
     key = (minutes, limit, level)
     if not force:
@@ -394,7 +490,7 @@ def _syslog_tail_uncached(minutes: int, limit: int, level: str) -> dict:
     ]
     if level == "all":
         cmd.append("--info")
-    rc, out, err = sh(cmd, timeout=25)
+    rc, out, err = _sh(cmd, timeout=25)
 
     lines = []
     if rc == 0 and out:
@@ -403,13 +499,17 @@ def _syslog_tail_uncached(minutes: int, limit: int, level: str) -> dict:
         lines = raw_lines[-limit:]
     elif rc != 0:
         syslog_path = Path("/var/log/system.log")
-        if syslog_path.exists():
+        try:
+            fallback = syslog_path.exists()
+        except OSError:
+            fallback = False
+        if fallback:
             try:
                 lines = tail_file_lines(syslog_path, limit)
                 err = "fallback:/var/log/system.log"
                 rc = 0
             except OSError as e:
-                err = str(e)
+                err = _as_text(e)
 
     return {
         "ok": rc == 0,
@@ -472,12 +572,13 @@ def _profiler_report(entry) -> tuple[int, str]:
     """
     _, data_type = entry
     try:
-        rc, out, err = sh(
+        rc, out, err = _sh(
             ["/usr/sbin/system_profiler", data_type, "-detailLevel", "mini"],
             timeout=12,
         )
     except Exception as exc:  # noqa: BLE001 - one report must not lose the rest
-        return 1, str(exc)[:4000]
+        # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 GET /api/tools.
+        return 1, _as_text(exc)[:4000]
     text = (out or err or "").strip()
     if len(text) > 4000:
         text = text[:4000] + "\n…(truncated)"
@@ -536,7 +637,7 @@ def _hardware_profile_uncached() -> dict:
     v = {
         "sections": sections,
         "disks": disks,
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
         "hint": "Hardware info is cached for 5 minutes",
         "cached": True,
     }
@@ -607,17 +708,19 @@ def check_updates(force: bool = False) -> dict:
 
     Single-flight, same reasoning as ``hardware_profile``: ``brew outdated`` plus
     ``softwareupdate -l`` is up to 90s of subprocess time, and the Tools page can
-    ask for it from several widgets at once.
+    ask for it from several widgets at once.  GitHub is a short HTTPS GET for
+    the panel's own latest release and rides the same snapshot.
     """
     if not force:
         hit = _updates_fresh()
         if hit is not None:
             return hit
     with _updates_refresh_lock:
-        hit = _updates_fresh()
-        if hit is not None:
-            return hit
-        return _check_updates_uncached()
+        if not force:
+            hit = _updates_fresh()
+            if hit is not None:
+                return hit
+        return _check_updates_uncached(force=force)
 
 
 #: `brew outdated` hung past 45s for hours on this host (mirror / lock).
@@ -641,7 +744,11 @@ def _brew_outdated() -> dict:
     # "no brew" while the rest of the panel used brew happily.
     global _brew_retry_at
     brew = BREW
-    if not Path(brew).exists():
+    try:
+        present = Path(brew).exists()
+    except OSError:
+        present = False
+    if not present:
         return {"ok": False, "outdated": [], "count": 0, "raw": ""}
     now = time.time()
     busy = _brew_busy()
@@ -652,11 +759,11 @@ def _brew_outdated() -> dict:
             return previous
         return {"ok": False, "outdated": [], "count": 0, "raw": "busy" if busy else "timeout"}
     try:
-        rc, out, err = sh(
+        rc, out, err = _sh(
             [brew, "outdated", "--verbose"], timeout=45, env=_brew_env(),
         )
     except Exception as exc:  # noqa: BLE001 - reported in the card
-        return {"ok": False, "outdated": [], "count": 0, "raw": str(exc)[:200]}
+        return {"ok": False, "outdated": [], "count": 0, "raw": _as_text(exc)[:200]}
     if rc == -1 and err == "timeout":
         _brew_retry_at = now + _BREW_FAIL_COOLDOWN
     elif rc == 0:
@@ -674,9 +781,9 @@ def _macos_updates() -> dict:
     """`softwareupdate -l`, filtered.  Never raises."""
     try:
         # slow by nature; a tight timeout and a partial answer beat blocking
-        rc, out, err = sh(["/usr/sbin/softwareupdate", "-l"], timeout=45)
+        rc, out, err = _sh(["/usr/sbin/softwareupdate", "-l"], timeout=45)
     except Exception as exc:  # noqa: BLE001 - reported in the card
-        return {"ok": False, "lines": [], "raw": str(exc)[:1500], "has_updates": False}
+        return {"ok": False, "lines": [], "raw": _as_text(exc)[:1500], "has_updates": False}
     raw = (out or err or "").strip()
     interesting = [
         ln for ln in raw.splitlines()
@@ -693,14 +800,311 @@ def _macos_updates() -> dict:
     }
 
 
-def _check_updates_uncached() -> dict:
+#: Pinned GitHub API host.  The panel checks its own releases here; a
+#: settings override may change owner/name, never the host.
+_GITHUB_HOST = "api.github.com"
+_GITHUB_REPO_DEFAULT = "elvin-li/ServerHub"
+_GITHUB_TIMEOUT = 8.0
+_GITHUB_BODY_CAP = 256 * 1024
+_GITHUB_TTL = 1800.0
+_github_cache: dict = {"t": 0.0, "v": None}
+_github_lock = threading.Lock()
+_REPO_RE = re.compile(r"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+_TAG_RE = re.compile(r"\Av?[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+
+def _github_repo() -> str:
+    try:
+        from hub.config import settings_section
+        raw = _as_text((settings_section("updates") or {}).get("github_repo")).strip()
+    except Exception:
+        raw = ""
+    if _REPO_RE.fullmatch(raw):
+        return raw
+    return _GITHUB_REPO_DEFAULT
+
+
+def parse_version(value) -> tuple:
+    """Numeric version tuple from ``v3.9.1`` / ``3.9.1-4-gdeadbeef``.
+
+    Non-numeric leftovers become ``(0,)`` so a compare never OverflowError's
+    or TypeError's GET /api/tools/updates.  Git describe's ``-N-gSHA`` suffix
+    is ignored so ``v3.9.1-4-gdead`` still compares as 3.9.1.
+    """
+    text = _as_text(value).strip()
+    m = re.match(r"v?(\d+(?:\.\d+){0,5})", text, re.I)
+    if not m:
+        return (0,)
+    parts: list[int] = []
+    for chunk in m.group(1).split("."):
+        try:
+            parts.append(int(chunk))
+        except (TypeError, ValueError, OverflowError):
+            break
+    return tuple(parts) or (0,)
+
+
+def _github_empty(*, error: str = "", repo: str | None = None) -> dict:
+    return {
+        "ok": False,
+        "current": _as_text(__version__),
+        "latest": None,
+        "tag": None,
+        "html_url": "",
+        "published_at": "",
+        "notes": "",
+        "update_available": False,
+        "error": _as_text(error)[:300],
+        "repo": repo or _github_repo(),
+        "source": "",
+    }
+
+
+def _github_get_json(path: str):
+    """GET ``https://api.github.com`` *path*.  Returns parsed JSON or raises."""
+    if not isinstance(path, str) or not path.startswith("/repos/"):
+        raise ValueError("github path")
+    url = f"https://{_GITHUB_HOST}{path}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"ServerHub/{_as_text(__version__) or 'panel'}",
+            "Accept": "application/vnd.github+json",
+        },
+        method="GET",
+    )
+    from hub.http_guard import no_redirect_opener
+    opener = no_redirect_opener()
+    try:
+        resp = opener.open(req, timeout=_GITHUB_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        body = b""
+        try:
+            body = exc.read(_GITHUB_BODY_CAP)
+        except Exception:
+            body = b""
+        raise RuntimeError(_as_text(body[:200]) or f"HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(_as_text(exc)[:200] or "unreachable") from exc
+    try:
+        raw = resp.read(_GITHUB_BODY_CAP)
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    try:
+        parsed = json.loads(raw.decode("utf-8", "replace") or "null")
+    except (ValueError, TypeError, RecursionError):
+        raise RuntimeError("invalid github json")
+    return parsed
+
+
+def _release_from_payload(payload, *, repo: str, source: str) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    tag = _as_text(payload.get("tag_name") or payload.get("name")).strip()
+    if not tag or not _TAG_RE.fullmatch(tag):
+        return None
+    html = _as_text(payload.get("html_url")).strip()
+    if html and not html.startswith("https://github.com/"):
+        html = f"https://github.com/{repo}/releases/tag/{tag}"
+    if not html:
+        html = f"https://github.com/{repo}/releases/tag/{tag}"
+    notes = _as_text(payload.get("body"))[:1500]
+    current = _as_text(__version__)
+    latest = tag.lstrip("vV") or tag
+    newer = parse_version(latest) > parse_version(current)
+    return {
+        "ok": True,
+        "current": current,
+        "latest": latest,
+        "tag": tag,
+        "html_url": html,
+        "published_at": _as_text(payload.get("published_at") or payload.get("created_at"))[:40],
+        "notes": notes,
+        "update_available": newer,
+        "error": "",
+        "repo": repo,
+        "source": source,
+    }
+
+
+def _github_latest_uncached() -> dict:
+    repo = _github_repo()
+    try:
+        payload = _github_get_json(f"/repos/{repo}/releases/latest")
+        found = _release_from_payload(payload, repo=repo, source="release")
+        if found:
+            return found
+    except RuntimeError as exc:
+        err = _as_text(exc)
+        low = err.lower()
+        # 404 = no releases published; fall through to tags.
+        if "404" not in low and "not found" not in low:
+            return _github_empty(error=err, repo=repo)
+    try:
+        tags = _github_get_json(f"/repos/{repo}/tags?per_page=5")
+    except RuntimeError as exc:
+        return _github_empty(error=_as_text(exc), repo=repo)
+    if not isinstance(tags, list) or not tags:
+        return _github_empty(error="no github releases or tags", repo=repo)
+    first = tags[0] if isinstance(tags[0], dict) else {}
+    fake = {
+        "tag_name": first.get("name"),
+        "html_url": f"https://github.com/{repo}/releases/tag/{_as_text(first.get('name')).strip()}",
+        "body": "",
+    }
+    found = _release_from_payload(fake, repo=repo, source="tag")
+    return found or _github_empty(error="unreadable github tag", repo=repo)
+
+
+def _github_latest(*, force: bool = False) -> dict:
+    """Latest GitHub release/tag for this panel.  Never raises."""
+    now = time.time()
+    if not force:
+        hit = _github_cache["v"]
+        if hit is not None and now - _github_cache["t"] < _GITHUB_TTL:
+            return hit
+    with _github_lock:
+        if not force:
+            hit = _github_cache["v"]
+            if hit is not None and time.time() - _github_cache["t"] < _GITHUB_TTL:
+                return hit
+        try:
+            result = _github_latest_uncached()
+        except Exception as exc:
+            result = _github_empty(error=_as_text(exc)[:200])
+        _github_cache.update(t=time.time(), v=result)
+        return result
+
+
+def github_update_status(*, fetch: bool = True, force: bool = False,
+                         checkout: bool = True) -> dict:
+    """Cached GitHub snapshot plus optional local checkout state.  Never raises.
+
+    ``fetch=False`` never opens a socket (dashboard / About / status poll).
+    ``checkout=False`` skips ``git status`` so a hot poll cannot stall.
+    """
+    if not fetch:
+        hit = _github_cache["v"]
+        gh = hit if isinstance(hit, dict) else _github_empty(error="")
+    else:
+        gh = _github_latest(force=force)
+    if not checkout:
+        return gh if isinstance(gh, dict) else _github_empty()
+    return _with_checkout_state(gh)
+
+
+def _checkout_is_git() -> bool:
+    try:
+        return (Path(BASE) / ".git").is_dir()
+    except OSError:
+        return False
+
+
+def _with_checkout_state(gh: dict) -> dict:
+    out = dict(gh) if isinstance(gh, dict) else _github_empty()
+    git = _checkout_is_git()
+    dirty = _git_dirty() if git else False
+    out["git"] = git
+    out["dirty"] = dirty
+    out["can_apply"] = bool(out.get("ok") and out.get("update_available") and git)
+    return out
+
+
+def _git_dirty() -> bool:
+    rc, out, err = _sh(
+        ["/usr/bin/git", "-C", str(BASE), "status", "--porcelain"],
+        timeout=8,
+    )
+    if rc != 0:
+        return True
+    return bool((out or err or "").strip())
+
+
+def apply_github_update(*, confirm: bool = False, stash: bool = False) -> dict:
+    """Fetch the GitHub tag and run ``install.sh`` as a maintenance job.
+
+    Local uncommitted work blocks the merge unless *stash* is true.  The stash
+    is kept (named ``serverhub-pre-update``) because ``install.sh`` restarts
+    the panel before a ``stash pop`` would run.
+    """
+    if not confirm:
+        raise api_error("tools.confirm_required")
+    if not _checkout_is_git():
+        raise api_error("tools.not_a_git_checkout")
+    snap = _github_latest(force=True)
+    if not snap.get("ok"):
+        raise api_error("tools.github_unreachable", error=_as_text(snap.get("error"))[:200] or "github")
+    if not snap.get("update_available"):
+        raise api_error("tools.no_update")
+    tag = _as_text(snap.get("tag")).strip()
+    if not _TAG_RE.fullmatch(tag):
+        raise api_error("tools.no_update")
+    dirty = _git_dirty()
+    if dirty and not stash:
+        raise api_error("tools.dirty_tree")
+    from hub import jobs
+    root = shlex.quote(str(BASE))
+    safe_tag = shlex.quote(tag)
+    stash_line = (
+        '/usr/bin/git stash push -u -m serverhub-pre-update; '
+        if dirty and stash else ""
+    )
+    command = (
+        f"set -euo pipefail; cd {root}; "
+        f"{stash_line}"
+        f"/usr/bin/git fetch --tags origin; "
+        f"/usr/bin/git merge --ff-only {safe_tag}; "
+        f"./install.sh"
+    )
+    jobs.start_job({
+        "id": "panel-update",
+        "command": command,
+        "timeout": 900,
+    })
+    return {
+        "ok": True,
+        "job_id": "panel-update",
+        "tag": tag,
+        "latest": snap.get("latest"),
+        "stashed": bool(dirty and stash),
+    }
+
+
+def apply_brew_upgrade(*, confirm: bool = False) -> dict:
+    """Upgrade outdated Homebrew formulae as a maintenance job."""
+    if not confirm:
+        raise api_error("tools.confirm_required")
+    if _brew_busy():
+        raise api_error("tools.brew_busy")
+    brew = BREW
+    try:
+        present = Path(brew).is_file()
+    except OSError:
+        present = False
+    if not present:
+        raise api_error("tools.brew_busy")
+    from hub import jobs
+    jobs.start_job({
+        "id": "brew-upgrade",
+        "command": f"{shlex.quote(str(brew))} upgrade --quiet",
+        "timeout": 1800,
+    })
+    return {"ok": True, "job_id": "brew-upgrade"}
+
+
+def _check_updates_uncached(*, force: bool = False) -> dict:
     # Two unrelated package managers asked two unrelated questions, each with a 45s
     # timeout -- so in series the worst case was the 90s the docstring warns about,
     # and the ordinary case was the sum of two slow commands for no reason.  They
     # share nothing and neither needs elevation, so they run together and the cost
-    # becomes the slower of the two.
+    # becomes the slower of the two.  GitHub is a short GET; run it on this
+    # thread while those two occupy the pool.
     brew_future = _pool.submit(_brew_outdated)
     macos_future = _pool.submit(_macos_updates)
+    github_result = github_update_status(fetch=True, force=force)
 
     def _result(fut, fallback):
         try:
@@ -715,10 +1119,11 @@ def _check_updates_uncached() -> dict:
     )
 
     result = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
+        "github": github_result,
         "brew": brew_result,
         "macos": macos_result,
-        "hint": "Check only, nothing is installed · install from the Maintenance page · results cached for 10 minutes",
+        "hint": "GitHub is the panel itself · Homebrew / macOS are check-only",
         "cached_ttl": _UPDATES_TTL,
     }
     _updates_cache.update(t=time.time(), v=result)
@@ -733,8 +1138,8 @@ def net_ping(host: str, count: int = 3) -> dict:
     if not cli_args.is_safe_hostname(host):
         return soft_fail("tools.bad_host")
     host = host.strip()
-    count = max(1, min(int(count or 3), 10))
-    rc, out, err = sh(
+    count = _clamp_int(count, 3, 1, 10)
+    rc, out, err = _sh(
         ["/sbin/ping", "-c", str(count), "-W", "2000", host],
         timeout=count * 3 + 5,
     )
@@ -747,7 +1152,7 @@ def net_ping(host: str, count: int = 3) -> dict:
 
 
 def net_dns_lookup(name: str) -> dict:
-    if not (name or "").strip():
+    if not isinstance(name, str) or not name.strip():
         return soft_fail("tools.empty_name")
     # `dig -f /etc/passwd` treats the file as a query list, and this endpoint
     # returns command output -- an arbitrary-file-read primitive from one
@@ -768,15 +1173,30 @@ def net_dns_lookup(name: str) -> dict:
                 "ip": ip,
                 "family": "IPv6" if fam == socket.AF_INET6 else "IPv4",
             })
-    except socket.gaierror as e:
-        return {"ok": False, "name": name, "message": str(e), "results": []}
+    except Exception as e:
+        return {"ok": False, "name": name, "message": _as_text(e), "results": []}
     # also dig if available for NS/info
     # System dig first. which("dig") used to win, so a PATH hijack could
     # replace the resolver this endpoint echoes back to the browser.
-    dig = "/usr/bin/dig" if Path("/usr/bin/dig").is_file() else (shutil.which("dig") or "")
+    try:
+        system_dig = Path("/usr/bin/dig").is_file()
+    except OSError:
+        system_dig = False
+    if system_dig:
+        dig = "/usr/bin/dig"
+    else:
+        try:
+            dig = shutil.which("dig") or ""
+        except (OSError, ValueError):
+            dig = ""
     dig_out = ""
-    if Path(dig).exists():
-        rc, out, _ = sh([dig, "+short", name], timeout=8)
+    try:
+        # Path("").exists() is True (cwd); an empty which() used to spawn [""].
+        have_dig = bool(dig) and Path(dig).is_file()
+    except OSError:
+        have_dig = False
+    if have_dig:
+        rc, out, _ = _sh([dig, "+short", name], timeout=8)
         if rc == 0:
             dig_out = (out or "").strip()[:500]
     return {
@@ -796,6 +1216,10 @@ def parse_lsof_listen_line(line: str) -> dict | None:
     only reliable way. NAME looks like "*:8086", "127.0.0.1:8086" or
     "[::1]:8086" — IPv6 literals contain colons, so split on the LAST one.
     """
+    if isinstance(line, (bytes, bytearray)):
+        line = line.decode("utf-8", "replace")
+    elif not isinstance(line, str):
+        return None
     parts = line.split()
     if len(parts) < 9:
         return None
@@ -808,6 +1232,10 @@ def parse_lsof_listen_line(line: str) -> dict | None:
     address, _, port_s = name.rpartition(":")
     if not address or not port_s.isdigit():
         return None
+    try:
+        port = int(port_s)
+    except (TypeError, ValueError):
+        return None
     command = unescape_proc_name(parts[0])[:40]
     return {
         # existing keys the Tools view already renders
@@ -818,13 +1246,13 @@ def parse_lsof_listen_line(line: str) -> dict | None:
         # added: structured fields for the port-conflict pre-check
         "process": command,
         "address": address[:64],
-        "port": int(port_s),
+        "port": port,
     }
 
 
 def listening_ports(limit: int = 40) -> dict:
     """Quick lsof listen summary (Unraid-ish net tools)."""
-    rc, out, err = sh(
+    rc, out, err = _sh(
         ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
         timeout=12,
     )
@@ -834,7 +1262,7 @@ def listening_ports(limit: int = 40) -> dict:
             row = parse_lsof_listen_line(line)
             if row:
                 rows.append(row)
-    rows = rows[: max(5, min(int(limit or 40), 100))]
+    rows = rows[: _clamp_int(limit, 40, 5, 100)]
     return {
         "ok": rc == 0,
         "count": len(rows),
@@ -851,13 +1279,13 @@ def flush_dns() -> dict:
         ["/usr/bin/dscacheutil", "-flushcache"],
         ["/usr/bin/killall", "-HUP", "mDNSResponder"],
     ]:
-        rc, out, err = sh(cmd, timeout=8)
-        msgs.append(f"{' '.join(cmd)} → rc={rc} {(out or err or '').strip()[:80]}")
+        rc, out, err = _sh(cmd, timeout=8)
+        msgs.append(f"{' '.join(cmd)} → rc={rc} {(out or err).strip()[:80]}")
         if rc == 0:
             ok_any = True
     # may need sudo for killall
     if not ok_any:
-        rc, out, err = sh(
+        rc, out, err = _sh(
             ["/usr/bin/sudo", "-n", "/usr/bin/killall", "-HUP", "mDNSResponder"],
             timeout=8,
         )
@@ -872,31 +1300,85 @@ def flush_dns() -> dict:
 
 # ─── LaunchAgents (broader than timers) ──────────────────────────────────────
 
+def _plist_int(raw):
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _plist_jsonable(value, depth: int = 0):
+    """Drop inf/nan/``\\ud800`` so Starlette's allow_nan=False encoder cannot 500."""
+    if depth > 8:
+        return None
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _as_text(value)
+    if isinstance(value, dict):
+        return {_as_text(k): _plist_jsonable(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_plist_jsonable(v, depth + 1) for v in value]
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")[:200]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/tools launchd.
+            return _plist_jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    return _as_text(value)[:200]
+
+
 def launchd_timers() -> list:
     """List StartInterval / calendar agents for Scheduler-like view."""
     import plistlib
 
-    agents = os.path.expanduser("~/Library/LaunchAgents")
+    try:
+        agents = os.path.expanduser("~/Library/LaunchAgents")
+    except (OSError, RuntimeError, ValueError, TypeError):
+        # RuntimeError: leftover HOME unset; ValueError: leftover NUL in HOME.
+        # GET /api/tools launchd timers used to 500.
+        return []
+    try:
+        paths = sorted(glob.glob(f"{agents}/*.plist"))
+    except OSError:
+        return []
     items = []
-    for path in sorted(glob.glob(f"{agents}/*.plist")):
+    for path in paths:
         try:
-            with open(path, "rb") as f:
-                pl = plistlib.load(f)
+            pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         except Exception:
             continue
         if not isinstance(pl, dict):
             continue
         label = pl.get("Label") or Path(path).stem
-        interval = pl.get("StartInterval")
+        if not isinstance(label, str):
+            label = Path(path).stem
+        label = _as_text(label)
+        interval = _plist_int(pl.get("StartInterval"))
         calendar = pl.get("StartCalendarInterval")
         if not interval and not calendar:
             continue
+        args = pl.get("ProgramArguments")
+        program = (
+            " ".join(_as_text(a) for a in args)[:120]
+            if isinstance(args, list) else ""
+        )
         items.append({
             "label": label,
-            "path": path,
+            "path": _as_text(path),
             "interval_sec": interval,
-            "calendar": calendar,
-            "program": " ".join(pl.get("ProgramArguments") or [])[:120],
+            "calendar": _plist_jsonable(calendar),
+            "program": _as_text(program),
         })
     return items
 
@@ -904,38 +1386,61 @@ def launchd_timers() -> list:
 def launchd_agents_summary() -> dict:
     import plistlib
 
-    agents_dir = Path(os.path.expanduser("~/Library/LaunchAgents"))
+    try:
+        agents_dir = Path(os.path.expanduser("~/Library/LaunchAgents"))
+    except (OSError, RuntimeError, ValueError, TypeError):
+        # RuntimeError: leftover HOME unset on GET /api/tools launchd agents.
+        return {
+            "count": 0,
+            "agents": [],
+            "dir": "",
+            "hint": "User-level LaunchAgents · see the Scheduler page for timers",
+        }
     items = []
-    for path in sorted(agents_dir.glob("*.plist")):
+    try:
+        paths = sorted(agents_dir.glob("*.plist"))
+    except OSError:
+        paths = []
+    for path in paths:
         try:
-            with open(path, "rb") as f:
-                pl = plistlib.load(f)
+            pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         except Exception:
-            items.append({"label": path.stem, "path": str(path), "error": "parse"})
+            items.append({
+                "label": _as_text(path.stem), "path": _as_text(path), "error": "parse",
+            })
             continue
         if not isinstance(pl, dict):
-            items.append({"label": path.stem, "path": str(path), "error": "parse"})
+            items.append({
+                "label": _as_text(path.stem), "path": _as_text(path), "error": "parse",
+            })
             continue
         label = pl.get("Label") or path.stem
+        if not isinstance(label, str):
+            label = path.stem
         run_at = bool(pl.get("RunAtLoad"))
         keep = pl.get("KeepAlive")
-        interval = pl.get("StartInterval")
+        interval = _plist_int(pl.get("StartInterval"))
         calendar = pl.get("StartCalendarInterval")
         disabled = bool(pl.get("Disabled"))
+        args = pl.get("ProgramArguments")
+        program = (
+            " ".join(_as_text(a) for a in args)[:100]
+            if isinstance(args, list) else ""
+        )
         items.append({
-            "label": label,
-            "path": str(path),
+            "label": _as_text(label),
+            "path": _as_text(path),
             "run_at_load": run_at,
             "keep_alive": bool(keep) if not isinstance(keep, dict) else True,
             "interval_sec": interval,
             "calendar": bool(calendar),
             "disabled": disabled,
-            "program": " ".join(pl.get("ProgramArguments") or [])[:100],
+            "program": _as_text(program),
         })
     return {
         "count": len(items),
         "agents": items,
-        "dir": str(agents_dir),
+        "dir": _as_text(agents_dir),
         "hint": "User-level LaunchAgents · see the Scheduler page for timers",
     }
 
@@ -957,7 +1462,7 @@ def about_info() -> dict:
             from hub.identity_svc import platform_string
             return platform_string()
         except Exception:
-            return platform.platform()
+            return _as_text(platform.platform())
 
     ip, plat = fan_out(lambda probe: probe(), [probe_host_ip, probe_platform])
     return {
@@ -965,8 +1470,8 @@ def about_info() -> dict:
         "version": __version__,
         "tagline_key": "tools.about_tagline",
         "host_ip": ip,
-        "platform": plat,
-        "python": platform.python_version(),
+        "platform": _as_text(plat),
+        "python": _as_text(platform.python_version()),
         "base": str(BASE),
         "credit_keys": [
             "tools.credit_stack",
@@ -978,4 +1483,5 @@ def about_info() -> dict:
             {"label_key": "nav.modules", "href": "/modules"},
             {"label_key": "nav.maintenance", "href": "/maintenance"},
         ],
+        "github": github_update_status(fetch=False, checkout=True),
     }

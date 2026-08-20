@@ -25,14 +25,14 @@
           <tr v-for="s in filtered" :key="s.id">
             <td><span class="led" :class="s.state==='ok'?'on':(s.state==='warn'?'warn':'err')"></span></td>
             <td>
-              <strong>{{ s.name }}</strong>
-              <div v-if="s.file" class="mono" style="color:var(--sub);font-size:10px">{{ s.file }}</div>
-              <div v-if="s.user" class="show-m sub">{{ s.user }}</div>
+              <strong>{{ finiteText(s.name) }}</strong>
+              <div v-if="finiteText(s.file, '')" class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(s.file) }}</div>
+              <div v-if="finiteText(s.user, '')" class="show-m sub">{{ finiteText(s.user) }}</div>
             </td>
             <td>
-              <span class="badge" :class="s.state==='ok'?'ok':(s.state==='warn'?'warn':'')">{{ s.status }}</span>
+              <span class="badge" :class="s.state==='ok'?'ok':(s.state==='warn'?'warn':'')">{{ finiteText(s.status) }}</span>
             </td>
-            <td class="mono col-hide-m">{{ s.user || '—' }}</td>
+            <td class="mono col-hide-m">{{ finiteText(s.user) }}</td>
             <td class="ops">
               <button
                 v-for="a in s.actions || []"
@@ -41,7 +41,7 @@
                 :class="{ primary: a==='start', danger: a==='stop', 'hide-m': a==='restart' }"
                 :disabled="busy"
                 @click="act(s, a)"
-              >{{ labels[a] || a }}</button>
+              >{{ finiteText(labels[a], '') || finiteText(a) }}</button>
             </td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
@@ -57,6 +57,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { brewAction, getBrewServices } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -70,11 +71,14 @@ const q = ref('')
 const loaded = ref(false)
 const loadError = ref('')
 let refreshTimer = null
+let pageAlive = true
+let loadGeneration = 0
 
 function scheduleRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => {
     refreshTimer = null
+    if (!pageAlive) return
     void refresh()
   }, 800)
 }
@@ -92,34 +96,46 @@ const filtered = computed(() => {
 })
 
 async function refresh() {
+  const generation = ++loadGeneration
   try {
     const j = await getBrewServices()
+    if (generation !== loadGeneration || !pageAlive) return
     services.value = j.services || []
     loadError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    loaded.value = true
+    if (generation === loadGeneration) loaded.value = true
   }
 }
 
 async function act(s, action) {
-  if (action === 'stop' && !confirm(t('brew.confirm_stop', { name: s.name }))) return
+  if (action === 'stop' && !confirm(t('brew.confirm_stop', { name: finiteText(s.name) }))) return
+  if (action === 'restart' && !confirm(t('brew.confirm_restart', { name: finiteText(s.name) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await brewAction(s.id, action)
-    toast(j.ok ? `✅ ${s.name}` : `❌ ${j.message}`)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(j.ok ? `✅ ${finiteText(s.name)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  pageAlive = true
+  void refresh()
+})
 onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = null
 })

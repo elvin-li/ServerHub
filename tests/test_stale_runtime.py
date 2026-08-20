@@ -313,6 +313,37 @@ class RemediateTests(unittest.TestCase):
         self.assertIn("Could not restart local.esphome", recorded[0])
         self.assertNotIn("Restarted local.esphome", recorded[0])
 
+    def test_overlapping_sweeps_kick_once(self):
+        import threading
+
+        rows = [{"label": "local.esphome", "pid": 1, "exe": GONE}]
+        calls: list[list[str]] = []
+        gate = threading.Barrier(8)
+
+        def gated_scan():
+            gate.wait(timeout=2)
+            return rows
+
+        def fake_sh(cmd, **kwargs):
+            calls.append(list(cmd))
+            return 0, "", ""
+
+        with (
+            patch.object(stale_runtime, "scan", gated_scan),
+            patch.object(stale_runtime, "sh", fake_sh),
+            patch.object(stale_runtime, "invalidate_launchd", lambda: None),
+            patch("hub.alerts.emit_alert", lambda **kw: {"id": kw["alert_id"]}),
+        ):
+            threads = [
+                threading.Thread(target=stale_runtime.remediate, args=(1000,))
+                for _ in range(8)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=2)
+        self.assertEqual(len(calls), 1, f"double-kicked: {calls}")
+
     def test_clean_scan_does_not_touch_launchctl(self):
         calls = []
         with (
@@ -353,6 +384,16 @@ class WiringTests(unittest.TestCase):
             ):
                 alerts.check_once()
         self.assertEqual(len(called), 1, "check_once never reached remediate")
+
+
+class RemediateClockLeftoverTests(unittest.TestCase):
+    def test_infinite_clock_does_not_raise(self):
+        """int(time.time()) OverflowError on leftover inf used to 500 the alerter kickstart."""
+        with (
+            patch.object(stale_runtime, "scan", return_value=[]),
+            patch.object(stale_runtime.time, "time", return_value=float("inf")),
+        ):
+            self.assertEqual(stale_runtime.remediate(), [])
 
 
 if __name__ == "__main__":

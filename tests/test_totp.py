@@ -100,6 +100,15 @@ class VerifyInputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             totp.decode_secret("")
 
+    def test_leftover_inf_timestamp_does_not_500_verify(self):
+        """``int(inf)`` OverflowError used to 500 TOTP confirm / login."""
+        self.assertIsNone(totp.verify(RFC_KEY_B32, "000000", timestamp=float("inf")))
+        self.assertIsNone(totp.verify(RFC_KEY_B32, "000000", timestamp=float("nan")))
+        self.assertIsNone(totp.verify(RFC_KEY_B32, "000000", timestamp=1e20))
+        self.assertIsNone(totp.verify(RFC_KEY_B32, "000000", timestamp=True))
+        with self.assertRaises(ValueError):
+            totp.totp_at(RFC_KEY_B32, float("inf"))
+
 
 class SecretHandlingTests(unittest.TestCase):
     def test_generated_secret_is_160_bit_base32(self):

@@ -49,8 +49,13 @@ def _require_admin_browser(request: Request) -> None:
 def _set_screen_sharing(request: Request, enabled: bool) -> dict:
     _require_admin_browser(request)
     result = shares_svc.set_system_service("screen_sharing", enabled)
+    # Leftover None AttributeError'd enable/disable; leftover inf / ``\\ud800``
+    # in an ok payload 500'd Starlette's allow_nan=False encoder.
+    if not isinstance(result, dict):
+        raise api_error("shares.operation_failed")
     if result.get("ok"):
-        return result
+        cleaned = power_svc._jsonable(result)
+        return cleaned if isinstance(cleaned, dict) else {"ok": True}
     error = str(result.get("error") or "failed")
     code = {
         "cancelled": "shares.authorization_cancelled",

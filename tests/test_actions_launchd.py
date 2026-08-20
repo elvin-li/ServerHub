@@ -62,6 +62,15 @@ class PlistDisabled(unittest.TestCase):
             actions._set_plist_disabled(path, True)
             self.assertEqual(Path(path).read_bytes(), raw)
 
+    def test_huge_plist_does_not_oom_disabled(self):
+        """``open(rb)`` of leftover multi-MB plist used to OOM start/stop."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "job.plist")
+            Path(path).write_bytes(b"x" * (2 * 1024 * 1024))
+            self.assertFalse(actions._plist_disabled(path))
+            actions._set_plist_disabled(path, True)
+            self.assertEqual(Path(path).stat().st_size, 2 * 1024 * 1024)
+
 
 class LaunchdStart(unittest.TestCase):
     TARGET = "com.kiro.ollama"
@@ -74,6 +83,9 @@ class LaunchdStart(unittest.TestCase):
         with (
             mock.patch.object(actions, "registry", return_value=registry),
             mock.patch.object(actions, "_launchctl", side_effect=launchctl) as mocked,
+            mock.patch.object(
+                actions, "_job_pid_and_status", return_value=("4242", "0"),
+            ),
         ):
             rc, out, err = actions.run_action(self.TARGET, "start")
         return rc, out, err, mocked
@@ -137,6 +149,30 @@ class LaunchdStart(unittest.TestCase):
                 mock.call(["kickstart", f"gui/{UID}/{self.TARGET}"]),
             ],
         )
+
+    def test_crash_loop_after_kickstart_is_a_coded_failure(self):
+        from fastapi import HTTPException
+
+        registry = {
+            self.TARGET: ("launchd", {"label": self.TARGET, "path": self.PLIST}),
+        }
+        with (
+            mock.patch.object(actions, "registry", return_value=registry),
+            mock.patch.object(
+                actions, "_launchctl",
+                side_effect=[(0, "", ""), (0, "", "")],
+            ),
+            mock.patch.object(
+                actions, "_job_pid_and_status",
+                side_effect=[("-", "255"), ("-", "255")],
+            ),
+            mock.patch.object(actions.time, "sleep"),
+            mock.patch.object(actions, "_plist_disabled", return_value=False),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                actions.run_action(self.TARGET, "start")
+        self.assertEqual(ctx.exception.detail["code"], "actions.crash_loop")
+        self.assertEqual(ctx.exception.detail["params"]["exit"], "255")
 
 
 class PlistPathUsesLabel(unittest.TestCase):

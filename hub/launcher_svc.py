@@ -16,8 +16,8 @@ from typing import Literal
 
 from hub.errors import soft_fail
 from hub.launchd_cache import invalidate_launchd
-from hub.paths import BASE
-from hub.util import LazyPool, sh
+from hub.paths import BASE, user_home
+from hub.util import LazyPool, sh, utf8_env
 
 _pool = LazyPool(4, "hub-launcher")
 
@@ -50,11 +50,38 @@ LEGACY_MENUBAR_ALTERNATES = (
     "local.serverhub-menubar",
     "com.elvin.serverhub-menubar",
 )
-APP_CANDIDATES = (
-    Path("/Applications/ServerHub.app"),
-    Path.home() / "Applications" / "ServerHub.app",
-)
+
+
+def _default_app_candidates() -> tuple[Path, ...]:
+    """User Applications fallback.  ``Path.home()`` leftover must not 500 import."""
+    home = user_home()
+    extra = () if home is None else (home / "Applications" / "ServerHub.app",)
+    return (Path("/Applications/ServerHub.app"),) + extra
+
+
+APP_CANDIDATES = _default_app_candidates()
 _UNRESOLVED_APP_PATH = object()
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def _resolve(primary_path: Path, primary: str, alternates: tuple[str, ...]) -> tuple[Path, str]:
@@ -65,11 +92,11 @@ def _resolve(primary_path: Path, primary: str, alternates: tuple[str, ...]) -> t
     take over; with nothing installed the primary is still returned so callers
     have a stable label to write and to report.
     """
-    if primary_path.is_file():
+    if _is_file(primary_path):
         return primary_path, primary
     for label in alternates:
         candidate = AGENTS_DIR / f"{label}.plist"
-        if candidate.is_file():
+        if _is_file(candidate):
             return candidate, label
     return primary_path, primary
 
@@ -90,6 +117,21 @@ def resolve_legacy_menubar() -> tuple[Path, str]:
     )
 
 
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", "replace")
+    elif isinstance(value, str):
+        text = value
+    elif value is None:
+        return ""
+    else:
+        try:
+            text = str(value)
+        except Exception:
+            return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _job_state(label: str) -> str | None:
     """Return launchd's top-level job state, not a nested activity state."""
     rc, output, _ = sh(
@@ -98,7 +140,7 @@ def _job_state(label: str) -> str | None:
     if rc != 0:
         return None
     depth = 0
-    for line in output.splitlines():
+    for line in _as_text(output).splitlines():
         stripped = line.strip()
         if depth == 1 and stripped.startswith("state = "):
             return stripped.removeprefix("state = ").strip()
@@ -111,7 +153,7 @@ def _loaded(label: str) -> bool:
 
 
 def _app_path() -> Path | None:
-    return next((path for path in APP_CANDIDATES if path.is_dir()), None)
+    return next((path for path in APP_CANDIDATES if _is_dir(path)), None)
 
 
 def _app_running(app: Path | None | object = _UNRESOLVED_APP_PATH) -> bool:
@@ -137,29 +179,44 @@ def status() -> dict:
     # These probes each spawn an independent, read-only system command. Running
     # them concurrently keeps the settings page latency near the slowest probe
     # instead of adding four subprocess startup times together.
-    app_running = _pool.submit(_app_running, app) if app is not None else None
-    panel_state = _pool.submit(_job_state, panel_label)
-    launcher_loaded = _pool.submit(_loaded, launcher_label)
-    legacy_loaded = _pool.submit(_loaded, legacy_label)
+    def submit(fn, *args, default=None, skip=False):
+        if skip:
+            return None, default, True
+        try:
+            return _pool.submit(fn, *args), default, False
+        except RuntimeError:
+            # Pool was shut down (reload / lifespan).  Running inline keeps
+            # GET /api/launcher from 500-ing while workers drain.
+            try:
+                return None, fn(*args), True
+            except Exception:
+                return None, default, True
 
-    def probe_result(future, default):
+    def finish(future, default, done):
+        if done:
+            return default
         try:
             return future.result()
         except Exception:
             return default
 
-    running = probe_result(app_running, False) if app_running is not None else False
-    panel = probe_result(panel_state, None)
-    launcher = probe_result(launcher_loaded, False)
-    legacy = probe_result(legacy_loaded, False)
+    app_running = submit(_app_running, app, default=False, skip=app is None)
+    panel_state = submit(_job_state, panel_label, default=None)
+    launcher_loaded = submit(_loaded, launcher_label, default=False)
+    legacy_loaded = submit(_loaded, legacy_label, default=False)
+    running = finish(*app_running)
+    panel = finish(*panel_state)
+    launcher = finish(*launcher_loaded)
+    legacy = finish(*legacy_loaded)
+    panel_state_text = None if panel is None else _as_text(panel)
     return {
         "app_installed": app is not None,
         "app_path": str(app) if app else None,
         "app_running": running,
-        "panel_running": panel == "running",
-        "panel_job_state": panel,
-        "panel_registered": panel_plist.is_file(),
-        "login_enabled": launcher_plist.is_file(),
+        "panel_running": panel_state_text == "running",
+        "panel_job_state": panel_state_text,
+        "panel_registered": _is_file(panel_plist),
+        "login_enabled": _is_file(launcher_plist),
         "launcher_registered": launcher,
         "legacy_menubar_registered": legacy,
         "runtime_path": str(BASE),
@@ -213,7 +270,10 @@ def set_login_enabled(enabled: bool) -> dict:
     launcher_plist, launcher_label = resolve_launcher()
     target = f"{DOMAIN}/{launcher_label}"
     if enabled:
-        logs = Path.home() / "Library" / "Logs"
+        home = user_home()
+        if home is None:
+            return {"ok": False, "message": "home directory is unavailable"}
+        logs = home / "Library" / "Logs"
         try:
             logs.mkdir(parents=True, exist_ok=True)
             _atomic_plist(launcher_plist, {
@@ -228,7 +288,7 @@ def set_login_enabled(enabled: bool) -> dict:
                 "StandardErrorPath": str(logs / "serverhub-launcher.err.log"),
             })
         except OSError as exc:
-            return {"ok": False, "message": str(exc)}
+            return {"ok": False, "message": _as_text(exc)}
         sh(["/bin/launchctl", "bootout", target], timeout=8)
         sh(["/bin/launchctl", "enable", target], timeout=5)
         rc, out, err = sh(
@@ -239,9 +299,9 @@ def set_login_enabled(enabled: bool) -> dict:
         invalidate_launchd()
         ok = rc == 0 or _loaded(launcher_label)
         message = (
-            (out or "enabled")
+            (_as_text(out) or "enabled")
             if ok
-            else (err or out or f"launchctl bootstrap failed with exit {rc}")
+            else (_as_text(err or out) or f"launchctl bootstrap failed with exit {rc}")
         )
         return {"ok": ok, "message": message}
 
@@ -260,13 +320,13 @@ def set_login_enabled(enabled: bool) -> dict:
     except FileNotFoundError:
         pass
     except OSError as exc:
-        return {"ok": False, "message": str(exc)}
+        return {"ok": False, "message": _as_text(exc)}
     if _loaded(launcher_label):
-        message = bootout_out or bootout_err or (
+        message = _as_text(bootout_out or bootout_err) or (
             f"launchctl bootout failed with exit {bootout_rc}"
         )
         return {"ok": False, "message": message}
-    return {"ok": not launcher_plist.exists(), "message": "disabled"}
+    return {"ok": not _exists(launcher_plist), "message": "disabled"}
 
 
 def open_app() -> dict:
@@ -275,9 +335,9 @@ def open_app() -> dict:
         return soft_fail("launcher.not_installed")
     rc, out, err = sh(["/usr/bin/open", "-gj", str(app)], timeout=10)
     message = (
-        out or "opened"
+        _as_text(out) or "opened"
         if rc == 0
-        else err or out or f"open failed with exit {rc}"
+        else _as_text(err or out) or f"open failed with exit {rc}"
     )
     return {"ok": rc == 0, "message": message}
 
@@ -308,7 +368,10 @@ def schedule_panel_action(action: Literal["restart", "stop"]) -> dict:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
             close_fds=True,
+            env=utf8_env(),
         )
-    except OSError as exc:
-        return {"ok": False, "message": str(exc)}
+    except (OSError, ValueError, TypeError) as exc:
+        # Leftover ``\\ud800`` in the launchctl label UnicodeEncodeError'd Popen
+        # (ValueError, not OSError) and 500'd POST /api/launcher/panel.
+        return {"ok": False, "message": _as_text(exc) or "spawn failed"}
     return {"ok": True, "message": f"panel {action} scheduled"}

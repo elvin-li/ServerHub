@@ -48,9 +48,26 @@ import glob
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 
 log = logging.getLogger("serverhub.freshness")
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -91,11 +108,23 @@ def configured_targets(raw: list | None = None) -> tuple[Target, ...]:
         if not isinstance(entry, dict):
             log.warning("freshness_targets: skipping non-mapping entry %r", entry)
             continue
-        tid = str(entry.get("id") or "").strip()
-        pattern = os.path.expanduser(str(entry.get("pattern") or "").strip())
+        try:
+            tid = str(entry.get("id") or "").strip()
+        except Exception:
+            log.warning("freshness_targets: skipping malformed entry %r", entry)
+            continue
+        try:
+            pattern = os.path.expanduser(_utf8_text(entry.get("pattern") or "").strip())
+        except (TypeError, ValueError, RuntimeError, OSError):
+            # Path.home / expanduser RuntimeError when HOME is unset; leftover
+            # NUL is ValueError. Either used to 500 POST /api/alerts/check.
+            log.warning("freshness_targets: skipping malformed entry %r", entry)
+            continue
         try:
             max_age = float(entry.get("max_age_hours") or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            max_age = 0.0
+        if max_age != max_age or max_age in (float("inf"), float("-inf")):
             max_age = 0.0
         if (not _ID_RE.fullmatch(tid) or tid in seen
                 or not os.path.isabs(pattern) or max_age <= 0):
@@ -104,8 +133,8 @@ def configured_targets(raw: list | None = None) -> tuple[Target, ...]:
         seen.add(tid)
         out.append(Target(
             id=tid,
-            label=str(entry.get("label") or "").strip() or tid,
-            pattern=pattern,
+            label=_utf8_text(entry.get("label") or "").strip() or tid,
+            pattern=_utf8_text(pattern),
             max_age_hours=max_age,
         ))
     return tuple(out)
@@ -126,10 +155,16 @@ def newest_mtime(pattern: str) -> float | None:
     (the jobs prune their own old archives) are skipped, not fatal.
     """
     best: float | None = None
-    for path in glob.glob(pattern):
+    try:
+        matches = glob.glob(pattern)
+    except (TypeError, ValueError, OSError, RuntimeError):
+        return None
+    for path in matches:
         try:
-            mt = os.stat(path).st_mtime
-        except OSError:
+            mt = float(os.stat(path).st_mtime)
+        except (OSError, TypeError, ValueError, OverflowError):
+            continue
+        if mt != mt or mt in (float("inf"), float("-inf")):
             continue
         if best is None or mt > best:
             best = mt
@@ -148,34 +183,62 @@ def check_freshness(prev: dict, new_state: dict, now: int,
     """
     from hub import alerts as _alerts
 
+    if not isinstance(prev, dict):
+        prev = {}
+    if not isinstance(new_state, dict):
+        return []
+    try:
+        now = int(now)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            now = int(time.time())
+        except (TypeError, ValueError, OverflowError):
+            # Leftover ``time.time() = inf`` OverflowError'd POST /api/alerts/check.
+            now = 0
+
     last_fire = prev.get("_freshness_last")
     if not isinstance(last_fire, dict):
         last_fire = {}
     new_last = dict(last_fire)
     emitted: list = []
     n = _alerts.notify_settings()
+    if not isinstance(n, dict):
+        n = {}
 
     for t in targets if targets is not None else configured_targets():
         key = f"freshness:{t.id}"
-        limit_sec = t.max_age_hours * 3600
-        mt = newest_mtime(t.pattern)
+        label = _utf8_text(t.label)
+        pattern = _utf8_text(t.pattern)
+        try:
+            limit_sec = float(t.max_age_hours) * 3600
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if limit_sec != limit_sec or limit_sec in (float("inf"), float("-inf")) or limit_sec <= 0:
+            continue
+        mt = newest_mtime(pattern)
+        try:
+            mt = float(mt) if mt is not None else None
+        except (TypeError, ValueError, OverflowError):
+            mt = None
+        if mt is not None and (mt != mt or mt in (float("inf"), float("-inf"))):
+            mt = None
         age_h = (now - mt) / 3600 if mt is not None else None
         stale = mt is None or (now - mt) > limit_sec
         new_state[key] = "down" if stale else "ok"
         old = prev.get(key)
-        last_t = int(last_fire.get(t.id) or 0)
+        last_t = _alerts._as_epoch(last_fire.get(t.id))
 
         if stale:
             if mt is None:
-                detail = f"no artifact matches {t.pattern}"
+                detail = f"no artifact matches {pattern}"
                 message = (
-                    f"{t.label} has produced nothing: no file matches "
-                    f"{t.pattern} — the job may be loaded but never firing"
+                    f"{label} has produced nothing: no file matches "
+                    f"{pattern} — the job may be loaded but never firing"
                 )
             else:
                 detail = f"newest artifact {age_h:.1f}h old (limit {t.max_age_hours:g}h)"
                 message = (
-                    f"{t.label} artifact is stale: newest match of {t.pattern} "
+                    f"{label} artifact is stale: newest match of {pattern} "
                     f"is {age_h:.1f}h old (limit {t.max_age_hours:g}h) — the "
                     f"job may be loaded but never firing"
                 )
@@ -187,7 +250,7 @@ def check_freshness(prev: dict, new_state: dict, now: int,
                 alert = {
                     "t": now,
                     "id": key,
-                    "name": f"Freshness · {t.label}",
+                    "name": f"Freshness · {label}",
                     "kind": "freshness",
                     "group": "scheduled",
                     "level": "down",
@@ -204,13 +267,13 @@ def check_freshness(prev: dict, new_state: dict, now: int,
                     )
         elif old == "down":
             message = (
-                f"{t.label} artifact is fresh again "
+                f"{label} artifact is fresh again "
                 f"({age_h:.1f}h old, limit {t.max_age_hours:g}h)"
             )
             alert = {
                 "t": now,
                 "id": key,
-                "name": f"Freshness · {t.label}",
+                "name": f"Freshness · {label}",
                 "kind": "freshness",
                 "group": "scheduled",
                 "level": "ok",

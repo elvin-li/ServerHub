@@ -119,6 +119,37 @@ describe('WireGuard page', () => {
     expect(wrapper.text()).toContain('wg.check_nat')
   })
 
+  it('does not offer Start or claim no peers before the first status arrives', async () => {
+    let resolveStatus
+    api.getWireguard.mockReturnValue(new Promise((resolve) => { resolveStatus = resolve }))
+    api.getWireguardReadiness.mockResolvedValue(readiness())
+    api.getWireguardSettings.mockResolvedValue({ settings: {} })
+    api.getWireguardNextIp.mockResolvedValue({ next_ip: '' })
+    const wrapper = mount(WireGuard, { global: { provide: { toast: vi.fn() } } })
+    await flushPromises()
+
+    expect(wrapper.find('.wg-start').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('wg.no_peers')
+
+    resolveStatus(status())
+    await flushPromises()
+    expect(wrapper.find('.wg-start').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows a retryable banner when the first status read fails', async () => {
+    api.getWireguard.mockRejectedValue(new Error('backend unreachable'))
+    api.getWireguardReadiness.mockResolvedValue(readiness())
+    api.getWireguardSettings.mockResolvedValue({ settings: {} })
+    const wrapper = mount(WireGuard, { global: { provide: { toast: vi.fn() } } })
+    await flushPromises()
+
+    expect(wrapper.html()).toContain('load-failure')
+    expect(wrapper.text()).not.toContain('wg.no_peers')
+    expect(wrapper.find('.wg-start').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('tells the operator when wireguard-tools is absent', async () => {
     const { wrapper } = await mountView({ installed: false, install: { installed: false } })
     expect(wrapper.text()).toContain('wg.not_installed_title')
@@ -219,6 +250,7 @@ describe('WireGuard readiness table', () => {
       if (typeof fn?.mockReset === 'function') fn.mockReset()
     }
     api.wireguardPeerDownloadUrl.mockReturnValue('/download')
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
   })
 
   /** Rows in the blocking-gaps table, by the check label each one renders. */
@@ -324,6 +356,7 @@ describe('WireGuard non-blocking warnings', () => {
       if (typeof fn?.mockReset === 'function') fn.mockReset()
     }
     api.wireguardPeerDownloadUrl.mockReturnValue('/download')
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
   })
 
   /** Rows in the warnings tile, by the check label each one renders. */

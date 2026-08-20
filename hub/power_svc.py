@@ -30,6 +30,71 @@ _pool = LazyPool(3, "hub-power")
 def shutdown_executor() -> None:
     _pool.shutdown()
 
+
+def _as_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Leftover ``\\ud800`` in ``host_ip`` / ifconfig MAC / pmset stderr still
+    500'd GET /api/system/power and PUT /api/system/power/wol.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _as_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_as_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/system/power.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _as_text(value)
+    except Exception:
+        return None
+
 VNC_PORT = 5900
 
 
@@ -50,7 +115,7 @@ def _iface_mac(dev: str) -> str:
         return ""
     rc, out, _ = sh(["/sbin/ifconfig", dev], timeout=5)
     if rc == 0:
-        m = re.search(r"\bether\s+([0-9a-fA-F:]{17})", out)
+        m = re.search(r"\bether\s+([0-9a-fA-F:]{17})", _as_text(out))
         if m:
             return m.group(1)
     return ""
@@ -66,7 +131,7 @@ def _womp_enabled() -> bool | None:
     rc, out, _ = sh(["/usr/bin/pmset", "-g"], timeout=5)
     if rc != 0:
         return None
-    m = re.search(r"\bwomp\s+(\d)", out)
+    m = re.search(r"\bwomp\s+(\d)", _as_text(out))
     return bool(int(m.group(1))) if m else None
 
 
@@ -76,14 +141,14 @@ def set_wol(enabled: bool) -> dict:
     if rc != 0:
         rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "womp", val], timeout=8)
     ok = rc == 0
-    msg = (out or err or "").strip()
+    msg = (_as_text(out) or _as_text(err)).strip()
     if not ok:
         msg = (msg or "failed") + f" · run manually: sudo pmset -a womp {val}"
-    return {
+    return _jsonable({
         "ok": ok,
         "enabled": enabled if ok else _womp_enabled(),
         "message": msg or ("Wake-on-LAN " + ("enabled" if enabled else "disabled")),
-    }
+    })
 
 
 # ─── Screen Sharing (VNC) ────────────────────────────────────────────────────
@@ -94,8 +159,11 @@ def _screensharing_running() -> bool:
 
 def screensharing_status() -> dict:
     running = _screensharing_running()
-    host = _host_ip()
-    return {
+    try:
+        host = _as_text(_host_ip())
+    except Exception:
+        host = ""
+    return _jsonable({
         "running": running,
         "port": VNC_PORT,
         "host": host,
@@ -106,7 +174,7 @@ def screensharing_status() -> dict:
             else "Disabled: click \u201cEnable Screen Sharing\u201d, or turn it on manually in "
                  "System Settings › General › Sharing › Screen Sharing"
         ),
-    }
+    })
 
 
 # ─── Power actions ───────────────────────────────────────────────────────────
@@ -131,6 +199,24 @@ def _do_power(action: str) -> None:
         sh(["/usr/bin/sudo", "-n", "/sbin/shutdown", flag, "now"], timeout=15)
 
 
+def _clamp_delay(raw, default: float = 2.0) -> float:
+    """Seconds the power thread actually sleeps.
+
+    The response used to clamp leftover ``.inf`` / ``1e308`` *after* starting
+    the worker, so POST /api/system/power/action reported ``scheduled_in_sec: 2``
+    while ``time.sleep(inf)`` OverflowError'd (or hung) and the action never ran.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return default
+    try:
+        delay = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if delay != delay or delay in (float("inf"), float("-inf")):
+        return default
+    return max(0.0, min(delay, 30.0))
+
+
 def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> dict:
     action = (action or "").strip().lower()
     if action not in _ACTIONS:
@@ -138,10 +224,11 @@ def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> 
     if not confirm:
         raise api_error("power.confirm_required")
 
+    delay = _clamp_delay(delay_sec)
     _last_power.update(action=action, at=time.time())
 
     def job():
-        time.sleep(max(0.0, delay_sec))
+        time.sleep(delay)
         try:
             _do_power(action)
         except Exception:
@@ -149,12 +236,12 @@ def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> 
 
     threading.Thread(target=job, daemon=True, name=f"power-{action}").start()
     label = {"shutdown": "Shutdown", "restart": "Restart", "sleep": "Sleep"}[action]
-    return {
+    return _jsonable({
         "ok": True,
         "action": action,
-        "scheduled_in_sec": round(delay_sec, 1),
-        "message": f"{label} command sent; it will run in about {delay_sec:.0f} seconds",
-    }
+        "scheduled_in_sec": round(delay, 1),
+        "message": f"{label} command sent; it will run in about {delay:.0f} seconds",
+    })
 
 
 # ─── Aggregate status for the page ───────────────────────────────────────────
@@ -182,15 +269,25 @@ def power_overview() -> dict:
             return fallback
 
     # `.result()` re-raises; a wedged `pmset` must not drop the power tile.
-    dev, mac = _result(f_nic, ("", ""))
+    nic = _result(f_nic, ("", ""))
+    if not isinstance(nic, (tuple, list)) or len(nic) < 2:
+        dev, mac = "", ""
+    else:
+        dev, mac = nic[0], nic[1]
     womp = _result(f_womp, None)
     screen_sharing = _result(f_ss, {}) or {}
-    return {
+    if not isinstance(screen_sharing, dict):
+        screen_sharing = {}
+    try:
+        host = screen_sharing.get("host") or _host_ip()
+    except Exception:
+        host = ""
+    return _jsonable({
         "actions": list(_ACTIONS),
         "wol": {
             "enabled": womp,
-            "iface": dev,
-            "mac": mac,
+            "iface": _as_text(dev),
+            "mac": _as_text(mac),
             "hint": "Wake-on-LAN can only wake a sleeping machine, and the magic packet "
                     "must come from another device on the LAN; it cannot power on a Mac "
                     "that is fully shut down.",
@@ -198,7 +295,7 @@ def power_overview() -> dict:
         "screen_sharing": screen_sharing,
         # Already resolved inside screensharing_status(); host_ip() is cached, so
         # this is a dict read rather than another lookup.
-        "host_ip": screen_sharing.get("host") or _host_ip(),
+        "host_ip": _as_text(host),
         "perf_tips": [
             "In the client's Screen Sharing app, choose View › Adaptive Quality for a "
             "more responsive session on weak networks.",
@@ -209,4 +306,4 @@ def power_overview() -> dict:
             "Keep the machine awake while remoting: raise displaysleep in power "
             "management or use a caffeinate-style tool.",
         ],
-    }
+    })

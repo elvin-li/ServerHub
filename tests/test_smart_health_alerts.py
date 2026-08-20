@@ -213,6 +213,18 @@ class SeverityTests(SmartAlertCase):
             with self.subTest(health=health):
                 self.assertEqual(self.one([disk(health=health)])["level"], "down")
 
+    def test_braces_in_model_or_health_do_not_break_format(self):
+        """Drive strings with ``{…}`` used to KeyError ``str.format`` and mute SMART."""
+        alert = self.one([disk(health="FAILED {attr}", model="Samsung SSD {990} PRO")])
+        self.assertEqual(alert["level"], "down")
+        self.assertIn("FAILED {attr}", alert["detail"])
+        self.assertIn("Samsung SSD {990} PRO", alert["name"])
+
+    def test_numeric_spec_on_a_string_leftover_does_not_raise(self):
+        detail, sentence = alerts._smart_reason("temp", v="hot", lim="warm")
+        self.assertIn("hot", detail)
+        self.assertIn("warm", sentence)
+
     def test_media_errors_are_fatal(self):
         self.assertEqual(self.one([disk(media_errors="3")])["level"], "down")
 

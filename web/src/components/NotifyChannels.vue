@@ -3,7 +3,8 @@
     <h2 class="section-title" style="margin-top:0">{{ t('notifych.title') }}</h2>
     <p class="hint" style="margin-top:0">{{ t('notifych.hint') }}</p>
 
-    <div class="table-wrap" v-if="channels.length">
+    <div v-if="loadError" class="sub" style="color:var(--down)" role="alert">{{ finiteText(loadError) }}</div>
+    <div class="table-wrap" v-else-if="channels.length">
     <table class="dense fit-m">
       <thead>
         <tr>
@@ -17,8 +18,8 @@
       <tbody>
         <tr v-for="c in channels" :key="c.id">
           <td>
-            <strong>{{ c.name }}</strong>
-            <div class="mono sub-line">{{ c.id }}</div>
+            <strong>{{ finiteText(c.name) }}</strong>
+            <div class="mono sub-line">{{ finiteText(c.id) }}</div>
             <div class="show-m sub">{{ typeLabel(c.type) }} · {{ t(`notifych.level_${c.min_level}`) }}</div>
           </td>
           <td class="col-hide-m">{{ typeLabel(c.type) }}</td>
@@ -49,7 +50,7 @@
     </div>
 
     <div v-if="editing" class="editor">
-      <h2 class="section-title">{{ editing.existing ? t('notifych.edit_title', { name: editing.name || editing.id }) : t('notifych.add') }}</h2>
+      <h2 class="section-title">{{ editing.existing ? t('notifych.edit_title', { name: finiteText(editing.name, '') || finiteText(editing.id) }) : t('notifych.add') }}</h2>
       <div class="form-grid">
         <label>{{ t('common.type') }}</label>
         <select v-model="editing.type" :disabled="editing.existing" :aria-label="t('common.type')">
@@ -105,12 +106,13 @@
 </template>
 
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { inject, onMounted, onUnmounted, ref } from 'vue'
 import {
   createNotifyChannel, deleteNotifyChannel, getNotifyChannels,
   testNotifyChannel, updateNotifyChannel,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -121,8 +123,11 @@ const channels = ref([])
 const types = ref({})
 const typeIds = ref([])
 const loaded = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const editing = ref(null)
+let pageAlive = true
+let loadGeneration = 0
 
 function typeLabel(ty) {
   const key = `notifych.type_${ty}`
@@ -181,14 +186,20 @@ function secretsFor(ty) {
 }
 
 async function load() {
+  const generation = ++loadGeneration
   try {
     const r = await getNotifyChannels()
-    channels.value = r.channels || []
-    types.value = r.types || {}
+    if (generation !== loadGeneration || !pageAlive) return
+    channels.value = Array.isArray(r?.channels) ? r.channels : []
+    types.value = r?.types && typeof r.types === 'object' ? r.types : {}
     typeIds.value = Object.keys(types.value)
-    loaded.value = true
+    loadError.value = ''
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    loadError.value = e.message || String(e)
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === loadGeneration) loaded.value = true
   }
 }
 
@@ -225,6 +236,7 @@ function startEdit(c) {
 async function save() {
   const e = editing.value
   if (!e) return
+  const generation = loadGeneration
   busy.value = true
   try {
     // An untouched (empty) secret input means "keep the stored value"; the
@@ -244,44 +256,59 @@ async function save() {
     }
     if (e.existing) await updateNotifyChannel(e.id, body)
     else await createNotifyChannel(body)
+    if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.save'))
     editing.value = null
     await load()
   } catch (err) {
-    toast('❌ ' + err.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(err.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function testChannel(c) {
+  const generation = loadGeneration
   busy.value = true
   try {
     const r = await testNotifyChannel(c.id)
+    if (generation !== loadGeneration || !pageAlive) return
     toast(r.ok ? '✅ ' + t('notifych.test_sent') : '❌ ' + softText(r))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function removeChannel(c) {
-  if (!confirm(t('notifych.delete_confirm', { name: c.name }))) return
+  if (!confirm(t('notifych.delete_confirm', { name: finiteText(c.name) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     await deleteNotifyChannel(c.id)
+    if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.delete'))
     if (editing.value?.id === c.id) editing.value = null
     await load()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  pageAlive = true
+  void load()
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+})
 </script>
 
 <style scoped>

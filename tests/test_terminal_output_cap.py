@@ -37,3 +37,19 @@ class TerminalRunCapTests(unittest.TestCase):
         self.assertNotIn("capture_output=True,", source)
         self.assertIn("iter_capped_lines", source)
         self.assertIn("start_new_session=True", source)
+
+    def test_nul_command_is_400_not_500(self):
+        with self.assertRaises(HTTPException) as raised:
+            terminal_svc._check_command("id\x00reboot")
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail["code"], "terminal.bad_command")
+
+    def test_nul_in_argv_does_not_raise(self):
+        result = terminal_svc._run(["/bin/echo", "hi\x00there"], timeout=2)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["rc"], 127)
+
+    def test_infinite_timeout_clamps(self):
+        self.assertEqual(terminal_svc._clamp_timeout(float("inf")), terminal_svc.DEFAULT_TIMEOUT)
+        self.assertEqual(terminal_svc._clamp_timeout(True), terminal_svc.DEFAULT_TIMEOUT)
+        self.assertEqual(terminal_svc._clamp_timeout(0), 1)

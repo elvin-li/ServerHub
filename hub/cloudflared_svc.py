@@ -6,6 +6,7 @@ broken bare `brew services cloudflared` (no args / no config) is avoided.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import plistlib
@@ -16,21 +17,39 @@ import threading
 import time
 from pathlib import Path
 
+from hub import cli_args, secure_io
 from hub.errors import api_error
-from hub.paths import AGENTS_DIR, BREW
-from hub import secure_io
+from hub.paths import AGENTS_DIR, BREW, user_home
 from hub.launchd_cache import invalidate_launchd
 from hub.proc_cache import invalidate_processes, ps_lines, ps_pid_commands
-from hub.util import fan_out, sh, tail_file_lines
+from hub.util import fan_out, read_text_capped, sh, tail_file_lines, utf8_env
 
-CF_BIN = "/opt/homebrew/bin/cloudflared"
-if not Path(CF_BIN).is_file():
-    CF_BIN = "/usr/local/bin/cloudflared"
+def _probe_cf_bin() -> str:
+    """First cloudflared path that is readable.  ``is_file`` EIO used to 500 import."""
+    preferred = "/opt/homebrew/bin/cloudflared"
+    try:
+        if Path(preferred).is_file():
+            return preferred
+    except (OSError, ValueError, TypeError):
+        pass
+    return "/usr/local/bin/cloudflared"
 
-CF_HOME = Path.home() / ".cloudflared"
+
+def _home_dir() -> Path:
+    """Best-effort HOME.  ``Path.home()`` leftover used to 500 import."""
+    return user_home() or Path("/var/empty/serverhub-cloudflared")
+
+
+CF_BIN = _probe_cf_bin()
+_HOME = _home_dir()
+CF_HOME = _HOME / ".cloudflared"
 CERT = CF_HOME / "cert.pem"
-STATE_DIR = Path.home() / "Services" / "cloudflared"
+STATE_DIR = _HOME / "Services" / "cloudflared"
 STATE_FILE = STATE_DIR / "serverhub-state.json"
+#: Leftover multi-MB serverhub-state.json used to OOM GET /api/cloudflared/status.
+_STATE_CAP = 256 * 1024
+#: Leftover huge ``tunnel login`` stdout line used to RSS-bomb POST /login.
+_LOGIN_LINE_CAP = 4096
 TOKEN_FILE = STATE_DIR / "tunnel.token"
 LOG_FILE = STATE_DIR / "tunnel.log"
 CONFIG_YML = CF_HOME / "config.yml"
@@ -43,6 +62,96 @@ LOGIN_URL_FILE = STATE_DIR / "login.url"
 #: after reading the URL left an unclosed TextIOWrapper (ResourceWarning
 #: in the suite, leaked fd in the panel until GC).
 _login_proc: subprocess.Popen | None = None
+
+
+def _as_text(value) -> str:
+    """Drop leftover ``\\ud800`` so cloudflared JSON cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+#: Cloudflare connector tokens always start with ``eyJ`` (base64 of ``{"``).
+#: The Zero Trust dashboard pastes a three-segment JWT; ``cloudflared tunnel
+#: token`` returns a single-segment JSON blob ``{"a","s","t"}``.  A 40-character
+#: placeholder still passed the old ``len < 40`` gate; KeepAlive then respawned
+#: forever on "Provided Tunnel token is not valid."
+_TOKEN_MIN = 80
+_TOKEN_FILE_CAP = 8192
+_TOKEN_B64_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_TOKEN_JWT_RE = re.compile(
+    r"^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$"
+)
+
+
+def _normalize_token(token) -> str:
+    return _as_text(token).strip().strip("\"'")
+
+
+def _compact_token_payload(text: str) -> dict | None:
+    """Decode a one-segment ``{"a","s","t"}`` connector token, or None."""
+    if not text.startswith("eyJ") or not _TOKEN_B64_RE.fullmatch(text):
+        return None
+    try:
+        raw = text + "=" * (-len(text) % 4)
+        data = base64.urlsafe_b64decode(raw.encode("ascii"))
+        obj = json.loads(data)
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    account, tunnel = obj.get("a"), obj.get("t")
+    if not isinstance(account, str) or not isinstance(tunnel, str):
+        return None
+    if len(account) < 8 or len(tunnel) < 8:
+        return None
+    return obj
+
+
+def token_looks_valid(token) -> bool:
+    """True when *token* is a Cloudflare connector JWT or compact token."""
+    text = _normalize_token(token)
+    if len(text) < _TOKEN_MIN:
+        return False
+    if _TOKEN_JWT_RE.fullmatch(text):
+        return True
+    return _compact_token_payload(text) is not None
+
+
+def _read_saved_token() -> str:
+    if not _path_is_file(TOKEN_FILE):
+        return ""
+    try:
+        return _normalize_token(read_text_capped(TOKEN_FILE, _TOKEN_FILE_CAP))
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
+def _path_is_file(path: Path) -> bool:
+    """``Path.is_file()`` raises on EACCES/EIO; a dying mount used to 500 status/logs."""
+    try:
+        return path.is_file()
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _path_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 #: Cloudflare's documented tunnel edge range (198.41.192.0/20).  A subset is
@@ -78,7 +187,7 @@ def resolve_edge_ips() -> list[str]:
                 addr = info[4][0]
                 if addr not in out:
                     out.append(addr)
-        except OSError:
+        except (OSError, UnicodeError, ValueError):
             continue
     return out
 
@@ -125,34 +234,89 @@ def _edge_workaround_args() -> list[str]:
 
 
 def _ensure_dirs() -> None:
-    CF_HOME.mkdir(parents=True, exist_ok=True)
-    try:
-        CF_HOME.chmod(0o700)
-    except OSError:
-        pass
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        STATE_DIR.chmod(0o700)
-    except OSError:
-        pass
+    for path in (CF_HOME, STATE_DIR):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # A file occupying ~/.cloudflared used to FileExistsError and
+            # 500 GET /api/cloudflared/status on every poll.
+            continue
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
 
 
 def _bin() -> str:
-    if Path(CF_BIN).is_file():
+    if _path_is_file(Path(CF_BIN)):
         return CF_BIN
-    w = sh(["/usr/bin/which", "cloudflared"], timeout=5)[1].strip()
-    if w and Path(w).is_file():
+    w = _as_text(sh(["/usr/bin/which", "cloudflared"], timeout=5)[1]).strip()
+    if w and _path_is_file(Path(w)):
         return w
     raise api_error("cloudflared.not_installed")
 
 
+def _jsonable_state(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Infinity in serverhub-state.json was already dropped; leftover
+    ``name: 2026-08-19`` / ``!!binary`` / ``!!set`` still leaked
+    ``datetime.date`` / bytes / set into GET /api/cloudflared/status
+    (``active_tunnel`` / ``mode``) because this walker returned them as-is.
+    """
+    if depth > 16:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            # Leftover ``\\ud800`` keys used to 500 GET /api/cloudflared/status.
+            k = k.encode("utf-8", "replace").decode("utf-8")
+            out[k] = _jsonable_state(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable_state(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/cloudflared/status.
+            return _jsonable_state(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _as_text(value)
+    except Exception:
+        return None
+
+
 def _load_state() -> dict:
     _ensure_dirs()
-    if STATE_FILE.is_file():
+    if _path_is_file(STATE_FILE):
         try:
-            data = json.loads(STATE_FILE.read_text() or "{}")
-        except Exception:
+            data = json.loads(read_text_capped(STATE_FILE, _STATE_CAP) or "{}")
+        except (OSError, ValueError, RecursionError):
+            # RecursionError: leftover deeply-nested tunnel state is not ValueError.
             return {}
+        data = _jsonable_state(data)
         return data if isinstance(data, dict) else {}
     return {}
 
@@ -161,26 +325,52 @@ def _save_state(data: dict) -> None:
     _ensure_dirs()
     # Created 0600 through the open() mode: write-then-chmod left the state
     # readable by every local user for the duration of the write.
-    secure_io.replace_secret_text(
-        STATE_FILE, json.dumps(data, ensure_ascii=False, indent=2)
-    )
+    try:
+        secure_io.replace_secret_text(
+            STATE_FILE,
+            json.dumps(
+                _jsonable_state(data), ensure_ascii=False, indent=2, allow_nan=False,
+            ),
+        )
+    except (OSError, ValueError, TypeError, RecursionError):
+        # A file occupying STATE_DIR or a directory occupying STATE_FILE
+        # used to 500 POST /start after the tunnel itself was already up.
+        # RecursionError: leftover nested tunnel state after _jsonable_state
+        # is not ValueError.
+        pass
 
 
 def _logged_in() -> bool:
-    return CERT.is_file() and CERT.stat().st_size > 20
+    try:
+        # is_file then stat raced: a vanished cert raised FileNotFoundError
+        # and 500'd every cloudflared status/action that gates on login.
+        return _path_is_file(CERT) and CERT.stat().st_size > 20
+    except (OSError, ValueError):
+        return False
+
+
+def _forget_login_pid() -> None:
+    try:
+        LOGIN_PID.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _read_login_pid() -> int | None:
     """Return the recorded login PID, discarding malformed/stale metadata."""
-    if not LOGIN_PID.is_file():
+    if not _path_is_file(LOGIN_PID):
         return None
     try:
-        pid = int(LOGIN_PID.read_text().strip())
-        if pid <= 1:
+        with open(LOGIN_PID, encoding="utf-8", errors="replace") as fh:
+            raw = fh.read(32)
+        pid = int(raw.strip())
+        # pid_t is signed 32-bit; os.kill/waitpid OverflowError above that
+        # and 500'd every cloudflared status poll.
+        if pid <= 1 or pid > 2**31 - 1:
             raise ValueError("unsafe pid")
         return pid
-    except (OSError, ValueError):
-        LOGIN_PID.unlink(missing_ok=True)
+    except (OSError, ValueError, OverflowError):
+        _forget_login_pid()
         return None
 
 
@@ -198,12 +388,14 @@ def _wait_login_pid(pid: int, timeout: float) -> bool:
             waited, _ = os.waitpid(pid, os.WNOHANG)
             if waited == pid:
                 return True
+        except OverflowError:
+            return True
         except ChildProcessError:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
                 return True
-            except PermissionError:
+            except (PermissionError, OverflowError):
                 return False
 
         if time.monotonic() >= deadline:
@@ -219,15 +411,18 @@ def _login_process_pending() -> bool:
     try:
         waited, _ = os.waitpid(pid, os.WNOHANG)
         if waited == pid:
-            LOGIN_PID.unlink(missing_ok=True)
+            _forget_login_pid()
             return False
+    except OverflowError:
+        _forget_login_pid()
+        return False
     except ChildProcessError:
         pass
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
-        LOGIN_PID.unlink(missing_ok=True)
+    except (ProcessLookupError, PermissionError, OverflowError):
+        _forget_login_pid()
         return False
 
 
@@ -247,6 +442,27 @@ def _close_login_proc() -> None:
             pass
 
 
+def _signal_login(pid: int, sig: int) -> None:
+    """Signal the login waiter, and its group only when we own the group.
+
+    ``login_start`` uses ``start_new_session``, so the child is a group
+    leader (pgid == pid) and ``killpg`` takes browser helpers with it.
+    A leftover PID from an older panel (or a test child) often shares
+    *this* process group; ``killpg`` there would take the panel down.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError, OverflowError):
+        pgid = None
+    try:
+        if pgid is not None and pgid == pid and pgid != os.getpgrp():
+            os.killpg(pgid, sig)
+            return
+        os.kill(pid, sig)
+    except OverflowError as exc:
+        raise ProcessLookupError from exc
+
+
 def _terminate_login_process(*, term_timeout: float = 2.0,
                              kill_timeout: float = 1.0) -> bool:
     """Stop and reap the login waiter recorded in ``LOGIN_PID``.
@@ -263,7 +479,7 @@ def _terminate_login_process(*, term_timeout: float = 2.0,
         return True
 
     try:
-        os.kill(pid, signal.SIGTERM)
+        _signal_login(pid, signal.SIGTERM)
     except ProcessLookupError:
         # It may already be an exited, waitable child.
         pass
@@ -273,7 +489,7 @@ def _terminate_login_process(*, term_timeout: float = 2.0,
     stopped = _wait_login_pid(pid, term_timeout)
     if not stopped:
         try:
-            os.kill(pid, signal.SIGKILL)
+            _signal_login(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         except (PermissionError, OSError):
@@ -281,7 +497,7 @@ def _terminate_login_process(*, term_timeout: float = 2.0,
         stopped = _wait_login_pid(pid, kill_timeout)
 
     if stopped:
-        LOGIN_PID.unlink(missing_ok=True)
+        _forget_login_pid()
         _close_login_proc()
     return stopped
 
@@ -293,7 +509,7 @@ def _process_running() -> bool:
     # the process table twice.  The match below stays local because it is not a plain
     # substring test; it distinguishes a real `tunnel run` from any stray cloudflared.
     for line in ps_lines():
-        low = line.lower()
+        low = _as_text(line).lower()
         if "cloudflared" not in low:
             continue
         if "tunnel run" in low or "tunnel --config" in low:
@@ -304,19 +520,57 @@ def _process_running() -> bool:
     return False
 
 
+def _parse_launchctl_print(out) -> dict:
+    """Pull state / runs / last exit from ``launchctl print`` text."""
+    text = _as_text(out)
+    state = ""
+    m = re.search(r"(?m)^\s*state\s*=\s*(.+?)\s*$", text)
+    if m:
+        state = m.group(1).strip()
+    runs = None
+    m = re.search(r"runs\s*=\s*(\d+)", text)
+    if m:
+        try:
+            runs = int(m.group(1))
+        except (TypeError, ValueError, OverflowError):
+            runs = None
+    last_exit = None
+    m = re.search(r"last exit code\s*=\s*(-?\d+)", text)
+    if m:
+        try:
+            last_exit = int(m.group(1))
+        except (TypeError, ValueError, OverflowError):
+            last_exit = None
+    return {"state": state, "runs": runs, "last_exit": last_exit}
+
+
+def _launchd_job_info(label: str = LABEL) -> dict:
+    empty = {
+        "loaded": False,
+        "running": False,
+        "state": "",
+        "runs": None,
+        "last_exit": None,
+    }
+    try:
+        uid = os.getuid()
+        rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{uid}/{label}"], timeout=5)
+    except Exception:
+        return empty
+    if rc != 0:
+        return empty
+    parsed = _parse_launchctl_print(out)
+    parsed["loaded"] = True
+    parsed["running"] = parsed.get("state") == "running"
+    return parsed
+
+
 def _launchd_running() -> bool:
-    uid = os.getuid()
-    rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{uid}/{LABEL}"], timeout=5)
-    if rc == 0 and "state = running" in (out or ""):
+    if _launchd_job_info().get("running"):
         return True
     # brew agent (usually useless without config)
-    rc2, out2, _ = sh(
-        ["/bin/launchctl", "print", f"gui/{uid}/homebrew.mxcl.cloudflared"],
-        timeout=5,
-    )
-    if rc2 == 0 and "state = running" in (out2 or ""):
-        return True
-    return False
+    brew = _launchd_job_info("homebrew.mxcl.cloudflared")
+    return bool(brew.get("running"))
 
 
 def _is_running() -> bool:
@@ -387,7 +641,7 @@ def _list_tunnels_uncached() -> list[dict] | None:
     rc, out, err = sh([_bin(), "tunnel", "list"], timeout=10)
     if rc != 0:
         return None
-    text = (out or "") + "\n" + (err or "")
+    text = _as_text(out) + "\n" + _as_text(err)
     tunnels: list[dict] = []
     # ID NAME CREATED CONNECTIONS
     for line in text.splitlines():
@@ -413,40 +667,70 @@ def _list_tunnels_uncached() -> list[dict] | None:
     return tunnels
 
 
+def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required") -> str:
+    """Tunnel name/UUID that cannot be read as a cloudflared option."""
+    # Nested non-strings in serverhub-state.json used to raise ``.strip``.
+    if not isinstance(value, str):
+        if value in (None, ""):
+            raise api_error(empty_code)
+        raise api_error("cloudflared.invalid_name")
+    text = value.strip()
+    if not text:
+        raise api_error(empty_code)
+    if not cli_args.is_safe_positional(text):
+        raise api_error("cloudflared.invalid_name")
+    return text
+
+
 def fetch_token(tunnel: str) -> str:
     """Fetch run token for named tunnel (requires cert.pem)."""
-    tunnel = (tunnel or "").strip()
-    if not tunnel:
-        raise api_error("cloudflared.tunnel_required")
+    tunnel = _tunnel_argv(tunnel)
     if not _logged_in():
         raise api_error("cloudflared.not_logged_in")
     rc, out, err = sh([_bin(), "tunnel", "token", tunnel], timeout=45)
-    token = (out or "").strip().splitlines()
-    token = (token[-1] if token else "").strip()
-    if rc != 0 or not token or len(token) < 40:
+    token = _as_text(out).strip().splitlines()
+    token = _normalize_token(token[-1] if token else "")
+    if rc != 0 or not token_looks_valid(token):
         raise api_error(
             "cloudflared.token_fetch_failed",
-            error=(err or out or "unknown")[-500:],
+            error=(_as_text(err) or _as_text(out) or "unknown")[-500:],
         )
     return token
 
 
 def _write_token(token: str) -> Path:
     _ensure_dirs()
-    token = (token or "").strip()
-    if len(token) < 40:
+    token = _normalize_token(token)
+    if not token_looks_valid(token):
         raise api_error("cloudflared.invalid_token")
     # The tunnel token grants ingress to this LAN, so it must never exist with
     # default permissions, not even for the moment before a chmod.
-    secure_io.replace_secret_text(TOKEN_FILE, token + "\n")
+    try:
+        secure_io.replace_secret_text(TOKEN_FILE, token + "\n")
+    except OSError:
+        # A directory occupying tunnel.token, or a file occupying STATE_DIR,
+        # used to 500 POST /start-token.
+        raise api_error("cloudflared.no_token")
     return TOKEN_FILE
+
+
+def _launch_env() -> dict[str, str]:
+    """Launchd/login env.  ``Path.home()`` RuntimeError used to 500 POST /start."""
+    env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
+    home = user_home()
+    if home is not None:
+        env["HOME"] = str(home)
+    return env
 
 
 def _write_launchagent_token() -> Path:
     """LaunchAgent: cloudflared tunnel run --token-file ..."""
     _ensure_dirs()
-    if not TOKEN_FILE.is_file():
+    saved = _read_saved_token()
+    if not saved:
         raise api_error("cloudflared.no_token")
+    if not token_looks_valid(saved):
+        raise api_error("cloudflared.invalid_token")
     bin_path = _bin()
     # Rendered one <string> per argv element, so the workaround flags land as
     # real separate arguments (launchd does no word splitting).
@@ -486,12 +770,11 @@ def _write_launchagent_token() -> Path:
         "StandardOutPath": str(LOG_FILE),
         "StandardErrorPath": str(LOG_FILE),
         "WorkingDirectory": str(STATE_DIR),
-        "EnvironmentVariables": {
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(Path.home()),
-        },
+        "EnvironmentVariables": _launch_env(),
     }
-    PLIST.write_bytes(plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False))
+    secure_io.replace_bytes(
+        PLIST, plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
+    )
     return PLIST
 
 
@@ -519,11 +802,61 @@ def _launchctl_bootout() -> None:
     _forget_host_state()
 
 
+def _recent_tunnel_error() -> str:
+    """Human reason from the last log lines, or empty when nothing matches."""
+    try:
+        lines = tail_file_lines(LOG_FILE, 40)
+    except Exception:
+        return ""
+    text = _as_text("\n".join(lines)).lower()
+    if "token is not valid" in text:
+        return (
+            "Provided tunnel token is not valid. "
+            "Paste a Zero Trust tunnel token (it starts with eyJ)."
+        )
+    if "flag provided but not defined" in text:
+        return (
+            "cloudflared rejected a LaunchAgent flag "
+            "(often --edge placed after the `run` subcommand)."
+        )
+    if "tls handshake with edge: eof" in text:
+        return (
+            "TLS handshake with the Cloudflare edge failed "
+            "(DNS hijack or a local proxy intercepting the tunnel)."
+        )
+    return ""
+
+
+def _start_failure_reason(info: dict | None = None) -> str:
+    hint = _recent_tunnel_error()
+    if hint:
+        return hint
+    info = info if isinstance(info, dict) else {}
+    last_exit = info.get("last_exit")
+    state = _as_text(info.get("state") or "") or "not running"
+    if last_exit not in (None, 0):
+        return (
+            f"cloudflared exited with code {last_exit} ({state}). "
+            f"Check {LOG_FILE}."
+        )
+    return f"Start command issued but cloudflared is not running. Check {LOG_FILE}."
+
+
+def _raise_if_start_failed(result: dict) -> None:
+    if result.get("ok"):
+        return
+    msg = _as_text(result.get("message") or "")
+    low = msg.lower()
+    if "token is not valid" in low or "starts with eyj" in low:
+        raise api_error("cloudflared.invalid_token")
+    raise api_error("cloudflared.start_failed", error=msg[-500:] or "not running")
+
+
 def _launchctl_bootstrap() -> dict:
     uid = os.getuid()
     _launchctl_bootout()
     time.sleep(0.4)
-    if not PLIST.is_file():
+    if not _path_is_file(PLIST):
         return {"ok": False, "message": f"Missing {PLIST}"}
     rc, out, err = sh(
         ["/bin/launchctl", "bootstrap", f"gui/{uid}", str(PLIST)],
@@ -533,35 +866,39 @@ def _launchctl_bootstrap() -> dict:
     sh(["/bin/launchctl", "enable", f"gui/{uid}/{LABEL}"], timeout=10)
     sh(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"], timeout=15)
     _forget_host_state()
-    ok = rc == 0 or _is_running()
-    msg = (out or "") + (err or "")
+    msg = (_as_text(out) + _as_text(err)).strip()
     running = False
-    if ok:
-        # wait briefly for process
-        for _ in range(8):
-            # The point of this loop is to observe a change, so each pass needs its
-            # own reading.  The process table and the launchd listing are both cached
-            # for a few seconds to collapse concurrent page readers, and a cached
-            # answer here would mean polling the same pre-start snapshot eight times
-            # and reporting a successful start as "check the log".
-            _forget_host_state()
-            running = _is_running()
-            if running:
-                break
-            time.sleep(0.4)
-    # One reading decides both fields.  They used to be two separate `_is_running()`
-    # calls -- each a full process-table scan -- which could disagree with each other
-    # and report ok=True alongside "start command issued, check the log".
-    return {
-        "ok": ok or running,
-        "message": msg.strip() or ("Started" if running else "Start command issued; check the log"),
-    }
+    info: dict = {}
+    # The point of this loop is to observe a change, so each pass needs its
+    # own reading.  The process table and the launchd listing are both cached
+    # for a few seconds to collapse concurrent page readers, and a cached
+    # answer here would mean polling the same pre-start snapshot eight times
+    # and reporting a successful start as "check the log".
+    for i in range(8):
+        _forget_host_state()
+        running = _is_running()
+        if running:
+            break
+        info = _launchd_job_info()
+        # Invalid token (and similar) exits in milliseconds.  Do not wait the
+        # full poll window, and do not leave KeepAlive loaded — that is the
+        # silent crash loop the Services page then reports as "won't start".
+        if i >= 1 and info.get("last_exit") not in (None, 0) and not info.get("running"):
+            break
+        time.sleep(0.4)
+    if running:
+        return {"ok": True, "message": msg or "Started"}
+    reason = _start_failure_reason(info)
+    _launchctl_bootout()
+    return {"ok": False, "message": reason}
 
 
 def status() -> dict:
     """Panel snapshot for Cloudflared."""
     _ensure_dirs()
-    st = _load_state()
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
 
     def _tunnels() -> tuple[list, str | None]:
         """The tunnel list, or the reason it could not be fetched.
@@ -573,7 +910,7 @@ def status() -> dict:
         try:
             return list_tunnels(), None
         except Exception as e:
-            return [], str(e)
+            return [], _as_text(e)
 
     # The liveness check is local and the tunnel list is a round-trip to
     # Cloudflare; neither reads the other's answer, and this endpoint is polled, so
@@ -590,9 +927,10 @@ def status() -> dict:
     )
 
     login_url = None
-    if LOGIN_URL_FILE.is_file():
+    if _path_is_file(LOGIN_URL_FILE):
         try:
-            login_url = LOGIN_URL_FILE.read_text().strip() or None
+            with open(LOGIN_URL_FILE, encoding="utf-8", errors="replace") as fh:
+                login_url = fh.read(4096).strip() or None
         except Exception:
             login_url = None
     # Reap a login child that exited between polls instead of retaining a zombie.
@@ -603,31 +941,49 @@ def status() -> dict:
         bin_path = _bin()
     except Exception:
         bin_path = None
-    return {
+    has_token = _path_is_file(TOKEN_FILE)
+    token_ok = token_looks_valid(_read_saved_token()) if has_token else False
+    crash_loop = False
+    last_exit = None
+    status_text = "Running" if running else "Stopped"
+    if not running and _path_is_file(PLIST):
+        info = _launchd_job_info()
+        last_exit = info.get("last_exit")
+        if info.get("loaded") and last_exit not in (None, 0):
+            crash_loop = True
+            status_text = _recent_tunnel_error() or (
+                f"Crash-looping · last exit {last_exit}"
+            )
+        elif has_token and not token_ok:
+            status_text = "Saved token is not a valid Cloudflare connector token"
+    return _jsonable_state({
         "ok": True,
-        "installed": bool(bin_path and Path(bin_path).is_file()),
+        "installed": bool(bin_path and _path_is_file(Path(bin_path))),
         "bin": bin_path,
         "logged_in": _logged_in(),
-        "cert_path": str(CERT) if CERT.is_file() else None,
+        "cert_path": str(CERT) if _path_is_file(CERT) else None,
         "running": running,
         "state": "ok" if running else "down",
-        "status_text": "Running" if running else "Stopped",
+        "status_text": status_text,
+        "crash_loop": crash_loop,
+        "last_exit": last_exit,
+        "token_ok": token_ok,
         "active_tunnel": st.get("tunnel_name") or st.get("tunnel_id"),
-        "mode": st.get("mode") or ("token" if TOKEN_FILE.is_file() else None),
-        "has_token": TOKEN_FILE.is_file(),
+        "mode": st.get("mode") or ("token" if has_token else None),
+        "has_token": has_token,
         "tunnels": tunnels,
         "tunnels_error": tunnels_err,
         "login_url": login_url if login_pending or not _logged_in() else None,
         "login_pending": login_pending,
-        "plist": str(PLIST) if PLIST.is_file() else None,
+        "plist": str(PLIST) if _path_is_file(PLIST) else None,
         "log_path": str(LOG_FILE),
-        "config_path": str(CONFIG_YML) if CONFIG_YML.is_file() else None,
+        "config_path": str(CONFIG_YML) if _path_is_file(CONFIG_YML) else None,
         "notes": (
             "Pick an existing tunnel or paste a Zero Trust token to start/stop. "
             "Configure routes/subdomains in the Cloudflare Zero Trust dashboard "
             "(recommended); no Remote Desktop needed."
         ),
-    }
+    })
 
 
 def login_start() -> dict:
@@ -648,45 +1004,97 @@ def login_start() -> dict:
             "logged_in": False,
             "login_pending": True,
         }
-    LOGIN_URL_FILE.unlink(missing_ok=True)
-    LOGIN_LOG.write_text("")
-    # Run login; cloudflared prints a URL then waits for callback
+    try:
+        LOGIN_URL_FILE.unlink(missing_ok=True)
+    except OSError:
+        # A directory occupying login.url used to 500 POST /login.
+        pass
+    try:
+        # write_text follows a planted symlink and O_TRUNCs the target.
+        # LOGIN_URL already uses replace_secret_text (O_EXCL|O_NOFOLLOW tmp).
+        secure_io.replace_secret_text(LOGIN_LOG, "")
+    except OSError:
+        pass
+    # Run login; cloudflared prints a URL then waits for callback.
+    # cwd must be a directory: a file occupying ~/.cloudflared used to
+    # NotADirectoryError after _ensure_dirs started swallowing that collision.
+    cwd = str(CF_HOME) if _path_is_dir(CF_HOME) else None
     global _login_proc
     _close_login_proc()
-    proc = subprocess.Popen(
-        [_bin(), "tunnel", "login"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=str(CF_HOME),
-        env={**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": str(Path.home())},
-    )
+    try:
+        proc = subprocess.Popen(
+            [_bin(), "tunnel", "login"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            cwd=cwd,
+            env=utf8_env({**os.environ, **_launch_env()}),
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, ValueError, TypeError) as e:
+        return {
+            "ok": False,
+            "message": f"Could not start cloudflared login: {e}",
+            "logged_in": False,
+        }
     _login_proc = proc
-    LOGIN_PID.write_text(str(proc.pid))
+    try:
+        secure_io.replace_secret_text(LOGIN_PID, str(proc.pid))
+    except OSError:
+        pass
     url = None
     # read up to ~8s for URL line
     deadline = time.time() + 12
     buf = ""
-    assert proc.stdout is not None
+    if proc.stdout is None:
+        return {
+            "ok": False,
+            "message": "Login process started but no output was captured",
+            "login_pending": True,
+        }
     while time.time() < deadline:
         if proc.poll() is not None:
             break
-        line = proc.stdout.readline()
+        try:
+            line = proc.stdout.readline(_LOGIN_LINE_CAP)
+        except (OSError, UnicodeDecodeError, ValueError, TypeError):
+            break
         if not line:
             time.sleep(0.15)
             continue
+        if len(line) >= _LOGIN_LINE_CAP and not line.endswith("\n"):
+            try:
+                while True:
+                    rest = proc.stdout.readline(_LOGIN_LINE_CAP)
+                    if rest == "" or rest.endswith("\n"):
+                        break
+            except (OSError, UnicodeDecodeError, ValueError, TypeError):
+                break
         buf += line
-        LOGIN_LOG.write_text(buf[-8000:])
+        if len(buf) > 16_000:
+            buf = buf[-8000:]
+        try:
+            secure_io.replace_secret_text(LOGIN_LOG, buf[-8000:])
+        except OSError:
+            pass
         m = re.search(r"https://[^\s]+", line)
         if m:
             url = m.group(0).rstrip(").,]")
-            LOGIN_URL_FILE.write_text(url)
+            try:
+                secure_io.replace_secret_text(LOGIN_URL_FILE, url)
+            except OSError:
+                pass
             break
     if not url and buf:
         m2 = re.search(r"https://[^\s]+", buf)
         if m2:
             url = m2.group(0).rstrip(").,]")
-            LOGIN_URL_FILE.write_text(url)
+            try:
+                secure_io.replace_secret_text(LOGIN_URL_FILE, url)
+            except OSError:
+                pass
     if not url:
         # still running? keep process
         if proc.poll() is None:
@@ -713,13 +1121,22 @@ def login_poll() -> dict:
         # A successful callback leaves the directly-spawned login waiter alive;
         # stop and reap it rather than only sending a signal and leaking a zombie.
         stopped = _terminate_login_process()
-        LOGIN_URL_FILE.unlink(missing_ok=True)
+        try:
+            LOGIN_URL_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
         return {
             "ok": stopped,
             "logged_in": True,
             "message": "Login successful" if stopped else "Login successful, but cleaning up the login process failed; try again later",
         }
-    url = LOGIN_URL_FILE.read_text().strip() if LOGIN_URL_FILE.is_file() else None
+    url = None
+    try:
+        if _path_is_file(LOGIN_URL_FILE):
+            with open(LOGIN_URL_FILE, encoding="utf-8", errors="replace") as fh:
+                url = fh.read(4096).strip() or None
+    except (OSError, UnicodeDecodeError, ValueError):
+        url = None
     return {
         "ok": True,
         "logged_in": False,
@@ -731,7 +1148,9 @@ def login_poll() -> dict:
 
 def create_tunnel(name: str) -> dict:
     name = re.sub(r"[^a-zA-Z0-9._-]", "", (name or "").strip())
-    if not name:
+    # The charset class includes ``-``, so ``--help`` survived the strip and
+    # became ``cloudflared tunnel create --help``.
+    if not name or not cli_args.is_safe_positional(name):
         raise api_error("cloudflared.invalid_name")
     if not _logged_in():
         raise api_error("cloudflared.login_required")
@@ -739,34 +1158,39 @@ def create_tunnel(name: str) -> dict:
     # The account list just changed; do not let the page show the old one.
     invalidate_tunnels()
     ok = rc == 0
-    msg = ((out or "") + "\n" + (err or "")).strip()
+    msg = (_as_text(out) + "\n" + _as_text(err)).strip()
     tunnels = list_tunnels() if ok or _logged_in() else []
     return {"ok": ok, "message": msg[-2000:], "tunnels": tunnels}
 
 
 def start_with_tunnel(tunnel: str) -> dict:
     """Fetch token for tunnel name/uuid and start LaunchAgent."""
-    tunnel = (tunnel or "").strip()
+    tunnel = _tunnel_argv(tunnel)
     token = fetch_token(tunnel)
     _write_token(token)
     _write_launchagent_token()
     r = _launchctl_bootstrap()
+    _raise_if_start_failed(r)
     st = _load_state()
     st.update({"mode": "token", "tunnel_name": tunnel, "updated": time.time()})
     _save_state(st)
     return {
-        "ok": r.get("ok") or _is_running(),
+        "ok": True,
         "message": f"Tunnel \"{tunnel}\" configured and started\n" + (r.get("message") or ""),
-        "running": _is_running(),
+        "running": True,
         "active_tunnel": tunnel,
     }
 
 
 def start_with_token(token: str, label: str | None = None) -> dict:
     """Start using a pasted Zero Trust token."""
+    token = _normalize_token(token)
+    if not token_looks_valid(token):
+        raise api_error("cloudflared.invalid_token")
     _write_token(token)
     _write_launchagent_token()
     r = _launchctl_bootstrap()
+    _raise_if_start_failed(r)
     st = _load_state()
     st.update({
         "mode": "token",
@@ -775,9 +1199,9 @@ def start_with_token(token: str, label: str | None = None) -> dict:
     })
     _save_state(st)
     return {
-        "ok": r.get("ok") or _is_running(),
+        "ok": True,
         "message": "Tunnel started with the token\n" + (r.get("message") or ""),
-        "running": _is_running(),
+        "running": True,
     }
 
 
@@ -800,17 +1224,23 @@ def stop() -> dict:
 
 
 def restart() -> dict:
-    st = _load_state()
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
     name = st.get("tunnel_name")
-    if TOKEN_FILE.is_file():
+    if _path_is_file(TOKEN_FILE):
+        if not token_looks_valid(_read_saved_token()):
+            _launchctl_bootout()
+            raise api_error("cloudflared.invalid_token")
         _write_launchagent_token()
         r = _launchctl_bootstrap()
-        return {
-            "ok": r.get("ok") or _is_running(),
+        _raise_if_start_failed(r)
+        return _jsonable_state({
+            "ok": True,
             "message": "Restarted\n" + (r.get("message") or ""),
-            "running": _is_running(),
+            "running": True,
             "active_tunnel": name,
-        }
+        })
     if name and _logged_in():
         return start_with_tunnel(name)
     return {"ok": False, "message": "Nothing to restart: pick a tunnel or paste a token and start it first"}
@@ -818,9 +1248,9 @@ def restart() -> dict:
 
 def route_dns(tunnel: str, hostname: str) -> dict:
     """cloudflared tunnel route dns <tunnel> <hostname>"""
-    tunnel = (tunnel or "").strip()
+    tunnel = _tunnel_argv(tunnel, empty_code="cloudflared.route_args_required")
     hostname = (hostname or "").strip().lower()
-    if not tunnel or not hostname:
+    if not hostname or not cli_args.is_safe_hostname(hostname):
         raise api_error("cloudflared.route_args_required")
     if not _logged_in():
         raise api_error("cloudflared.login_required")
@@ -828,20 +1258,35 @@ def route_dns(tunnel: str, hostname: str) -> dict:
         [_bin(), "tunnel", "route", "dns", tunnel, hostname],
         timeout=60,
     )
-    msg = ((out or "") + "\n" + (err or "")).strip()
+    msg = (_as_text(out) + "\n" + _as_text(err)).strip()
     return {"ok": rc == 0, "message": msg[-2000:]}
 
 
 def logs(lines: int = 120) -> dict:
-    lines = max(20, min(int(lines or 120), 500))
+    try:
+        n = int(lines or 120)
+    except (TypeError, ValueError, OverflowError):
+        n = 120
+    if isinstance(lines, float) and (
+        lines != lines or lines in (float("inf"), float("-inf"))
+    ):
+        n = 120
+    lines = max(20, min(n, 500))
     chunks: list[str] = []
     for p in (LOG_FILE, Path("/opt/homebrew/var/log/cloudflared.log"), LOGIN_LOG):
-        if p.is_file():
-            try:
-                tail = "\n".join(tail_file_lines(p, lines))
-                chunks.append(f"===== {p} =====\n{tail}")
-            except Exception as e:
-                chunks.append(f"===== {p} =====\n(read error: {e})")
+        # is_file() on the brew log path used to PermissionError and 500
+        # GET /api/cloudflared/logs even when our own tunnel.log was fine.
+        try:
+            present = p.is_file()
+        except (OSError, ValueError):
+            continue
+        if not present:
+            continue
+        try:
+            tail = "\n".join(tail_file_lines(p, lines))
+            chunks.append(f"===== {p} =====\n{tail}")
+        except Exception as e:
+            chunks.append(f"===== {p} =====\n(read error: {e})")
     if not chunks:
         return {"ok": True, "log": "No logs yet (the tunnel writes to ~/Services/cloudflared/tunnel.log once started)"}
     return {"ok": True, "log": "\n\n".join(chunks), "source": "cloudflared"}
@@ -854,7 +1299,7 @@ def uninstall_service() -> dict:
     removed = []
     for p in (PLIST, TOKEN_FILE, LOGIN_URL_FILE):
         try:
-            if p.is_file():
+            if _path_is_file(p):
                 p.unlink()
                 removed.append(str(p))
         except Exception:

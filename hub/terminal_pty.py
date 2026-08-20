@@ -28,6 +28,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from hub.paths import DOCKER
 from hub import terminal_svc
+from hub.errors import exc_detail
 from hub.websocket_security import authenticate_websocket
 
 MAX_SESSIONS = 4
@@ -55,10 +56,15 @@ _sessions_lock = threading.Lock()
 
 
 def _bounded_int(value: str | int | None, default: int, low: int, high: int) -> int:
-    try:
-        parsed = int(value or default)
-    except (TypeError, ValueError):
+    # Bool is an int, and JSON ``1e309`` is ``inf`` — ``int(inf)`` OverflowError
+    # used to kill the PTY session as ``io_error`` on a resize frame.
+    if isinstance(value, bool) or value is None:
         parsed = default
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            parsed = default
     return max(low, min(parsed, high))
 
 
@@ -77,12 +83,25 @@ def _safe_container(value: str | None) -> str:
     return text
 
 
+def _json_object(text: str) -> dict | None:
+    """Control-plane JSON from the browser.  A list used to raise ``.get``."""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _argv(target: str, container: str, shell: str) -> tuple[list[str], str | None]:
     if target == "host":
         if not terminal_svc.host_enabled():
             raise PermissionError("terminal.host_disabled")
         host_shell = shell or terminal_svc._default_shell()
-        if not Path(host_shell).is_file():
+        try:
+            ok = Path(host_shell).is_file()
+        except (OSError, ValueError):
+            ok = False
+        if not ok:
             host_shell = terminal_svc._default_shell()
         return [host_shell, "-l"], terminal_svc._resolve_cwd(None)
     if target == "container":
@@ -113,7 +132,12 @@ async def _write_all(fd: int, data: bytes) -> None:
 
 def _set_size(fd: int, cols: int, rows: int) -> None:
     packed = struct.pack("HHHH", rows, cols, 0, 0)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+    except OSError:
+        # A failed resize must not tear the session down; the shell keeps the
+        # previous window size.
+        pass
 
 
 def _reserve(user: str, target: str, container: str) -> _Session | None:
@@ -154,10 +178,10 @@ async def terminal_websocket(websocket: WebSocket) -> None:
     try:
         argv, cwd = _argv(target, container, shell)
     except PermissionError as exc:
-        await _reject(websocket, 4403, str(exc))
+        await _reject(websocket, 4403, exc_detail(exc))
         return
     except ValueError as exc:
-        await _reject(websocket, 4400, str(exc))
+        await _reject(websocket, 4400, exc_detail(exc))
         return
 
     session = _reserve(user, target, container)
@@ -191,7 +215,7 @@ async def terminal_websocket(websocket: WebSocket) -> None:
         slave_fd = -1
         os.set_blocking(master_fd, False)
         terminal_svc._audit({
-            "ts": int(time.time()), "event": "pty_start", "session": session.session_id,
+            "ts": terminal_svc._now(), "event": "pty_start", "session": session.session_id,
             "target": target, "container": container, "who": user,
         })
         await websocket.send_json({
@@ -253,16 +277,17 @@ async def terminal_websocket(websocket: WebSocket) -> None:
                     await _write_all(master_fd, data)
                     last_input = time.monotonic()
                     continue
-                if text is None or len(text.encode("utf-8")) > MAX_MESSAGE_BYTES:
+                if text is None or len(text.encode("utf-8", "replace")) > MAX_MESSAGE_BYTES:
                     close_reason = "input_limit"
                     return
-                try:
-                    payload = json.loads(text)
-                except (TypeError, ValueError):
+                payload = _json_object(text)
+                if payload is None:
                     continue
                 kind = payload.get("type")
                 if kind == "input":
-                    data = str(payload.get("data") or "").encode("utf-8")
+                    # JSON ``"\\ud800"`` is a str; strict UTF-8 used to kill the
+                    # session as ``io_error`` instead of replacing the leftover.
+                    data = str(payload.get("data") or "").encode("utf-8", "replace")
                     input_bytes += len(data)
                     if input_bytes > MAX_INPUT_BYTES:
                         close_reason = "input_limit"
@@ -302,7 +327,9 @@ async def terminal_websocket(websocket: WebSocket) -> None:
                 close_reason = "io_error"
     except (WebSocketDisconnect, BrokenPipeError, ConnectionResetError):
         close_reason = "disconnect"
-    except FileNotFoundError:
+    except (OSError, TypeError, ValueError):
+        # FileNotFoundError is OSError; cwd EIO/ESTALE and a missing PTY
+        # used to escape the FileNotFoundError-only handler as a 500.
         close_reason = "not_found"
         try:
             await websocket.send_json({"type": "error", "code": "terminal.runtime_not_found"})
@@ -344,7 +371,7 @@ async def terminal_websocket(websocket: WebSocket) -> None:
                 except subprocess.TimeoutExpired:
                     rc = proc.poll()
         terminal_svc._audit({
-            "ts": int(time.time()), "event": "pty_end", "session": session.session_id,
+            "ts": terminal_svc._now(), "event": "pty_end", "session": session.session_id,
             "target": target, "container": container, "who": user,
             "rc": rc, "duration_ms": int((time.monotonic() - started) * 1000),
             "reason": close_reason, "input_bytes": input_bytes,

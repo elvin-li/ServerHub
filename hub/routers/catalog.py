@@ -9,6 +9,28 @@ from hub import apps_manage_svc, auth, autostart_svc, catalog, catalog_remote, s
 
 from ..errors import api_error
 
+
+def _as_text(value) -> str:
+    """Drop leftover inf / ``\\ud800`` so POST /api/apps/credentials cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 router = APIRouter(tags=["catalog"])
 
 
@@ -135,8 +157,12 @@ def save_app_credential(body: CredentialSaveBody, request: Request):
     message = "Credential saved securely to the macOS Keychain"
     if body.apply_to_service:
         result = service_credentials.apply(body.service_id, body.username, body.password)
+        if not isinstance(result, dict):
+            result = {}
         applied = bool(result.get("ok"))
-        message = result.get("message") or message
+        text = _as_text(result.get("message"))
+        if text:
+            message = text
     item = service_credentials.store(
         body.service_id,
         display_name=body.display_name,

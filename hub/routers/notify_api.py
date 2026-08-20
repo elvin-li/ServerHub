@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hub import audit, notify_channels
 from hub.auth import request_username
 from hub.errors import api_error
+from hub.util import strftime_now
 
 router = APIRouter(tags=["notify"])
 
@@ -194,11 +195,9 @@ def test_channel(cid: str, request: Request):
     channel = notify_channels.get_channel(cid)
     if channel is None:
         raise api_error("notify.not_found", id=cid)
-    import time
-
     result = notify_channels.dispatch(
         "ServerHub test",
-        f"Notification channel test {time.strftime('%H:%M:%S')}",
+        f"Notification channel test {strftime_now('%H:%M:%S')}",
         event="test",
         channel_id=cid,
     )

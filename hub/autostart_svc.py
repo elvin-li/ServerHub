@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import os
 import plistlib
-import time
 from pathlib import Path
 
 from hub import cli_args
-from hub.docker_cli import engine_up
+from hub.docker_cli import _jsonable, engine_up
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd, loaded_labels
-from hub.util import cached_snapshot, fan_out, sh
+from hub.util import cached_snapshot, fan_out, read_bytes_capped, run_capped, sh, strftime_now, utf8_env
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 
 # Imported for the panel/launcher label spellings rather than restating them here:
@@ -25,7 +24,7 @@ from hub.brew_cache import brew_services_list, invalidate_brew_services
 # hub.paths and hub.util, none of which import this module, so there is no cycle.
 from hub import launcher_svc  # noqa: E402
 
-from hub.paths import AGENTS_DIR  # noqa: E402
+from hub.paths import AGENTS_DIR, user_home  # noqa: E402
 # Imported rather than redefined: hub.paths tries `which brew` before the two
 # standard prefixes, so a Homebrew installed anywhere else is still found. The
 # local copy this replaces only knew /opt/homebrew and /usr/local, which meant
@@ -34,6 +33,48 @@ from hub.paths import AGENTS_DIR  # noqa: E402
 from hub.paths import BREW  # noqa: E402
 
 _TTL = 12.0
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/apps/autostart.
+_PLIST_CAP = 256 * 1024
+
+
+def _as_text(value) -> str:
+    """JSON-safe leftover. ``\\ud800`` in brew/Popen messages used to 500 autostart JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _plist_label(pl: dict, fallback: str) -> str:
+    raw = pl.get("Label") if isinstance(pl, dict) else None
+    return raw if isinstance(raw, str) and raw else fallback
 
 #: Labels this page must never switch *off*.  These are the panel itself and the
 #: login launcher that starts it, and disabling either from here was a one-click,
@@ -95,8 +136,7 @@ def _uid_domain() -> str:
 
 def _read_plist(path: Path) -> dict:
     try:
-        with open(path, "rb") as f:
-            pl = plistlib.load(f)
+        pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         return pl if isinstance(pl, dict) else {}
     except Exception:
         return {}
@@ -154,9 +194,16 @@ def _docker_autostart_items() -> list[dict]:
         return []
     from hub import containers_svc
     info = containers_svc.list_containers(with_stats=False)
+    raw = info.get("containers") if isinstance(info, dict) else None
     items = []
-    for c in info.get("containers") or []:
-        name = c.get("id") or c.get("name")
+    for c in raw if isinstance(raw, list) else []:
+        if not isinstance(c, dict):
+            continue
+        ident = c.get("id") if c.get("id") is not None else c.get("name")
+        # bool is an int; True must not become the container name "True".
+        if isinstance(ident, bool) or ident is None or not isinstance(ident, (str, int)):
+            continue
+        name = str(ident)
         if not name:
             continue
         policy = c.get("restart_policy") or "no"
@@ -190,22 +237,36 @@ def set_docker_autostart(name: str, enabled: bool, policy: str | None = None) ->
 # ─── Brew services ───────────────────────────────────────────────────────────
 
 def _brew_service_items() -> list[dict]:
-    if not Path(BREW).is_file():
+    if not _is_file(Path(BREW)):
         return []
     items = []
     # Shared TTL cache: this list was being fetched once per caller, and
     # `brew services list --json` costs ~1.3s each time.
     data = brew_services_list()
     for s in data:
-        name = s.get("name") or ""
+        if not isinstance(s, dict):
+            continue
+        name = s.get("name") if isinstance(s.get("name"), str) else _as_text(s.get("name"))
         if not name or name == "nginx":  # managed separately via custom conf often
             # still show nginx but mark custom
             pass
-        status = (s.get("status") or "").lower()
-        file_path = s.get("file") or ""
+        raw_status = s.get("status")
+        status = raw_status.lower() if isinstance(raw_status, str) else _as_text(raw_status).lower()
+        raw_file = s.get("file")
+        if isinstance(raw_file, str):
+            file_path = raw_file
+        elif isinstance(raw_file, (bytes, bytearray)):
+            file_path = raw_file.decode("utf-8", "replace")
+        else:
+            file_path = ""
         pl = {}
-        if file_path and Path(file_path).exists():
-            pl = _read_plist(Path(file_path))
+        if file_path:
+            try:
+                fp = Path(file_path)
+                if fp.exists():
+                    pl = _read_plist(fp)
+            except (OSError, ValueError, TypeError):
+                pl = {}
         # brew services "started" means loaded; RunAtLoad typically true when managed by brew
         run_at = pl.get("RunAtLoad", True) if pl else (status in ("started", "running", "error"))
         # autostart ≈ will start at login: brew has registered the agent (file exists + RunAtLoad)
@@ -217,7 +278,7 @@ def _brew_service_items() -> list[dict]:
             "id": f"brew:{name}",
             "kind": "brew",
             "name": name,
-            "label": pl.get("Label") or f"homebrew.mxcl.{name}",
+            "label": _plist_label(pl, f"homebrew.mxcl.{name}"),
             "autostart": auto,
             "running": status in ("started", "running"),
             "status": status or "unknown",
@@ -235,34 +296,36 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
     # Same hyphen-permissive class as brew_svc had: `{"id": "brew:--all"}`
     # reached `brew services stop --all`.
     name = cli_args.require_positional(name, label="brew service name")
-    if not Path(BREW).is_file():
+    if not _is_file(Path(BREW)):
         raise api_error("brew.not_found")
-    import subprocess
     action = "start" if enabled else "stop"
     try:
-        p = subprocess.run(
+        rc, msg = run_capped(
             [BREW, "services", action, name],
-            capture_output=True, text=True, timeout=120, env=_brew_env(),
+            timeout=120, env=_brew_env(), cap=2000,
         )
-        msg = ((p.stdout or "") + (p.stderr or "")).strip()
+        msg = _as_text(msg).strip()
         # `brew services start/stop` is exactly what the shared snapshot
         # reports on, so the cached copy is stale the moment this returns.
         invalidate_brew_services()
         # stop unloads agent → no login start; start loads with RunAtLoad
         return {
-            "ok": p.returncode == 0,
+            "ok": rc == 0,
             "message": msg or f"brew services {action} {name}",
-            "autostart": enabled if p.returncode == 0 else None,
+            "autostart": enabled if rc == 0 else None,
         }
+    except RecursionError:
+        # leftover ``str(e)`` RecursionError is not OSError; PUT brew autostart used to 500.
+        return {"ok": False, "message": "action failed"}
     except Exception as e:
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": _as_text(e) or "action failed"}
 
 
 # ─── LaunchAgents (user) ─────────────────────────────────────────────────────
 
 def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
     items = []
-    if not AGENTS_DIR.is_dir():
+    if not _is_dir(AGENTS_DIR):
         return items
 
     # The login script agent gets its own "登录脚本" row from ``_script_status()``.
@@ -280,9 +343,13 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
     # Parse and filter the plists first — pure filesystem work — so the subprocess
     # probes below are paid only for agents that survive the filter.
     parsed = []
-    for path in sorted(AGENTS_DIR.glob("*.plist")):
+    try:
+        plist_paths = sorted(AGENTS_DIR.glob("*.plist"))
+    except OSError:
+        return items
+    for path in plist_paths:
         pl = _read_plist(path)
-        label = pl.get("Label") or path.stem
+        label = _plist_label(pl, path.stem)
         # skip brew-managed (shown under brew) to reduce dupes — still include non-mxcl
         if label.startswith("homebrew.mxcl."):
             continue  # covered by brew list
@@ -324,7 +391,10 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
             "disabled": disabled,
             "plist": str(path),
             "detail": f"RunAtLoad={run_at} KeepAlive={bool(keep)} loaded={loaded}",
-            "program": " ".join(pl.get("ProgramArguments") or [])[:100],
+            "program": (
+                " ".join(str(a) for a in pl["ProgramArguments"])[:100]
+                if isinstance(pl.get("ProgramArguments"), list) else ""
+            ),
             # No "disable" for the panel and its login launcher: offering the button
             # invited a click that stops ServerHub from ever starting at login, and
             # the ``launchctl disable`` behind it outlives a reboot (see
@@ -358,16 +428,24 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
         raise api_error("autostart.self_protected", label=label)
     path = AGENTS_DIR / f"{label}.plist"
     # find by Label field if filename differs
-    if not path.exists():
-        for p in AGENTS_DIR.glob("*.plist"):
+    if not _exists(path):
+        try:
+            found = list(AGENTS_DIR.glob("*.plist"))
+        except OSError:
+            found = []
+        for p in found:
             pl = _read_plist(p)
             if pl.get("Label") == label:
                 path = p
                 break
-    if not path.exists():
+    if not _exists(path):
         raise api_error("autostart.plist_missing", label=label)
 
     pl = _read_plist(path)
+    # A torn/non-dict plist used to come back as {} and this wrote
+    # {RunAtLoad, Disabled} over the live agent, wiping ProgramArguments.
+    if not isinstance(pl.get("Label"), str) or not pl.get("Label"):
+        raise api_error("autostart.bad_plist", label=label)
     pl["RunAtLoad"] = bool(enabled)
     if enabled:
         pl["Disabled"] = False
@@ -382,12 +460,12 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
         # bootout then bootstrap to pick up RunAtLoad
         sh(["/bin/launchctl", "bootout", f"{dom}/{label}"], timeout=8)
         rc, out, err = sh(["/bin/launchctl", "bootstrap", dom, str(path)], timeout=10)
-        logs.append(out or err or f"bootstrap rc={rc}")
+        logs.append(_as_text(out or err) or f"bootstrap rc={rc}")
         sh(["/bin/launchctl", "enable", f"{dom}/{label}"], timeout=5)
         sh(["/bin/launchctl", "kickstart", "-k", f"{dom}/{label}"], timeout=10)
     else:
         rc, out, err = sh(["/bin/launchctl", "bootout", f"{dom}/{label}"], timeout=10)
-        logs.append(out or err or f"bootout rc={rc}")
+        logs.append(_as_text(out or err) or f"bootout rc={rc}")
         # disable for session
         sh(["/bin/launchctl", "disable", f"{dom}/{label}"], timeout=5)
 
@@ -452,8 +530,9 @@ def _script_status(loaded_snapshot: frozenset[str] | None = None) -> dict:
     # the same agent stops being listed twice with contradictory states -- it used
     # to appear here as "未启用" and again under "LaunchAgents" as autostart=True.
     plist, label = _resolve_script_agent()
-    script = Path.home() / "Services" / "autostart.sh"
-    installed = plist.exists()
+    home = user_home()
+    script = (home / "Services" / "autostart.sh") if home is not None else None
+    installed = _exists(plist)
     pl = _read_plist(plist) if installed else {}
     return {
         # Keeps the "script:" prefix: set_autostart() dispatches on kind:name and
@@ -465,7 +544,7 @@ def _script_status(loaded_snapshot: frozenset[str] | None = None) -> dict:
         "autostart": bool(pl.get("RunAtLoad")) and installed,
         "running": _launchctl_loaded(label, loaded_snapshot) if installed else False,
         "plist": str(plist) if installed else None,
-        "script": str(script) if script.exists() else None,
+        "script": str(script) if script is not None and _exists(script) else None,
         "detail": "starts the configured local services after login",
         "actions": ["enable", "disable", "run_now"] if installed else [],
         "group": "Login script",
@@ -481,8 +560,11 @@ def set_script_autostart(enabled: bool) -> dict:
 
 
 def run_autostart_now() -> dict:
-    script = Path.home() / "Services" / "autostart.sh"
-    if not script.exists():
+    home = user_home()
+    if home is None:
+        raise api_error("autostart.script_missing")
+    script = home / "Services" / "autostart.sh"
+    if not _exists(script):
         raise api_error("autostart.script_missing")
     import subprocess
     try:
@@ -491,11 +573,16 @@ def run_autostart_now() -> dict:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
-            env=_brew_env(),
+            env=utf8_env(_brew_env()),
         )
         return {"ok": True, "message": f"autostart.sh started in the background (pid {p.pid})"}
+    except RecursionError:
+        return {"ok": False, "message": "start failed"}
+    except (OSError, ValueError, TypeError) as e:
+        # Leftover ``\\ud800`` env UnicodeEncodeError is ValueError, not OSError.
+        return {"ok": False, "message": _as_text(e) or "start failed"}
     except Exception as e:
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": _as_text(e) or "start failed"}
 
 
 # ─── Overview ────────────────────────────────────────────────────────────────
@@ -552,13 +639,14 @@ def overview(force: bool = False) -> dict:
         "running": sum(1 for i in items if i.get("running")),
     }
     v = {
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
         "items": items,
         "counts": counts,
         "groups": ["Login script", "Homebrew services", "LaunchAgents", "Docker containers"],
         "hint": "Docker uses restart policies; brew/LaunchAgents load at login. Stopping a brew service also cancels its login autostart.",
     }
-    return v
+    cleaned = _jsonable(v)
+    return cleaned if isinstance(cleaned, dict) else v
 
 
 def set_autostart(item_id: str, enabled: bool, policy: str | None = None) -> dict:

@@ -187,6 +187,8 @@ describe('a failed first load explains itself', () => {
     { name: 'Pool', load: () => import('./Pool.vue'), api: ['getStoragePool'], empty: 'pool.empty_members' },
     { name: 'Services', load: () => import('./Services.vue'), api: ['getServices'], empty: 'services.empty' },
     { name: 'Apps', load: () => import('./Apps.vue'), api: ['getManagedApps'], empty: 'apps.managed_empty' },
+    { name: 'Logs', load: () => import('./Logs.vue'), api: ['getLogSources'], empty: 'logs.empty' },
+    { name: 'WireGuard', load: () => import('./WireGuard.vue'), api: ['getWireguard'], empty: 'wg.no_peers' },
   ]
 
   for (const { name, load, api, empty } of CASES) {

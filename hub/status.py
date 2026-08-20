@@ -18,7 +18,7 @@ from hub.discovery import (
     discover_vms,
 )
 from hub.system import collect_system
-from hub.util import LazyPool
+from hub.util import LazyPool, strftime_now
 
 # Hot path: 35s TTL + single-flight in low mode. Sidebar and menubar poll
 # every 30s; a 20s TTL missed on every one of those ticks.
@@ -36,6 +36,89 @@ _refresh_lock = threading.Lock()
 # Adaptive filesystem scans change rarely — cache longer.
 _adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
 _ADAPTIVE_TTL = 60.0
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    ``int(inf)`` on a yaml ``1e999`` port was already isolated; the service
+    row still carried ``port: inf`` / ``ports: [inf]`` and YAML timestamps
+    in ``quick_links`` are ``datetime`` objects — both 500 GET /api/status.
+    A leftover ``\\ud800`` in a name or key still 500'd the same encoder
+    (``ensure_ascii=False`` then UTF-8) on GET /api/status and status peek.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 the encoder.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _status_quick_links() -> list:
+    try:
+        raw = cfg().get("quick_links")
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    # YAML anchors can make a cyclic mapping. resolve_value is depth-capped
+    # so this no longer RecursionError's; still absorb any leftover raise.
+    try:
+        links = resolve_value(raw)
+    except Exception:
+        return []
+    return links if isinstance(links, list) else []
+
+
 #: Separate from `_refresh_lock`: the adaptive scans and the status build are
 #: independent refreshes, and sharing one lock would make each wait on the other.
 _adaptive_refresh_lock = threading.Lock()
@@ -47,7 +130,11 @@ def shutdown_executor() -> None:
 
 
 def peek_status() -> dict | None:
-    """Last built status snapshot, or None. Does not trigger discovery."""
+    """Last built status snapshot, or None. Does not trigger discovery.
+
+    Re-sanitizes: a leftover inf / bytes / ``\\ud800`` planted in the cache
+    used to 500 GET /api/status and the menubar's peek poll at encode time.
+    """
     return cached_status()
 
 
@@ -137,51 +224,94 @@ def _future_result(fut, fallback):
         return fallback
 
 
+def _rows(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _container_pair(value):
+    """``discover_containers`` is ``(items, engine_up)``; a bare list used to unpack-500."""
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        items, up = value
+        return _rows(items), bool(up)
+    return [], False
+
+
+def _remember_port(ports: set, value) -> None:
+    # yaml ``port: 1e999`` is inf; ``int(inf)`` OverflowError is not ValueError.
+    try:
+        ports.add(int(value))
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+
 def _build_status() -> dict:
-    adaptive_on = (cfg().get("settings") or {}).get("adaptive", True)
+    raw_settings = cfg().get("settings")
+    adaptive_on = (raw_settings if isinstance(raw_settings, dict) else {}).get("adaptive", True)
     f_l = _pool.submit(discover_launchd)
     f_d = _pool.submit(discover_containers)
     f_v = _pool.submit(discover_vms)
     f_s = _pool.submit(collect_system)
     f_sc = _pool.submit(collect_scripts)
-    launchd = _future_result(f_l, [])
-    containers, engine_up = _future_result(f_d, ([], False))
-    vms = _future_result(f_v, [])
+    launchd = _rows(_future_result(f_l, []))
+    containers, engine_up = _container_pair(_future_result(f_d, ([], False)))
+    vms = _rows(_future_result(f_v, []))
     system = _future_result(f_s, {})
-    scripts = _future_result(f_sc, [])
-    services = collect_apps(engine_up) + scripts + launchd + containers + vms
+    system = system if isinstance(system, dict) else {}
+    scripts = _rows(_future_result(f_sc, []))
+    try:
+        apps = collect_apps(engine_up)
+    except Exception:
+        apps = []
+    services = _rows(apps) + scripts + launchd + containers + vms
 
     # Adaptive: orphan listeners not covered by known services
     if adaptive_on:
         known_ports = set()
         known_names = set()
         for s in services:
-            known_names.add(s.get("id") or "")
-            known_names.add(s.get("name") or "")
+            if not isinstance(s, dict):
+                continue
+            sid, sname = s.get("id"), s.get("name")
+            if isinstance(sid, str):
+                known_names.add(sid)
+            if isinstance(sname, str):
+                known_names.add(sname)
             if s.get("port"):
-                try:
-                    known_ports.add(int(s["port"]))
-                except (TypeError, ValueError):
-                    pass
-            for p in (s.get("meta") or {}).get("detected_ports") or []:
-                try:
-                    known_ports.add(int(p))
-                except (TypeError, ValueError):
-                    pass
-            for m in re.finditer(r":(\d{2,5})\b", s.get("detail") or ""):
-                known_ports.add(int(m.group(1)))
-        orphans = discover_orphan_listeners(known_ports, known_names)
-        services.extend(orphans)
+                _remember_port(known_ports, s["port"])
+            meta = s.get("meta") if isinstance(s.get("meta"), dict) else {}
+            for p in meta.get("detected_ports") if isinstance(meta.get("detected_ports"), list) else []:
+                _remember_port(known_ports, p)
+            detail = s.get("detail")
+            if isinstance(detail, str):
+                for m in re.finditer(r":(\d{2,5})\b", detail):
+                    known_ports.add(int(m.group(1)))
+        # Collectors are isolated above; this scan sat outside that and
+        # 500'd a cold /api/status when lsof raised.
+        try:
+            orphans = discover_orphan_listeners(known_ports, known_names)
+        except Exception:
+            orphans = []
+        if isinstance(orphans, list):
+            services.extend(orphans)
 
     # Defensive counts: always include core keys; unknown states get their own bucket.
     groups, counts = {}, {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
     for s in services:
-        groups.setdefault(s.get("group") or "Other", []).append(s)
-        st = s.get("state") or "unknown"
+        if not isinstance(s, dict):
+            continue
+        group = s.get("group")
+        group = group if isinstance(group, str) and group else "Other"
+        groups.setdefault(group, []).append(s)
+        st = s.get("state")
+        if not isinstance(st, str) or not st:
+            st = "unknown"
         if st not in counts:
             counts[st] = 0
         counts[st] += 1
-    order = list(cfg().get("groups_order") or [])
+    raw_order = cfg().get("groups_order")
+    # Names only.  ``_as_config`` leaves this list unfiltered (it is not a
+    # list of mappings); a nested dict used to TypeError on ``g in groups``.
+    order = [g for g in raw_order if isinstance(g, str)] if isinstance(raw_order, list) else []
     # ensure adaptive groups appear near end unless ordered
     for extra in ("Gateway", "Auto-discovered", "Homebrew Services"):
         if extra not in order:
@@ -189,32 +319,48 @@ def _build_status() -> dict:
     ordered = [{"group": g, "services": groups.pop(g)} for g in order if g in groups]
     ordered += [{"group": g, "services": v} for g, v in groups.items()]
     # 主动停止(stopped)不进告警列表；warn/down 才算需要关注
-    problems = [s for s in services if s.get("state") not in ("ok", "stopped")]
+    problems = [
+        s for s in services
+        if isinstance(s, dict) and s.get("state") not in ("ok", "stopped")
+    ]
 
     adaptive_info = {}
     if adaptive_on:
         extra = _adaptive_info()
         adaptive_info = {
-            "orphan_count": sum(1 for s in services if s.get("kind") == "auto"),
-            "auto_labeled": sum(1 for s in services if s.get("auto")),
+            "orphan_count": sum(
+                1 for s in services if isinstance(s, dict) and s.get("kind") == "auto"
+            ),
+            "auto_labeled": sum(
+                1 for s in services if isinstance(s, dict) and s.get("auto")
+            ),
             "compose_projects": extra["compose_projects"],
             "nginx_sites": extra["nginx_sites"],
         }
 
-    return {
+    try:
+        from hub.tools_svc import github_update_status
+        panel_update = github_update_status(fetch=False, checkout=False)
+    except Exception:
+        panel_update = {}
+    if not isinstance(panel_update, dict):
+        panel_update = {}
+
+    return _jsonable({
         "version": __version__,
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
         "groups": ordered,
         "system": system,
         "counts": counts,
-        "links": resolve_value(cfg().get("quick_links") or []),
+        "links": _status_quick_links(),
         "engine_up": engine_up,
         "problems": problems[:30],
         "service_total": len(services),
         "adaptive": adaptive_info,
         "resource_mode": resource_mode(),
         "locale": panel_locale(),
-    }
+        "panel_update": panel_update,
+    })
 
 
 _MEMBER_SERVICE_FIELDS = {
@@ -224,12 +370,18 @@ _MEMBER_SERVICE_FIELDS = {
 
 def member_service_summary(service: dict) -> dict:
     """Copy only fields a family member needs to identify and open a service."""
+    if not isinstance(service, dict):
+        return {"actions": []}
     summary = {
         key: value
         for key, value in service.items()
         if key in _MEMBER_SERVICE_FIELDS
     }
-    actions = set(service.get("actions") or [])
+    raw_actions = service.get("actions")
+    # ``set(actions)`` TypeError'd a nested mapping and 500'd member /api/status.
+    actions = {
+        action for action in raw_actions if isinstance(action, str)
+    } if isinstance(raw_actions, list) else set()
     summary["actions"] = [action for action in ("open", "detail") if action in actions]
     return summary
 
@@ -242,14 +394,26 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
     Host metrics, global quick links, and adaptive discovery metadata are
     administrator data and are deliberately omitted from member responses.
     """
+    if not isinstance(status, dict):
+        status = {}
+    if not isinstance(resources, (list, tuple, set, frozenset)):
+        resources = []
     allowed = {str(resource) for resource in resources if str(resource).strip()}
     groups: list[dict] = []
     services: list[dict] = []
-    for group in status.get("groups") or []:
+    groups_raw = status.get("groups")
+    if not isinstance(groups_raw, list):
+        groups_raw = []
+    for group in groups_raw:
+        if not isinstance(group, dict):
+            continue
+        raw_svcs = group.get("services")
+        if not isinstance(raw_svcs, list):
+            raw_svcs = []
         visible = [
             member_service_summary(service)
-            for service in (group.get("services") or [])
-            if str(service.get("id") or "") in allowed
+            for service in raw_svcs
+            if isinstance(service, dict) and str(service.get("id") or "") in allowed
         ]
         if visible:
             groups.append({"group": group.get("group"), "services": visible})
@@ -260,7 +424,7 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
         state = str(service.get("state") or "unknown")
         counts[state] = counts.get(state, 0) + 1
 
-    return {
+    return _jsonable({
         "version": status.get("version"),
         "ts": status.get("ts"),
         "groups": groups,
@@ -277,7 +441,7 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
         "adaptive": {},
         "resource_mode": status.get("resource_mode") or "low",
         "locale": status.get("locale") or panel_locale(),
-    }
+    })
 
 
 def cached_status() -> dict | None:
@@ -285,9 +449,18 @@ def cached_status() -> dict | None:
 
     Does not trigger discovery. ``/api/health`` uses this so a liveness probe
     cannot become a 5-way host scan.
+
+    Re-sanitizes: a leftover inf / ``\\ud800`` planted in the cache used to
+    500 GET /api/health (``st.get("counts")`` AttributeError'd a scalar
+    leftover; leftover inf ``engine_up`` / ``\\ud800`` count keys 500'd
+    the encoder).
     """
     with _lock:
-        return _status_cache["v"]
+        hit = _status_cache["v"]
+    if hit is None:
+        return None
+    cleaned = _jsonable(hit)
+    return cleaned if isinstance(cleaned, dict) else None
 
 
 def full_status(force=False):
@@ -321,12 +494,15 @@ def _stamp_locale(status: dict) -> dict:
 
     Changing the panel language must not wait for the 35s status TTL: the
     menu-bar client polls /api/status and rebuilds when this field moves.
+    Re-sanitizes so a leftover ``\\ud800`` planted in the peek cache cannot
+    500 the encoder on a cache hit.
     """
+    if not isinstance(status, dict):
+        return _jsonable(status)
     try:
         loc = panel_locale()
     except Exception:
         loc = status.get("locale") or "zh-CN"
-    if status.get("locale") == loc:
-        return status
-    status["locale"] = loc
-    return status
+    if status.get("locale") != loc:
+        status["locale"] = loc
+    return _jsonable(status)

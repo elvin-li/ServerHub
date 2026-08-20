@@ -25,7 +25,7 @@ vi.mock('../api/client', () => ({
   getStacks: vi.fn(async () => ({ stacks: [] })),
 }))
 
-const { getSchedulerJobs } = await import('../api/client')
+const { getSchedulerJobs, backupPostgres } = await import('../api/client')
 const { setLocale } = await import('../i18n/index.js')
 const Backups = (await import('./Backups.vue')).default
 
@@ -100,5 +100,30 @@ describe('creating a scheduled backup task', () => {
     const titles = newTaskTypes(wrapper)
     expect(titles.some((s) => /rsync/i.test(s))).toBe(true)
     expect(titles.some((s) => /stack/i.test(s))).toBe(true)
+  })
+
+  it('does not toast a postgres backup that finishes after leave', async () => {
+    let finish
+    backupPostgres.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    vi.stubGlobal('confirm', () => true)
+    await setLocale('en')
+    getSchedulerJobs.mockResolvedValue({ jobs: [] })
+    const toast = vi.fn()
+    const wrapper = mount(Backups, {
+      global: {
+        provide: { toast },
+        stubs: { SkeletonLoader: true, LoadFailure: true, RouterLink: true },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+    const pg = wrapper.findAll('button').find((b) => b.text() === 'Backup PostgreSQL')
+    expect(pg, 'postgres backup button').toBeTruthy()
+    await pg.trigger('click')
+    wrapper.unmount()
+    finish({ ok: true, message: 'dumped', path: '/b/x.sql.bak', size_mb: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(toast).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
   })
 })

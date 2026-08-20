@@ -19,8 +19,8 @@
 
     <template v-else>
       <div class="toolbar files-toolbar">
-        <select v-model="rootId" class="cat-select" @change="onRootChange">
-          <option v-for="r in roots" :key="r.id" :value="r.id">{{ r.name }}</option>
+        <select v-model="rootId" class="cat-select" @change="onRootChange" :aria-label="t('files.root')">
+          <option v-for="r in roots" :key="r.id" :value="r.id">{{ finiteText(r.name) }}</option>
         </select>
         <button type="button" @click="loadList" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="doMkdir">{{ t('files.mkdir') }}</button>
@@ -31,7 +31,7 @@
         <button type="button" class="danger" :disabled="busy || !selected.length" @click="doDeleteSelected">
           {{ t('files.delete') }}
         </button>
-        <span class="meta-count" v-if="listing">{{ listing.count }} {{ t('files.items') }}</span>
+        <span class="meta-count" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
         <div class="toolbar-spacer"></div>
         <button type="button" :disabled="busy" @click="openFullFB">{{ t('files.open_full') }}</button>
         <button
@@ -46,22 +46,22 @@
       </div>
 
       <nav class="crumbs" v-if="listing">
-        <button type="button" class="crumb" @click="goPath(listing.root)">{{ listing.root_id || 'root' }}</button>
-        <template v-for="(c, i) in listing.crumbs" :key="c.path">
+        <button type="button" class="crumb" @click="goPath(listing.root)">{{ finiteText(listing.root_id, 'root') }}</button>
+        <template v-for="(c, i) in listing.crumbs || []" :key="c.path">
           <span class="sep">/</span>
-          <button type="button" class="crumb" :class="{ current: i === listing.crumbs.length - 1 }" @click="goPath(c.path)">
-            {{ c.name || '/' }}
+          <button type="button" class="crumb" :class="{ current: i === (listing.crumbs || []).length - 1 }" @click="goPath(c.path)">
+            {{ finiteText(c.name, '/') }}
           </button>
         </template>
       </nav>
 
-      <div v-if="error" class="err-bar">{{ error }}</div>
+      <div class="err-live" role="alert" aria-live="assertive"><div v-if="error" class="err-bar">{{ finiteText(error) }}</div></div>
 
       <div class="table-wrap" @dragover.prevent @drop.prevent="onDrop">
         <table class="dense files-table fit-m" v-if="listing">
           <thead>
             <tr>
-              <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
+              <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleAll" :aria-label="t('files.select_all')" /></th>
               <th>{{ t('common.name') }}</th>
               <th>{{ t('files.size') }}</th>
               <th class="col-hide-m">{{ t('files.mtime') }}</th>
@@ -81,18 +81,18 @@
               @dblclick="openItem(it)"
             >
               <td class="col-check" @click.stop>
-                <input type="checkbox" :checked="selected.includes(it.path)" @change="toggleSel(it.path)" />
+                <input type="checkbox" :checked="selected.includes(it.path)" @change="toggleSel(it.path)" :aria-label="t('files.select_item', { name: finiteText(it.name) })" />
               </td>
               <td class="name-cell" @click="openItem(it)" tabindex="0" role="button" @keydown.enter.prevent="openItem(it)" @keydown.space.prevent="openItem(it)">
                 <span class="name-inner">
                   <span class="ico" aria-hidden="true">{{ it.is_dir ? '📁' : (it.is_link ? '🔗' : '📄') }}</span>
-                  <span class="name-text">{{ it.name }}</span>
+                  <span class="name-text">{{ finiteText(it.name) }}</span>
                 </span>
-                <div class="show-m sub">{{ fmtTime(it.mtime) }}{{ it.mode ? ' · ' + it.mode : '' }}</div>
+                <div class="show-m sub">{{ fmtTime(it.mtime) }}{{ finiteText(it.mode, '') ? ' · ' + finiteText(it.mode) : '' }}</div>
               </td>
               <td class="mono size-cell">{{ it.is_dir ? '—' : fmtSize(it.size) }}</td>
               <td class="mono sub time-cell col-hide-m">{{ fmtTime(it.mtime) }}</td>
-              <td class="mono sub mode-cell col-hide-m">{{ it.mode }}</td>
+              <td class="mono sub mode-cell col-hide-m">{{ finiteText(it.mode) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
                   <button v-if="it.is_file" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
@@ -124,6 +124,7 @@
  * Full FileBrowser process is started only on explicit request, and can be stopped to free RAM.
  */
 import { computed, inject, onUnmounted, ref } from 'vue'
+import { finiteN, finiteText, fmtTs } from '../lib/finite'
 import {
   deleteFile,
   ensureFileBrowser,
@@ -150,6 +151,7 @@ const selected = ref([])
 const fb = ref({ running: false, url: '', installed: false })
 const currentPath = ref('')
 let listRequest = 0
+let pageAlive = true
 
 const allSelected = computed(() => {
   const items = listing.value?.items || []
@@ -174,14 +176,13 @@ function fmtSize(n) {
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
   let i = 0
   let v = Number(n)
+  if (!Number.isFinite(v) || v < 0) return '—'
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`
 }
 
 function fmtTime(ts) {
-  if (!ts) return '—'
-  const d = new Date(ts * 1000)
-  return d.toLocaleString()
+  return fmtTs(ts)
 }
 
 async function activate() {
@@ -201,6 +202,7 @@ function deactivate() {
   listRequest += 1
   activated.value = false
   loading.value = false
+  busy.value = false
   listing.value = null
   selected.value = []
   error.value = ''
@@ -208,8 +210,10 @@ function deactivate() {
 }
 
 async function loadOverview() {
+  const request = ++listRequest
   try {
     const j = await getFilesOverview()
+    if (request !== listRequest) return false
     roots.value = j.roots || []
     fb.value = j.filebrowser || {}
     if (!rootId.value && roots.value.length) {
@@ -218,6 +222,7 @@ async function loadOverview() {
     }
     return true
   } catch (e) {
+    if (request !== listRequest) return false
     error.value = e.message || String(e)
     return false
   }
@@ -234,12 +239,15 @@ async function loadList() {
   try {
     const j = await listFiles(path, root)
     if (request !== listRequest || !activated.value) return
-    listing.value = j
+    listing.value = {
+      ...j,
+      items: Array.isArray(j.items) ? j.items : [],
+      crumbs: Array.isArray(j.crumbs) ? j.crumbs : [],
+    }
     currentPath.value = j.path
   } catch (e) {
     if (request !== listRequest || !activated.value) return
     error.value = typeof e.message === 'string' ? e.message : String(e)
-    listing.value = null
   } finally {
     if (request === listRequest) loading.value = false
   }
@@ -284,15 +292,20 @@ function toggleAll(e) {
 async function doMkdir() {
   const name = prompt(t('files.mkdir_ph'))
   if (!name) return
+  const request = listRequest
   busy.value = true
   try {
     await makeDirectory(currentPath.value, name, rootId.value)
+    if (request !== listRequest) return
     toast(`✅ ${t('files.mkdir')}`)
     await loadList()
   } catch (e) {
-    toast(`❌ ${e.message}`)
+    if (request !== listRequest) return
+    toast(`❌ ${finiteText(e.message)}`)
   } finally {
-    busy.value = false
+    // loadList() bumps listRequest, so a request match would leave the
+    // toolbar stuck disabled after a successful mkdir.
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -300,37 +313,52 @@ async function doRename(it) {
   if (busy.value) return
   const name = prompt(t('files.rename_ph'), it.name)
   if (!name || name === it.name) return
+  const request = listRequest
   busy.value = true
   try {
     await renameFile(it.path, name, rootId.value)
+    if (request !== listRequest) return
     toast('✅')
     await loadList()
   } catch (e) {
-    toast(`❌ ${e.message}`)
+    if (request !== listRequest) return
+    toast(`❌ ${finiteText(e.message)}`)
   } finally {
-    busy.value = false
+    // loadList() bumps listRequest, so a request match would leave Rename
+    // stuck disabled after a successful write.
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doDeleteOne(it) {
   if (busy.value) return
-  if (!confirm(t('files.confirm_delete', { name: it.name }))) return
+  const key = it.is_dir ? 'files.confirm_delete_dir' : 'files.confirm_delete'
+  if (!confirm(t(key, { name: finiteText(it.name) }))) return
+  const request = listRequest
   busy.value = true
   try {
     await deleteFile(it.path, rootId.value)
+    if (request !== listRequest) return
     toast('✅')
     await loadList()
   } catch (e) {
-    toast(`❌ ${e.message}`)
+    if (request !== listRequest) return
+    toast(`❌ ${finiteText(e.message)}`)
   } finally {
-    busy.value = false
+    // loadList() bumps listRequest, so a request match would leave Delete
+    // stuck disabled after a successful write.
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doDeleteSelected() {
   if (!selected.value.length) return
-  if (!confirm(t('files.confirm_delete_n', { n: selected.value.length }))) return
+  const items = listing.value?.items || []
+  const hasDir = selected.value.some((path) => items.find((it) => it.path === path)?.is_dir)
+  const key = hasDir ? 'files.confirm_delete_n_dirs' : 'files.confirm_delete_n'
+  if (!confirm(t(key, { n: selected.value.length }))) return
   const paths = [...selected.value]
+  const request = listRequest
   busy.value = true
   let ok = 0
   let failed = 0
@@ -338,28 +366,44 @@ async function doDeleteSelected() {
     for (const path of paths) {
       try {
         await deleteFile(path, rootId.value)
+        if (request !== listRequest) return
         ok++
       } catch (e) {
+        if (request !== listRequest) return
         failed++
-        toast(`❌ ${path}: ${e.message}`)
+        toast(`❌ ${finiteText(path)}: ${finiteText(e.message)}`)
       }
     }
+    if (request !== listRequest) return
     toast(`${failed ? '❌' : '✅'} ${ok}/${paths.length}`)
     await loadList()
   } finally {
-    busy.value = false
+    // loadList() bumps listRequest, so a request match would leave the
+    // toolbar stuck disabled after a successful batch delete.
+    if (pageAlive) busy.value = false
   }
 }
 
 function download(it) {
   const q = new URLSearchParams({ path: it.path })
   if (rootId.value) q.set('root_id', rootId.value)
-  window.open(`/api/files/download?${q}`, '_blank')
+  // An <a> with rel=noopener, not window.open: the download endpoint can
+  // 302 through a content-type the browser will render, and a tab opened
+  // without noopener gets window.opener back to the panel.
+  const a = document.createElement('a')
+  a.href = `/api/files/download?${q}`
+  a.target = '_blank'
+  a.rel = 'noopener'
+  a.download = it.name || 'download'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
 }
 
 async function uploadFiles(fileList) {
   if (!fileList?.length) return
   const files = Array.from(fileList)
+  const request = listRequest
   busy.value = true
   let ok = 0
   let failed = 0
@@ -371,16 +415,21 @@ async function uploadFiles(fileList) {
         if (rootId.value) fd.append('root_id', rootId.value)
         fd.append('file', file)
         await uploadFile(fd)
+        if (request !== listRequest) return
         ok++
       } catch (e) {
+        if (request !== listRequest) return
         failed++
-        toast(`❌ ${file.name}: ${e.message}`)
+        toast(`❌ ${finiteText(file.name)}: ${finiteText(e.message)}`)
       }
     }
+    if (request !== listRequest) return
     toast(`${failed ? '❌' : '✅'} ${ok}/${files.length}`)
     await loadList()
   } finally {
-    busy.value = false
+    // loadList() bumps listRequest, so a request match would leave Upload
+    // stuck disabled after a successful batch.
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -400,6 +449,7 @@ function onDrop(e) {
 }
 
 async function openFullFB() {
+  const request = listRequest
   busy.value = true
   try {
     // activate panel lightly so roots load; FB is separate process
@@ -407,6 +457,7 @@ async function openFullFB() {
       // still only start FB — don't force builtin list
     }
     const j = await ensureFileBrowser()
+    if (request !== listRequest) return
     if (!j?.ok) throw new Error(j?.message || t('common.failed'))
     fb.value = j
     const url = j.url || 'http://localhost:8125'
@@ -414,32 +465,40 @@ async function openFullFB() {
     toast(j.started ? t('files.fb_started') : t('files.fb_running'))
     // optional: enable on-demand mode so it won't auto-start at boot next time
   } catch (e) {
-    toast(`❌ ${e.message}`)
+    if (request !== listRequest) return
+    toast(`❌ ${finiteText(e.message)}`)
   } finally {
-    busy.value = false
+    // deactivate()/loadList() bump listRequest; a request match would leave
+    // Open FileBrowser stuck after the user closed the builtin list.
+    if (pageAlive) busy.value = false
   }
 }
 
 async function stopFB() {
   if (!confirm(t('files.confirm_stop_fb'))) return
+  const request = listRequest
   busy.value = true
   try {
     const j = await stopFileBrowser()
+    if (request !== listRequest) return
     if (!j?.ok) throw new Error(j?.message || t('common.failed'))
     fb.value = j
-    toast(j.message || '✅ ' + t('common.ok'))
+    toast(finiteText(j.message, '') || '✅ ' + t('common.ok'))
   } catch (e) {
-    toast(`❌ ${e.message}`)
+    if (request !== listRequest) return
+    toast(`❌ ${finiteText(e.message)}`)
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 // Nothing on mount — true zero cost until user clicks
 onUnmounted(() => {
+  pageAlive = false
   listRequest += 1
   activated.value = false
   loading.value = false
+  busy.value = false
   // free UI state only; backend process not touched
   listing.value = null
 })
@@ -511,6 +570,12 @@ onUnmounted(() => {
 .crumb.current { color: var(--txt); font-weight: 600; cursor: default; }
 .sep { color: var(--sub); }
 
+.err-live:empty {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
 .err-bar {
   padding: 8px 12px; margin-bottom: 10px; font-size: 12px;
   background: color-mix(in srgb, #c02020 10%, var(--card));

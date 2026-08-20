@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Any
 
-from hub import vm_console
+from hub import cli_args, vm_console
 from hub.config import override
 from hub.errors import api_error
 from hub.paths import ORBCTL, UTMCTL
@@ -43,12 +43,144 @@ ORB_DISTROS = [
 ]
 
 
+def _bin_present(path) -> bool:
+    if not path:
+        return False
+    try:
+        return __import__("pathlib").Path(path).exists()
+    except (OSError, TypeError, ValueError):
+        # Dying FUSE/SMB mounts raise EIO; a NUL leftover raises ValueError.
+        return False
+
+
 def _utm_available() -> bool:
-    return bool(UTMCTL) and __import__("pathlib").Path(UTMCTL).exists()
+    return _bin_present(UTMCTL)
 
 
 def _orb_available() -> bool:
-    return bool(ORBCTL) and __import__("pathlib").Path(ORBCTL).exists()
+    return _bin_present(ORBCTL)
+
+
+def _as_text(value) -> str:
+    """Drop leftover ``\\ud800`` so GET /api/vms cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _display_text(value, fallback: str = "") -> str:
+    """JSON-safe display string for a leftover YAML/JSON field.
+
+    ``name: .inf``, ``group: 2026-08-19``, ``!!binary`` and a ``!!set`` each
+    used to leak into GET /api/vms and fail Starlette's allow_nan=False encoder.
+    """
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return fallback
+        return str(value)
+    if isinstance(value, int):
+        try:
+            float(value)
+        except OverflowError:
+            return fallback
+        return str(value)
+    if isinstance(value, str):
+        return _as_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        return fallback
+    try:
+        text = str(value)
+    except Exception:
+        return fallback
+    return _as_text(text) if text else fallback
+
+
+def _optional_text(value) -> str | None:
+    text = _display_text(value, "")
+    return text or None
+
+
+def _id_text(value, fallback: str) -> str:
+    """Machine id/uuid from leftover orbctl JSON: Infinity/objects are not ids."""
+    if isinstance(value, str) and value:
+        return _as_text(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            float(value)
+        except OverflowError:
+            return fallback
+        return str(value)
+    return fallback
+
+
+def _jsonable(value, depth: int = 0):
+    """Drop leftover inf/bytes/huge ints/``\\ud800`` so Starlette cannot 500 GET /api/vms."""
+    if depth > 32:
+        return None
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            try:
+                key = k if isinstance(k, (str, bytes, bytearray)) else str(k)
+            except Exception:
+                continue
+            key = _as_text(key)
+            out[key] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        try:
+            float(value)
+        except OverflowError:
+            return None
+        return value
+    if isinstance(value, str):
+        return _as_text(value)
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/vms.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    return None
+
+
+def _listing_rows(probe) -> list:
+    """One hypervisor's inventory, or [] if that listing is leftover/broken.
+
+    ``fan_out`` re-raises, so a single ``utmctl`` blow-up used to 500 GET /api/vms
+    (including the OrbStack rows that had already succeeded).
+    """
+    try:
+        rows = probe()
+    except Exception:
+        return []
+    return list(rows) if isinstance(rows, (list, tuple)) else []
 
 
 def _probe_port(port) -> bool | None:
@@ -69,6 +201,7 @@ def _list_utm_vms_uncached() -> list[dict]:
     rc, out, err = sh([UTMCTL, "list"], timeout=10)
     if rc != 0:
         return []
+    out = _as_text(out)
     # Parsed first, probed second, assembled third.  The per-VM work in the old
     # single loop was a TCP connect against the VM's configured port, which costs
     # the full 0.6s timeout whenever the guest is not listening yet -- so a host
@@ -80,7 +213,7 @@ def _list_utm_vms_uncached() -> list[dict]:
         parts = line.split(None, 2)
         if len(parts) < 3:
             continue
-        uuid, status, name = parts[0], parts[1], parts[2]
+        uuid, status, name = _as_text(parts[0]), _as_text(parts[1]), _as_text(parts[2])
         ov = override(name) or override(uuid) or {}
         if ov.get("hide"):
             continue
@@ -123,13 +256,13 @@ def _list_utm_vms_uncached() -> list[dict]:
             # renaming a VM must not move an allowlist entry to another machine.
             "console_id": vm_console.console_id_for_utm(uuid),
             "console": vm_console.capability(backend="utm", vm_uuid=uuid, running=started),
-            "name": ov.get("name") or name,
+            "name": _display_text(ov.get("name"), name) or name,
             "backend": "utm",
             "status": status,
             "state": state,
             "detail": f"UTM · {status}",
-            "url": ov.get("url"),
-            "group": ov.get("group") or "UTM",
+            "url": _optional_text(ov.get("url")),
+            "group": _display_text(ov.get("group"), "UTM") or "UTM",
             "actions": actions,
             "ips": [],
         })
@@ -161,29 +294,43 @@ def _list_orb_machines_uncached() -> list[dict]:
     # orbctl list -f json if available, else text
     rc, out, err = sh([ORBCTL, "list", "-f", "json"], timeout=15)
     items: list[dict] = []
+    out = _as_text(out)
     if rc == 0 and out.strip().startswith(("[", "{")):
         import json
         try:
             data = json.loads(out)
-            if isinstance(data, dict):
-                data = data.get("machines") or data.get("items") or []
-            for m in data or []:
-                name = m.get("name") or m.get("Name") or m.get("id") or ""
-                if not name:
-                    continue
-                status = (m.get("state") or m.get("status") or m.get("Status") or "").lower()
-                item = _orb_item(name, status, m)
-                if item:
-                    items.append(item)
-            if items:
-                return items
+        except (TypeError, ValueError, RecursionError):
+            # RecursionError: leftover deeply-nested ``orbctl list -f json``
+            # is not ValueError; GET /api/vms used to 500.
+            data = None
+        try:
+            if data is not None:
+                if isinstance(data, dict):
+                    data = data.get("machines") or data.get("items") or []
+                if not isinstance(data, list):
+                    data = []
+                for m in data:
+                    if not isinstance(m, dict):
+                        continue
+                    name = _as_text(m.get("name") or m.get("Name") or m.get("id") or "")
+                    if not name:
+                        continue
+                    raw_status = m.get("state") or m.get("status") or m.get("Status") or ""
+                    if not isinstance(raw_status, str):
+                        raw_status = str(raw_status) if raw_status is not None else ""
+                    status = _as_text(raw_status).lower()
+                    item = _orb_item(name, status, m)
+                    if item:
+                        items.append(item)
+                if items:
+                    return items
         except Exception:
             pass
     rc, out, err = sh([ORBCTL, "list"], timeout=15)
     if rc != 0:
         return []
     # parse table: NAME  STATE  ...
-    lines = [ln for ln in out.splitlines() if ln.strip()]
+    lines = [ln for ln in _as_text(out).splitlines() if ln.strip()]
     if not lines:
         return []
     # skip header if present
@@ -192,7 +339,7 @@ def _list_orb_machines_uncached() -> list[dict]:
         parts = line.split()
         if len(parts) < 2:
             continue
-        name, status = parts[0], parts[1].lower()
+        name, status = _as_text(parts[0]), _as_text(parts[1]).lower()
         if name.lower() in ("name", "id"):
             continue
         item = _orb_item(name, status, {})
@@ -212,6 +359,7 @@ def list_orb_machines(force: bool = False) -> list[dict]:
 
 
 def _orb_item(name: str, status: str, raw: dict) -> dict | None:
+    name, status = _as_text(name), _as_text(status)
     ov = override(f"orb-{name}") or override(name) or {}
     if ov.get("hide"):
         return None
@@ -227,25 +375,27 @@ def _orb_item(name: str, status: str, raw: dict) -> dict | None:
         actions = ["stop", "restart", "shell", "delete", "rename"]
     else:
         actions = ["start", "delete", "clone", "rename"]
+    uuid = _id_text(raw.get("id"), name)
+    distro = raw.get("distro") or raw.get("image") or ""
     return {
         "id": f"orb:{name}",
-        "uuid": raw.get("id") or name,
-        "name": ov.get("name") or name,
+        "uuid": uuid,
+        "name": _display_text(ov.get("name"), name) or name,
         "orb_name": name,
         "backend": "orb",
         "status": status or "unknown",
         "state": state,
         "detail": f"OrbStack · {status or 'unknown'}",
-        "url": ov.get("url"),
-        "group": ov.get("group") or "OrbStack Linux",
+        "url": _optional_text(ov.get("url")),
+        "group": _display_text(ov.get("group"), "OrbStack Linux") or "OrbStack Linux",
         "actions": actions,
-        "distro": raw.get("distro") or raw.get("image") or "",
+        "distro": _display_text(distro, ""),
         "ips": [],
         # OrbStack Linux machines are headless by design.  Reporting the reason
         # (rather than omitting the key) lets the UI explain why there is no
         # console button instead of rendering one that could never connect.
         "console_id": None,
-        "console": vm_console.capability(backend="orb", vm_uuid=str(raw.get("id") or name), running=running),
+        "console": vm_console.capability(backend="orb", vm_uuid=uuid, running=running),
     }
 
 
@@ -257,9 +407,9 @@ def list_all_vms() -> dict:
     what puts UTM's rows ahead of OrbStack's in the combined list.
     """
     utm, orb = fan_out(
-        lambda probe: probe(), [list_utm_vms, list_orb_machines], max_workers=2
+        _listing_rows, [list_utm_vms, list_orb_machines], max_workers=2
     )
-    return {
+    return _jsonable({
         "vms": utm + orb,
         "utm_count": len(utm),
         "orb_count": len(orb),
@@ -268,40 +418,45 @@ def list_all_vms() -> dict:
         "utmctl": UTMCTL,
         "orbctl": ORBCTL,
         "orb_distros": ORB_DISTROS,
-    }
+    })
 
 
 def discover_vms() -> list:
     """Status feed format for services dashboard."""
     items = []
-    for v in list_utm_vms() + list_orb_machines():
+    for v in _listing_rows(list_utm_vms) + _listing_rows(list_orb_machines):
+        if not isinstance(v, dict):
+            continue
         actions = []
-        if v["state"] == "ok":
+        if v.get("state") == "ok":
             actions = ["restart", "stop"]
         else:
             actions = ["start"]
         items.append({
-            "id": v["id"],
+            "id": v.get("id"),
             "kind": "vm",
-            "name": v["name"],
-            "state": v["state"],  # ok | warn | stopped | down
-            "detail": v["detail"],
+            "name": v.get("name"),
+            "state": v.get("state"),  # ok | warn | stopped | down
+            "detail": v.get("detail"),
             "url": v.get("url"),
             "group": v.get("group") or "Virtual Machines",
             "actions": actions,
             "backend": v.get("backend"),
         })
-    return items
+    return _jsonable(items) or []
 
 
 def rename_vm_display(vm_id: str, new_name: str) -> dict:
     """Rename display name via services.yaml overrides (utmctl has no rename)."""
     from hub.config import set_override
 
-    new_name = (new_name or "").strip()
-    if not new_name:
+    if not isinstance(new_name, str) or not new_name.strip():
         raise api_error("vms.name_required")
+    new_name = new_name.strip()
     backend, name = _parse_id(vm_id)
+    name = (name or "").strip()
+    if not name:
+        raise api_error("vms.name_required")
     # key used by list_* for overrides
     if backend == "orb":
         key = name  # override(name) or override(orb-name)
@@ -320,82 +475,120 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
     return {"ok": True, "action": "rename", "id": vm_id, "name": new_name, "message": f"Display name changed to {new_name}"}
 
 
+def _argv_name(value: str, *, code: str = "vms.bad_id") -> str:
+    """A VM name that cannot be read as a utmctl/orbctl option.
+
+    UTM display names may contain spaces (``Windows 11``), so this is not
+    :func:`cli_args.require_positional`.  A leading hyphen is enough to turn
+    ``utmctl start --help`` / ``orbctl clone src --all``.
+    """
+    text = str(value or "").strip()
+    if (
+        not text
+        or text.startswith("-")
+        or any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
+    ):
+        raise api_error(code)
+    return text
+
+
 def _parse_id(vm_id: str) -> tuple[str, str]:
     """Return (backend, name)."""
-    if vm_id.startswith("orb:"):
-        return "orb", vm_id[4:]
+    raw = str(vm_id or "").strip()
+    if not raw or any(ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
+        raise api_error("vms.bad_id")
+    if raw.startswith("orb:"):
+        return "orb", _argv_name(raw[4:])
     # uuid style → utm
-    if re.match(r"^[0-9A-Fa-f-]{36}$", vm_id):
-        return "utm", vm_id
+    if re.match(r"^[0-9A-Fa-f-]{36}$", raw):
+        return "utm", raw
+    # Refuse before ``orbctl list``: ``--help`` is not a machine name.
+    if raw.startswith("-"):
+        raise api_error("vms.bad_id")
     # check orb first by listing
-    for m in list_orb_machines():
-        if m.get("orb_name") == vm_id or m["id"] == vm_id:
-            return "orb", m.get("orb_name") or vm_id
-    return "utm", vm_id
+    try:
+        machines = list_orb_machines()
+    except Exception:
+        machines = []
+    for m in machines if isinstance(machines, list) else []:
+        if not isinstance(m, dict):
+            continue
+        if m.get("orb_name") == raw or m.get("id") == raw:
+            return "orb", _argv_name(m.get("orb_name") or raw)
+    return "utm", _argv_name(raw)
 
 
 def vm_action(vm_id: str, action: str, **kwargs) -> dict[str, Any]:
-    backend, name = _parse_id(vm_id)
+    backend, ident = _parse_id(vm_id)
     action = (action or "").strip().lower()
 
     if backend == "utm":
-        return _utm_action(name, action, **kwargs)
+        return _utm_action(ident, action, **kwargs)
     if backend == "orb":
-        return _orb_action(name, action, **kwargs)
+        return _orb_action(ident, action, **kwargs)
     raise api_error("vms.unknown_backend", vm=vm_id)
 
 
-def _utm_action(name: str, action: str, **kwargs) -> dict:
+def _utm_action(ident: str, action: str, **kwargs) -> dict:
     if not _utm_available():
         raise api_error("vms.utm_unavailable")
     if action == "start":
-        rc, out, err = sh([UTMCTL, "start", name], timeout=90)
+        rc, out, err = sh([UTMCTL, "start", ident], timeout=90)
     elif action == "stop":
         force = kwargs.get("force", True)
-        args = [UTMCTL, "stop", name]
+        args = [UTMCTL, "stop", ident]
         if force:
             args.append("--force")
         else:
             args.append("--request")
         rc, out, err = sh(args, timeout=180)
     elif action == "kill":
-        rc, out, err = sh([UTMCTL, "stop", name, "--kill"], timeout=60)
+        rc, out, err = sh([UTMCTL, "stop", ident, "--kill"], timeout=60)
     elif action == "suspend":
-        rc, out, err = sh([UTMCTL, "suspend", name], timeout=120)
+        rc, out, err = sh([UTMCTL, "suspend", ident], timeout=120)
     elif action == "restart":
-        return _utm_restart_async(name)
+        return _utm_restart_async(ident)
     elif action == "delete":
         # must be stopped
-        st = _utm_status(name)
+        st = _utm_status(ident)
         if st in ("started", "running"):
-            sh([UTMCTL, "stop", name, "--force"], timeout=120)
+            sh([UTMCTL, "stop", ident, "--force"], timeout=120)
             time.sleep(2)
-        rc, out, err = sh([UTMCTL, "delete", name], timeout=60)
+        rc, out, err = sh([UTMCTL, "delete", ident], timeout=60)
     elif action == "clone":
-        new_name = (kwargs.get("name") or "").strip()
-        args = [UTMCTL, "clone", name]
-        if new_name:
-            args += ["--name", new_name]
+        new_name = kwargs.get("name")
+        args = [UTMCTL, "clone", ident]
+        if new_name is not None and new_name != "":
+            if not isinstance(new_name, str):
+                raise api_error("vms.bad_machine_name")
+            args += ["--name", _argv_name(new_name, code="vms.bad_machine_name")]
         rc, out, err = sh(args, timeout=300)
     elif action == "ip":
-        rc, out, err = sh([UTMCTL, "ip-address", name], timeout=15)
-        ips = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+        rc, out, err = sh([UTMCTL, "ip-address", ident], timeout=15)
+        text = _as_text(out)
+        ips = [ln.strip() for ln in text.splitlines() if ln.strip()]
         _invalidate()
-        return {"ok": rc == 0, "action": action, "id": name, "ips": ips, "message": out or err}
+        return {
+            "ok": rc == 0, "action": action, "id": ident, "ips": ips,
+            "message": text or _as_text(err),
+        }
     elif action == "rename":
-        return rename_vm_display(name, kwargs.get("name") or "")
+        return rename_vm_display(ident, kwargs.get("name") or "")
     elif action == "status":
-        st = _utm_status(name)
-        return {"ok": True, "action": action, "id": name, "status": st}
+        st = _utm_status(ident)
+        return {"ok": True, "action": action, "id": ident, "status": st}
     else:
         raise api_error("vms.utm_unsupported_action", action=action)
     _invalidate()
-    return {"ok": rc == 0, "action": action, "id": name, "message": out if rc == 0 else (err or out)}
+    return {
+        "ok": rc == 0, "action": action, "id": ident,
+        "message": _as_text(out) if rc == 0 else (_as_text(err) or _as_text(out)),
+    }
 
 
 def _utm_status(name: str) -> str:
     rc, out, _ = sh([UTMCTL, "status", name], timeout=10)
-    return (out or "").strip() if rc == 0 else "unknown"
+    return _as_text(out).strip() if rc == 0 else "unknown"
 
 
 def utm_vm_running(vm_uuid: str) -> bool:
@@ -408,7 +601,13 @@ def utm_vm_running(vm_uuid: str) -> bool:
     uuid = str(vm_uuid or "").strip().lower()
     if not uuid or not _utm_available():
         return False
-    for vm in list_utm_vms(force=True):
+    try:
+        vms = list_utm_vms(force=True)
+    except Exception:
+        return False
+    for vm in vms if isinstance(vms, list) else []:
+        if not isinstance(vm, dict):
+            continue
         if str(vm.get("uuid") or "").strip().lower() != uuid:
             continue
         return _utm_status(str(vm.get("id") or "")) in ("started", "running")
@@ -424,7 +623,7 @@ def _utm_restart_async(name: str) -> dict:
         sh([UTMCTL, "stop", name, "--force"], timeout=180)
         for _ in range(40):
             _, out, _ = sh([UTMCTL, "status", name], timeout=10)
-            if out == "stopped":
+            if _as_text(out).strip() == "stopped":
                 break
             time.sleep(2)
         sh([UTMCTL, "start", name], timeout=90)
@@ -434,42 +633,53 @@ def _utm_restart_async(name: str) -> dict:
     return {"ok": True, "action": "restart", "id": name, "message": "Restart started (takes about 1–2 minutes)"}
 
 
-def _orb_action(name: str, action: str, **kwargs) -> dict:
+def _orb_action(ident: str, action: str, **kwargs) -> dict:
     if not _orb_available():
         raise api_error("vms.orb_unavailable")
     if action == "start":
-        rc, out, err = sh([ORBCTL, "start", name], timeout=120)
+        rc, out, err = sh([ORBCTL, "start", ident], timeout=120)
     elif action == "stop":
-        rc, out, err = sh([ORBCTL, "stop", name], timeout=120)
+        rc, out, err = sh([ORBCTL, "stop", ident], timeout=120)
     elif action == "restart":
-        rc, out, err = sh([ORBCTL, "restart", name], timeout=180)
+        rc, out, err = sh([ORBCTL, "restart", ident], timeout=180)
     elif action == "delete":
         # orbctl delete NAME -y if exists
-        rc, out, err = sh([ORBCTL, "delete", name, "-f"], timeout=180)
+        rc, out, err = sh([ORBCTL, "delete", ident, "-f"], timeout=180)
         if rc != 0:
-            rc, out, err = sh([ORBCTL, "delete", name], timeout=180)
+            rc, out, err = sh([ORBCTL, "delete", ident], timeout=180)
     elif action == "clone":
-        new_name = (kwargs.get("name") or f"{name}-clone").strip()
-        rc, out, err = sh([ORBCTL, "clone", name, new_name], timeout=600)
+        new_name = kwargs.get("name")
+        if new_name is None or new_name == "":
+            new_name = f"{ident}-clone"
+        elif not isinstance(new_name, str):
+            raise api_error("vms.bad_machine_name")
+        new_name = _argv_name(new_name, code="vms.bad_machine_name")
+        rc, out, err = sh([ORBCTL, "clone", ident, new_name], timeout=600)
     elif action == "shell":
-        # return SSH hint
-        rc, out, err = sh([ORBCTL, "ssh", name], timeout=10)
+        # Hint only.  ``orbctl ssh`` is an interactive session and used to sit
+        # on the request thread until the 10s sh() timeout.
         return {
             "ok": True,
             "action": "shell",
-            "id": name,
-            "message": out or f"Run in a terminal: orb -m {name}",
-            "command": f"orb -m {name}",
+            "id": ident,
+            "message": f"Run in a terminal: orb -m {ident}",
+            "command": f"orb -m {ident}",
         }
     elif action == "info":
-        rc, out, err = sh([ORBCTL, "info", name], timeout=15)
-        return {"ok": rc == 0, "action": "info", "id": name, "message": out or err}
+        rc, out, err = sh([ORBCTL, "info", ident], timeout=15)
+        return {
+            "ok": rc == 0, "action": "info", "id": ident,
+            "message": _as_text(out) or _as_text(err),
+        }
     elif action == "rename":
-        return rename_vm_display(f"orb:{name}", kwargs.get("name") or "")
+        return rename_vm_display(f"orb:{ident}", kwargs.get("name") or "")
     else:
         raise api_error("vms.orb_unsupported_action", action=action)
     _invalidate()
-    return {"ok": rc == 0, "action": action, "id": name, "message": out if rc == 0 else (err or out)}
+    return {
+        "ok": rc == 0, "action": action, "id": ident,
+        "message": _as_text(out) if rc == 0 else (_as_text(err) or _as_text(out)),
+    }
 
 
 def create_orb_machine(distro: str, name: str | None = None, arch: str | None = None) -> dict:
@@ -479,11 +689,14 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
     distro = (distro or "").strip()
     if not distro:
         raise api_error("vms.distro_required")
-    # sanitize
-    if not re.match(r"^[a-zA-Z0-9._:-]+$", distro):
+    # ``^[a-zA-Z0-9._:-]+$`` matched ``--help`` because ``-`` is in the class
+    # with no first-character anchor — ``orbctl create --help``.
+    if not cli_args.is_safe_positional(distro):
         raise api_error("vms.bad_distro")
     args = [ORBCTL, "create", distro]
     if name:
+        if not isinstance(name, str):
+            raise api_error("vms.bad_machine_name")
         name = name.strip()
         if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", name):
             raise api_error("vms.bad_machine_name")
@@ -497,5 +710,5 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
         "action": "create",
         "distro": distro,
         "name": name,
-        "message": out if rc == 0 else (err or out),
+        "message": _as_text(out) if rc == 0 else (_as_text(err) or _as_text(out)),
     }

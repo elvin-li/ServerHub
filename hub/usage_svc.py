@@ -30,7 +30,7 @@ from pathlib import Path
 
 from hub import files_svc
 from hub.errors import api_error
-from hub.util import fan_out, sh
+from hub.util import fan_out, sh, strftime_now
 
 MDUTIL = "/usr/bin/mdutil"
 
@@ -90,6 +90,63 @@ _SCAN_WORKERS = 4
 _LEASE = 4096
 
 
+def _as_text(value) -> str:
+    """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 usage JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _safe_bytes(value) -> int:
+    """Clamp a ``stat.st_size`` so ``inf``/None cannot 500 the JSON encoder."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return n if n > 0 else 0
+
+
+def _json_float(value, ndigits: int = 2, default: float = 0.0) -> float:
+    """Finite float for JSON; OverflowError / inf must not 500 allow_nan=False."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if n != n or n in (float("inf"), float("-inf")):
+        return default
+    n = round(n, ndigits)
+    if n != n or n in (float("inf"), float("-inf")):
+        return default
+    return n
+
+
+def _gb(n: int) -> float:
+    try:
+        g = n / 2**30
+    except (OverflowError, ValueError, ZeroDivisionError, TypeError):
+        return 0.0
+    return _json_float(g, 2)
+
+
+def _dup_min_mb(floor: int) -> float:
+    try:
+        return floor / (1024 * 1024)
+    except (OverflowError, ValueError, ZeroDivisionError, TypeError):
+        return 1.0
+
+
 def _is_never_walk(path: Path) -> bool:
     text = str(path)
     for blocked in _NEVER_WALK:
@@ -109,24 +166,44 @@ def scan_roots() -> list[dict]:
     roots: list[dict] = []
     seen: set[str] = set()
 
-    def add(root_id: str, name: str, path: Path) -> None:
+    def add(root_id: str, name: str, path) -> None:
         try:
-            resolved = path.resolve()
-        except OSError:
+            resolved = Path(path).resolve()
+        except (OSError, ValueError, TypeError, RuntimeError):
             return
         text = str(resolved)
-        if text in seen or not resolved.is_dir():
+        try:
+            if text in seen or not resolved.is_dir():
+                return
+        except OSError:
             return
         if _is_never_walk(resolved) or files_svc.is_protected(resolved):
             return
         seen.add(text)
-        roots.append({"id": root_id, "name": name, "path": text})
+        roots.append({
+            "id": _as_text(root_id),
+            "name": _as_text(name),
+            "path": _as_text(text),
+        })
 
-    for entry in files_svc.default_roots():
-        add(str(entry.get("id") or "root"), str(entry.get("name") or ""), Path(entry["path"]))
+    incoming = files_svc.default_roots()
+    # None/int leftover used to TypeError GET /api/storage/usage.
+    if not isinstance(incoming, (list, tuple)):
+        incoming = []
+    for entry in incoming:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        add(str(entry.get("id") or "root"), str(entry.get("name") or ""), path)
 
     volumes = Path("/Volumes")
-    if volumes.is_dir():
+    try:
+        listed = volumes.is_dir()
+    except OSError:
+        listed = False
+    if listed:
         try:
             children = sorted(volumes.iterdir())
         except OSError:
@@ -142,11 +219,18 @@ def scan_roots() -> list[dict]:
     try:
         from hub import shares_svc
 
-        overview = shares_svc.overview() if hasattr(shares_svc, "overview") else {}
-        for share in (overview or {}).get("shares") or []:
-            path = str((share or {}).get("path") or "")
-            if path.startswith("/"):
-                add(f"share-{(share.get('name') or 'share')}", str(share.get("name") or path), Path(path))
+        for share in shares_svc.list_smb_shares(include_sizes=False) or []:
+            if not isinstance(share, dict):
+                continue
+            path = share.get("path")
+            # Path() TypeError'd a non-str share path and 500'd the usage page.
+            if not isinstance(path, str) or not path.startswith("/"):
+                continue
+            add(
+                f"share-{(share.get('name') or 'share')}",
+                str(share.get("name") or path),
+                path,
+            )
     except Exception:
         # Share enumeration is a convenience here, never a hard dependency.
         pass
@@ -172,20 +256,28 @@ def _resolve(path: str | None, root_id: str | None) -> Path:
     if not path or path in (".", "/"):
         return base or Path(roots[0]["path"])
 
-    candidate = Path(os.path.expanduser(str(path)))
     try:
-        candidate = candidate.resolve()
-    except OSError:
-        raise api_error("files.not_found", path=str(path))
+        candidate = Path(os.path.expanduser(str(path))).resolve()
+    except (OSError, ValueError, RuntimeError):
+        # Symlink loops raise RuntimeError, not OSError — that used to 500
+        # /api/storage/usage/tree.
+        raise api_error("files.not_found", path=str(path)[:200])
 
     allowed = [base] if base else [Path(r["path"]) for r in roots]
     if not any(candidate == a or a in candidate.parents for a in allowed):
         raise api_error("files.path_outside_root")
     if _is_never_walk(candidate) or files_svc.is_protected(candidate):
         raise api_error("files.path_protected")
-    if not candidate.exists():
+    try:
+        exists = candidate.exists()
+        is_dir = candidate.is_dir() if exists else False
+    except OSError:
+        # exists/is_dir on a dying FUSE mount raise EIO; files_svc.list_dir
+        # already maps that to permission_denied.
+        raise api_error("files.permission_denied", path=str(candidate))
+    if not exists:
         raise api_error("files.not_found", path=str(candidate))
-    if not candidate.is_dir():
+    if not is_dir:
         raise api_error("files.not_a_dir")
     return candidate
 
@@ -348,9 +440,9 @@ def _walk_parallel(target: Path, budget: _Budget, make_sink, on_file, *,
                                     subdirs.append(child)
                             elif entry.is_file(follow_symlinks=False):
                                 on_file(entry, sink)
-                        except OSError:
+                        except (OSError, ValueError, TypeError):
                             continue
-            except (OSError, PermissionError):
+            except (OSError, PermissionError, ValueError, TypeError):
                 pass
             _push(subdirs)
 
@@ -386,11 +478,11 @@ def _dir_size(path: Path, spender: _Spender) -> tuple[int, int]:
                             if not _is_never_walk(child):
                                 stack.append(child)
                         elif entry.is_file(follow_symlinks=False):
-                            total += entry.stat(follow_symlinks=False).st_size
+                            total += _safe_bytes(entry.stat(follow_symlinks=False).st_size)
                             files += 1
-                    except OSError:
+                    except (OSError, ValueError, TypeError):
                         continue
-        except (OSError, PermissionError):
+        except (OSError, PermissionError, ValueError, TypeError):
             continue
     return total, files
 
@@ -411,7 +503,12 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
     try:
         with os.scandir(target) as it:
             entries = list(it)
-    except (OSError, PermissionError):
+    except FileNotFoundError:
+        # _resolve's exists() can lose a race; a vanished dir is not a 403.
+        raise api_error("files.not_found", path=str(target))
+    except NotADirectoryError:
+        raise api_error("files.not_a_dir")
+    except OSError:
         raise api_error("files.permission_denied", path=str(target))
 
     # Split the listing first, then size the directories concurrently.  Sizing
@@ -429,18 +526,18 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
                     continue
                 subdirs.append(entry)
             elif entry.is_file(follow_symlinks=False):
-                size = entry.stat(follow_symlinks=False).st_size
+                size = _safe_bytes(entry.stat(follow_symlinks=False).st_size)
                 own_files += 1
                 own_bytes += size
                 children.append({
-                    "name": entry.name,
-                    "path": entry.path,
+                    "name": _as_text(entry.name),
+                    "path": _as_text(entry.path),
                     "kind": "file",
                     "bytes": size,
-                    "gb": round(size / 2**30, 2),
+                    "gb": _gb(size),
                     "files": 1,
                 })
-        except OSError:
+        except (OSError, ValueError, TypeError):
             continue
 
     sizes = fan_out(
@@ -450,27 +547,32 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
     )
     for entry, (size, files) in zip(subdirs, sizes):
         children.append({
-            "name": entry.name,
-            "path": entry.path,
+            "name": _as_text(entry.name),
+            "path": _as_text(entry.path),
             "kind": "dir",
             "bytes": size,
-            "gb": round(size / 2**30, 2),
+            "gb": _gb(size),
             "files": files,
         })
 
     children.sort(key=lambda c: c["bytes"], reverse=True)
     total = sum(c["bytes"] for c in children)
     for child in children:
-        child["percent"] = round(child["bytes"] / total * 100, 1) if total else 0.0
+        try:
+            child["percent"] = (
+                _json_float(child["bytes"] / total * 100, 1) if total else 0.0
+            )
+        except (OverflowError, ValueError, ZeroDivisionError, TypeError):
+            child["percent"] = 0.0
 
-    parent = str(target.parent)
+    parent = _as_text(target.parent)
     roots = {r["path"] for r in scan_roots()}
     return {
-        "path": str(target),
-        "parent": parent if str(target) not in roots else "",
+        "path": _as_text(target),
+        "parent": parent if _as_text(target) not in roots else "",
         "roots": scan_roots(),
         "total_bytes": total,
-        "total_gb": round(total / 2**30, 2),
+        "total_gb": _gb(total),
         "own_files": own_files,
         "own_bytes": own_bytes,
         "children": children[:400],
@@ -483,7 +585,10 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
 def largest_files(path: str | None = None, root_id: str | None = None, limit: int = 50) -> dict:
     """The biggest files anywhere under *path*."""
     target = _resolve(path, root_id)
-    cap = max(1, min(int(limit or 50), 500))
+    try:
+        cap = max(1, min(int(limit or 50), 500))
+    except (TypeError, ValueError, OverflowError):
+        cap = 50
     budget = _Budget(SCAN_SECONDS, SCAN_ENTRIES)
     started = time.monotonic()
 
@@ -504,7 +609,7 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
             return
         sink["seen"] += 1
         top = sink["top"]
-        top.append((st.st_size, entry.path, st.st_mtime))
+        top.append((_safe_bytes(st.st_size), entry.path, st.st_mtime))
         if len(top) > cap * 20:
             top.sort(key=lambda x: x[0], reverse=True)
             del top[cap:]
@@ -513,18 +618,22 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
     scanned = sum(s["seen"] for s in sinks)
     found = [item for sink in sinks for item in sink["top"]]
     found.sort(key=lambda x: x[0], reverse=True)
-    items = [
-        {
-            "path": p,
-            "name": Path(p).name,
+    items = []
+    for size, p, mtime in found[:cap]:
+        try:
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+        except (OverflowError, OSError, ValueError, TypeError):
+            # Corrupt mtimes (network FS, FAT) used to 500 this endpoint.
+            stamp = ""
+        items.append({
+            "path": _as_text(p),
+            "name": _as_text(Path(p).name),
             "bytes": size,
-            "gb": round(size / 2**30, 2),
-            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime)),
-        }
-        for size, p, mtime in found[:cap]
-    ]
+            "gb": _gb(size),
+            "mtime": stamp,
+        })
     return {
-        "path": str(target),
+        "path": _as_text(target),
         "items": items,
         "scanned": scanned,
         "truncated": budget.truncated,
@@ -545,7 +654,9 @@ def _hash_file(path: Path, *, partial: bool) -> str | None:
                     if not block:
                         break
                     digest.update(block)
-    except OSError:
+    except (OSError, ValueError, TypeError):
+        # ValueError: leftover ``\\ud800`` in a FUSE name. open() encodes
+        # strictly; the duplicates walk used to 500 GET /api/storage/usage/duplicates.
         return None
     return digest.hexdigest()
 
@@ -574,7 +685,13 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
     Anything smaller than *min_mb* is ignored.
     """
     target = _resolve(path, root_id)
-    floor = max(DUP_MIN_BYTES, int(float(min_mb or 1.0) * 1024 * 1024))
+    try:
+        mb = float(min_mb or 1.0)
+        if mb != mb or mb in (float("inf"), float("-inf")) or mb <= 0:
+            raise ValueError
+        floor = max(DUP_MIN_BYTES, int(mb * 1024 * 1024))
+    except (TypeError, ValueError, OverflowError):
+        floor = DUP_MIN_BYTES
     budget = _Budget(DUP_SECONDS, DUP_CANDIDATES)
     started = time.monotonic()
 
@@ -583,7 +700,7 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
 
     def _on_file(entry, sink: dict[int, list[str]]) -> None:
         try:
-            size = entry.stat(follow_symlinks=False).st_size
+            size = _safe_bytes(entry.stat(follow_symlinks=False).st_size)
         except OSError:
             return
         if size >= floor:
@@ -625,21 +742,21 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
                 groups.append({
                     "hash": digest[:16],
                     "bytes": size,
-                    "gb": round(size / 2**30, 2),
+                    "gb": _gb(size),
                     "count": len(matches),
                     "reclaimable_bytes": reclaimable,
-                    "reclaimable_gb": round(reclaimable / 2**30, 2),
-                    "paths": sorted(matches)[:20],
+                    "reclaimable_gb": _gb(reclaimable),
+                    "paths": [_as_text(p) for p in sorted(matches)[:20]],
                 })
 
     groups.sort(key=lambda g: g["reclaimable_bytes"], reverse=True)
     return {
-        "path": str(target),
-        "min_mb": round(floor / 1024 / 1024, 1),
+        "path": _as_text(target),
+        "min_mb": _json_float(_dup_min_mb(floor), 1, default=1.0),
         "groups": groups[:100],
         "group_count": len(groups),
         "reclaimable_bytes": wasted,
-        "reclaimable_gb": round(wasted / 2**30, 2),
+        "reclaimable_gb": _gb(wasted),
         "truncated": budget.truncated,
         "elapsed_sec": round(time.monotonic() - started, 2),
         "note": "read-only report; delete duplicates from the file manager",
@@ -657,8 +774,8 @@ def _spotlight_query(volume: str) -> tuple[int, str]:
     try:
         rc, text, err = sh([MDUTIL, "-s", volume], timeout=8)
     except Exception as exc:  # noqa: BLE001
-        return 1, str(exc)
-    return rc, (text or err or "").strip()
+        return 1, _as_text(exc)
+    return rc, _as_text(text or err).strip()
 
 
 def spotlight_status() -> list[dict]:
@@ -670,13 +787,16 @@ def spotlight_status() -> list[dict]:
     """
     volumes = ["/"]
     root = Path("/Volumes")
-    if root.is_dir():
-        try:
+    try:
+        if root.is_dir():
             for child in sorted(root.iterdir()):
-                if child.is_dir() and not child.is_symlink():
-                    volumes.append(str(child))
-        except OSError:
-            pass
+                try:
+                    if child.is_dir() and not child.is_symlink():
+                        volumes.append(_as_text(child))
+                except OSError:
+                    continue
+    except OSError:
+        pass
 
     # One `mdutil -s` per volume, 8s timeout each, previously in series -- so on
     # the kind of machine this page exists for, with an array of volumes mounted,
@@ -694,10 +814,10 @@ def spotlight_status() -> list[dict]:
         else:
             state = "unknown"
         out.append({
-            "volume": volume,
+            "volume": _as_text(volume),
             "state": state,
             "enabled": state == "enabled",
-            "detail": blob[:200],
+            "detail": _as_text(blob)[:200],
             "readable": rc == 0,
         })
     return out
@@ -708,10 +828,16 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     from hub.macos_admin import run_admin
 
     target = str(volume or "").strip()
-    known = {v["volume"] for v in spotlight_status()}
+    known = {
+        v.get("volume")
+        for v in spotlight_status()
+        if isinstance(v, dict) and isinstance(v.get("volume"), str)
+    }
     if target not in known:
         return {"ok": False, "error": "bad_volume"}
     result = run_admin([MDUTIL, "-i", "on" if enabled else "off", target], timeout=60)
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "failed"}
     if result.get("ok"):
         result["volume"] = target
         result["enabled"] = bool(enabled)
@@ -721,7 +847,7 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
 def overview() -> dict:
     """Landing payload: roots to pick from, plus Spotlight state."""
     return {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "roots": scan_roots(),
         "spotlight": spotlight_status(),
         "limits": {

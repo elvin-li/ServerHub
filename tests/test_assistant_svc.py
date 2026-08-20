@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -57,6 +58,20 @@ class CatalogAndMatch(unittest.TestCase):
 
     def test_unknown_name_returns_nothing(self):
         self.assertEqual(assistant_svc.match_panels("definitely-not-a-panel"), [])
+
+    def test_wrong_json_types_do_not_raise_at_load(self):
+        """A list/string leftover used to raise at import and take down the panel."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "assistant_intents.json").write_text("[]", encoding="utf-8")
+            (root / "assistant_panels.json").write_text('"oops"', encoding="utf-8")
+            (root / "assistant_blurbs.json").write_text("[]", encoding="utf-8")
+            with mock.patch.object(assistant_svc, "_HERE", root):
+                self.assertEqual(assistant_svc._load_object("assistant_intents.json"), {})
+                self.assertEqual(assistant_svc._load_list("assistant_panels.json"), [])
+                self.assertEqual(assistant_svc._load_object("assistant_blurbs.json"), {})
+        self.assertIsInstance(assistant_svc._compile(None).pattern, str)
+        self.assertFalse(assistant_svc._compile(None).search("anything"))
 
     def test_resolve_path_maps_a_route_and_nested_suffix(self):
         row = assistant_svc.resolve_path("/logs", "zh-CN")
@@ -125,6 +140,55 @@ class SnapshotAndFallback(unittest.TestCase):
         paths = [row["path"] for row in assistant_svc.suggest_panels(snap, "en")]
         self.assertIn("/services", paths)
         self.assertIn("/health", paths)
+
+    def test_infinite_counts_do_not_500_snapshot(self):
+        """``int(inf)`` used to OverflowError POST /api/assistant/ask."""
+        import json as _json
+
+        with (
+            mock.patch("hub.status.peek_status", return_value={
+                "system": {
+                    "load_pct": float("inf"),
+                    "mem_used_pct": float("nan"),
+                    "disk_pct": 40,
+                    "disk_used_gb": 1,
+                    "disk_total_gb": 2,
+                },
+                "engine_up": True,
+                "counts": {"ok": float("inf"), "warn": 1, "down": 0, "stopped": 0},
+                "problems": [],
+            }),
+            mock.patch("hub.status.full_status"),
+            mock.patch("hub.ollama_svc.status", return_value={"reachable": False}),
+            mock.patch("hub.ups_svc.ups_snapshot", return_value={"present": False}),
+        ):
+            snap = assistant_svc.build_snapshot()
+        self.assertEqual(snap["counts"]["ok"], 0)
+        self.assertIsNone(snap["cpu_load_pct"])
+        self.assertIsNone(snap["mem_used_pct"])
+        _json.dumps(snap, allow_nan=False)
+
+    def test_junk_snapshot_fields_do_not_500(self):
+        snap = {
+            "counts": ["not", "a", "map"],
+            "ollama": ["reachable"],
+            "ups": "battery",
+            "problems": "nginx is down",
+            "disk_root_pct": "full",
+        }
+        paths = [row["path"] for row in assistant_svc.suggest_panels(snap, "en")]
+        self.assertTrue(paths)
+        text = assistant_svc.fallback_brief(snap, "en")
+        self.assertIn("Overview:", text)
+        self.assertIn("No service alerts", text)
+
+    def test_pick_model_skips_non_dict_rows(self):
+        with mock.patch("hub.ollama_svc.status", return_value={
+            "reachable": True,
+            "resident": ["nope", {"name": ""}],
+            "models": [{"name": "qwen3.5:4b"}, "x"],
+        }):
+            self.assertEqual(assistant_svc._pick_model(), "qwen3.5:4b")
 
 
 class AskGating(unittest.TestCase):
@@ -252,6 +316,15 @@ class RouterContract(unittest.TestCase):
 
         self.assertIn("assistant.query_required", CODES)
         self.assertIn("assistant.bad_action", CODES)
+
+
+class AssistantCatalogLoadTests(unittest.TestCase):
+    def test_nested_catalog_json_does_not_500(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "x.json").write_text('{"k":' * 12000 + "1" + "}" * 12000)
+            with mock.patch.object(assistant_svc, "_HERE", path):
+                self.assertIsNone(assistant_svc._load_json("x.json"))
 
 
 if __name__ == "__main__":

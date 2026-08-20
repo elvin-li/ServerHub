@@ -75,4 +75,39 @@ describe('ServiceSignatures', () => {
     })
     w.unmount()
   })
+
+  it('does not toast a late failure after unmount', async () => {
+    const toast = vi.fn()
+    let rejectLoad
+    api.getServiceSignatures.mockImplementation(() => new Promise((_, reject) => {
+      rejectLoad = reject
+    }))
+    const w = mount(ServiceSignatures, {
+      global: { provide: { toast } },
+    })
+    w.unmount()
+    rejectLoad(new Error('gone'))
+    await flushPromises()
+    expect(toast).not.toHaveBeenCalled()
+  })
+
+  it('does not toast a save that finishes after leave', async () => {
+    const toast = vi.fn()
+    let resolveSave
+    api.upsertServiceSignature.mockImplementation(() => new Promise((resolve) => {
+      resolveSave = resolve
+    }))
+    const w = mount(ServiceSignatures, {
+      global: { provide: { toast } },
+    })
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text() === 'svcsig.add').trigger('click')
+    const inputs = w.findAll('.form-grid input')
+    await inputs[0].setValue('cache')
+    await w.findAll('button').find((b) => b.text() === 'common.save').trigger('click')
+    w.unmount()
+    resolveSave({ ok: true })
+    await flushPromises()
+    expect(toast).not.toHaveBeenCalled()
+  })
 })

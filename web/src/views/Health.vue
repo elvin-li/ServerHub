@@ -2,14 +2,14 @@
   <div>
     <div class="page-title">
       <h1>{{ t('pages.health') }}</h1>
-      <span class="meta">{{ t('pages.health_meta') }} · {{ data?.ts || '…' }}</span>
+      <span class="meta">{{ t('pages.health_meta') }} · {{ finiteText(data?.ts, '…') }}</span>
     </div>
 
     <div class="toolbar">
       <button class="primary" @click="load" :disabled="loading">{{ t('health.rescan') }}</button>
       <span class="meta hide-m" v-if="data?.summary" style="color:var(--sub)">
-        {{ t('health.passed') }} {{ data.summary.ok }} · {{ t('health.warnings') }} {{ data.summary.warn }} · {{ t('health.errors') }} {{ data.summary.error }}
-        · {{ data.summary.total }}
+        {{ t('health.passed') }} {{ finiteN(data.summary.ok) }} · {{ t('health.warnings') }} {{ finiteN(data.summary.warn) }} · {{ t('health.errors') }} {{ finiteN(data.summary.error) }}
+        · {{ finiteN(data.summary.total) }}
       </span>
       <span v-if="data" class="badge" :class="data.healthy ? 'ok' : 'down'" style="margin-left:4px">
         {{ data.healthy ? t('common.healthy') : t('common.issues') }}
@@ -21,15 +21,15 @@
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
         <h3>{{ t('health.passed') }}</h3>
-        <div class="v" style="color:var(--ok)">{{ data.summary.ok }}</div>
+        <div class="v" style="color:var(--ok)">{{ finiteN(data.summary.ok) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('health.warnings') }}</h3>
-        <div class="v" style="color:var(--warn)">{{ data.summary.warn }}</div>
+        <div class="v" style="color:var(--warn)">{{ finiteN(data.summary.warn) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('health.errors') }}</h3>
-        <div class="v" style="color:var(--down)">{{ data.summary.error }}</div>
+        <div class="v" style="color:var(--down)">{{ finiteN(data.summary.error) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('health.overall') }}</h3>
@@ -60,15 +60,15 @@
           <tr v-for="c in filtered" :key="c.id">
             <td><span class="led" :class="led(c)"></span></td>
             <td>
-              <strong>{{ c.name }}</strong>
-              <div v-if="errText(c.detail)" class="show-m sub">{{ errText(c.detail) }}</div>
-              <div v-if="c.fix && !c.ok" class="show-m sub">{{ errText(c.fix) }}</div>
+              <strong>{{ finiteText(c.name) }}</strong>
+              <div v-if="finiteText(errText(c.detail), '')" class="show-m sub">{{ finiteText(errText(c.detail)) }}</div>
+              <div v-if="c.fix && !c.ok" class="show-m sub">{{ finiteText(errText(c.fix)) }}</div>
             </td>
             <td>
               <span class="badge" :class="levelBadge(c)">{{ levelLabel(c) }}</span>
             </td>
-            <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ errText(c.detail) }}</td>
-            <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? errText(c.fix) : (c.ok ? '—' : '') }}</td>
+            <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(errText(c.detail)) }}</td>
+            <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? finiteText(errText(c.fix)) : (c.ok ? '—' : '') }}</td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
             <td colspan="5" style="color:var(--sub)">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>
@@ -80,9 +80,10 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getHealthChecks } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -93,6 +94,8 @@ const loading = ref(false)
 const loaded = ref(false)
 const loadError = ref('')
 const filter = ref('all')
+let pageAlive = true
+let loadGeneration = 0
 
 const filtered = computed(() => {
   const list = data.value?.checks || []
@@ -122,17 +125,31 @@ function levelBadge(c) {
 }
 
 async function load() {
+  const generation = ++loadGeneration
   loading.value = true
   try {
-    data.value = await getHealthChecks()
+    const next = await getHealthChecks()
+    if (generation !== loadGeneration || !pageAlive) return
+    data.value = next
     loadError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === loadGeneration && pageAlive) {
+      loading.value = false
+      loaded.value = true
+    }
   }
-  loading.value = false
-  loaded.value = true
 }
 
-onMounted(load)
+onMounted(() => {
+  pageAlive = true
+  void load()
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+})
 </script>

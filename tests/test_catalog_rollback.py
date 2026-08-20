@@ -17,13 +17,6 @@ from fastapi import HTTPException
 from hub import catalog
 
 
-class _FakeProc:
-    def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
 TEMPLATE = """---
 name: Rollback Fixture
 desc: fixture
@@ -57,7 +50,7 @@ class CatalogRollbackTest(unittest.TestCase):
         self.tid = "rollback-fixture"
         (self.templates / f"{self.tid}.yml").write_text(TEMPLATE)
 
-        # A fake docker binary that is never actually executed (subprocess.run
+        # A fake docker binary that is never actually executed (run_capped
         # is patched) but must exist so install_template takes the "up" path.
         self.docker = tmp / "docker"
         self.docker.write_text("#!/bin/sh\nexit 0\n")
@@ -95,8 +88,8 @@ class CatalogRollbackTest(unittest.TestCase):
     # ── failure rolls everything back ───────────────────────────────────────
     def test_failed_up_removes_dir_and_registration(self):
         with mock.patch.object(
-            catalog.subprocess, "run",
-            return_value=_FakeProc(1, stderr="Error: port is already allocated"),
+            catalog, "run_capped",
+            return_value=(1, "Error: port is already allocated"),
         ):
             r = catalog.install_template(self.tid, {})
 
@@ -112,12 +105,12 @@ class CatalogRollbackTest(unittest.TestCase):
     def test_retry_after_failure_is_not_409(self):
         """The actual reported bug: second attempt used to fail forever."""
         with mock.patch.object(
-            catalog.subprocess, "run", return_value=_FakeProc(1, stderr="boom")
+            catalog, "run_capped", return_value=(1, "boom")
         ):
             catalog.install_template(self.tid, {})
         # retry now succeeds instead of raising "already installed"
         with mock.patch.object(
-            catalog.subprocess, "run", return_value=_FakeProc(0, stdout="Started")
+            catalog, "run_capped", return_value=(0, "Started")
         ):
             r2 = catalog.install_template(self.tid, {})
         self.assertTrue(r2["ok"], r2["message"])
@@ -125,8 +118,7 @@ class CatalogRollbackTest(unittest.TestCase):
 
     def test_exception_during_up_also_rolls_back(self):
         with mock.patch.object(
-            catalog.subprocess, "run",
-            side_effect=catalog.subprocess.TimeoutExpired("docker", 600),
+            catalog, "run_capped", return_value=(-1, "timeout after 600s"),
         ):
             r = catalog.install_template(self.tid, {})
         self.assertFalse(r["ok"])
@@ -141,7 +133,7 @@ class CatalogRollbackTest(unittest.TestCase):
         keeper.write_text("user data")
 
         with mock.patch.object(
-            catalog.subprocess, "run", return_value=_FakeProc(1, stderr="boom")
+            catalog, "run_capped", return_value=(1, "boom")
         ):
             r = catalog.install_template(self.tid, {})
 
@@ -153,7 +145,7 @@ class CatalogRollbackTest(unittest.TestCase):
     # ── success leaves things in place ──────────────────────────────────────
     def test_success_keeps_dir_and_registration(self):
         with mock.patch.object(
-            catalog.subprocess, "run", return_value=_FakeProc(0, stdout="Started")
+            catalog, "run_capped", return_value=(0, "Started")
         ):
             r = catalog.install_template(self.tid, {})
         self.assertTrue(r["ok"], r["message"])
@@ -208,7 +200,7 @@ class PortConflictTest(unittest.TestCase):
     def test_no_free_port_anywhere_still_refuses_install(self):
         """With every port busy there is nothing to relocate to."""
         with mock.patch.object(catalog, "_port_is_bound", lambda port: True), \
-             mock.patch.object(catalog.subprocess, "run") as run:
+             mock.patch.object(catalog, "run_capped") as run:
             with self.assertRaises(HTTPException) as ctx:
                 catalog.install_template(self.tid, {})
         self.assertEqual(ctx.exception.status_code, 409)
@@ -223,8 +215,8 @@ class PortConflictTest(unittest.TestCase):
             'services:\n  x:\n    image: a\n    ports:\n      - "59731:80"\n'
         )
         with mock.patch.object(catalog, "_port_is_bound", lambda port: False), \
-             mock.patch.object(catalog.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="started", stderr="")
+             mock.patch.object(catalog, "run_capped") as run:
+            run.return_value = (0, "started")
             result = catalog.install_template(self.tid, {})
 
         self.assertTrue(result["ok"], result.get("message"))

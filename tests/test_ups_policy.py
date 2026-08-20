@@ -25,6 +25,7 @@ a patched ``_spawn`` so the state machine is deterministic.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import sys
 import tempfile
@@ -192,6 +193,21 @@ class ConditionTests(unittest.TestCase):
         hit, _ = ups_policy._condition(_status(pct=None), _policy(trigger_pct=25))
         self.assertFalse(hit)
 
+    def test_hand_edited_percent_string_does_not_500(self):
+        hit, _ = ups_policy._condition(_status(pct=10), _policy(trigger_pct="25%"))
+        self.assertFalse(hit)
+
+    def test_huge_trigger_integers_do_not_500(self):
+        """Leftover YAML ``trigger_pct: 10**400`` OverflowError'd ``float()`` on the plan."""
+        huge = 10 ** 400
+        hit, _ = ups_policy._condition(_status(pct=18), _policy(trigger_pct=huge))
+        self.assertFalse(hit)
+        hit, _ = ups_policy._condition(
+            _status(pct=80, remaining=huge),
+            _policy(trigger_pct=None, trigger_remaining_min=10),
+        )
+        self.assertFalse(hit)
+
     def test_no_conditions_configured_never_fires(self):
         pol = _policy(trigger_pct=None, trigger_remaining_min=None)
         hit, _ = ups_policy._condition(_status(pct=1), pol)
@@ -226,6 +242,99 @@ class PlanTests(PolicyBase):
             steps = ups_policy.build_plan(_policy(stacks=[], stop_scripts=["gravity"]))
         self.assertFalse(steps[0]["running"],
                          "a service the operator stopped must not be stopped (or restarted) by policy")
+
+    def test_junk_stack_rows_do_not_500(self):
+        with mock.patch.object(
+            ups_policy, "_list_stacks",
+            lambda: [None, "oops", {"id": "ok", "name": "OK", "status": "ok"}],
+        ):
+            steps = ups_policy.build_plan(_policy(stacks="all"))
+            cat = ups_policy._catalog()
+        self.assertEqual([s["id"] for s in steps], ["ok"])
+        self.assertEqual([s["id"] for s in cat["stacks"]], ["ok"])
+
+    def test_non_list_scripts_catalog_does_not_500(self):
+        with mock.patch.object(ups_policy, "_list_stacks", lambda: []), \
+             mock.patch("hub.config.cfg", lambda: {"scripts": 3}):
+            self.assertEqual(ups_policy._catalog()["scripts"], [])
+
+
+class Leftover500Tests(unittest.TestCase):
+    """Request-path leftovers that 500 GET /api/ups and /api/ups/shutdown/plan."""
+
+    def test_junk_status_groups_do_not_500(self):
+        """``g.get("services")`` 500'd the plan on leftover status rows."""
+        with mock.patch(
+            "hub.status.full_status",
+            return_value={"groups": [
+                None, "oops",
+                {"services": [None, "x", {"id": "gravity", "state": "ok"}]},
+            ]},
+        ):
+            states = ups_policy._service_states()
+        self.assertEqual(states, {"gravity": "ok"})
+
+    def test_infinite_state_fields_do_not_500(self):
+        """``1e400`` in the persisted state used to 500 GET /api/ups."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state_file = Path(tmp.name) / "ups-policy-state.json"
+        state_file.write_text(json.dumps({
+            "phase": "engaged",
+            "engaged_at": float("inf"),
+            "reason": "battery 18% ≤ 25%",
+            "steps": [{"kind": "stack", "id": "immich"}],
+            "last": {"restored_at": float("nan")},
+        }))
+        with mock.patch.object(ups_policy, "STATE_FILE", state_file):
+            st = ups_policy.public_state()
+        json.dumps(st, allow_nan=False)
+        self.assertEqual(st["phase"], "engaged")
+        self.assertIsNone(st["engaged_at"])
+        self.assertIsNone(st["last"]["restored_at"])
+
+    def test_state_file_stat_eio_does_not_500(self):
+        """A dying ``data/`` mount used to OSError ``exists()`` on GET /api/ups."""
+        with mock.patch.object(Path, "exists", side_effect=OSError(5, "I/O error")):
+            st = ups_policy.public_state()
+        json.dumps(st, allow_nan=False)
+        self.assertEqual(st["phase"], "idle")
+        self.assertIsNone(st["last"])
+
+    def test_huge_state_file_does_not_oom(self):
+        """``read_text()`` of leftover multi-MB ups-policy-state.json used to OOM GET /api/ups."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state_file = Path(tmp.name) / "ups-policy-state.json"
+        state_file.write_bytes(b"x" * (2 * 1024 * 1024))
+        with mock.patch.object(ups_policy, "STATE_FILE", state_file):
+            st = ups_policy.public_state()
+        json.dumps(st, allow_nan=False)
+        self.assertEqual(st["phase"], "idle")
+
+    def test_infinite_worker_claim_ts_does_not_500(self):
+        """Leftover ``worker_owner.ts: 1e400`` OverflowError'd ``int(inf)`` on the sweep."""
+        ups_policy._worker_active.clear()
+        self.assertFalse(ups_policy._worker_busy({
+            "worker_owner": {"pid": 1, "ts": float("inf")},
+        }))
+
+    def test_save_state_drops_leftover_inf(self):
+        """``json.dumps`` without allow_nan=False used to rewrite Infinity onto disk."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state_file = Path(tmp.name) / "ups-policy-state.json"
+        with mock.patch.object(ups_policy, "STATE_FILE", state_file):
+            ups_policy._save_state({
+                "phase": "engaged",
+                "engaged_at": float("inf"),
+                "reason": b"battery",
+            })
+        raw = json.loads(state_file.read_text())
+        json.dumps(raw, allow_nan=False)
+        self.assertEqual(raw["phase"], "engaged")
+        self.assertIsNone(raw["engaged_at"])
+        self.assertEqual(raw["reason"], "battery")
 
 
 class SweepStateMachineTests(PolicyBase):
@@ -663,6 +772,41 @@ class ApiTests(PolicyBase):
             r = self._client().put("/api/ups/halt", json={"haltlevel": 20})
         self.assertEqual(r.status_code, 409)
         self.assertEqual(r.json()["detail"]["code"], "admin.password_required")
+
+
+class UpsClockLeftoverTests(unittest.TestCase):
+    def test_infinite_clock_does_not_raise(self):
+        """int(time.time()) OverflowError on leftover inf used to 500 UPS restore."""
+        with mock.patch.object(ups_policy.time, "time", return_value=float("inf")):
+            self.assertEqual(ups_policy._now(), 0)
+
+
+class UpsPolicyJsonableLeftoverTests(unittest.TestCase):
+    def test_isoformat_inf_date_bytes_set_do_not_500(self):
+        """Leftover YAML dates/!!set/isoformat inf used to 500 GET /api/ups."""
+        class _Stamp:
+            def isoformat(self):
+                return float("inf")
+
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        self.assertEqual(ups_policy._as_text(Recursing()), "Recursing")
+        self.assertIsNone(ups_policy._jsonable(_Stamp()))
+        out = ups_policy._jsonable({
+            "when": _Stamp(),
+            "name": datetime.date(2026, 8, 19),
+            "blob": b"ups",
+            "tags": {"battery"},
+            "n": float("inf"),
+        })
+        json.dumps(out, allow_nan=False)
+        self.assertIsNone(out["when"])
+        self.assertEqual(out["name"], "2026-08-19")
+        self.assertEqual(out["blob"], "ups")
+        self.assertEqual(out["tags"], ["battery"])
+        self.assertIsNone(out["n"])
 
 
 if __name__ == "__main__":

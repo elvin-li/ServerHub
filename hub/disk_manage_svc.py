@@ -19,7 +19,7 @@ from hub.disk_snapshot import (
     root_info,
 )
 from hub.errors import api_error
-from hub.util import fan_out, sh
+from hub.util import fan_out, run_bytes, sh
 
 DISK_RE = re.compile(r"^disk\d+(s\d+)*$")
 WHOLE_RE = re.compile(r"^disk\d+$")
@@ -38,10 +38,12 @@ FS_TYPES = {
 
 def _plist(cmd: list[str], timeout: int = 30) -> dict | list | None:
     try:
-        p = subprocess.run(cmd, capture_output=True, timeout=timeout)
-        if p.returncode != 0 or not p.stdout:
+        # Binary plist: UTF-8 ``sh()`` would corrupt it.  ``run_bytes``
+        # streams to a tempfile and refuses a payload past the cap.
+        rc, stdout, _ = run_bytes(cmd, timeout=timeout, runner=subprocess.run)
+        if rc != 0 or not stdout:
             return None
-        return plistlib.loads(p.stdout)
+        return plistlib.loads(stdout)
     except Exception:
         return None
 
@@ -182,8 +184,109 @@ def _prefetch_disk_info(nodes: list[str]) -> None:
     fan_out(_fetch_shared, pending, max_workers=min(_INFO_WORKERS, len(pending)))
 
 
+def _ident(value) -> str:
+    """Plist device identifier as a string.
+
+    ``DeviceIdentifier`` / ``ParentWholeDisk`` are strings in a healthy
+    diskutil plist.  An array-shaped or non-string value used to TypeError
+    ``re.match`` / ``set.add`` and 500 the manage listing.  Leftover
+    ``bytes`` used to stringify as ``b'disk4'`` and drop the node.  A
+    leftover ``\\ud800`` identifier used to 500 the same JSON encoder.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    if not isinstance(value, str):
+        return ""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    return value
+
+
+def _text(value) -> str:
+    """Plist display field as a JSON-safe string.
+
+    ``VolumeName`` / ``MountPoint`` / ``MediaName`` are strings in a healthy
+    diskutil plist.  ``inf`` used to fail Starlette's ``allow_nan=False``
+    encoder and ``bytes`` used to TypeError ``json.dumps``.  A leftover
+    ``\\ud800`` name still 500'd the UTF-8 encode of GET /api/storage.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    elif value in (None, False, ""):
+        return ""
+    elif isinstance(value, (dict, set, frozenset)):
+        return ""
+    elif not isinstance(value, str):
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _opt_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    return bool(value)
+
+
+def _size_bytes(raw) -> int:
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _size_gb(size: int):
+    """``round(10**400 / 2**30)`` OverflowError'd the manage listing.
+
+    ``int(inf)`` is already caught by ``_size_bytes``; a huge *finite* plist
+    integer is a valid Python int and used to escape on the GB conversion.
+    """
+    if not size:
+        return None
+    try:
+        gb = round(size / 2**30, 1)
+    except OverflowError:
+        return None
+    if gb != gb or gb in (float("inf"), float("-inf")):
+        return None
+    return gb
+
+
+def _label_ok(value: str) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Leftover ``\\ud800`` used to UnicodeEncodeError ``subprocess`` argv
+        # on POST /api/storage/manage rename/erase.
+        return False
+    return not any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
+
+
 def _normalize_id(device: str) -> str:
-    d = (device or "").strip().replace("/dev/", "")
+    if not isinstance(device, str):
+        raise api_error("disk.invalid_device", device=device)
+    d = device.strip().replace("/dev/", "")
     if not DISK_RE.match(d):
         raise api_error("disk.invalid_device", device=device)
     return d
@@ -191,8 +294,9 @@ def _normalize_id(device: str) -> str:
 
 def _is_system_related(info: dict, device_id: str) -> bool:
     """Block ops on boot/system volumes and their parent whole disk."""
-    # Mounted at system paths
-    mp = info.get("MountPoint") or ""
+    # Mounted at system paths.  Leftover plist ``bytes`` used to stringify as
+    # ``b'/'`` and skip the boot-volume guard on POST /api/storage/manage.
+    mp = _text(info.get("MountPoint"))
     if mp in ("/", "/System/Volumes/Data", "/System/Volumes/Preboot", "/System/Volumes/VM"):
         return True
     if mp.startswith("/System/Volumes/"):
@@ -208,18 +312,18 @@ def _is_system_related(info: dict, device_id: str) -> bool:
         if device_id == "disk0":
             return True
     # Parent whole of a system volume
-    whole = info.get("ParentWholeDisk") or ""
+    whole = _ident(info.get("ParentWholeDisk"))
     if whole == "disk0":
         # only if this is internal system — still be careful for partitions of disk0
         if info.get("Internal") and info.get("SolidState"):
             # APFS system container
-            fs = (info.get("FilesystemType") or info.get("FilesystemName") or "").lower()
+            fs = _text(info.get("FilesystemType") or info.get("FilesystemName")).lower()
             if "apfs" in fs or info.get("APFSContainerReference"):
                 # any volume on system APFS container
-                if not (info.get("MountPoint") or "").startswith("/Volumes/"):
+                if not mp.startswith("/Volumes/"):
                     # not user external mount
                     # If not mounted under /Volumes, treat APFS on disk0 parent as system-ish
-                    parent = info.get("ParentWholeDisk") or device_id
+                    parent = whole or device_id
                     if parent == "disk0" or device_id.startswith("disk0"):
                         # allow only if explicitly external volume name on /Volumes - handled above
                         if not mp.startswith("/Volumes/"):
@@ -276,40 +380,48 @@ def list_managed_volumes() -> list[dict]:
     if not pl:
         return []
 
-    if root_details.get("ParentWholeDisk"):
-        system_wholes.add(root_details["ParentWholeDisk"])
+    parent_whole = _ident(root_details.get("ParentWholeDisk"))
+    if parent_whole:
+        system_wholes.add(parent_whole)
     # Physical store of APFS container
     stores = root_details.get("APFSPhysicalStores") or []
     if isinstance(stores, list):
         for s in stores:
-            if isinstance(s, dict) and s.get("APFSPhysicalStore"):
-                m = re.search(r"(disk\d+)", s["APFSPhysicalStore"])
-                if m:
-                    system_wholes.add(m.group(1))
+            if not isinstance(s, dict):
+                continue
+            store = _ident(s.get("APFSPhysicalStore"))
+            if not store:
+                continue
+            m = re.search(r"(disk\d+)", store)
+            if m:
+                system_wholes.add(m.group(1))
     # boot physical disk always system
     system_wholes.add("disk0")
 
-    all_disks = list(pl.get("AllDisksAndPartitions") or [])
+    raw_disks = pl.get("AllDisksAndPartitions")
+    all_disks = [n for n in raw_disks if isinstance(n, dict)] if isinstance(raw_disks, list) else []
     out = []
 
     def walk(node: dict, whole: str | None = None):
-        ident = node.get("DeviceIdentifier") or ""
+        if not isinstance(node, dict):
+            return
+        ident = _ident(node.get("DeviceIdentifier"))
         if not ident:
             return
         is_whole = WHOLE_RE.match(ident) is not None
         w = ident if is_whole else (whole or ident)
         # partitions list
-        parts = node.get("Partitions") or []
-        apfs_vols = node.get("APFSVolumes") or []
-        children = parts + apfs_vols
+        parts = node.get("Partitions") if isinstance(node.get("Partitions"), list) else []
+        apfs_vols = node.get("APFSVolumes") if isinstance(node.get("APFSVolumes"), list) else []
+        children = [c for c in (parts + apfs_vols) if isinstance(c, dict)]
         if children:
             for ch in children:
                 walk(ch, w if is_whole else whole or w)
             # still record whole disk summary
             if is_whole:
                 info = _diskutil_info(ident)
-                size = node.get("Size") or info.get("TotalSize") or 0
-                content = str(node.get("Content") or info.get("Content") or "")
+                size = _size_bytes(node.get("Size") or info.get("TotalSize"))
+                content = _text(node.get("Content") or info.get("Content"))
                 # Synthetic APFS containers (not in physical list) are system-side
                 synth = bool(physical_wholes) and ident not in physical_wholes
                 is_sys = (
@@ -319,20 +431,21 @@ def list_managed_volumes() -> list[dict]:
                     or "Recovery" in content
                     or "APFS_ISC" in content
                 )
+                mount = _text(info.get("MountPoint"))
                 out.append({
                     "id": ident,
                     "device": f"/dev/{ident}",
-                    "name": info.get("MediaName") or info.get("IORegistryEntryName") or ident,
-                    "volume_name": info.get("VolumeName") or "",
+                    "name": _text(info.get("MediaName") or info.get("IORegistryEntryName")) or ident,
+                    "volume_name": _text(info.get("VolumeName")),
                     "whole_disk": ident,
                     "is_whole": True,
                     "size_bytes": size,
-                    "size_gb": round(size / 2**30, 1) if size else None,
-                    "fs": info.get("FilesystemType") or content,
+                    "size_gb": _size_gb(size),
+                    "fs": _text(info.get("FilesystemType")) or content,
                     "content": content,
-                    "mount": info.get("MountPoint") or "",
-                    "mounted": bool(info.get("MountPoint")),
-                    "writable": info.get("Writable") if "Writable" in info else None,
+                    "mount": mount,
+                    "mounted": bool(mount),
+                    "writable": _opt_bool(info.get("Writable")) if "Writable" in info else None,
                     "internal": bool(info.get("Internal")),
                     "ejectable": bool(info.get("Ejectable")),
                     "removable": bool(info.get("Removable") or info.get("RemovableMedia")),
@@ -343,14 +456,13 @@ def list_managed_volumes() -> list[dict]:
 
         # leaf volume / partition
         info = _diskutil_info(ident)
-        size = node.get("Size") or info.get("TotalSize") or 0
-        mount = info.get("MountPoint") or node.get("MountPoint") or ""
-        content = str(node.get("Content") or info.get("Content") or "")
+        size = _size_bytes(node.get("Size") or info.get("TotalSize"))
+        mount = _text(info.get("MountPoint") or node.get("MountPoint"))
+        content = _text(node.get("Content") or info.get("Content"))
         fs_type = (
-            info.get("FilesystemType")
-            or info.get("FilesystemName")
+            _text(info.get("FilesystemType"))
+            or _text(info.get("FilesystemName"))
             or content
-            or ""
         )
         # system / recovery / preboot — never manage
         synth_parent = bool(physical_wholes) and w and w not in physical_wholes
@@ -367,25 +479,25 @@ def list_managed_volumes() -> list[dict]:
             or "Preboot" in str(mount)
         )
         name = (
-            info.get("VolumeName")
-            or node.get("VolumeName")
-            or info.get("MediaName")
+            _text(info.get("VolumeName"))
+            or _text(node.get("VolumeName"))
+            or _text(info.get("MediaName"))
             or ident
         )
         item = {
             "id": ident,
             "device": f"/dev/{ident}",
             "name": name,
-            "volume_name": info.get("VolumeName") or node.get("VolumeName") or "",
+            "volume_name": _text(info.get("VolumeName") or node.get("VolumeName")),
             "whole_disk": w,
             "is_whole": False,
             "size_bytes": size,
-            "size_gb": round(size / 2**30, 1) if size else None,
+            "size_gb": _size_gb(size),
             "fs": fs_type,
             "content": content,
-            "mount": mount or "",
+            "mount": mount,
             "mounted": bool(mount),
-            "writable": info.get("WritableVolume", info.get("Writable")),
+            "writable": _opt_bool(info.get("WritableVolume", info.get("Writable"))),
             "internal": bool(info.get("Internal")),
             "ejectable": bool(info.get("Ejectable")),
             "removable": bool(info.get("Removable") or info.get("RemovableMedia")),
@@ -400,12 +512,17 @@ def list_managed_volumes() -> list[dict]:
     # serial waits before this.  Collect the identifiers from the same tree the
     # walk descends so the two cannot disagree about which nodes are visited.
     def _identifiers(node: dict) -> list[str]:
-        ident = node.get("DeviceIdentifier") or ""
+        if not isinstance(node, dict):
+            return []
+        ident = _ident(node.get("DeviceIdentifier"))
         if not ident:
             return []
         found = [ident]
-        for ch in (node.get("Partitions") or []) + (node.get("APFSVolumes") or []):
-            found.extend(_identifiers(ch))
+        parts = node.get("Partitions") if isinstance(node.get("Partitions"), list) else []
+        apfs = node.get("APFSVolumes") if isinstance(node.get("APFSVolumes"), list) else []
+        for ch in parts + apfs:
+            if isinstance(ch, dict):
+                found.extend(_identifiers(ch))
         return found
 
     _prefetch_disk_info([n for d in all_disks for n in _identifiers(d)])
@@ -475,7 +592,8 @@ def disk_action(
 
     def run(args: list[str], timeout: int = 120) -> tuple[int, str, str]:
         rc, out, err = sh(args, timeout=timeout)
-        log.append(f"$ {' '.join(args)}\n{(out or '')}\n{(err or '')}".strip())
+        out, err = _text(out), _text(err)
+        log.append(f"$ {' '.join(args)}\n{out}\n{err}".strip())
         # Every branch below reaches diskutil through here, and every one of them
         # changes what `diskutil info` would report -- mount point, volume name,
         # filesystem.  Without this the panel could serve the pre-operation view
@@ -491,7 +609,7 @@ def disk_action(
         # here rather than only in the router so the service is correct when called
         # directly.
         invalidate_disks()
-        return rc, out or "", err or ""
+        return rc, out, err
 
     # ---- non-destructive ----
     if action == "mount":
@@ -514,8 +632,10 @@ def disk_action(
         rc, out, err = run(["/usr/sbin/diskutil", "eject", did])
         return {"ok": rc == 0, "action": action, "device": did, "message": out or err, "log": log}
     if action == "rename":
-        new_name = (name or "").strip()
-        if not new_name or len(new_name) > 64:
+        if not isinstance(name, str):
+            raise api_error("disk.name_required")
+        new_name = name.strip()
+        if not new_name or len(new_name) > 64 or not _label_ok(new_name):
             raise api_error("disk.name_required")
         # diskutil rename /Volumes/Old New  OR  diskutil rename diskXsY New
         rc, out, err = run(["/usr/sbin/diskutil", "rename", did, new_name])
@@ -525,16 +645,29 @@ def disk_action(
     if action in ("eraseVolume", "format", "eraseDisk"):
         if not confirm:
             raise api_error("disk.confirm_required")
-        vol_name = (info.get("VolumeName") or info.get("MediaName") or did).strip()
-        if confirm_name is not None and confirm_name.strip() != vol_name and confirm_name.strip() != did:
-            raise api_error("disk.confirm_name_mismatch", name=vol_name, id=did)
+        vol_name = _text(info.get("VolumeName") or info.get("MediaName") or did).strip()
+        if confirm_name is not None:
+            if not isinstance(confirm_name, str):
+                raise api_error("disk.confirm_name_mismatch", name=vol_name, id=did)
+            if confirm_name.strip() != vol_name and confirm_name.strip() != did:
+                raise api_error("disk.confirm_name_mismatch", name=vol_name, id=did)
+        if fs is not None and not isinstance(fs, str):
+            raise api_error(
+                "disk.unsupported_fs", fs=fs, choices=", ".join(sorted(set(FS_TYPES)))
+            )
         fs_key = (fs or "ExFAT").strip()
         fs_type = FS_TYPES.get(fs_key) or FS_TYPES.get(fs_key.upper())
         if not fs_type:
             raise api_error(
             "disk.unsupported_fs", fs=fs, choices=", ".join(sorted(set(FS_TYPES)))
         )
-        new_label = (name or vol_name or "UNTITLED").strip()[:32] or "UNTITLED"
+        # ``subprocess.run`` ValueError's a NUL in argv.  Rename already
+        # rejected control characters; erase used to 500 POST /api/storage/manage.
+        if name is not None and not isinstance(name, str):
+            raise api_error("disk.name_required")
+        new_label = ((name or vol_name or "UNTITLED").strip()[:32] or "UNTITLED")
+        if not _label_ok(new_label):
+            raise api_error("disk.name_required")
 
         if action == "eraseDisk":
             if not WHOLE_RE.match(did):

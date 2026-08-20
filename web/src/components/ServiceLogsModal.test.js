@@ -4,9 +4,15 @@
  * (Escape closes, the scroll lock never outlives the modal).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 
+const clipboard = vi.hoisted(() => ({
+  copyToClipboard: vi.fn(),
+}))
+
+vi.mock('../lib/clipboard', () => clipboard)
 vi.mock('../i18n', () => ({
   injectI18n: () => ({
     t: (key, params = {}) => Object.entries(params).reduce(
@@ -75,5 +81,22 @@ describe('ServiceLogsModal', () => {
     // Escape after unmount may not re-fire close.
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not toast a clipboard copy that finishes after leave', async () => {
+    const toast = vi.fn()
+    let resolveCopy
+    clipboard.copyToClipboard.mockImplementation(() => new Promise((resolve) => {
+      resolveCopy = resolve
+    }))
+    const w = mount(ServiceLogsModal, {
+      props: { entry },
+      global: { provide: { toast } },
+    })
+    await w.findAll('button').find((b) => b.text() === 'services.copy_log').trigger('click')
+    w.unmount()
+    resolveCopy(true)
+    await flushPromises()
+    expect(toast).not.toHaveBeenCalled()
   })
 })

@@ -102,8 +102,21 @@ class RequestClientTests(unittest.TestCase):
         auth._login_attempts.clear()
         self.addCleanup(auth._login_attempts.clear)
         auth._login_attempts["gone"] = [time.time() - 400]
-        auth.login_allowed("gone")
+        auth.login_allowed("gone", consume=False)
         self.assertNotIn("gone", auth._login_attempts)
+
+    def test_concurrent_allows_are_serialized_under_the_lock(self):
+        # consume=True is the login-route path: the slot is reserved in the
+        # same critical section as the check, so five overlapping attempts
+        # cannot all see "< 5" and all proceed.
+        auth._login_attempts.clear()
+        self.addCleanup(auth._login_attempts.clear)
+        allowed = 0
+        for _ in range(8):
+            if auth.login_allowed("burst")[0]:
+                allowed += 1
+        self.assertEqual(allowed, 5)
+        self.assertFalse(auth.login_allowed("burst")[0])
 
 
 class _PanelSandbox(unittest.TestCase):

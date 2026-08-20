@@ -15,7 +15,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from hub import audit, auth, twofa_svc
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 from hub.routers.nas_common import client_host, require_admin_browser
 
 router = APIRouter(tags=["accounts"])
@@ -33,7 +33,7 @@ _ACCOUNT_ERRORS = {
 
 
 def _account_error(exc: ValueError):
-    code = _ACCOUNT_ERRORS.get(str(exc), "accounts.bad_username")
+    code = _ACCOUNT_ERRORS.get(exc_detail(exc, cap=64), "accounts.bad_username")
     if code == "auth.password_too_short":
         return api_error(code, min=auth.MIN_PASSWORD_LENGTH)
     return api_error(code)

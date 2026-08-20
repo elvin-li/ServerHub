@@ -31,6 +31,50 @@ class NetworkResilienceTests(unittest.TestCase):
         with patch.object(network_svc, "sh", return_value=(0, rejected, "")):
             self.assertFalse(network_svc._alias_local_route("192.0.2.204")["ok"])
 
+    def test_ifconfig_ether_without_address_is_not_a_500(self):
+        output = (
+            "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+            "\tether \n"
+            "\tinet 192.0.2.10 netmask 0xffffff00 broadcast 192.0.2.255\n"
+            "en7: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+            "\tether aa:bb:cc:dd:ee:ff\n"
+        )
+        with patch.object(network_svc, "sh", return_value=(0, output, "")):
+            items = network_svc._interfaces_uncached()
+        by_name = {i["name"]: i for i in items}
+        self.assertIsNone(by_name["en0"]["mac"])
+        self.assertEqual(by_name["en7"]["mac"], "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(by_name["en0"]["ipv4"][0]["ip"], "192.0.2.10")
+
+    def test_primary_ipv4_skips_junk_address_rows(self):
+        iface = {
+            "status": "active",
+            "ipv4": [
+                "not-a-row",
+                {"ip": "169.254.1.1", "netmask": "255.255.0.0"},
+                {"ip": "192.0.2.20", "netmask": "255.255.255.0"},
+            ],
+        }
+        self.assertEqual(network_svc._primary_ipv4_for_device("en0", iface), "192.0.2.20")
+        self.assertIsNone(network_svc._primary_ipv4_for_device("en0", "not-a-map"))
+
+    def test_iface_usable_and_netmask_tolerate_leftover_types(self):
+        """status/ipv4 leftovers used to raise on preferred_active_device."""
+        self.assertFalse(network_svc._iface_usable("en0"))
+        self.assertTrue(network_svc._iface_usable({
+            "up": True, "status": 1, "ipv4": [{"ip": "192.0.2.1"}],
+        }))
+        self.assertFalse(network_svc._iface_usable({
+            "up": True, "status": "active", "ipv4": "10.0.0.1",
+        }))
+        self.assertEqual(network_svc._hex_netmask_to_dotted(None), "")
+        self.assertEqual(network_svc._hex_netmask_to_dotted("0xffffff00"), "255.255.255.0")
+        iface = {
+            "status": "active",
+            "ipv4": [{"ip": "192.0.2.9", "netmask": 0xFFFFFF00}],
+        }
+        self.assertEqual(network_svc._primary_ipv4_for_device("en0", iface), "192.0.2.9")
+
     def test_existing_alias_with_broken_local_route_is_rebuilt(self):
         conf = {
             "auto_bind": True,

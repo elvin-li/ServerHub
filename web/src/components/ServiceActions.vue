@@ -15,11 +15,11 @@
   uninstall) to the same row.
 -->
 <template>
-  <div :class="wrapClass">
+  <div :class="wrapClass" :aria-busy="busy ? 'true' : undefined">
     <a
       v-if="service.url"
       :class="openClass"
-      :href="service.url"
+      :href="finiteText(service.url, '')"
       target="_blank"
       rel="noopener"
       @click.stop
@@ -45,6 +45,7 @@
 <script setup>
 import { computed } from 'vue'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 import { canLogs, controlActs, primaryActs, serviceLabels } from '../lib/serviceActions'
 
 const { t } = injectI18n()

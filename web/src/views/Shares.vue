@@ -24,8 +24,11 @@
     </div>
 
     <LoadFailure v-if="!data && loadError" :detail="loadError" :retry="refresh" :busy="loading" />
+    <div v-else-if="!loaded || (!data && loading)" class="card page-placeholder" role="status" aria-live="polite">
+      {{ t('common.loading') }}
+    </div>
     <div v-else-if="!data" class="card page-placeholder" role="status" aria-live="polite">
-      {{ loading ? t('common.loading') : t('shares.unavailable') }}
+      {{ t('shares.unavailable') }}
     </div>
 
     <template v-else>
@@ -34,8 +37,8 @@
           <div class="host-icon"><Server :size="22" /></div>
           <div class="host-copy">
             <span id="sharing-host-title" class="section-title">{{ t('shares.this_mac') }}</span>
-            <strong>{{ data.host?.name || t('shares.unknown') }}</strong>
-            <code>{{ data.host?.address || '—' }}</code>
+            <strong>{{ finiteText(data.host?.name, '') || t('shares.unknown') }}</strong>
+            <code>{{ finiteText(data.host?.address) }}</code>
           </div>
         </div>
         <div class="host-stats" :aria-label="t('shares.overview_summary')">
@@ -49,10 +52,10 @@
           </div>
         </div>
         <div class="host-links btns">
-          <a v-if="data.host?.smb_url" class="btn primary" :href="data.host.smb_url">
+          <a v-if="data.host?.smb_url" class="btn primary" :href="finiteText(data.host.smb_url, '')">
             <FolderOpen :size="15" />{{ t('shares.connect_files') }}
           </a>
-          <a v-if="data.host?.vnc_url" class="btn" :href="data.host.vnc_url">
+          <a v-if="data.host?.vnc_url" class="btn" :href="finiteText(data.host.vnc_url, '')">
             <Monitor :size="15" />{{ t('shares.connect_screen') }}
           </a>
         </div>
@@ -80,9 +83,9 @@
           <article v-for="share in data.smb" :key="share.record_name" class="share-row">
             <div class="folder-icon"><Folder :size="18" /></div>
             <div class="share-copy">
-              <strong>{{ share.smb_name || share.name }}</strong>
-              <code class="path">{{ share.path }}</code>
-              <a v-if="share.url" :href="share.url">{{ share.url }}</a>
+              <strong>{{ finiteText(share.smb_name, '') || finiteText(share.name) }}</strong>
+              <code class="path">{{ finiteText(share.path) }}</code>
+              <a v-if="share.url" :href="finiteText(share.url, '')">{{ finiteText(share.url) }}</a>
             </div>
             <div class="share-badges">
               <span v-if="share.guest" class="badge warn"><Users :size="12" />{{ t('shares.guest') }}</span>
@@ -91,16 +94,16 @@
               <span v-if="share.encrypted" class="badge accent">{{ t('shares.encrypted') }}</span>
               <span v-if="share.time_machine" class="badge accent tm-badge">
                 <History :size="12" />
-                {{ share.tm_quota_gb
-                  ? t('shares.tm_quota_badge', { gb: share.tm_quota_gb })
+                {{ finiteN(share.tm_quota_gb, null) != null
+                  ? t('shares.tm_quota_badge', { gb: finiteN(share.tm_quota_gb) })
                   : t('shares.time_machine_badge') }}
               </span>
             </div>
             <div class="share-actions btns">
-              <button class="tiny" :aria-label="t('shares.edit_named', { name: share.smb_name || share.name })" :disabled="busy" @click="openEdit(share)">
+              <button class="tiny" :aria-label="t('shares.edit_named', { name: finiteText(share.smb_name, '') || finiteText(share.name) })" :disabled="busy" @click="openEdit(share)">
                 <Pencil :size="15" />{{ t('shares.edit_action') }}
               </button>
-              <button class="tiny danger-button" :aria-label="t('shares.remove_named', { name: share.smb_name || share.name })" :disabled="busy" @click="removeShare(share)">
+              <button class="tiny danger-button" :aria-label="t('shares.remove_named', { name: finiteText(share.smb_name, '') || finiteText(share.name) })" :disabled="busy" @click="removeShare(share)">
                 <Trash2 :size="15" />{{ t('shares.remove_action') }}
               </button>
             </div>
@@ -144,7 +147,7 @@
                   v-if="typeof service.enabled === 'boolean'"
                   class="mac-switch"
                   role="switch"
-                  :aria-label="t('shares.toggle_service', { name: t(`shares.service_${service.id}`) })"
+                  :aria-label="t('shares.toggle_service', { name: t(`shares.service_${finiteText(service.id, '')}`) })"
                   :aria-checked="service.enabled ? 'true' : 'false'"
                   :disabled="busy"
                   @click="toggleService(service)"
@@ -189,11 +192,11 @@
         <div class="card file-service-list">
           <article v-for="service in data.file_services" :key="service.id" class="file-service-row">
             <div class="service-icon service-file"><Globe2 :size="17" /></div>
-            <strong>{{ service.name }}</strong>
+            <strong>{{ finiteText(service.name) }}</strong>
             <span class="badge" :class="service.state === 'ok' ? 'ok' : 'stopped'">
               {{ service.state === 'ok' ? t('common.running') : t('common.off') }}
             </span>
-            <a v-if="service.url" class="btn tiny" :href="service.url" target="_blank" rel="noopener">
+            <a v-if="service.url" class="btn tiny" :href="finiteText(service.url, '')" target="_blank" rel="noopener">
               {{ t('common.open') }}<ExternalLink :size="13" />
             </a>
           </article>
@@ -263,18 +266,18 @@
             <h3>{{ t('shares.acl_title') }}</h3>
             <p class="acl-hint">{{ t('shares.acl_hint') }}</p>
             <div v-if="aclLoading" class="acl-hint">{{ t('common.loading') }}</div>
-            <div v-else-if="aclError" class="acl-error">{{ aclError }}</div>
+            <div v-else-if="aclError" class="acl-error">{{ finiteText(aclError) }}</div>
             <template v-else-if="acl">
               <div v-for="user in acl.users" :key="user.username" class="acl-user-row">
                 <span class="acl-user">
-                  <strong>{{ user.username }}</strong>
-                  <small v-if="user.real_name">{{ user.real_name }}</small>
+                  <strong>{{ finiteText(user.username) }}</strong>
+                  <small v-if="finiteText(user.real_name, '')">{{ finiteText(user.real_name) }}</small>
                   <small v-if="user.username === acl.owner" class="acl-owner-tag">{{ t('shares.acl_owner') }}</small>
                 </span>
                 <select
                   :value="aclLevelOf(user.username)"
                   :disabled="aclBusy || user.username === acl.owner"
-                  :aria-label="t('shares.acl_level_for', { name: user.username })"
+                  :aria-label="t('shares.acl_level_for', { name: finiteText(user.username) })"
                   @change="applyAcl(user.username, $event.target.value)"
                 >
                   <option value="none">{{ t('shares.acl_none') }}</option>
@@ -283,11 +286,11 @@
                 </select>
               </div>
               <details class="acl-entries" v-if="acl.entries.length">
-                <summary>{{ t('shares.acl_current', { n: acl.entries.length }) }}</summary>
+                <summary>{{ t('shares.acl_current', { n: finiteN(acl.entries.length) }) }}</summary>
                 <code v-for="entry in acl.entries" :key="entry.index" class="acl-entry mono">
-                  {{ entry.index }}: {{ entry.kind }}:{{ entry.name }}
-                  {{ entry.inherited ? 'inherited ' : '' }}{{ entry.effect }}
-                  {{ entry.perms.join(',') }}
+                  {{ finiteN(entry.index) }}: {{ finiteText(entry.kind) }}:{{ finiteText(entry.name) }}
+                  {{ entry.inherited ? 'inherited ' : '' }}{{ finiteText(entry.effect) }}
+                  {{ (entry.perms || []).map(p => finiteText(p, '')).filter(Boolean).join(',') }}
                 </code>
               </details>
               <p class="acl-hint">{{ t('shares.acl_guest_note') }}</p>
@@ -302,7 +305,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import {
   Archive, Bluetooth, ExternalLink, Folder, FolderOpen, Globe2, HardDriveDownload,
   History, Laptop, LoaderCircle, LockKeyhole, Monitor, Music2, Pencil, Plus,
@@ -313,6 +316,7 @@ import {
   createShare, getShareAcl, getShares, openSharingSettings,
   removeShare as removeShareRequest, setShareAcl, setSystemSharing, updateShare,
 } from '../api/client'
+import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -321,6 +325,7 @@ const toast = inject('toast')
 const { t } = injectI18n()
 const data = ref(null)
 const loading = ref(false)
+const loaded = ref(false)
 const loadError = ref('')
 const busy = ref(false)
 const busyLabel = ref('')
@@ -332,6 +337,8 @@ const emptyForm = () => ({
   encrypted: false, time_machine: false, tm_quota_gb: '',
 })
 const form = ref(emptyForm())
+let pageAlive = true
+let loadGeneration = 0
 
 const iconMap = {
   screen_sharing: Monitor,
@@ -350,7 +357,7 @@ const coreServices = computed(() => systemServices.value.filter((service) => ser
 const managedServices = computed(() => systemServices.value.filter((service) => !service.controllable))
 const shareCount = computed(() => data.value?.smb?.length || 0)
 const tmStatus = computed(() => data.value?.time_machine || {})
-const hostName = computed(() => data.value?.host?.name || t('shares.unknown'))
+const hostName = computed(() => finiteText(data.value?.host?.name, '') || t('shares.unknown'))
 const activeCoreCount = computed(() => coreServices.value.filter((service) => service.enabled === true).length)
 const stateClass = (enabled) => enabled === true ? 'ok' : enabled === false ? 'stopped' : 'warn'
 const stateText = (enabled) => enabled === true
@@ -365,16 +372,25 @@ useDismissable(sheetOpen, closeSheet, sheetPanel)
 
 async function refresh() {
   if (loading.value) return
+  const generation = ++loadGeneration
   loading.value = true
   try {
-    data.value = await getShares()
+    const next = await getShares()
+    if (generation !== loadGeneration || !pageAlive) return
+    data.value = next
     loadError.value = ''
   } catch (error) {
     // "Sharing is unavailable" was asserted for any failure, which conflates a
     // host that has file sharing switched off with a request that never landed.
+    if (generation !== loadGeneration || !pageAlive) return
     loadError.value = error.message || String(error)
-    toast(`❌ ${error.message}`)
-  } finally { loading.value = false }
+    toast(`❌ ${finiteText(error.message)}`)
+  } finally {
+    if (generation === loadGeneration) {
+      loading.value = false
+      loaded.value = true
+    }
+  }
 }
 
 function openCreate() {
@@ -386,9 +402,9 @@ function openCreate() {
 function openEdit(share) {
   editing.value = share
   form.value = {
-    path: share.path || '',
-    name: share.record_name || share.name || '',
-    smb_name: share.smb_name || '',
+    path: finiteText(share.path, ''),
+    name: finiteText(share.record_name, '') || finiteText(share.name, ''),
+    smb_name: finiteText(share.smb_name, ''),
     guest: Boolean(share.guest),
     readonly: Boolean(share.readonly),
     encrypted: Boolean(share.encrypted),
@@ -404,19 +420,24 @@ const acl = ref(null)
 const aclLoading = ref(false)
 const aclError = ref('')
 const aclBusy = ref(false)
+let aclGeneration = 0
 
 async function loadAcl(path) {
+  const generation = ++aclGeneration
   acl.value = null
   aclError.value = ''
   if (!path) return
   aclLoading.value = true
   try {
-    acl.value = await getShareAcl(path)
+    const next = await getShareAcl(path)
+    if (generation !== aclGeneration || !pageAlive) return
+    acl.value = next
   } catch (error) {
+    if (generation !== aclGeneration || !pageAlive) return
     // Read failure degrades to guidance instead of hiding the whole sheet.
-    aclError.value = error.message
+    aclError.value = finiteText(error.message, '')
   } finally {
-    aclLoading.value = false
+    if (generation === aclGeneration) aclLoading.value = false
   }
 }
 
@@ -433,22 +454,28 @@ function aclLevelOf(username) {
 
 async function applyAcl(username, level) {
   if (aclBusy.value || !editing.value?.path) return
+  const generation = aclGeneration
   aclBusy.value = true
   try {
     // The response carries the read-back, verified on-disk state.
     const result = await setShareAcl(editing.value.path, username, level)
+    if (generation !== aclGeneration || !pageAlive) return
     acl.value = { ...acl.value, ...result }
-    toast(`✅ ${t('shares.acl_saved', { name: username })}`)
+    toast(`✅ ${t('shares.acl_saved', { name: finiteText(username) })}`)
   } catch (error) {
-    toast(`❌ ${error.message}`)
+    if (generation !== aclGeneration || !pageAlive) return
+    toast(`❌ ${finiteText(error.message)}`)
     await loadAcl(editing.value.path)
   } finally {
-    aclBusy.value = false
+    // loadAcl() bumps aclGeneration, so a generation match would leave
+    // ACL selects stuck after a failed write.
+    if (pageAlive) aclBusy.value = false
   }
 }
 
 function closeSheet() {
   if (busy.value) return
+  aclGeneration += 1
   sheetOpen.value = false
   editing.value = null
 }
@@ -464,6 +491,7 @@ function quotaPayload() {
 async function saveShare() {
   if (busy.value || !formValid.value) return
   if (form.value.guest && !confirm(t('shares.confirm_guest'))) return
+  const generation = loadGeneration
   busy.value = true
   busyLabel.value = t('shares.waiting_for_admin')
   try {
@@ -478,61 +506,99 @@ async function saveShare() {
     const result = editing.value
       ? await updateShare(editing.value.record_name, options)
       : await createShare({ path: form.value.path, name: form.value.name, ...options })
-    toast(`✅ ${result.message || t('shares.saved')}`)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(`✅ ${finiteText(result.message, '') || t('shares.saved')}`)
     sheetOpen.value = false
     editing.value = null
     await refresh()
   } catch (error) {
-    toast(`❌ ${error.message}`)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(`❌ ${finiteText(error.message)}`)
     await refresh()
   } finally {
-    busy.value = false
-    busyLabel.value = ''
+    // refresh() bumps loadGeneration; the sheet must still drop its busy
+    // label after a successful save.
+    if (pageAlive) {
+      busy.value = false
+      busyLabel.value = ''
+    }
   }
 }
 
 async function removeShare(share) {
-  if (busy.value || !confirm(t('shares.confirm_remove', { name: share.smb_name || share.name }))) return
+  if (busy.value || !confirm(t('shares.confirm_remove', { name: finiteText(share.smb_name, '') || finiteText(share.name) }))) return
+  const generation = loadGeneration
   busy.value = true
   busyLabel.value = t('shares.waiting_for_admin')
   try {
     await removeShareRequest(share.record_name)
+    if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('shares.removed')}`)
-  } catch (error) { toast(`❌ ${error.message}`) }
-  finally {
-    busy.value = false
-    busyLabel.value = ''
-    await refresh()
+  } catch (error) {
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(`❌ ${finiteText(error.message)}`)
+  } finally {
+    if (pageAlive) {
+      busy.value = false
+      busyLabel.value = ''
+    }
+    if (generation === loadGeneration && pageAlive) await refresh()
   }
 }
 
 async function toggleService(service) {
   if (busy.value || typeof service.enabled !== 'boolean') return
   const target = !service.enabled
-  if (target && !confirm(t('shares.confirm_enable_service', { name: t(`shares.service_${service.id}`) }))) return
-  if (!target && service.id === 'screen_sharing' && !confirm(t('shares.confirm_disable_screen'))) return
+  if (target && !confirm(t('shares.confirm_enable_service', { name: t(`shares.service_${finiteText(service.id, '')}`) }))) return
+  if (!target) {
+    const disableKey = service.id === 'screen_sharing'
+      ? 'shares.confirm_disable_screen'
+      : 'shares.confirm_disable_service'
+    if (!confirm(t(disableKey, { name: t(`shares.service_${finiteText(service.id, '')}`) }))) return
+  }
+  const generation = loadGeneration
   busy.value = true
   busyLabel.value = t('shares.waiting_for_admin')
   try {
     await setSystemSharing(service.id, target)
+    if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('shares.service_updated')}`)
-  } catch (error) { toast(`❌ ${error.message}`) }
-  finally {
-    busy.value = false
-    busyLabel.value = ''
-    await refresh()
+  } catch (error) {
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(`❌ ${finiteText(error.message)}`)
+  } finally {
+    if (pageAlive) {
+      busy.value = false
+      busyLabel.value = ''
+    }
+    if (generation === loadGeneration && pageAlive) await refresh()
   }
 }
 
 async function openSettings() {
   if (busy.value) return
+  const generation = loadGeneration
   busy.value = true
-  try { await openSharingSettings() }
-  catch (error) { toast(`❌ ${error.message}`) }
-  finally { busy.value = false }
+  try {
+    await openSharingSettings()
+  } catch (error) {
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(`❌ ${finiteText(error.message)}`)
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  pageAlive = true
+  refresh()
+})
+
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+  aclGeneration += 1
+})
 </script>
 
 <style scoped>

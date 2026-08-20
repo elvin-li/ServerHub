@@ -246,6 +246,8 @@ def _iter_signatures(extras: list[dict] | None):
     """Operator-defined signatures first, so they override a built-in slug."""
     seen: set[str] = set()
     for sig in extras or []:
+        if not isinstance(sig, dict):
+            continue
         slug = sig.get("slug")
         if not slug or slug in seen:
             continue
@@ -326,16 +328,22 @@ def parse_signature(raw) -> dict | None:
     slug = re.sub(r"[^a-z0-9]+", "-", str(raw.get("slug") or "").lower()).strip("-")
     if not slug:
         return None
+    raw_procs = raw.get("procs")
     procs = tuple(
         str(p).strip().lower()
-        for p in (raw.get("procs") or [])
+        for p in (raw_procs if isinstance(raw_procs, list) else [])
         if str(p).strip()
     )
     ports: list[int] = []
-    for p in raw.get("ports") or []:
+    raw_ports = raw.get("ports")
+    # YAML ``ports: !!set`` is a set; ``[.inf]`` OverflowError's ``int()``.
+    port_rows = raw_ports if isinstance(raw_ports, (list, tuple, set, frozenset)) else []
+    for p in port_rows:
+        if isinstance(p, bool):
+            continue
         try:
             n = int(p)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if 1 <= n <= 65535 and n not in ports:
             ports.append(n)

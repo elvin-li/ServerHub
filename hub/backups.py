@@ -18,9 +18,47 @@ from pathlib import Path
 from hub import secure_io
 from hub.config import cfg
 from hub.errors import CODES, api_error
-from hub.paths import CONFIG_FILE, DATA_DIR
+from hub.paths import CONFIG_FILE, DATA_DIR, user_home
+from hub.util import read_text_capped, run_capped, strftime_now, utf8_env
 
-BACKUP_ROOT = Path.home() / "Services" / "backups"
+
+def _as_text(value) -> str:
+    """``run_capped`` leftovers arrive as bytes/None; JSON and ``.strip`` need text."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _home_dir() -> Path:
+    """Best-effort HOME.  ``Path.home()`` leftover used to 500 import."""
+    return user_home() or Path("/var/empty/serverhub-backups")
+
+
+_HOME = _home_dir()
+BACKUP_ROOT = _HOME / "Services" / "backups"
+
+#: Leftover multi-MB panel_status / .env / inflight markers used to OOM
+#: GET /api/backups and POST /api/backups/immich.
+_JSON_CAP = 256 * 1024
+_ENV_CAP = 64 * 1024
+_MARKER_CAP = 64 * 1024
+#: Resolved compose JSON is typically tens of KB.  ``run_capped`` keeps a
+#: *trailing* window, so the 4KB chatter cap turned every real
+#: ``compose config --format json`` into a torn suffix and backup_stack
+#: refused with ``compose_config_failed``.
+_COMPOSE_JSON_CAP = 256 * 1024
 
 #: This host's Immich cluster is PostgreSQL 18 on :5433.  PATH ``pg_dump`` is
 #: 17.x and a version-mismatched dump of that database is empty or truncated,
@@ -29,7 +67,7 @@ BACKUP_ROOT = Path.home() / "Services" / "backups"
 #: to expose that job; after postgres targets became configuration only
 #: TeslaMate remained on the button.  These paths rediscover the Immich dump
 #: without putting its password in services.yaml.
-IMMICH_ROOT = Path.home() / "Services" / "immich"
+IMMICH_ROOT = _HOME / "Services" / "immich"
 IMMICH_SCRIPT = IMMICH_ROOT / "backup-db.sh"
 IMMICH_DB_ENV = IMMICH_ROOT / "db.env"
 _PG18_DUMPS = (
@@ -46,15 +84,17 @@ _DUMP_CHUNK = 1 << 20
 #: PhotosBridge index, generated media on PhotoVault).  Read-only: the Backups
 #: page needs those paths to explain *what* to back up; it must not ``du`` the
 #: USB volume on every load.
-PHOTOSHUB_CFG = Path.home() / "PhotosHub" / "config" / "config.json"
-PHOTOSHUB_STATE = Path.home() / "PhotosHub" / "state"
+PHOTOSHUB_CFG = _HOME / "PhotosHub" / "config" / "config.json"
+PHOTOSHUB_STATE = _HOME / "PhotosHub" / "state"
 _GENERATED_DIRS = ("thumbs", "encoded-video", "upload", "library")
 # 0700, not the umask default: a config backup contains services.yaml verbatim,
 # which holds the admin password hash and any tunnel/API tokens, and a database
 # dump contains whatever the database holds.  The originals are 0600, so leaving
 # the copies at 0644 in a traversable directory handed every other local account
 # the exact secrets the originals protect.
-secure_io.make_secret_dir(BACKUP_ROOT)
+# Skip mkdir when HOME is the /var/empty fallback: that used to 500 import.
+if user_home() is not None:
+    secure_io.make_secret_dir(BACKUP_ROOT)
 
 log = logging.getLogger("serverhub.backups")
 
@@ -100,7 +140,12 @@ def _private_dest(base: Path) -> Path:
     existing, because after this it always does -- and must use the returned path,
     not the one they passed in.
     """
-    base.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        base.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Leftover file occupying the backup directory, dying volume: let
+        # the writer fail the same way as any other unwritable dest.
+        return base
     head, dot, tail = base.name.partition(".")
     for attempt in range(1, _MAX_COLLISIONS + 1):
         candidate = (
@@ -165,7 +210,10 @@ def _prune(pattern: str, retain: int = RETAIN) -> None:
     rotate away the last good copy.  Removals are logged: a backup disappearing is
     something an operator should be able to account for afterwards.
     """
-    retain = max(1, int(retain))
+    try:
+        retain = max(1, int(retain))
+    except (TypeError, ValueError, OverflowError):
+        retain = RETAIN
     try:
         found = sorted(BACKUP_ROOT.glob(pattern), reverse=True)
     except OSError:
@@ -179,11 +227,41 @@ def _prune(pattern: str, retain: int = RETAIN) -> None:
 
 
 def _written_bytes(dest: Path) -> int:
-    """Size of a produced archive, or 0 when it is missing or still empty."""
+    """Size of a produced archive, or 0 when it is missing, empty, or leftover junk.
+
+    A FUSE/network fs reporting ``st_size = inf`` used to leak into
+    POST /api/backups/* ``size_mb`` and 500 Starlette's ``allow_nan=False``
+    encoder.  A 400-digit leftover size OverflowError'd ``size / 1024``.
+    """
     try:
-        return dest.stat().st_size
+        st = dest.stat()
     except OSError:
         return 0
+    nums = _stat_numbers(st)
+    return nums[0] if nums is not None else 0
+
+
+def _stat_numbers(st) -> tuple[int, int] | None:
+    """``(size, mtime)`` as finite ints, or None when the stat is leftover junk.
+
+    A FUSE/network fs reporting ``st_mtime = inf`` used to OverflowError
+    ``int()`` inside :func:`scan_backups` and 500 GET /api/backups.
+    A 400-digit leftover ``st_size`` is a valid int, then ``size / 1024``
+    OverflowError'd the size_mb field on the same path.
+    """
+    try:
+        size = int(st.st_size)
+        mtime = int(st.st_mtime)
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return None
+    if size < 0:
+        return None
+    try:
+        float(size)
+        float(mtime)
+    except OverflowError:
+        return None
+    return size, mtime
 
 
 def _discard(dest: Path) -> None:
@@ -225,6 +303,8 @@ def _discard(dest: Path) -> None:
 # (PGPASSWORD / ~/.pgpass), which is what unconfigured installs relied on.
 
 BACKUP_SECRETS_FILE = DATA_DIR / "backup-credentials.json"
+#: Leftover multi-MB credentials used to OOM POST /api/backups/postgres.
+_SECRETS_CAP = 256 * 1024
 
 #: Target ids become filenames and prune globs, so the charset is pinned the
 #: same way volume names are below: no separators, no wildcards.
@@ -271,8 +351,9 @@ def pg_targets(raw: list | None = None) -> list[dict]:
         port_raw = entry.get("port", 5432)
         try:
             # None/"" mean "unset" and take the default; 0 is a typo, not a port.
+            # YAML ``port: .inf`` used to OverflowError GET /api/backups.
             port = int(5432 if port_raw in (None, "") else port_raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if not _PG_ID_RE.fullmatch(tid) or tid in seen or not db:
             continue
@@ -305,6 +386,10 @@ def _ensure_secret_mode(path: Path) -> None:
     bits — matching the 0600-at-creation guarantee the other secret stores make.
     """
     try:
+        # A leftover directory named backup-credentials.json is not a secret
+        # file; chmod 0600 would lock the directory itself, not fix a mode.
+        if not path.is_file():
+            return
         mode = path.stat().st_mode
     except OSError:
         return
@@ -320,8 +405,13 @@ def _pg_password(target_id: str) -> str:
     """The stored password for one pg target, or "" when none is on file."""
     _ensure_secret_mode(BACKUP_SECRETS_FILE)
     try:
-        raw = json.loads(BACKUP_SECRETS_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if not BACKUP_SECRETS_FILE.is_file():
+            return ""
+        raw = json.loads(
+            read_text_capped(BACKUP_SECRETS_FILE, _SECRETS_CAP, encoding="utf-8")
+        )
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested credentials is not ValueError.
         return ""
     entry = raw.get(target_id) if isinstance(raw, dict) else None
     if not isinstance(entry, dict):
@@ -349,10 +439,14 @@ def _pg_env(target: dict) -> dict:
     """Subprocess environment for one dump: maintenance_env over os.environ,
     plus the target's password resolved per the note above."""
     env = dict(os.environ)
-    env.update({
-        k: str(v)
-        for k, v in ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()
-    })
+    # Read through this module's ``cfg`` so a test (or a future caller)
+    # that stubs ``backups.cfg`` also stubs the overlay.  ``maintenance_env()``
+    # always goes back to ``hub.config.cfg`` and would silently pick up the
+    # live services.yaml PATH instead.
+    settings = cfg().get("settings")
+    raw = settings.get("maintenance_env") if isinstance(settings, dict) else {}
+    if isinstance(raw, dict):
+        env.update({str(k): str(v) for k, v in raw.items()})
     password = _pg_password(target["id"])
     if not password and target["password_env"]:
         password = str(env.get(target["password_env"]) or "")
@@ -413,6 +507,19 @@ def restore_hint(name: str) -> str:
     return ""
 
 
+def apply_restore_path(hint: str, path: str) -> str:
+    """Put *path* into a hint without treating the rest as format fields.
+
+    Hints for configured pg targets already interpolate host/user/db via an
+    f-string.  ``str.format(path=…)`` then re-parses the whole string, so a
+    user or database name containing braces raised KeyError and 500'd the
+    Backups page.  The only placeholder these templates use is ``{path}``.
+    """
+    if not hint:
+        return ""
+    return hint.replace("{path}", str(path))
+
+
 def scan_backups() -> list:
     """Every backup artefact found, newest first and not truncated.
 
@@ -422,16 +529,22 @@ def scan_backups() -> list:
     believe backups older than the cap were deleted.
     """
     items = []
-    roots = [
-        BACKUP_ROOT,
-        Path.home() / "Services" / "teslamate" / "backups",
-        DATA_DIR,
-    ]
+    home = user_home()
+    roots = [BACKUP_ROOT, DATA_DIR]
+    if home is not None:
+        roots.insert(1, home / "Services" / "teslamate" / "backups")
     for root in roots:
-        if not root.is_dir():
+        try:
+            if not root.is_dir():
+                continue
+            found = list(root.rglob("*"))
+        except OSError:
             continue
-        for p in root.rglob("*"):
-            if not p.is_file():
+        for p in found:
+            try:
+                if not p.is_file():
+                    continue
+            except OSError:
                 continue
             name = p.name
             if not (
@@ -442,14 +555,21 @@ def scan_backups() -> list:
                 continue
             try:
                 st = p.stat()
+            except OSError:
+                continue
+            nums = _stat_numbers(st)
+            if nums is None:
+                continue
+            size, mtime = nums
+            try:
                 hint = restore_hint(name)
                 items.append({
-                    "path": str(p),
-                    "name": name,
-                    "dir": str(p.parent),
-                    "size_mb": round(st.st_size / 1024 / 1024, 2),
-                    "mtime": int(st.st_mtime),
-                    "restore": hint.format(path=str(p)) if hint else "",
+                    "path": _as_text(p),
+                    "name": _as_text(name),
+                    "dir": _as_text(p.parent),
+                    "size_mb": round(size / 1024 / 1024, 2),
+                    "mtime": mtime,
+                    "restore": _as_text(apply_restore_path(hint, str(p))),
                 })
             except OSError:
                 pass
@@ -464,34 +584,124 @@ def list_backups(limit: int = 40) -> list:
 
 def _pg18_dump() -> Path | None:
     for path in _PG18_DUMPS:
-        if path.is_file() and os.access(path, os.X_OK):
-            return path
+        try:
+            if path.is_file() and os.access(path, os.X_OK):
+                return path
+        except OSError:
+            # Dying FUSE/SMB: is_file() re-raises EIO/ESTALE.
+            continue
     return None
 
 
 def _immich_latest() -> dict | None:
-    if not BACKUP_ROOT.is_dir():
+    try:
+        if not BACKUP_ROOT.is_dir():
+            return None
+        paths = list(BACKUP_ROOT.glob("immich_*.sql.gz"))
+    except OSError:
         return None
-    found = sorted(
-        BACKUP_ROOT.glob("immich_*.sql.gz"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not found:
+    ranked: list[tuple[float, Path]] = []
+    for p in paths:
+        try:
+            ranked.append((p.stat().st_mtime, p))
+        except OSError:
+            continue
+    if not ranked:
         return None
-    latest = found[0]
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    latest = ranked[0][1]
+    try:
+        st = latest.stat()
+    except OSError:
+        return None
+    nums = _stat_numbers(st)
+    if nums is None:
+        return None
+    size, mtime = nums
     return {
         "name": latest.name,
-        "mtime": int(latest.stat().st_mtime),
-        "size_mb": round(latest.stat().st_size / 1024 / 1024, 2),
+        "mtime": mtime,
+        "size_mb": round(size / 1024 / 1024, 2),
     }
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's encoder cannot 500 GET /api/backups.
+
+    PhotosHub ``1e400`` floats in dicts/lists were already dropped; bytes,
+    tuple-inf, and ``.inf`` keys still leaked into the page payload.
+    A leftover ``\\ud800`` in ``reason`` / ``size_human`` / a status key
+    still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/backups.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
 
 
 def _json_object(path: Path) -> dict:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        # Leftover directory named backup_status.json is IsADirectoryError;
+        # a dying FUSE mount re-raises EIO from is_file() itself.
+        if not path.is_file():
+            return {}
+        raw = json.loads(read_text_capped(path, _JSON_CAP, encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError:
+        # a torn panel_status.json used to 500 the Backups page.
+        # RecursionError: leftover deeply-nested status is not ValueError.
         return {}
+    raw = _jsonable(raw) if isinstance(raw, dict) else {}
     return raw if isinstance(raw, dict) else {}
 
 
@@ -499,7 +709,11 @@ def _path_state(raw: object) -> dict:
     text = str(raw or "").strip()
     if not text:
         return {"path": "", "present": False}
-    return {"path": text, "present": Path(text).is_dir()}
+    try:
+        present = Path(text).is_dir()
+    except (OSError, ValueError):
+        present = False
+    return {"path": text, "present": present}
 
 
 def _status_snippet(raw: dict) -> dict:
@@ -508,18 +722,21 @@ def _status_snippet(raw: dict) -> dict:
         return {}
     out = {}
     for key in ("ok", "last_success", "last_attempt", "size_human", "reason"):
-        if key in raw and raw[key] not in (None, ""):
-            out[key] = raw[key]
+        if key not in raw:
+            continue
+        value = _jsonable(raw[key])
+        if value not in (None, ""):
+            out[key] = value
     return out
 
 
 def _immich_media_from_env() -> str:
     env = IMMICH_ROOT / ".env"
-    if not env.is_file():
-        return ""
     try:
-        lines = env.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        if not env.is_file():
+            return ""
+        lines = read_text_capped(env, _ENV_CAP, encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
         return ""
     for line in lines:
         if line.startswith("IMMICH_MEDIA_LOCATION="):
@@ -545,16 +762,23 @@ def immich_layers() -> dict:
     generated_root = _path_state(media)
     generated_dirs = []
     if generated_root["path"]:
-        root = Path(generated_root["path"])
-        generated_dirs = [
-            {"name": name, "present": (root / name).is_dir()}
-            for name in _GENERATED_DIRS
-        ]
+        try:
+            root = Path(generated_root["path"])
+        except (OSError, ValueError, TypeError):
+            root = None
+        if root is not None:
+            generated_dirs = []
+            for name in _GENERATED_DIRS:
+                try:
+                    present = (root / name).is_dir()
+                except OSError:
+                    present = False
+                generated_dirs.append({"name": name, "present": present})
     last = _immich_latest()
     restore = ""
     if last:
         hint = restore_hint(last["name"])
-        restore = hint.format(path=str(BACKUP_ROOT / last["name"])) if hint else ""
+        restore = apply_restore_path(hint, str(BACKUP_ROOT / last["name"]))
     panel = _json_object(PHOTOSHUB_STATE / "panel_status.json")
     orig_snap = panel.get("originals") if isinstance(panel.get("originals"), dict) else {}
     bridge_snap = panel.get("bridge") if isinstance(panel.get("bridge"), dict) else {}
@@ -578,7 +802,7 @@ def immich_layers() -> dict:
         bridge_extra["last_success"] = bridge_snap.get("last_success")
     if bridge_snap.get("exported_files") is not None:
         bridge_extra["exported_files"] = bridge_snap.get("exported_files")
-    return {
+    payload = {
         "db": {
             "port": 5433,
             "last": last,
@@ -593,15 +817,28 @@ def immich_layers() -> dict:
         "generated": {**generated_root, "dirs": generated_dirs},
         "external": external,
     }
+    # Leftover Infinity in backup_status.json / panel_status.json used to
+    # leak into GET /api/backups under Starlette's allow_nan=False encoder.
+    cleaned = _jsonable(payload)
+    return cleaned if isinstance(cleaned, dict) else payload
 
 
 def immich_backup_info() -> dict:
     """Whether the Immich dump can run here, plus the post-redesign layout."""
     via = ""
-    if IMMICH_SCRIPT.is_file() and os.access(IMMICH_SCRIPT, os.X_OK):
+    try:
+        script_ok = IMMICH_SCRIPT.is_file() and os.access(IMMICH_SCRIPT, os.X_OK)
+    except OSError:
+        script_ok = False
+    if script_ok:
         via = "script"
-    elif _pg18_dump() is not None and IMMICH_DB_ENV.is_file():
-        via = "native"
+    else:
+        try:
+            native_ok = _pg18_dump() is not None and IMMICH_DB_ENV.is_file()
+        except OSError:
+            native_ok = False
+        if native_ok:
+            via = "native"
     layers = immich_layers()
     has_layout = bool(
         layers["originals"]["path"]
@@ -623,7 +860,11 @@ def _immich_conn() -> dict:
     from urllib.parse import unquote, urlparse
 
     raw = ""
-    for line in IMMICH_DB_ENV.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = read_text_capped(IMMICH_DB_ENV, _ENV_CAP, encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Immich db.env is unreadable") from exc
+    for line in lines:
         if line.startswith("DB_URL="):
             raw = line.split("=", 1)[1].strip().strip("\"'")
             break
@@ -663,24 +904,28 @@ def _backup_immich() -> dict:
 
 def _backup_immich_script() -> dict:
     """The host script already pins PG18, gzips, checks the tail, and prunes."""
-    before = {p.name for p in BACKUP_ROOT.glob("immich_*.sql.gz")} if BACKUP_ROOT.is_dir() else set()
     try:
-        p = subprocess.run(
-            [str(IMMICH_SCRIPT)],
-            capture_output=True,
-            text=True,
-            timeout=600,
-            cwd=str(IMMICH_ROOT),
+        before = (
+            {p.name for p in BACKUP_ROOT.glob("immich_*.sql.gz")}
+            if BACKUP_ROOT.is_dir() else set()
         )
+    except OSError:
+        before = set()
+    try:
+        rc, text = run_capped(
+            [str(IMMICH_SCRIPT)], timeout=600, cwd=str(IMMICH_ROOT),
+        )
+        text = _as_text(text)
     except Exception as exc:
-        return {"ok": False, "message": str(exc)[:500]}
+        # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 POST /api/backups.
+        return {"ok": False, "message": _as_text(exc)[:500]}
     latest = _immich_latest()
     created = latest and latest["name"] not in before
-    ok = p.returncode == 0 and bool(created)
+    ok = rc == 0 and bool(created)
     return {
         "ok": ok,
         "path": str(BACKUP_ROOT / latest["name"]) if ok and latest else None,
-        "message": ((p.stdout or p.stderr or f"exit {p.returncode}")[:500]),
+        "message": (text or f"exit {rc}")[:500],
         "size_mb": latest["size_mb"] if ok and latest else 0,
     }
 
@@ -718,9 +963,9 @@ def _backup_immich_native() -> dict:
     try:
         conn = _immich_conn()
     except Exception as exc:
-        return {"ok": False, "message": str(exc)[:200]}
+        return {"ok": False, "message": _as_text(exc)[:200]}
 
-    stamp = time.strftime("%Y%m%d_%H%M%S")
+    stamp = strftime_now("%Y%m%d_%H%M%S", "0")
     dest = _private_dest(BACKUP_ROOT / f"immich_{stamp}.sql.gz")
     env = dict(os.environ)
     env["PGPASSWORD"] = conn["password"]
@@ -740,7 +985,7 @@ def _backup_immich_native() -> dict:
     try:
         with tempfile.TemporaryFile() as errfile:
             dump = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=errfile, env=env,
+                argv, stdout=subprocess.PIPE, stderr=errfile, env=utf8_env(env),
                 start_new_session=True,
             )
 
@@ -788,9 +1033,12 @@ def _backup_immich_native() -> dict:
                 # Callers only surface [:500]; an unbounded read of a
                 # chatty pg_dump stderr used to RSS-bomb the panel.
                 err_text = errfile.read(2048).decode("utf-8", "replace")
+    except RecursionError:
+        _discard(dest)
+        return {"ok": False, "message": (err_text or "immich dump failed")[:500]}
     except Exception as exc:
         _discard(dest)
-        return {"ok": False, "message": (err_text or str(exc))[:500]}
+        return {"ok": False, "message": (err_text or _as_text(exc))[:500]}
     finally:
         # A write error leaves pg_dump holding a connection to the live
         # database; without this it outlives the request that started it.
@@ -854,16 +1102,16 @@ def _backup_postgres() -> dict:
 
 
 def _dump_one_postgres(target: dict) -> dict:
-    stamp = time.strftime("%Y%m%d_%H%M%S")
+    stamp = strftime_now("%Y%m%d_%H%M%S", "0")
     dest = _private_dest(BACKUP_ROOT / f"{target['id']}_{stamp}.sql.bak")
     cmd = _pg_dump_argv(target, dest)
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
-                           env=_pg_env(target))
+        rc, text = run_capped(cmd, timeout=600, env=_pg_env(target))
+        text = _as_text(text)
         # Size, not existence: the destination was pre-created 0600 so pg_dump
         # could not publish it, which means it exists even when the dump failed.
         size = _written_bytes(dest)
-        ok = p.returncode == 0 and size > 0
+        ok = rc == 0 and size > 0
         if not ok:
             _discard(dest)
         else:
@@ -871,12 +1119,15 @@ def _dump_one_postgres(target: dict) -> dict:
         return {
             "ok": ok,
             "path": str(dest) if ok else None,
-            "message": (p.stdout or p.stderr or f"exit {p.returncode}")[:500],
+            "message": (text or f"exit {rc}")[:500],
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
+    except RecursionError:
+        _discard(dest)
+        return {"ok": False, "message": "dump failed"}
     except Exception as e:
         _discard(dest)
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": _as_text(e)}
 
 
 #: Substrings that pick which ~/Library/LaunchAgents/*.plist go into a config
@@ -939,7 +1190,11 @@ def config_archive_extra_paths() -> list[Path]:
     for entry in raw:
         if not isinstance(entry, str) or not entry.strip():
             continue
-        path = Path(os.path.expanduser(entry.strip()))
+        try:
+            path = Path(os.path.expanduser(entry.strip()))
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError: leftover HOME unset on a ``~/…`` extra_paths entry.
+            continue
         if path.is_absolute() and path not in out:
             out.append(path)
     return out
@@ -964,20 +1219,26 @@ def backup_configs() -> dict:
 _VOLUME_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,254}\Z")
 
 
-def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
+def _run_argv(argv: list[str], *, timeout: int, cap: int = 4000) -> tuple[int, str, str]:
     """All subprocesses of the stack backup go through one seam.
 
     Exists so the tests can replace every docker/tar invocation with a fake
     and assert on the exact call order — most importantly that ``compose
     start`` happens even when the archive step blows up.
+
+    *cap* defaults to a 4KB trailing window for chatter (stop/start/tar).
+    Callers that parse structured stdout (resolved compose JSON) pass a
+    larger cap so ``run_capped``'s tail window still covers the whole
+    document.
     """
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        return 124, "", f"timeout after {timeout}s"
+        rc, text = run_capped(argv, timeout=timeout, cap=cap)
+        # Combined stream: callers already do ``(err or out)``.
+        # Leftover bytes/None used to TypeError ``.strip()`` / JSON-encode
+        # POST /api/backups/stack and the postgres/immich/config dumps.
+        return rc, _as_text(text), ""
     except Exception as e:  # noqa: BLE001 — a backup step must report, not raise
-        return -1, "", str(e)
+        return -1, "", _as_text(e)
 
 
 def _engine_up() -> bool:
@@ -1005,36 +1266,49 @@ def _stack_mounts(compose_path: str, workdir: str | None) -> tuple[list[str], li
     rc, out, err = _run_argv(
         [DOCKER, "compose", "-f", compose_path, "config", "--format", "json"],
         timeout=60,
+        cap=_COMPOSE_JSON_CAP,
     )
     if rc != 0 or not out.strip():
         return [], [], (err or out or f"compose config exit {rc}").strip()[:300]
     try:
         resolved = json.loads(out)
-    except ValueError as e:
-        return [], [], f"unparsable compose config: {e}"
+    except (TypeError, ValueError, RecursionError) as e:
+        # RecursionError: leftover deeply-nested compose JSON is not ValueError.
+        return [], [], "unparsable compose config: " + (_as_text(e) or "error")
     if not isinstance(resolved, dict):
         return [], [], "compose config is not an object"
 
     volume_names: dict[str, str] = {}
-    for key, spec in (resolved.get("volumes") or {}).items():
+    declared = resolved.get("volumes") or {}
+    if not isinstance(declared, dict):
+        declared = {}
+    for key, spec in declared.items():
         name = (spec or {}).get("name") if isinstance(spec, dict) else None
         volume_names[key] = str(name or key)
 
     binds: list[str] = []
     volumes: list[str] = []
-    for svc in (resolved.get("services") or {}).values():
-        for entry in (svc or {}).get("volumes") or []:
+    services = resolved.get("services") or {}
+    if not isinstance(services, dict):
+        services = {}
+    for svc in services.values():
+        if not isinstance(svc, dict):
+            continue
+        raw_vols = svc.get("volumes")
+        if not isinstance(raw_vols, list):
+            continue
+        for entry in raw_vols:
             if not isinstance(entry, dict):
                 continue
             kind = entry.get("type")
             source = str(entry.get("source") or "")
             if kind == "bind" and source.startswith("/"):
-                p = Path(source)
                 try:
+                    p = Path(source)
                     # Sockets (docker.sock) and device nodes are wiring, not data.
                     if not (p.is_dir() or p.is_file()) or p.is_socket():
                         continue
-                except OSError:
+                except (OSError, ValueError):
                     continue
                 if source not in binds:
                     binds.append(source)
@@ -1071,12 +1345,23 @@ def _write_inflight(stack_id: str, compose_path: str) -> None:
     """Best-effort: an unwritable data dir must not block the backup itself."""
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        _inflight_marker(stack_id).write_text(json.dumps({
+        try:
+            ts = int(time.time())
+        except (TypeError, ValueError, OverflowError):
+            ts = 0
+        payload = _jsonable({
             "stack": stack_id,
-            "compose_path": str(compose_path),
-            "ts": int(time.time()),
-        }) + "\n")
-    except OSError:
+            "compose_path": compose_path,
+            "ts": ts,
+        })
+        if not isinstance(payload, dict):
+            payload = {}
+        secure_io.replace_bytes(
+            _inflight_marker(stack_id),
+            (json.dumps(payload, allow_nan=False) + "\n").encode("utf-8"),
+        )
+    except (OSError, TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover nested inflight marker after _jsonable is not ValueError.
         pass
 
 
@@ -1105,8 +1390,8 @@ def recover_interrupted_stack_backups() -> list[dict]:
         return recovered
     for marker in markers:
         try:
-            info = json.loads(marker.read_text())
-        except (OSError, ValueError):
+            info = json.loads(read_text_capped(marker, _MARKER_CAP))
+        except (OSError, ValueError, RecursionError):
             info = {}
         if not isinstance(info, dict):
             info = {}
@@ -1189,7 +1474,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
         log.append(f"!! {mounts_err}")
         return {"ok": False, "error": "compose_config_failed", "message": mounts_err}
 
-    stamp = time.strftime("%Y%m%d_%H%M%S")
+    stamp = strftime_now("%Y%m%d_%H%M%S", "0")
     dest_dir = BACKUP_ROOT / "appdata" / stack_id
     secure_io.make_secret_dir(BACKUP_ROOT / "appdata")
     secure_io.make_secret_dir(dest_dir)
@@ -1355,19 +1640,29 @@ def data_state_paths() -> list[Path]:
 
 
 def _backup_configs() -> dict:
-    stamp = time.strftime("%Y%m%d_%H%M%S")
+    stamp = strftime_now("%Y%m%d_%H%M%S", "0")
     # services.yaml first (the member a restorer looks for), then the data/
     # credential and state files, then the install's own extras.  tar records
     # each member's mode, so the 0600 files come back 0600 -- the archive
     # itself is 0600 in a 0700 directory via _private_dest, same as before.
     paths = [CONFIG_FILE, *data_state_paths(), *config_archive_extra_paths()]
     # include launchagents selectively
-    agents = Path.home() / "Library" / "LaunchAgents"
-    if agents.is_dir():
-        for pl in agents.glob("*.plist"):
-            if _wanted_agent(pl.name):
-                paths.append(pl)
-    existing = [str(p) for p in paths if p.exists()]
+    home = user_home()
+    agents = (home / "Library" / "LaunchAgents") if home is not None else None
+    try:
+        if agents is not None and agents.is_dir():
+            for pl in agents.glob("*.plist"):
+                if _wanted_agent(pl.name):
+                    paths.append(pl)
+    except OSError:
+        pass
+    existing = []
+    for p in paths:
+        try:
+            if p.exists():
+                existing.append(str(p))
+        except OSError:
+            continue
     # "At least one file exists" was the old guard, and it let the one member
     # anyone would ever restore from go missing silently: with services.yaml
     # absent but a single plist present, tar succeeded, the size was plausible,
@@ -1388,16 +1683,15 @@ def _backup_configs() -> dict:
     # hands back a different name when the first one is taken.
     dest = _private_dest(BACKUP_ROOT / f"configs_{stamp}.tgz")
     try:
-        p = subprocess.run(
+        rc, text = run_capped(
             ["/usr/bin/tar", "czf", str(dest)] + existing,
-            capture_output=True,
-            text=True,
             timeout=120,
         )
+        text = _as_text(text)
         # This archive contains services.yaml, so judge success by size: the
         # placeholder always exists after _private_dest.
         size = _written_bytes(dest)
-        ok = p.returncode == 0 and size > 0
+        ok = rc == 0 and size > 0
         if not ok:
             _discard(dest)
         else:
@@ -1405,9 +1699,9 @@ def _backup_configs() -> dict:
         return {
             "ok": ok,
             "path": str(dest) if ok else None,
-            "message": (p.stderr or p.stdout or "")[:500] or ("ok" if ok else "fail"),
+            "message": (text or "")[:500] or ("ok" if ok else "fail"),
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
     except Exception as e:
         _discard(dest)
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": _as_text(e)}

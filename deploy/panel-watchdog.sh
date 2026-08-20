@@ -32,6 +32,10 @@ case "$PORT" in ''|*[!0-9]*)
   exit 0 ;;
 esac
 FAIL_THRESHOLD="${SERVERHUB_WATCHDOG_THRESHOLD:-3}"
+# A non-integer or zero threshold makes `[ "$fails" -lt "$FAIL_THRESHOLD" ]`
+# either error (status 2, so the `&& exit 0` is skipped) or never true —
+# kickstart on the first miss.  Fall back to the same default as an unset var.
+case "$FAIL_THRESHOLD" in ''|*[!0-9]*|0) FAIL_THRESHOLD=3 ;; esac
 # The failure counter is scoped to the probed port.  It used to be one shared
 # file, and on 2026-08-13 03:49 a manual test run with SERVERHUB_PORT=59999
 # fed its misses into the same counter the production 8086 probe reads: the
@@ -154,7 +158,15 @@ log "port $PORT unreachable ($fails/$FAIL_THRESHOLD) label=$LABEL"
 
 # Threshold reached.  Clear a wedged xpcproxy first: while it holds the job's
 # pid, launchd reports the job as running and kickstart cannot make progress.
-stuck="$(pgrep -f "xpcproxy $LABEL" 2>/dev/null | head -1)"
+# pgrep -f "xpcproxy $LABEL" also matches this script, a log tail, and any
+# diagnostic whose argv merely contains the pair.  Match argv0 ending in
+# xpcproxy and the next argument equal to the label.
+# PATH-relative so the behaviour suite can shim ps/kill.  launchd's PATH is
+# /usr/bin:/bin.  Restrict to this uid so we never SIGKILL another user's
+# xpcproxy with the same label string.
+stuck="$(ps -u "$(id -u)" -o pid=,command= | awk -v label="$LABEL" '
+  $2 ~ /(^|\/)xpcproxy$/ && $3 == label { print $1; exit }
+')"
 if [ -n "$stuck" ]; then
   log "killing wedged xpcproxy pid=$stuck"
   kill -9 "$stuck" 2>/dev/null

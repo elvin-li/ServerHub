@@ -20,8 +20,8 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 from hub import (  # noqa: E402
-    alerts, backups, metrics, network_svc, scheduler_svc, smart_test_svc,
-    tools_svc,
+    alerts, app_factory, backups, metrics, network_svc, scheduler_svc,
+    smart_test_svc, tools_svc,
 )
 from hub.app_factory import create_app  # noqa: E402
 
@@ -78,6 +78,25 @@ class LifespanWorkerTests(unittest.TestCase):
         with TestClient(create_app()):
             mocks["tools_svc.start_updates_warmer"].assert_not_called()
         mocks["tools_svc.stop_updates_warmer"].assert_called_once()
+
+    def test_inf_and_bool_intervals_do_not_crash_lifespan(self):
+        """YAML ``metrics_interval: .inf`` used to OverflowError startup.
+
+        ``true`` is a bool subclass of int and used to start the sampler at 1s.
+        """
+        from fastapi.testclient import TestClient
+
+        mocks = self._quiet_lifespan()
+        with mock.patch.object(
+            app_factory, "cfg",
+            return_value={"settings": {
+                "metrics_interval": float("inf"),
+                "alert_interval": True,
+            }},
+        ):
+            with TestClient(create_app()):
+                mocks["metrics.start_sampler"].assert_called_once_with(90)
+                mocks["alerts.start_alerter"].assert_called_once_with(90)
 
     def test_smart_scheduler_start_is_idempotent(self):
         """Lifespan may run more than once per process (tests, reloads); a

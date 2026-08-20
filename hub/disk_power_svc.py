@@ -25,10 +25,52 @@ from hub.disk_snapshot import (
     root_whole_disks,
 )
 from hub.paths import SMARTCTL
-from hub.util import fan_out, sh, ttl_memo
+from hub.util import fan_out, run_bytes, sh, ttl_memo
 
 # Whole-disk identifiers only
 DISK_RE = re.compile(r"^disk\d+$")
+
+
+def _text(value) -> str:
+    """Plist display field as a JSON-safe string.
+
+    ``MediaName`` / ``BusProtocol`` are strings in a healthy diskutil plist.
+    ``inf`` used to fail Starlette's ``allow_nan=False`` encoder on the
+    power listing (size inf was already dropped; the name/protocol fields
+    were not).  Leftover ``sh`` int/None used to TypeError slicing the
+    sleep/wake log.  A leftover ``\\ud800`` name still 500'd the UTF-8
+    encode of GET /api/storage/disks.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    elif value in (None, False, ""):
+        return ""
+    elif isinstance(value, (dict, set, frozenset)):
+        return ""
+    elif not isinstance(value, str):
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _dev_exists(node: str) -> bool:
+    """``Path.exists()`` raises EIO/ESTALE on a dying mount; pathlib only
+    swallows ENOENT/ELOOP.  Wake used to 500 POST /api/storage/disks."""
+    try:
+        return Path(node).exists()
+    except (OSError, ValueError):
+        return False
 
 
 #: A wedged diskutil (typically an external HDD asleep) used to pin this whole
@@ -40,12 +82,14 @@ _DISKUTIL_TIMEOUT = 5
 def _diskutil_info(node: str) -> dict:
     # -plist outputs binary plist — must use raw bytes (not text mode)
     try:
-        p = subprocess.run(
+        rc, stdout, _ = run_bytes(
             ["/usr/sbin/diskutil", "info", "-plist", node],
-            capture_output=True, timeout=_DISKUTIL_TIMEOUT,
+            timeout=_DISKUTIL_TIMEOUT,
+            runner=subprocess.run,
         )
-        if p.returncode == 0 and p.stdout:
-            return plistlib.loads(p.stdout)
+        if rc == 0 and stdout:
+            parsed = plistlib.loads(stdout)
+            return parsed if isinstance(parsed, dict) else {}
     except Exception:
         pass
     return {}
@@ -94,13 +138,26 @@ def _volumes_on_disk(disk_id: str) -> list[dict]:
         try:
             total_kb = int(parts[1])
             used_kb = int(parts[2])
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
             total_kb = used_kb = 0
+        try:
+            total_gb = round(total_kb / 1024 / 1024, 1) if total_kb else None
+            used_gb = round(used_kb / 1024 / 1024, 1) if used_kb else None
+        except OverflowError:
+            total_gb = used_gb = None
+        if total_gb is not None and (
+            total_gb != total_gb or total_gb in (float("inf"), float("-inf"))
+        ):
+            total_gb = None
+        if used_gb is not None and (
+            used_gb != used_gb or used_gb in (float("inf"), float("-inf"))
+        ):
+            used_gb = None
         vols.append({
-            "device": fs,
-            "mount": mount,
-            "total_gb": round(total_kb / 1024 / 1024, 1) if total_kb else None,
-            "used_gb": round(used_kb / 1024 / 1024, 1) if used_kb else None,
+            "device": _text(fs),
+            "mount": _text(mount),
+            "total_gb": total_gb,
+            "used_gb": used_gb,
         })
     return vols
 
@@ -133,8 +190,8 @@ def _is_system_disk(info: dict, disk_id: str, volumes: list) -> bool:
         if v.get("mount") in ("/", "/System/Volumes/Data", "/System/Volumes/Preboot"):
             return True
     # Internal Apple SSD
-    name = (info.get("MediaName") or info.get("IORegistryEntryName") or "").upper()
-    protocol = (info.get("BusProtocol") or "").lower()
+    name = _text(info.get("MediaName") or info.get("IORegistryEntryName")).upper()
+    protocol = _text(info.get("BusProtocol")).lower()
     if info.get("SolidState") and info.get("Internal") and protocol in ("apple fabric", "pci-express", "nvme", ""):
         if "APPLE SSD" in name or info.get("DeviceLocation") == "Internal":
             # disk0 is typically the real whole disk
@@ -155,14 +212,14 @@ def _power_state(disk_id: str, volumes: list, info: dict, probe: bool = True) ->
         return "active"
     # exists?
     node = f"/dev/{disk_id}"
-    if not Path(node).exists() and not info:
+    if not _dev_exists(node) and not info:
         return "offline"
     if not probe:
         # Unmounted but present, no spin state to discover.
         return "idle"
     # smartctl check power mode
     rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-n", "standby", node], timeout=_DISKUTIL_TIMEOUT)
-    text = (out or "") + (err or "")
+    text = _text(out) + _text(err)
     if "STANDBY" in text.upper() or "Device is in STANDBY" in text:
         return "spun_down"
     if "SLEEP" in text.upper():
@@ -177,7 +234,7 @@ def _power_state(disk_id: str, volumes: list, info: dict, probe: bool = True) ->
     # unmounted but present
     if info.get("Ejectable") or info.get("Removable") or info.get("RemovableMedia"):
         # after eject, disk may disappear
-        if not Path(node).exists():
+        if not _dev_exists(node):
             return "offline"
         return "idle"
     return "idle"
@@ -248,15 +305,26 @@ def _describe_disk(disk_id: str) -> dict | None:
             # try without path
             info = _diskutil_info(disk_id)
         volumes = _volumes_on_disk(disk_id)
-        protocol = info.get("BusProtocol") or info.get("Protocol") or ""
+        protocol = _text(info.get("BusProtocol") or info.get("Protocol"))
         name = (
-            info.get("IORegistryEntryName")
-            or info.get("MediaName")
-            or info.get("VolumeName")
+            _text(info.get("IORegistryEntryName"))
+            or _text(info.get("MediaName"))
+            or _text(info.get("VolumeName"))
             or disk_id
         )
         size = info.get("TotalSize") or info.get("Size") or 0
-        size_gb = round(size / 1e9, 1) if size else None
+        try:
+            size_n = int(size)
+        except (TypeError, ValueError, OverflowError):
+            size_n = 0
+        try:
+            size_gb = round(size_n / 1e9, 1) if size_n else None
+        except OverflowError:
+            size_gb = None
+        if size_gb is not None and (
+            size_gb != size_gb or size_gb in (float("inf"), float("-inf"))
+        ):
+            size_gb = None
         system = _is_system_disk(info, disk_id, volumes)
         ejectable = bool(info.get("Ejectable"))
         removable = bool(info.get("Removable") or info.get("RemovableMedia"))
@@ -266,7 +334,7 @@ def _describe_disk(disk_id: str) -> dict | None:
         # Cascade of fallbacks: each only upgrades None → True, never downgrades
         # to False, so the next fallback in the chain still fires.
         if ssd is None:
-            media = (info.get("MediaName") or "") + " " + (info.get("IORegistryEntryName") or "")
+            media = _text(info.get("MediaName")) + " " + _text(info.get("IORegistryEntryName"))
             media_upper = media.upper()
             if "SSD" in media_upper or "NVME" in media_upper:
                 ssd = True
@@ -278,6 +346,7 @@ def _describe_disk(disk_id: str) -> dict | None:
         # the cost for internal disks where diskutil always answers).
         if ssd is None and not system and not internal:
             rc_s, out_s, _ = sh([SMARTCTL, "-a", node], timeout=8)
+            out_s = _text(out_s)
             if rc_s in (0, 4) and out_s:
                 for sline in out_s.splitlines():
                     if "Rotation Rate" in sline and "Solid State" in sline:
@@ -344,7 +413,7 @@ def _describe_disk(disk_id: str) -> dict | None:
             "device": node,
             "name": name,
             "size_gb": size_gb,
-            "size_human": info.get("TotalSize") and f"{size_gb} GB",
+            "size_human": f"{size_gb} GB" if size_gb else None,
             "protocol": protocol,
             "ssd": bool(ssd),
             "rotational": bool(rotational) and not bool(ssd),
@@ -412,6 +481,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
 
     # 1) Always unmount first (safe, keeps device node for wake)
     rc, out, err = sh(["/usr/sbin/diskutil", "unmountDisk", "force", node], timeout=60)
+    out, err = _text(out), _text(err)
     log.append(f"unmountDisk: rc={rc} {(out or err)[:200]}")
     # This module mutates the very mount state disk_manage_svc caches, so its
     # short-TTL `diskutil info` entries are stale the moment the command runs.
@@ -434,6 +504,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     #    注意：内置 SD 读卡器 eject 后设备节点会消失，无法软件唤醒，故 sleep 不做 eject
     if mode == "eject":
         rc2, out2, err2 = sh(["/usr/sbin/diskutil", "eject", node], timeout=60)
+        out2, err2 = _text(out2), _text(err2)
         log.append(f"eject: rc={rc2} {(out2 or err2)[:200]}")
         # Eject removes the device node entirely, which is a second state change
         # after the unmount above -- the earlier invalidation predates it.
@@ -456,6 +527,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
         ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,now", node],
         timeout=20,
     )
+    out3, err3 = _text(out3), _text(err3)
     log.append(f"smartctl standby: rc={rc3} {(out3 or err3)[:200]}")
     if rc3 == 0:
         return {
@@ -487,10 +559,10 @@ def wake_disk(disk_id: str) -> dict:
     log = []
 
     # If disk node gone after eject, user must re-plug
-    if not Path(node).exists():
+    if not _dev_exists(node):
         # try diskutil list to refresh
         sh(["/usr/sbin/diskutil", "list"], timeout=10)
-        if not Path(node).exists():
+        if not _dev_exists(node):
             return {
                 "ok": False,
                 "action": "wake",
@@ -505,17 +577,18 @@ def wake_disk(disk_id: str) -> dict:
         ["/bin/dd", f"if={rdev}", "of=/dev/null", "bs=512", "count=1"],
         timeout=30,
     )
-    log.append(f"dd spin-up: rc={rc0} {(err0 or out0)[:120]}")
+    log.append(f"dd spin-up: rc={rc0} {(_text(err0) or _text(out0))[:120]}")
 
     # exit standby via smartctl if possible
     rc1, out1, err1 = sh(
         ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,off", node],
         timeout=15,
     )
-    log.append(f"smartctl standby off: rc={rc1} {(out1 or err1)[:120]}")
+    log.append(f"smartctl standby off: rc={rc1} {(_text(out1) or _text(err1))[:120]}")
 
     time.sleep(0.5)
     rc2, out2, err2 = sh(["/usr/sbin/diskutil", "mountDisk", node], timeout=90)
+    out2, err2 = _text(out2), _text(err2)
     log.append(f"mountDisk: rc={rc2} {(out2 or err2)[:200]}")
     # Waking remounts the volumes, so every cached `diskutil info` entry for this
     # disk and its children now reports the wrong mount point.

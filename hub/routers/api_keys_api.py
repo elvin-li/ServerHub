@@ -16,7 +16,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from hub import api_keys, audit
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 from hub.routers.nas_common import client_host, require_admin_browser
 
 router = APIRouter(tags=["api-keys"])
@@ -50,7 +50,7 @@ def api_keys_create(body: ApiKeyCreateBody, request: Request):
             body.name, body.role, expires_days=body.expires_days
         )
     except ValueError as exc:
-        raise api_error(_CREATE_ERRORS.get(str(exc), "apikeys.name_required"))
+        raise api_error(_CREATE_ERRORS.get(exc_detail(exc, cap=64), "apikeys.name_required"))
     # Field names chosen to survive audit redaction ("key" is a secret hint,
     # "kid" is not); the plaintext key is never passed to record() at all.
     audit.record(

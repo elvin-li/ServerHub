@@ -95,6 +95,70 @@ class StoreTests(_Store):
         with mock.patch("hub.api_keys.time.time", return_value=future):
             self.assertIsNone(api_keys.verify(token))
 
+    def test_garbage_expires_and_last_used_do_not_500(self):
+        record, token = api_keys.create("mon", "member")
+        raw = json.loads(self.store.read_text())
+        raw["keys"][0]["expires"] = "never"
+        raw["keys"][0]["last_used"] = "yesterday"
+        self.store.write_text(json.dumps(raw))
+        self.assertIsNone(api_keys.verify(token), "unparseable expiry is fail-closed")
+        view = api_keys.public_view({
+            "id": record["id"], "name": "mon", "role": "member",
+            "last_used": "yesterday",
+        })
+        self.assertIsNone(view["last_used"])
+
+    def test_last_used_numeric_string_and_inf_parse(self):
+        self.assertEqual(api_keys._as_epoch("1724000000.5"), 1724000000)
+        self.assertEqual(api_keys._as_epoch(float("inf")), 0)
+        self.assertEqual(api_keys._as_epoch(True), 0)
+        view = api_keys.public_view({
+            "id": "ak_x", "name": "mon", "role": "member",
+            "last_used": float("inf"),
+        })
+        self.assertIsNone(view["last_used"])
+
+    def test_json_1e309_expires_and_created_do_not_500(self):
+        """JSON ``1e309`` loads as inf; ``int(inf)`` 500'd every Bearer, and
+        listing leaked inf into Starlette's allow_nan=False encoder."""
+        record, token = api_keys.create("mon", "member")
+        raw = json.loads(self.store.read_text())
+        huge = json.loads("1e309")
+        raw["keys"][0]["expires"] = huge
+        raw["keys"][0]["created"] = huge
+        self.store.write_text(json.dumps(raw))
+        self.assertIsNone(api_keys.verify(token), "inf expiry is fail-closed")
+        view = api_keys.public_view(raw["keys"][0])
+        json.dumps(view, allow_nan=False)
+        self.assertIsNone(view["created"])
+        self.assertIsNone(view["expires"])
+        listed = api_keys.list_public()
+        json.dumps(listed, allow_nan=False)
+        self.assertEqual(listed[0]["id"], record["id"])
+
+    def test_expires_zero_is_expired_not_forever(self):
+        record, token = api_keys.create("mon", "member")
+        raw = json.loads(self.store.read_text())
+        raw["keys"][0]["expires"] = 0
+        self.store.write_text(json.dumps(raw))
+        self.assertIsNone(api_keys.verify(token))
+        # Listing still names the row; 0 is a finite stamp.
+        view = api_keys.public_view(raw["keys"][0])
+        json.dumps(view, allow_nan=False)
+        self.assertEqual(view["id"], record["id"])
+
+    def test_a_short_digest_does_not_500_every_bearer(self):
+        good, token = api_keys.create("good", "member")
+        raw = json.loads(self.store.read_text())
+        raw["keys"].insert(0, {
+            "id": "ak_broken", "name": "broken", "role": "member",
+            "digest": "too-short", "created": 1, "expires": None, "last_used": None,
+        })
+        self.store.write_text(json.dumps(raw))
+        hit = api_keys.verify(token)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["id"], good["id"])
+
     def test_validation_rejects_bad_input(self):
         cases = [
             (dict(name="", role="member"), "bad_name"),

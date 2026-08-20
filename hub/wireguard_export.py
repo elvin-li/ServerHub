@@ -19,6 +19,15 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+
+def _quote(value) -> str:
+    """Percent-encode a conf field. Leftover ``\\ud800`` used to 500 format=sr."""
+    if isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", "replace")
+    else:
+        text = "" if value is None else str(value)
+    return quote(text.encode("utf-8", "replace").decode("utf-8"), safe="")
+
 #: WireGuard's own default is 1420, but a tunnel that traverses PPPoE or a
 #: mobile carrier fragments at that size and manifests as "connects, then
 #: stalls on large transfers".  1280 is the IPv6 minimum MTU and the value the
@@ -225,19 +234,19 @@ def to_shadowrocket(conf: str, name: str) -> str:
     host, port = _endpoint(peer)
 
     params = [
-        f"publicKey={quote(peer.get('PublicKey', ''), safe='')}",
-        f"privateKey={quote(interface.get('PrivateKey', ''), safe='')}",
+        f"publicKey={_quote(peer.get('PublicKey', ''))}",
+        f"privateKey={_quote(interface.get('PrivateKey', ''))}",
         f"ip={_first_address(interface)}",
         f"mtu={_mtu(interface)}",
         "udp=1",
     ]
     if interface.get("DNS"):
-        params.append(f"dns={quote(interface['DNS'], safe='')}")
+        params.append(f"dns={_quote(interface['DNS'])}")
     if peer.get("PresharedKey"):
-        params.append(f"presharedKey={quote(peer['PresharedKey'], safe='')}")
+        params.append(f"presharedKey={_quote(peer['PresharedKey'])}")
     if peer.get("AllowedIPs"):
-        params.append(f"allowedIPs={quote(peer['AllowedIPs'], safe='')}")
-    return f"wireguard://{host}:{port}?{'&'.join(params)}#{quote(name, safe='')}"
+        params.append(f"allowedIPs={_quote(peer['AllowedIPs'])}")
+    return f"wireguard://{host}:{port}?{'&'.join(params)}#{_quote(name)}"
 
 
 def render(

@@ -24,12 +24,12 @@
         <tbody>
           <tr v-for="row in rows" :key="row.slug">
             <td>
-              <strong>{{ row.name }}</strong>
-              <div class="mono sub-line">{{ row.slug }}</div>
-              <div class="show-m sub">{{ row.category }} · {{ (row.ports || []).join(', ') || '—' }}</div>
+              <strong>{{ finiteText(row.name) }}</strong>
+              <div class="mono sub-line">{{ finiteText(row.slug) }}</div>
+              <div class="show-m sub">{{ finiteText(row.category) }} · {{ fmtPorts(row.ports) }}</div>
             </td>
-            <td class="col-hide-m">{{ row.category }}</td>
-            <td class="col-hide-m mono">{{ (row.ports || []).join(', ') || '—' }}</td>
+            <td class="col-hide-m">{{ finiteText(row.category) }}</td>
+            <td class="col-hide-m mono">{{ fmtPorts(row.ports) }}</td>
             <td class="row-btns">
               <button type="button" class="tiny" :disabled="busy" @click="startEdit(row)">{{ t('common.edit') }}</button>
               <button type="button" class="tiny danger" :disabled="busy" @click="removeRow(row)">{{ t('common.delete') }}</button>
@@ -38,6 +38,7 @@
         </tbody>
       </table>
     </div>
+    <LoadFailure v-else-if="loadError" :detail="loadError" :retry="load" :busy="busy" />
     <div v-else-if="loaded" class="sub">{{ t('svcsig.empty') }}</div>
     <div v-else class="sub">{{ t('common.loading') }}</div>
 
@@ -83,9 +84,11 @@
 </template>
 
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { forgetServiceSignature, getServiceSignatures, upsertServiceSignature } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
+import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -93,13 +96,21 @@ const { t } = injectI18n()
 const rows = ref([])
 const builtinCount = ref(0)
 const loaded = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const editing = ref(null)
+let pageAlive = true
+let loadGeneration = 0
 
 function httpValue(http) {
   if (http === true) return 'true'
   if (http === false) return 'false'
   return ''
+}
+
+function fmtPorts(ports) {
+  const parts = (ports || []).map((p) => finiteText(p, '')).filter(Boolean)
+  return parts.length ? parts.join(', ') : '—'
 }
 
 function parseList(raw) {
@@ -110,13 +121,19 @@ function parseList(raw) {
 }
 
 async function load() {
+  const generation = ++loadGeneration
   try {
     const data = await getServiceSignatures()
-    rows.value = data.signatures || []
-    builtinCount.value = data.builtin_count || 0
-    loaded.value = true
+    if (generation !== loadGeneration || !pageAlive) return
+    rows.value = Array.isArray(data?.signatures) ? data.signatures : []
+    builtinCount.value = finiteN(data.builtin_count, 0)
+    loadError.value = ''
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (generation !== loadGeneration || !pageAlive) return
+    loadError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message || e))
+  } finally {
+    if (generation === loadGeneration) loaded.value = true
   }
 }
 
@@ -133,8 +150,8 @@ function startEdit(row) {
     slug: row.slug,
     name: row.name || '',
     category: row.category || '',
-    procs: (row.procs || []).join(', '),
-    ports: (row.ports || []).join(', '),
+    procs: (row.procs || []).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
+    ports: (row.ports || []).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
     http: httpValue(row.http),
     brew: row.brew || '',
   }
@@ -143,6 +160,7 @@ function startEdit(row) {
 async function save() {
   const e = editing.value
   if (!e) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const ports = parseList(e.ports)
@@ -160,32 +178,44 @@ async function save() {
     else if (e.http === 'false') body.http = false
     else body.http = null
     await upsertServiceSignature(body)
+    if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('svcsig.saved')}`)
     editing.value = null
     await load()
   } catch (err) {
-    toast(`❌ ${err.message || err}`)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(err.message || err))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function removeRow(row) {
-  if (!confirm(t('svcsig.confirm_delete', { slug: row.slug }))) return
+  if (!confirm(t('svcsig.confirm_delete', { slug: finiteText(row.slug) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     await forgetServiceSignature(row.slug)
+    if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('svcsig.removed')}`)
     if (editing.value?.slug === row.slug) editing.value = null
     await load()
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  pageAlive = true
+  void load()
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+})
 </script>
 
 <style scoped>

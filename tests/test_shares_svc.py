@@ -54,7 +54,7 @@ class MacOSAdminTests(unittest.TestCase):
         self.assertTrue(argv[6].startswith("PATH=\"/opt/homebrew/bin:"), argv[6])
         self.assertTrue(argv[6].endswith("/bin/echo one; /bin/echo two"), argv[6])
         # The password travels on stdin, never on the command line.
-        self.assertEqual(run.call_args.kwargs.get("input"), "s3cret\n")
+        self.assertEqual(run.call_args.kwargs.get("input"), b"s3cret\n")
         self.assertNotIn("s3cret", " ".join(argv))
 
     def test_wrong_web_password_is_structured(self):
@@ -78,6 +78,28 @@ class MacOSAdminTests(unittest.TestCase):
             result = macos_admin.run_admin_sequence([["/usr/bin/true", "bad\x00arg"]])
         self.assertEqual(result, {"ok": False, "error": "invalid_command"})
         run.assert_not_called()
+
+    def test_surrogate_sudo_stderr_does_not_500(self):
+        """Leftover ``\\ud800`` in sudo stderr used to 500 privileged-action JSON."""
+        completed = type("R", (), {
+            "returncode": 1, "stdout": "", "stderr": "diskutil failed\ud800",
+        })()
+        with patch("hub.macos_admin.subprocess.run", return_value=completed):
+            with macos_admin.use_admin_password("s3cret"):
+                result = macos_admin.run_admin(["/usr/sbin/diskutil", "info", "disk4"])
+        self.assertFalse(result["ok"])
+        self.assertNotIn("\ud800", result.get("message") or "")
+        json.dumps(result, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+    def test_surrogate_password_does_not_500(self):
+        completed = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with patch("hub.macos_admin.subprocess.run", return_value=completed) as run:
+            with macos_admin.use_admin_password("pw\ud800"):
+                result = macos_admin.run_admin(["/usr/bin/true"])
+        self.assertEqual(result, {"ok": True})
+        stdin = run.call_args.kwargs.get("input")
+        self.assertIsInstance(stdin, (bytes, bytearray))
+        stdin.decode("utf-8")
 
 
 class SharesServiceTests(unittest.TestCase):

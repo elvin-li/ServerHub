@@ -38,12 +38,13 @@ function vueFiles() {
  * telling a screen reader nothing about what had opened.
  *
  * `cmd-palette-bg` is a third spelling, used once, for the Cmd+K palette.
- * `assist-bg` is the AI assistant drawer. Both are listed explicitly rather
- * than matched by a `-bg$` suffix rule: several unrelated classes end in -bg,
- * and a pattern loose enough to catch them would demand a dialog role from
- * things that are not dialogs.
+ * `assist-bg` is the AI assistant drawer. `terminal-backdrop` is the
+ * in-browser terminal, and `share-sheet-backdrop` is the Shares editor.
+ * Listed explicitly rather than matched by a `-bg$` suffix rule: several
+ * unrelated classes end in -bg, and a pattern loose enough to catch them
+ * would demand a dialog role from things that are not dialogs.
  */
-const OVERLAY = /class="(?:[^"]*\s)?(?:modal-bg|drawer-bg|cmd-palette-bg|assist-bg)(?:\s[^"]*)?"/g
+const OVERLAY = /class="(?:[^"]*\s)?(?:modal-bg|drawer-bg|cmd-palette-bg|assist-bg|terminal-backdrop|share-sheet-backdrop)(?:\s[^"]*)?"/g
 
 describe('modal dialogs', () => {
   it('pair every overlay with a dialog role', () => {
@@ -69,6 +70,60 @@ describe('modal dialogs', () => {
       if (dialogs > named) offenders.push(`${name}: ${dialogs - named} unnamed dialog(s)`)
     }
     expect(offenders).toEqual([])
+  })
+
+  it('marks overlay backdrops as presentation so AT skip them', () => {
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(OVERLAY)) {
+        const around = template.slice(m.index, m.index + 220)
+        if (!/role="presentation"/.test(around)) {
+          offenders.push(`${name}: overlay backdrop without role="presentation"`)
+        }
+      }
+    }
+    expect(offenders, 'overlay wrappers without role=presentation are read as extra regions').toEqual([])
+  })
+
+  it('marks every dialog aria-modal', () => {
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/role="dialog"/g)) {
+        const around = template.slice(Math.max(0, m.index - 220), m.index + 180)
+        if (!/aria-modal="true"/.test(around)) offenders.push(`${name}: dialog without aria-modal`)
+      }
+    }
+    expect(offenders, 'dialogs without aria-modal leak the page behind them to AT').toEqual([])
+  })
+})
+
+describe('icon-only controls', () => {
+  it('give every icon-only button or link an accessible name', () => {
+    // title= is a last-resort accessible name and is invisible to some AT;
+    // icon-only controls in this panel must spell the name with aria-label.
+    const TAG = /<(button|a)\b([^>]*)>([\s\S]*?)<\/\1>/g
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(TAG)) {
+        const [, tag, attrs, body] = m
+        const text = body
+          .replace(/<[^>]+>/g, '')
+          .replace(/\{\{[\s\S]*?\}\}/g, 'X')
+          .replace(/&[^;]+;/g, 'X')
+          .trim()
+        const iconOnly = text === '' || /^[↑↓←→×✕!]$/.test(text)
+        if (!iconOnly) continue
+        if (/aria-label=/.test(attrs) || /aria-labelledby=/.test(attrs)) continue
+        offenders.push(`${name}: <${tag}${attrs.slice(0, 80)}>`)
+      }
+    }
+    expect(
+      offenders,
+      'icon-only controls need aria-label; title= is not a reliable name',
+    ).toEqual([])
   })
 })
 
@@ -126,9 +181,17 @@ describe('service uninstall UI', () => {
 
 describe('timer lifecycle', () => {
   it('does not overlap async polling requests', () => {
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      if (/setInterval\s*\(\s*async\b/.test(src)) {
+        offenders.push(`${name}: setInterval(async …) starts another request before the prior one finishes`)
+      }
+      if (/startVisibleInterval\s*\(\s*async\b/.test(src)) {
+        offenders.push(`${name}: startVisibleInterval(async …) hides the same overlap behind the helper`)
+      }
+    }
+    expect(offenders).toEqual([])
     const apps = readFileSync(resolve(SRC, 'views', 'Apps.vue'), 'utf8')
-    expect(apps, 'setInterval(async …) starts another request before the prior one finishes')
-      .not.toMatch(/setInterval\s*\(\s*async\b/)
     expect(apps).toContain('cfPollGeneration')
     expect(apps).toMatch(/onUnmounted\s*\(\s*\(\)\s*=>\s*\{[\s\S]*stopCfLoginPolling\(\)/)
   })
@@ -193,6 +256,26 @@ describe('dialog keyboard contract', () => {
       }
     })
   }
+
+  it('wires every role="dialog" through useDismissable, even without a known overlay class', () => {
+    // OVERLAY is an allow-list of backdrop class names. A dialog that skips
+    // those spellings (or uses a new one) would slip the per-file overlay
+    // tests while still trapping the keyboard user behind a box that only
+    // closes on a click.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const dialogs = (src.match(/role="dialog"/g) || []).length
+      if (!dialogs) continue
+      const wired = (src.match(/useDismissable\(/g) || []).length
+      if (wired < dialogs) {
+        offenders.push(`${name}: ${dialogs} dialog(s) but ${wired} useDismissable call(s)`)
+      }
+      if (!/from ['"][^'"]*composables\/useDismissable/.test(src)) {
+        offenders.push(`${name}: role="dialog" without a useDismissable import`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
 })
 
 describe('mobile chrome', () => {
@@ -309,13 +392,32 @@ describe('tab selection state', () => {
   it('exposes the selected tab to assistive technology', () => {
     const offenders = []
     for (const [name, src] of vueFiles()) {
-      for (const [, tabs] of src.matchAll(/<div class="tabs">([\s\S]*?)<\/div>/g)) {
+      for (const [, tabs] of src.matchAll(/<div class="(?:tabs|tools-tabs)">([\s\S]*?)<\/div>/g)) {
         const buttons = (tabs.match(/<button\b/g) || []).length
         const states = (tabs.match(/:aria-pressed=/g) || []).length
         if (buttons !== states) offenders.push(`${name}: ${buttons - states} tab button(s) hide their selected state`)
       }
     }
     expect(offenders).toEqual([])
+  })
+})
+
+describe('appearance controls', () => {
+  it('names the login locale select', () => {
+    const login = readFileSync(resolve(__dirname, 'Login.vue'), 'utf8')
+    expect(login).toMatch(/login-locale[\s\S]*aria-label="t\('appearance\.language'\)"/)
+  })
+
+  it('exposes theme and density selection with aria-pressed', () => {
+    const settings = readFileSync(resolve(__dirname, 'Settings.vue'), 'utf8')
+    expect(settings).toMatch(/class="theme-card"[\s\S]*:aria-pressed="theme === th\.id"/)
+    expect(settings).toMatch(/:aria-pressed="density === d\.id"/)
+  })
+
+  it('names the admin password field instead of relying on its placeholder', () => {
+    const admin = readFileSync(resolve(SRC, 'components/AdminPasswordDialog.vue'), 'utf8')
+    expect(admin).toMatch(/aria-label="t\('adminPrompt.password'\)"/)
+    expect(admin).not.toMatch(/placeholder="t\('adminPrompt.password'\)"/)
   })
 })
 
@@ -369,7 +471,8 @@ describe('storage state semantics', () => {
 
   it('does not present a missing array status as started', () => {
     expect(main).not.toContain("data?.array?.status || 'started'")
-    expect(main).toContain("data?.array?.status || t('network.unknown')")
+    expect(main).not.toContain("data?.array?.status || t('network.unknown')")
+    expect(main).toContain("finiteText(data?.array?.status, '') || t('network.unknown')")
   })
 
   it('preserves the saved pool free-space floor when editing other fields', () => {
@@ -388,6 +491,20 @@ describe('workload operation semantics', () => {
       expect(src, `${name} must not overlap job requests`).not.toMatch(/setInterval\s*\(\s*poll/)
       expect(src, `${name} needs an in-flight response invalidation token`).toContain('jobPollGeneration')
       expect(src, `${name} must invalidate polling on unmount`).toMatch(/onUnmounted\([^)]*stopJobPolling|onUnmounted\s*\(\s*\(\)\s*=>\s*\{[\s\S]*stopJobPolling\(\)/)
+    }
+  })
+
+  it('invalidates in-flight container inspect on leave', () => {
+    expect(containers).toMatch(/async function openInspect\(c\)[\s\S]*const generation = listGeneration/)
+    expect(containers).toMatch(/onUnmounted\(\(\) => \{[\s\S]*listGeneration \+= 1/)
+  })
+
+  it('discards container create/pull/volume/network writes after leave', () => {
+    expect(containers).toContain('function stillOnList')
+    for (const name of ['doRun', 'doPull', 'rmi', 'createVol', 'rmVol', 'createNet', 'rmNet']) {
+      expect(containers, `${name} must snapshot listGeneration`).toMatch(
+        new RegExp(`async function ${name}[\\s\\S]*const generation = listGeneration`),
+      )
     }
   })
 
@@ -415,6 +532,20 @@ describe('network operation semantics', () => {
     }
     expect(network).not.toMatch(/setTimeout\s*\(\s*\(\)\s*=>\s*refresh\(true\)/)
     expect(network).toContain('for (const id of refreshTimers) clearTimeout(id)')
+    expect(network).toMatch(/function scheduleRefresh[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(network).toContain('function stillOnNetwork')
+    expect(network).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
+    expect(network).toMatch(/async function runAutoBind\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(network).toMatch(/async function runFailover\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    for (const fn of [
+      'saveAutoBind', 'applyProfile', 'saveOrder', 'toggleService', 'addAlias',
+      'removeAlias', 'setDhcp', 'applyManual', 'applyDns', 'wifi', 'doLookup',
+      'applyPorts', 'applyConnect',
+    ]) {
+      expect(network, `${fn} must drop busy with pageAlive after refresh() bumps`).toMatch(
+        new RegExp(`async function ${fn}[\\s\\S]*finally \\{[\\s\\S]*if \\(pageAlive\\) busy\\.value = false`),
+      )
+    }
   })
 
   it('warns before connection-changing operations', () => {
@@ -423,6 +554,10 @@ describe('network operation semantics', () => {
       'network.confirm_wifi',
       'network.confirm_recreate_ports',
       'network.confirm_disconnect',
+      'network.confirm_connect',
+      'network.confirm_failover',
+      'network.confirm_add_alias',
+      'network.confirm_autobind',
     ]) expect(network).toContain(key)
   })
 })
@@ -440,6 +575,7 @@ describe('operations polling and submission guards', () => {
     expect(logs).not.toContain('setInterval(')
     expect(logs).toContain('startVisibleInterval(load, 6000)')
     expect(logs).toContain('loadGeneration')
+    expect(logs).toMatch(/async function loadSources\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\)/)
   })
 
   it('does not refresh a failed backup into the successful list', () => {
@@ -459,6 +595,45 @@ describe('operations polling and submission guards', () => {
     expect(alerts).toContain('const busy = ref(false)')
     expect(alerts).toMatch(/async function check\(\)[\s\S]*if \(busy\.value\) return[\s\S]*finally/)
     expect(alerts).toMatch(/async function test\(\)[\s\S]*if \(busy\.value\) return[\s\S]*finally/)
+    expect(alerts).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
+    expect(alerts).toMatch(/async function check\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\) busy\.value = false/)
+    expect(alerts).toMatch(/async function test\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\) busy\.value = false/)
+    expect(alerts).toContain('let loadGeneration = 0')
+    expect(alerts).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
+  })
+
+  it('invalidates in-flight NotifyChannels and ServiceSignatures loads on leave', () => {
+    const notify = readFileSync(resolve(SRC, 'components/NotifyChannels.vue'), 'utf8')
+    const sigs = readFileSync(resolve(SRC, 'components/ServiceSignatures.vue'), 'utf8')
+    const form = readFileSync(resolve(SRC, 'components/ScheduleJobForm.vue'), 'utf8')
+    for (const [name, src] of [
+      ['NotifyChannels.vue', notify],
+      ['ServiceSignatures.vue', sigs],
+    ]) {
+      expect(src, name).toContain('let loadGeneration = 0')
+      expect(src, name).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
+    }
+    expect(form, 'ScheduleJobForm.vue').toContain('let previewGeneration = 0')
+    expect(form, 'ScheduleJobForm.vue').toContain('let stacksGeneration = 0')
+    expect(form).toMatch(/onUnmounted\(\(\) => \{[\s\S]*previewGeneration \+= 1/)
+    expect(form).toMatch(/onUnmounted\(\(\) => \{[\s\S]*stacksGeneration \+= 1/)
+  })
+
+  it('invalidates in-flight Bookmarks and Health loads on leave', () => {
+    const bookmarks = readFileSync(resolve(SRC, 'views/Bookmarks.vue'), 'utf8')
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    const modules = readFileSync(resolve(SRC, 'views/Modules.vue'), 'utf8')
+    const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
+    for (const [name, src] of [
+      ['Bookmarks.vue', bookmarks],
+      ['Health.vue', health],
+      ['Modules.vue', modules],
+    ]) {
+      expect(src, name).toContain('let loadGeneration = 0')
+      expect(src, name).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
+    }
+    expect(gateway).toContain('let loadSeq = 0')
+    expect(gateway).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadSeq \+= 1/)
   })
 
   it('does not report an unsaved diagnostics snapshot as saved', () => {
@@ -467,6 +642,9 @@ describe('operations polling and submission guards', () => {
     expect(tools).toContain("if (j.saved_path)")
     expect(tools).toContain("t('tools.diag_save_failed'")
     expect(tools).toContain('j.save_error')
+    expect(tools).toMatch(/async function genDiag\(\)[\s\S]*if \(generation !== reloadGeneration/)
+    expect(tools).toMatch(/async function doPrune\([\s\S]*if \(generation !== reloadGeneration/)
+    expect(tools).toMatch(/async function doFlushDns\(\)[\s\S]*if \(generation !== reloadGeneration/)
     expect(settings).toContain('const saved = Boolean(result.saved_path)')
     expect(settings).toContain("t('settings.diag_save_failed'")
     expect(settings).toContain('result.save_error')
@@ -481,6 +659,9 @@ describe('operations polling and submission guards', () => {
     expect(dashboard).toContain('loadSensors(false, { light: !highMode.value })')
     expect(dashboard).toContain('refreshHeavy(false, highMode.value)')
     expect(dashboard).toMatch(/onUnmounted\([\s\S]*clearTimeout\(actionRefreshTimer\)/)
+    expect(dashboard).toMatch(/async function loadPower\(\)[\s\S]*if \(!dashAlive\) return/)
+    expect(dashboard).toMatch(/async function loadSensors\([\s\S]*const generation = \+\+sensorsGeneration/)
+    expect(dashboard).toMatch(/onUnmounted\(\(\) => \{[\s\S]*sensorsGeneration \+= 1/)
   })
 
   it('keeps file navigation and terminal connection state current', () => {
@@ -488,16 +669,463 @@ describe('operations polling and submission guards', () => {
     const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
     const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
     expect(files).toContain('const request = ++listRequest')
+    expect(files).toMatch(/async function loadOverview\(\)[\s\S]*const request = \+\+listRequest/)
     expect(files).toContain('request !== listRequest || !activated.value')
+    expect(files).toMatch(/async function openFullFB\(\)[\s\S]*if \(request !== listRequest\) return/)
+    expect(files).toMatch(/async function openFullFB\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(files).toMatch(/async function stopFB\(\)[\s\S]*if \(request !== listRequest\) return/)
+    expect(files).toMatch(/async function stopFB\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(files).toMatch(/async function doMkdir\(\)[\s\S]*if \(request !== listRequest\) return/)
+    expect(files).toMatch(/async function doMkdir\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(files).toMatch(/async function doRename\([\s\S]*if \(request !== listRequest\) return/)
+    expect(files).toMatch(/async function doRename\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(files).toMatch(/async function doDeleteOne\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(files).toMatch(/async function doDeleteSelected\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(files).toMatch(/async function uploadFiles\([\s\S]*if \(request !== listRequest\) return/)
+    expect(files).toMatch(/async function uploadFiles\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
     expect(files).toMatch(/function deactivate\(\)[\s\S]*listRequest \+= 1/)
-    expect(files).toMatch(/onUnmounted\([\s\S]*listRequest \+= 1/)
+    expect(files).toMatch(/onUnmounted\([\s\S]*pageAlive = false[\s\S]*listRequest \+= 1/)
     expect(files.match(/if \(!j\?\.ok\) throw new Error/g)).toHaveLength(2)
+    expect(files).not.toMatch(/window\.open\(`\/api\/files\/download/)
+    expect(files).toContain("a.rel = 'noopener'")
+    expect(files).toContain('a.download = it.name')
     expect(terminal).toContain('terminal handshake timeout')
     expect(terminal).toMatch(/message\.type === 'ready'[\s\S]{0,100}clearConnectTimer\(\)/)
     expect(terminal).toMatch(/function closeTerminal\(\)[\s\S]{0,100}clearConnectTimer\(\)/)
     expect(terminal).toMatch(/function onSocketClose\(\)[\s\S]{0,100}clearConnectTimer\(\)/)
     expect(settings).toMatch(/async function testNotify\(\)[\s\S]*if \(saving\.value\) return[\s\S]*finally/)
     expect(settings).toMatch(/async function forceCheck\(\)[\s\S]*if \(saving\.value\) return[\s\S]*finally/)
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toContain('let loadGeneration = 0')
+    expect(photoshub).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
+  })
+
+  it('invalidates in-flight Settings and Account loads on leave', () => {
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    const account = readFileSync(resolve(SRC, 'views/Account.vue'), 'utf8')
+    expect(settings).toContain('let loadGeneration = 0')
+    expect(settings).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
+    expect(account).toContain('let loadGeneration = 0')
+    expect(account).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
+  })
+
+  it('does not write Settings saves or copy timers after leave', () => {
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    for (const fn of [
+      'syncUiToServer', 'saveIdentity', 'savePassword', 'saveAdvanced',
+      'saveOllama', 'saveTerminal', 'saveUps', 'saveHalt',
+      'applyPower', 'runAliasAlign', 'runDiagnostics', 'pickLocale',
+      'startTwofaEnroll', 'confirmTwofaEnroll', 'disableTwofa',
+      'regenTwofaRecovery', 'adminResetTwofa', 'createKey', 'revokeKey',
+      'runDrill', 'testNotify', 'forceCheck', 'runLauncher',
+    ]) {
+      expect(settings, `${fn} must ignore a late response`).toMatch(
+        new RegExp(`async function ${fn}\\([\\s\\S]*if \\(!pageAlive\\) return`),
+      )
+    }
+    // `save` is the panel/notify writer; the name is a prefix of saveIdentity etc.
+    expect(settings).toMatch(/async function save\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(settings).toMatch(/function persistUi\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(settings).toMatch(/async function copyRecoveryCodes\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(settings).toMatch(/async function copyCreatedKey\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(settings).toMatch(/copyRecoveryTimer = setTimeout\(\(\) => \{[\s\S]*if \(!pageAlive\) return/)
+    expect(settings).toMatch(/copyKeyTimer = setTimeout\(\(\) => \{[\s\S]*if \(!pageAlive\) return/)
+  })
+
+  it('discards Users and Brew mutations that finish after leave', () => {
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(users).toMatch(/async function createAccount\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(users).toMatch(/async function createAccount\([\s\S]*finally \{[\s\S]*if \(pageAlive\) accountsBusy\.value = false/)
+    expect(users).toMatch(/async function saveResources\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(users).toMatch(/async function saveResources\([\s\S]*finally \{[\s\S]*if \(pageAlive\) accountsBusy\.value = false/)
+    expect(users).toMatch(/async function doResetPassword\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(users).toMatch(/async function doResetPassword\([\s\S]*finally \{[\s\S]*if \(pageAlive\) accountsBusy\.value = false/)
+    expect(users).toMatch(/async function resetTwofa\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(users).toMatch(/async function resetTwofa\([\s\S]*finally \{[\s\S]*if \(pageAlive\) accountsBusy\.value = false/)
+    expect(users).toMatch(/async function removeAccount\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(users).toMatch(/async function removeAccount\([\s\S]*finally \{[\s\S]*if \(pageAlive\) accountsBusy\.value = false/)
+    expect(brew).toMatch(/async function act\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(brew).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(brew).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
+  })
+
+  it('discards Containers, Services, WireGuard and Compose mutations that finish after leave', () => {
+    const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    const wireguard = readFileSync(resolve(SRC, 'views/WireGuard.vue'), 'utf8')
+    const compose = readFileSync(resolve(SRC, 'views/Compose.vue'), 'utf8')
+    expect(containers).toMatch(/function stillOnList\(generation\) \{\s*\n\s*return pageAlive && generation === listGeneration/)
+    expect(containers).toMatch(/function scheduleRefresh\([\s\S]*if \(generation !== listGeneration \|\| !pageAlive\) return/)
+    expect(containers).toMatch(/async function act\([\s\S]*if \(!stillOnList\(generation\)\) return/)
+    expect(containers).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(containers).toMatch(/async function doPrune\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(containers).toMatch(/async function toggleAutostart\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(containers).toMatch(/async function openInspect\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(containers).toMatch(/async function doRun\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(containers).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
+    expect(services).toMatch(/function later\([\s\S]*if \(!pageAlive\) return/)
+    expect(services).toMatch(/async function onAction\([\s\S]*if \(!pageAlive\) return/)
+    for (const fn of ['openUninstall', 'confirmUninstall', 'adopt', 'saveScript', 'forgetScript', 'saveOverride', 'hideService']) {
+      expect(services, `${fn} must ignore a late response`).toMatch(
+        new RegExp(`async function ${fn}[\\s\\S]*if \\(!pageAlive\\) return`),
+      )
+    }
+    expect(wireguard).toMatch(/async function withBusy\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(wireguard).toMatch(/async function withBusy\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(wireguard).toMatch(/async function copyWstunnelCommand\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(wireguard).toMatch(/async function copyPeer\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(wireguard).toMatch(/async function createPeer\(\)[\s\S]*if \(!created \|\| !pageAlive\) return/)
+    expect(compose).toMatch(/async function save\(\)[\s\S]*if \(generation !== composeGeneration \|\| !pageAlive\) return/)
+    expect(compose).toMatch(/async function create\(\)[\s\S]*if \(generation !== stacksGeneration \|\| !pageAlive\) return/)
+    expect(compose).toMatch(/async function run\([\s\S]*finally \{[\s\S]*if \(pageAlive && !holdBusy\) busy\.value = false/)
+    expect(compose).toMatch(/if \(!j\.running\) \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+  })
+
+  it('discards Scheduler, VMs, Account and Shares mutations that finish after leave', () => {
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+    const account = readFileSync(resolve(SRC, 'views/Account.vue'), 'utf8')
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(scheduler).toMatch(/async function saveJob\([\s\S]*if \(pollStopped\) return/)
+    expect(scheduler).toMatch(/async function removeJob\([\s\S]*if \(pollStopped\) return/)
+    expect(vms).toMatch(/function scheduleRefresh\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(vms).toMatch(/async function act\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(vms).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(vms).toMatch(/async function doClone\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(vms).toMatch(/async function doCreate\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(vms).toMatch(/async function doRename\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(account).toMatch(/async function savePassword\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(account).toMatch(/async function savePassword\([\s\S]*finally \{[\s\S]*if \(pageAlive\) savingPassword\.value = false/)
+    expect(account).toMatch(/async function confirmEnroll\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(account).toMatch(/async function startEnroll\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(account).toMatch(/async function confirmEnroll\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(account).toMatch(/async function disable\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(account).toMatch(/async function regenRecovery\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(account).toMatch(/async function copyRecoveryCodes\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(shares).toMatch(/async function saveShare\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(shares).toMatch(/async function saveShare\([\s\S]*finally \{[\s\S]*if \(pageAlive\) \{[\s\S]*busy\.value = false/)
+    expect(shares).toMatch(/async function applyAcl\([\s\S]*finally \{[\s\S]*if \(pageAlive\) aclBusy\.value = false/)
+    expect(shares).toMatch(/async function removeShare\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(shares).toMatch(/async function removeShare\([\s\S]*finally \{[\s\S]*if \(pageAlive\) \{[\s\S]*busy\.value = false/)
+    expect(shares).toMatch(/async function toggleService\([\s\S]*finally \{[\s\S]*if \(pageAlive\) \{[\s\S]*busy\.value = false/)
+    expect(shares).toMatch(/async function openSettings\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+  })
+
+  it('invalidates in-flight Ollama status and settings loads on leave', () => {
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toContain('let loadGeneration = 0')
+    expect(ollama).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
+  })
+
+  it('discards Apps Cloudflare/remote and Containers exec that finish after leave', () => {
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const array = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    expect(apps).toMatch(/function later\([\s\S]*if \(generation !== appsDataGeneration\) return/)
+    expect(apps).toMatch(/async function cfLogin\(\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(apps).toMatch(/async function saveRemoteSource\(\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(containers).toMatch(/async function runExec\(\)[\s\S]*if \(!stillOnList\(generation\)\) return/)
+    expect(dashboard).toMatch(/function scheduleActionRefresh\(\)[\s\S]*if \(!dashAlive\) return/)
+    expect(array).toMatch(/function scheduleRefresh\([\s\S]*if \(generation !== loadSeq \|\| !pageAlive\) return/)
+  })
+
+  it('invalidates in-flight Apps catalog-remote and MainArray threshold loads', () => {
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    const array = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    expect(apps).toMatch(/async function loadRemote\(\)[\s\S]*const generation = appsDataGeneration/)
+    expect(apps).toMatch(/onUnmounted\(\(\) => \{[\s\S]*appsDataGeneration \+= 1/)
+    expect(apps).toContain('function stillOnApps')
+    expect(apps).toMatch(/function stillOnApps\(generation\) \{\s*\n\s*return pageAlive && generation === appsDataGeneration/)
+    expect(apps).toMatch(/async function openDetail\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(apps).toMatch(/async function saveCredential\([\s\S]*finally \{[\s\S]*if \(pageAlive\) credentialBusy\.value = false/)
+    expect(apps).toMatch(/async function deleteCredential\([\s\S]*finally \{[\s\S]*if \(pageAlive\) credentialBusy\.value = false/)
+    expect(apps).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
+    expect(apps).toMatch(/async function setAutostartItem\([\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(apps).toMatch(/async function doInstall\(\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(apps).toMatch(/async function launchOpenInner\([\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(apps).toMatch(/onUnmounted\(\(\) => \{[\s\S]*closeDetail\(\)/)
+    expect(apps).toMatch(/onUnmounted\(\(\) => \{[\s\S]*closeJobLog\(\)/)
+    expect(array).toMatch(/async function loadSmartThresholds\(\)[\s\S]*const mySeq = loadSeq/)
+    expect(array).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadSeq \+= 1/)
+  })
+
+  it('discards MainArray, Pool, Maintenance, Logs and Dashboard mutations that finish after leave', () => {
+    const array = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    const pool = readFileSync(resolve(SRC, 'views/Pool.vue'), 'utf8')
+    const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+    const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const audit = readFileSync(resolve(SRC, 'views/Audit.vue'), 'utf8')
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    for (const fn of ['power', 'manage', 'doRename', 'doFormat', 'runSmartTest']) {
+      expect(array, `${fn} must ignore a late response`).toMatch(
+        new RegExp(`async function ${fn}[\\s\\S]*if \\(generation !== loadSeq \\|\\| !pageAlive\\) return`),
+      )
+      expect(array, `${fn} must drop busy with pageAlive after loadSeq bumps`).toMatch(
+        new RegExp(`async function ${fn}[\\s\\S]*finally \\{[\\s\\S]*if \\(pageAlive\\) (?:busy|smartTestBusy)\\.value = false`),
+      )
+    }
+    expect(array).toMatch(/async function openSmart\([\s\S]*finally \{[\s\S]*if \(pageAlive\) smartLoading\.value = false/)
+    expect(array).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
+    expect(pool).toMatch(/async function doPreview\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(pool).toMatch(/async function doPreview\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(pool).toMatch(/async function doSave\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(pool).toMatch(/async function doSave\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(pool).toMatch(/async function doClear\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(pool).toMatch(/async function doClear\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(maintenance).toMatch(/async function run\([\s\S]*if \(generation !== listGeneration \|\| !pageAlive\) return/)
+    expect(logs).toMatch(/async function copyLog\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(dashboard).toMatch(/async function act\([\s\S]*if \(!dashAlive\) return/)
+    expect(dashboard).toMatch(/async function copyVnc\(\)[\s\S]*if \(!dashAlive\) return/)
+    expect(dashboard).toMatch(/async function copyOllamaApi\(\)[\s\S]*if \(!dashAlive\) return/)
+    expect(dashboard).toMatch(/function setMetricRange\([\s\S]*\.finally\(\(\) => \{[\s\S]*if \(dashAlive\) metricsSwitching\.value = false/)
+    expect(audit).toMatch(/async function refresh\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(audit).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
+    expect(health).toMatch(/async function load\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+  })
+
+  it('discards Login credential exchange that finishes after leave', () => {
+    const login = readFileSync(resolve(SRC, 'views/Login.vue'), 'utf8')
+    expect(login).toMatch(/async function submit\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(login).toMatch(/totpStep\.value = true[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(login).toMatch(/async function submitTotp\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(login).toMatch(/async function copyToken\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(login).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
+    expect(login).toMatch(/function leaveTotpStep\(\)[\s\S]*loginGeneration \+= 1/)
+    expect(login).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loginGeneration \+= 1/)
+    expect(login).toMatch(/async function submitTotp\([\s\S]*finally \{[\s\S]*if \(pageAlive && generation === loginGeneration\) busy\.value = false/)
+  })
+
+  it('discards NotifyChannels and ServiceSignatures writes that finish after leave', () => {
+    const notify = readFileSync(resolve(SRC, 'components/NotifyChannels.vue'), 'utf8')
+    const sigs = readFileSync(resolve(SRC, 'components/ServiceSignatures.vue'), 'utf8')
+    const assist = readFileSync(resolve(SRC, 'components/AssistantDrawer.vue'), 'utf8')
+    expect(notify).toMatch(/async function save\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(notify).toMatch(/async function testChannel\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(notify).toMatch(/async function testChannel\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    expect(notify).toMatch(/async function removeChannel\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(sigs).toMatch(/async function save\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(sigs).toMatch(/async function removeRow\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(assist).toMatch(/const out = await askAssistant\([\s\S]*if \(generation !== sendGeneration \|\| !props\.open\) \{/)
+  })
+
+  it('discards service log copies that finish after leave', () => {
+    const drawer = readFileSync(resolve(SRC, 'components/ServiceDetailDrawer.vue'), 'utf8')
+    const logs = readFileSync(resolve(SRC, 'components/ServiceLogsModal.vue'), 'utf8')
+    expect(drawer).toMatch(/async function copyLog\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(logs).toMatch(/async function copyLog\(\)[\s\S]*if \(!pageAlive\) return/)
+  })
+
+  it('discards Gateway test/reload and VncConsole fullscreen after leave', () => {
+    const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
+    const vnc = readFileSync(resolve(SRC, 'components/VncConsole.vue'), 'utf8')
+    expect(gateway).toMatch(/async function test\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(gateway).toMatch(/async function reload\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(vnc).toMatch(/async function toggleFullscreen\(\)[\s\S]*if \(disposed\) return/)
+  })
+
+  it('discards App/Terminal/Dashboard leftover loads that finish after leave', () => {
+    const app = readFileSync(resolve(SRC, 'App.vue'), 'utf8')
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const assist = readFileSync(resolve(SRC, 'components/AssistantDrawer.vue'), 'utf8')
+    expect(app).toContain('function stillOnShell')
+    expect(app).toMatch(/async function refresh\(\)[\s\S]*if \(!stillOnShell\(generation\)\) return/)
+    expect(app).toMatch(/function probePhotoHub\(\)[\s\S]*if \(!stillOnShell\(generation\)\) return/)
+    expect(app).toMatch(/function loadAssistCatalog\(\)[\s\S]*if \(!stillOnShell\(generation\) \|\| !authState\.canManage\) return/)
+    expect(app).toMatch(/async function ptrTouchEnd\(\)[\s\S]*if \(!stillOnShell\(generation\)\) return/)
+    expect(app).toMatch(/async function logout\(\)[\s\S]*if \(!stillOnShell\(generation\)\) return/)
+    expect(app).toMatch(/async function onLocale\([\s\S]*if \(!stillOnShell\(generation\)\) return/)
+    expect(app).toMatch(/window\.addEventListener\('online', onOnline\)/)
+    expect(app).toMatch(/window\.addEventListener\('offline', onOffline\)/)
+    expect(app).toMatch(/window\.addEventListener\('sw-update-ready', onSwUpdateReady\)/)
+    expect(app).toMatch(/onUnmounted\(\(\) => \{[\s\S]*removeEventListener\('online', onOnline/)
+    expect(app).toMatch(/onUnmounted\(\(\) => \{[\s\S]*removeEventListener\('offline', onOffline/)
+    expect(app).toMatch(/onUnmounted\(\(\) => \{[\s\S]*removeEventListener\('sw-update-ready', onSwUpdateReady/)
+    expect(terminal).toMatch(/async function openTerminal\(\)[\s\S]*if \(!pageAlive \|\| !dialogOpen\.value\) return/)
+    expect(terminal).toMatch(/\} catch \(error\) \{[\s\S]*clearConnectTimer\(\)/)
+    expect(terminal).toMatch(/\} catch \(error\) \{[\s\S]*if \(!pageAlive\) return/)
+    expect(dashboard).toMatch(/function startDashTimers\(\)[\s\S]*if \(!dashAlive\) return/)
+    expect(assist).toMatch(/async function send\([\s\S]*if \(generation !== sendGeneration \|\| !props\.open\) \{/)
+  })
+
+  it('discards PhotosHub, Shares ACL and Settings launcher writes after leave', () => {
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(photoshub).toMatch(/async function saveSettings\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(photoshub).toMatch(/async function saveSettings\([\s\S]*finally \{[\s\S]*if \(pageAlive\) saving\.value = false/)
+    expect(photoshub).toMatch(/async function run\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(photoshub).toMatch(/async function run\([\s\S]*finally \{[\s\S]*if \(pageAlive\) \{[\s\S]*busy\.value = false/)
+    expect(photoshub).toMatch(/async function removeSelected\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(photoshub).toMatch(/async function removeSelected\([\s\S]*finally \{[\s\S]*if \(pageAlive\) pendingLoading\.value = false/)
+    expect(photoshub).toMatch(/async function loadPending\(\)[\s\S]*finally \{[\s\S]*if \(pageAlive\) pendingLoading\.value = false/)
+    expect(shares).toMatch(/async function loadAcl\([\s\S]*if \(generation !== aclGeneration \|\| !pageAlive\) return/)
+    expect(shares).toMatch(/async function applyAcl\([\s\S]*if \(generation !== aclGeneration \|\| !pageAlive\) return/)
+    expect(shares).toMatch(/async function applyAcl\([\s\S]*finally \{[\s\S]*if \(pageAlive\) aclBusy\.value = false/)
+    expect(settings).toMatch(/async function loadLauncher\(\)[\s\S]*if \(request === launcherLoadRequest && pageAlive\)/)
+    expect(settings).toMatch(/onUnmounted\(\(\) => \{[\s\S]*launcherLoadRequest \+= 1/)
+  })
+
+  it('clears leftover Tools/Scheduler/form busy with pageAlive after a generation bump', () => {
+    const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
+    const form = readFileSync(resolve(SRC, 'components/ScheduleJobForm.vue'), 'utf8')
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    const bookmarks = readFileSync(resolve(SRC, 'views/Bookmarks.vue'), 'utf8')
+    const modules = readFileSync(resolve(SRC, 'views/Modules.vue'), 'utf8')
+    const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+    const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    const admin = readFileSync(resolve(SRC, 'components/AdminPasswordDialog.vue'), 'utf8')
+    const actions = readFileSync(resolve(SRC, 'components/ServiceActions.vue'), 'utf8')
+    expect(tools).toContain('let pageAlive = true')
+    expect(tools).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false[\s\S]*reloadGeneration \+= 1/)
+    for (const fn of ['genDiag', 'doPrune', 'loadSyslog', 'loadHw', 'loadUpdates', 'doPing', 'doDns', 'doFlushDns']) {
+      expect(tools, `${fn} must drop loading with pageAlive after reload() bumps`).toMatch(
+        new RegExp(`async function ${fn}[\\s\\S]*?finally \\{[\\s\\S]*?if \\(pageAlive\\) loading\\.value = false`),
+      )
+    }
+    expect(form).toMatch(/async function doPreview\([\s\S]*finally \{[\s\S]*if \(pageAlive\) previewing\.value = false/)
+    expect(form).toContain('let previewGeneration = 0')
+    expect(form).toContain('let stacksGeneration = 0')
+    expect(health).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
+    expect(bookmarks).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
+    expect(modules).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\) loaded\.value = true/)
+    expect(logs).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
+    expect(maintenance).toMatch(/async function pollLog\([\s\S]*if \(!id \|\| generation !== pollGeneration \|\| !pageAlive\) return/)
+    expect(maintenance).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === listGeneration && pageAlive\) loaded\.value = true/)
+    expect(scheduler).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(!pollStopped\) \{[\s\S]*loading\.value = false/)
+    expect(admin).toMatch(/onUnmounted\(\(\) => \{[\s\S]*settle\(null\)/)
+    expect(actions).toMatch(/:aria-busy="busy \? 'true' : undefined"/)
+  })
+
+  it('discards leftover timer, watcher and copy-to-clipboard writes after leave', () => {
+    const dismiss = readFileSync(resolve(SRC, 'composables/useDismissable.js'), 'utf8')
+    const app = readFileSync(resolve(SRC, 'App.vue'), 'utf8')
+    const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    const vnc = readFileSync(resolve(SRC, 'components/VncConsole.vue'), 'utf8')
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+    const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+    const pool = readFileSync(resolve(SRC, 'views/Pool.vue'), 'utf8')
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    const drawer = readFileSync(resolve(SRC, 'components/ServiceDetailDrawer.vue'), 'utf8')
+    const poll = readFileSync(resolve(SRC, 'lib/poll.js'), 'utf8')
+    const client = readFileSync(resolve(SRC, 'api/client.js'), 'utf8')
+    expect(dismiss).toContain('function stillOn')
+    expect(dismiss).toMatch(/await Promise\.resolve\(\)\s*\n\s*if \(!stillOn\(generation\)\) return/)
+    expect(dismiss).toMatch(/onBeforeUnmount\(\(\) => \{[\s\S]*pageAlive = false[\s\S]*loadGeneration \+= 1/)
+    expect(app).toMatch(/nextTick\(\(\) => \{[\s\S]*if \(!stillOnShell\(generation\) \|\| !cmdOpen\.value\) return[\s\S]*cmdInput\.value\?\.focus/)
+    expect(containers).toMatch(/requestAnimationFrame\(\(\) => \{[\s\S]*if \(generation !== listGeneration\) return/)
+    expect(scheduler).toMatch(/pollTimer = setTimeout\(\(\) => \{[\s\S]*if \(pollStopped\) return/)
+    expect(vnc).toMatch(/await panelEl\.value\?\.requestFullscreen\(\)[\s\S]*if \(disposed\) \{/)
+    expect(vnc).toMatch(/watch\(autoScale, \(enabled\) => \{[\s\S]*if \(disposed\) return/)
+    expect(vnc).toMatch(/watch\(viewOnly, \(enabled\) => \{[\s\S]*if \(disposed\) return/)
+    expect(ollama).toMatch(/async function copyText\([\s\S]*if \(!pageAlive\) return/)
+    expect(ollama).toMatch(/function startPullPolling\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(ollama).toMatch(/if \(pageAlive\) ollamaSaving\.value = false/)
+    expect(ollama).toMatch(/if \(pageAlive\) unloading\.value = false/)
+    expect(ollama).toMatch(/if \(pageAlive\) deleting\.value = false/)
+    expect(ollama).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) svcBusy\.value = false/)
+    expect(ollama).toMatch(/async function startPull\([\s\S]*finally \{[\s\S]*if \(pageAlive\) pullBusy\.value = false/)
+    expect(ollama).toMatch(/async function runTest\([\s\S]*finally \{[\s\S]*if \(pageAlive\) testBusy\.value = false/)
+    expect(ollama).toContain('v-if="m.content || m.pending"')
+    expect(backups).toMatch(/async function copyRestore\([\s\S]*if \(!pageAlive\) return/)
+    expect(logs).toMatch(/function startAutoRefresh\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(logs).toMatch(/watch\(auto,[\s\S]*if \(!pageAlive\) return/)
+    expect(pool).toMatch(/watch\(selected, \(\) => \{[\s\S]*if \(!pageAlive\) return/)
+    expect(terminal).toMatch(/watch\(container, \(id\) => \{[\s\S]*if \(!pageAlive\) return/)
+    expect(settings).toMatch(/async function loadLauncher\(\) \{\s*\n\s*if \(!pageAlive\) return/)
+    expect(settings).toMatch(/await sleep\(300\)\s*\n\s*if \(!pageAlive\) return/)
+    expect(drawer).toMatch(/watch\(\(\) => props\.service, \(\) => \{[\s\S]*if \(!pageAlive\) return/)
+    expect(poll).toMatch(/if \(gen !== generation\) return\s*\n\s*await tick\(\)/)
+    expect(client).toMatch(/const userAborted = Boolean\(signal\?\.aborted\)/)
+    expect(client).toMatch(/if \(signal\?\.aborted\) \{\s*\n\s*const err = new Error\('aborted'\)/)
+  })
+
+  it('discards a second-await mutation that used to land after leave', () => {
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    const compose = readFileSync(resolve(SRC, 'views/Compose.vue'), 'utf8')
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    const wireguard = readFileSync(resolve(SRC, 'views/WireGuard.vue'), 'utf8')
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    const assist = readFileSync(resolve(SRC, 'components/AssistantDrawer.vue'), 'utf8')
+    expect(apps).toMatch(/async function checkRemoteUpdates\(\)[\s\S]*await loadRemote\(\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(apps).toMatch(/async function toggleManagedAutostart\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(apps).toMatch(/async function doManagedAction\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
+    expect(compose).toMatch(/async function create\(\)[\s\S]*await loadStacks\(\)[\s\S]*if \(!pageAlive\) return[\s\S]*selected\.value = j\.id/)
+    expect(photoshub).toMatch(/await getPhotosHubStatus\(\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value =/)
+    expect(photoshub).toMatch(/await getPhotosHubStatus\(\)\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value = after/)
+    expect(wireguard).not.toMatch(/pingResult\.value = await pingWireguardPeers/)
+    expect(wireguard).toMatch(/await pingWireguardPeers\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return[\s\S]*pingResult\.value = result/)
+    expect(ollama).toMatch(/async function scrollChat\(\)[\s\S]*await nextTick\(\)[\s\S]*if \(!pageAlive\) return/)
+    expect(assist).toMatch(/if \(props\.open && generation === sendGeneration\) \{[\s\S]*await nextTick\(\)\s*\n\s*if \(generation !== sendGeneration \|\| !props\.open\) return[\s\S]*logEl\.value\?\.scrollTo/)
+    expect(assist).toMatch(/\} finally \{\s*\n\s*if \(generation === sendGeneration\) \{\s*\n\s*busy\.value = false/)
+    expect(assist).toMatch(/if \(!isOpen\) \{[\s\S]*busy\.value = false/)
+  })
+
+  it('ignores copy-to-clipboard results that arrive after leave', () => {
+    const ALIVE = /pageAlive|dashAlive|disposed|stillOn/
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      if (!src.includes('copyToClipboard')) continue
+      for (const m of src.matchAll(/await copyToClipboard\([^)]*\)/g)) {
+        const after = src.slice(m.index, m.index + 280)
+        if (!ALIVE.test(after)) {
+          offenders.push(`${name}: copyToClipboard result used without an alive check`)
+        }
+      }
+    }
+    expect(offenders, 'a late clipboard write must not toast on an unmounted page').toEqual([])
+  })
+
+  it('does not keep busy after a refresh that bumps generation', () => {
+    // A mutation that snapshots generation, then calls a loader that does
+    // `++generation` before returning, cannot gate busy=false on a generation
+    // match: the increment runs before finally, so the button stays disabled.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const incrementers = new Map()
+      for (const m of src.matchAll(/async function (\w+)\s*\([^)]*\)\s*\{/g)) {
+        const head = src.slice(m.index + m[0].length, m.index + m[0].length + 500)
+        const bump = head.match(/const \w+ = \+\+(\w+)/)
+        if (bump) incrementers.set(m[1], bump[1])
+      }
+      for (const m of src.matchAll(/(?:async )?function (\w+)\s*\([^)]*\)\s*\{/g)) {
+        const fn = m[1]
+        const rest = src.slice(m.index)
+        const stop = rest.slice(20).search(/\n(?:async function |function |onMounted|onUnmounted)/)
+        const body = rest.slice(0, stop === -1 ? 3500 : stop + 20)
+        const snap = body.match(/const (generation|request|seq|mySeq) = (?!\+\+)(\w+)/)
+        if (!snap) continue
+        const [, local, counter] = snap
+        const fin = body.match(/finally(?:\s*\(\s*\(\)\s*=>\s*|\s*)\{([\s\S]*?)\n  \}/)
+        if (!fin) continue
+        if (!/\w*(?:[Bb]usy|[Ll]oading|[Ss]aving|[Ss]witching)\w*\.value = false/.test(fin[1])) continue
+        const gated =
+          new RegExp(`${local} === ${counter}`).test(fin[1])
+          || /stillOn\w*\(\s*generation\s*\)/.test(fin[1])
+        if (!gated) continue
+        const before = body.slice(0, body.indexOf('finally'))
+          .replace(/setTimeout\s*\(\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{[\s\S]*?\n\s*\},/g, '')
+        const hits = []
+        for (const [inc, gen] of incrementers) {
+          if (gen !== counter) continue
+          if (new RegExp(`(?:await |void |\\n\\s*)${inc}\\s*\\(`).test(before)) hits.push(inc)
+        }
+        if (hits.length) {
+          offenders.push(`${name}: ${fn}() calls ${hits[0]}() which ++${counter}, then finally gates busy on ${local}`)
+        }
+      }
+    }
+    expect(
+      offenders,
+      'refresh() bumps generation before finally; clear busy with pageAlive',
+    ).toEqual([])
   })
 })
 
@@ -572,5 +1200,1681 @@ describe('async status regions', () => {
       }
     }
     expect(offenders, 'output that arrives after a click must be announced').toEqual([])
+  })
+})
+
+describe('error live regions', () => {
+  /**
+   * Bodies of every aria-live element, including nested children.
+   *
+   * The first version stopped at the first matching close tag, so Ollama's
+   * chat log (`<div aria-live><div class="meta">…</div>…{{ cond ? t() : '' }}`)
+   * never saw the empty interpolation sitting two siblings down.
+   */
+  function liveRegions(template) {
+    const regions = []
+    const re = /<\/?([a-z][\w-]*)\b[^>]*\/?>/gi
+    const stack = []
+    for (const m of template.matchAll(re)) {
+      const raw = m[0]
+      const tag = m[1].toLowerCase()
+      if (raw.startsWith('</')) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (stack[i].tag === tag) {
+            if (stack[i].live) {
+              regions.push({
+                raw: stack[i].raw,
+                body: template.slice(stack[i].bodyStart, m.index),
+                index: stack[i].index,
+              })
+            }
+            stack.length = i
+            break
+          }
+        }
+        continue
+      }
+      const voidEl = /\/\s*>$/.test(raw)
+        || ['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'].includes(tag)
+      if (voidEl) continue
+      stack.push({
+        tag,
+        // role=status is an implicit polite live region; App.vue's toast
+        // binds :aria-live, but several siblings only set the role.
+        live: /aria-live/.test(raw) || /\brole="status"/.test(raw),
+        raw,
+        bodyStart: m.index + raw.length,
+        index: m.index,
+      })
+    }
+    return regions
+  }
+
+  function liveRegionBodies(template) {
+    return liveRegions(template).map((r) => r.body)
+  }
+
+  function ancestorGatesIdent(template, index, ident) {
+    const re = /<\/?([a-z][\w-]*)\b([^>]*)\/?>/gi
+    const stack = []
+    const voidEl = new Set([
+      'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+      'meta', 'param', 'source', 'track', 'wbr',
+    ])
+    for (const m of template.slice(0, index).matchAll(re)) {
+      const raw = m[0]
+      const tag = m[1].toLowerCase()
+      const attrs = m[2]
+      if (raw.startsWith('</')) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (stack[i].tag === tag) {
+            stack.length = i
+            break
+          }
+        }
+        continue
+      }
+      if (/\/\s*>$/.test(raw) || voidEl.has(tag)) continue
+      stack.push({ tag, attrs })
+    }
+    const vif = new RegExp(`\\bv-(?:if|else-if)="[^"]*\\b${ident}\\b`)
+    return stack.some((el) => vif.test(el.attrs))
+  }
+
+  it('does not interpolate an empty string into a live region', () => {
+    // A failed PhotosHub log fetch used `logError ? '' : '—'` inside aria-live,
+    // so the region announced nothing while the error sat in a silent sibling.
+    // The `: ''` tail (Ollama chat-body) is the same hole: thinking-only and
+    // error replies interpolated nothing while the text lived next door.
+    const EMPTY = /\?\s*['"]{2}\s*:|:\s*['"]{2}|\|\|\s*['"]{2}|\?\?\s*['"]{2}/
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const body of liveRegionBodies(template)) {
+        for (const interp of body.matchAll(/\{\{([\s\S]*?)\}\}/g)) {
+          if (EMPTY.test(interp[1])) {
+            offenders.push(`${name}: live region can render empty — ${interp[0].trim().slice(0, 60)}`)
+          }
+        }
+      }
+    }
+    expect(offenders, 'an error that lands in a live region must have text').toEqual([])
+  })
+
+  it('does not interpolate an idle empty ref into an always-on live region', () => {
+    // v-if="msg" on the live node (or on a parent / inner child) keeps '' out
+    // of the accessibility tree. An always-mounted region that renders
+    // {{ toast }} — toast starts as ref('') and is cleared back to '' — tells
+    // the screen reader a blank update when the timer fires.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const emptyRefs = new Set(
+        [...src.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*ref\(\s*['"]{2}\s*\)/g)]
+          .map((m) => m[1]),
+      )
+      if (!emptyRefs.size) continue
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const region of liveRegions(template)) {
+        for (const interp of region.body.matchAll(/\{\{\s*([A-Za-z_$][\w$]*)\s*\}\}/g)) {
+          const ident = interp[1]
+          if (!emptyRefs.has(ident)) continue
+          // v-if on the live node only keeps '' out when it actually names
+          // this ref. `v-if="tab==='logs'"` still interpolates idle {{ msg }}.
+          const gatedHere = new RegExp(`\\bv-(?:if|else-if)="[^"]*\\b${ident}\\b`).test(region.raw)
+          if (gatedHere) continue
+          const beforeInterp = region.body.slice(0, interp.index)
+          if (new RegExp(`\\bv-(?:if|else-if)="[^"]*\\b${ident}\\b`).test(beforeInterp)) continue
+          if (ancestorGatesIdent(template, region.index, ident)) continue
+          offenders.push(`${name}: always-on live region interpolates empty ${ident}`)
+        }
+      }
+    }
+    expect(
+      offenders,
+      'idle live regions must v-if the text, not interpolate ref(\'\')',
+    ).toEqual([])
+  })
+
+  it('keeps persistent alert wrappers compact so :empty applies', () => {
+    // Login takes idle alert wrappers out of flow with `:empty`. A newline
+    // between the wrapper and its v-if child is a text node, so :empty never
+    // matches and the form spends a gap on an invisible box.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/<([a-z][\w-]*)\b([^>]*role="alert"[^>]*)>([\s\S]*?)<\/\1>/gi)) {
+        const [, , attrs, body] = m
+        if (!/aria-live/.test(attrs)) continue
+        if (!/v-if=/.test(body)) continue
+        if (/^\s/.test(body) || /\s$/.test(body)) {
+          offenders.push(`${name}: whitespace inside persistent error live region`)
+        }
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('does not keep a token-error live region on the returning-user form', () => {
+    const login = readFileSync(resolve(SRC, 'views/Login.vue'), 'utf8')
+    const template = login.slice(0, login.search(/<script\b/) >>> 0)
+    expect(template).not.toMatch(/class="token-error-live"/)
+    expect(template).toMatch(/v-if="setupMode && tokenNeeded && tokenError"/)
+  })
+
+  it('does not keep leftover always-on live regions on idle Compose job logs', () => {
+    const compose = readFileSync(resolve(SRC, 'views/Compose.vue'), 'utf8')
+    expect(compose).toMatch(/v-if="jobLog"[\s\S]{0,80}aria-live="polite"/)
+    expect(compose).not.toMatch(/<pre class="log"[^>]*aria-live="polite">\{\{ jobLog \}\}/)
+  })
+
+  it('does not keep leftover always-on live regions on idle PhotosHub logs', () => {
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/v-if="lastAction\.stdout \|\| lastAction\.stderr"[\s\S]{0,80}aria-live="polite"/)
+    expect(photoshub).toMatch(/v-if="\(logData\?\.lines \|\| \[\]\)\.length"[\s\S]{0,80}aria-live="polite"/)
+    expect(photoshub).not.toMatch(/aria-live="polite">\{\{ lastAction\.stdout \|\| lastAction\.stderr \|\| '—' \}\}/)
+    expect(photoshub).not.toMatch(/\|\| '—' \}\}<\/pre>/)
+  })
+
+  it('does not keep the Ollama chat log live while it is empty', () => {
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/:aria-live="chatMessages\.length \? 'polite' : undefined"/)
+    expect(ollama).not.toMatch(/class="chat-log" aria-live="polite"/)
+  })
+
+  it('does not keep the assistant log live while it is empty', () => {
+    const assist = readFileSync(resolve(SRC, 'components/AssistantDrawer.vue'), 'utf8')
+    expect(assist).toMatch(/:aria-live="turns\.length \? 'polite' : undefined"/)
+    expect(assist).not.toMatch(/class="assist-log" aria-live="polite"/)
+  })
+})
+
+describe('leftover Infinity interpolations', () => {
+  // Logs fmtSize and VncConsole session limits already reject Infinity. The
+  // quieter leftover pages still interpolated the raw leftover number: Audit
+  // returned the unparsed `ts` when Date failed, Bookmarks printed `b.ms`,
+  // and Logs forwarded `meta.lines` into the i18n string.
+
+  it('Audit timestamps do not fall back to the raw leftover value', () => {
+    const audit = readFileSync(resolve(SRC, 'views/Audit.vue'), 'utf8')
+    expect(audit).toMatch(/function fmt\(ts\)[\s\S]*Number\.isNaN\(d\.getTime\(\)\) \? ''/)
+    expect(audit).not.toMatch(/Number\.isNaN\(d\.getTime\(\)\) \? ts/)
+    expect(audit).toMatch(/Number\.isFinite\(retained\)/)
+  })
+
+  it('Bookmarks latency rejects non-finite leftovers', () => {
+    const bookmarks = readFileSync(resolve(SRC, 'views/Bookmarks.vue'), 'utf8')
+    expect(bookmarks).not.toMatch(/\{\{\s*b\.ms\s*\}\}/)
+    expect(bookmarks).toMatch(/function finiteMs\([\s\S]*Number\.isFinite/)
+  })
+
+  it('Logs sizes and line counts reject non-finite leftovers', () => {
+    const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+    expect(logs).toMatch(/function fmtSize\([\s\S]*Number\.isFinite/)
+    expect(logs).toMatch(/function fmtCount\([\s\S]*Number\.isFinite/)
+    expect(logs).toMatch(/t\('logs\.lines_n',\s*\{\s*n:\s*fmtCount\(/)
+    expect(logs).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(logs).toMatch(/finiteText\(s\.name\)/)
+  })
+
+  it('Files and Ollama size formatters reject leftover Infinity', () => {
+    const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(files).toMatch(/function fmtSize\([\s\S]*Number\.isFinite/)
+    expect(ollama).toMatch(/function fmtSize\([\s\S]*Number\.isFinite/)
+    expect(ollama).toMatch(/function finiteN\([\s\S]*Number\.isFinite/)
+    expect(ollama).toMatch(/finiteN\(testResult\.duration_s\)/)
+    expect(ollama).toMatch(/finiteN\(testResult\.tokens_per_s\)/)
+  })
+
+  it('VncConsole session limits go through finiteSecs', () => {
+    const vnc = readFileSync(resolve(SRC, 'components/VncConsole.vue'), 'utf8')
+    expect(vnc).toMatch(/function finiteSecs\([\s\S]*Number\.isFinite/)
+    expect(vnc).toMatch(/expires:\s*finiteSecs\(sessionInfo\.expires_in\)/)
+    expect(vnc).toMatch(/max:\s*finiteSecs\(sessionInfo\.max_session_seconds\)/)
+    expect(vnc).toMatch(/finiteText\(vm\.name\)/)
+    expect(vnc).not.toMatch(/vm\.console\?\.protocol \|\| 'VNC'/)
+    expect(vnc).toMatch(/finiteText\(vm\.console\?\.protocol/)
+    expect(vnc).not.toMatch(/\{\{\s*errorMessage\s*\}\}/)
+    expect(vnc).toMatch(/finiteText\(errorMessage\)/)
+    expect(vnc).not.toMatch(/event\.detail\?\.reason \|\| t\('vms\.console_connection_failed'\)/)
+    expect(vnc).toMatch(/finiteText\(event\.detail\?\.reason, ''\) \|\| t\('vms\.console_connection_failed'\)/)
+    expect(vnc).not.toMatch(/\{\{\s*statusLabel\s*\}\}/)
+    expect(vnc).toMatch(/finiteText\(statusLabel\)/)
+    expect(vnc).toMatch(/finiteText\(status\.value, 'failed'\)/)
+  })
+
+  it('Dashboard load/bps/bookmark latency reject leftover Infinity', () => {
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/function fmtN\([\s\S]*Number\.isFinite/)
+    expect(dashboard).toMatch(/function formatBps\([\s\S]*Number\.isFinite/)
+    expect(dashboard).not.toMatch(/b\.ms != null \? b\.ms \+ ' ms'/)
+    expect(dashboard).toMatch(/function bmLabel\([\s\S]*Number\.isFinite\(ms\)/)
+  })
+
+  it('LineChart drops leftover Infinity samples instead of labelling them', () => {
+    const chart = readFileSync(resolve(SRC, 'components/LineChart.vue'), 'utf8')
+    expect(chart).toMatch(/typeof v === 'number' && Number\.isFinite\(v\) \? v : null/)
+    expect(chart).toMatch(/function formatLegend\([\s\S]*Number\.isFinite/)
+    expect(chart).toMatch(/function formatTick\([\s\S]*Number\.isFinite/)
+    expect(chart).not.toMatch(/\{\{\s*g\.label\s*\}\}/)
+    expect(chart).toMatch(/finiteText\(g\.label\)/)
+    expect(chart).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(chart).toMatch(/finiteText\(s\.name\)/)
+    expect(chart).not.toMatch(/\{\{\s*refLabel\s*\}\}/)
+    expect(chart).toMatch(/finiteText\(refLabel\)/)
+    expect(chart).not.toMatch(/\{\{\s*unitHint\s*\}\}/)
+    expect(chart).toMatch(/finiteText\(unitHint\)/)
+  })
+
+  it('size/age formatters used in templates Number.isFinite leftover values', () => {
+    // toFixed(Infinity) and Math.round(Infinity / n) stringify as the word
+    // "Infinity". Any helper the template interpolates that does that math
+    // has to reject non-finite leftovers the way Logs fmtSize does.
+    function braceBody(src, openIdx) {
+      let depth = 0
+      for (let i = openIdx; i < src.length; i++) {
+        if (src[i] === '{') depth++
+        else if (src[i] === '}') {
+          depth--
+          if (depth === 0) return src.slice(openIdx + 1, i)
+        }
+      }
+      return ''
+    }
+
+    const STRINGIFIES = /\.toFixed\s*\(|Math\.(?:round|floor)\s*\([^)]*\//
+    const BYTES = /\/\s*2\s*\*\*\s*30|\/\s*1024|\/\s*1e[369]/
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      const script = src.slice(src.search(/<script\b/) >>> 0)
+      const decls = [
+        ...script.matchAll(/function\s+(\w+)\s*\([^)]*\)\s*\{/g),
+        ...script.matchAll(/(?:const|let)\s+(\w+)\s*=\s*computed\s*\(\s*(?:\(\)\s*=>\s*)?\{/g),
+      ]
+      for (const m of decls) {
+        const fn = m[1]
+        if (!new RegExp(`\\b${fn}\\b`).test(template)) continue
+        const openIdx = m.index + m[0].length - 1
+        const body = braceBody(script, openIdx)
+        if (!STRINGIFIES.test(body) && !BYTES.test(body)) continue
+        if (!/Number\.isFinite/.test(body)) {
+          offenders.push(`${name}: ${fn} interpolates numbers without Number.isFinite`)
+        }
+      }
+    }
+    expect(
+      offenders,
+      'template formatters must clamp leftover Infinity/NaN',
+    ).toEqual([])
+  })
+
+  it('does not concatenate leftover size_gb/load1 without a finite check', () => {
+    const app = readFileSync(resolve(SRC, 'App.vue'), 'utf8')
+    const array = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(app).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(app).toMatch(/function fmtLoad\([\s\S]*finiteN/)
+    expect(array).toMatch(/function sizeGb\([\s\S]*Number\.isFinite/)
+    expect(tools).toMatch(/function sizeGb\([\s\S]*Number\.isFinite/)
+    expect(settings).toMatch(/function sizeGb\([\s\S]*Number\.isFinite/)
+    expect(backups).toMatch(/function sizeMb\([\s\S]*Number\.isFinite/)
+    expect(dash).toMatch(/const cpuUsed = computed\(\(\) => \{[\s\S]*Number\.isFinite/)
+    expect(dash).toMatch(/const memUsedPct = computed\(\(\) => \{[\s\S]*Number\.isFinite/)
+  })
+
+  it('Network leftover ports/pids/mtu go through finiteN', () => {
+    const network = readFileSync(resolve(SRC, 'views/Network.vue'), 'utf8')
+    expect(network).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(network).not.toMatch(/\{\{\s*p\.port\s*\}\}/)
+    expect(network).not.toMatch(/\{\{\s*p\.pid\s*\}\}/)
+    expect(network).not.toMatch(/\{\{\s*i\.mtu \|\| '—'\s*\}\}/)
+    expect(network).toMatch(/finiteN\(p\.port\)/)
+    expect(network).toMatch(/finiteN\(p\.pid\)/)
+    expect(network).toMatch(/finiteN\(i\.mtu\)/)
+    expect(network).not.toMatch(/\$\{p\.host_port\}:\$\{p\.container_port\}/)
+    expect(network).toMatch(/finiteN\(p\.host_port\)/)
+    expect(network).toMatch(/finiteN\(p\.container_port\)/)
+    expect(network).toMatch(/finiteText\(data\.network_failover\.state\.last_check_at/)
+    expect(network).not.toMatch(/at: data\.network_failover\.state\.last_check_at/)
+    expect(network).toMatch(/finiteText\(data\.network_failover\.state\.last_action/)
+    expect(network).not.toMatch(/data\.default_route\.gateway \|\| '—'/)
+    expect(network).toMatch(/finiteText\(data\.default_route\.gateway/)
+    expect(network).not.toMatch(/data\.default_route\?\.interface \|\| '—'/)
+    expect(network).toMatch(/finiteText\(data\.default_route\?\.interface/)
+    expect(network).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(network).toMatch(/finiteText\(s\.name\)/)
+    expect(network).not.toMatch(/s\.ip \|\| '—'/)
+    expect(network).toMatch(/finiteText\(s\.ip\)/)
+    expect(network).not.toMatch(/n\.gateway \|\| '—'/)
+    expect(network).toMatch(/finiteText\(n\.gateway\)/)
+    expect(network).not.toMatch(/\{\{\s*a\.ip\s*\}\}/)
+    expect(network).toMatch(/finiteText\(a\.ip\)/)
+    expect(network).not.toMatch(/data\?\.services_error \|\| t\('network\.no_services'\)/)
+    expect(network).toMatch(/finiteText\(data\?\.services_error, ''\) \|\| t\('network\.no_services'\)/)
+    expect(network).not.toMatch(/finiteText\(\(i\.ipv6 \|\| \[\]\)\.slice\(0,2\)\.join\(', '\)\)/)
+    expect(network).toMatch(/\(i\.ipv6 \|\| \[\]\)\.slice\(0,2\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(network).not.toMatch(/finiteText\(\(s\.dns\|\|\[\]\)\.join\(', '\)\)/)
+    expect(network).toMatch(/\(s\.dns\|\|\[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(network).not.toMatch(/\{\{\s*msg\s*\}\}/)
+    expect(network).toMatch(/finiteText\(msg\)/)
+    expect(network).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(network).not.toMatch(/\{\{\s*p\.process\s*\}\}/)
+    expect(network).toMatch(/finiteText\(p\.process\)/)
+    expect(network).not.toMatch(/\{\{\s*p\.user\s*\}\}/)
+    expect(network).toMatch(/finiteText\(p\.user\)/)
+    expect(network).not.toMatch(/\{\{\s*p\.address\s*\}\}/)
+    expect(network).toMatch(/finiteText\(p\.address\)/)
+    expect(network).not.toMatch(/\{\{\s*r\.flags\s*\}\}/)
+    expect(network).toMatch(/finiteText\(r\.flags\)/)
+    expect(network).not.toMatch(/\{\{\s*n\.driver\s*\}\}/)
+    expect(network).toMatch(/finiteText\(n\.driver\)/)
+    expect(network).not.toMatch(/\{\{\s*portEdit\s*\}\}/)
+    expect(network).toMatch(/finiteText\(portEdit\)/)
+    expect(network).not.toMatch(/\{\{\s*lookupResult\.host\s*\}\}/)
+    expect(network).toMatch(/finiteText\(lookupResult\.host\)/)
+    expect(network).not.toMatch(/\{\{\s*lookupResult\.message\s*\}\}/)
+    expect(network).toMatch(/finiteText\(lookupResult\.message\)/)
+    expect(network).not.toMatch(/\{\{\s*data\.wstunnel\.client_command\s*\}\}/)
+    expect(network).toMatch(/finiteText\(data\.wstunnel\.client_command\)/)
+    expect(network).not.toMatch(/msg\.value = j\.message \|\| ''/)
+    expect(network).toMatch(/msg\.value = finiteText\(j\.message, ''\)/)
+  })
+
+  it('Containers leftover engine figures go through finiteN', () => {
+    const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+    expect(containers).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(containers).toMatch(/finiteN\(engineInfo\.info\?\.Containers/)
+    expect(containers).toMatch(/finiteN\(engineInfo\.info\?\.NCPU/)
+    expect(containers).not.toMatch(/engineInfo\.info\?\.Containers \?\? '—'/)
+    expect(containers).not.toMatch(/stats\[c\.id\]\?\.mem_pct \|\| stats\[c\.id\]\?\.mem \|\| ''/)
+    expect(containers).toMatch(/finiteN\(j\.done, 0\)/)
+    expect(containers).toMatch(/finiteN\(j\.total, 0\)/)
+    expect(containers).not.toMatch(/j\.done \|\| 0/)
+    expect(containers).toMatch(/finiteText\(data\.update_checked_at/)
+    expect(containers).not.toMatch(/\{\{\s*data\.update_checked_at\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(c\.ports\)/)
+    expect(containers).not.toMatch(/\{\{\s*c\.ports \|\| '—'\s*\}\}/)
+    expect(containers).not.toMatch(/engineInfo\.orb_version \|\| '—'/)
+    expect(containers).toMatch(/finiteText\(engineInfo\.orb_version/)
+    expect(containers).toMatch(/finiteText\(engineInfo\.info\?\.ServerVersion/)
+    expect(containers).not.toMatch(/\{\{\s*c\.name\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(c\.name\)/)
+    expect(containers).not.toMatch(/im\.Repository \|\| '—'/)
+    expect(containers).toMatch(/finiteText\(im\.Repository/)
+    expect(containers).not.toMatch(/inspectData\.State\?\.Health \|\| '—'/)
+    expect(containers).toMatch(/finiteText\(inspectData\.State\?\.Health/)
+    expect(containers).not.toMatch(/finiteText\(stats\[c\.id\]\?\.mem_pct \|\| stats\[c\.id\]\?\.mem\)/)
+    expect(containers).toMatch(/finiteText\(stats\[c\.id\]\?\.mem_pct, ''\) \|\| finiteText\(stats\[c\.id\]\?\.mem\)/)
+    expect(containers).not.toMatch(/\{\{\s*execOut \|\| t\('docker\.exec_output_ph'\)\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(execOut, ''\) \|\| t\('docker\.exec_output_ph'\)/)
+    expect(containers).not.toMatch(/\(inspectData\.Env\|\|\[\]\)\.join\('\\n'\)/)
+    expect(containers).toMatch(/finiteText\(e, ''\)/)
+    expect(containers).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(containers).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(containers).not.toMatch(/`❌ \$\{j\.message\}`/)
+    expect(containers).toMatch(/`❌ \$\{finiteText\(j\.message\)\}`/)
+    expect(containers).not.toMatch(/action: labels\[action\] \|\| action/)
+    expect(containers).toMatch(/action: finiteText\(labels\[action\], ''\) \|\| finiteText\(action\)/)
+    expect(containers).not.toMatch(/\{ action, n: selected\.value\.length \}/)
+    expect(containers).toMatch(/action: finiteText\(action\), n: finiteN\(selected\.value\.length, 0\)/)
+    expect(containers).not.toMatch(/image: ref \}\)/)
+    expect(containers).toMatch(/image: finiteText\(ref\)/)
+    expect(containers).not.toMatch(/\{\{\s*c\.project\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(c\.project\)/)
+    expect(containers).not.toMatch(/\{\{\s*v\.Driver\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(v\.Driver\)/)
+    expect(containers).not.toMatch(/\{\{\s*v\.Mountpoint\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(v\.Mountpoint\)/)
+    expect(containers).not.toMatch(/\{\{\s*n\.Scope\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(n\.Scope\)/)
+    expect(containers).not.toMatch(/\{\{\s*n\.Driver\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(n\.Driver\)/)
+    expect(containers).not.toMatch(/\{\{\s*engineInfo\.info\?\.OperatingSystem\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(engineInfo\.info\?\.OperatingSystem\)/)
+    expect(containers).not.toMatch(/\{\{\s*engineInfo\.docker_cli\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(engineInfo\.docker_cli\)/)
+    expect(containers).not.toMatch(/\{\{\s*logName\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(logName\)/)
+    expect(containers).not.toMatch(/\{\{\s*logText\s*\}\}/)
+    expect(containers).toMatch(/finiteText\(logText\)/)
+    expect(containers).not.toMatch(/logName\.value = c\.name/)
+    expect(containers).toMatch(/logName\.value = finiteText\(c\.name/)
+    expect(containers).toMatch(/logText\.value \+ finiteText\(chunk, ''\)/)
+  })
+
+  it('Apps leftover catalog counts go through finiteN', () => {
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(apps).toMatch(/finiteN\(managed\.counts\.total\)/)
+    expect(apps).toMatch(/finiteN\(autostart\.counts\.autostart_on\)/)
+    expect(apps).not.toMatch(/\{\{\s*managed\.counts\.total\s*\}\}/)
+    expect(apps).toMatch(/finiteN\(overview\.value\.total, null\)/)
+    expect(apps).not.toMatch(/r\.unchanged \?\? 0/)
+    expect(apps).toMatch(/finiteText\(remoteInfo\.last_check/)
+    expect(apps).not.toMatch(/\{\{\s*remoteInfo\.last_check\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(c\.ports\)/)
+    expect(apps).not.toMatch(/\{\{\s*c\.ports\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(it\.ports_summary/)
+    expect(apps).not.toMatch(/\{\{\s*it\.detail \|\| it\.plist \|\| '—'\s*\}\}/)
+    expect(apps).not.toMatch(/finiteText\(it\.detail \|\| it\.plist\)/)
+    expect(apps).toMatch(/finiteText\(it\.detail, ''\) \|\| finiteText\(it\.plist/)
+    expect(apps).not.toMatch(/o\.version \|\| '—'/)
+    expect(apps).toMatch(/finiteText\(o\.version/)
+    expect(apps).toMatch(/finiteText\(detail\.uuid/)
+    expect(apps).not.toMatch(/\{\{\s*tpl\.name\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(tpl\.name\)/)
+    expect(apps).not.toMatch(/\{\{\s*it\.name\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(it\.name\)/)
+    expect(apps).not.toMatch(/\{\{\s*detail\.name\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(detail\.name\)/)
+    expect(apps).not.toMatch(/n\.ip \|\| '—'/)
+    expect(apps).toMatch(/finiteText\(n\.ip\)/)
+    expect(apps).not.toMatch(/tpl\.desc \|\| '—'/)
+    expect(apps).toMatch(/finiteText\(tpl\.desc\)/)
+    expect(apps).not.toMatch(/it\.path \|\| it\.package \|\| it\.backend \|\| '—'/)
+    expect(apps).toMatch(/finiteText\(it\.path, ''\) \|\| finiteText\(it\.package, ''\) \|\| finiteText\(it\.backend\)/)
+    expect(apps).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(apps).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(apps).not.toMatch(/finiteText\(\(it\.ips \|\| \[\]\)\.join\(', '\)\)/)
+    expect(apps).toMatch(/\(it\.ips \|\| \[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(apps).not.toMatch(/\{\{\s*cfMsg\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(cfMsg\)/)
+    expect(apps).not.toMatch(/\(detail\.env_sample \|\| \[\]\)\.join\('\\n'\)/)
+    expect(apps).toMatch(/\(detail\.env_sample \|\| \[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(apps).not.toMatch(/managed\.value && managed\.value\.host_ip\) \|\| window\.location\.hostname/)
+    expect(apps).toMatch(/function browseHost\(\)[\s\S]*finiteText\(window\.location\.hostname, ''\)/)
+    expect(apps).toMatch(/finiteText\(managed\.value\?\.host_ip, ''\)/)
+    expect(apps).not.toMatch(/compose_warnings \|\| \[\]\)\.map\(\(w\) => t\(`catalog_remote\.warn_\$\{w\}`\)\)\.join/)
+    expect(apps).toMatch(/compose_warnings \|\| \[\]\)\.map\(\(w\) => finiteText\(w, ''\)\)/)
+    expect(apps).not.toMatch(/:href="cfStatus\.login_url"/)
+    expect(apps).toMatch(/:href="finiteText\(cfStatus\.login_url, ''\)"/)
+    expect(apps).not.toMatch(/\{\{\s*cfStatus\.login_url\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(cfStatus\.login_url\)/)
+    expect(apps).not.toMatch(/:href="installUrl"/)
+    expect(apps).toMatch(/:href="finiteText\(installUrl, ''\)"/)
+    const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
+    expect(tools).not.toMatch(/:href="updates\.github\?\.html_url"/)
+    expect(tools).toMatch(/:href="finiteText\(updates\.github\.html_url, ''\)"/)
+    expect(apps).not.toMatch(/installTpl\.method \|\| 'system'/)
+    expect(apps).toMatch(/finiteText\(installTpl\.method, ''\) \|\| 'system'/)
+    expect(apps).not.toMatch(/installTpl\.package \? ` · \$\{installTpl\.package\}`/)
+    expect(apps).toMatch(/finiteText\(installTpl\.package, ''\) \? ` · \$\{finiteText\(installTpl\.package\)\}`/)
+    expect(apps).not.toMatch(/it\.policy \? ' · ' \+ it\.policy/)
+    expect(apps).toMatch(/finiteText\(it\.policy, ''\) \? ' · ' \+ finiteText\(it\.policy\)/)
+    expect(apps).not.toMatch(/\{\{\s*it\.kind\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(it\.kind\)/)
+    expect(apps).not.toMatch(/\{\{\s*installTpl\.notes\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(installTpl\.notes\)/)
+    expect(apps).not.toMatch(/\{\{\s*v\.help\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(v\.help\)/)
+    expect(apps).not.toMatch(/tpl\.remote_version \? ` \$\{tpl\.remote_version\}`/)
+    expect(apps).toMatch(/finiteText\(tpl\.remote_version, ''\) \? ` \$\{finiteText\(tpl\.remote_version\)\}`/)
+    expect(apps).not.toMatch(/class="tag">\{\{ tg \}\}<\/span>/)
+    expect(apps).toMatch(/finiteText\(tg\)/)
+    expect(apps).not.toMatch(/class="section-title">\{\{ grp \}\}<\/h2>/)
+    expect(apps).toMatch(/finiteText\(grp\)/)
+    expect(apps).not.toMatch(/\{\{\s*logTitle\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(logTitle\)/)
+    expect(apps).not.toMatch(/\{\{\s*installCreds\s*\}\}/)
+    expect(apps).toMatch(/finiteText\(installCreds\)/)
+    expect(apps).toMatch(/function kindLabel\([\s\S]*finiteText\(k\)/)
+    expect(apps).not.toMatch(/c\?\.label \|\| id \|\| 'other'/)
+    expect(apps).toMatch(/finiteText\(c\?\.label, ''\) \|\| finiteText\(id/)
+    expect(apps).not.toMatch(/`✅ \$\{action\}`/)
+    expect(apps).toMatch(/`✅ \$\{finiteText\(action\)\}`/)
+    expect(apps).not.toMatch(/`✅ restart=\$\{policy\}`/)
+    expect(apps).toMatch(/`✅ restart=\$\{finiteText\(policy\)\}`/)
+    expect(apps).not.toMatch(/r\.first_run_credentials \|\| installTpl\.value\.first_run_credentials/)
+    expect(apps).toMatch(/finiteText\(r\.first_run_credentials, ''\) \|\| finiteText\(installTpl\.value\.first_run_credentials/)
+    expect(apps).not.toMatch(/logTitle\.value = title \|\| jobId/)
+    expect(apps).toMatch(/logTitle\.value = finiteText\(title, ''\) \|\| finiteText\(jobId\)/)
+    expect(apps).not.toMatch(/logText\.value = j\.log \+/)
+    expect(apps).toMatch(/logText\.value = finiteText\(j\.log, ''\)/)
+    expect(apps).not.toMatch(/if \(tpl\.url_hint\) return tpl\.url_hint/)
+    expect(apps).toMatch(/finiteText\(tpl\.url_hint, ''\) \|\| finiteText\(tpl\.url, ''\)/)
+  })
+
+  it('Dashboard leftover volumes/ports/rss go through finite helpers', () => {
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dash).toMatch(/function fmt\(ts\)[\s\S]*fmtTs/)
+    expect(dash).not.toMatch(/\{\{\s*v\.used_gb\s*\}\}/)
+    expect(dash).not.toMatch(/\{\{\s*v\.pct\s*\}\}%/)
+    expect(dash).not.toMatch(/\{\{\s*p\.port\s*\}\}/)
+    expect(dash).not.toMatch(/\{\{\s*p\.rss_mb\s*\}M/)
+    expect(dash).not.toMatch(/'pid '\s*\+\s*p\.pid/)
+    expect(dash).toMatch(/fmtGb\(v\.used_gb\)/)
+    expect(dash).toMatch(/finiteN\(p\.port\)/)
+    expect(dash).toMatch(/finiteN\(p\.pid\)/)
+    expect(dash).toMatch(/withUnit\(p\.rss_mb, 'M'\)/)
+    expect(dash).not.toMatch(/\{\{\s*ups\.battery_percent\s*\}\}%/)
+    expect(dash).toMatch(/withUnit\(ups\.battery_percent, '%'\)/)
+    expect(dash).not.toMatch(/cstats\[c\.id\]\?\.mem_pct \|\| cstats\[c\.id\]\?\.mem \|\| '—'/)
+    expect(dash).not.toMatch(/finiteText\(cstats\[c\.id\]\?\.mem_pct \|\| cstats\[c\.id\]\?\.mem\)/)
+    expect(dash).toMatch(/finiteText\(cstats\[c\.id\]\?\.mem_pct, ''\) \|\| finiteText\(cstats\[c\.id\]\?\.mem\)/)
+    expect(dash).toMatch(/finiteText\(cstats\[c\.id\]\?\.cpu\)/)
+    expect(dash).toMatch(/finiteText\(d\.smart\.temp\)/)
+    expect(dash).toMatch(/finiteN\(status\.adaptive\.auto_labeled, 0\)/)
+    expect(dash).toMatch(/finiteN\(status\.adaptive\.orphan_count, 0\)/)
+    expect(dash).not.toMatch(/status\.adaptive\.auto_labeled \|\| 0/)
+    expect(dash).toMatch(/finiteN\(cpu\.value\.user, 0\)/)
+    expect(dash).toMatch(/finiteText\(errText\(c\.detail\)\)/)
+    expect(dash).not.toMatch(/class="detail"[^>]*>\{\{ errText\(c\.detail\) \}\}/)
+    expect(dash).not.toMatch(/if \(d\?\.size\) return d\.size/)
+    expect(dash).toMatch(/function formatDiskSize\([\s\S]*finiteText\(d\?\.size/)
+    expect(dash).not.toMatch(/sensors\.value\?\.uptime\?\.uptime_text \|\| sys\.value\.uptime \|\| '—'/)
+    expect(dash).toMatch(/finiteText\(sensors\.value\?\.uptime\?\.uptime_text/)
+    expect(dash).not.toMatch(/\{\{\s*host\?\.cpu \|\| 'CPU'\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(host\?\.cpu, 'CPU'\)/)
+    expect(dash).not.toMatch(/finiteText\(s\.detail \|\| s\.state\)/)
+    expect(dash).toMatch(/finiteText\(s\.detail, ''\) \|\| finiteText\(s\.state\)/)
+    expect(dash).toMatch(/finiteText\(s\.detail\)/)
+    expect(dash).not.toMatch(/host\?\.hostname \|\| '—'/)
+    expect(dash).toMatch(/finiteText\(host\?\.hostname/)
+    expect(dash).not.toMatch(/host\?\.lan_ip \|\| host\?\.host_ip \|\| '—'/)
+    expect(dash).toMatch(/finiteText\(host\?\.lan_ip/)
+    expect(dash).not.toMatch(/if \(o\.version\) lines\.push\(`v\$\{o\.version\}`\)/)
+    expect(dash).toMatch(/finiteText\(o\.version/)
+    expect(dash).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(s\.name\)/)
+    expect(dash).not.toMatch(/\{\{\s*p\.name\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(p\.name\)/)
+    expect(dash).not.toMatch(/\{\{\s*c\.name\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(c\.name\)/)
+    expect(dash).not.toMatch(/u\.name \|\| '—'/)
+    expect(dash).toMatch(/finiteText\(u\.name\)/)
+    expect(dash).not.toMatch(/diskArray\.value\.used_gb \?\? sensors/)
+    expect(dash).toMatch(/finiteN\(diskArray\.value\.used_gb, null\) \?\? finiteN\(sensors\.value\?\.disk\?\.root_used_gb, null\) \?\? finiteN\(sys\.value\.disk_used_gb\)/)
+    expect(dash).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(dash).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(dash).not.toMatch(/\{\{\s*loadError\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(loadError\)/)
+    expect(dash).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(dash).not.toMatch(/:href="s\.url"/)
+    expect(dash).toMatch(/:href="finiteText\(s\.url, ''\)"/)
+    expect(dash).not.toMatch(/:href="c\.url"/)
+    expect(dash).toMatch(/:href="finiteText\(c\.url, ''\)"/)
+    expect(dash).not.toMatch(/:href="b\.url"/)
+    expect(dash).toMatch(/:href="finiteText\(b\.url, ''\)"/)
+    expect(dash).not.toMatch(/\{\{\s*labels\[a\] \|\| a\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(labels\[a\], ''\) \|\| finiteText\(a\)/)
+    expect(dash).not.toMatch(/\{\{\s*p\.process\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(p\.process\)/)
+    expect(dash).not.toMatch(/\{\{\s*p\.address\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(p\.address\)/)
+    expect(dash).not.toMatch(/\{\{\s*v\.kind\s*\}\}/)
+    expect(dash).toMatch(/finiteText\(v\.kind\)/)
+    expect(dash).toMatch(/const mount = finiteText\(v\.mount, ''\)/)
+  })
+
+  it('Settings leftover epoch stamps go through fmtTs', () => {
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(settings).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(settings).toMatch(/function fmtEpoch\([\s\S]*fmtTs/)
+    expect(settings).toMatch(/function fmtUpsTs\([\s\S]*fmtTs/)
+    expect(settings).toMatch(/finiteN\(sysBundle\.management\.panel_port\)/)
+    expect(settings).not.toMatch(/\{\{\s*upsInfo\.battery_percent\s*\}\}%/)
+    expect(settings).toMatch(/withUnit\(upsInfo\.battery_percent, '%'\)/)
+    expect(settings).toMatch(/withUnit\(sysBundle\.power\.ups\.battery_percent, '%'\)/)
+    expect(settings).not.toMatch(/\{\{\s*dockerInfo\.info\?\.NCPU\s*\}\}/)
+    expect(settings).toMatch(/finiteN\(dockerInfo\.info\?\.NCPU/)
+    expect(settings).toMatch(/finiteN\(dockerInfo\.info\?\.ContainersRunning/)
+    expect(settings).toMatch(/finiteN\(sysBundle\.datetime\.unix\)/)
+    expect(settings).toMatch(/finiteN\(sysBundle\.disk\.disksleep_minutes\)/)
+    expect(settings).toMatch(/finiteN\(sysBundle\?\.power\?\.assertion_count\)/)
+    expect(settings).toMatch(/withUnit\(upsInfo\.halt_levels\.haltlevel, '%'\)/)
+    expect(settings).not.toMatch(/tm\.interval \|\| tm\.calendar/)
+    expect(settings).toMatch(/withUnit\(tm\.interval, 's'\)/)
+    expect(settings).not.toMatch(/identity\?\.hostname \|\| '—'/)
+    expect(settings).toMatch(/finiteText\(identity\?\.hostname/)
+    expect(settings).not.toMatch(/host\?\.hostname \|\| '—'/)
+    expect(settings).toMatch(/finiteText\(host\?\.hostname/)
+    expect(settings).not.toMatch(/form\?\.version \|\| sysBundle/)
+    expect(settings).toMatch(/finiteText\(form\?\.version/)
+    expect(settings).toMatch(/finiteText\(sysBundle\.management\.version/)
+    expect(settings).not.toMatch(/dockerInfo\.orb_version \|\| '—'/)
+    expect(settings).toMatch(/finiteText\(dockerInfo\.orb_version/)
+    expect(settings).toMatch(/finiteText\(dockerInfo\.info\?\.ServerVersion/)
+    expect(settings).not.toMatch(/identity\?\.model \|\| '—'/)
+    expect(settings).toMatch(/finiteText\(identity\?\.model/)
+    expect(settings).not.toMatch(/host\?\.platform \|\| '—'/)
+    expect(settings).toMatch(/finiteText\(host\?\.platform/)
+    expect(settings).not.toMatch(/upsLast\.reason \|\| '—'/)
+    expect(settings).toMatch(/finiteText\(upsLast\.reason/)
+    expect(settings).not.toMatch(/\{\{\s*v\.name\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(v\.name\)/)
+    expect(settings).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(settings).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(settings).not.toMatch(/upsLast\.failed\.join\(', '\)/)
+    expect(settings).toMatch(/\(upsLast\.failed \|\| \[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(settings).not.toMatch(/\{\{\s*identityError\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(identityError\)/)
+    expect(settings).not.toMatch(/\{\{\s*diagMsg\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(diagMsg\)/)
+    expect(settings).not.toMatch(/\{\{\s*l\.native\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(l\.native\)/)
+    expect(settings).not.toMatch(/n: haltLevel\.value \}\)/)
+    expect(settings).toMatch(/n: finiteN\(haltLevel\.value\)/)
+    expect(settings).not.toMatch(/\{\{\s*twofaEnroll\.manual_entry\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(twofaEnroll\.manual_entry\)/)
+    expect(settings).not.toMatch(/\{\{\s*createdKey\.key\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(createdKey\.key\)/)
+    expect(settings).not.toMatch(/\{\{\s*code\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(code\)/)
+    expect(settings).not.toMatch(/\{\{\s*dockerInfo\.info\?\.OperatingSystem/)
+    expect(settings).toMatch(/finiteText\(dockerInfo\.info\?\.OperatingSystem\)/)
+    expect(settings).not.toMatch(/sysBundle\.datetime\.ntp_server \|\| ''/)
+    expect(settings).toMatch(/finiteText\(sysBundle\.datetime\.ntp_server/)
+    expect(settings).not.toMatch(/\{\{\s*sysBundle\?\.datetime\?\.hint\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(sysBundle\?\.datetime\?\.hint\)/)
+    expect(settings).not.toMatch(/style="margin-bottom:6px">\{\{ a \}\}<\/div>/)
+    expect(settings).toMatch(/finiteText\(a\)/)
+    expect(settings).not.toMatch(/\{\{\s*diagPreview\s*\}\}/)
+    expect(settings).toMatch(/finiteText\(diagPreview\)/)
+    expect(settings).not.toMatch(/`✅ \$\{key\}=\$\{value\}`/)
+    expect(settings).toMatch(/`✅ \$\{finiteText\(key\)\}=\$\{finiteText\(value\)\}`/)
+  })
+
+  it('Ollama leftover context lengths, pids and dates reject Infinity', () => {
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).not.toMatch(/\{\{\s*m\.context_length \|\| '—'\s*\}\}/)
+    expect(ollama).not.toMatch(/\{\{\s*data\.service\.pid\s*\}\}/)
+    expect(ollama).toMatch(/finiteN\(m\.context_length\)/)
+    expect(ollama).toMatch(/finiteN\(data\.service\.pid\)/)
+    expect(ollama).toMatch(/function fmtDate\([\s\S]*Number\.isFinite/)
+    expect(ollama).toMatch(/finiteText\(m\.parameter_size/)
+    expect(ollama).not.toMatch(/m\.parameter_size \? ' ' \+ m\.parameter_size/)
+    expect(ollama).not.toMatch(/data\.version \|\| '—'/)
+    expect(ollama).toMatch(/finiteText\(data\.version/)
+    expect(ollama).not.toMatch(/\{\{\s*m\.name\s*\}\}/)
+    expect(ollama).toMatch(/finiteText\(m\.name\)/)
+    expect(ollama).not.toMatch(/data\.service\?\.label \|\| '—'/)
+    expect(ollama).toMatch(/finiteText\(data\.service\?\.label/)
+    expect(ollama).not.toMatch(/m\.family \|\| '—'/)
+    expect(ollama).toMatch(/finiteText\(m\.family/)
+    expect(ollama).not.toMatch(/toast\('❌ ' \+ \(e\.message \|\| e\)\)/)
+    expect(ollama).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
+    expect(ollama).not.toMatch(/\(m\.capabilities \|\| \[\]\)\.join\(', '\)/)
+    expect(ollama).toMatch(/\(m\.capabilities \|\| \[\]\)\.map\(c => finiteText\(c, ''\)\)/)
+    expect(ollama).not.toMatch(/class="badge cap">\{\{ c \}\}<\/span>/)
+    expect(ollama).toMatch(/finiteText\(c\)/)
+  })
+
+  it('PhotosHub leftover originals/export figures go through finiteN', () => {
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(photoshub).toMatch(/withUnit\(data\.value\?\.originals\?\.local_original_pct, '%'\)/)
+    expect(photoshub).toMatch(/finiteN\(data\.bridge\?\.exported_files\)/)
+    expect(photoshub).not.toMatch(/return p == null \? '—' : `\$\{p\}%`/)
+    expect(photoshub).toMatch(/finiteText\(data\.external_backup\?\.last_success/)
+    expect(photoshub).not.toMatch(/data\.external_backup\?\.last_success \|\| t\('photoshub\.disk_absent'\)/)
+    expect(photoshub).not.toMatch(/cfg\?\.paths\?\.photos_library \|\| '—'/)
+    expect(photoshub).toMatch(/finiteText\(cfg\?\.paths\?\.photos_library\)/)
+    expect(photoshub).not.toMatch(/data\.bridge\?\.mode \|\| '—'/)
+    expect(photoshub).toMatch(/finiteText\(data\.bridge\?\.mode\)/)
+    expect(photoshub).toMatch(/\.map\(n => finiteText\(n, ''\)\)/)
+    expect(photoshub).not.toMatch(/pendingCount \?\? '—'/)
+    expect(photoshub).toMatch(/finiteN\(pendingCount\)/)
+    expect(photoshub).not.toMatch(/aria-live="polite">\{\{ lastAction\.stdout \|\| lastAction\.stderr \}\}/)
+    expect(photoshub).toMatch(/finiteText\(lastAction\.stdout, ''\) \|\| finiteText\(lastAction\.stderr\)/)
+    expect(photoshub).not.toMatch(/\(logData\?\.lines \|\| \[\]\)\.join\('\\n'\)/)
+    expect(photoshub).toMatch(/finiteText\(l, ''\)/)
+    expect(photoshub).toMatch(/finiteText\(logError\)/)
+    expect(photoshub).not.toMatch(/: \(action \|\| ''\)/)
+    expect(photoshub).toMatch(/finiteText\(action, ''\)/)
+    expect(photoshub).not.toMatch(/toast\('❌ ' \+ \(e\?\.message \|\| e\)\)/)
+    expect(photoshub).toMatch(/toast\('❌ ' \+ finiteText\(e\?\.message \|\| e\)\)/)
+  })
+
+  it('Shares leftover Time Machine quotas go through finiteN', () => {
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(shares).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(shares).toMatch(/finiteN\(share\.tm_quota_gb/)
+    expect(shares).not.toMatch(/t\('shares\.tm_quota_badge', \{ gb: share\.tm_quota_gb \}\)/)
+    expect(shares).not.toMatch(/\{\{\s*entry\.index\s*\}\}/)
+    expect(shares).toMatch(/finiteN\(entry\.index\)/)
+    expect(shares).not.toMatch(/data\.host\?\.name \|\| t\('shares\.unknown'\)/)
+    expect(shares).toMatch(/finiteText\(data\.host\?\.name/)
+    expect(shares).not.toMatch(/data\.host\?\.address \|\| '—'/)
+    expect(shares).toMatch(/finiteText\(data\.host\?\.address/)
+    expect(shares).not.toMatch(/\{\{\s*service\.name\s*\}\}/)
+    expect(shares).toMatch(/finiteText\(service\.name\)/)
+    expect(shares).not.toMatch(/\{\{\s*user\.username\s*\}\}/)
+    expect(shares).toMatch(/finiteText\(user\.username\)/)
+    expect(shares).not.toMatch(/\{\{\s*entry\.perms\.join/)
+    expect(shares).toMatch(/entry\.perms \|\| \[\]\)\.map\(p => finiteText\(p/)
+    expect(shares).toMatch(/finiteText\(entry\.kind\)/)
+    expect(shares).toMatch(/finiteText\(entry\.effect\)/)
+    expect(shares).toMatch(/n: finiteN\(acl\.entries\.length\)/)
+    expect(shares).not.toMatch(/:href="data\.host\.smb_url"/)
+    expect(shares).toMatch(/:href="finiteText\(data\.host\.smb_url, ''\)"/)
+    expect(shares).not.toMatch(/:href="share\.url"/)
+    expect(shares).toMatch(/:href="finiteText\(share\.url, ''\)"/)
+    expect(shares).not.toMatch(/class="acl-error">\{\{ aclError \}\}<\/div>/)
+    expect(shares).toMatch(/finiteText\(aclError\)/)
+    expect(shares).not.toMatch(/aclError\.value = error\.message/)
+    expect(shares).toMatch(/aclError\.value = finiteText\(error\.message, ''\)/)
+  })
+
+  it('MainArray leftover capacities go through fmtGb/withUnit', () => {
+    const array = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    expect(array).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(array).not.toMatch(/\{\{\s*d\.used_gb\s*\}\}/)
+    expect(array).not.toMatch(/\{\{\s*d\.pct\s*\}\}%/)
+    expect(array).not.toMatch(/new Date\(h\.ts \* 1000\)\.toLocaleString\(\)/)
+    expect(array).toMatch(/fmtGb\(d\.used_gb\)/)
+    expect(array).toMatch(/withUnit\(d\.pct, '%'\)/)
+    expect(array).toMatch(/fmtTs\(h\.ts\)/)
+    expect(array).not.toMatch(/data\?\.array\?\.system_count \?\? 0/)
+    expect(array).toMatch(/finiteN\(data\?\.array\?\.system_count/)
+    expect(array).toMatch(/finiteN\(data\?\.array\?\.disk_count/)
+    expect(array).toMatch(/finiteText\(d\.smart\?\.temp\)/)
+    expect(array).toMatch(/finiteText\(m\.smart\?\.temp\)/)
+    expect(array).toMatch(/finiteText\(d\.size\)/)
+    expect(array).toMatch(/finiteText\(m\.size\)/)
+    expect(array).not.toMatch(/\{\{\s*d\.size \|\| '—'\s*\}\}/)
+    expect(array).not.toMatch(/\{\{\s*a\.id\s*\}\}/)
+    expect(array).not.toMatch(/\{\{\s*a\.value\s*\}\}/)
+    expect(array).not.toMatch(/\{\{\s*a\.worst\s*\}\}/)
+    expect(array).not.toMatch(/\{\{\s*a\.thresh\s*\}\}/)
+    expect(array).not.toMatch(/a\.raw !== undefined \? a\.raw : a\.value/)
+    expect(array).toMatch(/finiteN\(a\.id\)/)
+    expect(array).toMatch(/finiteText\(a\.value\)/)
+    expect(array).toMatch(/finiteText\(a\.worst\)/)
+    expect(array).toMatch(/finiteText\(a\.thresh\)/)
+    expect(array).toMatch(/finiteText\(a\.raw\)/)
+    expect(array).not.toMatch(/\{\{\s*renameTarget\.id\s*\}\}/)
+    expect(array).toMatch(/finiteText\(renameTarget\.id\)/)
+    expect(array).not.toMatch(/\{\{\s*formatTarget\.id\s*\}\}/)
+    expect(array).toMatch(/finiteText\(formatTarget\.id\)/)
+    expect(array).not.toMatch(/\{\{\s*v\.id\s*\}\}/)
+    expect(array).toMatch(/finiteText\(v\.id\)/)
+    expect(array).not.toMatch(/\{\{\s*m\.id\s*\}\}/)
+    expect(array).toMatch(/finiteText\(m\.id\)/)
+    expect(array).not.toMatch(/v\.disk_id \|\| '—'/)
+    expect(array).not.toMatch(/v\.disk_id \? ' · ' \+ v\.disk_id/)
+    expect(array).toMatch(/finiteText\(v\.disk_id/)
+    expect(array).toMatch(/finiteText\(d\.disk_id/)
+    expect(array).not.toMatch(/d\.protocol \|\| '—'/)
+    expect(array).toMatch(/finiteText\(d\.protocol\)/)
+    expect(array).not.toMatch(/\{\{\s*data\.array\.status\s*\}\}/)
+    expect(array).toMatch(/finiteText\(data\.array\.status\)/)
+    expect(array).not.toMatch(/\{\{\s*d\.label\s*\}\}/)
+    expect(array).toMatch(/finiteText\(d\.label\)/)
+    expect(array).not.toMatch(/m\.smart\?\.model \|\| m\.smart\?\.serial \|\| '—'/)
+    expect(array).toMatch(/finiteText\(m\.smart\?\.model, ''\) \|\| finiteText\(m\.smart\?\.serial\)/)
+    expect(array).not.toMatch(/v\.fs \|\| '—'/)
+    expect(array).toMatch(/finiteText\(v\.fs\)/)
+    expect(array).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(array).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(array).not.toMatch(/\{\{\s*lastMsg\s*\}\}/)
+    expect(array).toMatch(/finiteText\(lastMsg\)/)
+    expect(array).not.toMatch(/m\.caps\.supported\.join\(', '\)/)
+    expect(array).toMatch(/\(m\.caps\.supported \|\| \[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(array).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(array).not.toMatch(/id: d\.id \}\)/)
+    expect(array).toMatch(/id: finiteText\(d\.id\)/)
+    expect(array).not.toMatch(/\$\{t\('main_extra\.mount'\)\} \$\{v\.id\}/)
+    expect(array).toMatch(/\$\{t\('main_extra\.mount'\)\} \$\{finiteText\(v\.id\)\}/)
+    expect(array).not.toMatch(/v\.mount \|\| t\('main_extra\.not_mounted'\)/)
+    expect(array).toMatch(/finiteText\(v\.mount, ''\) \|\| t\('main_extra\.not_mounted'\)/)
+    expect(array).not.toMatch(/data\?\.managed\?\.hint \|\| ''/)
+    expect(array).toMatch(/finiteText\(data\?\.managed\?\.hint, ''\)/)
+    expect(array).not.toMatch(/\{\{\s*m\.caps\.reason\s*\}\}/)
+    expect(array).toMatch(/finiteText\(m\.caps\.reason\)/)
+    expect(array).not.toMatch(/\{\{\s*m\.lastResult\s*\}\}/)
+    expect(array).toMatch(/finiteText\(m\.lastResult\)/)
+    expect(array).not.toMatch(/v: health \}\)/)
+    expect(array).toMatch(/v: finiteText\(health\)/)
+    expect(array).not.toMatch(/:key="f" :value="f">\{\{ f \}\}<\/option>/)
+    expect(array).toMatch(/finiteText\(f\)/)
+    expect(array).not.toMatch(/reasons: d\.error/)
+    expect(array).toMatch(/reasons: finiteText\(d\.error\)/)
+  })
+
+  it('Pool leftover capacities go through fmtGb/withUnit', () => {
+    const pool = readFileSync(resolve(SRC, 'views/Pool.vue'), 'utf8')
+    expect(pool).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(pool).not.toMatch(/\{\{\s*m\.pct\s*\}\}%/)
+    expect(pool).not.toMatch(/\{\{\s*m\.used_gb\s*\}\}/)
+    expect(pool).toMatch(/fmtGb\(m\.used_gb\)/)
+    expect(pool).toMatch(/withUnit\(m\.pct, '%'\)/)
+    expect(pool).not.toMatch(/\{\{\s*r\.at_risk_gb\s*\}\} GB/)
+    expect(pool).toMatch(/fmtGb\(r\.at_risk_gb\)/)
+    expect(pool).toMatch(/fmtGb\(r\.survives_gb\)/)
+    expect(pool).not.toMatch(/m\.disk_id \|\| '—'/)
+    expect(pool).not.toMatch(/c\.disk_id \|\| '—'/)
+    expect(pool).not.toMatch(/r\.disk_id \|\| '—'/)
+    expect(pool).toMatch(/finiteText\(m\.disk_id/)
+    expect(pool).toMatch(/finiteText\(c\.disk_id/)
+    expect(pool).toMatch(/finiteText\(r\.disk_id/)
+    expect(pool).not.toMatch(/m\.filesystem \|\| '—'/)
+    expect(pool).not.toMatch(/c\.filesystem \|\| '—'/)
+    expect(pool).not.toMatch(/shownTarget \|\| '—'/)
+    expect(pool).toMatch(/finiteText\(m\.filesystem\)/)
+    expect(pool).toMatch(/finiteText\(c\.filesystem\)/)
+    expect(pool).toMatch(/finiteText\(shownTarget\)/)
+    expect(pool).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(pool).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(pool).not.toMatch(/\{\{\s*lastMsg\s*\}\}/)
+    expect(pool).toMatch(/finiteText\(lastMsg\)/)
+    expect(pool).toMatch(/lastMsg\.value = finiteText\(e\.message, ''\)/)
+    expect(pool).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(pool).not.toMatch(/:key="m" style="margin-right:10px">\{\{ m \}\}<\/span>/)
+    expect(pool).toMatch(/finiteText\(m\)/)
+  })
+
+  it('WireGuard leftover ports/mtu/latency go through finite helpers', () => {
+    const wg = readFileSync(resolve(SRC, 'views/WireGuard.vue'), 'utf8')
+    expect(wg).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(wg).toMatch(/function relativeAge\([\s\S]*Number\.isFinite/)
+    expect(wg).not.toMatch(/r\.latency_ms != null \? r\.latency_ms \+ ' ms'/)
+    expect(wg).not.toMatch(/MTU \{\{ data\.mtu \}\}/)
+    expect(wg).toMatch(/withUnit\(r\.latency_ms, ' ms'\)/)
+    expect(wg).toMatch(/finiteN\(data\.mtu\)/)
+    expect(wg).toMatch(/finiteN\(data\.listen_port\)/)
+    expect(wg).toMatch(/finiteN\(data\.active_count\)/)
+    expect(wg).toMatch(/finiteN\(data\.peer_count\)/)
+    expect(wg).toMatch(/finiteN\(data\.keepalive_missing\)/)
+    expect(wg).not.toMatch(/\{\{\s*data\.active_count \}\}/)
+    expect(wg).toMatch(/finiteText\(p\.keepalive, 'off'\)/)
+    expect(wg).not.toMatch(/\{\{\s*p\.keepalive \|\| 'off'\s*\}\}/)
+    expect(wg).toMatch(/finiteN\(readiness\.peer_origin\.foreign/)
+    expect(wg).toMatch(/finiteN\(pingResult\.reachable/)
+    expect(wg).toMatch(/finiteN\(result\.created/)
+    expect(wg).toMatch(/finiteText\(p\.tx_human\)/)
+    expect(wg).not.toMatch(/n: readiness\.peer_origin\.foreign/)
+    expect(wg).not.toMatch(/↑\{\{ p\.tx_human \}\}/)
+    expect(wg).not.toMatch(/\{\{\s*c\.detail\s*\}\}/)
+    expect(wg).toMatch(/finiteText\(c\.detail\)/)
+    expect(wg).not.toMatch(/p\.name \|\| t\('wg\.unnamed'\)/)
+    expect(wg).toMatch(/finiteText\(p\.name/)
+    expect(wg).not.toMatch(/data\.public_key \|\| '—'/)
+    expect(wg).toMatch(/finiteText\(data\.public_key/)
+    expect(wg).not.toMatch(/p\.endpoint \|\| '—'/)
+    expect(wg).toMatch(/finiteText\(p\.endpoint/)
+    expect(wg).not.toMatch(/data\.address \|\| data\.subnet/)
+    expect(wg).toMatch(/finiteText\(data\.address, ''\) \|\| finiteText\(data\.subnet\)/)
+    expect(wg).not.toMatch(/data\.wstunnel\.port \|\| data\.wstunnel\.listen/)
+    expect(wg).toMatch(/finiteText\(data\.wstunnel\.port, ''\) \|\| finiteText\(data\.wstunnel\.listen\)/)
+    expect(wg).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(wg).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(wg).not.toMatch(/readiness\?\.wan_interface \|\| 'en0'/)
+    expect(wg).toMatch(/finiteText\(readiness\?\.wan_interface, ''\) \|\| 'en0'/)
+  })
+
+  it('VMs leftover ids go through finiteText', () => {
+    const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+    expect(vms).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(vms).not.toMatch(/\{\{\s*renameTarget\.id\s*\}\}/)
+    expect(vms).toMatch(/finiteText\(renameTarget\.id\)/)
+    expect(vms).not.toMatch(/\{\{\s*v\.name\s*\}\}/)
+    expect(vms).toMatch(/finiteText\(v\.name\)/)
+    expect(vms).not.toMatch(/\{\{\s*cloneTarget\.name\s*\}\}/)
+    expect(vms).toMatch(/finiteText\(cloneTarget\.name\)/)
+    expect(vms).not.toMatch(/v\.ips\.join\(', '\)/)
+    expect(vms).toMatch(/finiteText\(ip, ''\)/)
+    expect(vms).not.toMatch(/\{\{\s*labels\[a\] \|\| a\s*\}\}/)
+    expect(vms).toMatch(/finiteText\(labels\[a\], ''\) \|\| finiteText\(a\)/)
+    expect(vms).not.toMatch(/\{\{\s*d\s*\}\}/)
+    expect(vms).toMatch(/finiteText\(d\)/)
+    expect(vms).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(vms).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(vms).not.toMatch(/window\.location\.hostname \|\| data\.value\?\.host_ip/)
+    expect(vms).toMatch(/finiteText\(window\.location\.hostname, ''\) \|\| finiteText\(data\.value\?\.host_ip, ''\)/)
+  })
+
+  it('Tools leftover disk/pid interpolations go through finite helpers', () => {
+    const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
+    expect(tools).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(tools).not.toMatch(/diag\.root_disk_pct \?\? '—'/)
+    expect(tools).not.toMatch(/\{\{\s*p\.pid\s*\}\}/)
+    expect(tools).toMatch(/withUnit\(diag\.root_disk_pct, '%'\)/)
+    expect(tools).toMatch(/finiteN\(p\.pid\)/)
+    expect(tools).toMatch(/fmtGb\(diag\.root_disk_free_gb\)/)
+    expect(tools).not.toMatch(/row\.interval_sec \? row\.interval_sec \+ 's'/)
+    expect(tools).toMatch(/withUnit\(row\.interval_sec, 's'\)/)
+    expect(tools).toMatch(/\.map\(n => finiteN\(n\)\)\.join\(' \/ '\)/)
+    expect(tools).toMatch(/finiteText\(diag\.ts\)/)
+    expect(tools).toMatch(/finiteText\(l\.reclaimable\)/)
+    expect(tools).not.toMatch(/\{\{\s*diag\.cpu \|\| '—'\s*\}\}/)
+    expect(tools).not.toMatch(/\{\{\s*diag\.uptime_human \|\| '—'\s*\}\}/)
+    expect(tools).toMatch(/finiteText\(diag\.cpu\)/)
+    expect(tools).toMatch(/finiteText\(diag\.uptime_human\)/)
+    expect(tools).not.toMatch(/\{\{\s*diag\.hostname\s*\}\}/)
+    expect(tools).toMatch(/finiteText\(diag\.hostname\)/)
+    expect(tools).not.toMatch(/diag\.version \|\| '—'/)
+    expect(tools).toMatch(/finiteText\(diag\.version/)
+    expect(tools).toMatch(/finiteText\(about\.version/)
+    expect(tools).not.toMatch(/\{\{\s*c\.name\s*\}\}/)
+    expect(tools).toMatch(/finiteText\(c\.name\)/)
+    expect(tools).not.toMatch(/\{\{\s*p\.name\s*\}\}/)
+    expect(tools).toMatch(/finiteText\(p\.name\)/)
+    expect(tools).not.toMatch(/\{\{\s*a\.label\s*\}\}/)
+    expect(tools).toMatch(/finiteText\(a\.label\)/)
+    expect(tools).not.toMatch(/d\.power_state \|\| '—'/)
+    expect(tools).toMatch(/finiteText\(d\.power_state/)
+    expect(tools).not.toMatch(/sec\.text \|\| '—'/)
+    expect(tools).toMatch(/finiteText\(sec\.text\)/)
+    expect(tools).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(tools).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(tools).not.toMatch(/\{\{\s*diagMsg\s*\}\}/)
+    expect(tools).toMatch(/finiteText\(diagMsg\)/)
+    expect(tools).not.toMatch(/finiteText\(\(updates\.macos\?\.lines\|\|\[\]\)\.join\('\\n'\)/)
+    expect(tools).toMatch(/\(updates\.macos\?\.lines\|\|\[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(tools).not.toMatch(/\{\{\s*dnsOut\s*\}\}/)
+    expect(tools).toMatch(/finiteText\(dnsOut\)/)
+    expect(tools).not.toMatch(/what: labels\[what\] \|\| what/)
+    expect(tools).toMatch(/what: finiteText\(labels\[what\], ''\) \|\| finiteText\(what\)/)
+  })
+
+  it('Files leftover listing counts and mtimes reject Infinity', () => {
+    const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+    expect(files).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(files).not.toMatch(/\{\{\s*listing\.count\s*\}\}/)
+    expect(files).toMatch(/finiteN\(listing\.count\)/)
+    expect(files).toMatch(/function fmtTime\([\s\S]*fmtTs/)
+    expect(files).not.toMatch(/listing\.root_id \|\| 'root'/)
+    expect(files).toMatch(/finiteText\(listing\.root_id/)
+    expect(files).not.toMatch(/\{\{\s*it\.name\s*\}\}/)
+    expect(files).toMatch(/finiteText\(it\.name\)/)
+    expect(files).not.toMatch(/class="err-bar">\{\{ error \}\}<\/div>/)
+    expect(files).toMatch(/finiteText\(error\)/)
+    expect(files).not.toMatch(/it\.mode \? ' · ' \+ it\.mode/)
+    expect(files).toMatch(/finiteText\(it\.mode, ''\) \? ' · ' \+ finiteText\(it\.mode\)/)
+  })
+
+  it('Modules leftover names go through finiteText', () => {
+    const modules = readFileSync(resolve(SRC, 'views/Modules.vue'), 'utf8')
+    expect(modules).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(modules).not.toMatch(/\{\{\s*m\.name\s*\}\}/)
+    expect(modules).toMatch(/finiteText\(m\.name\)/)
+    expect(modules).toMatch(/finiteText\(m\.description\)/)
+    expect(modules).not.toMatch(/class="btn tiny">\{\{ r \}\}<\/router-link>/)
+    expect(modules).toMatch(/finiteText\(r\)/)
+    expect(modules).toMatch(/label === key \? finiteText\(cat\)/)
+  })
+
+  it('Health leftover summary counts go through finiteN', () => {
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    expect(health).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(health).not.toMatch(/\{\{\s*data\.summary\.ok\s*\}\}/)
+    expect(health).not.toMatch(/data\?\.ts \|\| '…'/)
+    expect(health).toMatch(/finiteN\(data\.summary\.ok\)/)
+    expect(health).toMatch(/finiteN\(data\.summary\.warn\)/)
+    expect(health).toMatch(/finiteN\(data\.summary\.error\)/)
+    expect(health).toMatch(/finiteN\(data\.summary\.total\)/)
+    expect(health).toMatch(/finiteText\(data\?\.ts/)
+    expect(health).toMatch(/finiteText\(errText\(c\.detail\)\)/)
+    expect(health).not.toMatch(/\{\{\s*errText\(c\.detail\)\s*\}\}/)
+    expect(health).not.toMatch(/\{\{\s*c\.name\s*\}\}/)
+    expect(health).toMatch(/finiteText\(c\.name\)/)
+    expect(health).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(health).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+  })
+
+  it('Users leftover counts and uids go through finiteN', () => {
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    expect(users).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(users).not.toMatch(/\{\{\s*data\.count\s*\}\}/)
+    expect(users).not.toMatch(/\{\{\s*u\.uid\s*\}\}/)
+    expect(users).not.toMatch(/\(data\.count \|\| 0\) - \(data\.admins \|\| 0\)/)
+    expect(users).toMatch(/finiteN\(data\.count/)
+    expect(users).toMatch(/finiteN\(data\.admins/)
+    expect(users).toMatch(/finiteN\(u\.uid\)/)
+    expect(users).toMatch(/function finiteDiff\([\s\S]*finiteN/)
+    expect(users).not.toMatch(/\{\{\s*u\.name\s*\}\}/)
+    expect(users).toMatch(/finiteText\(u\.name\)/)
+    expect(users).toMatch(/finiteText\(opt\.id\)/)
+    expect(users).toMatch(/finiteText\(opt\.name\)/)
+    expect(users).not.toMatch(/\{\{\s*opt\.name\s*\}\}/)
+    expect(users).not.toMatch(/u\.gecos \|\| '—'/)
+    expect(users).not.toMatch(/acct\.resources\.join\(', '\)/)
+    expect(users).toMatch(/function resourceList\([\s\S]*finiteText/)
+    expect(users).toMatch(/finiteText\(serviceOptionsError\)/)
+    expect(users).toMatch(/finiteText\(accountsError, ''\)/)
+    expect(users).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(users).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+  })
+
+  it('Gateway leftover pids go through finiteN', () => {
+    const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
+    expect(gateway).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(gateway).not.toMatch(/pid \{\{ data\.pid \}\}/)
+    expect(gateway).toMatch(/finiteN\(data\.pid/)
+    expect(gateway).not.toMatch(/\{\{\s*data\.label\s*\}\}/)
+    expect(gateway).toMatch(/finiteText\(data\.label\)/)
+    expect(gateway).not.toMatch(/\(s\.server_names \|\| \[\]\)\.join\(', '\) \|\| '—'/)
+    expect(gateway).not.toMatch(/\{\{\s*data\.conf\s*\}\}/)
+    expect(gateway).toMatch(/finiteText\(data\.conf\)/)
+    expect(gateway).not.toMatch(/\{\{\s*\(s\.listens \|\| \[\]\)\.join/)
+    expect(gateway).toMatch(/s\.listens \|\| \[\]\)\.map\(n => finiteText\(n/)
+    expect(gateway).toMatch(/s\.server_names \|\| \[\]\)\.map\(n => finiteText\(n/)
+    expect(gateway).not.toMatch(/\{\{\s*msg\s*\}\}/)
+    expect(gateway).toMatch(/finiteText\(msg\)/)
+    expect(gateway).not.toMatch(/msg\.value = j\.message \|\| ''/)
+    expect(gateway).toMatch(/msg\.value = finiteText\(j\.message, ''\)/)
+  })
+
+  it('Maintenance leftover rc and finished reject Infinity', () => {
+    const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+    expect(maintenance).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(maintenance).not.toMatch(/❌ \{\{ task\.rc \}\}/)
+    expect(maintenance).toMatch(/finiteN\(task\.rc\)/)
+    expect(maintenance).toMatch(/finiteText\(task\.finished\)/)
+    expect(maintenance).toMatch(/finiteN\(j\.rc\)/)
+    expect(maintenance).not.toMatch(/\{\{\s*task\.id\s*\}\}/)
+    expect(maintenance).toMatch(/finiteText\(task\.id\)/)
+    expect(maintenance).not.toMatch(/\{\{\s*task\.name\s*\}\}/)
+    expect(maintenance).toMatch(/finiteText\(task\.name\)/)
+    expect(maintenance).not.toMatch(/\{\{\s*loadError\s*\}\}/)
+    expect(maintenance).toMatch(/finiteText\(loadError/)
+    expect(maintenance).not.toMatch(/loadError \|\| \(loaded/)
+    expect(maintenance).not.toMatch(/\{\{\s*logTitle\s*\}\}/)
+    expect(maintenance).toMatch(/finiteText\(logTitle\)/)
+    expect(maintenance).not.toMatch(/\{\{\s*logText\s*\}\}/)
+    expect(maintenance).toMatch(/finiteText\(logText\)/)
+    expect(maintenance).toMatch(/logText\.value = finiteText\(j\.log, ''\)/)
+    expect(maintenance).toMatch(/logTitle\.value = finiteText\(task\.name\)/)
+  })
+
+  it('Account leftover recovery counts go through finiteN', () => {
+    const account = readFileSync(resolve(SRC, 'views/Account.vue'), 'utf8')
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(account).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(account).toMatch(/finiteN\(twofa\.recovery_remaining/)
+    expect(account).not.toMatch(/n: twofa\.recovery_remaining/)
+    expect(settings).toMatch(/finiteN\(twofa\.recovery_remaining/)
+    expect(settings).not.toMatch(/n: twofa\.recovery_remaining/)
+    expect(account).not.toMatch(/name: authState\.username/)
+    expect(account).toMatch(/name: finiteText\(authState\.username\)/)
+    expect(account).not.toMatch(/\{\{\s*authState\.username\s*\}\}/)
+    expect(account).toMatch(/finiteText\(authState\.username\)/)
+    expect(account).not.toMatch(/\{\{\s*enrollment\.manual_entry\s*\}\}/)
+    expect(account).toMatch(/finiteText\(enrollment\.manual_entry\)/)
+    expect(account).not.toMatch(/\{\{\s*code\s*\}\}/)
+    expect(account).toMatch(/finiteText\(code\)/)
+    expect(account).not.toMatch(/\{\{\s*twofaError\s*\}\}/)
+    expect(account).toMatch(/finiteText\(twofaError\)/)
+    expect(account).not.toMatch(/passwordMessage \|\| t\('settings\.password_rule'\)/)
+    expect(account).toMatch(/finiteText\(passwordMessage, ''\) \|\| t\('settings\.password_rule'\)/)
+    expect(account).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(account).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+  })
+
+  it('Bookmarks leftover summary counts go through finite helpers', () => {
+    const bookmarks = readFileSync(resolve(SRC, 'views/Bookmarks.vue'), 'utf8')
+    expect(bookmarks).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(bookmarks).toMatch(/finiteN\(data\.up/)
+    expect(bookmarks).toMatch(/finiteN\(data\.down/)
+    expect(bookmarks).toMatch(/finiteText\(data\.checked_at/)
+    expect(bookmarks).not.toMatch(/at: data\.checked_at \|\| '—'/)
+    expect(bookmarks).not.toMatch(/\{\{\s*b\.name\s*\}\}/)
+    expect(bookmarks).toMatch(/finiteText\(b\.name\)/)
+    expect(bookmarks).toMatch(/finiteText\(b\.url\)/)
+    expect(bookmarks).not.toMatch(/return b\.status \|\| t\('dashboard\.bm_up'\)/)
+    expect(bookmarks).toMatch(/finiteText\(b\.status, ''\) \|\| t\('dashboard\.bm_up'\)/)
+    expect(bookmarks).toMatch(/finiteText\(bk\.name, ''\) \|\| finiteText\(bk\.id, ''\)/)
+    expect(bookmarks).not.toMatch(/:href="b\.url"/)
+    expect(bookmarks).toMatch(/:href="finiteText\(b\.url, ''\)"/)
+  })
+
+  it('Alerts leftover timestamps go through fmtTs', () => {
+    const alerts = readFileSync(resolve(SRC, 'views/Alerts.vue'), 'utf8')
+    expect(alerts).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(alerts).toMatch(/function fmt\([\s\S]*fmtTs/)
+    expect(alerts).not.toMatch(/\{\{\s*a\.name\s*\}\}/)
+    expect(alerts).toMatch(/finiteText\(a\.name\)/)
+    expect(alerts).not.toMatch(/n: r\.emitted\?\.length \|\| 0/)
+    expect(alerts).toMatch(/n: finiteN\(r\.emitted\?\.length, 0\)/)
+    expect(alerts).not.toMatch(/'❌ ' \+ \(r\.message \|\| ''\)/)
+    expect(alerts).toMatch(/'❌ ' \+ finiteText\(r\.message, ''\)/)
+  })
+
+  it('Scheduler leftover counts/duration/rc go through finite helpers', () => {
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(scheduler).not.toMatch(/\{\{\s*data\.count\s*\}\}/)
+    expect(scheduler).not.toMatch(/\{\{\s*run\.duration \}\}s/)
+    expect(scheduler).not.toMatch(/rc=\{\{ run\.rc \?\? '—' \}\}/)
+    expect(scheduler).toMatch(/function fmt\([\s\S]*fmtTs/)
+    expect(scheduler).toMatch(/finiteN\(data\.count/)
+    expect(scheduler).toMatch(/withUnit\(run\.duration, 's'\)/)
+    expect(scheduler).toMatch(/finiteN\(run\.rc/)
+    expect(scheduler).not.toMatch(/s\.enabled \? s\.interval :/)
+    expect(scheduler).toMatch(/finiteText\(s\.interval/)
+    expect(scheduler).toMatch(/function formatCal\([\s\S]*finiteText/)
+    expect(scheduler).not.toMatch(/typeof c === 'object' \? JSON\.stringify\(c\) : String\(c\)/)
+    expect(scheduler).not.toMatch(/\{\{\s*job\.name\s*\}\}/)
+    expect(scheduler).toMatch(/finiteText\(job\.name\)/)
+    expect(scheduler).not.toMatch(/row\.program \|\| '—'/)
+    expect(scheduler).toMatch(/finiteText\(row\.program\)/)
+    expect(scheduler).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(scheduler).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(scheduler).not.toMatch(/\{\{\s*runsError\s*\}\}/)
+    expect(scheduler).toMatch(/finiteText\(runsError\)/)
+    expect(scheduler).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(scheduler).not.toMatch(/\{\{\s*job\.cron\s*\}\}/)
+    expect(scheduler).toMatch(/finiteText\(job\.cron\)/)
+    expect(scheduler).not.toMatch(/\{\{\s*run\.tail\s*\}\}/)
+    expect(scheduler).toMatch(/finiteText\(run\.tail\)/)
+  })
+
+  it('Backups leftover ports/files/mtime go through finite helpers', () => {
+    const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+    expect(backups).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(backups).toMatch(/function sizeMb\([\s\S]*Number\.isFinite/)
+    expect(backups).toMatch(/function fmt\([\s\S]*fmtTs/)
+    expect(backups).not.toMatch(/:\{\{ layers\.db\.port \}\}/)
+    expect(backups).toMatch(/finiteN\(layers\.db\.port/)
+    expect(backups).toMatch(/finiteN\(layers\.bridge\.exported_files/)
+    expect(backups).toMatch(/finiteN\(job\.params\.retain/)
+    expect(backups).toMatch(/finiteText\(rsyncBinary\.version/)
+    expect(backups).toMatch(/finiteText\(preview\.binary\.version/)
+    expect(backups).toMatch(/finiteText\(job\.params\.stack_id/)
+    expect(backups).not.toMatch(/\{\{\s*job\.name\s*\}\}/)
+    expect(backups).toMatch(/finiteText\(job\.name\)/)
+    expect(backups).not.toMatch(/\{\{\s*b\.name\s*\}\}/)
+    expect(backups).toMatch(/finiteText\(b\.name\)/)
+    expect(backups).not.toMatch(/layers\.db\?\.last\?\.name \|\| t\('photoshub\.never'\)/)
+    expect(backups).toMatch(/finiteText\(layers\.db\?\.last\?\.name/)
+    expect(backups).not.toMatch(/layers\.bridge\?\.path \|\| '—'/)
+    expect(backups).toMatch(/finiteText\(layers\.bridge\?\.last_success, ''\) \|\| finiteText\(layers\.bridge\?\.path\)/)
+    expect(backups).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(backups).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(backups).not.toMatch(/\{\{\s*msg\s*\}\}/)
+    expect(backups).toMatch(/finiteText\(msg\)/)
+    expect(backups).toMatch(/msg\.value = finiteText\(e\.message, ''\)/)
+    expect(backups).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(backups).toMatch(/postgresTargets\.value\.map\(\(t\) => finiteText\(t\.id, ''\)\)/)
+    expect(backups).not.toMatch(/\{\{\s*job\.cron\s*\}\}/)
+    expect(backups).toMatch(/finiteText\(job\.cron\)/)
+    expect(backups).not.toMatch(/preview\.samples" :key="i">\{\{ line \}\}<\/div>/)
+    expect(backups).toMatch(/finiteText\(line\)/)
+  })
+
+  it('App leftover service counts go through finiteN', () => {
+    const app = readFileSync(resolve(SRC, 'App.vue'), 'utf8')
+    expect(app).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(app).not.toMatch(/\{\{\s*counts\.ok\s*\}\}/)
+    expect(app).not.toMatch(/\{\{\s*counts\.warn\s*\}\}/)
+    expect(app).toMatch(/finiteN\(counts\.ok/)
+    expect(app).toMatch(/finiteN\(counts\.warn/)
+    expect(app).toMatch(/finiteN\(counts\.down/)
+    expect(app).not.toMatch(/item\.title \|\| t\(item\.labelKey\)/)
+    expect(app).toMatch(/finiteText\(item\.title/)
+    expect(app).toMatch(/finiteText\(item\.to\)/)
+    expect(app).toMatch(/finiteText\(toast\)/)
+    expect(app).not.toMatch(/\{\{\s*l\.native\s*\}\}/)
+    expect(app).toMatch(/finiteText\(l\.native\)/)
+  })
+
+  it('Audit leftover extra fields go through finiteText', () => {
+    const audit = readFileSync(resolve(SRC, 'views/Audit.vue'), 'utf8')
+    expect(audit).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(audit).toMatch(/finiteText\(v\)/)
+    expect(audit).not.toMatch(/`\$\{k\}=\$\{v\}`/)
+    expect(audit).not.toMatch(/e\.username \|\| '—'/)
+    expect(audit).toMatch(/finiteText\(e\.username\)/)
+    expect(audit).not.toMatch(/e\.client \|\| '—'/)
+    expect(audit).toMatch(/finiteText\(e\.client\)/)
+    expect(audit).not.toMatch(/e\.outcome \|\| '—'/)
+    expect(audit).toMatch(/finiteText\(e\.outcome\)/)
+    expect(audit).not.toMatch(/\{\{\s*e\.client\s*\}\}/)
+    expect(audit).toMatch(/`\$\{finiteText\(k\)\}=\$\{finiteText\(v\)\}`/)
+    expect(audit).toMatch(/n: finiteN\(entries\.length\)/)
+    expect(audit).toMatch(/max: finiteN\(maxRetained\)/)
+  })
+
+  it('Dashboard leftover service totals go through finiteN', () => {
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dash).toMatch(/finiteN\(status\?\.service_total/)
+    expect(dash).toMatch(/finiteN\(status\?\.counts\?\.ok/)
+    expect(dash).not.toMatch(/status\?\.service_total \?\? '—'/)
+  })
+
+  it('Services leftover totals go through finiteN', () => {
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(services).toMatch(/finiteN\(status\.service_total/)
+    expect(services).not.toMatch(/status\.service_total \?\? flat\.length/)
+    expect(services).not.toMatch(/status\?\.counts\?\.ok \?\? 0/)
+    expect(services).toMatch(/finiteN\(status\?\.counts\?\.ok, 0\)/)
+    expect(services).toMatch(/finiteN\(result\.ok_count, 0\)/)
+    expect(services).not.toMatch(/`✅ \$\{result\.ok_count\}`/)
+    expect(services).not.toMatch(/ts: status\.ts,/)
+    expect(services).toMatch(/finiteText\(status\.ts/)
+    expect(services).not.toMatch(/\{\{\s*s\.detail\s*\}\}/)
+    expect(services).toMatch(/finiteText\(s\.detail\)/)
+    expect(services).not.toMatch(/\{\{\s*s\.id\s*\}\}/)
+    expect(services).toMatch(/finiteText\(s\.id\)/)
+    expect(services).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(services).toMatch(/finiteText\(s\.name\)/)
+    expect(services).toMatch(/finiteText\(p\.name\)/)
+    expect(services).not.toMatch(/toast\(`❌ \$\{e\.message \|\| e\}`\)/)
+    expect(services).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
+    expect(services).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+  })
+
+  it('Containers job log live region is gated on jobLog', () => {
+    const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+    expect(containers).toMatch(/<pre v-if="jobLog"[\s\S]*aria-live="polite"/)
+    expect(containers).toMatch(/finiteText\(stats\[c\.id\]\?\.cpu\)/)
+    expect(containers).not.toMatch(/stats\[c\.id\]\?\.cpu \|\| '—'/)
+    expect(containers).toMatch(/finiteText\(c\.network\)/)
+  })
+
+  it('ScheduleJobForm leftover preview counts go through finiteN', () => {
+    const form = readFileSync(resolve(SRC, 'components/ScheduleJobForm.vue'), 'utf8')
+    expect(form).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(form).toMatch(/finiteN\(preview\.creates\)/)
+    expect(form).toMatch(/finiteN\(preview\.updates\)/)
+    expect(form).toMatch(/finiteN\(preview\.deletes\)/)
+    expect(form).not.toMatch(/n: preview\.creates \}\)/)
+    expect(form).toMatch(/finiteText\(line\)/)
+    expect(form).not.toMatch(/\{\{\s*line\s*\}\}/)
+    expect(form).not.toMatch(/\{\{\s*previewError\s*\}\}/)
+    expect(form).toMatch(/finiteText\(previewError\)/)
+    expect(form).not.toMatch(/\{\{\s*cronText\s*\}\}/)
+    expect(form).toMatch(/finiteText\(cronText\)/)
+    expect(form).not.toMatch(/\(p\.exclude \|\| \[\]\)\.join\('\\n'\)/)
+    expect(form).toMatch(/\(p\.exclude \|\| \[\]\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
+    expect(form).toMatch(/previewError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(form).toMatch(/n: finiteN\(step\[1\]\)/)
+  })
+
+  it('ServiceDetailDrawer leftover detail goes through finiteText', () => {
+    const drawer = readFileSync(resolve(SRC, 'components/ServiceDetailDrawer.vue'), 'utf8')
+    expect(drawer).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(drawer).not.toMatch(/\{\{\s*service\.detail \|\| '—'\s*\}\}/)
+    expect(drawer).toMatch(/finiteText\(service\.detail\)/)
+    expect(drawer).not.toMatch(/\{\{\s*service\.id\s*\}\}/)
+    expect(drawer).toMatch(/finiteText\(service\.id\)/)
+    expect(drawer).not.toMatch(/service\.group \|\| '—'/)
+    expect(drawer).toMatch(/finiteText\(service\.group\)/)
+    expect(drawer).not.toMatch(/service\.url \|\| '—'/)
+    expect(drawer).toMatch(/finiteText\(service\.url\)/)
+    expect(drawer).not.toMatch(/\{\{\s*service\.name\s*\}\}/)
+    expect(drawer).toMatch(/finiteText\(service\.name\)/)
+    expect(drawer).not.toMatch(/\(service\.env_sample \|\| \[\]\)\.join\('\\n'\)/)
+    expect(drawer).toMatch(/\(service\.env_sample \|\| \[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(drawer).not.toMatch(/\{\{\s*service\.launchctl\s*\}\}/)
+    expect(drawer).toMatch(/finiteText\(service\.launchctl\)/)
+    expect(drawer).not.toMatch(/\{\{\s*log \|\| t\('services\.log_empty'\)\s*\}\}/)
+    expect(drawer).toMatch(/finiteText\(log, ''\) \|\| t\('services\.log_empty'\)/)
+    expect(drawer).not.toMatch(/\(ad\.ports \|\| \[\]\)\.join\(', '\)/)
+    expect(drawer).toMatch(/\(ad\.ports \|\| \[\]\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
+    expect(drawer).toMatch(/\(sc\.ports \|\| \[\]\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
+  })
+
+  it('NotifyChannels leftover channel ids go through finiteText', () => {
+    const ch = readFileSync(resolve(SRC, 'components/NotifyChannels.vue'), 'utf8')
+    expect(ch).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(ch).not.toMatch(/\{\{\s*c\.id\s*\}\}/)
+    expect(ch).toMatch(/finiteText\(c\.id\)/)
+    expect(ch).not.toMatch(/editing\.name \|\| editing\.id/)
+    expect(ch).toMatch(/finiteText\(editing\.id/)
+    expect(ch).not.toMatch(/\{\{\s*c\.name\s*\}\}/)
+    expect(ch).toMatch(/finiteText\(c\.name\)/)
+    expect(ch).not.toMatch(/role="alert">\{\{ loadError \}\}<\/div>/)
+    expect(ch).toMatch(/finiteText\(loadError\)/)
+    expect(ch).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
+    expect(ch).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(ch).not.toMatch(/toast\('❌ ' \+ err\.message\)/)
+    expect(ch).toMatch(/toast\('❌ ' \+ finiteText\(err\.message\)\)/)
+  })
+
+  it('AssistantDrawer leftover path/title interpolations go through finiteText', () => {
+    const ad = readFileSync(resolve(SRC, 'components/AssistantDrawer.vue'), 'utf8')
+    expect(ad).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(ad).not.toMatch(/\{\{\s*p\.path\s*\}\}/)
+    expect(ad).toMatch(/finiteText\(p\.path\)/)
+    expect(ad).not.toMatch(/\{\{\s*p\.title\s*\}\}/)
+    expect(ad).toMatch(/finiteText\(p\.title\)/)
+    expect(ad).not.toMatch(/\$\{p\.name\} · \$\{p\.state\}/)
+    expect(ad).toMatch(/finiteText\(p\.name\)/)
+    expect(ad).not.toMatch(/q: query \|\| ''/)
+    expect(ad).toMatch(/q: finiteText\(query, ''\)/)
+    expect(ad).toMatch(/finiteText\(out\.text, ''\)/)
+    expect(ad).not.toMatch(/: \(err\.message \|\| String\(err\)\)/)
+    expect(ad).toMatch(/finiteText\(err\.message \|\| String\(err\)\)/)
+    expect(ad).toMatch(/emit\('go', finiteText\(path, ''\) \|\| '\/'\)/)
+    expect(ad).toMatch(/finiteText\(displayText\(out, query\), ''\)/)
+  })
+
+  it('ServiceLogsModal leftover source goes through finiteText', () => {
+    const modal = readFileSync(resolve(SRC, 'components/ServiceLogsModal.vue'), 'utf8')
+    expect(modal).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(modal).not.toMatch(/\{\{\s*entry\.source\s*\}\}/)
+    expect(modal).toMatch(/finiteText\(entry\.source\)/)
+    expect(modal).not.toMatch(/entry\.log \|\| t\('services\.log_empty'\)/)
+    expect(modal).toMatch(/finiteText\(entry\.log, ''\) \|\| t\('services\.log_empty'\)/)
+  })
+
+  it('ServiceSignatures leftover ports and counts go through finite helpers', () => {
+    const sigs = readFileSync(resolve(SRC, 'components/ServiceSignatures.vue'), 'utf8')
+    expect(sigs).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(sigs).toMatch(/function fmtPorts\([\s\S]*finiteText/)
+    expect(sigs).toMatch(/finiteN\(data\.builtin_count, 0\)/)
+    expect(sigs).not.toMatch(/data\.builtin_count \|\| 0/)
+    expect(sigs).not.toMatch(/\{\{\s*row\.name\s*\}\}/)
+    expect(sigs).toMatch(/finiteText\(row\.name\)/)
+    expect(sigs).not.toMatch(/\{\{\s*row\.slug\s*\}\}/)
+    expect(sigs).toMatch(/finiteText\(row\.slug\)/)
+    expect(sigs).not.toMatch(/\{\{\s*row\.category\s*\}\}/)
+    expect(sigs).toMatch(/finiteText\(row\.category\)/)
+    expect(sigs).not.toMatch(/toast\(`❌ \$\{e\.message \|\| e\}`\)/)
+    expect(sigs).not.toMatch(/toast\(`❌ \$\{err\.message \|\| err\}`\)/)
+    expect(sigs).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
+    expect(sigs).toMatch(/toast\('❌ ' \+ finiteText\(err\.message \|\| err\)\)/)
+    expect(sigs).not.toMatch(/\(row\.procs \|\| \[\]\)\.join\(', '\)/)
+    expect(sigs).toMatch(/\(row\.procs \|\| \[\]\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
+    expect(sigs).toMatch(/\(row\.ports \|\| \[\]\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
+  })
+
+  it('StackBar leftover segment values go through Number.isFinite', () => {
+    const bar = readFileSync(resolve(SRC, 'components/StackBar.vue'), 'utf8')
+    expect(bar).toMatch(/Number\.isFinite\(Number\(s\.value\)\)/)
+    expect(bar).toMatch(/:title="finiteText\(seg\.label\) \+ ': ' \+ format\(seg\.value\)"/)
+    expect(bar).not.toMatch(/:title="seg\.label \+ ': ' \+ format\(seg\.value\)"/)
+    expect(bar).not.toMatch(/seg\.label \+ ': ' \+ seg\.value/)
+    expect(bar).not.toMatch(/\{\{\s*seg\.label\s*\}\}/)
+    expect(bar).toMatch(/finiteText\(seg\.label\)/)
+  })
+
+  it('string identifier interpolations go through finiteText', () => {
+    // Leftover Infinity is a truthy number, so `hostname || '—'` still prints
+    // the word "Infinity". Identifier fields skip finiteN (they are strings)
+    // and have to go through finiteText instead.
+    const BARE_ID = /^\{\{\s*[A-Za-z_$][\w$]*(?:\?\.|\.)(?:id|hostname|local_hostname|host_ip|lan_ip|disk_id|stack_id|root_id|uuid|version|orb_version|ServerVersion)\s*\}\}$/
+    const ID_SLICE = /\{\{(?:(?!finiteText)[^}])*\.id\.slice\b/
+    const HOST_OR = /\{\{(?:(?!finiteText)[^}])*\b(?:hostname|local_hostname|host_ip|lan_ip|disk_id|stack_id|root_id|uuid|version|orb_version|ServerVersion)\b[^}]*\|\|/
+    const ID_FALLBACK = /\{\{(?:(?!finiteText)[^}])*\|\|\s*[A-Za-z_$][\w$?]*\.id\b/
+    const DISK_Q = /\{\{(?:(?!finiteText)[^}])*\.disk_id\s*\?/
+    const ATTR_ID = /(?::title|:aria-label)="(?!finiteText)[^"]*\.id"/g
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/\{\{[\s\S]*?\}\}/g)) {
+        const interp = m[0].replace(/\s+/g, ' ').trim()
+        if (BARE_ID.test(interp) || ID_SLICE.test(interp) || HOST_OR.test(interp) || ID_FALLBACK.test(interp) || DISK_Q.test(interp)) {
+          offenders.push(`${name}: ${interp}`)
+        }
+      }
+      for (const m of template.matchAll(ATTR_ID)) {
+        offenders.push(`${name}: ${m[0]}`)
+      }
+    }
+    expect(
+      offenders,
+      'identifier leftover Infinity must go through finiteText',
+    ).toEqual([])
+  })
+
+  it('Compose leftover stack names go through finiteText', () => {
+    const compose = readFileSync(resolve(SRC, 'views/Compose.vue'), 'utf8')
+    expect(compose).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(compose).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(compose).toMatch(/finiteText\(s\.name\)/)
+    expect(compose).not.toMatch(/\{\{\s*s\.status\s*\}\}/)
+    expect(compose).toMatch(/finiteText\(s\.status\)/)
+    expect(compose).not.toMatch(/s\.path \|\| '—'/)
+    expect(compose).toMatch(/finiteText\(s\.path\)/)
+    expect(compose).not.toMatch(/\{\{\s*msg\s*\}\}/)
+    expect(compose).toMatch(/finiteText\(msg\)/)
+    expect(compose).not.toMatch(/\{\{\s*jobLog\s*\}\}/)
+    expect(compose).toMatch(/finiteText\(jobLog\)/)
+    expect(compose).not.toMatch(/id: j\.id \}\)/)
+    expect(compose).toMatch(/id: finiteText\(j\.id\)/)
+    expect(compose).not.toMatch(/r\.message \|\| t\('compose\.started'\)/)
+    expect(compose).toMatch(/finiteText\(r\.message, ''\) \|\| t\('compose\.started'\)/)
+    expect(compose).not.toMatch(/jobLog\.value = j\.log \|\| ''/)
+    expect(compose).toMatch(/jobLog\.value = finiteText\(j\.log, ''\)/)
+  })
+
+  it('Brew leftover names go through finiteText', () => {
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(brew).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(brew).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(brew).toMatch(/finiteText\(s\.name\)/)
+    expect(brew).not.toMatch(/s\.user \|\| '—'/)
+    expect(brew).toMatch(/finiteText\(s\.user\)/)
+    expect(brew).not.toMatch(/\{\{\s*s\.status\s*\}\}/)
+    expect(brew).toMatch(/finiteText\(s\.status\)/)
+    expect(brew).not.toMatch(/\{\{\s*labels\[a\] \|\| a\s*\}\}/)
+    expect(brew).toMatch(/finiteText\(labels\[a\], ''\) \|\| finiteText\(a\)/)
+  })
+
+  it('Logs leftover names go through finiteText', () => {
+    const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+    expect(logs).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(logs).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
+    expect(logs).toMatch(/finiteText\(s\.name\)/)
+    expect(logs).not.toMatch(/\{\{\s*meta\.path\s*\}\}/)
+    expect(logs).toMatch(/finiteText\(meta\.path\)/)
+    expect(logs).toMatch(/n: finiteN\(displayLines\.length\)/)
+    expect(logs).not.toMatch(/displayLines\.value\.join\('\\n'\)/)
+    expect(logs).toMatch(/displayLines\.value\.map\(\(l\) => finiteText\(l, ''\)\)/)
+    expect(logs).not.toMatch(/\{\{\s*displayText\s*\}\}/)
+    expect(logs).toMatch(/finiteText\(displayText\)/)
+  })
+
+  it('Terminal leftover container labels and session ids go through finiteText', () => {
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    expect(terminal).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(terminal).not.toMatch(/\{\{\s*containerListError\s*\}\}/)
+    expect(terminal).toMatch(/finiteText\(containerListError\)/)
+    expect(terminal).not.toMatch(/\{\{\s*sessionId\s*\}\}/)
+    expect(terminal).toMatch(/finiteText\(sessionId\)/)
+    expect(terminal).not.toMatch(/item\?\.label \|\| container\.value \|\| t\('terminal\.target_container'\)/)
+    expect(terminal).toMatch(/finiteText\(item\?\.label, ''\) \|\| finiteText\(container\.value, ''\)/)
+    expect(terminal).toMatch(/sessionId\.value = finiteText\(message\.session, ''\)/)
+  })
+
+  it('leftover name interpolations in listed views go through finiteText', () => {
+    const FILES = [
+      'views/Network.vue', 'views/Containers.vue', 'views/Scheduler.vue',
+      'views/Dashboard.vue', 'views/Apps.vue', 'views/Brew.vue', 'views/Compose.vue',
+      'views/Ollama.vue', 'views/VMs.vue', 'views/Alerts.vue', 'views/Health.vue',
+      'views/Tools.vue', 'views/Backups.vue', 'views/Settings.vue', 'views/Logs.vue',
+      'views/Shares.vue', 'views/WireGuard.vue', 'views/MainArray.vue',
+      'views/PhotosHub.vue', 'views/Pool.vue', 'views/Services.vue',
+      'components/ServiceDetailDrawer.vue', 'components/NotifyChannels.vue',
+      'components/ServiceSignatures.vue', 'components/ServiceLogsModal.vue',
+      'components/AssistantDrawer.vue', 'components/LineChart.vue',
+      'components/VncConsole.vue',
+    ]
+    const BARE_NAME = /^\{\{\s*[A-Za-z_$][\w$]*(?:\?\.|\.)name\s*\}\}$/
+    const NAME_OR = /\{\{(?:(?!finiteText)[^}])*\.name\s*\|\|/
+    const ATTR_NAME = /(?::title|:aria-label|:placeholder)="(?![^"]*finiteText)[^"]*\.name"/g
+    const offenders = []
+    for (const rel of FILES) {
+      const src = readFileSync(resolve(SRC, rel), 'utf8')
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/\{\{[\s\S]*?\}\}/g)) {
+        const interp = m[0].replace(/\s+/g, ' ').trim()
+        if (BARE_NAME.test(interp) || NAME_OR.test(interp)) offenders.push(`${rel}: ${interp}`)
+      }
+      for (const m of template.matchAll(ATTR_NAME)) offenders.push(`${rel}: ${m[0]}`)
+    }
+    expect(offenders, 'leftover name Infinity must go through finiteText').toEqual([])
+  })
+
+  it('leftover string || em-dash interpolations go through finiteText', () => {
+    const FILES = [
+      'views/Network.vue', 'views/Containers.vue', 'views/Scheduler.vue',
+      'views/Dashboard.vue', 'views/Apps.vue', 'views/Brew.vue', 'views/Compose.vue',
+      'views/Ollama.vue', 'views/VMs.vue', 'views/Alerts.vue', 'views/Health.vue',
+      'views/Tools.vue', 'views/Backups.vue', 'views/Settings.vue', 'views/Logs.vue',
+      'views/Shares.vue', 'views/WireGuard.vue', 'views/MainArray.vue',
+      'views/PhotosHub.vue', 'views/Pool.vue', 'views/Services.vue',
+      'components/ServiceDetailDrawer.vue', 'components/NotifyChannels.vue',
+      'components/ServiceSignatures.vue', 'components/ServiceLogsModal.vue',
+      'components/AssistantDrawer.vue', 'components/ScheduleJobForm.vue',
+      'components/StackBar.vue', 'components/LineChart.vue',
+      'components/VncConsole.vue', 'App.vue',
+    ]
+    const OR_DASH = /\{\{(?:(?!finiteText)[^}])*\|\|\s*'—'\}/
+    const offenders = []
+    for (const rel of FILES) {
+      const src = readFileSync(resolve(SRC, rel), 'utf8')
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/\{\{[\s\S]*?\}\}/g)) {
+        const interp = m[0].replace(/\s+/g, ' ').trim()
+        if (OR_DASH.test(interp)) offenders.push(`${rel}: ${interp}`)
+      }
+    }
+    expect(offenders, 'leftover || em-dash Infinity must go through finiteText').toEqual([])
+  })
+
+  it('leftover status/path/label/detail/protocol/ip/mac interpolations go through finiteText', () => {
+    const BARE = /^\{\{\s*[A-Za-z_$][\w$]*(?:\?\.|\.)(?:[A-Za-z_$][\w$]*(?:\?\.|\.))*(?:status|path|label|detail|protocol|ip|mac)\s*\}\}$/
+    const OR_FIELD = /\{\{(?:(?!finiteText)[^}])*\.(?:status|path|label|detail|protocol|ip|mac)\s*\|\|/
+    const ATTR_FIELD = /(?::title|:aria-label)="(?![^"]*finiteText)[^"]*\.(?:status|path|label|detail|protocol|ip|mac)"/g
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/\{\{[\s\S]*?\}\}/g)) {
+        const interp = m[0].replace(/\s+/g, ' ').trim()
+        if (BARE.test(interp) || OR_FIELD.test(interp)) offenders.push(`${name}: ${interp}`)
+      }
+      for (const m of template.matchAll(ATTR_FIELD)) offenders.push(`${name}: ${m[0]}`)
+    }
+    expect(
+      offenders,
+      'leftover status/path/label/detail/protocol/ip/mac Infinity must go through finiteText',
+    ).toEqual([])
+  })
+
+  it('Login leftover username/token/error go through finiteText', () => {
+    const login = readFileSync(resolve(SRC, 'views/Login.vue'), 'utf8')
+    expect(login).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(login).not.toMatch(/state\.username \|\| 'admin'/)
+    expect(login).toMatch(/finiteText\(state\.username, ''\) \|\| 'admin'/)
+    expect(login).not.toMatch(/autoToken\.value = tokenResp\.setup_token \|\| ''/)
+    expect(login).toMatch(/finiteText\(tokenResp\.setup_token, ''\)/)
+    expect(login).not.toMatch(/username: result\.username \|\| username\.value/)
+    expect(login).toMatch(/finiteText\(result\.username, ''\) \|\| finiteText\(username\.value\)/)
+    expect(login).not.toMatch(/\{\{\s*autoToken\s*\}\}/)
+    expect(login).toMatch(/finiteText\(autoToken\)/)
+    expect(login).not.toMatch(/\{\{\s*error\s*\}\}/)
+    expect(login).toMatch(/finiteText\(error\)/)
+    expect(login).not.toMatch(/error\.value = e\.message/)
+    expect(login).toMatch(/error\.value = finiteText\(e\.message, ''\)/)
+    expect(login).not.toMatch(/totpPending\.value = result\.pending \|\| ''/)
+    expect(login).toMatch(/finiteText\(result\.pending, ''\)/)
+    expect(login).not.toMatch(/\{\{\s*l\.native\s*\}\}/)
+    expect(login).toMatch(/finiteText\(l\.native\)/)
+  })
+
+  it('AdminPasswordDialog has no leftover API interpolations', () => {
+    const dlg = readFileSync(resolve(SRC, 'components/AdminPasswordDialog.vue'), 'utf8')
+    const template = dlg.slice(0, dlg.search(/<script\b/) >>> 0)
+    const leftover = []
+    for (const m of template.matchAll(/\{\{[\s\S]*?\}\}/g)) {
+      const interp = m[0].replace(/\s+/g, ' ').trim()
+      if (!/\bt\(/.test(interp)) leftover.push(interp)
+    }
+    expect(leftover, 'AdminPasswordDialog interpolates only i18n strings').toEqual([])
+    expect(dlg).toMatch(/aria-label="t\('adminPrompt.password'\)"/)
+    expect(dlg).toMatch(/aria-label="t\('adminPrompt.title'\)"/)
+  })
+
+  it('leftover i18n identifier params go through finiteText', () => {
+    // t('foo', { name: leftover.username }) interpolates leftover Infinity
+    // into translated strings. finiteText must run on leftover identifier
+    // params the way Compose wraps created-stack ids.
+    const BARE = /\b(?:name|id|username|path|label)\s*:\s*(?:authState|acct|svc|task|it|c|uninstallModal|target|detail\.value|j|item|dev|twofaResetUser|portEdit|cfSelectedTunnel|createForm\.value)\.(?:username|name|id|path|label|remove_data_path|value)\b/
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      for (const m of src.matchAll(/t\(\s*(?:key|[`'"][^`'"]+[`'"]|[A-Za-z_$][\w$]*)\s*,\s*\{[\s\S]*?\}/g)) {
+        const call = m[0].replace(/\s+/g, ' ')
+        if (BARE.test(call)) offenders.push(`${name}: ${call.slice(0, 160)}`)
+      }
+    }
+    expect(offenders, 'leftover i18n identifier params must go through finiteText').toEqual([])
+  })
+
+  it('leftover toast/confirm identifier interpolations go through finiteText', () => {
+    const TOAST_IDENT = /toast\((?:(?!finiteText)[^;\n])*\$\{(?:c|s|svc|it|v|job|task|acct|file)\.(?:name|username|id)/
+    const CONFIRM_IDENT = /confirm\(t\((?:(?!finiteText)[^)]*)\b(?:name|id|username|path|label)\s*:\s*(?:svc|task|it|c|acct|detail\.value|uninstallModal|target|dev|peer)\.(?:name|username|id)/
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      for (const m of src.matchAll(new RegExp(TOAST_IDENT, 'g'))) {
+        offenders.push(`${name}: ${m[0].slice(0, 120)}`)
+      }
+      for (const m of src.matchAll(new RegExp(CONFIRM_IDENT, 'g'))) {
+        offenders.push(`${name}: ${m[0].slice(0, 120)}`)
+      }
+    }
+    expect(offenders, 'leftover toast/confirm identifier interpolations must go through finiteText').toEqual([])
+  })
+
+  it('leftover :title/:aria-label interpolations go through finiteText', () => {
+    const ATTR = /(?::title|:aria-label)="(?![^"]*(?:finiteText|t\())[^"]*\.(?:name|id|username|path|status|label|detail|protocol|ip|mac|url|conf|file|image|ports|pubkey|command|program|restore|source|error)"/g
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(ATTR)) {
+        offenders.push(`${name}: ${m[0]}`)
+      }
+    }
+    expect(offenders, 'leftover :title/:aria-label Infinity must go through finiteText').toEqual([])
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dash).toMatch(/finiteText\(first\?\.name, ''\)/)
+    expect(dash).toMatch(/const url = finiteText\(o\.url, ''\)/)
+    expect(dash).toMatch(/finiteText\(ollamaTooltip\.value, ''\) \|\| 'http:\/\/127\.0\.0\.1:11434'/)
+    expect(dash).toMatch(/finiteText\(ollama\.value\?\.url, ''\) \|\| 'http:\/\/127\.0\.0\.1:11434'/)
+  })
+
+  it('LoadFailure leftover message/detail go through finiteText', () => {
+    const fail = readFileSync(resolve(SRC, 'components/LoadFailure.vue'), 'utf8')
+    expect(fail).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(fail).not.toMatch(/\{\{\s*message\s*\}\}/)
+    expect(fail).toMatch(/finiteText\(message, ''\) \|\| t\('common\.load_failed'\)/)
+    expect(fail).not.toMatch(/\{\{\s*detail\s*\}\}/)
+    expect(fail).toMatch(/finiteText\(detail\)/)
+  })
+
+  it('leftover template array joins map finiteText per element', () => {
+    // `finiteText(list.join(', '))` still prints leftover Infinity inside an
+    // element. Each joined leftover has to go through finiteText first.
+    const BARE_JOIN = /\{\{(?:(?!finiteText|finiteN)[^}])*\.join\s*\(/
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/\{\{[\s\S]*?\}\}/g)) {
+        const interp = m[0].replace(/\s+/g, ' ').trim()
+        if (BARE_JOIN.test(interp)) offenders.push(`${name}: ${interp}`)
+      }
+    }
+    expect(offenders, 'leftover .join interpolations must map finiteText per element').toEqual([])
+  })
+
+  it('leftover document.title and hostname interpolations reject Infinity', () => {
+    const indexHtml = readFileSync(resolve(SRC, '../../index.html'), 'utf8')
+    expect(indexHtml).not.toMatch(/document\.title=\(c\.down\?`🔴\$\{c\.down\}/)
+    expect(indexHtml).toMatch(/document\.title=\(num\(c\.down,0\)>0\?`🔴\$\{num\(c\.down/)
+    expect(indexHtml).not.toMatch(/\$\{c\.ok\} 正常/)
+    expect(indexHtml).toMatch(/num\(c\.ok,"\?"\)/)
+    const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(vms).toMatch(/finiteText\(data\.value\?\.host_ip, ''\)/)
+    expect(apps).toMatch(/finiteText\(managed\.value\?\.host_ip, ''\)/)
+    expect(dash).toMatch(/finiteText\(host\?\.hostname/)
+    expect(settings).toMatch(/finiteText\(identity\?\.hostname/)
+    expect(settings).toMatch(/finiteText\(host\?\.hostname/)
+  })
+
+  it('keeps MainArray unknown-status and StackBar title leftover composition', () => {
+    const main = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    const bar = readFileSync(resolve(SRC, 'components/StackBar.vue'), 'utf8')
+    expect(main).toContain("finiteText(data?.array?.status, '') || t('network.unknown')")
+    expect(bar).toMatch(/:title="finiteText\(seg\.label\) \+ ': ' \+ format\(seg\.value\)"/)
   })
 })

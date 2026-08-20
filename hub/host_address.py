@@ -34,6 +34,25 @@ _detect_cache: dict[str, Any] = {"t": 0.0, "value": None}
 _DETECT_TTL = 30.0
 
 
+def _as_text(value) -> str:
+    """Drop leftover ``\\ud800`` so host_ip JSON cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 def configured_host() -> str:
     """Return the advertised host selector; auto means route discovery.
 
@@ -41,24 +60,24 @@ def configured_host() -> str:
     values there must not become ``{host}`` in bookmark / compose URLs.
     ``SERVERHUB_HOST_IP`` remains an explicit advertised-address override.
     """
-    advertised = (os.environ.get("SERVERHUB_HOST_IP") or "").strip()
+    advertised = _as_text(os.environ.get("SERVERHUB_HOST_IP") or "").strip()
     if advertised and advertised not in _BIND_ONLY_HOSTS:
         return advertised
-    bind_or_host = (os.environ.get("SERVERHUB_HOST") or "").strip()
+    bind_or_host = _as_text(os.environ.get("SERVERHUB_HOST") or "").strip()
     if bind_or_host and bind_or_host not in _BIND_ONLY_HOSTS:
         return bind_or_host
     try:
         from hub.config import cfg
 
-        return str((cfg().get("settings") or {}).get("host_ip") or "auto").strip()
+        return _as_text((cfg().get("settings") or {}).get("host_ip") or "auto").strip()
     except Exception:
         return "auto"
 
 
 def _usable_address(value: str) -> bool:
     try:
-        address = ipaddress.ip_address((value or "").strip())
-    except ValueError:
+        address = ipaddress.ip_address(_as_text(value).strip())
+    except (ValueError, TypeError):
         return False
     return not (address.is_loopback or address.is_unspecified or address.is_link_local)
 
@@ -87,7 +106,9 @@ def _default_route_fields() -> tuple[tuple[str, str], ...]:
     if rc != 0:
         return ()
     fields: list[tuple[str, str]] = []
-    for line in output.splitlines():
+    # int / None / bytes payloads used to AttributeError on splitlines and
+    # 500 every host_ip() consumer (status, bookmarks, compose URLs).
+    for line in _as_text(output).splitlines():
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
@@ -133,7 +154,7 @@ def default_interface(*, force: bool = False) -> str:
 @ttl_memo(_ADDRESS_TTL)
 def _interface_address(interface: str) -> str:
     rc, output, _ = sh(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
-    return output.strip() if rc == 0 else ""
+    return _as_text(output).strip() if rc == 0 else ""
 
 
 def interface_address(interface: str, *, force: bool = False) -> str:
@@ -167,8 +188,12 @@ def invalidate_routing() -> None:
 def _cached_detection(now: float) -> str:
     with _cache_lock:
         value = _detect_cache["value"]
-        if value and now - float(_detect_cache["t"]) < _DETECT_TTL:
-            return str(value)
+        try:
+            age = now - float(_detect_cache["t"])
+        except (TypeError, ValueError, OverflowError):
+            return ""
+        if value and age < _DETECT_TTL:
+            return _as_text(value)
     return ""
 
 
@@ -213,16 +238,22 @@ def _detect_lan_ip_uncached(now: float, *, force: bool = False) -> str:
             candidates.append(address)
     try:
         candidates.extend(
-            item[4][0]
+            _as_text(item[4][0])
             for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
         )
-    except OSError:
+    except (OSError, UnicodeError, ValueError, TypeError):
+        # Leftover ``\\ud800`` in the hostname is UnicodeError, not OSError;
+        # GET /api/system/host and every host_ip() consumer used to 500.
         pass
 
     value = next((candidate for candidate in candidates if _usable_address(candidate)), "")
     if not value:
-        local_name = socket.gethostname().strip()
+        try:
+            local_name = _as_text(socket.gethostname()).strip()
+        except (OSError, UnicodeError, ValueError, TypeError):
+            local_name = ""
         value = local_name if local_name else "localhost"
+    value = _as_text(value)
     with _cache_lock:
         _detect_cache.update(t=now, value=value)
     return value
@@ -243,16 +274,18 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
         from hub.config import cfg
 
         address_book = (cfg().get("settings") or {}).get("address_book") or {}
+        if not isinstance(address_book, dict):
+            address_book = {}
         values.update({
-            str(key): str(value)
+            _as_text(key): _as_text(value)
             for key, value in address_book.items()
             if value is not None
         })
     except Exception:
         pass
-    if extra:
+    if isinstance(extra, dict):
         values.update({
-            str(key): str(value)
+            _as_text(key): _as_text(value)
             for key, value in extra.items()
             if value is not None
         })
@@ -261,48 +294,75 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
 
 def resolve_template(value: str | None, extra: dict[str, Any] | None = None) -> str | None:
     """Expand host and named address-book variables."""
-    if value is None or not isinstance(value, str) or "{" not in value:
+    if value is None or not isinstance(value, str):
         return value
+    if "{" not in value:
+        return _as_text(value)
     variables = template_variables(extra)
-    return _VAR_RE.sub(lambda match: variables.get(match.group(1), match.group(0)), value)
+    return _as_text(_VAR_RE.sub(lambda match: variables.get(match.group(1), match.group(0)), value))
 
 
-def resolve_value(value: Any, extra: dict[str, Any] | None = None) -> Any:
-    """Recursively expand address templates at API/use boundaries."""
+def resolve_value(value: Any, extra: dict[str, Any] | None = None, *, _depth: int = 0) -> Any:
+    """Recursively expand address templates at API/use boundaries.
+
+    Depth-capped: leftover deeply-nested YAML used to RecursionError
+    compose/catalog/bookmark payloads that walk this walker.
+    """
+    if _depth > 16:
+        if isinstance(value, (dict, list, tuple)):
+            return None
+        return resolve_template(value, extra) if isinstance(value, str) else value
     if isinstance(value, str):
         return resolve_template(value, extra)
     if isinstance(value, list):
-        return [resolve_value(item, extra) for item in value]
+        return [resolve_value(item, extra, _depth=_depth + 1) for item in value]
     if isinstance(value, tuple):
-        return tuple(resolve_value(item, extra) for item in value)
+        return tuple(resolve_value(item, extra, _depth=_depth + 1) for item in value)
     if isinstance(value, dict):
-        return {key: resolve_value(item, extra) for key, item in value.items()}
+        return {
+            _as_text(key): resolve_value(item, extra, _depth=_depth + 1)
+            for key, item in value.items()
+        }
     return value
 
 
 def normalize_local_url(value: str | None) -> str:
     """Store local URLs with {host} so DHCP/interface changes do not stale them."""
-    raw = (value or "").strip()
-    if not raw or "{host}" in raw:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raw = _as_text(value).strip()
+    else:
+        raw = value.strip()
+    if not raw:
+        return raw
+    try:
+        raw.encode("utf-8")
+    except UnicodeEncodeError:
+        # Leftover ``\\ud800`` used to UTF-8 500 bookmark / service URL writes.
+        return _as_text(raw)
+    if "{host}" in raw:
         return raw
     try:
         parsed = urlsplit(raw)
-    except ValueError:
-        return raw
-    if not parsed.scheme or not parsed.hostname or parsed.username or parsed.password:
-        return raw
-    try:
+        hostname = (parsed.hostname or "").lower()
         port = parsed.port
-    except ValueError:
+    except (ValueError, UnicodeError):
+        return raw
+    if not parsed.scheme or not hostname or parsed.username or parsed.password:
         return raw
     local_names = {
         "localhost",
         "127.0.0.1",
         "::1",
         host_ip().lower(),
-        socket.gethostname().lower(),
     }
-    hostname = parsed.hostname.lower()
+    try:
+        # Same leftover as detect_lan_ip: ``gethostname()`` OSError / a
+        # lone surrogate used to 500 every caller that stores a local URL.
+        local_names.add(_as_text(socket.gethostname()).lower())
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
     if hostname not in local_names:
         return raw
     netloc = "{host}" + (f":{port}" if port else "")

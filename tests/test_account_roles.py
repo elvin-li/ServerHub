@@ -47,6 +47,22 @@ WITH_FAMILY = {
 }
 
 
+class AuthMutateTypeTests(unittest.TestCase):
+    def test_set_password_repairs_list_settings_and_auth(self):
+        data = {"settings": []}
+        with patch.object(auth, "config_mutate", side_effect=lambda fn: fn(data)):
+            auth.set_password("long-enough-password")
+        self.assertIsInstance(data["settings"], dict)
+        self.assertEqual(data["settings"]["auth"]["username"], "admin")
+        self.assertIn("password_hash", data["settings"]["auth"])
+
+        data = {"settings": {"auth": ["oops"]}}
+        with patch.object(auth, "config_mutate", side_effect=lambda fn: fn(data)):
+            auth.set_password("long-enough-password")
+        self.assertEqual(data["settings"]["auth"]["username"], "admin")
+        self.assertIsInstance(data["settings"]["auth"], dict)
+
+
 def with_cfg(cfg: dict):
     return patch.object(auth, "_auth_cfg", return_value=cfg)
 
@@ -109,6 +125,44 @@ class AccountsRegistryTests(unittest.TestCase):
         with with_cfg(cfg):
             reg = auth.accounts()
         self.assertEqual(list(reg), ["admin"])
+
+    def test_accounts_and_resources_that_are_not_lists_do_not_500(self):
+        # A hand-edit like ``accounts: 1`` used to TypeError on every cookie
+        # request.  ``resources: 80`` on one row did the same.
+        with with_cfg({"enabled": True, "username": "admin",
+                       "password_hash": "h", "accounts": 1}):
+            self.assertEqual(list(auth.accounts()), ["admin"])
+        with with_cfg({
+            "enabled": True,
+            "username": "admin",
+            "password_hash": "h",
+            "accounts": [{"username": "kid", "password_hash": "k", "resources": 80}],
+        }):
+            rec = auth.accounts()["kid"]
+            self.assertEqual(rec["resources"], [])
+
+    def test_session_epochs_that_is_not_a_map_is_zero(self):
+        with with_cfg({"session_epochs": ["admin"]}):
+            self.assertEqual(auth._session_epoch("admin"), 0)
+
+    def test_infinite_session_epoch_does_not_500(self):
+        """YAML ``.inf`` (and JSON 1e309) used to OverflowError login/session."""
+        with with_cfg({
+            "username": "admin",
+            "password_hash": "hash-admin",
+            "session_epochs": {"admin": float("inf")},
+        }):
+            self.assertEqual(auth._session_epoch("admin"), 0)
+            self.assertEqual(
+                auth.account_session_version("admin"),
+                hashlib.sha256(b"hash-admin").hexdigest()[:16],
+            )
+
+    def test_bump_repairs_an_infinite_epoch(self):
+        data = {"settings": {"auth": {"session_epochs": {"admin": float("inf")}}}}
+        with patch.object(auth, "config_mutate", side_effect=lambda fn: fn(data)):
+            auth.bump_session_epoch("admin")
+        self.assertEqual(data["settings"]["auth"]["session_epochs"]["admin"], 1)
 
     def test_a_fresh_install_with_no_credential_has_no_accounts(self):
         with with_cfg({"enabled": True}):

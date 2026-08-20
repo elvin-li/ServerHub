@@ -14,18 +14,27 @@ import stat
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 
-from hub.config import cfg
+from hub.config import settings_section
 from hub.errors import api_error
 from hub.host_address import host_ip
-from hub.paths import AGENTS_DIR, BASE, STATE_ROOT, UID
-from hub.util import sh
+from hub.paths import AGENTS_DIR, BASE, STATE_ROOT, UID, user_home
+from hub.util import read_bytes_capped, sh, utf8_env
 
-HOME = Path.home()
+
+def _default_home() -> Path:
+    """User home.  ``Path.home()`` leftover must not 500 import."""
+    return user_home() or Path("/var/empty/serverhub-files")
+
+
+HOME = _default_home()
 SERVICES_ROOT = HOME / "Services"
+#: Leftover multi-MB FileBrowser LaunchAgent plist used to OOM GET /api/files.
+_PLIST_CAP = 256 * 1024
 
 # ─── Protected paths ──────────────────────────────────────────────────────────
 # The default roots include ~/Services (which contains this install) and ~, so
@@ -56,6 +65,7 @@ PROTECTED_NAMES: frozenset[str] = frozenset({
     "backup-credentials.json",
     "twofa.json",
     "api-keys.json",
+    "notify-credentials.json",
     "wireguard-peers.json",
     ".local-client-token",
     ".setup-token",
@@ -89,7 +99,13 @@ def _fold(value: str) -> str:
     under-match.  A denied file is a visible annoyance; a leaked signing key is
     not.
     """
-    return str(value).lower()
+    try:
+        text = str(value)
+    except RecursionError:
+        return ""
+    except Exception:
+        return ""
+    return text.lower()
 
 
 def is_protected(p: Path) -> bool:
@@ -98,7 +114,7 @@ def is_protected(p: Path) -> bool:
     for d in PROTECTED_DIRS:
         try:
             resolved_dir = d.resolve()
-        except OSError:
+        except (OSError, RuntimeError, ValueError):
             continue
         folded_dir = _fold(resolved_dir)
         if folded == folded_dir:
@@ -133,26 +149,84 @@ _started_by_hub = False
 
 
 def _settings() -> dict:
-    return (cfg().get("settings") or {}).get("files") or {}
+    return settings_section("files")
+
+
+def _as_text(value) -> str:
+    """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 Files JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _try_resolve(value) -> Path | None:
+    """``Path.resolve()`` raises RuntimeError on a symlink loop, not OSError."""
+    try:
+        return Path(os.path.expanduser(str(value))).resolve()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return None
+
+
+def _is_dir(p: Path) -> bool:
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def _exists(p: Path) -> bool:
+    try:
+        return p.exists()
+    except OSError:
+        return False
 
 
 def default_roots() -> list[dict]:
     """Allowlisted roots. Configurable via settings.files.roots."""
     custom = _settings().get("roots")
-    if custom:
+    if isinstance(custom, list) and custom:
         out = []
         for r in custom:
-            if isinstance(r, str):
-                p = Path(os.path.expanduser(r)).resolve()
-                out.append({"id": p.name or "root", "name": p.name or str(p), "path": str(p)})
-            elif isinstance(r, dict) and r.get("path"):
-                p = Path(os.path.expanduser(r["path"])).resolve()
-                out.append({
-                    "id": r.get("id") or p.name or "root",
-                    "name": r.get("name") or p.name or str(p),
-                    "path": str(p),
-                })
-        return [x for x in out if Path(x["path"]).is_dir()]
+            try:
+                if isinstance(r, str):
+                    p = _try_resolve(r)
+                    if p is None:
+                        continue
+                    out.append({
+                        "id": _as_text(p.name or "root") or "root",
+                        "name": _as_text(p.name or str(p)) or "root",
+                        "path": _as_text(p),
+                    })
+                elif isinstance(r, dict) and r.get("path"):
+                    p = _try_resolve(r["path"])
+                    if p is None:
+                        continue
+                    rid = r.get("id") or p.name or "root"
+                    rname = r.get("name") or p.name or str(p)
+                    if not isinstance(rid, str) or not rid:
+                        rid = p.name or "root"
+                    if not isinstance(rname, str) or not rname:
+                        rname = p.name or str(p)
+                    out.append({
+                        "id": _as_text(rid) or "root",
+                        "name": _as_text(rname) or "root",
+                        "path": _as_text(p),
+                    })
+            except (OSError, ValueError, TypeError, RuntimeError):
+                continue
+        return [x for x in out if _is_dir(Path(x["path"]))]
     candidates = [
         {"id": "services", "name": "Services", "path": str(SERVICES_ROOT)},
         {"id": "media", "name": "Media", "path": str(SERVICES_ROOT / "media")},
@@ -165,8 +239,16 @@ def default_roots() -> list[dict]:
     out = []
     for c in candidates:
         p = Path(c["path"])
-        if p.exists():
-            out.append({**c, "path": str(p.resolve())})
+        if not _exists(p):
+            continue
+        resolved = _try_resolve(p)
+        if resolved is not None:
+            out.append({
+                **c,
+                "id": _as_text(c["id"]),
+                "name": _as_text(c["name"]),
+                "path": _as_text(resolved),
+            })
     return out
 
 
@@ -178,24 +260,38 @@ def _resolve_safe(path: str | None, root_id: str | None = None) -> Path:
 
     root_path: Path | None = None
     if root_id:
+        matched = False
         for r in roots:
             if r["id"] == root_id:
-                root_path = Path(r["path"]).resolve()
+                matched = True
+                root_path = _try_resolve(r["path"])
                 break
-        if root_path is None:
+        if not matched or root_path is None:
             raise api_error("files.unknown_root", root_id=root_id)
 
     if not path or path in (".", "/"):
         if root_path:
             return root_path
-        return Path(roots[0]["path"]).resolve()
+        first = _try_resolve(roots[0]["path"])
+        if first is None:
+            raise api_error("files.no_roots")
+        return first
 
-    p = Path(os.path.expanduser(str(path))).resolve()
+    p = _try_resolve(path)
+    if p is None:
+        raise api_error("files.not_found", path=str(path)[:200])
 
     # must be under some allowed root
-    allowed = [Path(r["path"]).resolve() for r in roots]
     if root_path:
         allowed = [root_path]
+    else:
+        allowed = []
+        for r in roots:
+            resolved = _try_resolve(r["path"])
+            if resolved is not None:
+                allowed.append(resolved)
+        if not allowed:
+            raise api_error("files.no_roots")
     ok = False
     for a in allowed:
         try:
@@ -217,54 +313,82 @@ def _resolve_safe(path: str | None, root_id: str | None = None) -> Path:
 def _entry(p: Path, root: Path) -> dict:
     try:
         st = p.lstat()
-    except OSError as e:
-        return {"name": p.name, "error": str(e)}
-    is_link = p.is_symlink()
-    is_dir = p.is_dir() and not is_link
-    # follow only for size of regular files
-    size = 0
-    if p.is_file():
-        try:
-            size = st.st_size
-        except OSError:
-            size = 0
+    except (OSError, ValueError, TypeError) as e:
+        # ValueError: leftover ``\\ud800`` in a FUSE/SMB name. pathlib
+        # exists/is_dir swallow that; lstat/open do not.
+        return {"name": _as_text(p.name), "error": _as_text(e)}
     try:
-        rel = str(p.relative_to(root)) if p != root else ""
-    except ValueError:
-        rel = p.name
-    mode = stat.filemode(st.st_mode)
-    return {
-        "name": p.name or str(p),
-        "path": str(p),
-        "rel": rel,
-        "is_dir": bool(is_dir or (is_link and p.is_dir())),
-        "is_file": p.is_file(),
-        "is_link": is_link,
-        "size": size,
-        "mtime": int(st.st_mtime),
-        "mode": mode,
-        "ext": p.suffix.lower() if p.is_file() else "",
-    }
+        is_link = p.is_symlink()
+        is_dir = p.is_dir() and not is_link
+        # follow only for size of regular files
+        size = 0
+        if p.is_file():
+            try:
+                size = int(st.st_size)
+            except (TypeError, ValueError, OverflowError, OSError):
+                size = 0
+            if size < 0:
+                size = 0
+        try:
+            rel = str(p.relative_to(root)) if p != root else ""
+        except ValueError:
+            rel = p.name
+        try:
+            mtime = int(st.st_mtime)
+        except (TypeError, ValueError, OverflowError):
+            mtime = 0
+        try:
+            mode = stat.filemode(int(st.st_mode))
+        except (TypeError, ValueError, OverflowError):
+            mode = ""
+        return {
+            "name": _as_text(p.name or str(p)),
+            "path": _as_text(p),
+            "rel": _as_text(rel),
+            "is_dir": bool(is_dir or (is_link and p.is_dir())),
+            "is_file": p.is_file(),
+            "is_link": is_link,
+            "size": size,
+            "mtime": mtime,
+            "mode": mode,
+            "ext": _as_text(p.suffix.lower()) if p.is_file() else "",
+        }
+    except (OSError, TypeError, ValueError) as e:
+        return {"name": _as_text(p.name), "error": _as_text(e)}
 
 
 def list_dir(path: str | None = None, root_id: str | None = None) -> dict:
     p = _resolve_safe(path, root_id)
-    if not p.exists():
+    try:
+        exists = p.exists()
+        is_dir = p.is_dir() if exists else False
+    except OSError:
+        # exists/is_dir on a dying FUSE mount raise EIO before iterdir.
+        raise api_error("files.permission_denied", path=str(p))
+    if not exists:
         raise api_error("files.not_found", path=str(p))
-    if not p.is_dir():
+    if not is_dir:
         raise api_error("files.not_a_dir")
 
     # pick root for relative paths
     roots = default_roots()
-    root = Path(roots[0]["path"]).resolve()
+    if not roots:
+        raise api_error("files.no_roots")
+    root = _try_resolve(roots[0]["path"])
+    if root is None:
+        raise api_error("files.no_roots")
     if root_id:
         for r in roots:
             if r["id"] == root_id:
-                root = Path(r["path"]).resolve()
+                resolved = _try_resolve(r["path"])
+                if resolved is not None:
+                    root = resolved
                 break
     else:
         for r in roots:
-            rp = Path(r["path"]).resolve()
+            rp = _try_resolve(r["path"])
+            if rp is None:
+                continue
             try:
                 p.relative_to(rp)
                 root = rp
@@ -275,8 +399,18 @@ def list_dir(path: str | None = None, root_id: str | None = None) -> dict:
 
     items = []
     try:
+        # exists/is_dir above can lose a race: the directory is unmounted or
+        # replaced before iterdir, and FileNotFoundError / NotADirectoryError
+        # used to 500 the Files page.
         children = list(p.iterdir())
+    except FileNotFoundError:
+        raise api_error("files.not_found", path=str(p))
+    except NotADirectoryError:
+        raise api_error("files.not_a_dir")
     except PermissionError:
+        raise api_error("files.permission_denied", path=str(p))
+    except OSError:
+        # Dying FUSE/SMB mounts raise EIO / EINVAL rather than PermissionError.
         raise api_error("files.permission_denied", path=str(p))
     show_hidden = bool(_settings().get("show_hidden"))
     for c in children:
@@ -297,16 +431,16 @@ def list_dir(path: str | None = None, root_id: str | None = None) -> dict:
             cur.relative_to(root)
         except ValueError:
             break
-        crumbs.append({"name": cur.name or root.name, "path": str(cur)})
+        crumbs.append({"name": _as_text(cur.name or root.name), "path": _as_text(cur)})
         if cur == root:
             break
         cur = cur.parent
     crumbs.reverse()
 
     return {
-        "path": str(p),
-        "root_id": root_id,
-        "root": str(root),
+        "path": _as_text(p),
+        "root_id": _as_text(root_id) if root_id else root_id,
+        "root": _as_text(root),
         "crumbs": crumbs,
         "items": items,
         "count": len(items),
@@ -323,40 +457,138 @@ def _clean_component(value: str | None) -> str:
     fields in the root-owned /etc/exports.  Names like this are never
     intentional, so refuse them at the point of creation too.
     """
-    text = (value or "").strip().replace("/", "").replace("\\", "")
+    if value is None:
+        text = ""
+    elif not isinstance(value, str):
+        raise api_error("files.bad_name")
+    else:
+        text = value.strip().replace("/", "").replace("\\", "")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
+        raise api_error("files.bad_name")
+    # Leftover ``\\ud800`` is not a control byte; Path.lstat/mkdir still
+    # UnicodeEncodeError, and the JSON encoder then 500s the Files page.
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
         raise api_error("files.bad_name")
     return text
 
 
 def mkdir(path: str, name: str, root_id: str | None = None) -> dict:
     parent = _resolve_safe(path, root_id)
-    if not parent.is_dir():
+    try:
+        is_dir = parent.is_dir()
+    except OSError:
+        raise api_error("files.permission_denied", path=str(parent))
+    if not is_dir:
         raise api_error("files.parent_not_a_dir")
     name = _clean_component(name)
     if not name or name in (".", ".."):
         raise api_error("files.bad_name")
-    dest = (parent / name).resolve()
+    try:
+        dest = (parent / name).resolve()
+    except (OSError, ValueError, RuntimeError):
+        raise api_error("files.bad_name")
     _resolve_safe(str(dest), root_id)  # re-check under root
-    if dest.exists():
+    try:
+        # O_EXCL equivalent: exists-then-mkdir raced and FileExistsError 500'd
+        # the Files page.  Let the kernel decide.
+        dest.mkdir(parents=False)
+    except FileExistsError:
         raise api_error("files.exists")
-    dest.mkdir(parents=False)
-    return {"ok": True, "path": str(dest)}
+    except FileNotFoundError:
+        # Parent vanished between is_dir and mkdir.
+        raise api_error("files.parent_not_a_dir")
+    except NotADirectoryError:
+        raise api_error("files.parent_not_a_dir")
+    except OSError:
+        raise api_error("files.permission_denied", path=str(dest))
+    return {"ok": True, "path": _as_text(dest)}
 
 
 def delete_path(path: str, root_id: str | None = None) -> dict:
     p = _resolve_safe(path, root_id)
     # never delete roots themselves
     for r in default_roots():
-        if p == Path(r["path"]).resolve():
+        resolved = _try_resolve(r["path"])
+        if resolved is not None and p == resolved:
             raise api_error("files.cannot_delete_root")
-    if not p.exists():
+    try:
+        # exists-then-unlink raced: a file removed between the check and the
+        # syscall raised FileNotFoundError and 500'd the Files page.
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    except FileNotFoundError:
         raise api_error("files.not_found")
-    if p.is_dir() and not p.is_symlink():
-        shutil.rmtree(p)
-    else:
-        p.unlink()
-    return {"ok": True, "path": str(p)}
+    except NotADirectoryError:
+        # is_dir() then rmtree: the path became a file in the gap.
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            raise api_error("files.not_found")
+        except OSError:
+            raise api_error("files.permission_denied", path=str(p))
+    except OSError:
+        raise api_error("files.permission_denied", path=str(p))
+    return {"ok": True, "path": _as_text(p)}
+
+
+#: Darwin ``renameatx_np`` / ``AT_FDCWD`` / ``RENAME_EXCL``.
+_AT_FDCWD = -2
+_RENAME_EXCL = 0x0004
+_renameatx_np = None
+
+
+def _dir_rename_no_clobber(src: Path, dest: Path) -> None:
+    """Rename a directory without replacing dest.
+
+    POSIX ``rename`` of a directory onto an empty dest directory succeeds and
+    deletes dest.  ``dest.exists()`` then ``os.rename`` is therefore still a
+    TOCTOU for directories.  ``renameatx_np(RENAME_EXCL)`` is one syscall.
+    """
+    global _renameatx_np
+    import ctypes
+
+    if _renameatx_np is None:
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        fn = libc.renameatx_np
+        fn.argtypes = [
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+        ]
+        fn.restype = ctypes.c_int
+        _renameatx_np = fn
+    rc = _renameatx_np(
+        _AT_FDCWD, os.fsencode(src), _AT_FDCWD, os.fsencode(dest), _RENAME_EXCL,
+    )
+    if rc == 0:
+        return
+    err = ctypes.get_errno() or errno.EIO
+    raise OSError(err, os.strerror(err), str(src), None, str(dest))
+
+
+def _rename_no_clobber(src: Path, dest: Path) -> None:
+    """Rename *src* to *dest* without replacing an existing dest.
+
+    POSIX ``rename`` replaces a dest file (and an empty dest directory).
+    ``dest.exists()`` then ``Path.rename`` is a TOCTOU: a name planted in the
+    gap is overwritten and ``FileExistsError`` is never raised.  ``link`` +
+    ``unlink`` is exclusive for files; directories use ``RENAME_EXCL``.
+    """
+    try:
+        directory = src.is_dir() and not src.is_symlink()
+    except OSError:
+        directory = False
+    if directory:
+        _dir_rename_no_clobber(src, dest)
+        return
+    os.link(src, dest)
+    try:
+        src.unlink()
+    except FileNotFoundError:
+        # Dest holds the remaining link; the rename completed.
+        pass
 
 
 def rename_path(path: str, new_name: str, root_id: str | None = None) -> dict:
@@ -364,20 +596,112 @@ def rename_path(path: str, new_name: str, root_id: str | None = None) -> dict:
     new_name = _clean_component(new_name)
     if not new_name or new_name in (".", ".."):
         raise api_error("files.bad_name")
-    dest = (p.parent / new_name).resolve()
+    try:
+        dest = (p.parent / new_name).resolve()
+    except (OSError, ValueError, RuntimeError):
+        raise api_error("files.bad_name")
     _resolve_safe(str(dest), root_id)
-    if dest.exists():
+    try:
+        taken = dest.exists()
+    except OSError:
+        raise api_error("files.permission_denied", path=str(dest))
+    if taken:
         raise api_error("files.dest_exists")
-    p.rename(dest)
-    return {"ok": True, "path": str(dest), "from": str(p)}
+    try:
+        _rename_no_clobber(p, dest)
+    except FileExistsError:
+        raise api_error("files.dest_exists")
+    except FileNotFoundError:
+        # Source vanished between resolve and rename.
+        raise api_error("files.not_found")
+    except OSError as exc:
+        if exc.errno == errno.EEXIST:
+            raise api_error("files.dest_exists")
+        if exc.errno in {errno.ENOTEMPTY, errno.EISDIR}:
+            raise api_error("files.dest_exists")
+        if exc.errno == errno.ENOENT:
+            raise api_error("files.not_found")
+        raise api_error("files.permission_denied", path=str(p))
+    return {"ok": True, "path": _as_text(dest), "from": _as_text(p)}
 
 
-def download(path: str, root_id: str | None = None) -> FileResponse:
+def _path_of_fd(fd: int) -> str | None:
+    """The path Darwin actually opened, or None when the kernel will not say.
+
+    ``O_NOFOLLOW`` only refuses a symlink at the last component.  An ancestor
+    swapped for a symlink after :func:`_resolve_safe` still leads ``open()``
+    into STATE_ROOT.  ``F_GETPATH`` is the path of the fd, so the denylist
+    can run against what was opened rather than what was asked for.
+    """
+    try:
+        import fcntl
+
+        raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(4096))
+    except (OSError, AttributeError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, (bytes, bytearray)):
+        return None
+    text = bytes(raw).split(b"\x00", 1)[0].decode("utf-8", "surrogateescape")
+    return text or None
+
+
+def _reject_opened_outside(fd: int, root_id: str | None) -> None:
+    opened = _path_of_fd(fd)
+    if not opened:
+        return
+    _resolve_safe(opened, root_id)
+
+
+def download(path: str, root_id: str | None = None) -> StreamingResponse:
     p = _resolve_safe(path, root_id)
-    if not p.is_file():
+    # Open the last component ourselves. FileResponse would re-open the
+    # path after this check, and a symlink planted in that window would
+    # be followed into STATE_ROOT secrets. O_NOFOLLOW is one syscall.
+    try:
+        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOENT, errno.EISDIR}:
+            raise api_error("files.file_only")
+        raise api_error("files.permission_denied", path=str(p))
+    except ValueError:
+        # Leftover ``\\ud800`` in the last component: os.open encodes
+        # strictly, unlike Path.exists.
         raise api_error("files.file_only")
-    media = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
-    return FileResponse(str(p), filename=p.name, media_type=media)
+    try:
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            # Dying FUSE/SMB after open: EIO used to 500 GET /api/files/download.
+            raise api_error("files.permission_denied", path=str(p))
+        if not stat.S_ISREG(st.st_mode):
+            raise api_error("files.file_only")
+        _reject_opened_outside(fd, root_id)
+        media = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+        try:
+            length = int(st.st_size)
+        except (TypeError, ValueError, OverflowError):
+            length = 0
+        if length < 0:
+            length = 0
+        headers = {
+            "Content-Length": str(length),
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(_as_text(p.name)),
+        }
+
+        def chunks():
+            try:
+                while True:
+                    buf = os.read(fd, 65536)
+                    if not buf:
+                        break
+                    yield buf
+            finally:
+                os.close(fd)
+
+        return StreamingResponse(chunks(), media_type=media, headers=headers)
+    except Exception:
+        os.close(fd)
+        raise
 
 
 async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dict:
@@ -388,9 +712,17 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
     # freezes every other request in the process for 5-15 seconds.
     def _prepare() -> tuple[Path, str, int]:
         parent = _resolve_safe(path, root_id)
-        if not parent.is_dir():
+        try:
+            is_dir = parent.is_dir()
+        except OSError:
+            raise api_error("files.permission_denied", path=str(parent))
+        if not is_dir:
             raise api_error("files.dest_not_a_dir")
-        name = _clean_component(Path(file.filename or "upload.bin").name)
+        try:
+            raw_name = Path(str(file.filename or "upload.bin")).name
+        except (OSError, ValueError, TypeError):
+            raise api_error("files.bad_filename")
+        name = _clean_component(raw_name)
         if not name or name in (".", ".."):
             raise api_error("files.bad_filename")
         dest = parent / name
@@ -405,11 +737,35 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
         except OSError as exc:
             if exc.errno in {errno.ELOOP, errno.EEXIST}:
                 raise api_error("files.upload_would_overwrite", name=name)
-            raise
+            if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
+                # Parent vanished or became a file between is_dir and open.
+                raise api_error("files.dest_not_a_dir")
+            raise api_error("files.permission_denied", path=str(dest))
+        opened = _path_of_fd(fd)
+        if opened:
+            try:
+                _resolve_safe(opened, root_id)
+            except Exception:
+                os.close(fd)
+                for victim in (opened, dest):
+                    try:
+                        Path(victim).unlink()
+                    except OSError:
+                        pass
+                raise
         return dest, name, fd
 
     dest, name, fd = await asyncio.to_thread(_prepare)
-    max_mb = int(_settings().get("max_upload_mb") or 512)
+    raw_max = _settings().get("max_upload_mb")
+    if isinstance(raw_max, bool) or raw_max is None:
+        max_mb = 512
+    else:
+        try:
+            max_mb = int(raw_max)
+        except (TypeError, ValueError, OverflowError):
+            max_mb = 512
+    if max_mb <= 0:
+        max_mb = 512
     max_bytes = max_mb * 1024 * 1024
     written = 0
     try:
@@ -441,7 +797,7 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
         raise
     finally:
         await file.close()
-    return {"ok": True, "path": str(dest), "size": written, "name": name}
+    return {"ok": True, "path": _as_text(dest), "size": written, "name": _as_text(name)}
 
 
 # ─── Optional FileBrowser process (full UI) ───────────────────────────────────
@@ -450,31 +806,33 @@ def filebrowser_status() -> dict:
     running = False
     pid = None
     rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{UID}/{FB_LABEL}"], timeout=5)
-    if rc == 0 and "state = running" in (out or ""):
+    out = _as_text(out)
+    if rc == 0 and "state = running" in out:
         running = True
-        for line in (out or "").splitlines():
+        for line in out.splitlines():
             if "pid =" in line:
                 try:
                     pid = int(line.split("=")[-1].strip())
-                except ValueError:
+                except (TypeError, ValueError, OverflowError):
                     pass
     if not running:
         rc2, out2, _ = sh(["/usr/bin/pgrep", "-x", "filebrowser-bin"], timeout=5)
+        out2 = _as_text(out2)
         if rc2 == 0 and out2.strip():
             running = True
             try:
                 pid = int(out2.splitlines()[0].strip())
-            except ValueError:
+            except (TypeError, ValueError, OverflowError):
                 pass
     host = host_ip()
     return {
-        "installed": FB_BIN.exists() or FB_PLIST.exists(),
+        "installed": _exists(FB_BIN) or _exists(FB_PLIST),
         "running": running,
         "pid": pid,
         "port": FB_PORT,
         "url": f"http://{host}:{FB_PORT}",
-        "plist": str(FB_PLIST) if FB_PLIST.exists() else None,
-        "bin": str(FB_BIN) if FB_BIN.exists() else None,
+        "plist": str(FB_PLIST) if _exists(FB_PLIST) else None,
+        "bin": str(FB_BIN) if _exists(FB_BIN) else None,
         "root": str(FB_ROOT_DEFAULT),
         "started_by_hub": _started_by_hub,
         "keepalive": _plist_keepalive(),
@@ -482,12 +840,11 @@ def filebrowser_status() -> dict:
 
 
 def _plist_keepalive() -> bool | None:
-    if not FB_PLIST.exists():
+    if not _exists(FB_PLIST):
         return None
     try:
         import plistlib
-        with open(FB_PLIST, "rb") as f:
-            pl = plistlib.load(f)
+        pl = plistlib.loads(read_bytes_capped(FB_PLIST, _PLIST_CAP))
         return bool(isinstance(pl, dict) and pl.get("KeepAlive"))
     except Exception:
         return None
@@ -499,19 +856,19 @@ def ensure_filebrowser() -> dict:
     st = filebrowser_status()
     if st["running"]:
         return {"ok": True, "message": "FileBrowser is already running", **st, "started": False}
-    if not FB_BIN.exists() and not FB_PLIST.exists():
+    if not _exists(FB_BIN) and not _exists(FB_PLIST):
         raise api_error("files.fb_not_installed")
 
     dom = f"gui/{UID}"
-    if FB_PLIST.exists():
+    if _exists(FB_PLIST):
         sh(["/bin/launchctl", "bootstrap", dom, str(FB_PLIST)], timeout=10)
         sh(["/bin/launchctl", "kickstart", "-k", f"{dom}/{FB_LABEL}"], timeout=10)
-    elif FB_BIN.exists():
+    elif _exists(FB_BIN):
         # Direct start without KeepAlive. Pass an argv vector so spaces or shell
         # metacharacters in the user's home path can never change the command.
-        FB_ROOT_DEFAULT.mkdir(parents=True, exist_ok=True)
-        SERVICES_ROOT.joinpath("filebrowser").mkdir(parents=True, exist_ok=True)
         try:
+            FB_ROOT_DEFAULT.mkdir(parents=True, exist_ok=True)
+            SERVICES_ROOT.joinpath("filebrowser").mkdir(parents=True, exist_ok=True)
             FB_LOG.parent.mkdir(parents=True, exist_ok=True)
             # O_NOFOLLOW refuses to follow a symlink planted at this exact path,
             # so a pre-existing link fails the start instead of redirecting the
@@ -532,8 +889,10 @@ def ensure_filebrowser() -> dict:
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                     close_fds=True,
+                    env=utf8_env(),
                 )
-        except OSError:
+        except (OSError, ValueError, TypeError):
+            # Leftover ``\\ud800`` env/path UnicodeEncodeError is ValueError, not OSError.
             raise api_error("files.fb_start_failed")
     else:
         raise api_error("files.fb_start_failed")
@@ -558,7 +917,7 @@ def stop_filebrowser() -> dict:
     """Stop FileBrowser to free memory. Disables KeepAlive temporarily via bootout."""
     global _started_by_hub
     dom = f"gui/{UID}"
-    if FB_PLIST.exists():
+    if _exists(FB_PLIST):
         sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=10)
     # Exact comm, not ``-f``: an editor or ``tail`` whose argv mentions the
     # binary must not be SIGTERM'd.
@@ -575,12 +934,16 @@ def stop_filebrowser() -> dict:
 
 def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     """Write LaunchAgent RunAtLoad/KeepAlive off for true on-demand (no boot RAM)."""
-    if not FB_PLIST.exists():
+    if not _exists(FB_PLIST):
         raise api_error("files.fb_no_plist")
     import plistlib
     from hub import secure_io
-    with open(FB_PLIST, "rb") as f:
-        pl = plistlib.load(f)
+    try:
+        pl = plistlib.loads(read_bytes_capped(FB_PLIST, _PLIST_CAP))
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested LaunchAgent plist is not
+        # ValueError; POST /api/files/filebrowser/ondemand used to 500.
+        raise api_error("files.fb_bad_plist")
     if not isinstance(pl, dict):
         raise api_error("files.fb_bad_plist")
     if enabled:
@@ -589,7 +952,10 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     else:
         pl["RunAtLoad"] = True
         pl["KeepAlive"] = True
-    secure_io.replace_bytes(FB_PLIST, plistlib.dumps(pl))
+    try:
+        secure_io.replace_bytes(FB_PLIST, plistlib.dumps(pl))
+    except OSError:
+        raise api_error("files.permission_denied", path=str(FB_PLIST))
     # reload definition if loaded
     dom = f"gui/{UID}"
     sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=8)

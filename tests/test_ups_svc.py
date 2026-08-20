@@ -9,6 +9,8 @@ test ever runs pmset or writes the real alerts file.
 """
 from __future__ import annotations
 
+import datetime
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -54,6 +56,14 @@ class ParseBattTests(unittest.TestCase):
         self.assertFalse(st["present"])
         self.assertEqual(st["source"], "unknown")
 
+    def test_none_bytes_and_int_payloads_do_not_500(self):
+        self.assertFalse(ups_svc._parse_batt(None)["present"])
+        self.assertFalse(ups_svc._parse_batt(8)["present"])
+        st = ups_svc._parse_batt(UPS_ON_BATTERY.encode())
+        self.assertEqual(st["battery_percent"], 42)
+        self.assertIsNone(ups_svc._parse_ups_thresholds(None))
+        self.assertIsNone(ups_svc._parse_ups_thresholds(0))
+
     def test_external_ups_on_wall_power(self):
         st = ups_svc._parse_batt(UPS_ON_AC)
         self.assertTrue(st["present"])
@@ -86,6 +96,19 @@ class ParseBattTests(unittest.TestCase):
         self.assertTrue(st["on_ac"])
         self.assertFalse(st["charging"])
 
+    def test_huge_remaining_estimate_does_not_500(self):
+        """pmset ``999…:00 remaining`` used to leak a 400-digit int into GET /api/ups."""
+        import json
+
+        hours = "9" * 400
+        st = ups_svc._parse_batt(
+            "Now drawing from 'UPS Power'\n"
+            f" -Back-UPS ES 750 \t42%; discharging; {hours}:00 remaining present: true\n"
+        )
+        json.dumps(st, allow_nan=False)
+        self.assertEqual(st["battery_percent"], 42)
+        self.assertIsNone(st["time_remaining_min"])
+
 
 class ParseUpsThresholdTests(unittest.TestCase):
     def test_configured_levels_are_reported_and_minus_one_dropped(self):
@@ -108,6 +131,85 @@ class UpsSettingsTests(unittest.TestCase):
         self.assertEqual(s["low_battery_pct"], 35)
         self.assertTrue(s["alerts_enabled"])
         self.assertNotIn("junk", s, "unknown keys must not leak into the policy")
+
+    def test_non_dict_settings_does_not_500(self):
+        """``(cfg().get("settings") or {}).get("ups")`` 500'd on a leftover list/string."""
+        for settings in ("nope", [1], 3, True):
+            with mock.patch.object(ups_svc, "cfg", lambda s=settings: {"settings": s}):
+                self.assertEqual(ups_svc.ups_settings()["low_battery_pct"], 20)
+
+    def test_infinite_policy_numbers_do_not_500(self):
+        """YAML ``.inf`` became a float inf; Starlette allow_nan=False 500'd GET /api/ups."""
+        import json
+
+        with mock.patch.object(ups_svc, "cfg", lambda: {"settings": {"ups": {
+            "low_battery_pct": float("inf"),
+            "alerts_enabled": True,
+            "shutdown": {
+                "enabled": True,
+                "trigger_pct": float("inf"),
+                "trigger_remaining_min": float("nan"),
+            },
+        }}}):
+            s = ups_svc.ups_settings()
+        json.dumps(s, allow_nan=False)
+        self.assertEqual(s["low_battery_pct"], 20)
+        self.assertIsNone(s["shutdown"]["trigger_pct"])
+        self.assertIsNone(s["shutdown"]["trigger_remaining_min"])
+
+    def test_huge_policy_integers_do_not_500(self):
+        """A 400-digit leftover YAML int is a valid int; ``float()`` OverflowError'd the plan."""
+        import json
+
+        huge = 10 ** 400
+        with mock.patch.object(ups_svc, "cfg", lambda: {"settings": {"ups": {
+            "low_battery_pct": huge,
+            "shutdown": {"trigger_pct": huge, "trigger_remaining_min": huge},
+        }}}):
+            s = ups_svc.ups_settings()
+        json.dumps(s, allow_nan=False)
+        self.assertEqual(s["low_battery_pct"], 20)
+        self.assertIsNone(s["shutdown"]["trigger_pct"])
+        self.assertIsNone(s["shutdown"]["trigger_remaining_min"])
+
+    def test_isoformat_inf_does_not_500_jsonable(self):
+        """A leftover ``isoformat()`` returning inf used to 500 GET /api/ups."""
+        class _Stamp:
+            def isoformat(self):
+                return float("inf")
+
+        self.assertIsNone(ups_svc._jsonable(_Stamp()))
+        out = ups_svc._jsonable({"name": _Stamp(), "ok": True})
+        json.dumps(out, allow_nan=False)
+        self.assertIsNone(out["name"])
+        self.assertIs(out["ok"], True)
+
+    def test_yaml_date_bytes_and_set_do_not_500_jsonable(self):
+        """Leftover YAML dates/!!binary/!!set used to leak into GET /api/ups."""
+        payload = {
+            "name": datetime.date(2026, 8, 19),
+            "note": b"ups",
+            "tags": {"ac", "usb"},
+            "nested": {"when": datetime.datetime(2026, 8, 19, 12, 0, 0)},
+        }
+        out = ups_svc._jsonable(payload)
+        json.dumps(out, allow_nan=False)
+        self.assertEqual(out["name"], "2026-08-19")
+        self.assertEqual(out["note"], "ups")
+        self.assertCountEqual(out["tags"], ["ac", "usb"])
+        self.assertTrue(out["nested"]["when"].startswith("2026-08-19"))
+
+    def test_as_text_recursing_does_not_500(self):
+        """leftover ``str()`` RecursionError used to 500 GET /api/ups."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        self.assertEqual(ups_svc._as_text(Recursing()), "Recursing")
+        json.dumps(
+            {"message": ups_svc._as_text(Recursing())},
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
 
 
 def _status(*, present=True, on_battery=False, pct=100, name="Back-UPS ES 750",

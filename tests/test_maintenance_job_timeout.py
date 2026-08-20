@@ -33,6 +33,34 @@ class StartJobGuardTests(unittest.TestCase):
     def tearDown(self):
         jobs._jobs.clear()
 
+    def test_maintenance_tasks_survives_a_non_list_section(self):
+        from unittest import mock
+        with mock.patch.object(jobs, "cfg", return_value={"maintenance": "nope"}):
+            self.assertEqual(jobs.maintenance_tasks(), {})
+        with mock.patch.object(jobs, "cfg", return_value={"maintenance": [
+            {"id": "brew-update", "name": "Brew"},
+            "junk",
+            {"id": 12},
+        ]}):
+            tasks = jobs.maintenance_tasks()
+        self.assertEqual(list(tasks), ["brew-update"])
+
+    def test_leftover_surrogate_name_does_not_500_json(self):
+        """YAML ``name: "\\ud800"`` used to 500 GET /api/maintenance."""
+        import json
+        from unittest import mock
+        with mock.patch.object(jobs, "cfg", return_value={"maintenance": [
+            {"id": "brew-update", "name": "Brew\ud800", "desc": b"ok",
+             "\ud800": 1, "timeout": float("inf")},
+        ]}):
+            tasks = jobs.maintenance_tasks()
+        row = tasks["brew-update"]
+        json.dumps(row, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertNotIn("\ud800", row["name"])
+        self.assertNotIn("\ud800", row)
+        self.assertEqual(row["desc"], "ok")
+        self.assertIsNone(row["timeout"])
+
     def test_missing_command_clears_the_running_flag(self):
         jobs._jobs.clear()
         jobs.start_job({"id": "broken", "timeout": 10})

@@ -29,9 +29,12 @@ from pathlib import Path
 from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
-from hub.util import cached_snapshot, fan_out, sh
+from hub.secure_io import replace_bytes
+from hub.util import cached_snapshot, fan_out, read_text_capped, sh, strftime_now
 
 HISTORY_PATH = DATA_DIR / "smart-tests.json"
+#: Leftover multi-MB smart-tests.json used to OOM GET /api/smart.
+_HISTORY_CAP = 256 * 1024
 
 #: ``/dev/disk4`` — the only device shape accepted into any argv here.
 _DEV_RE = re.compile(r"^/dev/disk\d{1,3}$")
@@ -135,11 +138,13 @@ def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     privileged retry.
     """
     rc, out, err = sh([SMARTCTL, *argv], timeout=timeout)
+    out, err = _as_text(out), _as_text(err)
     blob = f"{out}\n{err}".lower()
     if rc not in (0, 4) and any(
         token in blob for token in ("permission", "operation not permitted", "access denied")
     ):
         rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, *argv], timeout=timeout)
+        out, err = _as_text(out), _as_text(err)
     return rc, out, err
 
 
@@ -202,6 +207,7 @@ def passwordless_available() -> bool:
 def _device_nodes() -> list[str]:
     """Physical whole disks, as ``/dev/diskN``."""
     rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=10)
+    out = _as_text(out)
     nodes: list[str] = []
     if rc == 0:
         for match in re.finditer(r"/dev/(disk\d+)\s", out):
@@ -248,10 +254,11 @@ def _capabilities(
     :func:`_caps_raw` pass the output in instead of paying for it again.
     """
     rc, out, err = caps_raw if caps_raw is not None else _caps_raw(device)
+    out, err = _as_text(out), _as_text(err)
     text = out or ""
     lowered = text.lower()
     log_rc, log_out, log_err = selftest if selftest is not None else _selftest_raw(device)
-    log_blob = f"{log_out}\n{log_err}".lower()
+    log_blob = f"{_as_text(log_out)}\n{_as_text(log_err)}".lower()
 
     # Two different failures used to collapse into one message.  "The controller
     # will not talk to us at all" (every external enclosure on macOS) is not the
@@ -346,6 +353,7 @@ def _in_progress(device: str, caps_raw: tuple[int, str, str] | None = None) -> d
     :func:`_capabilities` also reads, instead of spawning it a second time.
     """
     rc, out, _ = caps_raw if caps_raw is not None else _caps_raw(device)
+    out = _as_text(out)
     if rc not in (0, 4) or not out:
         return {"running": False, "percent_remaining": None}
     m = re.search(r"Self-test routine in progress.*?(\d+)%\s*of test remaining", out, re.DOTALL | re.IGNORECASE)
@@ -360,47 +368,171 @@ def _in_progress(device: str, caps_raw: tuple[int, str, str] | None = None) -> d
 
 # ── history journal ──────────────────────────────────────────────────────────
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as bytes/None; parsers and JSON need text."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
+
+    ``last_run: .inf`` in settings was already clamped; a history row with
+    ``ts: Infinity`` still 500'd GET /api/smart.  Leftover ``!!binary``,
+    a YAML date, a ``!!set``, or ``\\ud800`` still 500'd the same encoder.
+    """
+    if depth > 16:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/smart.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 def _load_history() -> list[dict]:
     try:
-        data = json.loads(HISTORY_PATH.read_text())
-    except (OSError, ValueError):
+        data = json.loads(read_text_capped(HISTORY_PATH, _HISTORY_CAP))
+    except (OSError, TypeError, ValueError, RecursionError):
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    return [_jsonable(row) for row in data if isinstance(row, dict)]
 
 
 def _append_history(record: dict) -> None:
     with _history_lock:
         history = _load_history()
-        history.append(record)
+        history.append(_jsonable(record) if isinstance(record, dict) else {})
         # Bounded so a daily schedule cannot grow the file without limit.
         del history[:-500]
         try:
             HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-            HISTORY_PATH.write_text(json.dumps(history, indent=2, ensure_ascii=False))
-        except OSError:
+            replace_bytes(
+                HISTORY_PATH,
+                json.dumps(history, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8"),
+            )
+        except (OSError, TypeError, ValueError, RecursionError):
+            # RecursionError: leftover nested SMART history after _jsonable is
+            # not ValueError; POST /api/smart/test used to 500 the append.
             pass
 
 
 def history(limit: int = 100) -> list[dict]:
     records = _load_history()
-    return list(reversed(records[-max(1, min(limit, 500)):]))
+    try:
+        n = max(1, min(int(limit or 100), 500))
+    except (TypeError, ValueError, OverflowError):
+        n = 100
+    return [_jsonable(row) for row in reversed(records[-n:]) if isinstance(row, dict)]
 
 
 # ── schedule ─────────────────────────────────────────────────────────────────
 
-def get_schedule() -> dict:
+def _schedule_cfg() -> dict:
     stored = ((cfg().get("settings") or {}).get("smart_schedule") or {})
+    return stored if isinstance(stored, dict) else {}
+
+
+def _now() -> int:
+    """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd SMART runs."""
+    try:
+        return int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _schedule_epoch(raw) -> float:
+    # Leftover YAML ``last_run: true`` is a bool subclass of int;
+    # ``float(True)`` is 1.0 and made every schedule look overdue.
+    if isinstance(raw, bool) or raw is None:
+        return 0.0
+    try:
+        value = float(raw or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    # ``last_run: .inf`` in settings used to OverflowError ``int(inf)``
+    # on GET /api/smart, and Starlette's allow_nan=False encoder 500'd
+    # the schedule payload itself.
+    if value != value or value in (float("inf"), float("-inf")):
+        return 0.0
+    return value
+
+
+def get_schedule() -> dict:
+    stored = _schedule_cfg()
     interval = str(stored.get("interval") or "off").lower()
     if interval not in SCHEDULE_INTERVALS:
         interval = "off"
     kind = str(stored.get("kind") or "short").lower()
     if kind not in TEST_KINDS:
         kind = "short"
+    devices = stored.get("devices")
     return {
         "interval": interval,
         "kind": kind,
-        "last_run": stored.get("last_run") or 0,
-        "devices": [d for d in (stored.get("devices") or []) if _DEV_RE.match(str(d))],
+        "last_run": _schedule_epoch(stored.get("last_run")),
+        "devices": [d for d in (devices if isinstance(devices, list) else []) if _DEV_RE.match(str(d))],
         "intervals": list(SCHEDULE_INTERVALS),
         "kinds": list(TEST_KINDS),
     }
@@ -415,13 +547,13 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
         return {"ok": False, "error": "bad_kind"}
     known = set(_device_nodes())
     cleaned = [str(d) for d in (devices or []) if _DEV_RE.match(str(d)) and str(d) in known]
-    current = ((cfg().get("settings") or {}).get("smart_schedule") or {})
+    current = _schedule_cfg()
     update_settings({
         "smart_schedule": {
             "interval": interval,
             "kind": kind,
             "devices": cleaned,
-            "last_run": current.get("last_run") or 0,
+            "last_run": _schedule_epoch(current.get("last_run")),
         }
     })
     invalidate()
@@ -429,8 +561,8 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
 
 
 def _mark_ran() -> None:
-    stored = dict((cfg().get("settings") or {}).get("smart_schedule") or {})
-    stored["last_run"] = int(time.time())
+    stored = dict(_schedule_cfg())
+    stored["last_run"] = _now()
     update_settings({"smart_schedule": stored})
 
 
@@ -454,7 +586,7 @@ def run_due_tests() -> dict:
     schedule = get_schedule()
     if not passwordless_available():
         _append_history({
-            "ts": int(time.time()),
+            "ts": _now(),
             "device": "",
             "kind": schedule["kind"],
             "origin": "schedule",
@@ -469,7 +601,7 @@ def run_due_tests() -> dict:
         caps = _capabilities(device)
         if schedule["kind"] not in caps["supported"]:
             _append_history({
-                "ts": int(time.time()),
+                "ts": _now(),
                 "device": device,
                 "kind": schedule["kind"],
                 "origin": "schedule",
@@ -485,12 +617,12 @@ def run_due_tests() -> dict:
         ok = rc in (0, 4)
         started += 1 if ok else 0
         _append_history({
-            "ts": int(time.time()),
+            "ts": _now(),
             "device": device,
             "kind": schedule["kind"],
             "origin": "schedule",
             "ok": ok,
-            "message": (out or err or "").strip()[-300:],
+            "message": (_as_text(out) or _as_text(err)).strip()[-300:],
         })
     _mark_ran()
     invalidate()
@@ -507,6 +639,8 @@ def start_scheduler(check_interval: int = 900) -> None:
     global _scheduler_stop, _scheduler_thread
     if _scheduler_thread and _scheduler_thread.is_alive():
         return
+    from hub.worker_health import loop_interval
+    check_interval = loop_interval(check_interval, 900, minimum=1)
     stop = threading.Event()
 
     def loop():
@@ -563,14 +697,14 @@ def start_test(device: str, kind: str) -> dict:
     if rc not in (0, 4):
         # No passwordless rule: ask macOS for one-shot authorization instead.
         admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
-        ok = bool(admin.get("ok"))
-        message = str(admin.get("message") or "")
+        ok = bool(admin.get("ok")) if isinstance(admin, dict) else False
+        message = _as_text((admin or {}).get("message") if isinstance(admin, dict) else "")
     else:
         ok = True
-        message = (out or err or "").strip()
+        message = (_as_text(out) or _as_text(err)).strip()
 
     _append_history({
-        "ts": int(time.time()),
+        "ts": _now(),
         "device": node,
         "kind": test,
         "origin": "manual",
@@ -597,9 +731,10 @@ def abort_test(device: str) -> dict:
     if rc not in (0, 4):
         result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
         invalidate()
-        return result
+        cleaned = _jsonable(result) if isinstance(result, dict) else {}
+        return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
     invalidate()
-    return {"ok": True, "message": (out or err or "").strip()[-300:]}
+    return {"ok": True, "message": (_as_text(out) or _as_text(err)).strip()[-300:]}
 
 
 # ── page payload ─────────────────────────────────────────────────────────────
@@ -648,7 +783,8 @@ def _device_report(node: str) -> dict:
                 "reason": "probe_failed",
                 "device_type": "auto",
                 "estimated_minutes": {},
-                "detail": str(e)[:200],
+                # Leftover ``\\ud800`` in a raised message used to 500 GET /api/smart.
+                "detail": _as_text(e)[:200],
             },
             "log": [],
             "log_count": 0,
@@ -656,6 +792,15 @@ def _device_report(node: str) -> dict:
             "failures": 0,
             "progress": {"running": False, "percent_remaining": None},
         }
+
+
+def _smartctl_installed() -> bool:
+    """``Path.exists()`` raises EIO/ESTALE on a dying mount; pathlib only
+    swallows ENOENT/ELOOP.  That used to 500 GET /api/smart."""
+    try:
+        return Path(SMARTCTL).exists()
+    except (OSError, ValueError):
+        return False
 
 
 @cached_snapshot(_CACHE_TTL)
@@ -679,18 +824,21 @@ def overview() -> dict:
 
     schedule = get_schedule()
     period = SCHEDULE_INTERVALS.get(schedule["interval"], 0)
-    next_due = (
-        int(float(schedule["last_run"] or 0) + period) if period else 0
-    )
+    next_due = 0
+    if period:
+        try:
+            next_due = int(_schedule_epoch(schedule.get("last_run")) + period)
+        except (TypeError, ValueError, OverflowError):
+            next_due = 0
     data = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "devices": devices,
         "schedule": schedule,
         "next_due": next_due,
         "overdue": bool(period) and schedule_due(),
         "passwordless_sudo": passwordless,
         "smartctl": SMARTCTL,
-        "smartctl_installed": Path(SMARTCTL).exists(),
+        "smartctl_installed": _smartctl_installed(),
         "history": history(30),
     }
     return data

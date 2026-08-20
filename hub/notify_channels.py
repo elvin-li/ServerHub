@@ -29,17 +29,28 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import stat
 import threading
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 
 from hub import config, secure_io
-from hub.errors import api_error, soft_fail
-from hub.http_guard import RedirectRefused, is_allowed_webhook_url, no_redirect_opener
+from hub.errors import api_error, exc_detail, soft_fail
+from hub.http_guard import (
+    RedirectRefused,
+    _ip_from_host,
+    is_allowed_webhook_url,
+    no_redirect_opener,
+    notify_connect_peer,
+    pinned_no_redirect_opener,
+)
 from hub.paths import DATA_DIR
+from hub.util import read_text_capped
 
 _OPENER = no_redirect_opener()
 
@@ -48,6 +59,8 @@ _log = logging.getLogger("serverhub.notify")
 #: Where channel secrets live.  Module-level so tests can point it at a
 #: scratch directory, same pattern as service_credentials.INDEX_FILE.
 SECRETS_FILE = DATA_DIR / "notify-credentials.json"
+#: Leftover multi-MB notify-credentials.json used to OOM GET /api/alerts/channels.
+_SECRETS_CAP = 256 * 1024
 _secrets_lock = threading.Lock()
 
 #: Network budget per channel.  A dead SMTP server or webhook endpoint must
@@ -145,8 +158,14 @@ def _http_url_ok(url: str) -> bool:
 
     Discord/Slack/ntfy are public, so this is not the local-origin guard.
     Scheme-only used to let ``http://169.254.169.254/`` through.
+
+    ``urlsplit`` raises on a torn IPv6 paste (``http://[::1``); that used
+    to 500 POST /api/alerts/channels instead of ``notify.bad_url``.
     """
-    return is_allowed_webhook_url(url)
+    try:
+        return is_allowed_webhook_url(url)
+    except ValueError:
+        return False
 
 
 def valid_channel_id(cid) -> bool:
@@ -156,7 +175,7 @@ def valid_channel_id(cid) -> bool:
 # ── configuration ─────────────────────────────────────────────────────────────
 
 def _raw_notify_cfg() -> dict:
-    return (config.cfg().get("settings") or {}).get("notify") or {}
+    return config.settings_section("notify")
 
 
 def channels(raw: dict | None = None) -> list[dict]:
@@ -164,8 +183,17 @@ def channels(raw: dict | None = None) -> list[dict]:
     if raw is None:
         raw = _raw_notify_cfg()
     out = []
-    for ch in raw.get("channels") or []:
-        if isinstance(ch, dict) and ch.get("id") and ch.get("type") in CHANNEL_TYPES:
+    rows = raw.get("channels") if isinstance(raw, dict) else None
+    if not isinstance(rows, list):
+        rows = []
+    for ch in rows:
+        if not isinstance(ch, dict) or not ch.get("id"):
+            continue
+        # Membership on a dict hashes the key.  A hand-edit like ``type: [ntfy]``
+        # used to TypeError here and 500 GET /api/alerts/channels *and* the
+        # alert thread (dispatch claims it never raises).
+        ctype = ch.get("type")
+        if isinstance(ctype, str) and ctype in CHANNEL_TYPES:
             out.append(ch)
     return out
 
@@ -180,8 +208,18 @@ def get_channel(cid: str) -> dict | None:
 def save_channel(ch: dict) -> dict:
     """Upsert one channel into settings.notify.channels (cross-process safe)."""
     def apply(data: dict) -> None:
-        notify = data.setdefault("settings", {}).setdefault("notify", {})
-        chans = notify.setdefault("channels", [])
+        settings = data.get("settings")
+        if not isinstance(settings, dict):
+            settings = {}
+            data["settings"] = settings
+        notify = settings.get("notify")
+        if not isinstance(notify, dict):
+            notify = {}
+            settings["notify"] = notify
+        chans = notify.get("channels")
+        if not isinstance(chans, list):
+            chans = []
+            notify["channels"] = chans
         for i, existing in enumerate(chans):
             if isinstance(existing, dict) and existing.get("id") == ch["id"]:
                 chans[i] = ch
@@ -196,8 +234,15 @@ def delete_channel(cid: str) -> bool:
     removed = []
 
     def apply(data: dict) -> None:
-        notify = data.setdefault("settings", {}).setdefault("notify", {})
-        chans = notify.get("channels") or []
+        settings = data.get("settings")
+        if not isinstance(settings, dict):
+            return
+        notify = settings.get("notify")
+        if not isinstance(notify, dict):
+            return
+        chans = notify.get("channels")
+        if not isinstance(chans, list):
+            return
         kept = [c for c in chans if not (isinstance(c, dict) and c.get("id") == cid)]
         if len(kept) != len(chans):
             removed.append(cid)
@@ -265,19 +310,44 @@ def _legacy_target(raw: dict) -> tuple[dict, dict] | None:
 
 # ── secret storage ────────────────────────────────────────────────────────────
 
+def _drop_leftover_nonfile(path) -> None:
+    """Unlink a leftover directory/socket occupying notify-credentials.json."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.S_ISREG(st.st_mode):
+        return
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+    except OSError:
+        pass
+
+
 def _load_secrets() -> dict[str, dict]:
     try:
-        raw = json.loads(SECRETS_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(read_text_capped(SECRETS_FILE, _SECRETS_CAP, encoding="utf-8"))
         return raw if isinstance(raw, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); the alert sweep reads this.
+        # RecursionError: a leftover deeply-nested document is not ValueError.
         return {}
+
+
+def _secret_map(data: dict, cid: str) -> dict:
+    raw = data.get(cid)
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def channel_secrets(cid: str) -> dict:
     with _secrets_lock:
-        return dict(_load_secrets().get(cid) or {})
+        return _secret_map(_load_secrets(), cid)
 
 
 def _has_control_chars(text: str) -> bool:
@@ -298,11 +368,16 @@ def set_channel_secrets(cid: str, values: dict) -> None:
     """
     with _secrets_lock:
         data = _load_secrets()
-        cur = dict(data.get(cid) or {})
+        cur = _secret_map(data, cid)
         for key, value in (values or {}).items():
             if value is None:
                 continue
-            value = str(value)
+            try:
+                value = str(value)
+            except RecursionError:
+                raise api_error("notify.secret_control_chars", field="value")
+            except Exception:
+                continue
             if _has_control_chars(value):
                 raise api_error("notify.secret_control_chars", field=str(key))
             if value == "":
@@ -313,9 +388,7 @@ def set_channel_secrets(cid: str, values: dict) -> None:
             data[cid] = cur
         else:
             data.pop(cid, None)
-        secure_io.replace_secret_text(
-            SECRETS_FILE, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-        )
+        _write_secrets(data)
 
 
 def drop_channel_secrets(cid: str) -> None:
@@ -323,34 +396,191 @@ def drop_channel_secrets(cid: str) -> None:
         data = _load_secrets()
         if cid in data:
             del data[cid]
-            secure_io.replace_secret_text(
-                SECRETS_FILE, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-            )
+            _write_secrets(data)
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        # Pathological leftover ``__str__`` used to 500 POST /api/alerts/test
+        # via dispatch ``str(exc)`` after the sender was already wrapped.
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _json_safe(value, depth: int = 0):
+    """JSON-encodable form of a leftover YAML/JSON channel field.
+
+    Hand-edited ``port: .inf``, ``name: 2026-08-19`` (a YAML date), a
+    ``!!set`` recipient list, or a ``!!binary`` topic each used to 500
+    GET /api/alerts/channels under Starlette's allow_nan=False encoder.
+    A leftover ``\\ud800`` in ``name`` / ``id`` / a nested key still 500'd
+    the same route (and POST /api/alerts/test via dispatch results).
+    """
+    if depth > 32:
+        return None
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            try:
+                key = _utf8_text(k)
+            except Exception:
+                continue
+            out[key] = _json_safe(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(v, depth + 1) for v in value]
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (int, bool)) or value is None:
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/alerts/channels.
+            return _json_safe(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _write_secrets(data: dict) -> None:
+    """Persist the credentials file without rewriting leftover Infinity.
+
+    ``json.dumps`` without ``allow_nan=False`` used to copy ``1e400`` from a
+    sibling channel back onto disk, and PUT /api/alerts/channels 500'd once
+    the encoder refused NaN.
+    """
+    cleaned = _json_safe(data)
+    if not isinstance(cleaned, dict):
+        cleaned = {}
+    _drop_leftover_nonfile(SECRETS_FILE)
+    try:
+        secure_io.replace_secret_text(
+            SECRETS_FILE,
+            json.dumps(cleaned, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+        )
+    except (OSError, TypeError, ValueError, RecursionError):
+        # Leftover directory / EIO must not 500 PUT /api/alerts/channels.
+        # RecursionError: leftover nested secrets after _json_safe is not OSError.
+        pass
 
 
 def public_channel(ch: dict) -> dict:
     """API-safe view: config fields verbatim, secrets as has_* booleans only."""
     spec = CHANNEL_TYPES.get(str(ch.get("type"))) or {"fields": (), "secrets": ()}
     stored = channel_secrets(str(ch.get("id") or ""))
+    cid = _json_safe(ch.get("id"))
+    name = _json_safe(ch.get("name"))
+    if not (isinstance(name, str) and name.strip()):
+        name = cid if isinstance(cid, str) and cid else cid
     out = {
-        "id": ch.get("id"),
-        "type": ch.get("type"),
-        "name": ch.get("name") or ch.get("id"),
+        "id": cid,
+        "type": _json_safe(ch.get("type")),
+        "name": name,
         "enabled": bool(ch.get("enabled", True)),
-        "min_level": str(ch.get("min_level") or "warn"),
+        "min_level": _utf8_text(str(ch.get("min_level") or "warn")),
         "notify_resolve": bool(ch.get("notify_resolve", True)),
-        "config": {f: ch.get(f) for f in spec["fields"] if ch.get(f) is not None},
+        "config": {},
         "has": {s: bool(stored.get(s)) for s in spec["secrets"]},
     }
+    for field in spec["fields"]:
+        value = _json_safe(ch.get(field))
+        if value is not None:
+            out["config"][field] = value
     return out
 
 
 # ── senders ───────────────────────────────────────────────────────────────────
 
+def _open_request(req, timeout, dest_ip=None):
+    """Open *req*, pinning TCP to *dest_ip* when the send-path resolved one.
+
+    Tests patch this instead of ``_OPENER.open`` so a hostname URL never
+    triggers a second ``getaddrinfo`` inside urllib.
+    """
+    opener = pinned_no_redirect_opener(dest_ip) if dest_ip else _OPENER
+    return opener.open(req, timeout=timeout)
+
+
+def _smtp_tls_context():
+    """Verify the SMTP peer.  stdlib starttls/SMTP_SSL default to CERT_NONE."""
+    import ssl
+
+    return ssl.create_default_context()
+
+
+def _smtp_connect(host: str, port: int, timeout: float, *, use_ssl=False, dest_ip=None):
+    """Build an SMTP client whose TCP peer is *dest_ip* when given.
+
+    ``EHLO`` / STARTTLS / TLS SNI stay on *host*.  Constructing without a
+    host first is what lets us swap ``_get_socket`` before the connect;
+    callers that used ``SMTP(host, port)`` resolved twice.
+    """
+    import smtplib
+    import socket
+
+    ctor = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
+    ssl_ctx = _smtp_tls_context() if use_ssl else None
+    if not dest_ip:
+        if use_ssl:
+            return ctor(host, port, timeout=timeout, context=ssl_ctx)
+        return ctor(host, port, timeout=timeout)
+    smtp = ctor(timeout=timeout, context=ssl_ctx) if use_ssl else ctor(timeout=timeout)
+    smtp._host = host
+    ctx = ssl_ctx or getattr(smtp, "context", None)
+
+    def _get_socket(_sock_host, sock_port, sock_timeout):
+        raw = socket.create_connection((dest_ip, sock_port), sock_timeout)
+        if use_ssl and ctx is not None:
+            return ctx.wrap_socket(raw, server_hostname=host)
+        return raw
+
+    smtp._get_socket = _get_socket
+    smtp.connect(host, port)
+    return smtp
+
+
 def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
-    if not _http_url_ok(url):
+    if not is_allowed_webhook_url(url, resolve=False):
         return soft_fail("notify.bad_url", field="url")
-    body = json.dumps(payload).encode()
+    try:
+        host = (urlsplit(url).hostname or "").strip("[]")
+    except ValueError:
+        return soft_fail("notify.bad_url", field="url")
+    try:
+        # Leftover ``level: .inf`` / a YAML date in the payload used to raise
+        # out of dumps (or send Infinity) before the socket was opened.
+        # RecursionError: leftover deeply-nested title/body is not ValueError;
+        # POST /api/alerts/test and the alert sweep used to 500.
+        body = json.dumps(_json_safe(payload), default=str, allow_nan=False).encode()
+    except (TypeError, ValueError, OverflowError, RecursionError) as e:
+        return {"ok": False, "message": exc_detail(e)}
+    # One DNS lookup.  Connecting via the hostname would resolve again
+    # and could land on a metadata A record that was not in this answer.
+    peer = notify_connect_peer(host) if host else None
+    if not peer:
+        return soft_fail("notify.bad_url", field="url")
+    dest_ip = peer if _ip_from_host(peer) is not None else None
     req = urllib.request.Request(
         url,
         data=body,
@@ -358,14 +588,14 @@ def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
         headers={"Content-Type": "application/json", **(headers or {})},
     )
     try:
-        with _OPENER.open(req, timeout=TIMEOUT) as r:
+        with _open_request(req, TIMEOUT, dest_ip=dest_ip) as r:
             return {
                 "ok": True,
                 "status": r.status,
                 "body": r.read(200).decode(errors="replace"),
             }
     except RedirectRefused as e:
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": exc_detail(e)}
     except urllib.error.HTTPError as e:
         try:
             detail = e.read(200).decode(errors="replace")
@@ -376,7 +606,7 @@ def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
                 pass
         return {"ok": False, "message": f"HTTP {e.code}: {detail}"}
     except Exception as e:
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": exc_detail(e)}
 
 
 def _recipients(raw) -> list[str]:
@@ -388,7 +618,6 @@ def _recipients(raw) -> list[str]:
 
 
 def _send_email(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
-    import smtplib
     import socket
     from email.message import EmailMessage
 
@@ -396,10 +625,14 @@ def _send_email(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
     to = _recipients(ch.get("to"))
     if not host or not to:
         return soft_fail("notify.missing_field", field="host" if not host else "to")
+    peer = notify_connect_peer(host)
+    if not peer:
+        return soft_fail("notify.bad_url", field="host")
+    dest_ip = peer if _ip_from_host(peer) is not None and peer != host.lower().strip("[]") else None
     mode = str(ch.get("tls") or "starttls").lower()
     try:
         port = int(ch.get("port") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         port = 0
     username = str(ch.get("username") or "").strip()
     password = str(secrets.get("password") or "")
@@ -413,12 +646,12 @@ def _send_email(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
 
     try:
         if mode == "ssl":
-            smtp = smtplib.SMTP_SSL(host, port or 465, timeout=TIMEOUT)
+            smtp = _smtp_connect(host, port or 465, TIMEOUT, use_ssl=True, dest_ip=dest_ip)
         else:
-            smtp = smtplib.SMTP(host, port or 587, timeout=TIMEOUT)
+            smtp = _smtp_connect(host, port or 587, TIMEOUT, use_ssl=False, dest_ip=dest_ip)
         try:
             if mode == "starttls":
-                smtp.starttls()
+                smtp.starttls(context=_smtp_tls_context())
             if username and password:
                 smtp.login(username, password)
             smtp.send_message(msg)
@@ -428,7 +661,7 @@ def _send_email(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
             except Exception:
                 pass
     except Exception as e:
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": exc_detail(e)}
     return {"ok": True, "message": f"sent to {len(to)} recipient(s)"}
 
 
@@ -553,13 +786,19 @@ def _send_via(sender, ch: dict, secrets: dict, title: str, message: str,
     try:
         res = sender(ch, secrets, title, message, level=level, event=event)
     except Exception as e:  # a broken channel must not sink the others
-        res = {"ok": False, "message": str(e)}
-    return {
+        res = {"ok": False, "message": _utf8_text(e)}
+    if not isinstance(res, dict):
+        # A sender that returns None/list used to AttributeError *outside* the
+        # try, so the "never raises" contract only covered exceptions, not types.
+        res = {"ok": False, "message": "invalid sender response"}
+    # Leftover YAML ``id: "\ud800"`` / a sender returning inf/bytes/a date
+    # used to 500 POST /api/alerts/test under Starlette's UTF-8 encoder.
+    return _json_safe({
         "id": str(ch.get("id") or ""),
         "type": ch.get("type"),
         "ok": bool(res.get("ok")),
         "message": res.get("message") or res.get("body") or "",
-    }
+    })
 
 
 def dispatch(title: str, message: str, *, level=None, event=None, channel_id: str | None = None) -> dict:
@@ -578,6 +817,8 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
     try:
         raw = _raw_notify_cfg()
     except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
         raw = {}
     targets: list[tuple[dict, dict]] = []
     legacy = _legacy_target(raw)
@@ -621,36 +862,39 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
                 try:
                     results.append(fut.result())
                 except Exception as e:
-                    results.append({
+                    # Same leftover ``id: "\ud800"`` as _send_via: the
+                    # timeout/exception path used to skip _json_safe and
+                    # 500 POST /api/alerts/test under Starlette's UTF-8 encoder.
+                    results.append(_json_safe({
                         "id": str(ch.get("id") or ""),
                         "type": ch.get("type"),
                         "ok": False,
-                        "message": str(e),
-                    })
+                        "message": _utf8_text(e),
+                    }))
             else:
-                results.append({
+                results.append(_json_safe({
                     "id": str(ch.get("id") or ""),
                     "type": ch.get("type"),
                     "ok": False,
                     "message": f"timed out ({DISPATCH_BUDGET:.0f}s dispatch budget exhausted)",
-                })
+                }))
         for r in results:
-            if not r["ok"]:
+            if isinstance(r, dict) and not r.get("ok"):
                 _log.warning(
                     "notify channel %s (%s) failed: %s",
-                    r["id"], r["type"], r["message"],
+                    r.get("id"), r.get("type"), r.get("message"),
                 )
 
     if not results:
         out = soft_fail("notify.no_match")
         out["results"] = []
         return out
-    failed = [r for r in results if not r["ok"]]
-    return {
+    failed = [r for r in results if isinstance(r, dict) and not r.get("ok")]
+    return _json_safe({
         "ok": not failed,
         "sent": len(results) - len(failed),
         "failed": len(failed),
-        "message": "; ".join(f"{r['id'] or r['type']}: {r['message']}" for r in failed)[:400]
+        "message": "; ".join(f"{r.get('id') or r.get('type')}: {r.get('message')}" for r in failed)[:400]
         if failed else f"sent via {len(results)} channel(s)",
         "results": results,
-    }
+    })

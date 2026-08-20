@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import tempfile
@@ -70,9 +69,12 @@ import yaml
 from hub import audit, secure_io
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR
+from hub.util import read_text_capped, strftime_now
 
 REMOTE_DIR = DATA_DIR / "catalog-remote"
 STATE_PATH = REMOTE_DIR / "state.json"
+#: Leftover multi-MB state used to OOM GET /api/catalog/remote.
+_STATE_CAP = 256 * 1024
 
 #: One template is a compose file plus front matter; the largest shipped one is
 #: under 4 KB, so 64 KB leaves generous headroom while keeping a hostile source
@@ -107,6 +109,10 @@ CODES.setdefault(
     (401, "sign in from a browser to manage the catalog source"),
 )
 CODES.setdefault("catalog_remote.admin_required", (403, "administrator access is required"))
+CODES.setdefault(
+    "catalog_remote.write_failed",
+    (500, "could not write the remote catalog: {reason}"),
+)
 
 #: Audit event names (kept local: hub/audit.py is shared with parallel work).
 EVENT_SOURCE_CHANGED = "catalog.remote.source_changed"
@@ -122,6 +128,7 @@ REJECT_TOO_LARGE = "too_large"
 REJECT_SHA256_MISMATCH = "sha256_mismatch"
 REJECT_FETCH_FAILED = "fetch_failed"
 REJECT_PARSE_FAILED = "parse_failed"
+REJECT_WRITE_FAILED = "write_failed"
 
 
 class _FetchError(Exception):
@@ -133,21 +140,34 @@ class _TooLargeError(Exception):
 
 
 class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuse redirects that leave HTTPS.
+    """Refuse redirects that leave the manifest's HTTPS origin.
 
     urllib follows redirects transparently, including an https -> http
     downgrade, which would silently void the transport half of the integrity
-    story.  The sha256 pinning would still catch altered *template* bytes, but
-    the manifest itself has no pin, so the downgrade must be refused outright.
+    story.  Staying on HTTPS is not enough: a 302 to
+    ``https://169.254.169.254/`` is still SSRF (the same hole notify already
+    closed).  Pin to the original netloc; template paths are already origin
+    pinned by :func:`_entry_url`.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
-        if urllib.parse.urlsplit(newurl).scheme != "https":
+        src = urllib.parse.urlsplit(getattr(req, "full_url", "") or "")
+        dest = urllib.parse.urlsplit(newurl)
+        if dest.scheme != "https":
             raise urllib.error.URLError("redirect left https")
+        if dest.username is not None or dest.password is not None:
+            raise urllib.error.URLError("redirect has credentials")
+        if dest.netloc.lower() != src.netloc.lower():
+            raise urllib.error.URLError("redirect left origin")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_opener = urllib.request.build_opener(_HttpsOnlyRedirect())
+_opener = urllib.request.build_opener(
+    _HttpsOnlyRedirect(),
+    # Env HTTP(S)_PROXY would bypass the host check and fetch the
+    # unsigned manifest through whatever the process inherited.
+    urllib.request.ProxyHandler({}),
+)
 
 
 def _fetch(url: str, max_bytes: int) -> bytes:
@@ -157,7 +177,7 @@ def _fetch(url: str, max_bytes: int) -> bytes:
         with _opener.open(req, timeout=FETCH_TIMEOUT) as resp:
             data = resp.read(max_bytes + 1)
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise _FetchError(str(exc)) from exc
+        raise _FetchError(_as_text(exc)) from exc
     if len(data) > max_bytes:
         raise _TooLargeError(f"response exceeds {max_bytes} bytes")
     return data
@@ -174,13 +194,20 @@ def validate_source_url(url: str) -> str:
     # secret in plain sight (and Basic-auth sources are not supported anyway).
     if parts.scheme != "https" or not parts.hostname or "@" in parts.netloc:
         raise api_error("catalog_remote.bad_url")
+    # Same IMDS / link-local block as notify webhooks.  An administrator
+    # pointing the catalog at ``https://169.254.169.254/`` is SSRF, not a
+    # template source.
+    from hub.http_guard import is_allowed_notify_host
+
+    if not is_allowed_notify_host(parts.hostname):
+        raise api_error("catalog_remote.bad_url")
     return url
 
 
 def source_url() -> str:
-    from hub.config import cfg
+    from hub.config import settings_section
 
-    section = (cfg().get("settings") or {}).get("catalog_remote") or {}
+    section = settings_section("catalog_remote")
     return str(section.get("url") or "").strip()
 
 
@@ -197,23 +224,128 @@ def set_source_url(url: str, operator: str = "") -> dict:
 # ── state ─────────────────────────────────────────────────────────────────────
 
 
+def _as_text(value) -> str:
+    """Exception text that cannot RecursionError leftover ``str(exc)`` or UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Drop leftover inf/NaN/``\\ud800`` so GET /api/catalog/remote cannot 500."""
+    if depth > 32:
+        return None
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                key = k.decode("utf-8", "replace")
+            else:
+                try:
+                    key = k if isinstance(k, str) else str(k)
+                except Exception:
+                    continue
+            try:
+                key = key.encode("utf-8", "replace").decode("utf-8")
+            except Exception:
+                continue
+            out[key] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, (int, bool)) or value is None:
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/catalog/remote.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _as_text(value)
+    except Exception:
+        return None
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _ensure_dir() -> None:
-    secure_io.make_secret_dir(REMOTE_DIR)
+    try:
+        secure_io.make_secret_dir(REMOTE_DIR)
+        if _is_dir(REMOTE_DIR):
+            return
+    except OSError as exc:
+        raise api_error("catalog_remote.write_failed", reason=_as_text(exc))
+    raise api_error(
+        "catalog_remote.write_failed",
+        reason="remote catalog path is not a directory",
+    )
 
 
 def _load_state() -> dict:
     try:
-        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested state is not ValueError.
         return {}
+    data = _jsonable(data)
     return data if isinstance(data, dict) else {}
 
 
 def _save_state(state: dict) -> None:
     _ensure_dir()
-    secure_io.replace_secret_text(
-        STATE_PATH, json.dumps(state, ensure_ascii=False, indent=2)
-    )
+    payload = _jsonable(state)
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        secure_io.replace_secret_text(
+            STATE_PATH, json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)
+        )
+    except (OSError, TypeError, ValueError, RecursionError) as exc:
+        # RecursionError: leftover nested remote state after _jsonable is not
+        # ValueError; leftover ``str(exc)`` RecursionError used to 500 the write.
+        raise api_error("catalog_remote.write_failed", reason=_as_text(exc))
 
 
 def _invalidate_catalog_cache() -> None:
@@ -229,7 +361,7 @@ def _invalidate_catalog_cache() -> None:
 def remote_template_files() -> list[Path]:
     """Downloaded template files, sorted by name.  Missing dir -> empty."""
     try:
-        return sorted(p for p in REMOTE_DIR.glob("*.yml") if p.is_file())
+        return sorted(p for p in REMOTE_DIR.glob("*.yml") if _is_file(p))
     except OSError:
         return []
 
@@ -239,7 +371,7 @@ def remote_template_path(template_id: str) -> Path | None:
     if not _ID_RE.match(str(template_id or "")):
         return None
     p = REMOTE_DIR / f"{template_id}.yml"
-    return p if p.is_file() else None
+    return p if _is_file(p) else None
 
 
 def remote_versions() -> dict[str, str]:
@@ -264,7 +396,7 @@ def status() -> dict:
     for p in remote_template_files():
         tid = p.stem
         builtin = any(
-            (catalog.TEMPLATES / f"{tid}{suffix}").exists()
+            _exists(catalog.TEMPLATES / f"{tid}{suffix}")
             for suffix in (".yml", ".yaml")
         )
         overrides.append({
@@ -273,11 +405,13 @@ def status() -> dict:
             "builtin_available": builtin,
             "warnings": warnings.get(tid, []),
         })
+    last_check = state.get("last_check")
+    last_result = state.get("last_result")
     return {
         "url": source_url(),
         "configured": bool(source_url()),
-        "last_check": state.get("last_check") or "",
-        "last_result": state.get("last_result") or None,
+        "last_check": last_check if isinstance(last_check, str) else "",
+        "last_result": last_result if isinstance(last_result, dict) else None,
         "overrides": overrides,
         "count": len(overrides),
         "limits": {
@@ -304,13 +438,23 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
     """
     from hub import catalog
 
+    # SafeLoader rejects !!python/* at parse time, but a quoted or commented
+    # tag would still be written onto disk and later fed to any consumer that
+    # is not SafeLoader (docker-compose v1).  Refuse the substring outright.
+    if "!!python" in text.lower():
+        return "python YAML tags are not allowed"
     m = catalog.FM_RE.match(text)
     if not m:
         return "missing front matter"
     try:
         meta = yaml.safe_load(m.group(1))
-    except Exception as exc:  # noqa: BLE001 - carry the real cause upward
-        return f"front matter is not valid YAML: {exc}"
+    except (
+        yaml.YAMLError, RecursionError, TypeError, ValueError, AttributeError, KeyError,
+    ) as exc:
+        # RecursionError: leftover deeply-nested front matter is not YAMLError.
+        # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
+        # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
+        return "front matter is not valid YAML: " + _as_text(exc)
     if not isinstance(meta, dict):
         return "front matter is not a mapping"
     if not str(meta.get("name") or "").strip():
@@ -337,8 +481,13 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
     rendered = catalog.VAR_RE.sub("1", body)
     try:
         doc = yaml.safe_load(rendered)
-    except Exception as exc:  # noqa: BLE001
-        return f"compose body is not valid YAML: {exc}"
+    except (
+        yaml.YAMLError, RecursionError, TypeError, ValueError, AttributeError, KeyError,
+    ) as exc:
+        # RecursionError: leftover deeply-nested compose body is not YAMLError.
+        # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
+        # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
+        return "compose body is not valid YAML: " + _as_text(exc)
     if not isinstance(doc, dict) or not isinstance(doc.get("services"), dict) or not doc["services"]:
         return "compose body has no services mapping"
     return ""
@@ -370,7 +519,12 @@ def scan_compose_directives(text: str) -> list[str]:
     body = m.group(2) if m else text
     try:
         doc = yaml.safe_load(catalog.VAR_RE.sub("1", body))
-    except Exception:  # noqa: BLE001 - unparseable bodies are rejected elsewhere
+    except (
+        yaml.YAMLError, RecursionError, TypeError, ValueError, AttributeError, KeyError,
+    ):
+        # RecursionError: leftover deeply-nested compose body is not YAMLError.
+        # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
+        # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
         return []
     services = doc.get("services") if isinstance(doc, dict) else None
     if not isinstance(services, dict):
@@ -387,7 +541,10 @@ def scan_compose_directives(text: str) -> list[str]:
             hits.add(WARN_DEVICES)
         if str(service.get("network_mode") or "").strip().lower() == "host":
             hits.add(WARN_HOST_NETWORK)
-        for volume in service.get("volumes") or []:
+        volumes = service.get("volumes")
+        if not isinstance(volumes, list):
+            continue
+        for volume in volumes:
             # Both list forms: "sock:/sock" strings and {source: ...} maps.
             source = volume.get("source") if isinstance(volume, dict) else volume
             if "docker.sock" in str(source or ""):
@@ -464,14 +621,16 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
     try:
         raw = _fetch(index_url, MAX_MANIFEST_BYTES)
     except _TooLargeError as exc:
-        raise api_error("catalog_remote.fetch_failed", reason=str(exc))
+        raise api_error("catalog_remote.fetch_failed", reason=_as_text(exc))
     except _FetchError as exc:
-        raise api_error("catalog_remote.fetch_failed", reason=str(exc))
+        raise api_error("catalog_remote.fetch_failed", reason=_as_text(exc))
 
     try:
         manifest = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise api_error("catalog_remote.bad_manifest", reason=f"not JSON: {exc}")
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise api_error(
+            "catalog_remote.bad_manifest", reason="not JSON: " + _as_text(exc)
+        )
     if not isinstance(manifest, dict) or not isinstance(manifest.get("templates"), list):
         raise api_error("catalog_remote.bad_manifest", reason="missing templates list")
     entries = manifest["templates"]
@@ -510,7 +669,7 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
 
             current = known.get(tid) if isinstance(known.get(tid), dict) else {}
             final = REMOTE_DIR / f"{tid}.yml"
-            if current.get("sha256") == sha and final.is_file():
+            if current.get("sha256") == sha and _is_file(final):
                 unchanged.append(tid)
                 continue
 
@@ -531,7 +690,7 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
                 continue
             except _FetchError as exc:
                 rejected.append(
-                    {"id": tid, "reason": REJECT_FETCH_FAILED, "detail": str(exc)}
+                    {"id": tid, "reason": REJECT_FETCH_FAILED, "detail": _as_text(exc)}
                 )
                 continue
             if hashlib.sha256(blob).hexdigest() != sha:
@@ -548,11 +707,17 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
                 )
                 continue
 
-            # Fully validated: write to staging, then atomically into place.
-            staged = staging / f"{tid}.yml"
-            staged.write_text(text, encoding="utf-8")
-            staged.chmod(0o600)
-            os.replace(staged, final)
+            # replace_secret_text is 0600 from the first byte and does not
+            # O_TRUNC the published template if the process dies mid-write.
+            # A leftover directory named <id>.yml used to raise IsADirectoryError
+            # / PermissionError and 500 the whole sync.
+            try:
+                secure_io.replace_secret_text(final, text)
+            except OSError as exc:
+                rejected.append(
+                    {"id": tid, "reason": REJECT_WRITE_FAILED, "detail": _as_text(exc)}
+                )
+                continue
             (updated if current else added).append(tid)
             known[tid] = {
                 "version": version,
@@ -594,7 +759,10 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
         unchanged=len(unchanged),
         rejected=len(rejected),
     )
-    return summary
+    # Leftover JSON ``\ud800`` in a rejected manifest id used to UnicodeEncodeError
+    # POST /api/catalog/remote/check (Starlette allow_nan=False + UTF-8).
+    cleaned = _jsonable(summary)
+    return cleaned if isinstance(cleaned, dict) else {"ok": False, "rejected": []}
 
 
 def restore_builtin(template_id: str, operator: str = "") -> dict:
@@ -609,6 +777,10 @@ def restore_builtin(template_id: str, operator: str = "") -> dict:
         path.unlink()
     except FileNotFoundError:
         raise api_error("catalog_remote.not_remote", id=tid)
+    except OSError:
+        # A leftover directory named <id>.yml is not an override file; macOS
+        # raises EPERM here rather than EISDIR, which used to 500 restore.
+        raise api_error("catalog_remote.not_remote", id=tid)
     state = _load_state()
     templates = state.get("templates")
     if isinstance(templates, dict):
@@ -619,10 +791,11 @@ def restore_builtin(template_id: str, operator: str = "") -> dict:
     from hub import catalog
 
     builtin = any(
-        (catalog.TEMPLATES / f"{tid}{suffix}").exists() for suffix in (".yml", ".yaml")
+        _exists(catalog.TEMPLATES / f"{tid}{suffix}") for suffix in (".yml", ".yaml")
     )
     return {"ok": True, "id": tid, "builtin_available": builtin}
 
 
 def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    # Leftover inf clock OverflowError'd POST /api/catalog/remote/check timestamps.
+    return strftime_now("%Y-%m-%dT%H:%M:%S%z")

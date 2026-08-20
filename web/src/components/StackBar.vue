@@ -5,12 +5,12 @@
         v-for="(seg, i) in segs"
         :key="i"
         :style="{ width: seg.pct + '%', background: seg.color }"
-        :title="seg.label + ': ' + seg.value"
+        :title="finiteText(seg.label) + ': ' + format(seg.value)"
       ></i>
     </div>
     <div class="stack-legend" v-if="showLegend">
       <span v-for="(seg, i) in segs" :key="i">
-        <i :style="{ background: seg.color }"></i>{{ seg.label }} {{ format(seg.value) }}{{ unit }}
+        <i :style="{ background: seg.color }"></i>{{ finiteText(seg.label) }} {{ format(seg.value) }}{{ unit }}
       </span>
     </div>
   </div>
@@ -18,6 +18,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { finiteText } from '../lib/finite'
 
 const props = defineProps({
   /** [{ label, value, color }] */
@@ -32,16 +33,17 @@ const props = defineProps({
 const segs = computed(() => {
   const t = props.total || 100
   return (props.segments || [])
-    .filter(s => s && s.value != null && s.value > 0)
+    .filter(s => s && Number.isFinite(Number(s.value)) && Number(s.value) > 0)
     .map(s => ({
       ...s,
-      pct: Math.max(0.4, Math.min(100, (s.value / t) * 100)),
+      pct: Math.max(0.4, Math.min(100, (Number(s.value) / t) * 100)),
     }))
 })
 
 function format(v) {
-  if (v == null) return '—'
-  return Number(v).toFixed(props.decimals)
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  return n.toFixed(props.decimals)
 }
 </script>
 

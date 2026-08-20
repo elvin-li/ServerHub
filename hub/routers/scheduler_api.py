@@ -53,7 +53,7 @@ def _validated_params(job_type: str, params: dict) -> dict:
     """Per-type parameter validation; returns exactly what will be stored."""
     params = params or {}
     if job_type == "command":
-        command = str(params.get("command") or "").strip()
+        command = scheduler_svc._command_text(params.get("command"))
         if not command or len(command) > _MAX_COMMAND_LEN:
             raise api_error("scheduler.bad_params", field="command")
         return {"command": command}
@@ -71,7 +71,7 @@ def _validated_params(job_type: str, params: dict) -> dict:
         if retain not in (None, ""):
             try:
                 retain = int(retain)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 raise api_error("scheduler.bad_params", field="retain")
             if not 1 <= retain <= 365:
                 raise api_error("scheduler.bad_params", field="retain")
@@ -100,9 +100,13 @@ def _validated_record(body: JobBody, jid: str) -> dict:
         "params": _validated_params(body.type, body.params),
     }
     if body.timeout is not None:
-        if not 1 <= int(body.timeout) <= scheduler_svc.MAX_TIMEOUT:
+        try:
+            timeout = int(body.timeout)
+        except (TypeError, ValueError, OverflowError):
             raise api_error("scheduler.bad_params", field="timeout")
-        record["timeout"] = int(body.timeout)
+        if not 1 <= timeout <= scheduler_svc.MAX_TIMEOUT:
+            raise api_error("scheduler.bad_params", field="timeout")
+        record["timeout"] = timeout
     return record
 
 
@@ -117,16 +121,19 @@ def _public_job(job: dict, last=_LAST_UNSET) -> dict:
     for all jobs) instead of re-reading the whole run journal per row.
     """
     out = dict(job)
-    cron = str(job.get("cron") or "")
-    out["next_run"] = scheduler_svc.next_run_ts(cron) if job.get("enabled") else None
-    out["running"] = scheduler_svc.is_running(str(job.get("id")))
+    jid = scheduler_svc._job_id(job)
+    out["next_run"] = (
+        scheduler_svc.next_run_ts(job.get("cron")) if scheduler_svc.job_enabled(job) else None
+    )
+    out["running"] = scheduler_svc.is_running(jid)
     if last is _LAST_UNSET:
-        last = scheduler_svc.last_run(str(job.get("id")))
+        last = scheduler_svc.last_run(jid)
     out["last"] = (
         {k: last.get(k) for k in ("ts", "end", "status", "rc", "duration", "trigger")}
-        if last else None
+        if isinstance(last, dict) else None
     )
-    return out
+    cleaned = scheduler_svc._jsonable(out)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _audit_fields(record: dict) -> dict:
@@ -143,7 +150,8 @@ def _audit_fields(record: dict) -> dict:
         "enabled": record.get("enabled"),
     }
     if record.get("type") == "command":
-        fields["command"] = (record.get("params") or {}).get("command")
+        params = record.get("params")
+        fields["command"] = params.get("command") if isinstance(params, dict) else None
     return fields
 
 
@@ -161,23 +169,50 @@ def _bridged_smart_schedule() -> dict | None:
     try:
         from hub import smart_test_svc
         schedule = smart_test_svc.get_schedule()
+        if not isinstance(schedule, dict):
+            return None
+        interval = schedule.get("interval") or "off"
+        if not isinstance(interval, str):
+            interval = "off"
+        period = smart_test_svc.SCHEDULE_INTERVALS.get(interval, 0)
+        try:
+            last = float(schedule.get("last_run") or 0)
+        except (TypeError, ValueError, OverflowError):
+            last = 0.0
+        if last != last or last in (float("inf"), float("-inf")):
+            last = 0.0
+        try:
+            last_i = int(last)
+        except (OverflowError, ValueError):
+            last_i = 0
+        next_run = None
+        if period:
+            try:
+                next_run = int(last + period)
+            except (OverflowError, ValueError):
+                next_run = None
+        devices = schedule.get("devices") or []
+        if not isinstance(devices, list):
+            devices = []
+        row = {
+            "id": "smart-selftest",
+            "name": "SMART self-test",
+            "type": "smart_test",
+            "readonly": True,
+            "enabled": interval != "off" and bool(devices),
+            "interval": interval,
+            "kind": schedule.get("kind"),
+            "devices": devices,
+            "last_run": last_i,
+            "next_run": next_run,
+        }
+        # YAML ``kind: .inf`` / a date / ``!!set`` devices / leftover
+        # ``[Infinity]`` used to 500 GET /api/scheduler/jobs under
+        # Starlette's allow_nan=False encoder.
+        cleaned = scheduler_svc._jsonable(row)
+        return cleaned if isinstance(cleaned, dict) else None
     except Exception:
         return None
-    interval = schedule.get("interval") or "off"
-    period = smart_test_svc.SCHEDULE_INTERVALS.get(interval, 0)
-    last = float(schedule.get("last_run") or 0)
-    return {
-        "id": "smart-selftest",
-        "name": "SMART self-test",
-        "type": "smart_test",
-        "readonly": True,
-        "enabled": interval != "off" and bool(schedule.get("devices")),
-        "interval": interval,
-        "kind": schedule.get("kind"),
-        "devices": schedule.get("devices") or [],
-        "last_run": int(last),
-        "next_run": int(last + period) if period else None,
-    }
 
 
 @router.get("/api/scheduler/jobs")
@@ -185,7 +220,7 @@ def list_jobs():
     last_by_job = scheduler_svc.last_runs_by_job()
     return {
         "jobs": [
-            _public_job(j, last=last_by_job.get(str(j.get("id"))))
+            _public_job(j, last=last_by_job.get(scheduler_svc._job_id(j)))
             for j in scheduler_svc.list_jobs()
         ],
         "system": [b for b in (_bridged_smart_schedule(),) if b],
@@ -262,12 +297,20 @@ def run_job_now(jid: str, request: Request):
 def job_runs(jid: str, limit: int = 20):
     if not _ID_RE.match(jid):
         raise api_error("scheduler.bad_id")
-    return {"runs": scheduler_svc.runs(jid, limit=max(1, min(int(limit), 200)))}
+    try:
+        cap = max(1, min(int(limit), 200))
+    except (TypeError, ValueError, OverflowError):
+        cap = 20
+    return {"runs": scheduler_svc.runs(jid, limit=cap)}
 
 
 @router.get("/api/scheduler/runs")
 def all_runs(limit: int = 50):
-    return {"runs": scheduler_svc.runs(limit=max(1, min(int(limit), 200)))}
+    try:
+        cap = max(1, min(int(limit), 200))
+    except (TypeError, ValueError, OverflowError):
+        cap = 50
+    return {"runs": scheduler_svc.runs(limit=cap)}
 
 
 # ── rsync helpers for the Backups page ───────────────────────────────────────

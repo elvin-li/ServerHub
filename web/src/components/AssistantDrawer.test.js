@@ -127,6 +127,45 @@ describe('AssistantDrawer', () => {
     wrapper.unmount()
   })
 
+  it('does not clear a newer send when the previous ask finishes after close', async () => {
+    let resolveFirst
+    askAssistant.mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+    const wrapper = mountDrawer()
+    await wrapper.get('[data-test="assistant-brief"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="assistant-stop"]').exists()).toBe(true)
+    await wrapper.setProps({ open: false })
+    await flushPromises()
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    let resolveSecond
+    askAssistant.mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve }))
+    await wrapper.get('[data-test="assistant-brief"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="assistant-stop"]').exists()).toBe(true)
+    resolveFirst({
+      ok: true,
+      kind: 'brief',
+      text: 'stale-brief',
+      panels: [],
+      used_llm: false,
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-test="assistant-stop"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('stale-brief')
+    resolveSecond({
+      ok: true,
+      kind: 'brief',
+      text: 'fresh-brief',
+      panels: [],
+      used_llm: false,
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-test="assistant-stop"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('fresh-brief')
+    wrapper.unmount()
+  })
+
   it('stops an in-flight ask', async () => {
     askAssistant.mockImplementation((_query, opts) => new Promise((_resolve, reject) => {
       opts.signal.addEventListener('abort', () => {

@@ -7,8 +7,9 @@ import shutil
 import threading
 import time
 
+from hub import secure_io
 from hub.paths import DATA_DIR
-from hub.util import sh
+from hub.util import sh, tail_file_lines
 
 METRICS_FILE = DATA_DIR / "metrics.jsonl"
 # ~48h at 90s interval ≈ 1920 points; keep headroom
@@ -33,8 +34,15 @@ _FLUSH_MAX_AGE = 300.0      # or at least every 5 min
 
 def _ncpu() -> int:
     now = time.time()
-    if _ncpu_cache["n"] is not None and now - _ncpu_cache["t"] < _NCPU_TTL:
-        return int(_ncpu_cache["n"])
+    cached = _ncpu_cache["n"]
+    if cached is not None and now - _ncpu_cache["t"] < _NCPU_TTL:
+        try:
+            n = int(cached)
+        except (TypeError, ValueError, OverflowError):
+            # Leftover planted ``n: .inf`` OverflowError'd ``int(inf)``.
+            n = 0
+        if n > 0:
+            return n
     rc, ncpu_s, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=2)
     n = int(ncpu_s) if rc == 0 and ncpu_s.isdigit() else 1
     _ncpu_cache.update(t=now, n=n)
@@ -67,7 +75,7 @@ def _cpu_used_quick(sensors: dict | None = None) -> float | None:
     try:
         if s and s.get("cpu_used_pct") is not None:
             return float(s["cpu_used_pct"])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
     try:
         load1 = os.getloadavg()[0]
@@ -103,7 +111,7 @@ def _sample() -> dict:
         if s.get("cpu_used_pct") is not None:
             try:
                 cpu_used = min(100.0, max(0.0, float(s["cpu_used_pct"])))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pass
 
     if not sensors_hit or mem_free is None:
@@ -121,7 +129,7 @@ def _sample() -> dict:
             mem_used_pct = 100 - mem_free
 
     return {
-        "t": int(time.time()),
+        "t": sample_ts(time.time()) or 0,
         "load1": round(load1, 2),
         "load5": round(load5, 2),
         "load15": round(load15, 2),
@@ -130,7 +138,7 @@ def _sample() -> dict:
         "cpu_used_pct": cpu_used,
         "mem_free_pct": mem_free,
         "mem_used_pct": mem_used_pct,
-        "disk_pct": round(du.used / du.total * 100, 1),
+        "disk_pct": round(du.used / du.total * 100, 1) if du.total else None,
         "disk_used_gb": round(du.used / 2**30, 1),
         "net_rx_bps": net_rx,
         "net_tx_bps": net_tx,
@@ -145,8 +153,7 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
     METRICS_FILE.parent.mkdir(exist_ok=True)
     chunk = "".join(_write_buf)
     _write_buf = []
-    with open(METRICS_FILE, "a") as f:
-        f.write(chunk)
+    secure_io.append_text(METRICS_FILE, chunk)
     _last_flush = time.time()
     now = time.time()
     if force_trim or now - _last_trim >= _TRIM_INTERVAL:
@@ -155,21 +162,14 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
             # errors="replace": a torn/binary write raised UnicodeDecodeError
             # past the OSError guard below, which disabled the ring-buffer
             # trim forever and let the file grow without bound.
-            lines = METRICS_FILE.read_text(errors="replace").splitlines()
+            lines = tail_file_lines(
+                METRICS_FILE, MAX_POINTS + _TRIM_SLACK + 1, max_bytes=4 * 1024 * 1024
+            )
             if len(lines) > MAX_POINTS + _TRIM_SLACK:
                 # Atomic ring-buffer rewrite: partial write_text left a short
                 # or empty history and the next sampler grew a second full copy.
                 payload = "\n".join(lines[-MAX_POINTS:]) + "\n"
-                tmp = METRICS_FILE.with_name(f"{METRICS_FILE.name}.{os.getpid()}.tmp")
-                try:
-                    tmp.write_text(payload)
-                    os.replace(tmp, METRICS_FILE)
-                except Exception:
-                    try:
-                        tmp.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    raise
+                secure_io.replace_bytes(METRICS_FILE, payload.encode("utf-8"))
         except OSError:
             pass
 
@@ -191,12 +191,121 @@ def flush_pending() -> None:
         _flush_buf_locked()
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    JSON ``Infinity`` / ``NaN`` in a leftover metrics.jsonl row used to take
+    down ``GET /api/metrics`` at encode time.  A leftover ``\\ud800`` string
+    or key still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
+    ``t`` is handled separately by :func:`sample_ts`.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/metrics.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def sample_ts(raw) -> int | None:
+    """Finite epoch seconds from a sample's ``t``, or None.
+
+    JSON allows ``Infinity`` / ``NaN``, and a leftover string timestamp used
+    to be skipped (or, on the rollup path, ``int(inf)`` OverflowError 500'd
+    ``GET /api/metrics?range=``).  Bool is rejected: ``True`` is an ``int``.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            raw = int(text)
+        except ValueError:
+            try:
+                raw = float(text)
+            except ValueError:
+                return None
+    if not isinstance(raw, (int, float)):
+        return None
+    # A leftover 400-digit ``t`` (or ``?since=`` of the same) used to
+    # OverflowError ``float(raw)`` / ``time.time() - since`` on the range path.
+    try:
+        as_float = float(raw)
+    except OverflowError:
+        return None
+    if as_float != as_float or as_float in (float("inf"), float("-inf")):
+        return None
+    try:
+        return int(raw)
+    except (OverflowError, ValueError):
+        return None
+
+
 def record_sample(sample: dict | None = None, *, immediate: bool = False) -> dict:
     """Record one sample. Batched to disk unless immediate=True."""
     global _last_sample
-    s = sample or _sample()
+    if sample is not None and not isinstance(sample, dict):
+        sample = None
+    s = _jsonable(sample or _sample())
+    if not isinstance(s, dict):
+        s = {"t": sample_ts(time.time()) or 0}
     _last_sample = s
-    line = json.dumps(s, ensure_ascii=False) + "\n"
+    try:
+        line = json.dumps(s, ensure_ascii=False, allow_nan=False) + "\n"
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover nested sample after _jsonable is not
+        # ValueError; the sampler thread used to die before the flush.
+        line = '{"t":0}\n'
     with _lock:
         _write_buf.append(line)
         now = time.time()
@@ -231,29 +340,46 @@ def latest_sample() -> dict | None:
             if lines:
                 parsed = json.loads(lines[-1])
                 if isinstance(parsed, dict):
-                    _last_sample = parsed
+                    _last_sample = _jsonable(parsed)
                     return _last_sample
-    except Exception:
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested metrics.jsonl is not ValueError.
         pass
     return None
 
 
 def history(minutes: int = 60) -> list:
     # include buffered points not yet on disk
-    cutoff = int(time.time()) - minutes * 60
+    now = sample_ts(time.time()) or 0
+    try:
+        span = int(minutes) * 60
+    except (TypeError, ValueError, OverflowError):
+        # Leftover ``minutes: .inf`` / ``int(time.time())`` on inf used to
+        # OverflowError GET /api/metrics.
+        span = 3600
+    if span < 0:
+        span = 3600
+    cutoff = now - span
     out = []
     try:
         if METRICS_FILE.exists():
             # errors="replace", matching the trim: mangled lines fail the
             # per-line json parse below and are skipped, not raised.
-            for line in METRICS_FILE.read_text(errors="replace").splitlines():
+            for line in tail_file_lines(
+                METRICS_FILE, MAX_POINTS, max_bytes=4 * 1024 * 1024
+            ):
                 if not line.strip():
                     continue
                 try:
                     o = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
                     continue
-                if isinstance(o, dict) and o.get("t", 0) >= cutoff:
+                t = sample_ts(o.get("t") if isinstance(o, dict) else None)
+                if t is not None and t >= cutoff:
+                    o = _jsonable(o) if isinstance(o, dict) else None
+                    if not isinstance(o, dict):
+                        continue
+                    o["t"] = t
                     out.append(o)
     except OSError:
         pass
@@ -261,9 +387,14 @@ def history(minutes: int = 60) -> list:
         for line in _write_buf:
             try:
                 o = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 continue
-            if isinstance(o, dict) and o.get("t", 0) >= cutoff:
+            t = sample_ts(o.get("t") if isinstance(o, dict) else None)
+            if t is not None and t >= cutoff:
+                o = _jsonable(o) if isinstance(o, dict) else None
+                if not isinstance(o, dict):
+                    continue
+                o["t"] = t
                 out.append(o)
     return out
 
@@ -312,8 +443,9 @@ def start_sampler(interval: int = 90):
     # its own first iteration instead, so nothing is lost: _loop samples before
     # its first wait, and latest_sample() already falls back to tailing the
     # metrics file while _last_sample is still unset.
+    from hub.worker_health import loop_interval
     _thread = threading.Thread(
-        target=_loop, args=(max(30, int(interval)),), daemon=True, name="metrics-sampler"
+        target=_loop, args=(loop_interval(interval),), daemon=True, name="metrics-sampler"
     )
     _thread.start()
 

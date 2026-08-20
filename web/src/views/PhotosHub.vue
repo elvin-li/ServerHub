@@ -2,7 +2,7 @@
   <div>
     <div class="page-title">
       <h1>{{ t('photoshub.title') }}</h1>
-      <span class="meta">{{ t('photoshub.meta') }} · {{ data?.ts || '…' }}</span>
+      <span class="meta">{{ t('photoshub.meta') }} · {{ finiteText(data?.ts, '…') }}</span>
     </div>
 
     <div v-if="ready" class="tabs">
@@ -21,8 +21,8 @@
         <button @click="run('sync')" :disabled="busy">{{ t('photoshub.act_sync') }}</button>
         <button @click="run('originals')" :disabled="busy">{{ t('photoshub.act_originals') }}</button>
         <button @click="run('doctor')" :disabled="busy">{{ t('photoshub.act_doctor') }}</button>
-        <a v-if="immichHref" class="btn-link" :href="immichHref" target="_blank" rel="noopener">Immich</a>
-        <a v-if="panelHref" class="btn-link" :href="panelHref" target="_blank" rel="noopener">{{ t('photoshub.status_panel') }}</a>
+        <a v-if="immichHref" class="btn-link" :href="finiteText(immichHref, '')" target="_blank" rel="noopener">Immich</a>
+        <a v-if="panelHref" class="btn-link" :href="finiteText(panelHref, '')" target="_blank" rel="noopener">{{ t('photoshub.status_panel') }}</a>
       </template>
       <span v-if="busy" class="meta">{{ t('photoshub.action_running', { action: actionLabel(busyAction) }) }}</span>
     </div>
@@ -49,17 +49,17 @@
           <div class="tile span-3">
             <h3>{{ t('photoshub.originals_pct') }}</h3>
             <div class="v" :style="{ color: originalsColor }">{{ originalsLabel }}</div>
-            <div class="meta">{{ data.originals?.originals_present }}/{{ data.originals?.assets_active }}</div>
+            <div class="meta">{{ finiteN(data.originals?.originals_present) }}/{{ finiteN(data.originals?.assets_active) }}</div>
           </div>
           <div class="tile span-3">
             <h3>{{ t('photoshub.bridge') }}</h3>
-            <div class="v" style="font-size:15px">{{ data.bridge?.mode || '—' }}</div>
-            <div class="meta">{{ data.bridge?.last_success || t('photoshub.never') }} · {{ t('photoshub.files_n', { n: data.bridge?.exported_files ?? '—' }) }}</div>
+            <div class="v" style="font-size:15px">{{ finiteText(data.bridge?.mode) }}</div>
+            <div class="meta">{{ finiteText(data.bridge?.last_success, t('photoshub.never')) }} · {{ t('photoshub.files_n', { n: finiteN(data.bridge?.exported_files) }) }}</div>
           </div>
           <div class="tile span-3">
             <h3>{{ t('photoshub.delete_gate') }}</h3>
             <div class="v" style="font-size:15px">{{ data.gates?.allow_delete_channel ? t('photoshub.enabled') : t('photoshub.frozen') }}</div>
-            <div class="meta">{{ t('photoshub.pending') }} {{ pendingCount ?? '—' }}</div>
+            <div class="meta">{{ t('photoshub.pending') }} {{ finiteN(pendingCount) }}</div>
           </div>
           <div class="tile span-3">
             <h3>{{ t('photoshub.people_title') }}</h3>
@@ -68,12 +68,13 @@
           </div>
           <div class="tile span-3">
             <h3>{{ t('photoshub.library_backup') }}</h3>
-            <div class="v" style="font-size:15px">{{ data.backup?.last_success || t('photoshub.never') }}</div>
-            <div class="meta">{{ data.backup?.size_human || (data.backup?.ok === false ? t('common.issues') : '') }}</div>
+            <div class="v" style="font-size:15px">{{ finiteText(data.backup?.last_success, t('photoshub.never')) }}</div>
+            <div v-if="data.backup?.size_human" class="meta">{{ finiteText(data.backup.size_human) }}</div>
+            <div v-else-if="data.backup?.ok === false" class="meta">{{ t('common.issues') }}</div>
           </div>
           <div class="tile span-3">
             <h3>{{ t('photoshub.ext_backup') }}</h3>
-            <div class="v" style="font-size:15px">{{ data.external_backup?.last_success || t('photoshub.disk_absent') }}</div>
+            <div class="v" style="font-size:15px">{{ finiteText(data.external_backup?.last_success, t('photoshub.disk_absent')) }}</div>
             <div class="meta">{{ externalIssue }}</div>
           </div>
         </div>
@@ -93,7 +94,7 @@
             {{ t('photoshub.remove_selected') }} ({{ selected.length }})
           </button>
         </div>
-        <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down)">{{ pendingError }}</p>
+        <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down)" role="alert">{{ finiteText(pendingError) }}</p>
         <p class="meta" v-if="pending?.gated || data?.gates?.allow_delete_channel === false" style="color:var(--warn)">
           {{ t('photoshub.gated_warn') }}
         </p>
@@ -103,7 +104,7 @@
             {{ t('photoshub.select_all') }}
           </label>
         </p>
-        <p v-if="!(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty">
+        <p v-if="!pendingError && !(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty">
           {{ pendingLoading ? t('common.scanning') : t('photoshub.no_pending') }}
         </p>
         <div v-else class="review-grid" data-test="photoshub-pending-grid">
@@ -117,27 +118,27 @@
               type="checkbox"
               :value="a.id"
               v-model="selected"
-              :aria-label="a.originalFileName || a.id"
+              :aria-label="finiteText(a.originalFileName, '') || finiteText(a.id)"
             />
             <img
               v-if="!thumbFailed[a.id]"
               :src="photosHubThumbUrl(a.id)"
-              :alt="a.originalFileName || ''"
+              :alt="finiteText(a.originalFileName, '')"
               loading="lazy"
               decoding="async"
               @error="thumbFailed[a.id] = true"
             />
-            <span v-else class="review-noimg meta">{{ a.type || t('photoshub.no_preview') }}</span>
+            <span v-else class="review-noimg meta">{{ finiteText(a.type, '') || t('photoshub.no_preview') }}</span>
             <span class="review-cap">
-              <span class="mono name">{{ a.originalFileName }}</span>
-              <span v-if="a.localDateTime" class="sub">{{ a.localDateTime }}</span>
+              <span class="mono name">{{ finiteText(a.originalFileName) }}</span>
+              <span v-if="a.localDateTime" class="sub">{{ finiteText(a.localDateTime) }}</span>
             </span>
           </label>
         </div>
       </div>
 
       <div v-else-if="tab === 'settings'" class="settings-grid" data-test="photoshub-settings">
-        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down)">{{ settingsError }}</p>
+        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down)">{{ finiteText(settingsError) }}</p>
         <div class="card-block">
           <div class="section-head">
             <h2>{{ t('photoshub.people_title') }}</h2>
@@ -194,17 +195,17 @@
           </div>
           <div class="form-grid readonly">
             <label>{{ t('photoshub.path_library') }}</label>
-            <div class="mono path">{{ cfg?.paths?.photos_library || '—' }}</div>
+            <div class="mono path">{{ finiteText(cfg?.paths?.photos_library) }}</div>
             <label>{{ t('photoshub.path_bridge') }}</label>
-            <div class="mono path">{{ cfg?.paths?.bridge_dir || '—' }}</div>
+            <div class="mono path">{{ finiteText(cfg?.paths?.bridge_dir) }}</div>
             <label>{{ t('photoshub.path_inbox') }}</label>
-            <div class="mono path">{{ cfg?.paths?.inbox_dir || '—' }}</div>
+            <div class="mono path">{{ finiteText(cfg?.paths?.inbox_dir) }}</div>
             <label>{{ t('photoshub.path_backup') }}</label>
-            <div class="mono path">{{ cfg?.paths?.backup_dir || '—' }}</div>
+            <div class="mono path">{{ finiteText(cfg?.paths?.backup_dir) }}</div>
             <label>{{ t('photoshub.path_media') }}</label>
-            <div class="mono path">{{ cfg?.paths?.media_location || '—' }}</div>
+            <div class="mono path">{{ finiteText(cfg?.paths?.media_location) }}</div>
             <label>{{ t('photoshub.handbook') }}</label>
-            <div class="mono path">{{ data.links?.handbook || '—' }}</div>
+            <div class="mono path">{{ finiteText(data.links?.handbook) }}</div>
           </div>
         </div>
 
@@ -214,11 +215,11 @@
             <span class="meta">{{ t('photoshub.gates_hint') }}</span>
           </div>
           <p class="meta">
-            {{ t('photoshub.min_originals') }} {{ cfg?.gates?.min_local_original_pct ?? 99 }}%
+            {{ t('photoshub.min_originals') }} {{ finiteN(cfg?.gates?.min_local_original_pct, 99) }}%
             · {{ t('photoshub.force_fallback') }}: {{ cfg?.bridge?.force_fallback ? t('common.on') : t('common.off') }}
-            · {{ t('photoshub.db_check') }}: {{ data.bridge?.photos_db_quick_check || '—' }}
+            · {{ t('photoshub.db_check') }}: {{ finiteText(data.bridge?.photos_db_quick_check) }}
           </p>
-          <p v-if="cfg?.bridge?.note" class="hint">{{ cfg.bridge.note }}</p>
+          <p v-if="cfg?.bridge?.note" class="hint">{{ finiteText(cfg.bridge.note) }}</p>
           <div class="toolbar" style="flex-wrap:wrap;margin-top:8px">
             <button @click="run('enable-delete')" :disabled="busy || !data?.gates?.originals_ready">
               {{ t('photoshub.act_enable_delete') }}
@@ -256,17 +257,20 @@
             <h2>{{ t('photoshub.last_action') }}: {{ actionLabel(lastAction.action) }}</h2>
             <span class="badge" :class="lastAction.ok ? 'ok' : 'down'">{{ lastAction.ok ? t('common.ok') : t('common.fail') }}</span>
           </div>
-          <pre class="mono logbox" aria-live="polite">{{ lastAction.stdout || lastAction.stderr || '—' }}</pre>
+          <pre v-if="lastAction.stdout || lastAction.stderr" class="mono logbox" aria-live="polite">{{ finiteText(lastAction.stdout, '') || finiteText(lastAction.stderr) }}</pre>
+          <pre v-else class="mono logbox">{{ '—' }}</pre>
         </div>
 
         <div class="card-block" style="margin-top:14px">
           <div class="section-head">
             <h2>{{ t('photoshub.logs') }}</h2>
             <div class="tabs">
-              <button v-for="n in logNames" :key="n" :class="{ active: logName===n }" :aria-pressed="logName===n" @click="switchLog(n)">{{ n }}</button>
+              <button v-for="n in logNames" :key="finiteText(n)" :class="{ active: logName===n }" :aria-pressed="logName===n" @click="switchLog(n)">{{ finiteText(n) }}</button>
             </div>
           </div>
-          <pre class="mono logbox" aria-live="polite">{{ (logData?.lines || []).join('\n') || '—' }}</pre>
+          <p v-if="logError" class="hint bad" role="alert">{{ finiteText(logError) }}</p>
+          <pre v-if="(logData?.lines || []).length" class="mono logbox" aria-live="polite">{{ (logData?.lines || []).map(l => finiteText(l, '')).filter(Boolean).join('\n') }}</pre>
+          <pre v-else class="mono logbox">{{ '—' }}</pre>
         </div>
       </template>
     </template>
@@ -274,7 +278,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import {
   getPhotosHubStatus,
   getPhotosHubConfig,
@@ -286,6 +290,7 @@ import {
   getPhotosHubLogs,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText, withUnit } from '../lib/finite'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 
@@ -313,8 +318,11 @@ const thumbFailed = ref({})
 const lastAction = ref(null)
 const logName = ref('bridge')
 const logData = ref(null)
+const logError = ref('')
 const logNames = ['bridge', 'delete', 'cleanup', 'backup', 'external', 'errors']
 const form = ref(emptyForm())
+let pageAlive = true
+let loadGeneration = 0
 
 function initialTab() {
   try {
@@ -327,12 +335,9 @@ function initialTab() {
 const tab = ref(initialTab())
 
 const ready = computed(() => Boolean(data.value?.photoshub_ok))
-const originalsLabel = computed(() => {
-  const p = data.value?.originals?.local_original_pct
-  return p == null ? '—' : `${p}%`
-})
+const originalsLabel = computed(() => withUnit(data.value?.originals?.local_original_pct, '%'))
 const originalsColor = computed(() => {
-  const p = data.value?.originals?.local_original_pct ?? 0
+  const p = finiteN(data.value?.originals?.local_original_pct, 0)
   if (p >= 99) return 'var(--ok)'
   if (p >= 50) return 'var(--warn)'
   return 'var(--down)'
@@ -344,8 +349,8 @@ const allSelected = computed(() => {
 const immichHref = computed(() => safeHttpUrl(data.value?.links?.immich))
 const panelHref = computed(() => safeHttpUrl(data.value?.links?.panel))
 const pendingCount = computed(() => {
-  const n = pending.value?.count
-  return typeof n === 'number' ? n : null
+  const n = finiteN(pending.value?.count, null)
+  return n == null ? null : n
 })
 const externalIssue = computed(() => {
   const ext = data.value?.external_backup
@@ -359,12 +364,12 @@ const formDirty = computed(() => {
 })
 const peopleLabel = computed(() => {
   const p = data.value?.people || {}
-  const names = [p.yuanbao?.name, p.erbao?.name].filter(Boolean)
+  const names = [p.yuanbao?.name, p.erbao?.name].map(n => finiteText(n, '')).filter(Boolean)
   return names.join(' · ') || '—'
 })
 const peopleMeta = computed(() => {
   const p = data.value?.people || {}
-  const bits = [p.yuanbao?.birthday, p.erbao?.birthday].filter(Boolean)
+  const bits = [p.yuanbao?.birthday, p.erbao?.birthday].map(n => finiteText(n, '')).filter(Boolean)
   return bits.join(' · ')
 })
 
@@ -374,9 +379,9 @@ function emptyForm() {
 
 function formFromConfig(c) {
   return {
-    yuanbao_name: c?.people?.yuanbao?.name || '',
+    yuanbao_name: finiteText(c?.people?.yuanbao?.name, ''),
     yuanbao_birthday: c?.people?.yuanbao?.birthday || '',
-    erbao_name: c?.people?.erbao?.name || '',
+    erbao_name: finiteText(c?.people?.erbao?.name, ''),
     erbao_birthday: c?.people?.erbao?.birthday || '',
     album_pending: c?.albums?.pending_delete || '',
     album_yuanbao: c?.albums?.yuanbao || '',
@@ -412,14 +417,14 @@ function actionLabel(action) {
     'configure-people': 'act_people',
   }
   const key = keys[action]
-  return key ? t(`photoshub.${key}`) : (action || '')
+  return key ? t(`photoshub.${key}`) : finiteText(action, '')
 }
 
 function safeHttpUrl(raw) {
-  const text = String(raw || '').trim()
+  const text = finiteText(raw, '').trim()
   try {
     const url = new URL(text)
-    if (url.protocol === 'http:' || url.protocol === 'https:') return text
+    if (url.protocol === 'http:' || url.protocol === 'https:') return finiteText(text, '')
   } catch {
     /* ignore */
   }
@@ -450,10 +455,13 @@ async function switchTab(id) {
 }
 
 async function load() {
+  const generation = ++loadGeneration
   loading.value = true
   loadError.value = ''
   try {
-    data.value = await getPhotosHubStatus()
+    const snap = await getPhotosHubStatus()
+    if (generation !== loadGeneration || !pageAlive) return
+    data.value = snap
     loaded.value = true
     if (data.value?.photoshub_ok) {
       const jobs = []
@@ -469,26 +477,34 @@ async function load() {
       pendingError.value = ''
     }
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     loadError.value = String(e?.message || e)
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 
 async function loadConfig({ force = false } = {}) {
   if (!data.value?.photoshub_ok) return
+  const generation = loadGeneration
   settingsError.value = ''
   try {
     const next = await getPhotosHubConfig()
+    if (generation !== loadGeneration || !pageAlive) return
     const keepForm = Boolean(cfg.value) && formDirty.value && !force
     cfg.value = next
     if (!keepForm) applyForm(next)
   } catch (e) {
-    settingsError.value = String(e?.message || e)
+    if (generation !== loadGeneration || !pageAlive) return
+    settingsError.value = finiteText(e?.message || e, '')
   }
 }
 
 async function saveSettings() {
+  const generation = loadGeneration
   saving.value = true
   try {
     const f = form.value
@@ -501,7 +517,7 @@ async function saveSettings() {
     if (f.album_pending) albums.pending_delete = f.album_pending
     const immich = { public_url: f.immich_public }
     if (f.immich_base) immich.base_url = f.immich_base
-    cfg.value = await patchPhotosHubConfig({
+    const next = await patchPhotosHubConfig({
       people: {
         yuanbao: { name: f.yuanbao_name, birthday: f.yuanbao_birthday },
         erbao: { name: f.erbao_name, birthday: f.erbao_birthday },
@@ -510,74 +526,108 @@ async function saveSettings() {
       immich,
       panel: { url: f.panel_url },
     })
+    if (generation !== loadGeneration || !pageAlive) return
+    cfg.value = next
     applyForm(cfg.value)
-    data.value = await getPhotosHubStatus()
+    const snap = await getPhotosHubStatus()
+    if (generation !== loadGeneration || !pageAlive) return
+    data.value = snap
     toast('✅ ' + t('photoshub.settings_saved'))
   } catch (e) {
-    toast('❌ ' + (e?.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e?.message || e))
   } finally {
-    saving.value = false
+    // load() bumps loadGeneration and Refresh is not gated on saving.
+    if (pageAlive) saving.value = false
   }
 }
 
 async function loadPending() {
   if (!data.value?.photoshub_ok) return
+  const generation = loadGeneration
   pendingLoading.value = true
   pendingError.value = ''
   try {
-    pending.value = await getPhotosHubPending()
+    const next = await getPhotosHubPending()
+    if (generation !== loadGeneration || !pageAlive) return
+    pending.value = next
     selected.value = []
     // A refresh is the operator retrying, so give previews that failed last
     // time (Immich still starting, a transient 502) another chance.
     thumbFailed.value = {}
   } catch (e) {
-    pendingError.value = String(e?.message || e)
+    if (generation !== loadGeneration || !pageAlive) return
+    pendingError.value = finiteText(e?.message || e, '')
   } finally {
-    pendingLoading.value = false
+    // load() bumps loadGeneration; a generation match would leave the
+    // pending refresh button stuck on "scanning".
+    if (pageAlive) pendingLoading.value = false
   }
 }
 
 async function run(action) {
+  if (action === 'sync' && !confirm(t('photoshub.confirm_sync'))) return
+  if (action === 'doctor' && !confirm(t('photoshub.confirm_doctor'))) return
   if (action === 'enable-delete' && !confirm(t('photoshub.confirm_enable_delete'))) return
   if (action === 'enable-cleanup' && !confirm(t('photoshub.confirm_enable_cleanup'))) return
   if (action === 'cleanup' && !confirm(t('photoshub.confirm_cleanup'))) return
   if (action === 'backup' && !confirm(t('photoshub.confirm_backup'))) return
+  if (action === 'external-backup' && !confirm(t('photoshub.confirm_ext_backup'))) return
+  if (action === 'originals' && !confirm(t('photoshub.confirm_originals'))) return
   if (action === 'configure-people' && !confirm(t('photoshub.confirm_people'))) return
+  if (action === 'delete-review' && !confirm(t('photoshub.confirm_delete_review'))) return
+  const generation = loadGeneration
   busy.value = true
   busyAction.value = action
   try {
-    lastAction.value = await postPhotosHubAction(action)
-    data.value = lastAction.value.status_after || (await getPhotosHubStatus())
+    const next = await postPhotosHubAction(action)
+    if (generation !== loadGeneration || !pageAlive) return
+    lastAction.value = next
+    const after = next.status_after || (await getPhotosHubStatus())
+    if (generation !== loadGeneration || !pageAlive) return
+    data.value = after
     if (action === 'delete-review') await loadPending()
     if (tab.value === 'settings') await loadConfig()
+    if (generation !== loadGeneration || !pageAlive) return
     toast(lastAction.value.ok
       ? '✅ ' + actionLabel(action)
-      : '❌ ' + (lastAction.value.stderr || actionLabel(action)))
+      : '❌ ' + (finiteText(lastAction.value.stderr, '') || actionLabel(action)))
   } catch (e) {
-    lastAction.value = { action, ok: false, stderr: String(e?.message || e) }
-    toast('❌ ' + (e?.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    lastAction.value = { action, ok: false, stderr: finiteText(e?.message || e, '') }
+    toast('❌ ' + finiteText(e?.message || e))
   } finally {
-    busy.value = false
-    busyAction.value = ''
+    // load() bumps loadGeneration; a generation match would leave the
+    // action buttons stuck after a successful run.
+    if (pageAlive) {
+      busy.value = false
+      busyAction.value = ''
+    }
   }
 }
 
 async function removeSelected() {
   if (!selected.value.length) return
   if (!confirm(t('photoshub.confirm_remove'))) return
+  const generation = loadGeneration
   pendingLoading.value = true
   try {
     await postPhotosHubPendingRemove(selected.value)
+    if (generation !== loadGeneration || !pageAlive) return
     await loadPending()
+    if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('photoshub.remove_selected'))
   } catch (e) {
     // A failed removal is not a failed page load: routing it to loadError put a
     // whole-page failure banner with a "reload everything" retry above a page
     // that had loaded fine, and left it there until the next full load.
-    pendingError.value = String(e?.message || e)
-    toast('❌ ' + (e?.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    pendingError.value = finiteText(e?.message || e, '')
+    toast('❌ ' + finiteText(e?.message || e))
   } finally {
-    pendingLoading.value = false
+    // load() bumps loadGeneration; a generation match would leave Remove
+    // stuck after a successful write.
+    if (pageAlive) pendingLoading.value = false
   }
 }
 
@@ -588,15 +638,27 @@ function toggleAll(ev) {
 
 async function switchLog(n) {
   if (!data.value?.photoshub_ok) return
+  const generation = loadGeneration
   logName.value = n
   try {
-    logData.value = await getPhotosHubLogs(n)
-  } catch {
-    logData.value = { lines: [] }
+    const next = await getPhotosHubLogs(n)
+    if (generation !== loadGeneration || !pageAlive) return
+    logData.value = next
+    logError.value = ''
+  } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
+    logError.value = String(e?.message || e)
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  pageAlive = true
+  void load()
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+})
 </script>
 
 <style scoped>

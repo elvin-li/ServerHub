@@ -333,21 +333,43 @@ def user_writable(path: str) -> bool:
     """
     import os
 
-    p = Path(path)
-    if p.is_symlink():
+    try:
+        p = Path(path)
+    except (TypeError, ValueError):
+        # Fail closed: a path we cannot even name is not pinned.
+        return True
+    try:
+        is_link = p.is_symlink()
+    except OSError:
+        is_link = False
+    if is_link:
         try:
             target = p.resolve()
-        except OSError:
+        except (OSError, RuntimeError):
+            # Symlink loops raise RuntimeError, not OSError.
             target = None
-        if target is not None and target.exists() and os.access(target, os.W_OK):
+        try:
+            if target is not None and target.exists() and os.access(target, os.W_OK):
+                return True
+        except OSError:
+            pass
+    try:
+        if p.exists() and os.access(p, os.W_OK):
             return True
-    if p.exists() and os.access(p, os.W_OK):
-        return True
+    except OSError:
+        pass
     # The nearest existing ancestor: writable means the leaf can be replaced.
     parent = p.parent
     while True:
-        if parent.exists():
-            return os.access(parent, os.W_OK)
+        try:
+            existed = parent.exists()
+        except OSError:
+            return True
+        if existed:
+            try:
+                return os.access(parent, os.W_OK)
+            except OSError:
+                return True
         if parent.parent == parent:
             return False
         parent = parent.parent

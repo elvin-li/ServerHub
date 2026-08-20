@@ -97,6 +97,7 @@ class PgTargetParsing(unittest.TestCase):
             {"id": "bad/sep", "db": "d"},
             {"id": "has space", "db": "d"},
             {"id": "badport", "db": "d", "port": "many"},
+            {"id": "portinf", "db": "d", "port": float("inf")},
             {"id": "portzero", "db": "d", "port": 0},
             {"id": "porthuge", "db": "d", "port": 70000},
             {"id": "good", "db": "gooddb", "port": "5433"},
@@ -138,13 +139,13 @@ class _DumpHarness(unittest.TestCase):
         self.calls: list[tuple[list[str], dict]] = []
         self.returncode = 0
 
-        def fake_run(argv, capture_output, text, timeout, env):
-            self.calls.append((list(argv), dict(env)))
+        def fake_capped(argv, timeout=10, env=None, cwd=None, cap=2048):
+            self.calls.append((list(argv), dict(env or {})))
             if self.returncode == 0:
                 Path(argv[-1]).write_bytes(b"x" * 4096)
-            return mock.Mock(returncode=self.returncode, stdout="", stderr="boom")
+            return self.returncode, "boom" if self.returncode else ""
 
-        run_patch = mock.patch.object(backups.subprocess, "run", fake_run)
+        run_patch = mock.patch.object(backups, "run_capped", fake_capped)
         run_patch.start()
         self.addCleanup(run_patch.stop)
 
@@ -254,16 +255,16 @@ class PgDumpBehaviour(_DumpHarness):
 
     def test_multi_target_failure_fails_the_aggregate(self):
         self.config["backups"]["postgres"].append({"id": "seconddb", "db": "second"})
-        original = backups.subprocess.run
+        original = backups.run_capped
 
         def second_fails(argv, **kwargs):
-            result = original(argv, **kwargs)
+            rc, text = original(argv, **kwargs)
             if "seconddb" in argv[-1]:
                 Path(argv[-1]).unlink(missing_ok=True)
-                return mock.Mock(returncode=1, stdout="", stderr="down")
-            return result
+                return 1, "down"
+            return rc, text
 
-        with mock.patch.object(backups.subprocess, "run", second_fails):
+        with mock.patch.object(backups, "run_capped", second_fails):
             result = backups._backup_postgres()
         self.assertFalse(result["ok"])
         self.assertIn("seconddb", result["message"])
@@ -301,6 +302,17 @@ class RestoreHints(unittest.TestCase):
         self.assertEqual(backups.restore_hint("teslamate_x.sql.bak"), "")
         self.assertEqual(backups.restore_hint("randomfile.tgz"), "")
 
+    def test_braces_in_the_target_do_not_break_path_substitution(self):
+        self.config["backups"]["postgres"] = [
+            {"id": "weird", "db": "db{x}", "user": "u{y}", "host": "h{z}", "port": 5432}
+        ]
+        hint = backups.restore_hint("weird_1.sql.bak")
+        filled = backups.apply_restore_path(hint, "/tmp/weird_1.sql.bak")
+        self.assertIn("/tmp/weird_1.sql.bak", filled)
+        self.assertIn("db{x}", filled)
+        self.assertIn("u{y}", filled)
+        self.assertNotIn("{path}", filled)
+
 
 class ConfigArchivePaths(unittest.TestCase):
     """extra_paths parsing plus the tar member list of _backup_configs()."""
@@ -327,6 +339,18 @@ class ConfigArchivePaths(unittest.TestCase):
                 with mock.patch.object(backups, "cfg", lambda bad=bad: bad):
                     self.assertEqual(backups.config_archive_extra_paths(), [])
 
+    def test_expanduser_runtimeerror_skips_tilde_extra_paths(self):
+        """``os.path.expanduser`` RuntimeError used to abort config-archive extras."""
+        raw = {"backups": {"config_archive": {"extra_paths": [
+            "~/Services/app/docker-compose.yml",
+            "/abs/ok.yml",
+        ]}}}
+        with (
+            mock.patch.object(backups, "cfg", lambda: raw),
+            mock.patch.object(backups.os.path, "expanduser", side_effect=RuntimeError("no home")),
+        ):
+            self.assertEqual(backups.config_archive_extra_paths(), [])
+
     def test_tar_members_are_config_plus_existing_extras(self):
         root = Path(tempfile.mkdtemp(prefix="serverhub-cfgbak-"))
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
@@ -341,16 +365,16 @@ class ConfigArchivePaths(unittest.TestCase):
 
         calls: list[list[str]] = []
 
-        def fake_run(argv, capture_output, text, timeout):
+        def fake_capped(argv, timeout=10, env=None, cwd=None, cap=2048):
             calls.append(list(argv))
             Path(argv[2]).write_bytes(b"x" * 2048)
-            return mock.Mock(returncode=0, stdout="", stderr="")
+            return 0, ""
 
         with mock.patch.object(backups, "BACKUP_ROOT", backup_root), \
              mock.patch.object(backups, "CONFIG_FILE", config_file), \
              mock.patch.object(backups, "DATA_DIR", root / "empty-data"), \
              mock.patch.object(backups, "cfg", lambda: raw), \
-             mock.patch.object(backups.subprocess, "run", fake_run):
+             mock.patch.object(backups, "run_capped", fake_capped):
             result = backups._backup_configs()
 
         self.assertTrue(result["ok"], result)
@@ -469,13 +493,13 @@ class ConfigArchiveDataState(unittest.TestCase):
         cfg = {"backups": {"config_archive": {"extra_paths": [str(extra)]}}}
         calls: list[list[str]] = []
 
-        def fake_run(argv, capture_output, text, timeout):
+        def fake_capped(argv, timeout=10, env=None, cwd=None, cap=2048):
             calls.append(list(argv))
             Path(argv[2]).write_bytes(b"x" * 2048)
-            return mock.Mock(returncode=0, stdout="", stderr="")
+            return 0, ""
 
         with mock.patch.object(backups, "cfg", lambda: cfg), \
-             mock.patch.object(backups.subprocess, "run", fake_run):
+             mock.patch.object(backups, "run_capped", fake_capped):
             result = backups._backup_configs()
         self.assertTrue(result["ok"], result)
         (argv,) = calls

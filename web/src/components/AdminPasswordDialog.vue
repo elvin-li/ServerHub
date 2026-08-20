@@ -3,13 +3,13 @@
     <div ref="panel" class="modal admin-prompt" role="dialog" aria-modal="true" :aria-label="t('adminPrompt.title')">
       <h3>{{ t('adminPrompt.title') }}</h3>
       <p class="hint">{{ t('adminPrompt.hint') }}</p>
-      <p v-if="incorrect" class="warn" role="alert">{{ t('adminPrompt.incorrect') }}</p>
+      <div class="admin-error-live" role="alert" aria-live="assertive"><p v-if="incorrect" class="warn">{{ t('adminPrompt.incorrect') }}</p></div>
       <form @submit.prevent="confirm">
         <input
           v-model="password"
           type="password"
           autocomplete="current-password"
-          :placeholder="t('adminPrompt.password')"
+          :aria-label="t('adminPrompt.password')"
         />
         <div class="actions">
           <button type="button" @click="cancel">{{ t('adminPrompt.cancel') }}</button>
@@ -73,13 +73,17 @@ function cancel() {
 useDismissable(open, cancel, panel)
 
 onMounted(() => registerAdminPromptHandler(handler))
-onUnmounted(() => unregisterAdminPromptHandler(handler))
+onUnmounted(() => {
+  unregisterAdminPromptHandler(handler)
+  settle(null)
+})
 </script>
 
 <style scoped>
 .admin-prompt { width: min(400px, 100%); max-height: none; gap: 10px; }
 .admin-prompt h3 { margin: 0; font-size: 15px; }
 .admin-prompt .hint { margin: 0; font-size: 12px; color: var(--sub); line-height: 1.5; }
+.admin-error-live:empty { position: absolute; width: 0; height: 0; overflow: hidden; }
 .admin-prompt .warn { margin: 0; font-size: 12px; color: var(--danger, #d33); }
 .admin-prompt input {
   width: 100%; box-sizing: border-box; padding: 9px 10px; font-size: 16px;

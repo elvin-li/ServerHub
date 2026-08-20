@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from hub import audit, nfs_svc, raid_svc, smart_test_svc, snapshots_svc, usage_svc
 from hub.errors import api_error
 from hub.routers.nas_common import (
+    _utf8_text,
     client_host,
     raise_for_admin_result,
     raise_service_error,
@@ -448,5 +449,12 @@ def api_storage_spotlight(body: SpotlightBody, request: Request):
 def api_nfs_preview():
     """The exact ``/etc/exports`` body a save would install, for review first."""
     entries = nfs_svc.read_exports()
-    lines = [e["raw"] for e in entries]
+    lines = []
+    if isinstance(entries, list):
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            raw = _utf8_text(e.get("raw"))
+            if raw:
+                lines.append(raw)
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""))

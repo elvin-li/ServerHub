@@ -166,6 +166,23 @@ class NextRunTests(unittest.TestCase):
     def test_invalid_expression_returns_none(self):
         self.assertIsNone(scheduler_svc.next_run_ts("not a cron"))
 
+    def test_five_field_list_parses_like_the_string(self):
+        parsed = scheduler_svc.parse_cron([0, 4, "*", "*", "*"])
+        self.assertEqual(parsed["minute"], frozenset({0}))
+        self.assertEqual(parsed["hour"], frozenset({4}))
+        self.assertTrue(scheduler_svc.valid_cron(["30", "3", "*", "*", "*"]))
+        self.assertTrue(scheduler_svc.cron_matches(
+            [30, 3, "*", "*", "*"], _t(2026, 8, 13, 3, 30),
+        ))
+        nxt = scheduler_svc.next_run_ts([0, 9, "*", "*", 7], self._after(2026, 8, 13))
+        self.assertEqual(datetime.fromtimestamp(nxt), datetime(2026, 8, 16, 9, 0))
+
+    def test_non_string_leftovers_are_invalid_not_stringified(self):
+        for bad in (None, True, 12345, {"minute": "*"}, ["*", "*", "*"]):
+            with self.subTest(bad=bad):
+                self.assertFalse(scheduler_svc.valid_cron(bad))
+                self.assertIsNone(scheduler_svc.next_run_ts(bad))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

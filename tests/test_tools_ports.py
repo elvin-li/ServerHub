@@ -87,12 +87,28 @@ class TestParseLsofListenLine(unittest.TestCase):
             "",
             "   ",
             "too few fields here",
+            None,
+            1,
             # NAME with no port
             "foo 1 root 1u IPv4 0x0 0t0 TCP somehost (LISTEN)",
             # non-numeric port (lsof without -P resolves service names)
             "foo 1 root 1u IPv4 0x0 0t0 TCP *:https (LISTEN)",
         ):
             self.assertIsNone(parse_lsof_listen_line(bad), bad)
+
+    def test_bytes_row_is_decoded(self):
+        row = parse_lsof_listen_line(
+            b"Python    36756 exampleuser    6u  IPv4 0x1      0t0  "
+            b"TCP 127.0.0.1:8086 (LISTEN)"
+        )
+        self.assertEqual(row["port"], 8086)
+        self.assertEqual(row["address"], "127.0.0.1")
+
+    def test_unicode_isdigit_port_is_dropped(self):
+        """``"80²".isdigit()`` is True; ``int("80²")`` is not."""
+        self.assertIsNone(parse_lsof_listen_line(
+            "foo 1 root 1u IPv4 0x0 0t0 TCP *:80\u00b2 (LISTEN)"
+        ))
 
     def test_hex_escaped_command_is_unescaped(self):
         row = parse_lsof_listen_line(
@@ -110,6 +126,19 @@ class TestParseLsofListenLine(unittest.TestCase):
         self.assertIn(8086, busy)
         self.assertIn(5432, busy)
         self.assertNotIn(9999, busy)
+
+
+class ClampIntTests(unittest.TestCase):
+    def test_junk_limit_does_not_500(self):
+        from hub import tools_svc
+
+        self.assertEqual(tools_svc._clamp_int("nope", 25, 5, 100), 25)
+        self.assertEqual(tools_svc._clamp_int(None, 25, 5, 100), 25)
+        self.assertEqual(tools_svc._clamp_int(3, 25, 5, 100), 5)
+        self.assertEqual(tools_svc._clamp_int(999, 25, 5, 100), 100)
+        self.assertEqual(tools_svc._clamp_int(float("inf"), 25, 5, 100), 25)
+        self.assertEqual(tools_svc._clamp_int(float("-inf"), 25, 5, 100), 25)
+        self.assertEqual(tools_svc._clamp_int(True, 25, 5, 100), 25)
 
 
 if __name__ == "__main__":

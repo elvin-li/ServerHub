@@ -170,12 +170,113 @@ MODULES: list[ModuleInfo] = [
 ]
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    YAML ``name: 2026-08-19``, ``!!binary`` ids, ``enabled: .inf``, and a
+    ``!!set`` of APIs each used to 500 GET /api/modules. A leftover
+    ``\\ud800`` name still 500'd the same encoder (``ensure_ascii=False``
+    then UTF-8).
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/modules.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _module_row(m) -> dict | None:
+    """Serialize one registry entry. Junk rows used to 500 GET /api/modules."""
+    if isinstance(m, ModuleInfo):
+        try:
+            row = asdict(m)
+        except Exception:
+            return None
+    elif isinstance(m, dict):
+        row = dict(m)
+    else:
+        return None
+    row = _jsonable(row)
+    if not isinstance(row, dict):
+        return None
+    cat = row.get("category")
+    if not isinstance(cat, str):
+        # A list leftover (``category: [ops]``) is unhashable and 500'd
+        # ``modules_by_category`` via setdefault.
+        row["category"] = "other"
+    if not isinstance(row.get("enabled"), bool):
+        row["enabled"] = True
+    return row
+
+
 def list_modules() -> list[dict]:
-    return [asdict(m) for m in MODULES]
+    out = []
+    for m in MODULES:
+        row = _module_row(m)
+        if row is not None:
+            out.append(row)
+    return out
 
 
 def modules_by_category() -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
-    for m in MODULES:
-        out.setdefault(m.category, []).append(asdict(m))
+    for row in list_modules():
+        cat = row.get("category")
+        if not isinstance(cat, str):
+            cat = "other"
+        try:
+            out.setdefault(cat, []).append(row)
+        except TypeError:
+            out.setdefault("other", []).append(row)
     return out

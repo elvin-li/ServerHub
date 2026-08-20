@@ -10,8 +10,8 @@
     <div ref="panel" class="modal log-modal" role="dialog" aria-modal="true" aria-labelledby="svc-log-title">
       <div class="drawer-head">
         <div>
-          <h2 id="svc-log-title" class="drawer-title">{{ entry.name || entry.id }} — {{ t('services.logs') }}</h2>
-          <div class="mono sub-id">{{ entry.source }}</div>
+          <h2 id="svc-log-title" class="drawer-title">{{ finiteText(entry.name, '') || finiteText(entry.id) }} — {{ t('services.logs') }}</h2>
+          <div class="mono sub-id">{{ finiteText(entry.source) }}</div>
         </div>
         <div class="drawer-actions">
           <button type="button" class="tiny" @click="emit('refresh')">{{ t('common.refresh') }}</button>
@@ -19,14 +19,15 @@
           <button type="button" @click="emit('close')">{{ t('common.close') }}</button>
         </div>
       </div>
-      <pre class="log">{{ entry.log || t('services.log_empty') }}</pre>
+      <pre class="log">{{ finiteText(entry.log, '') || t('services.log_empty') }}</pre>
     </div>
   </div>
 </template>
 
 <script setup>
-import { inject, ref } from 'vue'
+import { inject, onUnmounted, ref } from 'vue'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
 
@@ -42,8 +43,13 @@ const emit = defineEmits(['close', 'refresh'])
 
 const panel = ref(null)
 
+let pageAlive = true
+onUnmounted(() => { pageAlive = false })
+
 async function copyLog() {
-  toast(await copyToClipboard(props.entry?.log) ? '✅' : '❌')
+  const ok = await copyToClipboard(props.entry?.log)
+  if (!pageAlive) return
+  toast(ok ? '✅' : '❌')
 }
 
 // The parent v-ifs this component, so its lifetime is the dialog's open

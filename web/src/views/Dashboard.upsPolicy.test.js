@@ -128,6 +128,20 @@ describe('UPS host-strip indicator', () => {
   })
 })
 
+describe('icon-only power controls', () => {
+  it('name sleep, restart and shutdown for assistive technology', async () => {
+    const wrapper = await render()
+    const sleep = wrapper.findAll('button').find((b) => b.attributes('aria-label') === 'power.sleep')
+    const restart = wrapper.findAll('button').find((b) => b.attributes('aria-label') === 'power.restart')
+    const shutdown = wrapper.findAll('button').find((b) => b.attributes('aria-label') === 'power.shutdown')
+    expect(sleep, 'sleep').toBeTruthy()
+    expect(restart, 'restart').toBeTruthy()
+    expect(shutdown, 'shutdown').toBeTruthy()
+    expect(sleep.attributes('title')).toBe('power.sleep')
+    wrapper.unmount()
+  })
+})
+
 describe('Ollama host-strip indicator', () => {
   it('is absent when Ollama is not installed', async () => {
     getOllamaStatus.mockResolvedValue({ installed: false, reachable: false })

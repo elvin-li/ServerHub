@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from hub import __version__, alerts, backups, metrics, metrics_rollup, ollama_svc
 from hub.auth import auth_enabled
-from hub.config import cfg, update_settings
+from hub.config import _YAML_CAP, cfg, settings_section, update_settings
 from hub.errors import api_error
 from hub.host_address import configured_host, host_ip
 from hub.paths import DOCKER, ORB
@@ -114,72 +114,206 @@ _ALLOWED_THEMES = {
 _ALLOWED_DENSITY = {"compact", "comfortable", "cozy"}
 
 
+def _as_map(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    YAML ``metrics_interval: .inf``, ``username: 2026-08-19``, ``!!binary``
+    theme, and a ``!!set`` groups_order each used to 500 GET /api/settings.
+    A leftover ``\\ud800`` username or stack name still 500'd the same
+    encoder (``ensure_ascii=False`` then UTF-8).
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/settings.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _text(value, default: str = "") -> str:
+    cleaned = _jsonable(value)
+    return cleaned if isinstance(cleaned, str) and cleaned else default
+
+
+def _finite(value, default):
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return default
+        return value
+    return default
+
+
+def _epoch(value, default: int = 0) -> int:
+    """Finite unix timestamp. Leftover inf ``time.time()`` OverflowError'd
+    ``int(inf)`` on GET /api/metrics?range=."""
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return default
+        try:
+            return int(value)
+        except (OverflowError, ValueError):
+            return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _flag(value, default: bool = True) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _json_list(value) -> list:
+    cleaned = _jsonable(value if isinstance(value, (list, tuple, set, frozenset)) else [])
+    return cleaned if isinstance(cleaned, list) else []
+
+
 def _public_settings() -> dict:
     s = cfg().get("settings") or {}
-    auth = s.get("auth") or {}
-    notify = s.get("notify") or {}
-    ui = s.get("ui") or {}
+    if not isinstance(s, dict):
+        s = {}
+    auth = _as_map(s.get("auth"))
+    notify = _as_map(s.get("notify"))
+    ui = _as_map(s.get("ui"))
+    thresholds = _as_map(s.get("thresholds"))
+    locale = _text(ui.get("locale"), "zh-CN")
+    if locale not in _ALLOWED_LOCALES:
+        locale = "zh-CN"
+    theme = _text(ui.get("theme"), "system")
+    if theme not in _ALLOWED_THEMES:
+        theme = "system"
+    density = _text(ui.get("density"), "compact")
+    if density not in _ALLOWED_DENSITY:
+        density = "compact"
+    ollama = _as_map(s.get("ollama"))
+    aliases = _jsonable(_as_map(s.get("ip_aliases")))
+    if not isinstance(aliases, dict):
+        aliases = {}
+    data = cfg()
     return {
-        "host_ip": host_ip(),
-        "host_ip_config": configured_host(),
+        "host_ip": _text(host_ip()),
+        "host_ip_config": _text(configured_host()),
         "auth": {
             "enabled": auth_enabled(),
             # Loopback transport is never identity. Native clients authenticate
             # with the dedicated mode-0600 token instead.
             "allow_localhost": False,
-            "username": auth.get("username") or "admin",
+            "username": _text(auth.get("username"), "admin"),
             "has_password": bool(auth.get("password_hash") or (auth.get("password") and auth.get("password") != "change-me")),
         },
         "notify": {
             "enabled": bool(notify.get("enabled")),
             "include_warn": bool(notify.get("include_warn")),
-            "notify_resolve": notify.get("notify_resolve", True),
-            "ha_url": notify.get("ha_url") or "http://localhost:8123",
-            "ha_service": notify.get("ha_service") or "notify.notify",
+            "notify_resolve": _flag(notify.get("notify_resolve", True), True),
+            "ha_url": _text(notify.get("ha_url"), "http://localhost:8123"),
+            "ha_service": _text(notify.get("ha_service"), "notify.notify"),
             "has_token": bool(notify.get("ha_token")),
             "has_webhook": bool(
                 notify.get("ha_webhook_url") or notify.get("webhook_url")
             ),
         },
         "ui": {
-            "locale": ui.get("locale") or "zh-CN",
-            "theme": ui.get("theme") or "system",
-            "density": ui.get("density") or "compact",
+            "locale": locale,
+            "theme": theme,
+            "density": density,
         },
-        "metrics_interval": s.get("metrics_interval", 90),
-        "alert_interval": s.get("alert_interval", 90),
+        "metrics_interval": _finite(s.get("metrics_interval", 90), 90),
+        "alert_interval": _finite(s.get("alert_interval", 90), 90),
         "resource_mode": (
             s.get("resource_mode") if s.get("resource_mode") in ("low", "high") else "low"
         ),
-        "adaptive": s.get("adaptive", True),
+        "adaptive": _flag(s.get("adaptive", True), True),
         "thresholds": {
-            "enabled": (s.get("thresholds") or {}).get("enabled", True),
-            "cpu_pct": (s.get("thresholds") or {}).get("cpu_pct", 90),
-            "mem_pct": (s.get("thresholds") or {}).get("mem_pct", 90),
-            "disk_pct": (s.get("thresholds") or {}).get("disk_pct", 90),
-            "cooldown_sec": (s.get("thresholds") or {}).get("cooldown_sec", 1800),
+            "enabled": _flag(thresholds.get("enabled", True), True),
+            "cpu_pct": _finite(thresholds.get("cpu_pct", 90), 90),
+            "mem_pct": _finite(thresholds.get("mem_pct", 90), 90),
+            "disk_pct": _finite(thresholds.get("disk_pct", 90), 90),
+            "cooldown_sec": _finite(thresholds.get("cooldown_sec", 1800), 1800),
             # Enumerated, not spread, so the read side has to be extended with the
             # write side: without these four the settings page can PUT a SMART
             # threshold but never reads back what it saved.
-            "smart_enabled": (s.get("thresholds") or {}).get("smart_enabled", True),
-            "smart_temp_c": (s.get("thresholds") or {}).get("smart_temp_c", 60),
-            "smart_wear_pct": (s.get("thresholds") or {}).get("smart_wear_pct", 90),
-            "smart_spare_pct": (s.get("thresholds") or {}).get("smart_spare_pct", 10),
+            "smart_enabled": _flag(thresholds.get("smart_enabled", True), True),
+            "smart_temp_c": _finite(thresholds.get("smart_temp_c", 60), 60),
+            "smart_wear_pct": _finite(thresholds.get("smart_wear_pct", 90), 90),
+            "smart_spare_pct": _finite(thresholds.get("smart_spare_pct", 10), 10),
         },
-        "ip_aliases": s.get("ip_aliases") or {},
+        "ip_aliases": aliases,
         # Host terminal is RCE on this machine, so it ships off and the UI needs
         # to know the current state to render the gate honestly.
         "terminal": {
-            "host_enabled": bool((s.get("terminal") or {}).get("host_enabled", False)),
+            "host_enabled": bool(_as_map(s.get("terminal")).get("host_enabled", False)),
         },
         "ollama": {
-            "url": str((s.get("ollama") or {}).get("url") or ollama_svc.DEFAULT_URL).rstrip("/"),
-            "label": str((s.get("ollama") or {}).get("label") or ""),
+            "url": (_text(ollama.get("url"), ollama_svc.DEFAULT_URL).rstrip("/")
+                    or ollama_svc.DEFAULT_URL),
+            "label": _text(ollama.get("label"), ""),
         },
-        "paths": {"docker": DOCKER, "orb": ORB},
-        "stacks": cfg().get("stacks") or [],
-        "log_sources": cfg().get("log_sources") or [],
-        "groups_order": cfg().get("groups_order") or [],
+        "paths": {"docker": _text(DOCKER), "orb": _text(ORB)},
+        "stacks": _json_list(data.get("stacks") or []),
+        "log_sources": _json_list(data.get("log_sources") or []),
+        "groups_order": _json_list(data.get("groups_order") or []),
         "version": __version__,
     }
 
@@ -234,7 +368,7 @@ def put_settings(body: SettingsPatch):
             ui_patch["density"] = body.ui.density
         if ui_patch:
             # merge with existing ui
-            cur = dict((cfg().get("settings") or {}).get("ui") or {})
+            cur = dict(settings_section("ui"))
             cur.update(ui_patch)
             patch["ui"] = cur
     if body.adaptive is not None:
@@ -242,19 +376,19 @@ def put_settings(body: SettingsPatch):
     if body.thresholds is not None:
         th = {k: v for k, v in body.thresholds.model_dump().items() if v is not None}
         if th:
-            cur_th = dict((cfg().get("settings") or {}).get("thresholds") or {})
+            cur_th = dict(settings_section("thresholds"))
             cur_th.update(th)
             patch["thresholds"] = cur_th
     if body.ip_aliases is not None:
         al = {k: v for k, v in body.ip_aliases.model_dump().items() if v is not None}
         if al:
-            cur_al = dict((cfg().get("settings") or {}).get("ip_aliases") or {})
+            cur_al = dict(settings_section("ip_aliases"))
             cur_al.update(al)
             patch["ip_aliases"] = cur_al
     if body.terminal is not None:
         tm = {k: v for k, v in body.terminal.model_dump().items() if v is not None}
         if tm:
-            cur_tm = dict((cfg().get("settings") or {}).get("terminal") or {})
+            cur_tm = dict(settings_section("terminal"))
             cur_tm.update(tm)
             patch["terminal"] = cur_tm
     if body.ollama is not None:
@@ -264,7 +398,7 @@ def put_settings(body: SettingsPatch):
         if body.ollama.label is not None:
             o["label"] = ollama_svc.validate_settings_label(body.ollama.label)
         if o:
-            cur_o = dict((cfg().get("settings") or {}).get("ollama") or {})
+            cur_o = dict(settings_section("ollama"))
             cur_o.update(o)
             patch["ollama"] = cur_o
     if not patch:
@@ -308,10 +442,10 @@ def get_metrics(
         minutes = max(5, min(minutes, 48 * 60))
         pts = metrics.history(minutes)
         return {"points": pts, "latest": pts[-1] if pts else None}
-    now = int(time.time())
+    now = _epoch(time.time())
     if since is not None:
-        start = int(since)
-        end = int(until) if until is not None else now
+        start = _epoch(since)
+        end = now if until is None else _epoch(until, now)
         if end <= start:
             raise api_error("metrics.bad_window")
     else:
@@ -357,14 +491,29 @@ _EXPORT_REDACT_KEYS = frozenset({
 })
 
 
-def _redact_export(node):
+def _redact_export(node, depth: int = 0):
+    # Depth-capped: leftover deeply-nested YAML used to RecursionError the
+    # export after yaml.safe_load succeeded (RecursionError is not YAMLError).
+    if depth > 64:
+        return None
     if isinstance(node, dict):
-        return {
-            k: ("***redacted***" if k in _EXPORT_REDACT_KEYS and v else _redact_export(v))
-            for k, v in node.items()
-        }
+        out = {}
+        for k, v in node.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            k = _utf8_text(k)
+            if k in _EXPORT_REDACT_KEYS and v:
+                out[k] = "***redacted***"
+            else:
+                out[k] = _redact_export(v, depth + 1)
+        return out
     if isinstance(node, list):
-        return [_redact_export(v) for v in node]
+        return [_redact_export(v, depth + 1) for v in node]
+    if isinstance(node, str):
+        return _utf8_text(node)
     return node
 
 
@@ -376,10 +525,22 @@ def export_services_yaml():
     from hub.paths import CONFIG_FILE
 
     try:
-        data = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+        from hub.util import read_text_capped
+
+        data = yaml.safe_load(
+            read_text_capped(CONFIG_FILE, _YAML_CAP, encoding="utf-8")
+        ) or {}
+        if not isinstance(data, dict):
+            raise api_error("system_settings.export_failed")
         text = yaml.safe_dump(_redact_export(data), allow_unicode=True, sort_keys=False)
-    except yaml.YAMLError:
-        # Unparseable config: better to refuse than to stream raw secrets.
+    except (
+        OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
+        TypeError, ValueError, AttributeError, KeyError,
+    ):
+        # Unparseable or torn config: better to refuse than to stream raw secrets.
+        # RecursionError is leftover deeply nested YAML — not YAMLError.
+        # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
+        # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
         raise api_error("system_settings.export_failed")
     return PlainTextResponse(
         text,

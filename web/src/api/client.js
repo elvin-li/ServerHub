@@ -429,7 +429,12 @@ export const pruneDocker = (what) =>
 export const getSystemScheduler = () => json('/api/system/scheduler')
 export const getToolsAgents = () => json('/api/tools/agents')
 export const getToolsHardware = () => json('/api/tools/hardware')
-export const getToolsUpdates = () => json('/api/tools/updates')
+export const getToolsUpdates = (force = false) =>
+  json(force ? '/api/tools/updates?force=true' : '/api/tools/updates')
+export const applyServerHubUpdate = (stash = false) =>
+  json('/api/tools/updates/apply', jsonBody('POST', { confirm: true, stash: !!stash }))
+export const applyBrewUpgrade = () =>
+  json('/api/tools/updates/brew', jsonBody('POST', { confirm: true }))
 export const getToolsAbout = () => json('/api/tools/about')
 export const pingHost = (host, count = 3) =>
   json('/api/tools/net/ping', jsonBody('POST', { host, count }))
@@ -1025,17 +1030,29 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
         if (msg.content) content += msg.content
         if (msg.thinking) thinking += msg.thinking
         const snap = { ok: true, model, content, thinking, done: Boolean(chunk.done) }
+        if (signal?.aborted) {
+          const err = new Error('aborted')
+          err.name = 'AbortError'
+          throw err
+        }
         onChunk?.(snap)
         if (chunk.done) return snap
       }
+    }
+    if (signal?.aborted) {
+      const err = new Error('aborted')
+      err.name = 'AbortError'
+      throw err
     }
     const snap = { ok: true, model, content, thinking, done: true }
     onChunk?.(snap)
     return snap
   } catch (e) {
     if (e.name === 'AbortError') {
-      const err = new Error(t('err.timeout'))
+      const userAborted = Boolean(signal?.aborted)
+      const err = new Error(t(userAborted ? 'err.cancelled' : 'err.timeout'))
       err.status = 0
+      err.code = userAborted ? 'cancelled' : 'timeout'
       throw err
     }
     if (!e.status && e.message === 'Failed to fetch') {

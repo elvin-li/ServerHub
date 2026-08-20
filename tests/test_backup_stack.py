@@ -65,7 +65,7 @@ class _Harness(unittest.TestCase):
         self.stop_rc = 0
         self.start_rc = 0
 
-        def fake_run(argv, *, timeout):
+        def fake_run(argv, *, timeout, **_kwargs):
             self.calls.append(list(argv))
             joined = " ".join(argv)
             if "config" in argv and "--format" in argv:
@@ -239,12 +239,12 @@ class InflightMarkerTests(_Harness):
         seen = {"at_stop": None, "at_start": None}
         original = backups._run_argv
 
-        def spying_run(argv, *, timeout):
+        def spying_run(argv, *, timeout, **kwargs):
             if argv[-1] == "stop":
                 seen["at_stop"] = self._marker().exists()
             if argv[-1] == "start":
                 seen["at_start"] = self._marker().exists()
-            return original(argv, timeout=timeout)
+            return original(argv, timeout=timeout, **kwargs)
 
         with mock.patch.object(backups, "_run_argv", spying_run):
             result = backups.backup_stack("photoprism")
@@ -262,14 +262,23 @@ class InflightMarkerTests(_Harness):
         backups.backup_stack("photoprism", stop_first=False)
         self.assertFalse(self._marker().exists())
 
+    def test_write_inflight_leftover_inf_time_does_not_raise(self):
+        """int(time.time()) OverflowError on leftover inf used to abort the backup."""
+        with mock.patch("hub.backups.time.time", return_value=float("inf")):
+            backups._write_inflight("photoprism", str(self.compose_path))
+        rec = json.loads(self._marker().read_text())
+        json.dumps(rec, allow_nan=False)
+        self.assertEqual(rec["ts"], 0)
+        self.assertEqual(rec["stack"], "photoprism")
+
     def test_marker_records_stack_and_compose_path(self):
         captured = {}
         original = backups._run_argv
 
-        def spying_run(argv, *, timeout):
+        def spying_run(argv, *, timeout, **kwargs):
             if argv[-1] == "stop":
                 captured.update(json.loads(self._marker().read_text()))
-            return original(argv, timeout=timeout)
+            return original(argv, timeout=timeout, **kwargs)
 
         with mock.patch.object(backups, "_run_argv", spying_run):
             backups.backup_stack("photoprism")
@@ -339,6 +348,49 @@ class StackMountsJsonTests(unittest.TestCase):
         self.assertEqual(binds, [])
         self.assertEqual(volumes, [])
         self.assertIn("not an object", err)
+
+    def test_non_object_services_are_skipped(self):
+        payload = json.dumps({
+            "services": {
+                "ok": {"volumes": [{"type": "bind", "source": "/tmp"}]},
+                "bad": ["not", "a", "mapping"],
+            },
+            "volumes": {},
+        })
+        with (
+            mock.patch.object(backups, "_run_argv", return_value=(0, payload, "")),
+            mock.patch("hub.backups.Path.is_dir", return_value=True),
+            mock.patch("hub.backups.Path.is_file", return_value=False),
+            mock.patch("hub.backups.Path.is_socket", return_value=False),
+        ):
+            binds, volumes, err = backups._stack_mounts("compose.yml", None)
+        self.assertEqual(err, "")
+        self.assertEqual(binds, ["/tmp"])
+        self.assertEqual(volumes, [])
+
+    def test_nested_compose_json_does_not_500(self):
+        """json.loads RecursionError is not ValueError; leftover nested
+        ``compose config`` JSON used to 500 POST /api/backups/stack."""
+        nested = '{"k":' * 12000 + "1" + "}" * 12000
+        with mock.patch.object(backups, "_run_argv", return_value=(0, nested, "")):
+            binds, volumes, err = backups._stack_mounts("compose.yml", None)
+        self.assertEqual(binds, [])
+        self.assertEqual(volumes, [])
+        self.assertTrue(err)
+        json.dumps({"err": err}, allow_nan=False)
+
+    def test_compose_json_cap_covers_a_real_resolved_file(self):
+        """``run_capped`` tails; a 4KB cap tore every real compose JSON."""
+        seen = {}
+
+        def fake_capped(cmd, timeout=10, env=None, cwd=None, cap=2048):
+            seen["cap"] = cap
+            return 0, json.dumps({"services": {}, "volumes": {}})
+
+        with mock.patch.object(backups, "run_capped", fake_capped):
+            _binds, _vols, err = backups._stack_mounts("/tmp/c.yml", None)
+        self.assertGreaterEqual(seen["cap"], 64 * 1024)
+        self.assertEqual(err, "")
 
 
 if __name__ == "__main__":

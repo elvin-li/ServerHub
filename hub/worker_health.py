@@ -41,6 +41,87 @@ _lock = threading.Lock()
 _workers: dict[str, dict] = {}
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _coerce_interval(interval) -> float:
+    """A positive finite loop interval, even when a hand-edit passed ``90s``.
+
+    Leftover YAML ``true`` is a bool subclass of int; ``float(True)`` is 1.0
+    and used to mark the worker stale after three seconds.
+    """
+    if isinstance(interval, bool) or interval is None:
+        return 60.0
+    try:
+        n = float(interval)
+    except (TypeError, ValueError, OverflowError):
+        n = 60.0
+    if n != n or n in (float("inf"), float("-inf")) or n <= 0:
+        n = 60.0
+    n = max(1.0, n)
+    prod = n * STALE_AFTER
+    if prod != prod or prod in (float("inf"), float("-inf")):
+        n = 60.0
+    return n
+
+
+def loop_interval(raw, default: int = 90, *, minimum: int = 30, maximum: int = 86400) -> int:
+    """Positive seconds for ``Event.wait`` / ``int(interval)`` on the start path.
+
+    YAML leftover ``.inf`` / ``1e308`` / ``true`` / ``!!binary`` used to
+    OverflowError ``int(inf)`` on the LaunchAgent thread (sampler / alerter)
+    or kill the SMART scheduler on ``stop.wait(check_interval)``.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return default
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return default
+    try:
+        n = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if n <= 0 or n > maximum:
+        return default
+    return n if n >= minimum else minimum
+
+
+def _wall_now() -> float:
+    """Finite wall clock. Leftover ``time.time() = inf`` used to poison health age math."""
+    try:
+        n = float(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
+        return 0.0
+    return n
+
+
+def _coerce_now(now) -> float:
+    """Wall clock for age math; garbage / overflow must not 500 the health page."""
+    if now is None:
+        return _wall_now()
+    try:
+        n = float(now)
+    except (TypeError, ValueError, OverflowError):
+        return _wall_now()
+    if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
+        return _wall_now()
+    return n
+
+
 def register(name: str, interval: float, thread: threading.Thread | None = None) -> None:
     """(Re-)register a worker; records an initial beat.
 
@@ -50,55 +131,91 @@ def register(name: str, interval: float, thread: threading.Thread | None = None)
     """
     entry = {
         "thread": thread if thread is not None else threading.current_thread(),
-        "interval": max(1.0, float(interval)),
-        "beat": time.time(),
+        "interval": _coerce_interval(interval),
+        "beat": _wall_now(),
     }
     with _lock:
-        _workers[name] = entry
+        _workers[str(name)] = entry
 
 
 def beat(name: str) -> None:
     """Record one loop iteration.  A beat for an unregistered name is a no-op
     (the worker may have been unregistered by a concurrent ``stop_*``)."""
     with _lock:
-        entry = _workers.get(name)
-        if entry is not None:
-            entry["beat"] = time.time()
+        entry = _workers.get(str(name))
+        if isinstance(entry, dict):
+            entry["beat"] = _wall_now()
 
 
 def unregister(name: str) -> None:
     with _lock:
-        _workers.pop(name, None)
+        _workers.pop(str(name), None)
 
 
 def snapshot(now: float | None = None) -> list[dict]:
     """State of every registered worker, sorted by name."""
-    now = time.time() if now is None else now
+    now_f = _coerce_now(now)
     with _lock:
-        items = [(name, dict(entry)) for name, entry in _workers.items()]
+        items = []
+        for name, entry in _workers.items():
+            if isinstance(entry, dict):
+                items.append((name, dict(entry)))
     out = []
-    for name, entry in sorted(items):
-        thread = entry["thread"]
-        age = max(0.0, now - entry["beat"])
+    for name, entry in sorted(items, key=lambda kv: str(kv[0])):
+        thread = entry.get("thread")
+        try:
+            alive = bool(thread is not None and thread.is_alive())
+        except Exception:
+            alive = False
+        try:
+            beat = float(entry.get("beat") or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            beat = 0.0
+        if beat != beat or beat in (float("inf"), float("-inf")):
+            beat = 0.0
+        interval = _coerce_interval(entry.get("interval"))
+        age = max(0.0, now_f - beat)
+        if age != age or age in (float("inf"), float("-inf")):
+            age = 0.0
+        age_sec = round(age, 1)
+        if age_sec != age_sec or age_sec in (float("inf"), float("-inf")):
+            age_sec = 0.0
+        try:
+            stale = age > interval * STALE_AFTER
+        except (OverflowError, TypeError, ValueError):
+            stale = True
         out.append({
-            "name": name,
-            "alive": bool(thread is not None and thread.is_alive()),
-            "interval": entry["interval"],
-            "age_sec": round(age, 1),
-            "stale": age > entry["interval"] * STALE_AFTER,
+            "name": _utf8_text(name),
+            "alive": alive,
+            "interval": interval,
+            "age_sec": age_sec,
+            "stale": stale,
         })
     return out
 
 
-def problems(now: float | None = None) -> list[str]:
-    """Human-readable descriptions of dead or stale workers (empty = healthy)."""
+def problems(now: float | None = None, rows: list[dict] | None = None) -> list[str]:
+    """Human-readable descriptions of dead or stale workers (empty = healthy).
+
+    *rows* reuses a :func:`snapshot` already taken by the caller so health
+    cannot report ``N worker threads ticking`` from one read and a dead-thread
+    line from a second read that raced with unregister.
+    """
     out = []
-    for w in snapshot(now):
-        if not w["alive"]:
-            out.append(f"{w['name']}: thread died")
-        elif w["stale"]:
-            out.append(
-                f"{w['name']}: last tick {int(w['age_sec'])}s ago"
-                f" (interval {int(w['interval'])}s)"
-            )
+    for w in rows if rows is not None else snapshot(now):
+        if not isinstance(w, dict):
+            continue
+        name = _utf8_text(w.get("name") or "?")
+        if not w.get("alive"):
+            out.append(f"{name}: thread died")
+        elif w.get("stale"):
+            try:
+                age = int(float(w.get("age_sec") or 0))
+            except (TypeError, ValueError, OverflowError):
+                age = 0
+            try:
+                interval = int(float(w.get("interval") or 0))
+            except (TypeError, ValueError, OverflowError):
+                interval = 0
+            out.append(f"{name}: last tick {age}s ago (interval {interval}s)")
     return out

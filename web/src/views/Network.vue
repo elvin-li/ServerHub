@@ -4,7 +4,7 @@
       <h1>{{ t('network.title') }}</h1>
       <span class="meta">
         {{ t('network.meta') }}
-        <span v-if="data?.ts"> · {{ data.ts }}</span>
+        <span v-if="finiteText(data?.ts, '')"> · {{ finiteText(data.ts) }}</span>
       </span>
     </div>
 
@@ -21,7 +21,7 @@
     <div class="toolbar">
       <button class="primary" @click="refresh(true)" :disabled="loading">{{ t('common.refresh') }}</button>
       <span class="meta" style="color:var(--sub)" v-if="data?.default_route">
-        {{ t('network.default_gw', { gw: data.default_route.gateway || '—', iface: data.default_route.interface || '—' }) }}
+        {{ t('network.default_gw', { gw: finiteText(data.default_route.gateway), iface: finiteText(data.default_route.interface) }) }}
       </span>
     </div>
 
@@ -38,11 +38,11 @@
     <div class="net-summary" v-if="data">
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_egress') }}</span>
-        <span class="net-summary-value">{{ data.default_route?.interface || '—' }}</span>
+        <span class="net-summary-value">{{ finiteText(data.default_route?.interface) }}</span>
       </div>
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_gateway') }}</span>
-        <span class="net-summary-value mono">{{ data.default_route?.gateway || '—' }}</span>
+        <span class="net-summary-value mono">{{ finiteText(data.default_route?.gateway) }}</span>
       </div>
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_services') }}</span>
@@ -54,7 +54,7 @@
       </div>
     </div>
 
-    <pre v-if="msg" class="msg-box" role="status" aria-live="polite">{{ msg }}</pre>
+    <pre v-if="msg" class="msg-box" role="status" aria-live="polite">{{ finiteText(msg) }}</pre>
 
     <!-- Switch profile + multi-IP bindings -->
     <template v-if="tab==='switch'">
@@ -71,8 +71,8 @@
           <button :disabled="busy" @click="applyProfile('wifi_only')">{{ t('network.wifi_only') }}</button>
         </div>
         <div class="sub" style="margin-top:8px" v-if="data?.default_route">
-          {{ t('network.current_egress', { iface: data.default_route.interface || '—' }) }}
-          · {{ t('network.gateway_is', { gw: data.default_route.gateway || '—' }) }}
+          {{ t('network.current_egress', { iface: finiteText(data.default_route.interface) }) }}
+          · {{ t('network.gateway_is', { gw: finiteText(data.default_route.gateway) }) }}
         </div>
       </div>
 
@@ -91,8 +91,8 @@
         <div style="font-size:12px;line-height:1.6" v-if="data?.network_failover">
           <span>{{ t('network.policy_is', { state: data.network_failover.config?.enabled ? t('network.enabled_state') : t('network.disabled_state') }) }}</span>
           <span> · Wi‑Fi：{{ failoverWifiLabel }}</span>
-          <span v-if="data.network_failover.state?.last_check_at"> · {{ t('network.last_check', { at: data.network_failover.state.last_check_at }) }}</span>
-          <span v-if="data.network_failover.state?.last_action"> · {{ t('network.last_action', { action: data.network_failover.state.last_action }) }}</span>
+          <span v-if="finiteText(data.network_failover.state?.last_check_at, '')"> · {{ t('network.last_check', { at: finiteText(data.network_failover.state.last_check_at) }) }}</span>
+          <span v-if="finiteText(data.network_failover.state?.last_action, '')"> · {{ t('network.last_action', { action: finiteText(data.network_failover.state.last_action) }) }}</span>
         </div>
       </div>
 
@@ -117,18 +117,18 @@
         <div style="font-size:12px;line-height:1.6">
           <div>
             {{ t('network.wstunnel_listen') }}
-            <code>{{ data.wstunnel.listen || '—' }}</code>
+            <code>{{ finiteText(data.wstunnel.listen) }}</code>
           </div>
           <div>
             {{ t('network.wstunnel_public') }}
-            <code>{{ data.wstunnel.public || '—' }}</code>
+            <code>{{ finiteText(data.wstunnel.public) }}</code>
           </div>
           <div>
             {{ t('network.wstunnel_restrict') }}
-            <code>{{ data.wstunnel.restrict_to || '—' }}</code>
+            <code>{{ finiteText(data.wstunnel.restrict_to) }}</code>
           </div>
           <div v-if="data.wstunnel.client_command" class="mono" style="margin-top:6px;font-size:11px;word-break:break-all">
-            {{ data.wstunnel.client_command }}
+            {{ finiteText(data.wstunnel.client_command) }}
           </div>
         </div>
       </div>
@@ -143,19 +143,19 @@
             <tr v-for="(s, idx) in orderList" :key="s.name">
               <td class="mono col-hide-m">{{ idx + 1 }}</td>
               <td>
-                <strong>{{ s.name }}</strong>
+                <strong>{{ finiteText(s.name) }}</strong>
                 <span v-if="s.disabled" class="badge down">{{ t('network.act_disable') }}</span>
-                <span v-if="isWifi(s)" class="badge accent">Wi‑Fi</span>
+                <span v-if="isWifi(s)" class="badge accent">{{ t('network.badge_wifi') }}</span>
                 <span v-else-if="looksEthernet(s)" class="badge ok">{{ t('network.badge_wired') }}</span>
-                <div class="show-m sub mono">{{ s.device || '—' }} · {{ s.disabled ? 'off' : 'on' }}</div>
-                <div class="show-m sub mono">{{ s.mode }} {{ s.ip || '' }}</div>
+                <div class="show-m sub mono">{{ finiteText(s.device) }} · {{ s.disabled ? t('network.off') : t('network.on') }}</div>
+                <div class="show-m sub mono">{{ finiteText(s.mode) }} {{ finiteText(s.ip, '') }}</div>
               </td>
-              <td class="mono col-hide-m">{{ s.device || '—' }}</td>
-              <td class="col-hide-m">{{ s.disabled ? 'off' : 'on' }}</td>
-              <td class="mono col-hide-m" style="font-size:11px">{{ s.mode }} {{ s.ip || '' }}</td>
+              <td class="mono col-hide-m">{{ finiteText(s.device) }}</td>
+              <td class="col-hide-m">{{ s.disabled ? t('network.off') : t('network.on') }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(s.mode) }} {{ finiteText(s.ip, '') }}</td>
               <td class="ops">
-                <button class="tiny" :disabled="busy || idx===0" @click="moveService(idx, -1)">↑</button>
-                <button class="tiny" :disabled="busy || idx===orderList.length-1" @click="moveService(idx, 1)">↓</button>
+                <button class="tiny" :disabled="busy || idx===0" @click="moveService(idx, -1)" :aria-label="t('network.move_up')">↑</button>
+                <button class="tiny" :disabled="busy || idx===orderList.length-1" @click="moveService(idx, 1)" :aria-label="t('network.move_down')">↓</button>
                 <button class="tiny" :disabled="busy" @click="toggleService(s)">{{ s.disabled ? t('network.act_enable') : t('network.act_disable') }}</button>
               </td>
             </tr>
@@ -192,19 +192,19 @@
           <div>
             {{ t('network.preferred_iface') }}
             <strong class="mono" v-if="data.alias_auto.preferred">
-              {{ data.alias_auto.preferred.device }}
+              {{ finiteText(data.alias_auto.preferred.device) }}
             </strong>
             <span v-else style="color:var(--down)">{{ t('network.no_network') }}</span>
             <span v-if="data.alias_auto.preferred" style="color:var(--sub)">
-              · {{ data.alias_auto.preferred.service }}
-              · {{ t('network.primary_ip_is', { ip: data.alias_auto.preferred.primary_ip || '—' }) }}
+              · {{ finiteText(data.alias_auto.preferred.service) }}
+              · {{ t('network.primary_ip_is', { ip: finiteText(data.alias_auto.preferred.primary_ip) }) }}
             </span>
           </div>
           <div style="margin-top:6px">
             {{ t('network.managed_aliases') }}
             <span v-for="(ip, i) in (data.alias_auto.config?.ips || [])" :key="ip" class="badge" style="margin-right:4px"
               :class="(data.alias_auto.ips||[]).find(x=>x.ip===ip)?.on_preferred ? 'ok' : 'warn'"
-            >{{ ip }}</span>
+            >{{ finiteText(ip) }}</span>
             <span v-if="!(data.alias_auto.config?.ips||[]).length" style="color:var(--sub)">{{ t('network.not_configured') }}</span>
           </div>
           <div class="field-grid" style="margin-top:10px">
@@ -214,7 +214,7 @@
           <div class="btns" style="margin-top:8px">
             <button class="tiny" :disabled="busy" @click="saveAutoIps">{{ t('network.save_list') }}</button>
           </div>
-          <pre v-if="autoBindLog" class="log-pre" style="margin-top:8px;max-height:100px" role="status" aria-live="polite">{{ autoBindLog }}</pre>
+          <pre v-if="autoBindLog" class="log-pre" style="margin-top:8px;max-height:100px" role="status" aria-live="polite">{{ finiteText(autoBindLog) }}</pre>
         </div>
       </div>
       <div class="table-wrap" style="margin-bottom:12px">
@@ -226,16 +226,16 @@
             <template v-for="iface in (data?.interface_addresses || [])" :key="iface.device">
               <tr v-for="(a, ai) in (iface.addresses || [])" :key="iface.device + a.ip + ai">
                 <td class="mono" v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
-                  <strong>{{ iface.device }}</strong>
+                  <strong>{{ finiteText(iface.device) }}</strong>
                 </td>
                 <td v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
                   <span class="led" :class="iface.up ? 'on' : 'off'"></span>
                 </td>
                 <td class="mono">
-                  <strong>{{ a.ip }}</strong>
-                  <div class="show-m sub">{{ a.netmask }} · {{ a.alias ? t('network.badge_alias') : t('network.badge_primary') }}</div>
+                  <strong>{{ finiteText(a.ip) }}</strong>
+                  <div class="show-m sub">{{ finiteText(a.netmask) }} · {{ a.alias ? t('network.badge_alias') : t('network.badge_primary') }}</div>
                 </td>
-                <td class="mono col-hide-m">{{ a.netmask }}</td>
+                <td class="mono col-hide-m">{{ finiteText(a.netmask) }}</td>
                 <td class="col-hide-m">
                   <span class="badge" :class="a.alias ? 'warn' : 'ok'">{{ a.alias ? t('network.badge_alias') : t('network.badge_primary') }}</span>
                 </td>
@@ -255,7 +255,7 @@
                 </td>
               </tr>
               <tr v-if="!(iface.addresses||[]).length" :key="iface.device+'-empty'">
-                <td class="mono"><strong>{{ iface.device }}</strong></td>
+                <td class="mono"><strong>{{ finiteText(iface.device) }}</strong></td>
                 <td><span class="led" :class="iface.up ? 'on' : 'off'"></span></td>
                 <td colspan="3" style="color:var(--sub)">{{ t('network.no_ipv4') }}</td>
                 <td></td>
@@ -270,7 +270,7 @@
         <div class="field-grid">
           <label>{{ t('network.th_nic') }}</label>
           <select v-model="aliasForm.device" :aria-label="t('network.th_nic')">
-            <option v-for="i in deviceOptions" :key="i" :value="i">{{ i }}</option>
+            <option v-for="i in deviceOptions" :key="i" :value="i">{{ finiteText(i) }}</option>
           </select>
           <label>IP</label>
           <input v-model="aliasForm.ip" type="text" :placeholder="t('network.alias_ip_ph')"  :aria-label="t('network.alias_ip_ph')"/>
@@ -300,21 +300,21 @@
             <tr v-for="i in data?.interfaces || []" :key="i.name">
               <td><span class="led" :class="i.up ? 'on' : 'off'"></span></td>
               <td>
-                <strong>{{ i.name }}</strong>
-                <div class="show-m sub mono">{{ i.mac || '—' }}{{ i.mtu ? ' · MTU ' + i.mtu : '' }}</div>
-                <div v-if="(i.ipv6 || []).length" class="show-m sub mono">{{ (i.ipv6 || []).slice(0,2).join(', ') }}</div>
+                <strong>{{ finiteText(i.name) }}</strong>
+                <div class="show-m sub mono">{{ finiteText(i.mac) }}{{ finiteN(i.mtu, null) != null ? ' · MTU ' + finiteN(i.mtu) : '' }}</div>
+                <div v-if="(i.ipv6 || []).length" class="show-m sub mono">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
-              <td><span class="badge" :class="i.up ? 'ok' : ''">{{ i.status || (i.up ? 'up' : 'down') }}</span></td>
+              <td><span class="badge" :class="i.up ? 'ok' : ''">{{ finiteText(i.status, '') || (i.up ? 'up' : 'down') }}</span></td>
               <td class="mono">
-                <div v-for="(a,idx) in i.ipv4 || []" :key="idx">{{ a.ip }}</div>
+                <div v-for="(a,idx) in i.ipv4 || []" :key="idx">{{ finiteText(a.ip) }}</div>
                 <span v-if="!(i.ipv4||[]).length">—</span>
               </td>
               <td class="mono col-hide-m">
-                <div v-for="(a,idx) in i.ipv4 || []" :key="'m'+idx">{{ a.netmask || '—' }}</div>
+                <div v-for="(a,idx) in i.ipv4 || []" :key="'m'+idx">{{ finiteText(a.netmask) }}</div>
               </td>
-              <td class="mono col-hide-m" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).join(', ') || '—' }}</td>
-              <td class="mono col-hide-m">{{ i.mac || '—' }}</td>
-              <td class="mono col-hide-m">{{ i.mtu || '—' }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono col-hide-m">{{ finiteText(i.mac) }}</td>
+              <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
             </tr>
           </tbody>
         </table>
@@ -338,29 +338,29 @@
           <tbody>
             <tr v-for="s in data?.services || []" :key="s.name">
               <td>
-                <strong>{{ s.name }}</strong>
+                <strong>{{ finiteText(s.name) }}</strong>
                 <span v-if="s.disabled" class="badge down">{{ t('network.disabled') }}</span>
-                <div class="show-m sub">{{ s.mode }}{{ s.device ? ' · ' + s.device : '' }}{{ s.router ? ' · ' + s.router : '' }}</div>
-                <div v-if="(s.dns||[]).length" class="show-m sub mono">{{ (s.dns||[]).join(', ') }}</div>
+                <div class="show-m sub">{{ finiteText(s.mode) }}{{ finiteText(s.device, '') ? ' · ' + finiteText(s.device) : '' }}{{ finiteText(s.router, '') ? ' · ' + finiteText(s.router) : '' }}</div>
+                <div v-if="(s.dns||[]).length" class="show-m sub mono">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
-              <td class="mono col-hide-m">{{ s.device || '—' }}</td>
-              <td class="col-hide-m"><span class="badge" :class="s.mode==='manual'?'warn':(s.mode==='dhcp'?'ok':'')">{{ s.mode }}</span></td>
-              <td class="mono">{{ s.ip || '—' }}</td>
-              <td class="mono col-hide-m">{{ s.subnet || '—' }}</td>
-              <td class="mono col-hide-m">{{ s.router || '—' }}</td>
-              <td class="mono col-hide-m" style="font-size:11px">{{ (s.dns||[]).join(', ') || '—' }}</td>
+              <td class="mono col-hide-m">{{ finiteText(s.device) }}</td>
+              <td class="col-hide-m"><span class="badge" :class="s.mode==='manual'?'warn':(s.mode==='dhcp'?'ok':'')">{{ finiteText(s.mode) }}</span></td>
+              <td class="mono">{{ finiteText(s.ip) }}</td>
+              <td class="mono col-hide-m">{{ finiteText(s.subnet) }}</td>
+              <td class="mono col-hide-m">{{ finiteText(s.router) }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || s.disabled" @click="openManual(s)">{{ t('network.edit_ip') }}</button>
-                <button class="tiny" :disabled="busy || s.disabled" @click="setDhcp(s)">DHCP</button>
+                <button class="tiny" :disabled="busy || s.disabled" @click="setDhcp(s)">{{ t('network.act_dhcp') }}</button>
                 <button class="tiny" :disabled="busy || s.disabled" @click="openDns(s)">{{ t('network.tab_dns') }}</button>
                 <template v-if="isWifi(s)">
-                  <button class="tiny" :disabled="busy" @click="wifi('on')">Wi‑Fi On</button>
-                  <button class="tiny danger" :disabled="busy" @click="wifi('off')">Off</button>
+                  <button class="tiny" :disabled="busy" @click="wifi('on')">{{ t('network.wifi_on') }}</button>
+                  <button class="tiny danger" :disabled="busy" @click="wifi('off')">{{ t('network.wifi_off') }}</button>
                 </template>
               </td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="8" style="color:var(--sub)">{{ data?.services_error || t('network.no_services') }}</td>
+              <td colspan="8" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -374,11 +374,11 @@
         <button class="primary" :disabled="busy || !lookupHost.trim()" @click="doLookup">{{ t('network.resolve') }}</button>
       </div>
       <div class="tile" v-if="lookupResult">
-        <div><strong>{{ lookupResult.host }}</strong>
+        <div><strong>{{ finiteText(lookupResult.host) }}</strong>
           <span class="badge" :class="lookupResult.ok?'ok':'down'">{{ lookupResult.ok ? t('common.ok') : t('common.fail') }}</span>
         </div>
-        <div class="mono" style="margin-top:8px" v-for="(a,i) in lookupResult.answers||[]" :key="i">{{ a }}</div>
-        <pre v-if="!lookupResult.answers?.length" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ lookupResult.message }}</pre>
+        <div class="mono" style="margin-top:8px" v-for="(a,i) in lookupResult.answers||[]" :key="i">{{ finiteText(a) }}</div>
+        <pre v-if="!lookupResult.answers?.length && lookupResult.message" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ finiteText(lookupResult.message) }}</pre>
       </div>
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
       <div class="table-wrap">
@@ -387,11 +387,11 @@
           <tbody>
             <tr v-for="s in data?.services || []" :key="s.name">
               <td>
-                <strong>{{ s.name }}</strong>
-                <div v-if="(s.search_domains||[]).length" class="show-m sub mono">{{ (s.search_domains||[]).join(', ') }}</div>
+                <strong>{{ finiteText(s.name) }}</strong>
+                <div v-if="(s.search_domains||[]).length" class="show-m sub mono">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
-              <td class="mono">{{ (s.dns||[]).join(', ') || t('network.system_default') }}</td>
-              <td class="mono col-hide-m">{{ (s.search_domains||[]).join(', ') || '—' }}</td>
+              <td class="mono">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') || t('network.system_default') }}</td>
+              <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
           </tbody>
@@ -410,13 +410,13 @@
           <tbody>
             <tr v-for="(p,i) in filteredListen" :key="i">
               <td>
-                <strong>{{ p.process }}</strong>
-                <div class="show-m sub">{{ p.user }} · {{ p.pid }} · {{ p.address }}</div>
+                <strong>{{ finiteText(p.process) }}</strong>
+                <div class="show-m sub">{{ finiteText(p.user) }} · {{ finiteN(p.pid) }} · {{ finiteText(p.address) }}</div>
               </td>
-              <td class="mono col-hide-m">{{ p.pid }}</td>
-              <td class="col-hide-m">{{ p.user }}</td>
-              <td class="mono col-hide-m">{{ p.address }}</td>
-              <td class="mono">{{ p.port }}</td>
+              <td class="mono col-hide-m">{{ finiteN(p.pid) }}</td>
+              <td class="col-hide-m">{{ finiteText(p.user) }}</td>
+              <td class="mono col-hide-m">{{ finiteText(p.address) }}</td>
+              <td class="mono">{{ finiteN(p.port) }}</td>
             </tr>
           </tbody>
         </table>
@@ -431,12 +431,12 @@
           <tbody>
             <tr v-for="(r,i) in data?.routes || []" :key="i">
               <td class="mono">
-                {{ r.destination }}
-                <div v-if="r.flags" class="show-m sub">{{ r.flags }}</div>
+                {{ finiteText(r.destination) }}
+                <div v-if="r.flags" class="show-m sub">{{ finiteText(r.flags) }}</div>
               </td>
-              <td class="mono">{{ r.gateway }}</td>
-              <td class="mono col-hide-m">{{ r.flags }}</td>
-              <td>{{ r.netif }}</td>
+              <td class="mono">{{ finiteText(r.gateway) }}</td>
+              <td class="mono col-hide-m">{{ finiteText(r.flags) }}</td>
+              <td>{{ finiteText(r.netif) }}</td>
             </tr>
           </tbody>
         </table>
@@ -445,8 +445,8 @@
 
     <!-- Docker network -->
     <template v-else-if="tab==='docker'">
-      <div v-if="!data?.engine_up" class="placeholder">{{ t('network.engine_off') }}</div>
-      <template v-else>
+      <div v-if="data && data.engine_up === false" class="placeholder">{{ t('network.engine_off') }}</div>
+      <template v-else-if="data && data.engine_up">
         <h2 class="section-title">{{ t('network.port_maps') }}</h2>
         <div class="toolbar">
           <input v-model="dockerPortQ" type="text" :placeholder="t('network.filter_ctr')" style="min-width:160px"  :aria-label="t('network.filter_ctr')"/>
@@ -460,14 +460,14 @@
             <tbody>
               <tr v-for="(p,i) in filteredDockerPorts" :key="i">
                 <td>
-                  <strong>{{ p.container }}</strong>
-                  <div class="show-m sub">{{ p.status }} · {{ p.protocol || '—' }}</div>
+                  <strong>{{ finiteText(p.container) }}</strong>
+                  <div class="show-m sub">{{ finiteText(p.status) }} · {{ finiteText(p.protocol) }}</div>
                 </td>
-                <td class="col-hide-m" style="font-size:11px">{{ p.status }}</td>
-                <td class="mono">{{ p.host_ip }}:{{ p.host_port || '—' }}</td>
+                <td class="col-hide-m" style="font-size:11px">{{ finiteText(p.status) }}</td>
+                <td class="mono">{{ finiteText(p.host_ip) }}:{{ finiteN(p.host_port) }}</td>
                 <td class="col-hide-m">→</td>
-                <td class="mono">{{ p.container_port || '—' }}</td>
-                <td class="col-hide-m">{{ p.protocol || '—' }}</td>
+                <td class="mono">{{ finiteN(p.container_port) }}</td>
+                <td class="col-hide-m">{{ finiteText(p.protocol) }}</td>
                 <td class="ops">
                   <button class="tiny" :disabled="busy" @click="openPortEdit(p.container)">{{ t('network.change_port') }}</button>
                 </td>
@@ -488,16 +488,16 @@
             <tbody>
               <tr v-for="n in data?.docker_networks || []" :key="n.id">
                 <td>
-                  <strong>{{ n.name }}</strong>
-                  <div class="show-m sub">{{ n.driver }}{{ n.gateway ? ' · ' + n.gateway : '' }}</div>
+                  <strong>{{ finiteText(n.name) }}</strong>
+                  <div class="show-m sub">{{ finiteText(n.driver) }}{{ finiteText(n.gateway, '') ? ' · ' + finiteText(n.gateway) : '' }}</div>
                   <span v-if="n.builtin" class="badge">{{ t('network.builtin') }}</span>
                 </td>
-                <td class="col-hide-m">{{ n.driver }}</td>
-                <td class="mono">{{ n.subnet || '—' }}</td>
-                <td class="mono col-hide-m">{{ n.gateway || '—' }}</td>
+                <td class="col-hide-m">{{ finiteText(n.driver) }}</td>
+                <td class="mono">{{ finiteText(n.subnet) }}</td>
+                <td class="mono col-hide-m">{{ finiteText(n.gateway) }}</td>
                 <td class="col-hide-m" style="font-size:11px">
                   <div v-for="c in (n.containers||[]).slice(0,6)" :key="c.id">
-                    {{ c.name || c.id }} <span class="mono" style="color:var(--sub)">{{ c.ipv4 }}</span>
+                    {{ finiteText(c.name, '') || finiteText(c.id) }} <span class="mono" style="color:var(--sub)">{{ finiteText(c.ipv4, '') }}</span>
                   </div>
                   <span v-if="!(n.containers||[]).length" style="color:var(--sub)">—</span>
                 </td>
@@ -517,7 +517,7 @@
     <div ref="manualPanel" v-if="manualSvc" class="modal-bg" @click.self="manualSvc=null" role="presentation">
       <div class="modal" style="max-width:440px" role="dialog" aria-modal="true" aria-labelledby="net-manual-title">
         <div class="row" style="margin-bottom:12px">
-          <span id="net-manual-title" class="name">{{ t('network.static_ip') }} · {{ manualSvc.name }}</span>
+          <span id="net-manual-title" class="name">{{ t('network.static_ip') }} · {{ finiteText(manualSvc.name) }}</span>
           <button class="tiny" @click="manualSvc=null">{{ t('common.close') }}</button>
         </div>
         <div class="field-grid">
@@ -540,7 +540,7 @@
     <div ref="dnsPanel" v-if="dnsSvc" class="modal-bg" @click.self="dnsSvc=null" role="presentation">
       <div class="modal" style="max-width:440px" role="dialog" aria-modal="true" aria-labelledby="net-dns-title">
         <div class="row" style="margin-bottom:12px">
-          <span id="net-dns-title" class="name">DNS · {{ dnsSvc.name }}</span>
+          <span id="net-dns-title" class="name">DNS · {{ finiteText(dnsSvc.name) }}</span>
           <button class="tiny" @click="dnsSvc=null">{{ t('common.close') }}</button>
         </div>
         <label style="font-size:12px;color:var(--sub)">{{ t('network.dns_ph') }}</label>
@@ -556,7 +556,7 @@
     <div ref="portPanel" v-if="portEdit" class="modal-bg" @click.self="portEdit=null" role="presentation">
       <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="net-port-title">
         <div class="row" style="margin-bottom:12px">
-          <span id="net-port-title" class="name">{{ t('network.port_map') }} · {{ portEdit }}</span>
+          <span id="net-port-title" class="name">{{ t('network.port_map') }} · {{ finiteText(portEdit) }}</span>
           <button class="tiny" @click="portEdit=null">{{ t('common.close') }}</button>
         </div>
         <p style="font-size:12px;color:var(--down);line-height:1.45;margin-bottom:8px">
@@ -575,7 +575,7 @@
     <div ref="connectPanel" v-if="connectNet" class="modal-bg" @click.self="connectNet=null" role="presentation">
       <div class="modal" style="max-width:400px" role="dialog" aria-modal="true" aria-labelledby="net-connect-title">
         <div class="row" style="margin-bottom:12px">
-          <span id="net-connect-title" class="name">{{ connectMode==='connect'?t('network.connect_to'):t('network.disconnect_from') }} · {{ connectNet.name }}</span>
+          <span id="net-connect-title" class="name">{{ connectMode==='connect'?t('network.connect_to'):t('network.disconnect_from') }} · {{ finiteText(connectNet.name) }}</span>
           <button class="tiny" @click="connectNet=null">{{ t('common.close') }}</button>
         </div>
         <label style="font-size:12px;color:var(--sub)">{{ t('network.ctr_name') }}</label>
@@ -613,6 +613,7 @@ import {
   updateAliasAuto,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -650,13 +651,20 @@ const autoBindOn = ref(true)
 const autoIpsText = ref('')
 const autoBindLog = ref('')
 const refreshTimers = new Set()
+let pageAlive = true
 
 function scheduleRefresh(delay) {
+  const generation = loadGeneration
   const id = setTimeout(() => {
     refreshTimers.delete(id)
+    if (generation !== loadGeneration || !pageAlive) return
     void refresh(true)
   }, delay)
   refreshTimers.add(id)
+}
+
+function stillOnNetwork(generation) {
+  return pageAlive && generation === loadGeneration
 }
 
 const filteredListen = computed(() => {
@@ -736,10 +744,15 @@ function moveService(idx, dir) {
   orderList.value = arr
 }
 
+let loadGeneration = 0
+
 async function refresh(force = false) {
+  const generation = ++loadGeneration
   loading.value = true
   try {
-    data.value = await getSystemNetwork(force)
+    const next = await getSystemNetwork(force)
+    if (generation !== loadGeneration) return
+    data.value = next
     loadError.value = ''
     syncOrderFromData()
     if (deviceOptions.value.length && !deviceOptions.value.includes(aliasForm.value.device)) {
@@ -748,92 +761,113 @@ async function refresh(force = false) {
     const aa = data.value?.alias_auto
     if (aa?.config) {
       autoBindOn.value = !!aa.config.auto_bind
-      autoIpsText.value = (aa.config.ips || []).join(', ')
+      autoIpsText.value = (aa.config.ips || []).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
     }
   } catch (e) {
-    loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration) return
+    loadError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    loading.value = false
-    loaded.value = true
+    if (generation === loadGeneration) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 
 async function runAutoBind() {
+  const generation = loadGeneration
   busy.value = true
   autoBindLog.value = t('network.running')
   try {
     const j = await runAliasAutoBind()
+    if (!stillOnNetwork(generation)) return
     autoBindLog.value = JSON.stringify(j.actions || j, null, 2)
-    toast(j.ok ? `✅ ${j.message || t('network.aligned')}` : `❌ ${j.message || t('network.failed')}`)
+    toast(j.ok ? `✅ ${finiteText(j.message, '') || t('network.aligned')}` : `❌ ${finiteText(j.message, '') || t('network.failed')}`)
     await refresh(true)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
     autoBindLog.value = e.message
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function runFailover() {
+  if (!confirm(t('network.confirm_failover'))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await runNetworkFailover()
+    if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${j.mode === 'wired' ? t('network.wired_ok') : t('network.wifi_engaged')}` : `❌ ${t('network.switch_failed')}`)
     await refresh(true)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function saveAutoBind() {
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await updateAliasAuto({ auto_bind: autoBindOn.value })
+    if (!stillOnNetwork(generation)) return
     toast(`✅ ${autoBindOn.value ? t('network.autobind_enabled') : t('network.autobind_disabled')}`)
     data.value = { ...data.value, alias_auto: j }
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
     // Put the checkbox back. It is bound with v-model, so on failure it kept the
     // flipped position while the server state was unchanged -- the one control on
     // this page that showed a setting it had not actually applied.
     autoBindOn.value = !autoBindOn.value
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function saveAutoIps() {
+  if (!confirm(t('network.confirm_autobind'))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const ips = autoIpsText.value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
     const j = await updateAliasAuto({ ips })
+    if (!stillOnNetwork(generation)) return
     toast(`✅ ${t('network.alias_list_saved')}`)
     data.value = { ...data.value, alias_auto: j }
     await runAutoBind()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function applyProfile(profile) {
-  if (!confirm(t('network.confirm_profile', { profile }))) return
+  if (!confirm(t('network.confirm_profile', { profile: finiteText(profile) }))) return
+  const generation = loadGeneration
   busy.value = true
   msg.value = t('network.switching')
   try {
     const j = await switchNetworkProfile(profile)
-    toast(j.ok ? `✅ ${t('network.switched')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.switched')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) scheduleRefresh(2000)
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    // refresh() bumps loadGeneration; Refresh is bound to `loading`, not `busy`.
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -842,62 +876,78 @@ async function saveOrder() {
   // the machine onto a different network path -- the same class of change as the
   // confirmed actions elsewhere on this page.
   if (!confirm(t('network.confirm_order'))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await setNetworkServiceOrder(orderList.value.map(s => s.name))
-    toast(j.ok ? `✅ ${t('network.order_saved')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.order_saved')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) scheduleRefresh(1500)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function toggleService(s) {
   const en = !!s.disabled
-  if (!confirm(t('network.confirm_toggle', { action: en ? t('network.act_enable') : t('network.act_disable'), name: s.name }))) return
+  if (!confirm(t('network.confirm_toggle', { action: en ? t('network.act_enable') : t('network.act_disable'), name: finiteText(s.name) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await setNetworkServiceEnabled(s.name, en)
-    toast(j.ok ? '✅ ' + t('common.ok') : `❌ ${j.message}`)
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? '✅ ' + t('common.ok') : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1200)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function addAlias() {
+  if (!confirm(t('network.confirm_add_alias', {
+    device: finiteText(aliasForm.value.device),
+    ip: finiteText(aliasForm.value.ip),
+  }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await addNetworkAlias(aliasForm.value)
-    toast(j.ok ? `✅ ${t('network.ip_added')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.ip_added')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) scheduleRefresh(800)
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function removeAlias(device, ip) {
-  if (!confirm(t('network.confirm_del_alias', { device, ip }))) return
+  if (!confirm(t('network.confirm_del_alias', { device: finiteText(device), ip: finiteText(ip) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await removeNetworkAlias({ device, ip, netmask: '255.255.255.255' })
-    toast(j.ok ? `✅ ${t('network.alias_deleted')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.alias_deleted')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) scheduleRefresh(800)
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -918,18 +968,21 @@ function openPrimaryEdit(device, addr) {
 }
 
 async function setDhcp(s) {
-  if (!confirm(t('network.confirm_dhcp', { name: s.name }))) return
+  if (!confirm(t('network.confirm_dhcp', { name: finiteText(s.name) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await setNetworkDhcp(s.name)
-    toast(j.ok ? '✅ ' + t('network.dhcp_applied') : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? '✅ ' + t('network.dhcp_applied') : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) scheduleRefresh(1500)
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -944,27 +997,30 @@ function openManual(s) {
 
 async function applyManual() {
   if (!manualSvc.value) return
-  if (!confirm(t('network.confirm_manual', { name: manualSvc.value.name }))) return
+  if (!confirm(t('network.confirm_manual', { name: finiteText(manualSvc.value.name) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await setNetworkManual(manualSvc.value.name, manualForm.value)
-    toast(j.ok ? `✅ ${t('network.static_applied')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.static_applied')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) {
       manualSvc.value = null
       scheduleRefresh(2000)
     }
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 function openDns(s) {
   dnsSvc.value = s
-  dnsServers.value = (s.dns || []).join('\n')
+  dnsServers.value = (s.dns || []).map((n) => finiteText(n, '')).filter(Boolean).join('\n')
 }
 
 async function applyDns() {
@@ -974,47 +1030,57 @@ async function applyDns() {
   // session viewing this page. Every sibling connectivity action here already
   // confirms (applyProfile, toggleService, setDhcp, applyManual, wifi); this one
   // was the exception.
-  if (!confirm(t('network.confirm_dns', { name: dnsSvc.value.name }))) return
+  if (!confirm(t('network.confirm_dns', { name: finiteText(dnsSvc.value.name) }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await setNetworkDns(dnsSvc.value.name, servers)
-    toast(j.ok ? `✅ ${t('network.dns_updated')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.dns_updated')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) {
       dnsSvc.value = null
       scheduleRefresh(1000)
     }
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function wifi(state) {
   const label = state === 'on' ? t('network.on') : t('network.off')
   if (!confirm(t('network.confirm_wifi', { state: label }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await setWifiPower(state)
-    toast(j.ok ? '✅ ' + t('network.wifi_set', { state: label }) : `❌ ${j.message}`)
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? '✅ ' + t('network.wifi_set', { state: label }) : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1500)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doLookup() {
+  const generation = loadGeneration
   busy.value = true
   try {
-    lookupResult.value = await lookupNetworkDns(lookupHost.value.trim())
+    const next = await lookupNetworkDns(lookupHost.value.trim())
+    if (!stillOnNetwork(generation)) return
+    lookupResult.value = next
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -1022,8 +1088,8 @@ function openPortEdit(container) {
   portEdit.value = container || ''
   if (container) {
     const maps = (data.value?.docker_ports || [])
-      .filter(p => p.container === container && p.host_port)
-      .map(p => `${p.host_port}:${p.container_port}`)
+      .filter(p => p.container === container && finiteN(p.host_port, null) != null)
+      .map(p => `${finiteN(p.host_port)}:${finiteN(p.container_port)}`)
     portEditText.value = [...new Set(maps)].join('\n')
   } else {
     portEditText.value = ''
@@ -1038,23 +1104,26 @@ async function applyPorts() {
     toast('❌ ' + t('network.ctr_name'))
     return
   }
-  if (!confirm(t('network.confirm_recreate_ports', { name: portEdit.value }))) return
+  if (!confirm(t('network.confirm_recreate_ports', { name: finiteText(portEdit.value) }))) return
   const ports = portEditText.value.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean)
+  const generation = loadGeneration
   busy.value = true
   msg.value = '…'
   try {
     const j = await setContainerPorts(portEdit.value, ports)
-    toast(j.ok ? `✅ ${t('network.port_updated')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.port_updated')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) {
       portEdit.value = null
       scheduleRefresh(1200)
     }
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -1072,29 +1141,40 @@ function openDisconnect(n) {
 async function applyConnect() {
   if (!connectNet.value || !connectContainer.value.trim()) return
   const container = connectContainer.value.trim()
-  if (connectMode.value === 'disconnect' && !confirm(t('network.confirm_disconnect', {
-    container,
-    network: connectNet.value.name,
+  const confirmKey = connectMode.value === 'disconnect'
+    ? 'network.confirm_disconnect'
+    : 'network.confirm_connect'
+  if (!confirm(t(confirmKey, {
+    container: finiteText(container),
+    network: finiteText(connectNet.value.name),
   }))) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = await connectContainerNetwork(connectMode.value, connectNet.value.name, container)
-    toast(j.ok ? `✅ ${t('network.done')}` : `❌ ${j.message}`)
-    msg.value = j.message || ''
+    if (!stillOnNetwork(generation)) return
+    toast(j.ok ? `✅ ${t('network.done')}` : `❌ ${finiteText(j.message)}`)
+    msg.value = finiteText(j.message, '')
     if (j.ok) {
       connectNet.value = null
       scheduleRefresh(800)
     }
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (!stillOnNetwork(generation)) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
-onMounted(() => refresh(false))
+onMounted(() => {
+  pageAlive = true
+  refresh(false)
+})
 onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
   for (const id of refreshTimers) clearTimeout(id)
   refreshTimers.clear()
 })

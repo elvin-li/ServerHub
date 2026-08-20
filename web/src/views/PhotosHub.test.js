@@ -274,6 +274,31 @@ describe('PhotosHub page', () => {
     wrap.unmount()
   })
 
+  it('does not toast a settings save that finishes after leave', async () => {
+    getPhotosHubStatus.mockResolvedValue(INSTALLED)
+    getPhotosHubConfig.mockResolvedValue(CONFIG)
+    let finish
+    patchPhotosHubConfig.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const toast = vi.fn()
+    const wrap = mount(PhotosHub, {
+      global: {
+        provide: { toast },
+        stubs: {
+          LoadFailure: { props: ['detail'], template: '<div class="load-failure">{{ detail }}</div>' },
+          SkeletonLoader: { template: '<div class="skeleton" />' },
+        },
+      },
+    })
+    await flushPromises()
+    await tabButton(wrap, 'photoshub.tab_settings').trigger('click')
+    await flushPromises()
+    await wrap.findAll('button').find((button) => button.text() === 'common.save').trigger('click')
+    wrap.unmount()
+    finish(CONFIG)
+    await flushPromises()
+    expect(toast).not.toHaveBeenCalled()
+  })
+
   it('can still save a half-configured install', async () => {
     // The API treats immich.base_url and albums.pending_delete as required and
     // rejects the whole patch when either arrives as "". Sending them empty
@@ -365,5 +390,18 @@ describe('PhotosHub page', () => {
     expect(wrap.find('.load-failure').text()).toContain('boom')
     expect(getPhotosHubPending).not.toHaveBeenCalled()
     wrap.unmount()
+  })
+
+  it('discards a status payload that arrives after unmount', async () => {
+    let resolveStatus
+    getPhotosHubStatus.mockImplementation(() => new Promise((resolve) => {
+      resolveStatus = resolve
+    }))
+    const wrap = mountPage()
+    wrap.unmount()
+    resolveStatus(INSTALLED)
+    await flushPromises()
+    expect(wrap.find('[data-test="photoshub-absent"]').exists()).toBe(false)
+    expect(wrap.find('.load-failure').exists()).toBe(false)
   })
 })

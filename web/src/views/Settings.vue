@@ -2,7 +2,7 @@
   <div>
     <div class="page-title">
       <h1>{{ t('settings.title') }}</h1>
-      <span class="meta">{{ t('settings.meta') }} · v{{ form?.version || sysBundle?.management?.version || '—' }}</span>
+      <span class="meta">{{ t('settings.meta') }} · v{{ finiteText(form?.version, '') || finiteText(sysBundle?.management?.version) }}</span>
     </div>
 
     <div class="tabs">
@@ -22,7 +22,7 @@
             :key="l.id"
             :class="{ active: locale === l.id }"
             @click="pickLocale(l.id)"
-          >{{ l.native }}</button>
+          >{{ finiteText(l.native) }}</button>
         </div>
       </div>
 
@@ -36,6 +36,7 @@
             type="button"
             class="theme-card"
             :class="{ active: theme === th.id }"
+            :aria-pressed="theme === th.id"
             @click="pickTheme(th.id)"
           >
             <div class="swatches">
@@ -52,7 +53,9 @@
           <button
             v-for="d in densities"
             :key="d.id"
+            type="button"
             :class="{ active: density === d.id }"
+            :aria-pressed="density === d.id"
             @click="pickDensity(d.id)"
           >{{ t(d.labelKey) }}</button>
         </div>
@@ -71,19 +74,19 @@
           <label>{{ t('settings.computer_name') }}</label>
           <input v-model="identityForm.computer_name" type="text" placeholder="ComputerName" :aria-label="t('settings.computer_name')" />
           <label>{{ t('settings.hostname') }}</label>
-          <div class="mono">{{ identity?.hostname || '—' }}</div>
+          <div class="mono">{{ finiteText(identity?.hostname) }}</div>
           <label>LocalHostName</label>
-          <div class="mono">{{ identity?.local_hostname || '—' }}</div>
+          <div class="mono">{{ finiteText(identity?.local_hostname) }}</div>
           <label>{{ t('settings.model') }}</label>
-          <div class="mono" style="font-size:12px">{{ identity?.model || '—' }}</div>
+          <div class="mono" style="font-size:12px">{{ finiteText(identity?.model) }}</div>
           <label>{{ t('settings.timezone') }}</label>
-          <div class="mono">{{ identity?.timezone || '—' }}</div>
+          <div class="mono">{{ finiteText(identity?.timezone) }}</div>
           <label>{{ t('settings.platform') }}</label>
-          <div class="mono" style="font-size:11px">{{ identity?.platform || '—' }}</div>
+          <div class="mono" style="font-size:11px">{{ finiteText(identity?.platform) }}</div>
           <label>{{ t('settings.host_ip') }}</label>
           <input v-model="identityForm.host_ip" type="text" placeholder="auto" :aria-label="t('settings.host_ip')" />
           <label>{{ t('settings.probe_current') }}</label>
-          <div class="mono">{{ identity?.host_ip || '—' }}</div>
+          <div class="mono">{{ finiteText(identity?.host_ip) }}</div>
           <label>{{ t('settings.comment') }}</label>
           <input v-model="identityForm.comment" type="text" :aria-label="t('settings.comment')" />
         </div>
@@ -91,13 +94,13 @@
              sends them unconditionally, so a failed load must disable Save
              rather than let it write empty strings over the stored values. -->
         <div
-          v-if="!identityLoaded"
+          v-if="identityError"
           class="tile"
           style="margin-top:10px;border-left:3px solid var(--down)"
           role="alert"
         >
           <div>{{ t('settings.identity_load_failed') }}</div>
-          <div v-if="identityError" class="sub mono" style="margin-top:4px">{{ identityError }}</div>
+          <div class="sub mono" style="margin-top:4px">{{ finiteText(identityError) }}</div>
         </div>
         <div class="btns" style="margin-top:12px">
           <button class="primary" :disabled="saving || !identityLoaded" @click="saveIdentity">{{ t('settings.save_identity') }}</button>
@@ -160,9 +163,10 @@
           </dl>
           <div class="launcher-path">
             <span class="launcher-path-label">{{ t('settings.launcher_path') }}</span>
-            <code class="launcher-path-value">{{ launcher.app_path || '—' }}</code>
+            <code class="launcher-path-value">{{ finiteText(launcher.app_path) }}</code>
           </div>
         </div>
+        <LoadFailure v-else-if="launcherError" :detail="launcherError" :retry="loadLauncher" :busy="launcherLoading" />
         <div v-else-if="launcherLoading" class="placeholder launcher-placeholder" role="status" aria-live="polite">{{ t('common.loading') }}</div>
         <div v-else class="placeholder launcher-placeholder launcher-unavailable" role="status" aria-live="polite">
           {{ t('settings.launcher_unavailable') }}
@@ -184,13 +188,13 @@
           <label>{{ t('settings.host_ip') }}</label>
           <input v-model="form.host_ip" type="text" placeholder="auto" :aria-label="t('settings.host_ip')" />
           <label>{{ t('settings.probe_current') }}</label>
-          <div class="mono">{{ host?.lan_ip || host?.host_ip || '—' }}</div>
+          <div class="mono">{{ finiteText(host?.lan_ip, '') || finiteText(host?.host_ip) }}</div>
           <label>{{ t('settings.hostname') }}</label>
-          <div class="mono">{{ host?.hostname || '—' }}</div>
+          <div class="mono">{{ finiteText(host?.hostname) }}</div>
           <label>{{ t('settings.platform') }}</label>
-          <div class="mono" style="font-size:12px">{{ host?.platform || '—' }}</div>
+          <div class="mono" style="font-size:12px">{{ finiteText(host?.platform) }}</div>
           <label>docker / orb</label>
-          <div class="mono" style="font-size:12px">{{ form.paths?.docker }} · {{ form.paths?.orb }}</div>
+          <div class="mono" style="font-size:12px">{{ finiteText(form.paths?.docker) }} · {{ finiteText(form.paths?.orb) }}</div>
         </div>
       </div>
 
@@ -202,7 +206,7 @@
           <label>{{ t('settings.auth_localhost') }}</label>
           <div>{{ t('common.off') }}</div>
           <label>{{ t('settings.current_account') }}</label>
-          <div class="mono">{{ form.auth.username }}</div>
+          <div class="mono">{{ finiteText(form.auth.username) }}</div>
         </div>
         <p class="hint">{{ t('settings.auth_hint') }}</p>
       </div>
@@ -221,7 +225,7 @@
           <input v-model="accountForm.confirmPassword" type="password" autocomplete="new-password" minlength="10" :aria-label="t('settings.confirm_password')" />
         </div>
         <div class="password-footer">
-          <span class="hint password-state" :class="{ bad: !!passwordMessage() }">{{ passwordMessage() || t('settings.password_rule') }}</span>
+          <span class="hint password-state" :class="{ bad: !!passwordMessage() }">{{ finiteText(passwordMessage(), '') || t('settings.password_rule') }}</span>
           <button class="primary" :disabled="savingPassword || !!passwordValidation()" @click="savePassword">
             {{ savingPassword ? t('settings.updating_password') : t('settings.update_password') }}
           </button>
@@ -231,7 +235,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('twofa.title') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('twofa.hint') }}</p>
-        <div v-if="!twofa" class="hint">{{ t('common.loading') }}</div>
+        <div v-if="twofaError" class="hint bad">
+          {{ finiteText(twofaError) }}
+          <button class="tiny" type="button" :disabled="twofaBusy" @click="loadTwofa">{{ t('common.retry') }}</button>
+        </div>
+        <div v-else-if="!twofa" class="hint">{{ t('common.loading') }}</div>
         <template v-else>
           <div class="form-grid">
             <label>{{ t('common.status') }}</label>
@@ -240,7 +248,7 @@
                 {{ twofa.enabled ? t('common.on') : t('common.off') }}
               </span>
               <span v-if="twofa.enabled" class="hint" style="margin-left:8px">
-                {{ t('twofa.recovery_remaining', { n: twofa.recovery_remaining }) }}
+                {{ t('twofa.recovery_remaining', { n: finiteN(twofa.recovery_remaining) }) }}
               </span>
             </div>
           </div>
@@ -251,7 +259,7 @@
             <strong>{{ t('twofa.recovery_title') }}</strong>
             <p class="hint" style="margin-top:4px">{{ t('twofa.recovery_hint') }}</p>
             <div class="twofa-recovery-grid">
-              <code v-for="code in recoveryCodes" :key="code" class="mono">{{ code }}</code>
+              <code v-for="code in recoveryCodes" :key="finiteText(code)" class="mono">{{ finiteText(code) }}</code>
             </div>
             <div class="btns" style="margin-top:10px">
               <button @click="copyRecoveryCodes">{{ copiedRecovery ? t('common.copied') : t('twofa.recovery_copy') }}</button>
@@ -268,7 +276,7 @@
               <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>
               <div class="form-grid" style="margin-top:8px">
                 <label>{{ t('twofa.manual_secret') }}</label>
-                <code class="mono" style="user-select:all;word-break:break-all">{{ twofaEnroll.manual_entry }}</code>
+                <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(twofaEnroll.manual_entry) }}</code>
                 <label>{{ t('twofa.code_label') }}</label>
                 <input v-model.trim="twofaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10" :aria-label="t('twofa.code_label')" />
               </div>
@@ -312,7 +320,7 @@
           <strong>{{ t('apikeys.created_title') }}</strong>
           <p class="hint" style="margin-top:4px">{{ t('apikeys.created_hint') }}</p>
           <div class="apikey-value-row">
-            <code class="mono" style="user-select:all;word-break:break-all">{{ createdKey.key }}</code>
+            <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(createdKey.key) }}</code>
             <button @click="copyCreatedKey">{{ copiedKey ? t('common.copied') : t('common.copy') }}</button>
           </div>
           <div class="btns" style="margin-top:10px">
@@ -335,7 +343,7 @@
           <tbody>
             <tr v-for="key in apiKeys" :key="key.id">
               <td>
-                {{ key.name }}
+                {{ finiteText(key.name) }}
                 <div class="show-m sub">{{ fmtEpoch(key.created) }} · {{ key.last_used ? fmtEpoch(key.last_used) : t('apikeys.never_used') }}</div>
                 <div class="show-m sub">{{ key.expires ? fmtEpoch(key.expires) : t('apikeys.no_expiry') }}</div>
               </td>
@@ -350,6 +358,7 @@
           </tbody>
         </table>
         </div>
+        <p v-else-if="apiKeysError" class="hint" style="color:var(--down)">{{ finiteText(apiKeysError) }}</p>
         <p v-else-if="apiKeys" class="hint">{{ t('apikeys.empty') }}</p>
         <p v-else class="hint">{{ t('common.loading') }}</p>
 
@@ -400,14 +409,14 @@
           <input type="checkbox" v-model="form.notify.include_warn" />
           <label>{{ t('settings.notify_resolve') }}</label>
           <input type="checkbox" v-model="form.notify.notify_resolve" />
-          <label>HA URL</label>
-          <input v-model="form.notify.ha_url" type="text" aria-label="HA URL" />
-          <label>HA Service</label>
-          <input v-model="form.notify.ha_service" type="text" placeholder="notify.notify" aria-label="HA Service" />
-          <label>HA Token</label>
-          <input v-model="form.notify.ha_token" type="password" />
-          <label>Webhook URL</label>
-          <input v-model="form.notify.ha_webhook_url" type="text" />
+          <label>{{ t('notifych.f_ha_url') }}</label>
+          <input v-model="form.notify.ha_url" type="text" :aria-label="t('notifych.f_ha_url')" />
+          <label>{{ t('notifych.f_ha_service') }}</label>
+          <input v-model="form.notify.ha_service" type="text" placeholder="notify.notify" :aria-label="t('notifych.f_ha_service')" />
+          <label>{{ t('notifych.f_ha_token') }}</label>
+          <input v-model="form.notify.ha_token" type="password" :aria-label="t('notifych.f_ha_token')" />
+          <label>{{ t('notifych.f_ha_webhook_url') }}</label>
+          <input v-model="form.notify.ha_webhook_url" type="text" :aria-label="t('notifych.f_ha_webhook_url')" />
         </div>
         <div class="btns" style="margin-top:10px">
           <button @click="testNotify" :disabled="saving">{{ t('settings.test_notify') }}</button>
@@ -456,15 +465,16 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.ups_alerts') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.ups_alerts_hint') }}</p>
-        <div class="form-grid" v-if="upsInfo">
+        <LoadFailure v-if="upsError && !upsInfo" :detail="upsError" :retry="loadUps" />
+        <div class="form-grid" v-else-if="upsInfo">
           <label>{{ t('settings.power_source') }}</label>
           <div>
             <span v-if="upsInfo.present" class="badge" :class="upsInfo.on_battery ? 'warn' : 'ok'">
               {{ upsInfo.on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac') }}
             </span>
             <span v-else class="sub">{{ t('settings.ups_none') }}</span>
-            <span v-if="upsInfo.battery_percent != null" class="mono" style="margin-left:8px">
-              {{ upsInfo.battery_percent }}%
+            <span v-if="finiteN(upsInfo.battery_percent, null) != null" class="mono" style="margin-left:8px">
+              {{ withUnit(upsInfo.battery_percent, '%') }}
             </span>
             <span v-if="upsPhase !== 'idle'" class="badge down" style="margin-left:8px">
               {{ upsPhase === 'engaged' ? t('settings.ups_phase_engaged') : t('settings.ups_phase_restoring') }}
@@ -504,9 +514,9 @@
               </select>
               <div v-if="upsForm.shutdown.stacksMode === 'custom'" style="margin-top:6px">
                 <div v-for="(row, i) in upsStackRows" :key="row.id" class="ups-pick-row">
-                  <input type="checkbox" v-model="row.selected" :aria-label="row.id" />
+                  <input type="checkbox" v-model="row.selected" :aria-label="finiteText(row.id)" />
                   <span class="mono">
-                    {{ row.name }}
+                    {{ finiteText(row.name) }}
                     <span class="sub" v-if="row.missing">· {{ t('settings.ups_shutdown_stack_missing') }}</span>
                   </span>
                   <button class="btn" :disabled="i === 0" :aria-label="t('settings.ups_move_up')"
@@ -520,8 +530,8 @@
             <label v-if="upsScriptChoices.length">{{ t('settings.ups_shutdown_scripts') }}</label>
             <div v-if="upsScriptChoices.length">
               <div v-for="s in upsScriptChoices" :key="s.id" class="ups-pick-row">
-                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="s.id" />
-                <span class="mono">{{ s.name }}</span>
+                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(s.id)" />
+                <span class="mono">{{ finiteText(s.name) }}</span>
               </div>
             </div>
           </div>
@@ -545,18 +555,18 @@
               <span class="badge" :class="s.running ? 'warn' : ''">
                 {{ s.running ? t('settings.ups_step_stop') : t('settings.ups_step_skip') }}
               </span>
-              <span class="mono">{{ s.name || s.id }}</span>
+              <span class="mono">{{ finiteText(s.name, '') || finiteText(s.id) }}</span>
               <span class="sub">{{ s.kind === 'stack' ? 'compose' : 'service' }}</span>
             </div>
           </div>
 
           <p class="hint" v-if="upsLast" style="margin-top:10px" data-test="last-run">
-            {{ t('settings.ups_last_trigger', { time: fmtUpsTs(upsLast.engaged_at), reason: upsLast.reason || '—' }) }}
+            {{ t('settings.ups_last_trigger', { time: fmtUpsTs(upsLast.engaged_at), reason: finiteText(upsLast.reason) }) }}
             <template v-if="upsLast.restored_at">
               · {{ t('settings.ups_last_restored', { time: fmtUpsTs(upsLast.restored_at), n: (upsLast.restarted || []).length }) }}
             </template>
             <template v-if="(upsLast.failed || []).length">
-              · {{ t('settings.ups_last_failed', { ids: upsLast.failed.join(', ') }) }}
+              · {{ t('settings.ups_last_failed', { ids: (upsLast.failed || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }) }}
             </template>
           </p>
 
@@ -566,9 +576,9 @@
             <label>{{ t('settings.ups_halt_current') }}</label>
             <div class="mono">
               <template v-if="upsInfo.halt_levels">
-                <span v-if="upsInfo.halt_levels.haltlevel != null">haltlevel {{ upsInfo.halt_levels.haltlevel }}%</span>
-                <span v-if="upsInfo.halt_levels.haltafter != null" style="margin-left:8px">haltafter {{ upsInfo.halt_levels.haltafter }} min</span>
-                <span v-if="upsInfo.halt_levels.haltremain != null" style="margin-left:8px">haltremain {{ upsInfo.halt_levels.haltremain }} min</span>
+                <span v-if="finiteN(upsInfo.halt_levels.haltlevel, null) != null">haltlevel {{ withUnit(upsInfo.halt_levels.haltlevel, '%') }}</span>
+                <span v-if="finiteN(upsInfo.halt_levels.haltafter, null) != null" style="margin-left:8px">haltafter {{ withUnit(upsInfo.halt_levels.haltafter, ' min') }}</span>
+                <span v-if="finiteN(upsInfo.halt_levels.haltremain, null) != null" style="margin-left:8px">haltremain {{ withUnit(upsInfo.halt_levels.haltremain, ' min') }}</span>
               </template>
               <span v-else class="sub">{{ t('settings.ups_halt_none') }}</span>
             </div>
@@ -585,37 +595,37 @@
     </div>
 
     <div v-else-if="tab==='docker'">
+      <LoadFailure v-if="dockerError" :detail="dockerError" :retry="loadDockerInfo" />
       <div class="card" v-if="dockerInfo">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.docker_engine') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.docker_hint') }}</p>
         <div class="form-grid" v-if="dockerInfo.engine_up">
           <label>{{ t('common.engine') }}</label>
-          <div><span class="badge ok">{{ t('common.running') }}</span> {{ dockerInfo.info?.Name || '' }}</div>
+          <div><span class="badge ok">{{ t('common.running') }}</span> {{ finiteText(dockerInfo.info?.Name, '') }}</div>
           <label>Version</label>
-          <div class="mono">{{ dockerInfo.info?.ServerVersion }}</div>
+          <div class="mono">{{ finiteText(dockerInfo.info?.ServerVersion) }}</div>
           <label>OrbStack</label>
-          <div class="mono">{{ dockerInfo.orb_version || '—' }}</div>
+          <div class="mono">{{ finiteText(dockerInfo.orb_version) }}</div>
           <label>OS / Arch</label>
-          <div class="mono">{{ dockerInfo.info?.OperatingSystem }} · {{ dockerInfo.info?.Architecture }}</div>
+          <div class="mono">{{ finiteText(dockerInfo.info?.OperatingSystem) }} · {{ finiteText(dockerInfo.info?.Architecture) }}</div>
           <label>CPU / RAM</label>
-          <div>{{ dockerInfo.info?.NCPU }} · {{ memGb(dockerInfo.info?.MemTotal) }} GB</div>
+          <div>{{ finiteN(dockerInfo.info?.NCPU) }} · {{ memGb(dockerInfo.info?.MemTotal) }} GB</div>
           <label>Driver</label>
-          <div class="mono">{{ dockerInfo.info?.Driver }} · {{ dockerInfo.info?.DockerRootDir }}</div>
+          <div class="mono">{{ finiteText(dockerInfo.info?.Driver) }} · {{ finiteText(dockerInfo.info?.DockerRootDir) }}</div>
           <label>Containers</label>
           <div>
-            {{ t('common.running') }} {{ dockerInfo.info?.ContainersRunning ?? 0 }}
-            · {{ t('common.stopped') }} {{ dockerInfo.info?.ContainersStopped ?? 0 }}
-            · images {{ dockerInfo.info?.Images ?? 0 }}
+            {{ t('common.running') }} {{ finiteN(dockerInfo.info?.ContainersRunning, 0) }}
+            · {{ t('common.stopped') }} {{ finiteN(dockerInfo.info?.ContainersStopped, 0) }}
+            · images {{ finiteN(dockerInfo.info?.Images, 0) }}
           </div>
         </div>
-        <div v-else class="placeholder">{{ dockerInfo.message || t('common.off') }}</div>
+        <div v-else class="placeholder">{{ finiteText(dockerInfo.message, '') || t('common.off') }}</div>
         <div class="btns" style="margin-top:12px">
           <router-link class="btn primary" to="/containers">{{ t('nav.docker') }}</router-link>
           <button @click="loadDockerInfo">{{ t('common.refresh') }}</button>
         </div>
       </div>
-      <LoadFailure v-else-if="dockerError" :detail="dockerError" :retry="loadDockerInfo" />
-      <div v-else class="placeholder">{{ t('common.loading') }}</div>
+      <div v-else-if="!dockerError" class="placeholder">{{ t('common.loading') }}</div>
     </div>
 
     <!-- VMs -->
@@ -637,7 +647,7 @@
             </span>
           </div>
           <label>{{ t('settings.vm_total') }}</label>
-          <div>{{ sysBundle.vms.total ?? 0 }} · {{ t('common.running') }} {{ sysBundle.vms.running ?? 0 }}</div>
+          <div>{{ finiteN(sysBundle.vms.total, 0) }} · {{ t('common.running') }} {{ finiteN(sysBundle.vms.running, 0) }}</div>
         </div>
         <div class="btns" style="margin-top:12px">
           <router-link class="btn primary" to="/vms">{{ t('nav.vms') }}</router-link>
@@ -646,14 +656,16 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_list') }}</h2>
-        <div class="table-wrap" v-if="(sysBundle?.vms?.items||[]).length">
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
+        <div class="table-wrap" v-else-if="(sysBundle.vms?.items||[]).length">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th>Backend</th></tr></thead>
           <tbody>
             <tr v-for="v in sysBundle.vms.items" :key="v.id">
-              <td>{{ v.name }}</td>
-              <td><span class="badge">{{ v.state }}</span></td>
-              <td class="mono">{{ v.backend }}</td>
+              <td>{{ finiteText(v.name) }}</td>
+              <td><span class="badge">{{ finiteText(v.state) }}</span></td>
+              <td class="mono">{{ finiteText(v.backend) }}</td>
             </tr>
           </tbody>
         </table>
@@ -669,20 +681,20 @@
         <p class="hint" style="margin-top:0">{{ t('settings.datetime_hint') }}</p>
         <div class="form-grid" v-if="sysBundle?.datetime">
           <label>{{ t('settings.now') }}</label>
-          <div class="mono">{{ sysBundle.datetime.now }}</div>
+          <div class="mono">{{ finiteText(sysBundle.datetime.now) }}</div>
           <label>{{ t('settings.timezone') }}</label>
-          <div class="mono">{{ sysBundle.datetime.timezone || '—' }}</div>
+          <div class="mono">{{ finiteText(sysBundle.datetime.timezone) }}</div>
           <label>NTP</label>
           <div>
             <span class="badge" :class="sysBundle.datetime.ntp_enabled ? 'ok' : 'warn'">
               {{ sysBundle.datetime.ntp_enabled == null ? '—' : (sysBundle.datetime.ntp_enabled ? t('common.on') : t('common.off')) }}
             </span>
-            <span class="mono" style="margin-left:8px">{{ sysBundle.datetime.ntp_server || '' }}</span>
+            <span class="mono" style="margin-left:8px">{{ finiteText(sysBundle.datetime.ntp_server, '') }}</span>
           </div>
           <label>Unix</label>
-          <div class="mono">{{ sysBundle.datetime.unix }}</div>
+          <div class="mono">{{ finiteN(sysBundle.datetime.unix) }}</div>
         </div>
-        <p class="hint">{{ sysBundle?.datetime?.hint }}</p>
+        <p class="hint">{{ finiteText(sysBundle?.datetime?.hint) }}</p>
         <div class="btns" style="margin-top:10px">
           <button class="primary" @click="loadSysBundle">{{ t('common.refresh') }}</button>
         </div>
@@ -729,7 +741,7 @@
             <button class="tiny" :disabled="saving" @click="applyPower('womp')">{{ t('common.apply') }}</button>
           </div>
         </div>
-        <p class="hint">{{ sysBundle?.power?.hint }}</p>
+        <p class="hint">{{ finiteText(sysBundle?.power?.hint) }}</p>
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.ups') }}</h2>
@@ -737,28 +749,30 @@
           <label>{{ t('settings.power_source') }}</label>
           <div>
             <span class="badge" :class="sysBundle.power.ups.on_ac ? 'ok' : 'warn'">
-              {{ sysBundle.power.ups.source === 'ac' ? 'AC' : (sysBundle.power.ups.source || '—') }}
+              {{ sysBundle.power.ups.source === 'ac' ? 'AC' : finiteText(sysBundle.power.ups.source) }}
             </span>
           </div>
           <label>{{ t('settings.battery') }}</label>
           <div>
-            <span v-if="sysBundle.power.ups.battery_percent != null">
-              {{ sysBundle.power.ups.battery_percent }}%
+            <span v-if="finiteN(sysBundle.power.ups.battery_percent, null) != null">
+              {{ withUnit(sysBundle.power.ups.battery_percent, '%') }}
               <span class="meta" v-if="sysBundle.power.ups.charging">· {{ t('settings.charging') }}</span>
             </span>
             <span v-else>—</span>
           </div>
         </div>
-        <p class="hint">{{ sysBundle?.power?.ups?.hint }}</p>
+        <p class="hint">{{ finiteText(sysBundle?.power?.ups?.hint) }}</p>
         <h2 class="section-title">{{ t('settings.assertions') }}</h2>
-        <div v-if="(sysBundle?.power?.assertions||[]).length" class="mono" style="font-size:11px;max-height:180px;overflow:auto">
-          <div v-for="(a,i) in sysBundle.power.assertions" :key="i" style="margin-bottom:6px">{{ a }}</div>
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
+        <div v-else-if="(sysBundle.power?.assertions||[]).length" class="mono" style="font-size:11px;max-height:180px;overflow:auto">
+          <div v-for="(a,i) in sysBundle.power.assertions" :key="i" style="margin-bottom:6px">{{ finiteText(a) }}</div>
         </div>
         <div v-else class="sub">{{ t('settings.no_assertions') }}</div>
         <p v-if="hiddenAssertions" class="hint">
           {{ t('settings.assertions_truncated', {
             shown: (sysBundle?.power?.assertions || []).length,
-            total: sysBundle?.power?.assertion_count,
+            total: finiteN(sysBundle?.power?.assertion_count),
           }) }}
         </p>
         <div class="btns" style="margin-top:10px">
@@ -775,25 +789,27 @@
         <p class="hint" style="margin-top:0">{{ t('settings.disk_hint') }}</p>
         <div class="form-grid" v-if="sysBundle?.disk">
           <label>disksleep</label>
-          <div>{{ sysBundle.disk.disksleep_minutes ?? '—' }} {{ t('settings.minutes') }}</div>
+          <div>{{ finiteN(sysBundle.disk.disksleep_minutes) }} {{ t('settings.minutes') }}</div>
           <label>{{ t('settings.disk_count') }}</label>
-          <div>{{ sysBundle.disk.disk_count ?? 0 }}</div>
+          <div>{{ finiteN(sysBundle.disk.disk_count, 0) }}</div>
         </div>
-        <p class="hint">{{ sysBundle?.disk?.hint }}</p>
+        <p class="hint">{{ finiteText(sysBundle?.disk?.hint) }}</p>
         <div class="btns" style="margin-top:10px">
           <router-link class="btn primary" to="/main">{{ t('nav.main') }}</router-link>
         </div>
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk_power') }}</h2>
-        <div class="table-wrap" v-if="(sysBundle?.disk?.power_disks||[]).length">
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
+        <div class="table-wrap" v-else-if="(sysBundle.disk?.power_disks||[]).length">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('settings.disk') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
             <tr v-for="d in sysBundle.disk.power_disks" :key="d.id">
-              <td>{{ d.name }}</td>
-              <td><span class="badge">{{ d.power_state || '—' }}</span></td>
-              <td class="mono">{{ d.size_gb != null ? d.size_gb + ' GB' : '—' }}</td>
+              <td>{{ finiteText(d.name) }}</td>
+              <td><span class="badge">{{ finiteText(d.power_state) }}</span></td>
+              <td class="mono">{{ sizeGb(d.size_gb) }}</td>
             </tr>
           </tbody>
         </table>
@@ -816,13 +832,13 @@
           </div>
           <label>{{ t('settings.preferred_nic') }}</label>
           <div class="mono" v-if="sysBundle.alias_auto.preferred">
-            {{ sysBundle.alias_auto.preferred.device }} · {{ sysBundle.alias_auto.preferred.service }}
-            · {{ sysBundle.alias_auto.preferred.primary_ip }}
+            {{ finiteText(sysBundle.alias_auto.preferred.device) }} · {{ finiteText(sysBundle.alias_auto.preferred.service) }}
+            · {{ finiteText(sysBundle.alias_auto.preferred.primary_ip) }}
           </div>
           <div v-else style="color:var(--down)">—</div>
           <label>{{ t('settings.managed_ips') }}</label>
           <div>
-            <span v-for="ip in (sysBundle.alias_auto.config?.ips||[])" :key="ip" class="badge ok" style="margin-right:4px">{{ ip }}</span>
+            <span v-for="ip in (sysBundle.alias_auto.config?.ips||[])" :key="ip" class="badge ok" style="margin-right:4px">{{ finiteText(ip) }}</span>
           </div>
         </div>
         <div class="btns" style="margin-top:12px">
@@ -855,9 +871,9 @@
             </span>
           </div>
           <label>{{ t('settings.share_count') }}</label>
-          <div>{{ sysBundle.shares.share_count ?? 0 }}</div>
+          <div>{{ finiteN(sysBundle.shares.share_count, 0) }}</div>
         </div>
-        <p class="hint">{{ sysBundle?.shares?.hint }}</p>
+        <p class="hint">{{ finiteText(sysBundle?.shares?.hint) }}</p>
         <div class="btns" style="margin-top:10px">
           <router-link class="btn primary" to="/shares">{{ t('nav.shares') }}</router-link>
           <router-link class="btn" to="/users">{{ t('nav.users') }}</router-link>
@@ -872,15 +888,15 @@
         <p class="hint" style="margin-top:0">{{ t('settings.scheduler_hint') }}</p>
         <div class="form-grid" v-if="sysBundle?.scheduler">
           <label>{{ t('settings.timer_count') }}</label>
-          <div>{{ sysBundle.scheduler.count ?? 0 }}</div>
+          <div>{{ finiteN(sysBundle.scheduler.count, 0) }}</div>
         </div>
         <div class="table-wrap" style="margin-top:10px" v-if="(sysBundle?.scheduler?.timers||[]).length">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>Interval</th></tr></thead>
           <tbody>
             <tr v-for="(tm, i) in sysBundle.scheduler.timers.slice(0, 15)" :key="i">
-              <td class="mono" style="font-size:11px">{{ tm.label }}</td>
-              <td class="mono">{{ tm.interval || tm.calendar || '—' }}</td>
+              <td class="mono" style="font-size:11px">{{ finiteText(tm.label) }}</td>
+              <td class="mono">{{ finiteN(tm.interval, null) != null ? withUnit(tm.interval, 's') : (tm.calendar ? 'cal' : '—') }}</td>
             </tr>
           </tbody>
         </table>
@@ -900,22 +916,28 @@
         <p class="hint" style="margin-top:0">{{ t('settings.access_hint') }}</p>
         <div class="form-grid" v-if="sysBundle?.management">
           <label>{{ t('settings.panel_port') }}</label>
-          <div class="mono">{{ sysBundle.management.panel_port }}</div>
+          <div class="mono">{{ finiteN(sysBundle.management.panel_port) }}</div>
           <label>{{ t('settings.auth') }}</label>
           <div>
             <span class="badge" :class="sysBundle.management.auth_enabled ? 'ok' : 'warn'">
               {{ sysBundle.management.auth_enabled ? t('common.on') : t('common.off') }}
             </span>
-            · {{ sysBundle.management.username }}
+            · {{ finiteText(sysBundle.management.username) }}
           </div>
           <label>{{ t('settings.auth_localhost') }}</label>
           <div>{{ sysBundle.management.allow_localhost ? t('common.yes') : t('common.no') }}</div>
           <label>Host IP</label>
-          <div class="mono">{{ sysBundle.management.host_ip || '—' }}</div>
+          <div class="mono">{{ finiteText(sysBundle.management.host_ip) }}</div>
           <label>Nginx HTTPS</label>
-          <div class="mono">{{ sysBundle.management.nginx_https }}</div>
+          <div class="mono">{{ finiteText(sysBundle.management.nginx_https) }}</div>
           <label>{{ t('settings.version') }}</label>
-          <div>ServerHub {{ sysBundle.management.version }}</div>
+          <div>
+            ServerHub {{ finiteText(sysBundle.management.version) }}
+            <template v-if="sysBundle.management.panel_update?.update_available">
+              · {{ t('settings.update_available', { v: finiteText(sysBundle.management.panel_update.latest) }) }}
+              <router-link class="btn tiny primary" to="/tools?tab=updates">{{ t('dashboard.open_updates') }}</router-link>
+            </template>
+          </div>
         </div>
         <div class="btns" style="margin-top:12px">
           <button class="primary" @click="tab='panel'">{{ t('settings.edit_panel') }}</button>
@@ -925,9 +947,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.paths') }}</h2>
         <div class="mono" style="font-size:11px;line-height:1.6" v-if="sysBundle?.management?.paths">
-          <div>BASE: {{ sysBundle.management.paths.base }}</div>
-          <div>YAML: {{ sysBundle.management.paths.services_yaml }}</div>
-          <div v-if="sysBundle.management.paths.data">DATA: {{ sysBundle.management.paths.data }}</div>
+          <div>BASE: {{ finiteText(sysBundle.management.paths.base) }}</div>
+          <div>YAML: {{ finiteText(sysBundle.management.paths.services_yaml) }}</div>
+          <div v-if="sysBundle.management.paths.data">DATA: {{ finiteText(sysBundle.management.paths.data) }}</div>
         </div>
         <div class="btns" style="margin-top:12px;flex-direction:column;align-items:stretch">
           <router-link class="btn" to="/modules">{{ t('nav.modules') }}</router-link>
@@ -1003,7 +1025,7 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.ssd_friendly') }}</h2>
-        <p class="hint" style="margin-top:0">{{ sysBundle?.other?.ssd_friendly?.hint || t('settings.ssd_hint') }}</p>
+        <p class="hint" style="margin-top:0">{{ finiteText(sysBundle?.other?.ssd_friendly?.hint, '') || t('settings.ssd_hint') }}</p>
         <ul class="hint" style="margin:0;padding-left:18px;line-height:1.7">
           <li>{{ t('settings.ssd_item_metrics') }}</li>
           <li>{{ t('settings.ssd_item_alerts') }}</li>
@@ -1027,11 +1049,11 @@
           <router-link class="btn" to="/health">{{ t('nav.health') }}</router-link>
           <router-link class="btn" to="/logs">{{ t('nav.logs') }}</router-link>
         </div>
-        <p class="hint" v-if="diagMsg" style="margin-top:12px">{{ diagMsg }}</p>
+        <p class="hint" v-if="diagMsg" style="margin-top:12px">{{ finiteText(diagMsg) }}</p>
       </div>
       <div class="card" v-if="diagPreview">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.diag_preview') }}</h2>
-        <pre class="mono" style="font-size:11px;max-height:360px;overflow:auto;margin:0;white-space:pre-wrap" role="status" aria-live="polite">{{ diagPreview }}</pre>
+        <pre class="mono" style="font-size:11px;max-height:360px;overflow:auto;margin:0;white-space:pre-wrap" role="status" aria-live="polite">{{ finiteText(diagPreview) }}</pre>
       </div>
     </div>
 
@@ -1040,16 +1062,22 @@
       <button :disabled="saving" @click="load">{{ t('common.reload') }}</button>
       <a class="btn" href="/api/export/services-yaml" download="services.yaml">{{ t('settings.export_yaml') }}</a>
     </div>
+    <LoadFailure
+      v-else-if="formError && !form && !['identity','docker','appearance','datetime','power','disk','network','shares','access','vms','scheduler','diagnostics'].includes(tab)"
+      :detail="formError"
+      :retry="load"
+    />
     <div
-      v-else-if="!form && !['identity','docker','appearance','datetime','power','disk','network','shares','access','vms','scheduler','diagnostics'].includes(tab)"
+      v-else-if="!form && !formError && !['identity','docker','appearance','datetime','power','disk','network','shares','access','vms','scheduler','diagnostics'].includes(tab)"
       class="placeholder"
     >{{ t('common.loading') }}</div>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import qrcode from 'qrcode-generator'
+import { finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
   getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, getUps,
@@ -1074,6 +1102,7 @@ const { theme, density, themes, densities, setTheme, setDensity } = injectTheme(
 
 const tab = ref('appearance')
 const form = ref(null)
+const formError = ref('')
 const host = ref(null)
 const identity = ref(null)
 const identityForm = ref({ computer_name: '', comment: '', host_ip: '' })
@@ -1088,6 +1117,7 @@ const identityError = ref('')
 const dockerInfo = ref(null)
 const dockerError = ref('')
 const sysBundle = ref(null)
+const sysBundleError = ref('')
 //: How many sleep assertions the backend found but did not send.  A panel that
 //: predates `assertion_count` sends none, so fall back to the row count and keep
 //: the note hidden rather than claiming the list is short.
@@ -1095,12 +1125,63 @@ const hiddenAssertions = computed(() => {
   const power = sysBundle.value?.power
   if (!power) return 0
   const shown = (power.assertions || []).length
-  return Math.max(0, (power.assertion_count ?? shown) - shown)
+  const total = finiteN(power.assertion_count, shown)
+  return Math.max(0, total - shown)
 })
 const launcher = ref(null)
 const launcherBusy = ref(false)
 const launcherLoading = ref(false)
+const launcherError = ref('')
 let launcherLoadRequest = 0
+let pageAlive = true
+let loadGeneration = 0
+let saveGeneration = 0
+let twofaBusyGeneration = 0
+let apiKeyBusyGeneration = 0
+let launcherBusyGeneration = 0
+let drillBusyGeneration = 0
+let savingPasswordGeneration = 0
+
+function beginSaving() {
+  const generation = ++saveGeneration
+  saving.value = true
+  return generation
+}
+function endSaving(generation) {
+  if (generation === saveGeneration && pageAlive) saving.value = false
+}
+function beginTwofaBusy() {
+  const generation = ++twofaBusyGeneration
+  twofaBusy.value = true
+  return generation
+}
+function endTwofaBusy(generation) {
+  if (generation === twofaBusyGeneration && pageAlive) twofaBusy.value = false
+}
+function beginApiKeyBusy() {
+  const generation = ++apiKeyBusyGeneration
+  apiKeyBusy.value = true
+  return generation
+}
+function endApiKeyBusy(generation) {
+  if (generation === apiKeyBusyGeneration && pageAlive) apiKeyBusy.value = false
+}
+function beginLauncherBusy() {
+  const generation = ++launcherBusyGeneration
+  launcherBusy.value = true
+  return generation
+}
+function endLauncherBusy(generation) {
+  if (generation === launcherBusyGeneration && pageAlive) launcherBusy.value = false
+}
+function beginDrillBusy() {
+  const generation = ++drillBusyGeneration
+  drillBusy.value = true
+  return generation
+}
+function endDrillBusy(generation) {
+  if (generation === drillBusyGeneration && pageAlive) drillBusy.value = false
+}
 const powerForm = ref({ sleep: 0, displaysleep: 10, disksleep: 0, womp: 1 })
 const saving = ref(false)
 const diagMsg = ref('')
@@ -1108,6 +1189,7 @@ const diagPreview = ref('')
 const savingPassword = ref(false)
 const accountForm = ref({ username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
 const upsInfo = ref(null)
+const upsError = ref('')
 // shutdown.trigger_* hold '' for "condition off" (the inputs are cleared, not
 // zeroed); the empty string becomes an explicit null on save.
 const upsForm = ref({
@@ -1135,8 +1217,7 @@ const upsLast = computed(() => upsInfo.value?.shutdown_state?.last || null)
 const upsScriptChoices = computed(() => upsPlan.value?.catalog?.scripts || [])
 
 function fmtUpsTs(ts) {
-  if (!ts) return '—'
-  return new Date(ts * 1000).toLocaleString()
+  return fmtTs(ts)
 }
 
 function moveStackRow(i, delta) {
@@ -1154,12 +1235,12 @@ function buildStackRows() {
   if (custom) {
     for (const id of saved) {
       const hit = catalog.find((s) => s.id === id)
-      rows.push({ id, name: hit?.name || id, selected: true, missing: !hit })
+      rows.push({ id, name: finiteText(hit?.name, '') || id, selected: true, missing: !hit })
     }
   }
   for (const s of catalog) {
     if (!rows.some((r) => r.id === s.id)) {
-      rows.push({ id: s.id, name: s.name, selected: !custom, missing: false })
+      rows.push({ id: s.id, name: finiteText(s.name, '') || s.id, selected: !custom, missing: false })
     }
   }
   upsStackRows.value = rows
@@ -1167,6 +1248,7 @@ function buildStackRows() {
 
 // ── two-factor (TOTP) card state ─────────────────────────────────────────────
 const twofa = ref(null)          // status from the server, null while unknown
+const twofaError = ref('')
 const twofaBusy = ref(false)
 const twofaEnroll = ref(null)    // {secret, otpauth_uri, manual_entry, qrSvg}
 const twofaCode = ref('')        // pairing confirmation input
@@ -1174,13 +1256,16 @@ const twofaActionCode = ref('')  // disable / regenerate input
 const twofaResetUser = ref('')   // admin rescue target
 const recoveryCodes = ref([])    // plaintext codes, shown exactly once
 const copiedRecovery = ref(false)
+let copyRecoveryTimer = 0
 
 // ── API keys card state ──────────────────────────────────────────────────────
 const apiKeys = ref(null)        // list from the server, null while unknown
+const apiKeysError = ref('')
 const apiKeyBusy = ref(false)
 const newKey = ref({ name: '', role: 'member', expiresDays: null })
 const createdKey = ref(null)     // {key, record}: plaintext lives only here
 const copiedKey = ref(false)
+let copyKeyTimer = 0
 
 const tabs = [
   { id: 'appearance', labelKey: 'settings.tab_appearance' },
@@ -1201,8 +1286,14 @@ const tabs = [
 ]
 
 function memGb(bytes) {
-  if (!bytes) return '—'
-  return (bytes / 2 ** 30).toFixed(1)
+  const n = Number(bytes)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return (n / 2 ** 30).toFixed(1)
+}
+
+function sizeGb(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? `${n} GB` : '—'
 }
 
 function switchTab(id) {
@@ -1221,8 +1312,12 @@ function switchTab(id) {
 }
 
 async function loadSysBundle() {
+  const generation = loadGeneration
   try {
-    sysBundle.value = await getSystemSettings()
+    const next = await getSystemSettings()
+    if (generation !== loadGeneration || !pageAlive) return
+    sysBundle.value = next
+    sysBundleError.value = ''
     const p = sysBundle.value?.power?.settings || {}
     powerForm.value = {
       sleep: p.sleep ?? sysBundle.value?.power?.sleep ?? 0,
@@ -1231,7 +1326,9 @@ async function loadSysBundle() {
       womp: p.womp ?? sysBundle.value?.power?.womp ?? 1,
     }
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    sysBundleError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
@@ -1241,63 +1338,74 @@ function softText(j, fallbackKey = 'common.fail') {
     const translated = t(key, j.params || {})
     if (translated !== key) return translated
   }
-  return j?.message || t(fallbackKey)
+  return finiteText(j?.message, '') || t(fallbackKey)
 }
 
 async function applyPower(key) {
-  saving.value = true
+  const generation = beginSaving()
   try {
     const value = powerForm.value[key]
     const result = await setPowerSetting(key, value)
-    toast(result.ok ? `✅ ${key}=${value}` : `❌ ${softText(result)}`)
+    if (!pageAlive) return
+    toast(result.ok ? `✅ ${finiteText(key)}=${finiteText(value)}` : `❌ ${softText(result)}`)
     await loadSysBundle()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    saving.value = false
+    endSaving(generation)
   }
 }
 
 async function runAliasAlign() {
-  saving.value = true
+  if (!confirm(t('network.confirm_autobind'))) return
+  const generation = beginSaving()
   try {
     const result = await runAliasAutoBind()
-    toast(result.ok ? `✅ ${result.message || t('common.ok')}` : `❌ ${result.message || t('common.fail')}`)
+    if (!pageAlive) return
+    toast(result.ok ? `✅ ${finiteText(result.message, '') || t('common.ok')}` : `❌ ${finiteText(result.message, '') || t('common.fail')}`)
     await loadSysBundle()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    saving.value = false
+    endSaving(generation)
   }
 }
 
 async function runDiagnostics() {
-  saving.value = true
+  const generation = beginSaving()
   diagMsg.value = ''
   try {
     const result = await generateDiagnostics()
+    if (!pageAlive) return
     const saved = Boolean(result.saved_path)
     diagMsg.value = saved
       ? `${t('settings.diag_saved')}: ${result.saved_path}`
-      : t('settings.diag_save_failed', { error: result.save_error || t('common.failed') })
-    diagPreview.value = JSON.stringify({
-      generated_at: result.generated_at,
-      hostname: result.hostname,
-      platform: result.platform,
-      docker: result.docker,
-      management: result.management,
-      other: result.other,
-      vms: result.vms,
-      metrics_latest: result.metrics_latest,
-      health_summary: Array.isArray(result.health?.checks)
-        ? result.health.checks.slice(0, 8)
-        : result.health,
-    }, null, 2)
-    toast(saved ? '✅ ' + t('settings.diag_done') : '❌ ' + diagMsg.value)
+      : t('settings.diag_save_failed', { error: finiteText(result.save_error, '') || t('common.failed') })
+    try {
+      diagPreview.value = JSON.stringify({
+        generated_at: result.generated_at,
+        hostname: result.hostname,
+        platform: result.platform,
+        docker: result.docker,
+        management: result.management,
+        other: result.other,
+        vms: result.vms,
+        metrics_latest: result.metrics_latest,
+        health_summary: Array.isArray(result.health?.checks)
+          ? result.health.checks.slice(0, 8)
+          : result.health,
+      }, null, 2)
+    } catch {
+      diagPreview.value = ''
+    }
+    toast(saved ? '✅ ' + t('settings.diag_done') : '❌ ' + finiteText(diagMsg.value))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    saving.value = false
+    endSaving(generation)
   }
 }
 
@@ -1307,13 +1415,16 @@ async function runDiagnostics() {
 // getSettings(). Report the failure instead -- the local change is still applied,
 // so the message says it was not saved rather than that it did not work.
 function persistUi(patch) {
+  const generation = loadGeneration
   putSettings({ ui: patch }).catch(e => {
-    toast('❌ ' + t('appearance.save_server_failed', { error: e.message || e }))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + t('appearance.save_server_failed', { error: finiteText(e.message || e) }))
   })
 }
 
 async function pickLocale(id) {
   if (await setLocale(id)) {
+    if (!pageAlive) return
     toast('✅ ' + t('appearance.saved_local'))
     persistUi({ locale: id, theme: theme.value, density: density.value })
   }
@@ -1332,21 +1443,27 @@ function pickDensity(id) {
 }
 
 async function syncUiToServer() {
-  saving.value = true
+  const generation = beginSaving()
   try {
     await putSettings({
       ui: { locale: locale.value, theme: theme.value, density: density.value },
     })
+    if (!pageAlive) return
     toast('✅ ' + t('appearance.saved_server'))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 async function loadIdentity() {
+  const generation = loadGeneration
   try {
-    identity.value = await getIdentity()
+    const next = await getIdentity()
+    if (generation !== loadGeneration || !pageAlive) return
+    identity.value = next
     identityForm.value = {
       computer_name: identity.value.computer_name || '',
       comment: identity.value.comment || '',
@@ -1355,9 +1472,10 @@ async function loadIdentity() {
     identityLoaded.value = true
     identityError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     identityLoaded.value = false
-    identityError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    identityError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
@@ -1367,46 +1485,60 @@ async function saveIdentity() {
     toast('❌ ' + t('settings.identity_load_failed'))
     return
   }
-  saving.value = true
+  const generation = beginSaving()
   try {
     const r = await putIdentity({
       computer_name: identityForm.value.computer_name || null,
       comment: identityForm.value.comment,
       host_ip: identityForm.value.host_ip,
     })
-    toast('✅ ' + (r.message || t('common.save')))
+    if (!pageAlive) return
+    toast('✅ ' + (finiteText(r.message, '') || t('common.save')))
     await loadIdentity()
+    if (!pageAlive) return
     if (form.value && identityForm.value.host_ip) form.value.host_ip = identityForm.value.host_ip
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 async function loadDockerInfo() {
+  const generation = loadGeneration
   try {
-    dockerInfo.value = await getDockerInfo()
+    const next = await getDockerInfo()
+    if (generation !== loadGeneration || !pageAlive) return
+    dockerInfo.value = next
     dockerError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     // The tab's fallback branch renders "Loading…" whenever dockerInfo is null,
     // so swallowing this left the panel claiming it was still loading forever —
     // and the Refresh button lives inside the loaded branch, so there was no way
     // to retry from the page.
-    dockerError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    dockerError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
 async function loadLauncher() {
+  if (!pageAlive) return
   const request = ++launcherLoadRequest
   launcherLoading.value = true
+  launcherError.value = ''
   try {
     const status = await getLauncherStatus()
-    if (request === launcherLoadRequest) launcher.value = status
+    if (request !== launcherLoadRequest || !pageAlive) return
+    launcher.value = status
+    launcherError.value = ''
   } catch (e) {
-    if (request === launcherLoadRequest) toast('❌ ' + e.message)
+    if (request !== launcherLoadRequest || !pageAlive) return
+    launcherError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    if (request === launcherLoadRequest) launcherLoading.value = false
+    if (request === launcherLoadRequest && pageAlive) launcherLoading.value = false
   }
 }
 
@@ -1419,14 +1551,16 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
  * status of a socket that was not listening yet: the restart succeeded and the
  * UI reported it as a failure every single time.
  */
+let launcherPageAlive = true
 async function waitForPanelRestart() {
   // The API deliberately keeps answering for ~0.6s so its response reaches the
   // browser before launchd replaces the job, and the old worker drains its
   // connections after that.  Polling before it has actually gone would read
   // the process being torn down and call the restart finished.
   await sleep(3000)
+  if (!launcherPageAlive) return null
   const deadline = Date.now() + 150000
-  while (Date.now() < deadline) {
+  while (launcherPageAlive && Date.now() < deadline) {
     try {
       const status = await getLauncherStatus()
       if (status?.panel_running) return status
@@ -1440,14 +1574,15 @@ async function waitForPanelRestart() {
 
 async function runLauncher(action) {
   if (['restart', 'stop'].includes(action) && !confirm(t(`settings.launcher_${action}_confirm`))) return
-  launcherBusy.value = true
+  const generation = beginLauncherBusy()
   try {
     let result
     if (action === 'open') result = await openLauncherApp()
     else if (action === 'login') result = await setLauncherLogin(!launcher.value?.login_enabled)
     else result = await controlPanelService(action)
+    if (!pageAlive) return
     if (!result?.ok) throw new Error(softText(result))
-    toast('✅ ' + (result.message || t('common.ok')))
+    toast('✅ ' + (finiteText(result.message, '') || t('common.ok')))
     if (action === 'stop') {
       // The API intentionally disappears after accepting this command, so do
       // not leave the last green status visible or try to poll a stopped panel.
@@ -1463,6 +1598,7 @@ async function runLauncher(action) {
         panel_job_state: 'restarting',
       }
       const status = await waitForPanelRestart()
+      if (!launcherPageAlive) return
       if (status) {
         launcher.value = status
         toast('✅ ' + t('settings.launcher_restart_done'))
@@ -1474,15 +1610,19 @@ async function runLauncher(action) {
       }
     } else {
       await sleep(300)
+      if (!pageAlive) return
       await loadLauncher()
     }
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endLauncherBusy(generation)
   }
-  launcherBusy.value = false
 }
 
 async function load() {
+  const generation = ++loadGeneration
   try {
     // The host summary is only used for the hostname line; it does not feed the
     // settings form, so waiting for /api/settings before asking for it added a
@@ -1491,6 +1631,7 @@ async function load() {
       getSettings(),
       getHost().catch(() => null),
     ])
+    if (generation !== loadGeneration || !pageAlive) return
     host.value = hostInfo
     form.value = {
       ...s,
@@ -1549,13 +1690,16 @@ async function load() {
       },
     }
     accountForm.value.username = form.value.auth.username
+    formError.value = ''
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    formError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
 async function save() {
-  saving.value = true
+  const generation = beginSaving()
   try {
     const body = {
       host_ip: form.value.host_ip,
@@ -1593,12 +1737,15 @@ async function save() {
     if (form.value.notify.ha_token) body.notify.ha_token = form.value.notify.ha_token
     if (form.value.notify.ha_webhook_url) body.notify.ha_webhook_url = form.value.notify.ha_webhook_url
     await putSettings(body)
+    if (!pageAlive) return
     toast('✅ ' + t('common.save'))
     await load()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 function passwordValidation() {
@@ -1619,13 +1766,14 @@ function passwordMessage() {
 async function savePassword() {
   const error = passwordValidation()
   if (error) {
-    toast('❌ ' + error)
+    toast('❌ ' + finiteText(error))
     return
   }
   // Rotating the password bumps the session version, which signs out every other
   // browser session. Worth confirming: the current-password field proves intent to
   // change *a* password, not that the operator expected to be logged out elsewhere.
   if (!confirm(t('settings.confirm_password_change'))) return
+  const passwordGeneration = ++savingPasswordGeneration
   savingPassword.value = true
   try {
     const r = await changeAuthPassword(
@@ -1633,6 +1781,7 @@ async function savePassword() {
       accountForm.value.currentPassword,
       accountForm.value.newPassword,
     )
+    if (!pageAlive) return
     form.value.auth.username = r.username
     accountForm.value = {
       username: r.username,
@@ -1640,22 +1789,28 @@ async function savePassword() {
       newPassword: '',
       confirmPassword: '',
     }
-    toast('✅ ' + (r.message || t('settings.password_updated')))
+    toast('✅ ' + (finiteText(r.message, '') || t('settings.password_updated')))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (passwordGeneration === savingPasswordGeneration && pageAlive) savingPassword.value = false
   }
-  savingPassword.value = false
 }
 
 // ── two-factor (TOTP) ────────────────────────────────────────────────────────
 
 async function loadTwofa() {
-  // Silent: the card shows its loading hint until a status arrives, and a
-  // backend that predates 2FA simply leaves it there.
+  const generation = loadGeneration
   try {
-    twofa.value = await getTotpStatus()
-  } catch {
+    const next = await getTotpStatus()
+    if (generation !== loadGeneration || !pageAlive) return
+    twofa.value = next
+    twofaError.value = ''
+  } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     twofa.value = null
+    twofaError.value = finiteText(e.message || String(e), '')
   }
 }
 
@@ -1674,15 +1829,18 @@ function totpQrSvg(text) {
 }
 
 async function startTwofaEnroll() {
-  twofaBusy.value = true
+  const generation = beginTwofaBusy()
   try {
     const r = await enrollTotp()
+    if (!pageAlive) return
     twofaEnroll.value = { ...r, qrSvg: totpQrSvg(r.otpauth_uri) }
     twofaCode.value = ''
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endTwofaBusy(generation)
   }
-  twofaBusy.value = false
 }
 
 function cancelTwofaEnroll() {
@@ -1691,9 +1849,10 @@ function cancelTwofaEnroll() {
 }
 
 async function confirmTwofaEnroll() {
-  twofaBusy.value = true
+  const generation = beginTwofaBusy()
   try {
     const r = await confirmTotp(twofaCode.value)
+    if (!pageAlive) return
     recoveryCodes.value = r.recovery_codes || []
     copiedRecovery.value = false
     twofaEnroll.value = null
@@ -1701,125 +1860,154 @@ async function confirmTwofaEnroll() {
     toast('✅ ' + t('twofa.enabled_toast'))
     await loadTwofa()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endTwofaBusy(generation)
   }
-  twofaBusy.value = false
 }
 
 async function disableTwofa() {
   if (!confirm(t('twofa.disable_confirm'))) return
-  twofaBusy.value = true
+  const generation = beginTwofaBusy()
   try {
     await disableTotp(twofaActionCode.value)
+    if (!pageAlive) return
     twofaActionCode.value = ''
     recoveryCodes.value = []
     toast('✅ ' + t('twofa.disabled_toast'))
     await loadTwofa()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endTwofaBusy(generation)
   }
-  twofaBusy.value = false
 }
 
 async function regenTwofaRecovery() {
   if (!confirm(t('twofa.regen_confirm'))) return
-  twofaBusy.value = true
+  const generation = beginTwofaBusy()
   try {
     const r = await regenerateTotpRecovery(twofaActionCode.value)
+    if (!pageAlive) return
     recoveryCodes.value = r.recovery_codes || []
     copiedRecovery.value = false
     twofaActionCode.value = ''
     await loadTwofa()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endTwofaBusy(generation)
   }
-  twofaBusy.value = false
 }
 
 async function adminResetTwofa() {
-  if (!confirm(t('twofa.admin_reset_confirm', { name: twofaResetUser.value }))) return
-  twofaBusy.value = true
+  if (!confirm(t('twofa.admin_reset_confirm', { name: finiteText(twofaResetUser.value) }))) return
+  const generation = beginTwofaBusy()
   try {
     await adminDisableTotp(twofaResetUser.value)
-    toast('✅ ' + t('twofa.admin_reset_toast', { name: twofaResetUser.value }))
+    if (!pageAlive) return
+    toast('✅ ' + t('twofa.admin_reset_toast', { name: finiteText(twofaResetUser.value) }))
     twofaResetUser.value = ''
     await loadTwofa()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endTwofaBusy(generation)
   }
-  twofaBusy.value = false
 }
 
 async function copyRecoveryCodes() {
-  if (!await copyToClipboard(recoveryCodes.value.join('\n'))) {
+  const ok = await copyToClipboard(recoveryCodes.value.join('\n'))
+  if (!pageAlive) return
+  if (!ok) {
     toast('❌ ' + t('common.copy_failed'))
     return
   }
   copiedRecovery.value = true
-  setTimeout(() => { copiedRecovery.value = false }, 2000)
+  clearTimeout(copyRecoveryTimer)
+  copyRecoveryTimer = setTimeout(() => {
+    if (!pageAlive) return
+    copiedRecovery.value = false
+  }, 2000)
 }
 
 // ── API keys ─────────────────────────────────────────────────────────────────
 
 async function loadApiKeys() {
+  const generation = loadGeneration
   try {
-    apiKeys.value = (await listApiKeys()).keys || []
-  } catch {
-    apiKeys.value = null
+    const next = await listApiKeys()
+    if (generation !== loadGeneration || !pageAlive) return
+    apiKeys.value = next.keys || []
+    apiKeysError.value = ''
+  } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
+    apiKeysError.value = finiteText(e.message || String(e), '')
   }
 }
 
 function fmtEpoch(value) {
-  if (!value) return '—'
-  try {
-    return new Date(value * 1000).toLocaleString()
-  } catch {
-    return '—'
-  }
+  return fmtTs(value)
 }
 
 async function createKey() {
-  apiKeyBusy.value = true
+  const generation = beginApiKeyBusy()
   try {
     const r = await createApiKey({
       name: newKey.value.name,
       role: newKey.value.role,
       expiresDays: newKey.value.expiresDays || null,
     })
+    if (!pageAlive) return
     createdKey.value = r
     copiedKey.value = false
     newKey.value = { name: '', role: 'member', expiresDays: null }
     await loadApiKeys()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endApiKeyBusy(generation)
   }
-  apiKeyBusy.value = false
 }
 
 async function copyCreatedKey() {
-  if (!await copyToClipboard(createdKey.value?.key)) {
+  const ok = await copyToClipboard(createdKey.value?.key)
+  if (!pageAlive) return
+  if (!ok) {
     toast('❌ ' + t('common.copy_failed'))
     return
   }
   copiedKey.value = true
-  setTimeout(() => { copiedKey.value = false }, 2000)
+  clearTimeout(copyKeyTimer)
+  copyKeyTimer = setTimeout(() => {
+    if (!pageAlive) return
+    copiedKey.value = false
+  }, 2000)
 }
 
 async function revokeKey(key) {
-  if (!confirm(t('apikeys.revoke_confirm', { name: key.name }))) return
-  apiKeyBusy.value = true
+  if (!confirm(t('apikeys.revoke_confirm', { name: finiteText(key.name) }))) return
+  const generation = beginApiKeyBusy()
   try {
     await revokeApiKey(key.id)
-    toast('✅ ' + t('apikeys.revoked_toast', { name: key.name }))
+    if (!pageAlive) return
+    toast('✅ ' + t('apikeys.revoked_toast', { name: finiteText(key.name) }))
     await loadApiKeys()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endApiKeyBusy(generation)
   }
-  apiKeyBusy.value = false
 }
 
 async function saveAdvanced() {
-  saving.value = true
+  const generation = beginSaving()
   try {
     await putSettings({
       adaptive: form.value.adaptive,
@@ -1832,18 +2020,21 @@ async function saveAdvanced() {
         interval: form.value.ip_aliases.interval,
       },
     })
+    if (!pageAlive) return
     toast('✅ ' + t('common.save'))
     // Disjoint targets: load() rewrites `form`/`host`, loadSysBundle() rewrites
     // `sysBundle`/`powerForm`. Neither reads what the other writes.
     await Promise.all([load(), loadSysBundle()])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 async function saveOllama() {
-  saving.value = true
+  const generation = beginSaving()
   try {
     await putSettings({
       ollama: {
@@ -1851,12 +2042,15 @@ async function saveOllama() {
         label: form.value.ollama.label.trim(),
       },
     })
+    if (!pageAlive) return
     toast('✅ ' + t('common.save'))
     await load()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 async function saveTerminal() {
@@ -1866,7 +2060,7 @@ async function saveTerminal() {
   if (form.value.terminal.host_enabled && !confirm(t('settings.terminal_confirm'))) {
     return
   }
-  saving.value = true
+  const generation = beginSaving()
   try {
     await putSettings({
       terminal: {
@@ -1874,17 +2068,24 @@ async function saveTerminal() {
         cwd: form.value.terminal.cwd || undefined,
       },
     })
+    if (!pageAlive) return
     toast('✅ ' + t('common.save'))
     await load()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 async function loadUps() {
+  const generation = loadGeneration
   try {
-    upsInfo.value = await getUps()
+    const next = await getUps()
+    if (generation !== loadGeneration || !pageAlive) return
+    upsInfo.value = next
+    upsError.value = ''
     const sd = upsInfo.value.settings?.shutdown || {}
     upsForm.value = {
       alerts_enabled: upsInfo.value.settings?.alerts_enabled !== false,
@@ -1899,17 +2100,22 @@ async function loadUps() {
       },
     }
   } catch (e) {
-    // The card stays on its loading placeholder; the toast says why.
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    upsError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
     return
   }
   // Catalog for the stack/script pickers; enumeration is a docker round-trip,
   // so a failure degrades to "no pickers" rather than blocking the card.
   try {
-    upsPlan.value = await getUpsShutdownPlan()
+    const plan = await getUpsShutdownPlan()
+    if (generation !== loadGeneration || !pageAlive) return
+    upsPlan.value = plan
   } catch {
+    if (generation !== loadGeneration || !pageAlive) return
     upsPlan.value = null
   }
+  if (generation !== loadGeneration || !pageAlive) return
   buildStackRows()
 }
 
@@ -1935,76 +2141,107 @@ async function saveUps() {
     toast('❌ ' + t('settings.ups_shutdown_need_condition'))
     return
   }
-  saving.value = true
+  const generation = beginSaving()
   try {
     const r = await putUpsSettings({
       alerts_enabled: f.alerts_enabled,
       low_battery_pct: f.low_battery_pct,
       shutdown,
     })
+    if (!pageAlive) return
     if (r.ups) upsInfo.value = r.ups
     buildStackRows()
     toast('✅ ' + t('common.save'))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 async function runDrill() {
-  drillBusy.value = true
+  const generation = beginDrillBusy()
   try {
-    upsDrill.value = await runUpsShutdownDrill()
+    const next = await runUpsShutdownDrill()
+    if (!pageAlive) return
+    upsDrill.value = next
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endDrillBusy(generation)
   }
-  drillBusy.value = false
 }
 
 async function saveHalt() {
-  saving.value = true
+  if (!confirm(t('settings.ups_halt_confirm', { n: finiteN(haltLevel.value) }))) return
+  const generation = beginSaving()
   try {
     const r = await putUpsHalt({ haltlevel: Number(haltLevel.value) })
+    if (!pageAlive) return
     if (r.ups) upsInfo.value = r.ups
     toast('✅ ' + t('settings.ups_halt_set'))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    endSaving(generation)
   }
-  saving.value = false
 }
 
 async function testNotify() {
   if (saving.value) return
-  saving.value = true
+  const generation = beginSaving()
   try {
     const r = await apiTest()
-    toast(r.ok ? '✅ ' + t('common.ok') : '❌ ' + (r.message || t('common.fail')))
+    if (!pageAlive) return
+    toast(r.ok ? '✅ ' + t('common.ok') : '❌ ' + (finiteText(r.message, '') || t('common.fail')))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    saving.value = false
+    endSaving(generation)
   }
 }
 
 async function forceCheck() {
   if (saving.value) return
-  saving.value = true
+  const generation = beginSaving()
   try {
     const r = await forceAlertCheck()
+    if (!pageAlive) return
     toast(`${t('settings.force_check')} · ${r.emitted?.length || 0}`)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    saving.value = false
+    endSaving(generation)
   }
 }
 
 onMounted(() => {
+  pageAlive = true
+  launcherPageAlive = true
   load()
   loadIdentity()
   const wanted = new URLSearchParams(window.location.search).get('tab') || ''
   if (tabs.some((tb) => tb.id === wanted)) switchTab(wanted)
   // Don't load full system bundle until a tab needs it (saves ~1.5s shell storm)
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+  saveGeneration += 1
+  twofaBusyGeneration += 1
+  apiKeyBusyGeneration += 1
+  launcherBusyGeneration += 1
+  drillBusyGeneration += 1
+  savingPasswordGeneration += 1
+  launcherPageAlive = false
+  launcherLoadRequest += 1
+  clearTimeout(copyRecoveryTimer)
+  clearTimeout(copyKeyTimer)
 })
 </script>
 

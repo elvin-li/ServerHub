@@ -26,6 +26,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -168,6 +170,10 @@ class RemoteCatalogCase(unittest.TestCase):
 
 
 class UrlValidation(RemoteCatalogCase):
+    def test_opener_ignores_env_proxy(self):
+        src = Path(catalog_remote.__file__).read_text(encoding="utf-8")
+        self.assertIn("ProxyHandler({})", src)
+
     def test_https_url_is_accepted(self):
         self.assertEqual(
             catalog_remote.validate_source_url("https://example.com/index.json"),
@@ -196,6 +202,44 @@ class UrlValidation(RemoteCatalogCase):
             catalog_remote.validate_source_url("https://user:pw@example.com/i.json")
         self.assertEqual(self.api_code(ctx), "catalog_remote.bad_url")
 
+    def test_metadata_and_link_local_sources_are_refused(self):
+        for url in (
+            "https://169.254.169.254/latest/meta-data",
+            "https://metadata.google.internal/index.json",
+            "https://[fd00:ec2::254]/",
+            "https://2852039166/index.json",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(HTTPException) as ctx:
+                    catalog_remote.validate_source_url(url)
+                self.assertEqual(self.api_code(ctx), "catalog_remote.bad_url")
+
+    def test_https_redirect_to_another_host_is_refused(self):
+        handler = catalog_remote._HttpsOnlyRedirect()
+        req = urllib.request.Request(INDEX_URL)
+        for target in (
+            "https://169.254.169.254/latest/meta-data",
+            "https://evil.example/index.json",
+        ):
+            with self.subTest(target=target):
+                with self.assertRaises(urllib.error.URLError):
+                    handler.redirect_request(req, None, 302, "Found", {}, target)
+
+    def test_https_redirect_on_the_same_origin_is_still_followed(self):
+        handler = catalog_remote._HttpsOnlyRedirect()
+        req = urllib.request.Request(INDEX_URL)
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://catalog.example.com/dir/other.json"
+        )
+        self.assertIsNotNone(followed)
+
+    def test_python_yaml_tag_in_a_template_is_parse_failed(self):
+        text = VALID_TEMPLATE.replace(
+            "image: example/demo:1.2.3",
+            "image: !!python/object/apply:os.system ['id']",
+        )
+        self.assertIn("python YAML tags", catalog_remote._validate_template_text(text, "demo"))
+
     def test_check_without_a_configured_source_is_a_clean_error(self):
         with patch.object(catalog_remote, "source_url", lambda: ""):
             with self.assertRaises(HTTPException) as ctx:
@@ -211,6 +255,13 @@ class ManifestValidation(RemoteCatalogCase):
 
     def test_non_json_manifest_is_bad_manifest(self):
         self.responses[INDEX_URL] = b"<html>not a manifest</html>"
+        with self.assertRaises(HTTPException) as ctx:
+            self.sync()
+        self.assertEqual(self.api_code(ctx), "catalog_remote.bad_manifest")
+
+    def test_deeply_nested_manifest_is_bad_manifest(self):
+        """``json.loads`` RecursionError is not ValueError; POST check used to 500."""
+        self.responses[INDEX_URL] = ('{"k":' * 12000 + "1" + "}" * 12000).encode()
         with self.assertRaises(HTTPException) as ctx:
             self.sync()
         self.assertEqual(self.api_code(ctx), "catalog_remote.bad_manifest")
@@ -337,6 +388,22 @@ class TemplateValidationChain(RemoteCatalogCase):
         reasons = {r["id"]: r["reason"] for r in result["rejected"]}
         self.assertEqual(reasons, {"app-offline": "fetch_failed"})
         self.assertEqual(result["added"], ["app-online"])
+
+    def test_a_directory_named_like_a_template_does_not_500_the_sync(self):
+        self.remote_dir.mkdir(parents=True, exist_ok=True)
+        (self.remote_dir / "app-dir.yml").mkdir()
+        self.serve_manifest([
+            entry("app-dir", VALID_TEMPLATE),
+            entry("app-ok", SECOND_TEMPLATE),
+        ])
+        self.serve_template("app-dir", VALID_TEMPLATE)
+        self.serve_template("app-ok", SECOND_TEMPLATE)
+        result = self.sync()
+        reasons = {r["id"]: r["reason"] for r in result["rejected"]}
+        self.assertEqual(reasons.get("app-dir"), "write_failed")
+        self.assertEqual(result["added"], ["app-ok"])
+        self.assertTrue((self.remote_dir / "app-dir.yml").is_dir())
+        self.assertTrue((self.remote_dir / "app-ok.yml").is_file())
 
 
 class Atomicity(RemoteCatalogCase):
@@ -533,6 +600,14 @@ class MergeAndRestore(RemoteCatalogCase):
         with self.assertRaises(HTTPException) as ctx:
             catalog_remote.restore_builtin("demo")
         self.assertEqual(self.api_code(ctx), "catalog_remote.not_remote")
+
+    def test_restoring_a_directory_override_is_coded_not_500(self):
+        self.remote_dir.mkdir(parents=True, exist_ok=True)
+        (self.remote_dir / "demo.yml").mkdir()
+        with self.assertRaises(HTTPException) as ctx:
+            catalog_remote.restore_builtin("demo")
+        self.assertEqual(self.api_code(ctx), "catalog_remote.not_remote")
+        self.assertTrue((self.remote_dir / "demo.yml").is_dir())
 
     def test_status_reports_overrides_and_capability(self):
         self.install_override()

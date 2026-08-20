@@ -44,8 +44,8 @@
           <tbody>
             <tr v-for="job in jobs" :key="job.id">
               <td>
-                <strong>{{ job.name }}</strong>
-                <div class="show-m sub">{{ t(`sched.type_${job.type}`) }} · {{ job.cron }}</div>
+                <strong>{{ finiteText(job.name) }}</strong>
+                <div class="show-m sub">{{ t(`sched.type_${job.type}`) }} · {{ finiteText(job.cron) }}</div>
                 <div v-if="job.enabled" class="show-m sub">{{ fmt(job.next_run) }}</div>
                 <div class="show-m sub">
                   <span v-if="job.running">{{ t('sched.running') }}</span>
@@ -54,7 +54,7 @@
                 </div>
               </td>
               <td class="col-hide-m"><span class="badge accent">{{ t(`sched.type_${job.type}`) }}</span></td>
-              <td class="mono col-hide-m" style="font-size:11px">{{ job.cron }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(job.cron) }}</td>
               <td class="col-hide-m" style="font-size:12px">{{ job.enabled ? fmt(job.next_run) : '—' }}</td>
               <td class="col-hide-m">
                 <span v-if="job.running" class="badge warn">{{ t('sched.running') }}</span>
@@ -92,10 +92,10 @@
           <tbody>
             <tr v-for="s in systemJobs" :key="s.id">
               <td>
-                <strong>{{ s.name }}</strong> <span class="badge">{{ t('sched.readonly') }}</span>
-                <div class="show-m sub">{{ s.enabled ? s.interval : t('sched.disabled') }}{{ s.enabled ? ' · ' + fmt(s.next_run) : '' }}</div>
+                <strong>{{ finiteText(s.name) }}</strong> <span class="badge">{{ t('sched.readonly') }}</span>
+                <div class="show-m sub">{{ s.enabled ? finiteText(s.interval) : t('sched.disabled') }}{{ s.enabled ? ' · ' + fmt(s.next_run) : '' }}</div>
               </td>
-              <td class="col-hide-m">{{ s.enabled ? s.interval : t('sched.disabled') }}</td>
+              <td class="col-hide-m">{{ s.enabled ? finiteText(s.interval) : t('sched.disabled') }}</td>
               <td class="col-hide-m" style="font-size:12px">{{ s.enabled ? fmt(s.next_run) : '—' }}</td>
               <td><router-link class="btn tiny" to="/main">{{ t('sched.managed_edit_link') }}</router-link></td>
             </tr>
@@ -109,7 +109,7 @@
     <div v-else>
       <div class="toolbar">
         <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
-        <span class="meta" style="color:var(--sub)" v-if="data">{{ data.count }} {{ t('scheduler.timers') }}</span>
+        <span class="meta" style="color:var(--sub)" v-if="data">{{ finiteN(data.count) }} {{ t('scheduler.timers') }}</span>
       </div>
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
@@ -123,7 +123,7 @@
       <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
         <div class="tile span-4">
           <h3>{{ t('scheduler.timers') }}</h3>
-          <div class="v">{{ data.count }}</div>
+          <div class="v">{{ finiteN(data.count) }}</div>
         </div>
         <div class="tile span-4">
           <h3>{{ t('scheduler.interval_type') }}</h3>
@@ -156,17 +156,17 @@
           <tbody>
             <tr v-for="row in filtered" :key="row.label">
               <td class="mono">
-                <strong>{{ row.label }}</strong>
+                <strong>{{ finiteText(row.label) }}</strong>
                 <div v-if="formatCal(row.calendar)" class="show-m sub">{{ formatCal(row.calendar) }}</div>
-                <div v-if="row.program" class="show-m sub">{{ row.program }}</div>
+                <div v-if="row.program" class="show-m sub">{{ finiteText(row.program) }}</div>
               </td>
               <td>
                 <span class="badge accent">{{ row.interval_sec ? t('scheduler.interval_type') : t('scheduler.calendar_type') }}</span>
               </td>
               <td>{{ row.interval_sec ? formatInterval(row.interval_sec) : '—' }}</td>
               <td class="mono col-hide-m" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
-              <td class="mono col-hide-m" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="row.program">
-                {{ row.program || '—' }}
+              <td class="mono col-hide-m" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="finiteText(row.program)">
+                {{ finiteText(row.program) }}
               </td>
             </tr>
             <tr v-if="!filtered.length && !loadError">
@@ -199,17 +199,19 @@
     <div ref="runsPanel" v-if="runsFor" class="modal-bg" @click.self="runsFor = null" role="presentation">
       <div class="modal" style="max-width:640px;max-height:90vh;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="sched-runs-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: runsFor.name }) }}</span>
+          <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: finiteText(runsFor.name) }) }}</span>
           <button class="tiny" @click="runsFor = null">{{ t('common.close') }}</button>
         </div>
-        <div v-if="!runs.length" class="meta">{{ t('sched.runs_empty') }}</div>
+        <div v-if="runsError" class="meta" style="color:var(--down)">{{ finiteText(runsError) }}</div>
+        <div v-else-if="!runsLoaded" class="meta">{{ t('common.loading') }}</div>
+        <div v-else-if="!runs.length" class="meta">{{ t('sched.runs_empty') }}</div>
         <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
           <div style="font-size:12px;margin-bottom:4px">
             <span class="badge" :class="run.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${run.status}`) }}</span>
             <span class="mono" style="margin-left:8px">{{ fmt(run.ts) }}</span>
-            <span class="meta" style="margin-left:8px">{{ t('sched.col_duration') }}: {{ run.duration }}s · rc={{ run.rc ?? '—' }} · {{ t(`sched.trigger_${run.trigger}`) }}</span>
+            <span class="meta" style="margin-left:8px">{{ t('sched.col_duration') }}: {{ withUnit(run.duration, 's') }} · rc={{ finiteN(run.rc) }} · {{ t(`sched.trigger_${run.trigger}`) }}</span>
           </div>
-          <pre v-if="run.tail" class="log" style="max-height:160px;font-size:11px;margin:0">{{ run.tail }}</pre>
+          <pre v-if="run.tail" class="log" style="max-height:160px;font-size:11px;margin:0">{{ finiteText(run.tail) }}</pre>
         </div>
       </div>
     </div>
@@ -229,6 +231,7 @@ import {
   updateSchedulerJob,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -248,27 +251,39 @@ const editorOpen = ref(false)
 const editing = ref(null)
 const runsFor = ref(null)
 const runs = ref([])
+const runsLoaded = ref(false)
+const runsError = ref('')
 const formPanel = ref(null)
 const runsPanel = ref(null)
 useDismissable(editorOpen, () => { editorOpen.value = false }, formPanel)
 useDismissable(() => Boolean(runsFor.value), () => { runsFor.value = null }, runsPanel)
 
+// Unmount alone cannot stop this loop: it only clears the *armed* timer, but a
+// loadJobs() that was already in flight lands afterwards and re-arms — with a
+// job still running, the unmounted page then polls the API every 7s forever.
+let pollStopped = false
+
 function fmt(ts) {
-  return ts ? new Date(ts * 1000).toLocaleString() : '—'
+  return fmtTs(ts)
 }
 
 async function loadJobs() {
+  if (pollStopped) return
   jobsBusy.value = true
   try {
     const d = await getSchedulerJobs()
+    if (pollStopped) return
     jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
     systemJobs.value = Array.isArray(d?.system) ? d.system : []
     jobsError.value = ''
   } catch (e) {
-    jobsError.value = e.message || String(e)
+    if (pollStopped) return
+    jobsError.value = finiteText(e.message || String(e), '')
   } finally {
-    jobsBusy.value = false
-    jobsLoaded.value = true
+    if (!pollStopped) {
+      jobsBusy.value = false
+      jobsLoaded.value = true
+    }
   }
   schedulePoll()
 }
@@ -277,17 +292,12 @@ async function loadJobs() {
 // and last-run status update themselves; the timer stops as soon as nothing
 // is running, so an idle page polls nothing.
 let pollTimer = null
-// Unmount alone cannot stop this loop: it only clears the *armed* timer, but a
-// loadJobs() that was already in flight lands afterwards and re-arms — with a
-// job still running, the unmounted page then polls the API every 7s forever.
-// Same in-flight problem lib/poll.js solves with its generation counter; this
-// loop cannot use that helper because its interval is conditional.
-let pollStopped = false
 function schedulePoll() {
   if (pollStopped || pollTimer) return
   if (!jobs.value.some(j => j.running)) return
   pollTimer = setTimeout(() => {
     pollTimer = null
+    if (pollStopped) return
     // Skip the fetch while the tab is hidden but keep the loop armed, so the
     // badge catches up shortly after the operator returns instead of a hidden
     // tab asking the host for job status all night.
@@ -322,55 +332,75 @@ async function saveJob(body) {
   try {
     if (editing.value) await updateSchedulerJob(editing.value.id, body)
     else await createSchedulerJob(body)
+    if (pollStopped) return
     toast('✅ ' + t('sched.saved'))
     closeEditor()
     await loadJobs()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (pollStopped) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    jobsBusy.value = false
+    if (!pollStopped) jobsBusy.value = false
   }
 }
 
 async function toggle(job, enabled) {
   try {
     await enableSchedulerJob(job.id, enabled)
+    if (pollStopped) return
     await loadJobs()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (pollStopped) return
+    toast('❌ ' + finiteText(e.message))
     await loadJobs()
   }
 }
 
 async function runNow(job) {
+  const key = job.type === 'stack_backup'
+    ? 'backups.confirm_stack_run'
+    : job.type === 'rsync'
+      ? 'backups.confirm_rsync_run'
+      : 'sched.confirm_run'
+  if (!confirm(t(key, { name: finiteText(job.name) }))) return
   try {
     await runSchedulerJobNow(job.id)
-    toast('✅ ' + t('sched.started', { name: job.name }))
+    if (pollStopped) return
+    toast('✅ ' + t('sched.started', { name: finiteText(job.name) }))
     await loadJobs()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (pollStopped) return
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
 async function removeJob(job) {
-  if (!confirm(t('sched.confirm_delete', { name: job.name }))) return
+  if (!confirm(t('sched.confirm_delete', { name: finiteText(job.name) }))) return
   try {
     await deleteSchedulerJob(job.id)
+    if (pollStopped) return
     toast('✅ ' + t('sched.deleted'))
     await loadJobs()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (pollStopped) return
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
 async function openRuns(job) {
   runsFor.value = job
-  runs.value = []
+  runsLoaded.value = false
+  runsError.value = ''
   try {
     const d = await getSchedulerJobRuns(job.id, 30)
+    if (pollStopped) return
     runs.value = Array.isArray(d?.runs) ? d.runs : []
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (pollStopped) return
+    runsError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (!pollStopped) runsLoaded.value = true
   }
 }
 
@@ -400,27 +430,36 @@ const filtered = computed(() => {
 })
 
 function formatInterval(sec) {
-  if (sec >= 86400) return t('scheduler.unit_days', { n: Math.round(sec / 86400), sec })
-  if (sec >= 3600) return t('scheduler.unit_hours', { n: Math.round(sec / 3600), sec })
-  if (sec >= 60) return t('scheduler.unit_minutes', { n: Math.round(sec / 60), sec })
-  return `${sec}s`
+  const n = Number(sec)
+  if (!Number.isFinite(n) || n < 0) return '—'
+  if (n >= 86400) return t('scheduler.unit_days', { n: Math.round(n / 86400), sec: n })
+  if (n >= 3600) return t('scheduler.unit_hours', { n: Math.round(n / 3600), sec: n })
+  if (n >= 60) return t('scheduler.unit_minutes', { n: Math.round(n / 60), sec: n })
+  return `${n}s`
 }
 function formatCal(c) {
   if (!c) return '—'
-  return typeof c === 'object' ? JSON.stringify(c) : String(c)
+  if (typeof c === 'object') return JSON.stringify(c)
+  return finiteText(c)
 }
 
 async function load() {
   loading.value = true
   try {
-    data.value = await getScheduler()
+    const next = await getScheduler()
+    if (pollStopped) return
+    data.value = next
     loadError.value = ''
   } catch (e) {
-    loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    if (pollStopped) return
+    loadError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (!pollStopped) {
+      loading.value = false
+      loaded.value = true
+    }
   }
-  loading.value = false
-  loaded.value = true
 }
 
 onMounted(() => {

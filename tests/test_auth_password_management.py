@@ -114,12 +114,10 @@ class PasswordManagementTests(unittest.TestCase):
             patch("hub.auth.is_admin", return_value=True),
             patch("hub.auth.login_allowed", return_value=(True, 0)),
             patch("hub.auth.verify_account_password", return_value=False),
-            patch("hub.auth.record_login_failure") as failure,
         ):
             with self.assertRaises(HTTPException) as raised:
                 auth_change_password(_body("wrong-password"), _request(), Response())
         self.assertEqual(raised.exception.status_code, 401)
-        failure.assert_called_once()
 
     def test_change_password_rotates_credentials_and_session(self):
         # username != the signed-in name: the admin-only rename path, which

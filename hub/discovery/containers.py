@@ -131,6 +131,8 @@ def _refresh():
                 continue
             name, st, status, image, project = p
             ov = resolve_value(override(name))
+            if not isinstance(ov, dict):
+                ov = {}
             if ov.get("hide"):
                 continue
             # ok=运行 / warn=不健康 / stopped=主动退出(灰) / down=异常

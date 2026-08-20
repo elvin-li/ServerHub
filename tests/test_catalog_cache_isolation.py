@@ -14,6 +14,7 @@ cache returns, and the next caller must still see pristine data.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -107,6 +108,58 @@ class TestCatalogOverviewIsIdempotent(unittest.TestCase):
             data = catalog.catalog_overview()
         self.assertIn("templates", data)
         self.assertIsInstance(data["templates"], list)
+
+    def test_non_dict_native_rows_do_not_500_the_overview(self):
+        with (
+            mock.patch.object(catalog, "list_templates", return_value=[]),
+            mock.patch.object(
+                catalog, "fan_out",
+                return_value=([], ["oops", {"id": "native-x", "installed": True, "name": "X"}]),
+            ),
+        ):
+            data = catalog.catalog_overview()
+        self.assertEqual(data["native_count"], 1)
+        self.assertEqual(data["templates"][0]["id"], "native-x")
+
+
+class VanishedTemplateTests(unittest.TestCase):
+    def tearDown(self):
+        catalog._list_cache.update(t=0.0, sig="", items=None)
+
+    def test_a_vanished_template_does_not_500_the_store(self):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "ok.yml").write_text("---\nname: Ok\n---\nservices: {}\n")
+        (tmp / "gone.yml").write_text("---\nname: Gone\n---\nservices: {}\n")
+        real = catalog._parse_template
+
+        def parse(path):
+            if path.name == "gone.yml":
+                raise FileNotFoundError(path)
+            return real(path)
+
+        with (
+            mock.patch.object(catalog, "TEMPLATES", tmp),
+            mock.patch.object(catalog.catalog_remote, "remote_template_files", return_value=[]),
+            mock.patch.object(catalog, "_parse_template", side_effect=parse),
+        ):
+            items = catalog.list_templates(force=True)
+        ids = [row["id"] for row in items]
+        self.assertIn("ok", ids)
+        self.assertNotIn("gone", ids)
+
+    def test_an_unreadable_templates_dir_does_not_500_the_store(self):
+        tmp = Path(tempfile.mkdtemp())
+
+        def boom(self, pattern):
+            raise PermissionError("nope")
+
+        with (
+            mock.patch.object(catalog, "TEMPLATES", tmp),
+            mock.patch.object(catalog.catalog_remote, "remote_template_files", return_value=[]),
+            mock.patch.object(Path, "glob", boom),
+        ):
+            items = catalog.list_templates(force=True)
+        self.assertEqual(items, [])
 
 
 if __name__ == "__main__":

@@ -44,15 +44,24 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from hub.config import cfg
-from hub.errors import CODES, api_error
-from hub.http_guard import RedirectRefused, is_local_http_origin, no_redirect_opener
+from hub.errors import CODES, api_error, exc_detail
+from hub.http_guard import (
+    RedirectRefused,
+    _ip_from_host,
+    is_local_http_origin,
+    local_connect_peer,
+    no_redirect_opener,
+    pinned_no_redirect_opener,
+)
 from hub.jobs import run_watchdog
 from hub.paths import AGENTS_DIR
-from hub.util import cached_snapshot
+from hub.util import cached_snapshot, read_bytes_capped, strftime_now
 
 _OPENER = no_redirect_opener()
 
 _TTL = 30.0
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/ollama/status.
+_PLIST_CAP = 256 * 1024
 
 DEFAULT_URL = "http://127.0.0.1:11434"
 
@@ -117,13 +126,102 @@ CODES.setdefault("ollama.bad_label", (400, "invalid launchd label: {label}"))
 LABEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Inf in /api/tags was already dropped; YAML timestamps, ``!!binary`` names,
+    inf keys, and tuple-inf still leaked into GET /api/ollama/status.
+    A leftover ``\\ud800`` in a model name, generate ``response``, or chat
+    ``content`` still 500'd the same encoder.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _safe_int(raw, default: int = 0) -> int:
+    """``int(inf)`` OverflowError is not ValueError; leftover 1e400 used to 500."""
+    if isinstance(raw, bool) or raw in (None, ""):
+        return default
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif not isinstance(value, str):
+        return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 def _settings() -> dict:
-    return (cfg().get("settings") or {}).get("ollama") or {}
+    # Read through this module's ``cfg`` so tests can patch it.
+    # A leftover list/string settings (same shape that 500'd /api/ups) must
+    # not AttributeError on .get("ollama").
+    settings = cfg().get("settings")
+    raw = settings.get("ollama") if isinstance(settings, dict) else None
+    return raw if isinstance(raw, dict) else {}
 
 
 def configured_url() -> str:
     """The operator-edited URL, unvalidated."""
-    return str(_settings().get("url") or DEFAULT_URL).rstrip("/")
+    return _as_text(_settings().get("url")).strip().rstrip("/") or DEFAULT_URL
 
 
 def base_url() -> str:
@@ -168,9 +266,15 @@ def binary_path() -> str | None:
     """
     for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
         p = Path(prefix) / "ollama"
-        if p.is_file():
-            return str(p)
-    found = shutil.which("ollama")
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            continue
+    try:
+        found = shutil.which("ollama")
+    except (OSError, ValueError):
+        found = None
     return found if found and Path(found).is_absolute() else None
 
 
@@ -190,6 +294,17 @@ def _cli_env() -> dict:
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 
+def _ollama_open(req, timeout):
+    """Open *req* pinned to the first local IP the daemon URL resolved to."""
+    host = (urlsplit(base_url()).hostname or "").strip("[]")
+    peer = local_connect_peer(host) if host else None
+    if not peer:
+        raise ValueError("ollama url resolved off-LAN")
+    dest_ip = peer if _ip_from_host(peer) is not None else None
+    opener = pinned_no_redirect_opener(dest_ip) if dest_ip else _OPENER
+    return opener.open(req, timeout=timeout)
+
+
 def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT):
     """One request to the daemon; returns the parsed JSON body.
 
@@ -198,7 +313,15 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
     api_error, or an unreachable flag.  The body read is bounded.
     """
     url = base_url() + path
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    # Leftover inf in a generate/chat body used to send Infinity and 500
+    # under ``allow_nan=False``. RecursionError after ``_jsonable`` is not
+    # ValueError; leftover nested generate/chat used to 500 the request.
+    data = None
+    if payload is not None:
+        try:
+            data = json.dumps(_jsonable(payload), allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            raise ValueError("request is not json")
     req = urllib.request.Request(
         url,
         data=data,
@@ -206,15 +329,17 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
     try:
-        with _OPENER.open(req, timeout=timeout) as r:
+        with _ollama_open(req, timeout) as r:
             raw = r.read(MAX_BODY_BYTES)
     except RedirectRefused as e:
-        raise ValueError(str(e)) from e
+        # leftover ``str(e)`` RecursionError used to 500 GET /api/ollama/*.
+        raise ValueError(exc_detail(e) or "redirect refused") from e
     if len(raw) >= MAX_BODY_BYTES:
         raise ValueError("response body exceeds the parse cap")
     try:
         parsed = json.loads(raw) if raw else {}
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested daemon JSON is not ValueError.
         raise ValueError("response is not json")
     if not isinstance(parsed, dict):
         raise ValueError("response is not an object")
@@ -225,41 +350,56 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
 
 def _expires_forever(expires_at: str) -> bool:
     """keep_alive=-1 shows up as a far-future expires_at (year 2318 and alike)."""
-    m = re.match(r"(\d{4})-", expires_at or "")
+    text = expires_at if isinstance(expires_at, str) else ""
+    m = re.match(r"(\d{4})-", text)
     return bool(m) and int(m.group(1)) >= _FOREVER_YEAR
 
 
 def parse_tags(payload: dict) -> list[dict]:
     """Installed models from /api/tags, one flat dict per model."""
     out = []
-    for m in (payload or {}).get("models") or []:
+    models = (payload or {}).get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        models = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
         details = m.get("details") or {}
-        out.append({
-            "name": m.get("name") or m.get("model") or "",
-            "size": int(m.get("size") or 0),
-            "family": details.get("family") or "",
-            "parameter_size": details.get("parameter_size") or "",
-            "quantization": details.get("quantization_level") or "",
+        if not isinstance(details, dict):
+            details = {}
+        caps = m.get("capabilities")
+        out.append(_jsonable({
+            "name": _as_text(m.get("name")) or _as_text(m.get("model")),
+            "size": _safe_int(m.get("size")),
+            "family": _as_text(details.get("family")),
+            "parameter_size": _as_text(details.get("parameter_size")),
+            "quantization": _as_text(details.get("quantization_level")),
             "context_length": details.get("context_length"),
-            "capabilities": [str(c) for c in (m.get("capabilities") or [])],
-            "modified": m.get("modified_at") or "",
-        })
+            "capabilities": [_as_text(c) for c in caps] if isinstance(caps, list) else [],
+            "modified": _as_text(m.get("modified_at")),
+        }))
     return out
 
 
 def parse_ps(payload: dict) -> list[dict]:
     """Resident models from /api/ps, one flat dict per loaded model."""
     out = []
-    for m in (payload or {}).get("models") or []:
-        expires = m.get("expires_at") or ""
-        out.append({
-            "name": m.get("name") or m.get("model") or "",
-            "size": int(m.get("size") or 0),
-            "size_vram": int(m.get("size_vram") or 0),
+    models = (payload or {}).get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        models = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        expires = m.get("expires_at")
+        expires = expires if isinstance(expires, str) else ""
+        out.append(_jsonable({
+            "name": _as_text(m.get("name")) or _as_text(m.get("model")),
+            "size": _safe_int(m.get("size")),
+            "size_vram": _safe_int(m.get("size_vram")),
             "context_length": m.get("context_length"),
             "expires_at": expires,
             "forever": _expires_forever(expires),
-        })
+        }))
     return out
 
 
@@ -274,15 +414,52 @@ def _plist_label_if_ollama(path: Path) -> str | None:
     cannot read is not running ollama for us either.
     """
     try:
-        with open(path, "rb") as f:
-            pl = plistlib.load(f)
+        pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
     except Exception:
         return None
     if not isinstance(pl, dict):
         return None
     if "ollama" not in repr(pl).lower():
         return None
-    return str(pl.get("Label") or path.stem)
+    return _as_text(pl.get("Label")) or path.stem
+
+
+def origins_allow_lan(origins: str) -> bool:
+    """True when ``OLLAMA_ORIGINS`` would accept a LAN browser Origin header.
+
+    Setting the variable replaces Ollama's localhost defaults.  A list of only
+    ``chrome-extension://*`` (the previous plist) 403s Open WebUI and every
+    other LAN page that sends ``Origin: http://192.168…``.
+    """
+    text = _as_text(origins)
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if token == "*":
+            return True
+        low = token.lower()
+        if "192.168." in low or "10.10." in low or "10.0." in low:
+            return True
+    return False
+
+
+def _agent_origins(label: str | None = None) -> str:
+    """``OLLAMA_ORIGINS`` from the owning LaunchAgent, or empty."""
+    name = _as_text(label).strip()
+    if not name:
+        return ""
+    path = Path(AGENTS_DIR) / f"{name}.plist"
+    try:
+        pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
+    except Exception:
+        return ""
+    if not isinstance(pl, dict):
+        return ""
+    env = pl.get("EnvironmentVariables")
+    if not isinstance(env, dict):
+        return ""
+    return _as_text(env.get("OLLAMA_ORIGINS")).strip()
 
 
 def _candidate_labels() -> list[str]:
@@ -292,7 +469,12 @@ def _candidate_labels() -> list[str]:
     the UI warning is about distinct agents, not duplicate files.
     """
     seen: set[str] = set()
-    for path in AGENTS_DIR.glob("*.plist"):
+    try:
+        paths = list(AGENTS_DIR.glob("*.plist"))
+    except OSError:
+        # Unreadable LaunchAgents used to 500 GET /api/ollama/status.
+        paths = []
+    for path in paths:
         label = _plist_label_if_ollama(path)
         if label:
             seen.add(label)
@@ -316,7 +498,7 @@ def discover_label(
     *loaded* / *running* are injectable so the health path can pass empty sets
     instead of triggering a launchctl spawn.
     """
-    configured = str(_settings().get("label") or "").strip()
+    configured = _as_text(_settings().get("label")).strip()
     if configured:
         return configured
     candidates = _candidate_labels()
@@ -375,7 +557,7 @@ def _service_state(*, reachable: bool = False) -> dict:
         state["loaded"] = label in jobs.loaded
         pid = jobs.pid_for(label)
         state["running"] = pid is not None
-        state["pid"] = int(pid) if pid else None
+        state["pid"] = _safe_int(pid) if pid else None
     if reachable and not state["running"]:
         state["running"] = True
         state["loaded"] = True
@@ -394,21 +576,21 @@ def status() -> dict:
     models: list[dict] = []
     resident: list[dict] = []
     try:
-        version = str(_api("/api/version").get("version") or "")
+        version = _as_text(_api("/api/version").get("version"))
         reachable = True
     except Exception as e:
-        error = str(e)[:200]
+        error = exc_detail(e)
     if reachable:
         try:
             models = parse_tags(_api("/api/tags"))
             resident = parse_ps(_api("/api/ps"))
         except Exception as e:
             # Version answered but tags/ps failed: still "reachable", but say why.
-            error = str(e)[:200]
+            error = exc_detail(e)
     binary = binary_path()
     service = _service_state(reachable=reachable)
     snap = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "url": base_url(),
         "url_rejected": url_was_rejected(),
         "installed": bool(binary or service.get("label")),
@@ -421,7 +603,7 @@ def status() -> dict:
         "resident": resident,
         "pull": pull_state(),
     }
-    return snap
+    return _jsonable(snap)
 
 
 # ── model name validation ────────────────────────────────────────────────────
@@ -473,7 +655,7 @@ def start_pull(name: str) -> dict:
             raise api_error("ollama.pull_running", model=_pull.get("model") or "")
         _pull.update(
             running=True, rc=None, model=name,
-            started=time.strftime("%H:%M:%S"), finished=None,
+            started=strftime_now("%H:%M:%S"), finished=None,
             log=[f"$ ollama pull {name}"],
         )
 
@@ -485,7 +667,7 @@ def start_pull(name: str) -> dict:
             )
         finally:
             _pull["running"] = False
-            _pull["finished"] = time.strftime("%H:%M:%S")
+            _pull["finished"] = strftime_now("%H:%M:%S")
             status.invalidate()  # the tags list just changed
 
     threading.Thread(target=run, daemon=True, name="ollama-pull").start()
@@ -524,7 +706,7 @@ def unload_model(name: str) -> dict:
     try:
         _api("/api/generate", {"model": name, "keep_alive": 0}, timeout=UNLOAD_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.unload_failed", error=str(e)[:200])
+        raise api_error("ollama.unload_failed", error=exc_detail(e))
     status.invalidate()
     return {"ok": True, "model": name}
 
@@ -537,7 +719,7 @@ def quick_test(name: str, prompt: str, num_predict: int = 128) -> dict:
         raise api_error("ollama.prompt_required")
     if len(prompt) > MAX_PROMPT_CHARS:
         raise api_error("ollama.prompt_too_long", max=MAX_PROMPT_CHARS)
-    num_predict = max(1, min(int(num_predict or 128), MAX_NUM_PREDICT))
+    num_predict = max(1, min(_safe_int(num_predict, 128) or 128, MAX_NUM_PREDICT))
     payload = {
         "model": name,
         "prompt": prompt,
@@ -548,25 +730,24 @@ def quick_test(name: str, prompt: str, num_predict: int = 128) -> dict:
     try:
         resp = _api("/api/generate", payload, timeout=GENERATE_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.generate_failed", error=str(e)[:200])
+        raise api_error("ollama.generate_failed", error=exc_detail(e))
     elapsed = time.monotonic() - t0
-    eval_count = int(resp.get("eval_count") or 0)
-    eval_ns = int(resp.get("eval_duration") or 0)
-    return {
+    eval_count = _safe_int(resp.get("eval_count"))
+    return _jsonable({
         "ok": True,
         "model": name,
-        "response": str(resp.get("response") or ""),
+        "response": resp.get("response") or "",
         # Thinking-capable models (qwen3.5 and friends) spend their token
         # budget reasoning before they answer; with a capped num_predict the
         # whole budget can go there and ``response`` comes back empty.  The
         # trace is returned so the UI still has output to show — verified
         # against the real daemon, where "hi" @ num_predict=32 yielded
         # thinking-only output.
-        "thinking": str(resp.get("thinking") or ""),
+        "thinking": resp.get("thinking") or "",
         "duration_s": round(elapsed, 2),
         "eval_count": eval_count,
-        "tokens_per_s": round(eval_count / (eval_ns / 1e9), 1) if eval_ns else None,
-    }
+        "tokens_per_s": _tokens_per_s(resp),
+    })
 
 
 # ── in-panel chat ────────────────────────────────────────────────────────────
@@ -607,7 +788,7 @@ def normalize_chat_messages(messages) -> list[dict]:
 def _chat_payload(name: str, messages: list, num_predict: int, *, stream: bool) -> dict:
     name = validate_model_name(name)
     msgs = normalize_chat_messages(messages)
-    num_predict = max(1, min(int(num_predict or 128), MAX_NUM_PREDICT))
+    num_predict = max(1, min(_safe_int(num_predict, 128) or 128, MAX_NUM_PREDICT))
     return {
         "model": name,
         "messages": msgs,
@@ -617,9 +798,21 @@ def _chat_payload(name: str, messages: list, num_predict: int, *, stream: bool) 
 
 
 def _tokens_per_s(resp: dict) -> float | None:
-    eval_count = int(resp.get("eval_count") or 0)
-    eval_ns = int(resp.get("eval_duration") or 0)
-    return round(eval_count / (eval_ns / 1e9), 1) if eval_ns else None
+    # Same junk types as the eval_count field on chat(); int() used to 500.
+    # inf from JSON 1e400 is OverflowError, which is not ValueError.
+    # A finite leftover ``1e308`` / 400-digit integer still OverflowError's the
+    # division (or yields inf) and 500'd POST /api/ollama/test at encode time.
+    eval_count = _safe_int(resp.get("eval_count"))
+    eval_ns = _safe_int(resp.get("eval_duration"))
+    if not eval_ns:
+        return None
+    try:
+        rate = round(eval_count / (eval_ns / 1e9), 1)
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return None
+    if rate != rate or rate in (float("inf"), float("-inf")):
+        return None
+    return rate
 
 
 def chat(name: str, messages: list, num_predict: int = 128) -> dict:
@@ -634,41 +827,47 @@ def chat(name: str, messages: list, num_predict: int = 128) -> dict:
     try:
         resp = _api("/api/chat", payload, timeout=GENERATE_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.chat_failed", error=str(e)[:200])
-    msg = resp.get("message") or {}
-    eval_count = int(resp.get("eval_count") or 0)
-    return {
+        raise api_error("ollama.chat_failed", error=exc_detail(e))
+    msg = resp.get("message") if isinstance(resp.get("message"), dict) else {}
+    eval_count = _safe_int(resp.get("eval_count"))
+    return _jsonable({
         "ok": True,
         "model": payload["model"],
-        "role": str(msg.get("role") or "assistant"),
-        "content": str(msg.get("content") or ""),
-        "thinking": str(msg.get("thinking") or ""),
+        "role": msg.get("role") or "assistant",
+        "content": msg.get("content") or "",
+        "thinking": msg.get("thinking") or "",
         "duration_s": round(time.monotonic() - t0, 2),
         "eval_count": eval_count,
         "tokens_per_s": _tokens_per_s(resp),
-    }
+    })
 
 
 def _open_chat_http(payload: dict):
     """POST /api/chat and return the raw HTTPResponse (caller closes it)."""
     url = base_url() + "/api/chat"
+    try:
+        data = json.dumps(_jsonable(payload), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover nested chat body after _jsonable is not
+        # ValueError; POST /api/ollama/chat used to 500 before the HTTP open.
+        raise api_error("ollama.chat_failed", error="request is not json")
     req = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode("utf-8"),
+        data=data,
         method="POST",
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
     try:
-        return _OPENER.open(req, timeout=GENERATE_TIMEOUT)
+        return _ollama_open(req, GENERATE_TIMEOUT)
     except urllib.error.HTTPError as e:
         err = ""
         try:
             err = e.read(400).decode("utf-8", "replace")
         except Exception:
-            err = str(e)
-        raise api_error("ollama.chat_failed", error=(err or str(e))[:200])
+            err = exc_detail(e)
+        raise api_error("ollama.chat_failed", error=(err or exc_detail(e))[:200])
     except Exception as e:
-        raise api_error("ollama.chat_failed", error=str(e)[:200])
+        raise api_error("ollama.chat_failed", error=exc_detail(e))
 
 
 def start_chat_stream(name: str, messages: list, num_predict: int = 128):
@@ -737,7 +936,7 @@ def health_checks() -> list[dict]:
     port = urlsplit(base_url()).port or 11434
     row_name = f"Ollama local LLM API :{port}"
     try:
-        version = str(_api("/api/version").get("version") or "")
+        version = _as_text(_api("/api/version").get("version"))
         resident = parse_ps(_api("/api/ps"))
     except Exception as e:
         rows.append({
@@ -745,7 +944,7 @@ def health_checks() -> list[dict]:
             "name": row_name,
             "level": "warn",
             "ok": False,
-            "detail": f"API unreachable ({str(e)[:100]})",
+            "detail": f"API unreachable ({exc_detail(e, 100)})",
             "fix": f"launchctl kickstart -k gui/$(id -u)/{label}" if label
                    else "brew services start ollama",
         })
@@ -759,8 +958,24 @@ def health_checks() -> list[dict]:
         "detail": f"v{version} · {len(resident)} model(s) loaded ({names})",
         "fix": "",
     })
+    origins = _agent_origins(label)
+    if not origins_allow_lan(origins):
+        rows.append({
+            "id": "ollama_lan_origins",
+            "name": "Ollama LAN CORS",
+            "level": "warn",
+            "ok": False,
+            "detail": (
+                "OLLAMA_ORIGINS does not allow LAN browser origins; "
+                "pages that send Origin: http://192.168… get 403"
+            ),
+            "fix": (
+                "Add * (keep chrome-extension://* for translation add-ons) to "
+                f"OLLAMA_ORIGINS on {label or 'the Ollama LaunchAgent'} and kickstart it"
+            ),
+        })
     return rows
 
 
 if __name__ == "__main__":
-    print(json.dumps(status(), ensure_ascii=False, indent=2))
+    print(json.dumps(status(), ensure_ascii=False, indent=2, allow_nan=False))

@@ -95,6 +95,43 @@ class BootstrapCannotTruncateTests(unittest.TestCase):
         self.assertTrue(fresh.is_file(), "a fresh install got no config file")
         self.assertTrue(fresh.read_text().strip(), "the created config is empty")
 
+    def test_a_non_mapping_yaml_does_not_500_every_route(self):
+        """A list or scalar used to be cached as-is; the next cfg().get 500'd."""
+        self.path.write_text("- just\n- a\n- list\n")
+        with patch.object(config, "YAML_PATH", self.path), \
+             patch.object(config, "_cfg", {"mtime": None, "data": {}}):
+            data = config.cfg()
+        self.assertIsInstance(data, dict)
+        self.assertEqual(data.get("apps"), None)
+
+    def test_binary_junk_does_not_500_every_route(self):
+        """``read_text()`` raises UnicodeDecodeError, which is not YAMLError."""
+        self.path.write_bytes(b"\x00\xff\xfe{" + b"\x80" * 32)
+        with patch.object(config, "YAML_PATH", self.path), \
+             patch.object(config, "_cfg", {"mtime": None, "data": {}}):
+            data = config.cfg()
+        self.assertEqual(data, {})
+
+    def test_non_object_overrides_do_not_500_a_service_row(self):
+        self.path.write_text("overrides: [oops]\nsettings: []\n")
+        with patch.object(config, "YAML_PATH", self.path), \
+             patch.object(config, "_cfg", {"mtime": None, "data": {}}):
+            data = config.cfg()
+            self.assertEqual(data.get("overrides"), {})
+            self.assertEqual(data.get("settings"), {})
+            self.assertEqual(config.override("any"), {})
+            self.assertEqual(config.panel_locale(), config.DEFAULT_UI_LOCALE)
+            # Lifespan and /api/status both do ``settings.get(...)``.
+            self.assertIsNone(data["settings"].get("metrics_interval"))
+
+    def test_non_list_apps_do_not_500_discovery(self):
+        self.path.write_text("apps: {id: broken}\nstacks: nope\n")
+        with patch.object(config, "YAML_PATH", self.path), \
+             patch.object(config, "_cfg", {"mtime": None, "data": {}}):
+            data = config.cfg()
+        self.assertEqual(data.get("apps"), [])
+        self.assertEqual(data.get("stacks"), [])
+
     def test_a_created_config_is_not_readable_by_other_users(self):
         """It holds the admin password hash from the moment setup runs."""
         fresh = Path(self.dir.name) / "modes.yaml"

@@ -32,7 +32,7 @@ from typing import Any
 # registered, so a lazily-typed WebSocket would fail at startup, not import.
 from fastapi import WebSocket
 
-from hub.config import cfg
+from hub.config import settings_section
 
 #: A console ticket only has to survive the round trip from the REST response to
 #: the WebSocket upgrade the browser opens immediately afterwards.
@@ -103,7 +103,7 @@ def console_id_for_utm(vm_uuid: str) -> str:
 
 
 def _allowlist() -> dict[str, Any]:
-    settings = (cfg().get("settings") or {}).get("vm_console") or {}
+    settings = settings_section("vm_console")
     allowlist = settings.get("allowlist")
     return allowlist if isinstance(allowlist, dict) else {}
 
@@ -116,6 +116,18 @@ def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
     return None
 
 
+def _as_host_text(value) -> str:
+    """Allowlist host as text.  YAML ``!!binary`` is bytes; leftover numbers are not hosts."""
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
 def _is_loopback(host: str) -> bool:
     """True only when *host* can exclusively resolve to a loopback address.
 
@@ -123,16 +135,22 @@ def _is_loopback(host: str) -> bool:
     the loopback interface (or to a mix of addresses) is rejected, which also
     rules out DNS-rebinding style configuration mistakes.
     """
-    text = (host or "").strip()
-    if not text:
+    text = _as_host_text(host)
+    # Control characters (NUL) used to truncate ``127.0.0.1\\x00evil`` at the
+    # resolver.  A leftover 10k host used to UnicodeError ``getaddrinfo`` and
+    # 500 GET /api/vms via capability().  YAML ``!!binary`` host used to
+    # TypeError ``ord()`` on bytes.
+    if not text or len(text) > 253:
+        return False
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
         return False
     try:
         return ipaddress.ip_address(text).is_loopback
-    except ValueError:
+    except (TypeError, ValueError, OverflowError):
         pass
     try:
         infos = socket.getaddrinfo(text, None, proto=socket.IPPROTO_TCP)
-    except OSError:
+    except (OSError, TypeError, ValueError, UnicodeError, OverflowError):
         return False
     if not infos:
         return False
@@ -140,14 +158,14 @@ def _is_loopback(host: str) -> bool:
         try:
             if not ipaddress.ip_address(info[4][0]).is_loopback:
                 return False
-        except ValueError:
+        except (TypeError, ValueError, IndexError, OverflowError):
             return False
     return True
 
 
 def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTarget | None:
     """Resolve a console_id to its configured loopback endpoint, or None."""
-    text = (console_id or "").strip()
+    text = console_id.strip() if isinstance(console_id, str) else ""
     if not _CONSOLE_ID_RE.match(text):
         return None
     uuid = text.split(":", 1)[1]
@@ -159,10 +177,18 @@ def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTar
     protocol = str(entry.get("protocol") or "vnc").strip().lower()
     if protocol != "vnc":
         return None
-    host = str(entry.get("host") or "127.0.0.1").strip()
+    raw_host = entry.get("host")
+    host = "127.0.0.1" if raw_host in (None, "") else _as_host_text(raw_host)
+    if not host:
+        return None
+    raw_port = entry.get("port")
+    # Bool is an int (``True`` → port 1).  JSON ``1e309`` / YAML ``port: .inf``
+    # OverflowError ``int(inf)``; a 400-digit leftover int is not a TCP port.
+    if isinstance(raw_port, bool):
+        return None
     try:
-        port = int(entry.get("port") or 0)
-    except (TypeError, ValueError):
+        port = int(raw_port or 0)
+    except (TypeError, ValueError, OverflowError):
         return None
     if not 1 <= port <= 65535 or not _is_loopback(host):
         return None
@@ -198,7 +224,20 @@ def capability(*, backend: str, vm_uuid: str, running: bool) -> dict[str, Any]:
 
 
 def _digest(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    # Cookie / query leftovers can carry ``\\ud800``; strict UTF-8 used to 500
+    # POST /api/vms/.../console/session and the WebSocket upgrade.
+    return hashlib.sha256(str(value).encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _now() -> float:
+    """Finite wall clock. Leftover ``time.time() = inf`` used to poison ticket expiry."""
+    try:
+        n = float(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
+        return 0.0
+    return n
 
 
 def _purge_expired_locked(now: float) -> None:
@@ -209,7 +248,7 @@ def _purge_expired_locked(now: float) -> None:
 def issue_ticket(target: ConsoleTarget, *, user: str, session_token: str) -> dict[str, Any]:
     """Mint a single-use ticket bound to this admin session and VM."""
     ticket = secrets.token_urlsafe(32)
-    now = time.time()
+    now = _now()
     record = _Ticket(
         digest=_digest(ticket),
         console_id=target.console_id,
@@ -234,7 +273,7 @@ def consume_ticket(ticket: str | None, *, console_id: str, user: str, session_to
     if not ticket:
         return None
     digest = _digest(ticket)
-    now = time.time()
+    now = _now()
     with _lock:
         _purge_expired_locked(now)
         record = _tickets.get(digest)
@@ -253,7 +292,7 @@ def consume_ticket(ticket: str | None, *, console_id: str, user: str, session_to
 
 def allow_ticket_request(user: str) -> bool:
     """Throttle ticket minting so a stolen page cannot farm console URLs."""
-    now = time.time()
+    now = _now()
     with _lock:
         recent = [t for t in _ticket_requests.get(user, []) if now - t < TICKET_RATE_WINDOW]
         if len(recent) >= TICKET_RATE_LIMIT:
@@ -427,7 +466,7 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
 
         await websocket.accept()
         terminal_svc._audit({
-            "ts": int(time.time()), "event": "vm_console_start",
+            "ts": terminal_svc._now(), "event": "vm_console_start",
             "session": session.session_id, "console": target.console_id,
             "who": user, "view_only": bool(ticket.view_only),
         })
@@ -444,7 +483,7 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
                 pass
         release_session(session.session_id)
         terminal_svc._audit({
-            "ts": int(time.time()), "event": "vm_console_end",
+            "ts": terminal_svc._now(), "event": "vm_console_end",
             "session": session.session_id, "console": target.console_id,
             "who": user, "reason": reason,
             "duration_ms": int((time.monotonic() - started) * 1000),

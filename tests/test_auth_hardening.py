@@ -64,6 +64,10 @@ class AuthHardeningTests(unittest.TestCase):
                 self.assertTrue(auth.local_client_authenticated(request(headers=headers)))
                 self.assertFalse(auth.local_client_authenticated(request(client="192.0.2.4", headers=headers)))
                 self.assertFalse(auth.local_client_authenticated(request(headers=[])))
+                # A tunnel hop is also loopback at the TCP peer.  The token
+                # must not unlock /api/action for a remote visitor.
+                proxied = headers + [(b"cf-connecting-ip", b"203.0.113.9")]
+                self.assertFalse(auth.local_client_authenticated(request(headers=proxied)))
 
     def test_member_browser_session_is_limited_to_safe_read_routes(self):
         allowed = [
@@ -303,7 +307,9 @@ class AuthHardeningTests(unittest.TestCase):
                 self.assertFalse(auth.complete_setup("wrong", "password-123", "admin"))
                 self.assertTrue(token_file.exists())
                 self.assertTrue(auth.complete_setup("a" * 43, "password-123", "admin"))
-                set_password.assert_called_once_with("password-123", "admin", enable=True)
+                set_password.assert_called_once_with(
+                    "password-123", "admin", enable=True, only_if_unclaimed=True
+                )
                 self.assertFalse(token_file.exists())
 
 

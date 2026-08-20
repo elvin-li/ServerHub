@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -46,6 +47,177 @@ class PhotosHubStatus(unittest.TestCase):
         self.assertFalse(snap["gates"]["originals_ready"])
         self.assertEqual(photoshub_svc._delete_gated(), True)
 
+    def test_non_finite_status_json_does_not_500_the_page(self):
+        """``1e400`` is valid JSON and becomes inf; Starlette refuses to encode it."""
+        self._install_photoctl()
+        (self.hub / "state" / "originals_status.json").write_text(
+            '{"gate_ready": true, "n": 1e400}', encoding="utf-8",
+        )
+        (self.hub / "state" / "inventory_report.json").write_text(
+            '{"missing_elsewhere": 1e400}', encoding="utf-8",
+        )
+        (self.hub / "config" / "config.json").write_text(
+            '{"gates": {"min_local_original_pct": 1e400}}', encoding="utf-8",
+        )
+        snap = photoshub_svc.status()
+        cfg = photoshub_svc.public_config()
+        json.dumps(snap, allow_nan=False)
+        json.dumps(cfg, allow_nan=False)
+        self.assertEqual(snap["inventory"]["missing_elsewhere"], 0)
+        self.assertEqual(cfg["gates"]["min_local_original_pct"], 99.0)
+        self.assertTrue(snap["gates"]["originals_ready"])
+
+    def test_inventory_inf_does_not_500(self):
+        self.assertEqual(
+            photoshub_svc._inventory_public({"missing_elsewhere": float("inf")}),
+            {"missing_elsewhere": 0},
+        )
+
+    def test_leftover_inf_bytes_and_yaml_dates_do_not_500_config_write(self):
+        """``_write_cfg`` used allow_nan=True; inf keys / bytes / dates 500'd PATCH."""
+        self._install_photoctl()
+        photoshub_svc._write_cfg({
+            float("inf"): 1,
+            "extra": float("nan"),
+            "when": datetime(2026, 8, 19, 12, 0, 0),
+            "day": date(2026, 8, 19),
+            "blob": b"hello",
+            "load": (float("inf"), 1.0),
+            "people": {"yuanbao": {"name": "元宝"}},
+        })
+        stored = json.loads((self.hub / "config" / "config.json").read_text(encoding="utf-8"))
+        json.dumps(stored, allow_nan=False)
+        self.assertEqual(stored["blob"], "hello")
+        self.assertEqual(stored["load"], [None, 1.0])
+        self.assertTrue(str(stored["when"]).startswith("2026-08-19"))
+        snap = photoshub_svc.public_config()
+        json.dumps(snap, allow_nan=False)
+        self.assertEqual(snap["people"]["yuanbao"]["name"], "元宝")
+
+    def test_people_leftover_inf_and_bytes_do_not_500(self):
+        got = photoshub_svc._people_public({
+            "people": {"yuanbao": {"name": float("inf"), "birthday": b"2022-02"}},
+        })
+        json.dumps(got, allow_nan=False)
+        self.assertEqual(got["yuanbao"]["name"], "")
+        self.assertEqual(got["yuanbao"]["birthday"], "2022-02")
+
+    def test_non_object_nested_config_does_not_500_the_page(self):
+        """``public_config`` already guarded; ``status()`` still did ``or {}``."""
+        self._install_photoctl()
+        (self.hub / "config" / "config.json").write_text(
+            json.dumps({
+                "immich": [],
+                "gates": "nope",
+                "bridge": None,
+                "panel": ["url"],
+                "people": [],
+            }),
+            encoding="utf-8",
+        )
+        (self.hub / "config" / "immich_api_key").write_bytes(b"\xff\xfe not utf-8")
+        snap = photoshub_svc.status()
+        self.assertTrue(snap["photoshub_ok"])
+        self.assertEqual(snap["links"]["immich"], "")
+        self.assertEqual(snap["links"]["panel"], "")
+        self.assertEqual(photoshub_svc.public_config()["immich"]["has_api_key"], False)
+        self.assertTrue(photoshub_svc._delete_gated())
+
+    def test_huge_api_key_file_does_not_oom_status(self):
+        """``read_text()`` of a leftover multi-MB key file used to OOM GET /api/photoshub."""
+        self._install_photoctl()
+        (self.hub / "config" / "immich_api_key").write_text("k" * 200_000, encoding="utf-8")
+        snap = photoshub_svc.status()
+        json.dumps(snap, allow_nan=False)
+        self.assertLessEqual(len(photoshub_svc._immich_key()), 4096)
+
+    def test_run_action_home_runtimeerror_does_not_500(self):
+        """``Path.home()`` RuntimeError used to 500 POST /api/photoshub/action."""
+        self._install_photoctl()
+        with (
+            mock.patch.object(Path, "home", side_effect=RuntimeError("HOME")),
+            mock.patch.object(photoshub_svc, "run_watchdog", return_value=0),
+            mock.patch.object(photoshub_svc, "status", return_value={"ok": True}),
+        ):
+            out = photoshub_svc.run_action("status")
+        json.dumps(out, allow_nan=False)
+        self.assertTrue(out["ok"])
+
+    def test_status_inf_clock_isoformat_does_not_500(self):
+        """datetime.fromtimestamp OverflowError on leftover inf used to 500 GET /api/photoshub."""
+        self._install_photoctl()
+        with mock.patch.object(photoshub_svc.time, "time", return_value=float("inf")):
+            snap = photoshub_svc.status()
+        json.dumps(snap, allow_nan=False)
+        self.assertIsNone(snap["ts"])
+
+    def test_status_isoformat_inf_does_not_500_ts(self):
+        """A leftover ``isoformat()`` returning inf used to 500 GET /api/photoshub ts."""
+        self._install_photoctl()
+        with mock.patch.object(photoshub_svc, "_iso_now", return_value=float("inf")):
+            snap = photoshub_svc.status()
+        json.dumps(snap, allow_nan=False)
+        self.assertIsNone(snap["ts"])
+
+    def test_run_action_inf_clock_isoformat_does_not_500(self):
+        """datetime.fromtimestamp OverflowError on leftover inf used to 500 POST /api/photoshub/action."""
+        self._install_photoctl()
+        with (
+            mock.patch.object(photoshub_svc.time, "time", return_value=float("inf")),
+            mock.patch.object(photoshub_svc, "run_watchdog", return_value=0),
+        ):
+            out = photoshub_svc.run_action("status")
+        json.dumps(out, allow_nan=False)
+        self.assertIsNone(out["started"])
+        self.assertTrue(out["ok"])
+
+    def test_run_action_isoformat_inf_does_not_500_started(self):
+        """A leftover ``isoformat()`` returning inf used to 500 POST /api/photoshub/action."""
+        self._install_photoctl()
+        with (
+            mock.patch.object(photoshub_svc, "_iso_now", return_value=float("inf")),
+            mock.patch.object(photoshub_svc, "run_watchdog", return_value=0),
+            mock.patch.object(photoshub_svc, "status", return_value={"ok": True}),
+        ):
+            out = photoshub_svc.run_action("status")
+        json.dumps(out, allow_nan=False)
+        self.assertIsNone(out["started"])
+
+    def test_non_string_album_titles_do_not_500(self):
+        self._install_photoctl()
+        (self.hub / "config" / "config.json").write_text(
+            json.dumps({"immich": {
+                "album_pending_delete": ["Pending Delete"],
+                "album_yuanbao": 3,
+                "album_erbao": {"name": "x"},
+            }}),
+            encoding="utf-8",
+        )
+        albums = photoshub_svc.status()["albums"]
+        self.assertEqual(albums["pending_delete"], "Pending Delete")
+        self.assertEqual(albums["yuanbao"], "")
+        self.assertEqual(albums["erbao"], "")
+        self.assertEqual(photoshub_svc._pending_album_name(), "Pending Delete")
+
+    def test_pending_assets_skip_non_objects(self):
+        self._install_photoctl()
+        (self.hub / "config" / "config.json").write_text(
+            json.dumps({"immich": {"album_pending_delete": "Pending Delete"}}),
+            encoding="utf-8",
+        )
+        (self.hub / "config" / "immich_api_key").write_text("secret", encoding="utf-8")
+        with mock.patch.object(
+            photoshub_svc, "_immich_api",
+            side_effect=[
+                [{"albumName": "Pending Delete", "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}],
+                {"assets": ["oops", {"id": "11111111-2222-3333-4444-555555555555", "type": "IMAGE"}]},
+            ],
+        ):
+            pending = photoshub_svc.pending_delete_assets()
+        self.assertEqual(pending["count"], 2)
+        self.assertEqual(len(pending["assets"]), 1)
+        self.assertEqual(pending["assets"][0]["id"], "11111111-2222-3333-4444-555555555555")
+
     def test_missing_tree_is_not_ok(self):
         snap = photoshub_svc.status()
         self.assertFalse(snap["photoshub_ok"])
@@ -75,6 +247,15 @@ class PhotosHubStatus(unittest.TestCase):
         )
         snap = photoshub_svc.status()
         self.assertEqual(snap["links"]["immich"], "")
+
+    def test_write_cfg_dumps_recursion_does_not_500(self):
+        """json.dumps RecursionError is not OSError; PhotosHub save used to 500."""
+        dest = self.hub / "config" / "config.json"
+        if dest.exists():
+            dest.unlink()
+        with mock.patch.object(photoshub_svc.json, "dumps", side_effect=RecursionError):
+            photoshub_svc._write_cfg({"ok": True})
+        self.assertFalse(dest.exists())
 
     def test_action_without_tree_is_coded(self):
         with self.assertRaises(HTTPException) as raised:
@@ -198,7 +379,7 @@ class PhotosHubStatus(unittest.TestCase):
             encoding="utf-8",
         )
         with mock.patch.object(
-            photoshub_svc._IMMICH_OPENER, "open",
+            photoshub_svc, "_immich_open",
             side_effect=photoshub_svc._ImmichRedirect("redirect to http://evil/ refused"),
         ):
             with self.assertRaises(HTTPException) as raised:
@@ -334,6 +515,69 @@ class PhotosHubStatus(unittest.TestCase):
             photoshub_svc.recent_logs("passwd")
         self.assertEqual(raised.exception.detail["code"], "photoshub.bad_log")
 
+    def test_unreadable_log_dir_does_not_500(self):
+        self._install_photoctl()
+
+        def boom(self, pattern):
+            raise PermissionError("nope")
+
+        with mock.patch.object(Path, "glob", boom):
+            snap = photoshub_svc.recent_logs("bridge")
+        self.assertEqual(snap["lines"], [])
+        self.assertIsNone(snap["path"])
+
+    def test_tree_stat_eio_does_not_500_the_page(self):
+        """``Path.is_dir`` EIO used to 500 GET /api/photoshub/status."""
+        self._install_photoctl()
+        with mock.patch.object(Path, "is_dir", side_effect=OSError(5, "I/O error")):
+            snap = photoshub_svc.status()
+        json.dumps(snap, allow_nan=False)
+        self.assertFalse(snap["photoshub_ok"])
+
+    def test_status_json_stat_eio_does_not_500_the_page(self):
+        """``originals_status.json`` ``exists()`` EIO used to 500 the PhotosHub page."""
+        self._install_photoctl()
+        (self.hub / "state" / "originals_status.json").write_text(
+            '{"gate_ready": true}', encoding="utf-8",
+        )
+        with mock.patch.object(Path, "exists", side_effect=OSError(5, "I/O error")):
+            snap = photoshub_svc.status()
+        json.dumps(snap, allow_nan=False)
+        self.assertTrue(snap["photoshub_ok"])
+        self.assertFalse(snap["gates"]["originals_ready"])
+
+    def test_handbook_stat_eio_does_not_500_the_page(self):
+        self._install_photoctl()
+        real_is_file = Path.is_file
+
+        def is_file(self):
+            if self.suffix == ".md":
+                raise OSError(5, "I/O error")
+            return real_is_file(self)
+
+        with mock.patch.object(Path, "is_file", is_file):
+            snap = photoshub_svc.status()
+        json.dumps(snap, allow_nan=False)
+        self.assertTrue(snap["photoshub_ok"])
+        self.assertEqual(snap["links"]["handbook"], "")
+
+    def test_log_stat_eio_does_not_500(self):
+        """One log file ``exists()`` EIO used to 500 GET /api/photoshub/logs/bridge."""
+        self._install_photoctl()
+        (self.hub / "logs").mkdir()
+        (self.hub / "logs" / "bridge-1.log").write_text("ok\n", encoding="utf-8")
+        real_exists = Path.exists
+
+        def exists(self):
+            if self.suffix == ".log":
+                raise OSError(5, "I/O error")
+            return real_exists(self)
+
+        with mock.patch.object(Path, "exists", exists):
+            snap = photoshub_svc.recent_logs("bridge")
+        self.assertEqual(snap["lines"], [])
+        self.assertIsNone(snap["path"])
+
 
 class PhotosHubThumbnails(PhotosHubStatus):
     """The preview proxy that lets the review grid show pictures.
@@ -353,7 +597,7 @@ class PhotosHubThumbnails(PhotosHubStatus):
         resp.__enter__.return_value = resp
         resp.__exit__.return_value = False
         return mock.patch.object(
-            photoshub_svc._IMMICH_OPENER, "open", return_value=resp
+            photoshub_svc, "_immich_open", return_value=resp
         )
 
     def _with_key(self):
@@ -378,7 +622,7 @@ class PhotosHubThumbnails(PhotosHubStatus):
     def test_a_bad_asset_id_never_reaches_immich(self):
         self._install_photoctl()
         self._with_key()
-        with mock.patch.object(photoshub_svc._IMMICH_OPENER, "open") as opener:
+        with mock.patch.object(photoshub_svc, "_immich_open") as opener:
             for bad in ("../../etc/passwd", "a" * 100, "id with spaces", ""):
                 with self.assertRaises(HTTPException) as raised:
                     photoshub_svc.asset_thumbnail(bad)
@@ -422,6 +666,60 @@ class PhotosHubThumbnails(PhotosHubStatus):
         with self._serve(huge, "application/json"):
             with self.assertRaises(HTTPException) as raised:
                 photoshub_svc._immich_api("GET", "/api/albums")
+        self.assertEqual(raised.exception.detail["code"], "photoshub.immich_response")
+
+    def test_immich_nested_json_does_not_500(self):
+        """json.loads RecursionError is not JSONDecodeError; leftover nested
+        Immich JSON used to 500 GET /api/photoshub/pending-delete."""
+        self._install_photoctl()
+        self._with_key()
+        with self._serve(b'{"ok": true}', "application/json"):
+            with mock.patch.object(
+                photoshub_svc.json, "loads", side_effect=RecursionError,
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    photoshub_svc._immich_api("GET", "/api/albums")
+        self.assertEqual(raised.exception.detail["code"], "photoshub.immich_response")
+
+    def test_immich_body_leftover_inf_does_not_500(self):
+        """``json.dumps(body)`` without allow_nan=False used to send Infinity to Immich."""
+        self._install_photoctl()
+        self._with_key()
+        captured = []
+
+        class _Resp:
+            def read(self, n):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_open(req, timeout=None):
+            captured.append(req.data)
+            return _Resp()
+
+        with mock.patch.object(photoshub_svc, "_immich_open", side_effect=fake_open):
+            photoshub_svc._immich_api("DELETE", "/api/albums/x/assets", {
+                "ids": ["ok"],
+                "n": float("inf"),
+                "blob": b"hello",
+            })
+        raw = json.loads(captured[0])
+        json.dumps(raw, allow_nan=False)
+        self.assertEqual(raw["ids"], ["ok"])
+        self.assertIsNone(raw["n"])
+        self.assertEqual(raw["blob"], "hello")
+
+    def test_immich_body_dumps_recursion_does_not_500(self):
+        """json.dumps RecursionError is not ValueError; leftover nested Immich body used to 500."""
+        self._install_photoctl()
+        self._with_key()
+        with mock.patch.object(photoshub_svc.json, "dumps", side_effect=RecursionError):
+            with self.assertRaises(HTTPException) as raised:
+                photoshub_svc._immich_api("DELETE", "/api/albums/x/assets", {"ids": ["ok"]})
         self.assertEqual(raised.exception.detail["code"], "photoshub.immich_response")
 
     def test_every_thumb_failure_code_is_registered(self):
@@ -510,3 +808,57 @@ class PhotosHubAlbumJson(unittest.TestCase):
             got = photoshub_svc.pending_delete_assets()
         self.assertEqual(got["assets"], [])
         self.assertEqual(got["count"], 0)
+
+    def test_infinite_asset_fields_do_not_500(self):
+        """Immich JSON ``1e400`` used to 500 GET /api/photoshub/pending-delete."""
+        with mock.patch.object(photoshub_svc, "installed", return_value=True), \
+             mock.patch.object(photoshub_svc, "_pending_album_id", return_value="a" * 32), \
+             mock.patch.object(photoshub_svc, "_immich_api", return_value={
+                 "assets": [{
+                     "id": "11111111-2222-3333-4444-555555555555",
+                     "originalFileName": float("inf"),
+                     "localDateTime": float("nan"),
+                     "isArchived": float("inf"),
+                     "type": "IMAGE",
+                     "thumbHash": float("inf"),
+                 }],
+             }), \
+             mock.patch.object(photoshub_svc, "_delete_gated", return_value=False):
+            got = photoshub_svc.pending_delete_assets()
+        json.dumps(got, allow_nan=False)
+        self.assertEqual(got["count"], 1)
+        self.assertEqual(got["assets"][0]["id"], "11111111-2222-3333-4444-555555555555")
+
+    def test_pending_bytes_and_yaml_dates_do_not_500(self):
+        """``_jsonable`` used to walk dict/list/float only; Immich leftovers leaked."""
+        when = datetime(2026, 8, 19, 12, 0, 0)
+        with mock.patch.object(photoshub_svc, "installed", return_value=True), \
+             mock.patch.object(photoshub_svc, "_pending_album_id", return_value="a" * 32), \
+             mock.patch.object(photoshub_svc, "_immich_api", return_value={
+                 "assets": [{
+                     "id": "11111111-2222-3333-4444-555555555555",
+                     "originalFileName": b"x.jpg",
+                     "localDateTime": when,
+                     "type": b"IMAGE",
+                     "thumbHash": b"abcd",
+                 }],
+             }), \
+             mock.patch.object(photoshub_svc, "_delete_gated", return_value=False):
+            got = photoshub_svc.pending_delete_assets()
+        json.dumps(got, allow_nan=False)
+        asset = got["assets"][0]
+        self.assertEqual(asset["originalFileName"], "x.jpg")
+        self.assertEqual(asset["localDateTime"], when.isoformat())
+        self.assertEqual(asset["type"], "IMAGE")
+
+    def test_isoformat_inf_does_not_500_jsonable(self):
+        """A leftover ``isoformat()`` returning inf used to 500 GET /api/photoshub."""
+        class _Stamp:
+            def isoformat(self):
+                return float("inf")
+
+        self.assertIsNone(photoshub_svc._jsonable(_Stamp()))
+        out = photoshub_svc._jsonable({"localDateTime": _Stamp(), "id": "ok"})
+        json.dumps(out, allow_nan=False)
+        self.assertIsNone(out["localDateTime"])
+        self.assertEqual(out["id"], "ok")

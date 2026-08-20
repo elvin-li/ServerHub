@@ -1,15 +1,21 @@
 """Shared subprocess / network helpers."""
 from __future__ import annotations
 
+import errno
 import functools
 import inspect
 import logging
+import os
 import socket
 import subprocess
+import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, TypeVar
+
+from hub.cli_args import as_argv
 
 log = logging.getLogger("serverhub.util")
 
@@ -115,10 +121,23 @@ class LazyPool:
             return self._ex
 
     def submit(self, fn, /, *args, **kwargs):
-        return self._executor().submit(fn, *args, **kwargs)
+        try:
+            return self._executor().submit(fn, *args, **kwargs)
+        except RuntimeError:
+            # Executor shut down between lookup and submit (reload / lifespan).
+            # Inline so GET /api/status cannot 500 while workers drain.
+            fut = Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
 
     def map(self, fn, items):
-        return self._executor().map(fn, items)
+        try:
+            return self._executor().map(fn, items)
+        except RuntimeError:
+            return [fn(item) for item in items]
 
     def shutdown(self, wait: bool = False) -> None:
         with self._guard:
@@ -303,23 +322,97 @@ def tail_file_lines(path, n: int, *, max_bytes: int = 256 * 1024) -> list[str]:
     file — a PhotosHub backup log or a LaunchAgent stdout that grew for months
     — just to show a 40-line tail.  A prefix byte is dropped so a mid-line
     seek does not return a torn first row.
+
+    ``open(path, "rb")`` followed a last-component symlink, so a log path
+    swapped between the denylist check and the read would leak whatever it
+    pointed at.  Resolve first (so a legitimate rotation link still works),
+    then ``O_NOFOLLOW`` so a swap of the resolved name cannot be followed.
     """
     n = max(1, int(n))
     cap = max(1, int(max_bytes))
-    with open(path, "rb") as fh:
-        fh.seek(0, 2)
-        size = fh.tell()
-        take = min(size, cap)
-        if take <= 0:
-            return []
-        fh.seek(size - take)
-        data = fh.read(take)
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        target = path
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(target, flags)
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            fh.seek(0, 2)
+            size = fh.tell()
+            take = min(size, cap)
+            if take <= 0:
+                return []
+            fh.seek(size - take)
+            data = fh.read(take)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     text = data.decode("utf-8", errors="replace")
     if take < size:
         nl = text.find("\n")
         if nl != -1:
             text = text[nl + 1 :]
     return text.splitlines()[-n:]
+
+
+def read_text_capped(
+    path, max_bytes: int, *, encoding: str = "utf-8", errors: str = "strict"
+) -> str:
+    """Read *path*, refusing leftover multi-MB junk that used to OOM handlers.
+
+    ``Path.read_text()`` loads the whole file.  A leftover pidfile, key, conf,
+    or JSON store that grew to megabytes used to OOM the request that opened
+    it.  Raises ``OSError`` (including ``FileNotFoundError``) like
+    ``Path.read_text``, plus ``OSError(EFBIG)`` when the file exceeds
+    *max_bytes* so callers reuse their existing OSError fallback.
+    """
+    cap = max(1, int(max_bytes))
+    try:
+        p = path if isinstance(path, Path) else Path(path)
+        with p.open(encoding=encoding, errors=errors) as fh:
+            data = fh.read(cap + 1)
+    except UnicodeEncodeError as exc:
+        # Leftover ``\\ud800`` in the name is not OSError; open() used to
+        # 500 callers that only catch OSError.
+        raise OSError(errno.EINVAL, str(exc), str(path)) from exc
+    except ValueError as exc:
+        if isinstance(exc, UnicodeError):
+            raise
+        # Leftover NUL in the name.
+        raise OSError(errno.EINVAL, str(exc), str(path)) from exc
+    if len(data) > cap:
+        raise OSError(errno.EFBIG, "file exceeds read cap", str(p))
+    return data
+
+
+def read_bytes_capped(path, max_bytes: int) -> bytes:
+    """Read *path* as bytes, refusing leftover multi-MB junk that used to OOM.
+
+    ``Path.read_bytes()`` / ``open(..., "rb").read()`` loads the whole file.
+    A leftover LaunchAgent plist that grew to megabytes used to OOM the
+    request that parsed it.  Raises ``OSError`` (including
+    ``FileNotFoundError``) like ``Path.read_bytes``, plus ``OSError(EFBIG)``
+    when the file exceeds *max_bytes* so callers reuse their existing
+    OSError fallback.
+    """
+    cap = max(1, int(max_bytes))
+    try:
+        p = path if isinstance(path, Path) else Path(path)
+        with p.open("rb") as fh:
+            data = fh.read(cap + 1)
+    except UnicodeEncodeError as exc:
+        raise OSError(errno.EINVAL, str(exc), str(path)) from exc
+    except ValueError as exc:
+        if isinstance(exc, UnicodeError):
+            raise
+        raise OSError(errno.EINVAL, str(exc), str(path)) from exc
+    if len(data) > cap:
+        raise OSError(errno.EFBIG, "file exceeds read cap", str(p))
+    return data
 
 
 #: Same argv timing out on every dashboard tick used to reprint the warning
@@ -349,25 +442,238 @@ def _log_once(kind: str, cmd, message: str) -> None:
     log.warning(message, cmd)
 
 
-def sh(cmd, timeout=10, shell=False, env=None):
+def _exc_text(exc, cap: int = 200) -> str:
+    """Exception text that cannot RecursionError leftover ``str(e)`` or UTF-8 500."""
     try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, shell=shell, env=env,
-        )
-        return r.returncode, r.stdout.strip(), r.stderr.strip()
-    except subprocess.TimeoutExpired:
-        _log_once("timeout", cmd, "command timed out: %s")
-        return -1, "", "timeout"
-    except FileNotFoundError:
-        _log_once("missing", cmd, "command not found: %s")
-        return -1, "", "not found"
+        text = str(exc)
+    except RecursionError:
+        try:
+            text = type(exc).__name__
+        except Exception:
+            text = "error"
+    except Exception:
+        text = "error"
+    if not isinstance(text, str):
+        text = "error"
+    try:
+        cap_n = int(cap)
+    except (TypeError, ValueError, OverflowError):
+        cap_n = 200
+    return text.encode("utf-8", "replace").decode("utf-8")[: max(0, cap_n)]
+
+
+def strftime_now(fmt: str, default: str = "") -> str:
+    """``time.strftime`` of the current clock.
+
+    Leftover ``time.time() = inf`` OverflowError'd ``localtime`` and 500'd
+    GET /api/status, /api/sensors, /api/health, and Settings.
+    """
+    try:
+        return time.strftime(fmt)
+    except (OverflowError, OSError, ValueError, TypeError):
+        return default
+
+
+def utf8_env(env=None) -> dict[str, str]:
+    """Env mapping ``subprocess`` can encode.
+
+    Leftover ``\\ud800`` / NUL in a key or value UnicodeEncodeError'd
+    ``subprocess.run`` / ``Popen`` (not OSError) and 500'd compose
+    validate, brew, catalog install, and any other request that passed
+    ``os.environ``.
+    """
+    source = os.environ if env is None else env
+    try:
+        items = source.items()
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for key, value in items:
+        if isinstance(key, (bytes, bytearray)):
+            try:
+                key = key.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = value.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        if "\x00" in key or "\x00" in value:
+            continue
+        try:
+            key.encode("utf-8")
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            continue
+        out[key] = value
+    return out
+
+
+def run_capped(cmd, timeout=10, env=None, cwd=None, cap=2048):
+    """Run *cmd* and keep at most *cap* trailing bytes of combined output.
+
+    ``subprocess.run(capture_output=True)`` buffers the whole pipe until
+    exit.  A chatty ``docker compose up`` or ``pg_dump`` on a request
+    thread can RSS-bomb the panel for the length of *timeout*.
+    """
+    cap = max(1, int(cap))
+    argv = as_argv(cmd)
+    if argv is None:
+        return -1, "invalid argv"
+    with tempfile.TemporaryFile() as out:
+        try:
+            p = subprocess.run(
+                argv, stdout=out, stderr=subprocess.STDOUT,
+                timeout=timeout, env=utf8_env(env), cwd=cwd, check=False,
+            )
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            rc = -1
+        except FileNotFoundError:
+            return -1, "not found"
+        except (OSError, ValueError, TypeError, RecursionError) as exc:
+            # ValueError: leftover ``\\ud800`` cwd (UnicodeEncodeError).
+            # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
+            return -1, _exc_text(exc, cap)
+        try:
+            size = out.seek(0, 2)
+            out.seek(max(0, size - cap))
+            text = out.read().decode("utf-8", "replace")
+        except OSError:
+            text = ""
+    return rc, text
+
+
+#: Per-stream ceiling for :func:`run_bytes`.  Binary plists (``diskutil
+#: -plist``) must stay intact; a torn prefix is never a valid plist.  The
+#: cap still bounds a runaway child so a request thread cannot RSS-bomb
+#: the panel.
+_BYTES_CAP = 4 * 1024 * 1024
+
+
+def run_bytes(cmd, timeout=10, cap=_BYTES_CAP, runner=None):
+    """Run *cmd* and keep at most *cap* leading bytes of stdout (binary).
+
+    ``capture_output=True`` buffers the whole pipe in RAM.  Callers that
+    parse ``diskutil -plist`` need raw bytes (UTF-8 :func:`sh` would
+    corrupt a binary plist), but they do not need an unbounded buffer.
+
+    *runner* defaults to :func:`subprocess.run`.  Disk modules pass their
+    own ``subprocess.run`` so existing tests can stub it.
+    """
+    cap = max(1, int(cap))
+    argv = as_argv(cmd)
+    if argv is None:
+        return -1, b"", b"invalid argv"
+    run = runner or subprocess.run
+    try:
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            try:
+                r = run(
+                    argv, stdout=out, stderr=err, timeout=timeout, check=False,
+                    env=utf8_env(),
+                )
+                rc = r.returncode if getattr(r, "returncode", None) is not None else 0
+            except subprocess.TimeoutExpired:
+                _log_once("timeout", cmd, "command timed out: %s")
+                return -1, b"", b"timeout"
+            except FileNotFoundError:
+                _log_once("missing", cmd, "command not found: %s")
+                return -1, b"", b"not found"
+            except (OSError, ValueError, TypeError, RecursionError) as exc:
+                # Leftover ``\\ud800`` env UnicodeEncodeError is ValueError.
+                # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
+                _log_once("error", cmd, "command failed: %s")
+                return -1, b"", _exc_text(exc).encode("utf-8", "replace")[:200]
+
+            # Tests (and any caller that stubs ``subprocess.run``) return a
+            # CompletedProcess with captured bytes.  A real run redirected
+            # the pipes into *out*/*err*, so ``r.stdout`` is None.
+            captured = getattr(r, "stdout", None)
+            if captured is not None:
+                if isinstance(captured, str):
+                    captured = captured.encode("utf-8", "replace")
+                elif not isinstance(captured, (bytes, bytearray)):
+                    captured = bytes(captured)
+                return rc, bytes(captured)[:cap], b""
+
+            try:
+                size = out.seek(0, 2)
+                if size > cap:
+                    return -1, b"", b"truncated"
+                out.seek(0)
+                stdout = out.read(cap)
+            except OSError:
+                stdout = b""
+            return rc, stdout, b""
+    except (OSError, RecursionError) as exc:
+        return -1, b"", _exc_text(exc).encode("utf-8", "replace")[:200]
+
+
+#: Per-stream ceiling for :func:`sh`.  ``capture_output=True`` used to keep
+#: the whole pipe in RAM until exit; a chatty ``docker inspect`` / ``find``
+#: on a request thread could RSS-bomb the panel for the length of *timeout*.
+_SH_CAP = 1024 * 1024
+
+
+def sh(cmd, timeout=10, shell=False, env=None):
+    """Run *cmd* and keep at most :data:`_SH_CAP` leading bytes of each stream.
+
+    Head, not tail: callers parse JSON / plists from stdout.  A torn prefix
+    still fails those parsers (they already treat garbage as empty), but a
+    tail of a huge object is never valid JSON either and wastes the cap.
+    """
+    if not shell:
+        argv = as_argv(cmd)
+        if argv is None:
+            return -1, "", "invalid argv"
+        cmd = argv
+    try:
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            try:
+                r = subprocess.run(
+                    cmd, stdout=out, stderr=err,
+                    timeout=timeout, shell=shell, env=utf8_env(env),
+                )
+                rc = r.returncode
+            except subprocess.TimeoutExpired:
+                _log_once("timeout", cmd, "command timed out: %s")
+                return -1, "", "timeout"
+            except FileNotFoundError:
+                _log_once("missing", cmd, "command not found: %s")
+                return -1, "", "not found"
+            except (OSError, ValueError, TypeError, RecursionError) as exc:
+                # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
+                _log_once("error", cmd, "command failed: %s")
+                return -1, "", _exc_text(exc)
+
+            def _head(fh) -> str:
+                try:
+                    fh.seek(0)
+                    return fh.read(_SH_CAP).decode("utf-8", "replace").strip()
+                except OSError:
+                    return ""
+
+            return rc, _head(out), _head(err)
+    except (OSError, RecursionError) as exc:
+        return -1, "", _exc_text(exc)
 
 
 def port_open(port, host="localhost", timeout=0.6):
     if not port:
         return None
+    # YAML leftover ``port: .inf`` / ``.nan`` used to OverflowError /
+    # ValueError past the OSError guard.  ``fan_out`` re-raises, so one
+    # leftover took the whole /api/status batch with it.
     try:
-        with socket.create_connection((host, int(port)), timeout=timeout):
+        port_n = int(port)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    try:
+        with socket.create_connection((host, port_n), timeout=timeout):
             return True
     except OSError:
         return False

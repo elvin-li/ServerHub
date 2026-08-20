@@ -374,6 +374,17 @@ class FileServiceProbeTests(unittest.TestCase):
         self.assertEqual(by["filebrowser"]["url"], "http://192.168.1.9:8125")
         self.assertLess(elapsed, 2 * PROBE_DELAY * 0.8, f"took {elapsed:.2f}s")
 
+    def test_junk_quick_links_do_not_500(self):
+        with (
+            mock.patch.object(shares_svc, "port_open", lambda port, **kw: False),
+            mock.patch.object(shares_svc, "host_ip", lambda: "192.168.1.9"),
+            mock.patch.object(shares_svc, "cfg", lambda: {"quick_links": {"not": "a-list"}}),
+            mock.patch.object(shares_svc, "resolve_value", lambda v: v),
+        ):
+            services = shares_svc.file_services()
+        self.assertEqual(len(services), 2)
+        self.assertTrue(all(s["url"].startswith("http://192.168.1.9:") for s in services))
+
 
 def _inspect_payload(name):
     return json.dumps([{
@@ -1731,6 +1742,16 @@ class UpdateCheckTests(unittest.TestCase):
         with (
             mock.patch.object(tools_svc, "_brew_outdated", brew or slow_brew),
             mock.patch.object(tools_svc, "_macos_updates", macos or slow_macos),
+            mock.patch.object(
+                tools_svc, "_github_latest",
+                return_value={
+                    "ok": True, "current": "3.9.1", "latest": "3.9.1",
+                    "update_available": False, "tag": "v3.9.1",
+                    "html_url": "", "notes": "", "error": "",
+                    "repo": "elvin-li/ServerHub", "source": "release",
+                    "published_at": "",
+                },
+            ),
         ):
             started = time.time()
             out = tools_svc.check_updates(force=True)

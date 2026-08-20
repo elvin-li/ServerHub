@@ -90,7 +90,6 @@ def totp_verify(body: TotpVerifyBody, request: Request, response: Response):
         raise api_error("auth.totp_pending_invalid")
     method = twofa_svc.verify_second_factor(username, body.code)
     if method is None:
-        auth.record_login_failure(client)
         audit.record(
             audit.LOGIN_FAILED,
             username=username,
@@ -159,7 +158,6 @@ def totp_confirm(body: TotpCodeBody, request: Request, response: Response):
     except twofa_svc.NotPending:
         raise api_error("auth.totp_not_pending")
     if codes is None:
-        auth.record_login_failure(client)
         raise api_error("auth.bad_totp")
     auth.clear_login_failures(client)
     # Every outstanding session was issued under "password only"; enabling a
@@ -190,7 +188,6 @@ def totp_disable(body: TotpCodeBody, request: Request, response: Response):
         raise api_error("auth.totp_not_enabled")
     method = twofa_svc.verify_second_factor(username, body.code)
     if method is None:
-        auth.record_login_failure(client)
         audit.record(
             audit.TWOFA_DISABLED,
             username=username,
@@ -224,9 +221,14 @@ def totp_regenerate_recovery(body: TotpCodeBody, request: Request):
         raise api_error("auth.totp_not_enabled")
     method = twofa_svc.verify_second_factor(username, body.code)
     if method is None:
-        auth.record_login_failure(client)
         raise api_error("auth.bad_totp")
-    codes = twofa_svc.regenerate_recovery(username)
+    try:
+        codes = twofa_svc.regenerate_recovery(username)
+    except twofa_svc.NotEnabled:
+        # enabled() then regenerate is two lock acquisitions: an admin
+        # rescue in the other tab used to raise through as a 500 after the
+        # code had already been spent.
+        raise api_error("auth.totp_not_enabled")
     audit.record(
         audit.TWOFA_RECOVERY_REGENERATED,
         username=username,

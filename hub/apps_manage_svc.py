@@ -7,18 +7,159 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
-import time
 from pathlib import Path
 
 from hub import cli_args
-from hub.docker_cli import docker, engine_up, inspect_object
+from hub.docker_cli import _jsonable, docker, engine_up, inspect_object
 from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
-from hub.paths import DOCKER
-from hub.util import cached_snapshot, fan_out, sh, tail_file_lines
+from hub.paths import DOCKER, user_home
+from hub.util import cached_snapshot, fan_out, run_capped, sh, strftime_now, tail_file_lines
 
-SERVICES_ROOT = Path.home() / "Services"
+
+def _default_services_root() -> Path:
+    """Services tree under ``~/Services``.  ``Path.home()`` leftover must not 500 import."""
+    home = user_home()
+    return (home / "Services") if home is not None else Path("/var/empty/serverhub-services")
+
+
+SERVICES_ROOT = _default_services_root()
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/apps/managed.
+_PLIST_CAP = 256 * 1024
+
+
+def _plist_dict(path: Path) -> dict | None:
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read(_PLIST_CAP + 1)
+    except OSError:
+        return None
+    if len(raw) > _PLIST_CAP:
+        return None
+    try:
+        data = plistlib.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    if value is None:
+        return ""
+    try:
+        return _utf8_text(str(value))
+    except Exception:
+        return ""
+
+
+def _field_text(value, fallback: str = "") -> str:
+    """JSON-safe leftover YAML field (``.inf`` / dates / ``!!binary`` / ``!!set`` / ``\\ud800``)."""
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return fallback
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        return fallback
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            text = iso()
+            return _utf8_text(text) if isinstance(text, str) and text else fallback
+        except Exception:
+            return fallback
+    try:
+        text = str(value)
+    except Exception:
+        return fallback
+    return _utf8_text(text) if text else fallback
+
+
+def _optional_text(value) -> str | None:
+    text = _field_text(value, "")
+    return text or None
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _scrub_utf8(value, depth: int = 0):
+    if depth > 32:
+        return None
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            try:
+                key = k if isinstance(k, str) else str(k)
+                key = _utf8_text(key)
+            except Exception:
+                continue
+            out[key] = _scrub_utf8(v, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_scrub_utf8(v, depth + 1) for v in value]
+    return value
+
+
+def _safe_payload(payload):
+    """Starlette encodes with allow_nan=False; leftover inf/bytes/dates/``\\ud800`` 500 the Apps page."""
+    if not isinstance(payload, dict):
+        return payload
+    cleaned = _jsonable(payload)
+    if not isinstance(cleaned, dict):
+        return payload
+    return _scrub_utf8(cleaned)
 #: Apps page polls every 15s. An 8s snapshot missed on every sit tick
 #: (~940ms rebuild). 22s lets the 15s poll hit; brew_cache._TTL must stay
 #: strictly longer so inventory rebuilds do not re-run brew services list.
@@ -52,33 +193,67 @@ def _docker_stacks() -> list[dict]:
         stacks = containers_svc.list_stacks()
     except Exception:
         stacks = []
+    if not isinstance(stacks, list):
+        stacks = []
     # map stack path → containers via compose project label or cwd
     containers = []
     try:
         from hub import containers_svc
-        containers = (containers_svc.list_containers(with_stats=False).get("containers") or [])
+        raw_c = containers_svc.list_containers(with_stats=False).get("containers") or []
+        containers = raw_c if isinstance(raw_c, list) else []
     except Exception:
         pass
 
     for s in stacks:
-        sid = s.get("id") or Path(s.get("path") or "").name
-        path = s.get("path") or str(SERVICES_ROOT / sid)
-        compose = Path(path) / (s.get("compose_file") or "docker-compose.yml")
+        if not isinstance(s, dict):
+            continue
+        sid = s.get("id") if isinstance(s.get("id"), str) else ""
+        raw_path = s.get("path") if isinstance(s.get("path"), str) else ""
+        if not sid:
+            try:
+                sid = Path(raw_path).name
+            except (OSError, ValueError, TypeError):
+                continue
+        if not sid:
+            continue
+        path = raw_path or str(SERVICES_ROOT / sid)
+        compose_file = s.get("compose_file")
+        if not isinstance(compose_file, str) or not compose_file:
+            compose_file = "docker-compose.yml"
+        try:
+            compose = Path(path) / compose_file
+        except (OSError, ValueError, TypeError):
+            continue
         # match containers by compose project name or name prefix
         related = []
+        running_names = s.get("running_containers")
+        if not isinstance(running_names, list):
+            running_names = []
         for c in containers:
-            proj = c.get("project") or ""
-            cid = c.get("id") or ""
-            if proj == sid or cid == sid or cid in (s.get("running_containers") or []):
+            if not isinstance(c, dict):
+                continue
+            proj = str(c.get("project") or "")
+            cid = str(c.get("id") or "")
+            if proj == sid or cid == sid or cid in running_names or c.get("id") in running_names:
                 related.append(c)
         # use stack's own list when project labels missing
-        if not related and s.get("running_containers"):
-            by_id = {c.get("id"): c for c in containers}
-            for n in s["running_containers"]:
+        if not related and running_names:
+            by_id = {}
+            for c in containers:
+                if not isinstance(c, dict):
+                    continue
+                ident = c.get("id")
+                if isinstance(ident, bool) or not isinstance(ident, (str, int)):
+                    continue
+                by_id[ident] = c
+                by_id[str(ident)] = c
+            for n in running_names:
+                if isinstance(n, bool) or not isinstance(n, (str, int)):
+                    continue
                 if n in by_id:
                     related.append(by_id[n])
-        running = sum(1 for c in related if c.get("state") == "ok" or c.get("raw_state") == "running")
-        st = s.get("status") or ("ok" if running else "down")
+        n_running = sum(1 for c in related if c.get("state") == "ok" or c.get("raw_state") == "running")
+        st = s.get("status") or ("ok" if n_running else "down")
         ports = []
         for c in related:
             p = c.get("ports") or ""
@@ -87,22 +262,29 @@ def _docker_stacks() -> list[dict]:
         # stack autostart: any related container has restart policy
         auto_n = sum(1 for c in related if c.get("autostart"))
         url = _url_from_docker_ports(ports) or _url_from_known_stack(sid)
-        acts = _docker_actions(running, len(related), bool(s.get("compose_path") or compose.exists()))
+        acts = _docker_actions(n_running, len(related), bool(s.get("compose_path") or _exists(compose)))
         if url and "open" not in acts:
             acts = list(acts) + ["open"]
+        n_known = len(related) or len(running_names)
         items.append({
             "id": f"docker:{sid}",
             "source_id": sid,
             "kind": "docker",
-            "name": s.get("name") or sid,
-            "state": "ok" if running or st == "ok" else ("warn" if related else "down"),
-            "status_text": f"{running}/{len(related) or len(s.get('running_containers') or [])} containers running" if (related or s.get("running_containers")) else st,
+            "name": _field_text(s.get("name"), sid) or sid,
+            "state": "ok" if n_running or st == "ok" else ("warn" if related else "down"),
+            "status_text": (
+                f"{n_running}/{n_known} containers running"
+                if n_known
+                else (_field_text(st, "down") or "down")
+            ),
             "path": path,
-            "compose_file": s.get("compose_path") or (str(compose) if compose.exists() else None),
+            "compose_file": _optional_text(s.get("compose_path")) or (
+                str(compose) if _exists(compose) else None
+            ),
             "installed": True,
             "ports_summary": " · ".join(ports[:4]) if ports else "",
-            "container_count": len(related) or len(s.get("running_containers") or []),
-            "running_count": running,
+            "container_count": n_known,
+            "running_count": n_running,
             "autostart": auto_n > 0,
             "autostart_detail": f"{auto_n}/{len(related)} containers autostart" if related else None,
             "actions": acts,
@@ -111,12 +293,12 @@ def _docker_stacks() -> list[dict]:
         })
     # orphan compose dirs under Services with docker-compose.yml not in stacks
     try:
-        known = {s.get("id") for s in stacks}
-        if SERVICES_ROOT.is_dir():
+        known = {s.get("id") for s in stacks if isinstance(s, dict)}
+        if _is_dir(SERVICES_ROOT):
             for d in sorted(SERVICES_ROOT.iterdir()):
-                if not d.is_dir() or d.name in known:
+                if not _is_dir(d) or d.name in known:
                     continue
-                if (d / "docker-compose.yml").exists() or (d / "compose.yml").exists():
+                if _exists(d / "docker-compose.yml") or _exists(d / "compose.yml"):
                     items.append({
                         "id": f"docker:{d.name}",
                         "source_id": d.name,
@@ -125,7 +307,7 @@ def _docker_stacks() -> list[dict]:
                         "state": "down",
                         "status_text": "compose directory (not registered)",
                         "path": str(d),
-                        "compose_file": str(d / "docker-compose.yml") if (d / "docker-compose.yml").exists() else str(d / "compose.yml"),
+                        "compose_file": str(d / "docker-compose.yml") if _exists(d / "docker-compose.yml") else str(d / "compose.yml"),
                         "installed": True,
                         "ports_summary": "",
                         "container_count": 0,
@@ -153,11 +335,14 @@ def _docker_actions(running: int, total: int, has_compose: bool) -> list[str]:
 def _url_from_docker_ports(port_strs: list[str]) -> str | None:
     """Parse '0.0.0.0:4000->4000/tcp' → http://host:4000"""
     host = _host_ip()
-    for ps in port_strs:
+    for raw in port_strs:
+        ps = raw if isinstance(raw, str) else (str(raw) if raw not in (None, "") else "")
+        if not ps:
+            continue
         # 0.0.0.0:4000->4000/tcp  or  [::]:8123->8123/tcp
-        m = re.search(r"(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]):(\d+)->", ps or "")
+        m = re.search(r"(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]):(\d+)->", ps)
         if not m:
-            m = re.search(r":(\d+)->", ps or "")
+            m = re.search(r":(\d+)->", ps)
         if m:
             port = m.group(1)
             if port in ("1883", "5432", "6379", "3306", "5672", "9092"):
@@ -207,25 +392,22 @@ def _url_from_known_stack(sid: str) -> str | None:
 
 
 def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
-    if not DOCKER or not Path(DOCKER).exists():
+    if not DOCKER or not _exists(Path(DOCKER)):
         return soft_fail("services.docker_unavailable")
     p = Path(compose_path)
-    if not p.exists():
+    if not _exists(p):
         return soft_fail("compose.file_missing", path=str(p))
-    import subprocess
     try:
-        r = subprocess.run(
+        rc, msg = run_capped(
             [DOCKER, "compose", "-f", str(p), *args],
             cwd=str(p.parent),
-            capture_output=True,
-            text=True,
             timeout=timeout,
             env=dict(os.environ),
+            cap=4000,
         )
-        msg = ((r.stdout or "") + (r.stderr or "")).strip()
-        return {"ok": r.returncode == 0, "message": msg or f"exit {r.returncode}"}
+        return {"ok": rc == 0, "message": (_as_text(msg) or f"exit {rc}").strip()}
     except Exception as e:
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": _as_text(e)}
 
 
 def _container_log(lines: int):
@@ -241,8 +423,9 @@ def _container_log(lines: int):
         try:
             _, out, err = docker("logs", "--tail", str(lines), name, timeout=30)
         except Exception as exc:  # noqa: BLE001 - one container must not lose the rest
-            return str(exc)[-4000:]
-        return (out or err or "")[-4000:]
+            # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 GET /api/apps.
+            return _as_text(exc)[-4000:]
+        return _as_text(out or err)[-4000:]
 
     return read
 
@@ -263,18 +446,33 @@ def _inspect(name: str) -> tuple[int, str]:
         return 1, ""
 
 
+def _container_rows(payload) -> list:
+    """``list_containers()`` rows, or [] when the payload is the wrong shape.
+
+    A list leftover (or ``containers: 5``) used to raise on ``.get`` /
+    ``for c in 5`` and 500 the Apps detail and logs pages.
+    """
+    rows = payload.get("containers") if isinstance(payload, dict) else []
+    return rows if isinstance(rows, list) else []
+
+
 def _docker_detail(source_id: str) -> dict:
     from hub import containers_svc
     path = str(SERVICES_ROOT / source_id)
     compose = Path(path) / "docker-compose.yml"
-    if not compose.exists():
+    if not _exists(compose):
         compose = Path(path) / "compose.yml"
-    containers = containers_svc.list_containers(with_stats=False).get("containers") or []
+    containers = _container_rows(containers_svc.list_containers(with_stats=False))
     related = []
     for c in containers:
-        proj = c.get("project") or ""
-        cid = c.get("id") or c.get("name") or ""
-        if proj == source_id or cid == source_id or cid.startswith(source_id):
+        if not isinstance(c, dict):
+            continue
+        proj = str(c.get("project") or "")
+        cid = str(c.get("id") or c.get("name") or "")
+        # A numeric inspect Id used to reach startswith as an int and 500 the
+        # Apps detail page.  Skip the empty-prefix match that would attach
+        # every container to a blank source_id.
+        if proj == source_id or cid == source_id or (source_id and cid.startswith(str(source_id))):
             related.append(c)
 
     mounts = []
@@ -302,8 +500,10 @@ def _docker_detail(source_id: str) -> dict:
         data = inspect_object(out)
         if data is None:
             continue
-        net_settings = data.get("NetworkSettings") or {}
-        for m in (data.get("Mounts") or []):
+        net_settings = data.get("NetworkSettings") if isinstance(data.get("NetworkSettings"), dict) else {}
+        for m in data.get("Mounts") if isinstance(data.get("Mounts"), list) else []:
+            if not isinstance(m, dict):
+                continue
             mounts.append({
                 "container": name,
                 "type": m.get("Type"),
@@ -311,17 +511,22 @@ def _docker_detail(source_id: str) -> dict:
                 "destination": m.get("Destination"),
                 "rw": m.get("RW"),
             })
-        for net_name, net in (net_settings.get("Networks") or {}).items():
+        nets = net_settings.get("Networks") if isinstance(net_settings.get("Networks"), dict) else {}
+        for net_name, net in nets.items():
+            if not isinstance(net, dict):
+                continue
             networks.append({
                 "container": name,
                 "network": net_name,
                 "ip": net.get("IPAddress"),
                 "gateway": net.get("Gateway"),
             })
-        ports_map = net_settings.get("Ports") or {}
+        ports_map = net_settings.get("Ports") if isinstance(net_settings.get("Ports"), dict) else {}
         for cport, binds in ports_map.items():
-            if binds:
+            if binds and isinstance(binds, list):
                 for b in binds:
+                    if not isinstance(b, dict):
+                        continue
                     ports.append({
                         "container": name,
                         "published": f"{b.get('HostIp') or '0.0.0.0'}:{b.get('HostPort')}",
@@ -329,7 +534,10 @@ def _docker_detail(source_id: str) -> dict:
                     })
             else:
                 ports.append({"container": name, "published": None, "target": cport})
-        for e in (data.get("Config") or {}).get("Env") or []:
+        cfg_app = data.get("Config") if isinstance(data.get("Config"), dict) else {}
+        for e in cfg_app.get("Env") if isinstance(cfg_app.get("Env"), list) else []:
+            if not isinstance(e, str):
+                continue
             if any(k in e.upper() for k in ("PASSWORD", "SECRET", "TOKEN", "KEY=")):
                 env_sample.append(f"{e.split('=', 1)[0]}=***")
             else:
@@ -337,17 +545,19 @@ def _docker_detail(source_id: str) -> dict:
 
     data_paths = []
     root = Path(path)
-    if root.is_dir():
+    if _is_dir(root):
         for sub in ("data", "config", "pgdata", "redis", "media", "library", "uploads", "downloads"):
             p = root / sub
-            if p.exists():
+            if _exists(p):
                 data_paths.append(str(p))
         data_paths.append(str(root))
 
     db_hints = []
     for m in mounts:
-        dest = (m.get("destination") or "").lower()
-        src = m.get("source") or ""
+        if not isinstance(m, dict):
+            continue
+        dest = str(m.get("destination") or "").lower()
+        src = str(m.get("source") or "")
         if any(x in dest or x in src.lower() for x in ("postgres", "mysql", "mariadb", "mongo", "redis", "pgdata")):
             db_hints.append({"type": "volume/mount", "path": src, "mount": m.get("destination")})
 
@@ -369,14 +579,14 @@ def _docker_detail(source_id: str) -> dict:
         "name": display_name,
         "state": "ok" if running else "down",
         "path": path,
-        "compose_file": str(compose) if compose.exists() else None,
+        "compose_file": str(compose) if _exists(compose) else None,
         "containers": [
             {
-                "name": c.get("id") or c.get("name"),
-                "image": c.get("image"),
-                "state": c.get("state") or c.get("status"),
-                "ports": c.get("ports"),
-                "id": c.get("cid") or c.get("id"),
+                "name": str(c.get("id") or c.get("name") or ""),
+                "image": _optional_text(c.get("image")),
+                "state": _optional_text(c.get("state") or c.get("status")),
+                "ports": _optional_text(c.get("ports")) if not isinstance(c.get("ports"), (dict, list)) else c.get("ports"),
+                "id": str(c.get("cid") or c.get("id") or ""),
             }
             for c in related
         ],
@@ -386,13 +596,13 @@ def _docker_detail(source_id: str) -> dict:
         "data_paths": data_paths[:20],
         "databases": db_hints[:10],
         "env_sample": env_sample[:30],
-        "actions": _docker_actions(running, len(related), compose.exists()) + (
+        "actions": _docker_actions(running, len(related), _exists(compose)) + (
             ["open"] if (_url_from_docker_ports(
-                [c.get("ports") or "" for c in related if c.get("ports")]
+                [str(c.get("ports") or "") for c in related if c.get("ports")]
             ) or _url_from_known_stack(source_id)) else []
         ),
         "url": _url_from_docker_ports(
-            [c.get("ports") or "" for c in related if c.get("ports")]
+            [str(c.get("ports") or "") for c in related if c.get("ports")]
         ) or _url_from_known_stack(source_id),
         "host_ip": _host_ip(),
     }
@@ -401,20 +611,22 @@ def _docker_detail(source_id: str) -> dict:
 def _docker_logs(source_id: str, lines: int = 120) -> dict:
     path = SERVICES_ROOT / source_id
     compose = path / "docker-compose.yml"
-    if not compose.exists():
+    if not _exists(compose):
         compose = path / "compose.yml"
-    if compose.exists():
+    if _exists(compose):
         r = _compose_cmd(str(compose), "logs", "--no-color", "--tail", str(lines), timeout=60)
         return {"ok": r["ok"], "log": r["message"], "source": str(compose)}
     # fallback: logs of matching containers
     from hub import containers_svc
-    containers = containers_svc.list_containers(with_stats=False).get("containers") or []
+    containers = _container_rows(containers_svc.list_containers(with_stats=False))
     matching = []
     for c in containers:
-        name = c.get("name") or ""
-        labels = c.get("labels") or {}
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") if isinstance(c.get("name"), str) else str(c.get("id") or "")
+        labels = c.get("labels") if isinstance(c.get("labels"), dict) else {}
         proj = labels.get("com.docker.compose.project") or ""
-        if proj == source_id or name.startswith(source_id):
+        if proj == source_id or (isinstance(name, str) and name.startswith(source_id or "")):
             matching.append(name)
 
     # `docker logs` carries a 30s timeout and ran once per container in series, so
@@ -433,8 +645,13 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
 
 def _native_apps(force: bool = False) -> list[dict]:
     from hub import native_catalog
-    installed = [a for a in native_catalog.list_native_apps(force=force)
-                 if a.get("installed")]
+    raw = native_catalog.list_native_apps(force=force)
+    if not isinstance(raw, list):
+        raw = []
+    installed = [
+        a for a in raw
+        if isinstance(a, dict) and a.get("installed") and isinstance(a.get("id"), str)
+    ]
 
     # Both autostart lookups used to be issued *inside* the per-app loop, so a
     # whole `brew services` enumeration ran once for every brew-backed app.  On
@@ -533,7 +750,7 @@ def _native_apps(force: bool = False) -> list[dict]:
                 running = bool(cf.get("running"))
                 state = "ok" if running else "down"
                 auto_id = f"launchd:{cloudflared_svc.LABEL}"
-                auto = cloudflared_svc.PLIST.is_file()
+                auto = _is_file(cloudflared_svc.PLIST)
                 acts = (
                     ["stop", "restart", "detail", "logs", "uninstall", "autostart"]
                     if running
@@ -560,7 +777,7 @@ def _native_apps(force: bool = False) -> list[dict]:
             "id": f"native:{a['id']}",
             "source_id": a["id"],
             "kind": "native",
-            "name": a.get("name") or a["id"],
+            "name": _field_text(a.get("name"), a["id"]) or a["id"],
             # already filtered to installed; state from running (None → ok)
             "state": state,
             "status_text": (
@@ -570,13 +787,16 @@ def _native_apps(force: bool = False) -> list[dict]:
             "package": a.get("package"),
             "method": a.get("method"),
             "installed": True,
-            "ports_summary": ", ".join(a.get("ports") or []),
+            "ports_summary": ", ".join(
+                str(p) for p in (a.get("ports") if isinstance(a.get("ports"), list) else [])
+                if p not in (None, "")
+            ),
             "autostart": auto,
             "autostart_id": auto_id,
             "actions": acts,
-            "category": a.get("category") or "other",
-            "url": url or None,
-            "notes": a.get("notes") or "",
+            "category": _field_text(a.get("category"), "other") or "other",
+            "url": _optional_text(url) if url else None,
+            "notes": _field_text(a.get("notes"), ""),
         }
         if cf_extra:
             item["cloudflared"] = cf_extra
@@ -595,37 +815,52 @@ def _native_detail(source_id: str) -> dict:
     app = next((a for a in native_catalog.NATIVE_APPS if a["id"] == source_id), None)
     if not app:
         raise api_error("apps.native_not_found")
-    listed = next((a for a in native_catalog.list_native_apps(force=True) if a["id"] == source_id), {})
+    listed = next(
+        (
+            a for a in native_catalog.list_native_apps(force=True)
+            if isinstance(a, dict) and a.get("id") == source_id
+        ),
+        {},
+    )
     pkg = app.get("package")
+    pkg_key = pkg.split("@", 1)[0] if isinstance(pkg, str) and pkg else ""
     data_paths = []
+    home = user_home()
     # common brew prefixes
-    for base in (
-        Path("/opt/homebrew/var"),
-        Path("/usr/local/var"),
-        Path.home() / "Library/Application Support",
-        SERVICES_ROOT,
-    ):
-        if not base.exists() or not pkg:
+    bases = [Path("/opt/homebrew/var"), Path("/usr/local/var")]
+    if home is not None:
+        bases.append(home / "Library/Application Support")
+    bases.append(SERVICES_ROOT)
+    for base in bases:
+        if not _exists(base) or not pkg_key:
             continue
         # look for package-named dirs
-        for cand in base.glob(f"*{pkg.split('@')[0]}*"):
-            if cand.is_dir():
+        try:
+            candidates = list(base.glob(f"*{pkg_key}*"))
+        except (OSError, ValueError):
+            continue
+        for cand in candidates:
+            if _is_dir(cand):
                 data_paths.append(str(cand))
     if source_id == "native-filebrowser":
         data_paths.append(str(SERVICES_ROOT / "filebrowser"))
     if app.get("open"):
         app_path = Path(f"/Applications/{app['open']}.app")
-        if app_path.exists():
+        if _exists(app_path):
             data_paths.append(str(app_path))
 
-    ports = [{"published": f"0.0.0.0:{p}", "target": p} for p in (app.get("ports") or [])]
+    from hub.native_catalog import _port_list
+    port_nums = _port_list(app.get("ports"))
+    ports = [{"published": f"0.0.0.0:{p}", "target": p} for p in port_nums]
     # live listen check
     listen = []
     try:
         from hub import tools_svc
         for row in (tools_svc.listening_ports(80).get("ports") or []):
+            if not isinstance(row, dict):
+                continue
             name = row.get("name") or ""
-            for p in (app.get("ports") or []):
+            for p in port_nums:
                 if f":{p}" in name or name.endswith(str(p)):
                     listen.append(row)
     except Exception:
@@ -678,7 +913,7 @@ def _native_detail(source_id: str) -> dict:
                     else f"stopped · {cf['active_tunnel']}"
                 )
         except Exception as e:
-            out["cloudflared"] = {"ok": False, "message": str(e)}
+            out["cloudflared"] = {"ok": False, "message": _as_text(e)}
     return out
 
 
@@ -692,13 +927,14 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
         return cloudflared_svc.logs(lines=lines)
     pkg = app.get("package")
     chunks = []
+    home = user_home()
     # brew services log paths
     for logp in (
         Path(f"/opt/homebrew/var/log/{pkg}.log") if pkg else None,
         Path(f"/opt/homebrew/var/log/{pkg}/error.log") if pkg else None,
-        Path.home() / f"Library/Logs/{pkg}.log" if pkg else None,
+        (home / f"Library/Logs/{pkg}.log") if pkg and home is not None else None,
     ):
-        if logp and logp.exists():
+        if logp and _exists(logp):
             try:
                 chunks.append(
                     f"===== {logp} =====\n" + "\n".join(tail_file_lines(logp, lines))
@@ -717,7 +953,7 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
                 timeout=8,
             )
         if out or err:
-            chunks.append(f"===== launchctl =====\n{(out or err or '')[-3000:]}")
+            chunks.append(f"===== launchctl =====\n{_as_text(out or err)[-3000:]}")
     if not chunks:
         chunks.append("No dedicated log file found. System-level logs are available under Tools → System Logs.")
     return {"ok": True, "log": "\n\n".join(chunks), "source": "native"}
@@ -745,8 +981,6 @@ def _launchd_apps() -> list[dict]:
     (Kiro-Go and the like) that used to show on Services only, with no
     uninstall on this page.
     """
-    import plistlib
-
     from hub import config
     from hub.launchd_cache import Listing
     from hub.launchd_cache import listing as launchd_listing
@@ -756,7 +990,7 @@ def _launchd_apps() -> list[dict]:
     _EMPTY_LISTING = Listing({})
 
     agents = Path(AGENTS_DIR)
-    if not agents.is_dir():
+    if not _is_dir(agents):
         return []
     try:
         listing = launchd_listing()
@@ -764,7 +998,11 @@ def _launchd_apps() -> list[dict]:
         listing = _EMPTY_LISTING
     catalog = _catalog_launchd_labels()
     items = []
-    for path in sorted(agents.glob("*.plist")):
+    try:
+        plists = sorted(agents.glob("*.plist"))
+    except OSError:
+        return []
+    for path in plists:
         label = path.stem
         low = label.lower()
         if low in PROTECTED_LABELS or low in catalog:
@@ -773,14 +1011,19 @@ def _launchd_apps() -> list[dict]:
             continue
         program = ""
         workdir = ""
-        try:
-            data = plistlib.loads(path.read_bytes())
+        data = _plist_dict(path)
+        if data is None:
+            program = ""
+            workdir = ""
+        else:
             args = data.get("ProgramArguments") or []
+            if not isinstance(args, list):
+                args = []
             program = str(args[0]) if args else str(data.get("Program") or "")
             workdir = str(data.get("WorkingDirectory") or "")
             label = str(data.get("Label") or label)
-        except Exception:
-            pass
+            if program and not workdir:
+                workdir = str(Path(program).parent)
         # launchctl prints "-" in the pid column for a loaded-but-idle agent,
         # so the raw column is truthy for a job that is not running at all.
         # pid_for() tests it for digits; loaded says whether launchd knows the
@@ -788,32 +1031,43 @@ def _launchd_apps() -> list[dict]:
         pid = listing.pid_for(label)
         running = pid is not None
         loaded = label in listing.loaded
+        entry = listing.jobs.get(label)
+        last = entry[1] if entry else None
+        keep = bool(data.get("KeepAlive")) if data else False
         ov = config.override(label) or {}
-        name = ov.get("name") or label
+        name = _field_text(ov.get("name"), label) or label
         acts = (
             ["stop", "restart", "detail", "logs", "uninstall"]
             if running
             else ["start", "detail", "logs", "uninstall"]
         )
+        if running:
+            status_text = f"Running · pid {pid}"
+        elif loaded and last not in (None, "", "-", "0") and keep:
+            status_text = f"Crash-looping · last exit {last}"
+        elif loaded and last not in (None, "", "-", "0"):
+            status_text = f"Exited · last exit {last}"
+        elif loaded:
+            status_text = "Loaded but not running"
+        else:
+            status_text = "Not loaded"
         items.append({
             "id": f"launchd:{label}",
             "source_id": label,
             "kind": "launchd",
             "name": name,
             "state": "ok" if running else "down",
-            "status_text": f"Running · pid {pid}" if running else (
-                "Loaded but not running" if loaded else "Not loaded"
-            ),
-            "path": workdir or (str(Path(program).parent) if program else ""),
+            "status_text": status_text,
+            "path": workdir,
             "package": None,
             "method": "launchd",
             "installed": True,
-            "ports_summary": str(ov.get("port") or ""),
+            "ports_summary": _field_text(ov.get("port"), ""),
             "autostart": True,
             "autostart_id": f"launchd:{label}",
             "actions": acts,
-            "category": ov.get("group") or "other",
-            "url": ov.get("url") or None,
+            "category": _field_text(ov.get("group"), "other") or "other",
+            "url": _optional_text(ov.get("url")),
         })
     return items
 
@@ -836,24 +1090,26 @@ def _launchd_detail(label: str) -> dict:
 
 
 def _launchd_logs(label: str, lines: int = 120) -> dict:
-    import plistlib
-
     from hub.paths import AGENTS_DIR
 
     path = Path(AGENTS_DIR) / f"{label}.plist"
-    if not path.is_file():
+    if not _is_file(path):
         raise api_error("apps.launchd_not_found")
     chunks = []
-    try:
-        data = plistlib.loads(path.read_bytes())
-    except Exception as exc:
-        return {"ok": False, "log": str(exc), "source": "launchd"}
+    data = _plist_dict(path)
+    if data is None:
+        return {"ok": False, "log": "invalid plist", "source": "launchd"}
     for key in ("StandardOutPath", "StandardErrorPath"):
         logp = data.get(key)
         if not logp:
             continue
-        p = Path(str(logp)).expanduser()
-        if not p.is_file():
+        try:
+            p = Path(str(logp)).expanduser()
+        except (OSError, ValueError, TypeError, RuntimeError):
+            # RuntimeError: leftover HOME unset on ``~/Library/Logs/…``.
+            chunks.append(f"===== {logp!s} =====\n(invalid path)")
+            continue
+        if not _is_file(p):
             chunks.append(f"===== {p} =====\n(missing)")
             continue
         try:
@@ -873,7 +1129,10 @@ def _vms() -> list[dict]:
     from hub import vms_svc
     data = vms_svc.list_all_vms()
     items = []
-    for v in data.get("vms") or []:
+    raw = data.get("vms") if isinstance(data, dict) else []
+    for v in raw if isinstance(raw, list) else []:
+        if not isinstance(v, dict):
+            continue
         state = v.get("state") or v.get("status") or "unknown"
         running = state in ("ok", "running", "started")
         vid = v.get("id") or v.get("uuid") or v.get("name")
@@ -881,15 +1140,20 @@ def _vms() -> list[dict]:
             "id": f"vm:{vid}",
             "source_id": vid,
             "kind": "vm",
-            "name": v.get("display_name") or v.get("name") or vid,
-            "state": "ok" if running else ("stopped" if state in ("stopped", "stop") else state),
-            "status_text": v.get("detail") or state,
-            "backend": v.get("backend"),
+            "name": _field_text(v.get("display_name") or v.get("name"), str(vid) if vid else "") or (
+                _field_text(vid, "") or ""
+            ),
+            "state": "ok" if running else ("stopped" if state in ("stopped", "stop") else _field_text(state, "unknown")),
+            "status_text": _field_text(v.get("detail"), "") or _field_text(state, ""),
+            "backend": _optional_text(v.get("backend")),
             "path": None,
             "installed": True,
             "ports_summary": "",
-            "ips": v.get("ips") or [],
-            "url": v.get("url"),
+            "ips": [
+                ip for ip in (v.get("ips") if isinstance(v.get("ips"), list) else [])
+                if isinstance(ip, str) or (isinstance(ip, (int, float)) and ip == ip and ip not in (float("inf"), float("-inf")))
+            ],
+            "url": _optional_text(v.get("url")),
             "actions": _vm_actions(v),
             "category": "vm",
         })
@@ -897,7 +1161,8 @@ def _vms() -> list[dict]:
 
 
 def _vm_actions(v: dict) -> list[str]:
-    acts = list(v.get("actions") or [])
+    raw_acts = v.get("actions")
+    acts = list(raw_acts) if isinstance(raw_acts, list) else []
     # normalize
     out = ["detail"]
     state = v.get("state") or ""
@@ -919,9 +1184,18 @@ def _vm_actions(v: dict) -> list[str]:
 def _vm_detail(source_id: str) -> dict:
     from hub import vms_svc
     data = vms_svc.list_all_vms()
-    v = next((x for x in (data.get("vms") or []) if (x.get("id") or x.get("uuid") or x.get("name")) == source_id), None)
+    raw = data.get("vms") if isinstance(data, dict) else []
+    v = next(
+        (
+            x for x in (raw if isinstance(raw, list) else [])
+            if isinstance(x, dict)
+            and (x.get("id") or x.get("uuid") or x.get("name")) == source_id
+        ),
+        None,
+    )
     if not v:
         raise api_error("apps.vm_not_found")
+    ips = v.get("ips") if isinstance(v.get("ips"), list) else []
     return {
         "id": f"vm:{source_id}",
         "source_id": source_id,
@@ -930,11 +1204,11 @@ def _vm_detail(source_id: str) -> dict:
         "state": v.get("state"),
         "backend": v.get("backend"),
         "uuid": v.get("uuid"),
-        "ips": v.get("ips") or [],
+        "ips": ips,
         "url": v.get("url"),
         "detail": v.get("detail"),
         "ports": [],
-        "networks": [{"network": "vm", "ip": ip} for ip in (v.get("ips") or [])],
+        "networks": [{"network": "vm", "ip": ip} for ip in ips],
         "mounts": [],
         "data_paths": [],
         "databases": [],
@@ -948,13 +1222,19 @@ def _vm_logs(source_id: str, lines: int = 80) -> dict:
     # VMs rarely expose easy logs; return status dump
     try:
         d = _vm_detail(source_id)
+        try:
+            log = json.dumps(
+                _jsonable(d), ensure_ascii=False, indent=2, allow_nan=False,
+            )[:8000]
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            log = ""
         return {
             "ok": True,
-            "log": json.dumps(d, ensure_ascii=False, indent=2)[:8000],
+            "log": log,
             "source": "vm-status",
         }
     except Exception as e:
-        return {"ok": False, "log": str(e)}
+        return {"ok": False, "log": _as_text(e)}
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -1024,7 +1304,7 @@ def inventory(force: bool = False) -> dict:
         return (
             0 if st == "ok" else 1 if st == "warn" else 2,
             kind_rank,
-            x.get("name") or "",
+            str(x.get("name") or ""),
         )
     all_items.sort(key=sort_key)
     counts = {
@@ -1037,13 +1317,13 @@ def inventory(force: bool = False) -> dict:
         "stopped": sum(1 for x in all_items if x.get("state") in ("down", "stopped")),
     }
     v = {
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
         "items": all_items,
         "counts": counts,
         "host_ip": host,
         "engine_up": engine,
     }
-    return v
+    return _safe_payload(v)
 
 
 def detail(app_id: str) -> dict:
@@ -1056,13 +1336,13 @@ def detail(app_id: str) -> dict:
             raise api_error("apps.bad_id")
     source_id = cli_args.require_positional(source_id, label="app id")
     if kind == "docker":
-        return _docker_detail(source_id)
+        return _safe_payload(_docker_detail(source_id))
     if kind == "native":
-        return _native_detail(source_id)
+        return _safe_payload(_native_detail(source_id))
     if kind == "launchd":
-        return _launchd_detail(source_id)
+        return _safe_payload(_launchd_detail(source_id))
     if kind == "vm":
-        return _vm_detail(source_id)
+        return _safe_payload(_vm_detail(source_id))
     raise api_error("apps.unknown_kind", kind=kind)
 
 
@@ -1072,15 +1352,18 @@ def logs(app_id: str, lines: int = 120) -> dict:
         kind, source_id = "native", app_id
     if source_id:
         source_id = cli_args.require_positional(source_id, label="app id")
-    lines = max(20, min(int(lines or 120), 500))
+    try:
+        lines = max(20, min(int(lines or 120), 500))
+    except (TypeError, ValueError, OverflowError):
+        lines = 120
     if kind == "docker":
-        return _docker_logs(source_id, lines)
+        return _safe_payload(_docker_logs(source_id, lines))
     if kind == "native":
-        return _native_logs(source_id, lines)
+        return _safe_payload(_native_logs(source_id, lines))
     if kind == "launchd":
-        return _launchd_logs(source_id, lines)
+        return _safe_payload(_launchd_logs(source_id, lines))
     if kind == "vm":
-        return _vm_logs(source_id, lines)
+        return _safe_payload(_vm_logs(source_id, lines))
     raise api_error("apps.unknown_kind", kind=kind)
 
 
@@ -1102,19 +1385,28 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             # enable for all containers in stack / or single container name
             from hub import containers_svc
             containers = containers_svc.list_containers(with_stats=False).get("containers") or []
-            related = [
-                c for c in containers
-                if (c.get("project") == source_id or c.get("id") == source_id
-                    or (c.get("id") or "").startswith(source_id))
-            ]
+            related = []
+            for c in containers if isinstance(containers, list) else []:
+                if not isinstance(c, dict):
+                    continue
+                cid = str(c.get("id") or "")
+                if (
+                    str(c.get("project") or "") == source_id
+                    or cid == source_id
+                    or (source_id and cid.startswith(str(source_id)))
+                ):
+                    related.append(c)
             if not related:
                 # try treat source_id as container name
                 return autostart_svc.set_docker_autostart(source_id, enabled)
             results = []
             ok = True
             for c in related:
-                r = autostart_svc.set_docker_autostart(c.get("id"), enabled)
-                results.append(f"{c.get('id')}: {r.get('message')}")
+                ident = str(c.get("id") or "")
+                if not ident:
+                    continue
+                r = autostart_svc.set_docker_autostart(ident, enabled)
+                results.append(f"{ident}: {r.get('message')}")
                 ok = ok and r.get("ok")
             return {"ok": ok, "message": "\n".join(results)[-2000:], "autostart": enabled}
         if kind == "launchd":
@@ -1128,7 +1420,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             if source_id == "native-cloudflared":
                 from hub import cloudflared_svc
                 if enabled:
-                    if not cloudflared_svc.TOKEN_FILE.is_file():
+                    if not _is_file(cloudflared_svc.TOKEN_FILE):
                         raise api_error("apps.cloudflared_token_required")
                     cloudflared_svc._write_launchagent_token()
                     return cloudflared_svc._launchctl_bootstrap()
@@ -1148,7 +1440,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
     if kind == "docker":
         path = SERVICES_ROOT / source_id
         compose = path / "docker-compose.yml"
-        if not compose.exists():
+        if not _exists(compose):
             compose = path / "compose.yml"
         if action_name == "start":
             return _compose_cmd(str(compose), "up", "-d")
@@ -1181,7 +1473,10 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         if action_name in ("start", "stop", "restart", "run"):
             from hub import actions
             rc, out, err = actions.run_action(source_id, action_name)
-            return {"ok": rc == 0, "message": (out or err or "").strip() or action_name}
+            return {
+                "ok": rc == 0,
+                "message": _as_text(out or err).strip() or action_name,
+            }
         raise api_error("apps.native_action_unsupported", action=action_name)
 
     if kind == "native":
@@ -1203,7 +1498,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             from hub.paths import AGENTS_DIR
             plist = Path(AGENTS_DIR) / f"{label}.plist"
             if action_name == "start":
-                if not plist.exists():
+                if not _exists(plist):
                     # re-run install to materialize plist if missing
                     from hub import native_catalog as nc
                     r = nc.install_native(source_id)
@@ -1212,7 +1507,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             if action_name == "stop":
                 return _launchctl_unload(label)
             if action_name == "restart":
-                if plist.exists():
+                if _exists(plist):
                     return _launchctl_load(label, plist)
                 return {"ok": False, "message": f"{plist} not found"}
 
@@ -1251,7 +1546,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 # Prefer last known tunnel / existing token
                 st = cloudflared_svc._load_state()
                 name = st.get("tunnel_name")
-                if cloudflared_svc.TOKEN_FILE.is_file():
+                if _is_file(cloudflared_svc.TOKEN_FILE):
                     return cloudflared_svc.restart()
                 if name and cloudflared_svc._logged_in():
                     return cloudflared_svc.start_with_tunnel(name)

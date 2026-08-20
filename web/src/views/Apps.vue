@@ -4,8 +4,8 @@
       <h1>{{ t('apps.title') }}</h1>
       <span class="meta">
         {{ t('apps.meta') }}
-        · {{ overview.total ?? catalog.length }} {{ t('apps.templates') }}
-        · {{ overview.installed ?? 0 }} {{ t('apps.installed_n') }}
+        · {{ finiteN(overview.total, catalog.length) }} {{ t('apps.templates') }}
+        · {{ finiteN(overview.installed, 0) }} {{ t('apps.installed_n') }}
       </span>
     </div>
 
@@ -57,7 +57,7 @@
           }"
         >
           <header class="app-head">
-            <h3 class="app-title" :title="tpl.name">{{ tpl.name }}</h3>
+            <h3 class="app-title" :title="finiteText(tpl.name)">{{ finiteText(tpl.name) }}</h3>
             <div class="app-badges">
               <span class="chip" :class="tpl.kind === 'native' ? 'chip-native' : 'chip-docker'">
                 {{ tpl.kind === 'native' ? t('apps.kind_native') : t('apps.kind_docker') }}
@@ -66,7 +66,7 @@
                 v-if="tpl.source === 'remote'"
                 class="chip chip-remote"
                 :title="t('catalog_remote.badge_title')"
-              >{{ t('catalog_remote.badge') }}{{ tpl.remote_version ? ` ${tpl.remote_version}` : '' }}</span>
+              >{{ t('catalog_remote.badge') }}{{ finiteText(tpl.remote_version, '') ? ` ${finiteText(tpl.remote_version)}` : '' }}</span>
               <span v-if="tpl.featured" class="chip chip-feat">{{ t('apps.featured') }}</span>
               <span v-if="tpl.installed" class="chip chip-ok">{{ t('apps.installed') }}</span>
               <span v-if="tpl.running" class="chip chip-ok">{{ t('common.running') }}</span>
@@ -75,18 +75,18 @@
 
           <div class="app-meta">
             <span class="cat-tag">{{ catLabel(tpl.category) }}</span>
-            <span v-for="tg in (tpl.tags || []).slice(0, 3)" :key="tg" class="tag">{{ tg }}</span>
+            <span v-for="tg in (tpl.tags || []).slice(0, 3)" :key="finiteText(tg)" class="tag">{{ finiteText(tg) }}</span>
           </div>
 
-          <p class="app-desc">{{ tpl.desc || '—' }}</p>
+          <p class="app-desc">{{ finiteText(tpl.desc) }}</p>
 
           <div v-if="(tpl.ports || []).length" class="app-ports mono">
-            ports: {{ (tpl.ports || []).join(', ') }}
+            ports: {{ (tpl.ports || []).map(p => finiteText(p, '')).filter(Boolean).join(', ') }}
           </div>
-          <div v-if="(tpl.images || []).length" class="app-images mono" :title="(tpl.images || []).join(', ')">
-            {{ (tpl.images || []).slice(0, 2).join(', ') }}{{ (tpl.images || []).length > 2 ? '…' : '' }}
+          <div v-if="(tpl.images || []).length" class="app-images mono" :title="(tpl.images || []).map(im => finiteText(im, '')).filter(Boolean).join(', ')">
+            {{ (tpl.images || []).map(im => finiteText(im, '')).filter(Boolean).slice(0, 2).join(', ') }}{{ (tpl.images || []).length > 2 ? '…' : '' }}
           </div>
-          <div v-if="tpl.package" class="app-ports mono">brew: {{ tpl.package }}</div>
+          <div v-if="tpl.package" class="app-ports mono">brew: {{ finiteText(tpl.package) }}</div>
           <div v-if="catalogOpenUrl(tpl)" class="app-ports mono">{{ catalogOpenUrl(tpl) }}</div>
 
           <footer class="app-actions">
@@ -153,12 +153,12 @@
         <button type="button" class="primary" @click="loadManaged(true)" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" @click="tab = 'catalog'">{{ t('apps.browse_catalog') }}</button>
         <span class="meta-count" v-if="managed.counts">
-          {{ managed.counts.total }} ·
-          {{ t('apps.kind_native') }} {{ managed.counts.native }} ·
-          Docker {{ managed.counts.docker }} ·
-          {{ t('apps.kind_launchd') }} {{ managed.counts.launchd || 0 }} ·
-          VM {{ managed.counts.vm }} ·
-          {{ t('common.running') }} {{ managed.counts.running }}
+          {{ finiteN(managed.counts.total) }} ·
+          {{ t('apps.kind_native') }} {{ finiteN(managed.counts.native) }} ·
+          Docker {{ finiteN(managed.counts.docker) }} ·
+          {{ t('apps.kind_launchd') }} {{ finiteN(managed.counts.launchd, 0) }} ·
+          VM {{ finiteN(managed.counts.vm) }} ·
+          {{ t('common.running') }} {{ finiteN(managed.counts.running) }}
         </span>
       </div>
 
@@ -188,13 +188,13 @@
           <tbody>
             <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
               <td>
-                <strong>{{ it.name }}</strong>
-                <div class="sub-line" v-if="it.status_text">{{ it.status_text }}</div>
+                <strong>{{ finiteText(it.name) }}</strong>
+                <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
                 <div class="show-m sub-line">{{ kindLabel(it.kind) }}</div>
-                <div class="show-m sub-line mono">{{ it.ports_summary || (it.ips || []).join(', ') || '' }}</div>
-                <div class="show-m sub-line mono">{{ it.path || it.package || it.backend || '' }}</div>
+                <div v-if="finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div class="show-m sub-line mono">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend, '') }}</div>
                 <div class="show-m" @click.stop>
-                  <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="it.autostart_detail || ''">
+                  <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="finiteText(it.autostart_detail, '')">
                     <input
                       type="checkbox"
                       :checked="!!it.autostart"
@@ -213,9 +213,9 @@
                   {{ stateLabel(it.state) }}
                 </span>
               </td>
-              <td class="mono ports-cell col-hide-m">{{ it.ports_summary || (it.ips || []).join(', ') || '—' }}</td>
+              <td class="mono ports-cell col-hide-m">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="col-hide-m" @click.stop>
-                <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="it.autostart_detail || ''">
+                <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="finiteText(it.autostart_detail, '')">
                   <input
                     type="checkbox"
                     :checked="!!it.autostart"
@@ -226,7 +226,7 @@
                 </label>
                 <span v-else class="sub-line">—</span>
               </td>
-              <td class="mono path-cell col-hide-m" :title="it.path || it.package || ''">{{ it.path || it.package || it.backend || '—' }}</td>
+              <td class="mono path-cell col-hide-m" :title="finiteText(it.path, '') || finiteText(it.package, '')">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
                   <button type="button" class="act-btn" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">{{ t('apps.detail') }}</button>
@@ -259,17 +259,19 @@
         <button type="button" class="primary" @click="loadAutostart(true)" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="runAutostartNow">{{ t('apps.run_autostart_now') }}</button>
         <span class="meta-count" v-if="autostart.counts">
-          {{ t('apps.auto_on') }} {{ autostart.counts.autostart_on }} ·
-          {{ t('apps.auto_off') }} {{ autostart.counts.autostart_off }} ·
-          brew {{ autostart.counts.brew }} ·
-          Docker {{ autostart.counts.docker }} ·
-          LaunchAgent {{ autostart.counts.launchd }}
+          {{ t('apps.auto_on') }} {{ finiteN(autostart.counts.autostart_on) }} ·
+          {{ t('apps.auto_off') }} {{ finiteN(autostart.counts.autostart_off) }} ·
+          brew {{ finiteN(autostart.counts.brew) }} ·
+          Docker {{ finiteN(autostart.counts.docker) }} ·
+          LaunchAgent {{ finiteN(autostart.counts.launchd) }}
         </span>
       </div>
       <p class="hint-line">{{ t('apps.autostart_hint') }}</p>
-
+      <LoadFailure v-if="autostartError" :detail="autostartError" :retry="() => loadAutostart(true)" :busy="loading" />
+      <div v-else-if="!autostartLoaded" class="hint-line">{{ t('common.loading') }}</div>
+      <template v-else>
       <div v-for="grp in autostartGroups" :key="grp" class="auto-group">
-        <h2 class="section-title">{{ grp }}</h2>
+        <h2 class="section-title">{{ finiteText(grp) }}</h2>
         <div class="managed-table-wrap" style="margin-bottom:14px">
           <table class="managed-table">
             <thead>
@@ -284,18 +286,18 @@
             <tbody>
               <tr v-for="it in (autostartByGroup[grp] || [])" :key="it.id">
                 <td>
-                  <strong>{{ it.name }}</strong>
-                  <div class="sub-line mono" v-if="it.program">{{ it.program }}</div>
-                  <div class="show-m sub-line mono">{{ it.detail || it.plist || '' }}</div>
+                  <strong>{{ finiteText(it.name) }}</strong>
+                  <div class="sub-line mono" v-if="it.program">{{ finiteText(it.program) }}</div>
+                  <div class="show-m sub-line mono">{{ finiteText(it.detail, '') || finiteText(it.plist, '') }}</div>
                   <div class="show-m sub-line">
-                    {{ it.running ? t('common.running') : t('common.stopped') }}{{ it.policy ? ' · ' + it.policy : '' }}
+                    {{ it.running ? t('common.running') : t('common.stopped') }}{{ finiteText(it.policy, '') ? ' · ' + finiteText(it.policy) : '' }}
                   </div>
                 </td>
                 <td class="col-hide-m">
                   <span class="chip" :class="it.running ? 'chip-ok' : 'chip-muted'">
                     {{ it.running ? t('common.running') : t('common.stopped') }}
                   </span>
-                  <span v-if="it.policy" class="sub-line mono"> {{ it.policy }}</span>
+                  <span v-if="finiteText(it.policy, '')" class="sub-line mono"> {{ finiteText(it.policy) }}</span>
                 </td>
                 <td>
                   <label class="auto-toggle">
@@ -308,12 +310,12 @@
                     <span>{{ it.autostart ? t('apps.auto_on') : t('apps.auto_off') }}</span>
                   </label>
                 </td>
-                <td class="mono path-cell col-hide-m" :title="it.detail || it.plist || ''">{{ it.detail || it.plist || '—' }}</td>
+                <td class="mono path-cell col-hide-m" :title="finiteText(it.detail, '') || finiteText(it.plist)">{{ finiteText(it.detail, '') || finiteText(it.plist) }}</td>
                 <td class="actions-cell">
                   <div class="act-row" v-if="it.kind === 'docker'">
                     <select
                       class="policy-select"
-                      :value="it.policy || 'no'"
+                      :value="finiteText(it.policy, '') || 'no'"
                       :disabled="busy"
                       @change="setDockerPolicy(it, $event.target.value)"
                     >
@@ -323,7 +325,7 @@
                       <option value="on-failure">on-failure</option>
                     </select>
                   </div>
-                  <span v-else class="sub-line">{{ it.kind }}</span>
+                  <span v-else class="sub-line">{{ finiteText(it.kind) }}</span>
                 </td>
               </tr>
               <tr v-if="!(autostartByGroup[grp] || []).length">
@@ -333,6 +335,7 @@
           </table>
         </div>
       </div>
+      </template>
     </template>
 
     <!-- Detail drawer -->
@@ -340,7 +343,7 @@
       <aside ref="detailPanel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="apps-detail-title" tabindex="-1">
         <div class="drawer-head">
           <div>
-            <h2 id="apps-detail-title" class="drawer-title">{{ detail.name }}</h2>
+            <h2 id="apps-detail-title" class="drawer-title">{{ finiteText(detail.name) }}</h2>
             <div class="app-badges" style="margin-top:6px">
               <span class="chip" :class="kindChip(detail.kind)">{{ kindLabel(detail.kind) }}</span>
               <span class="chip" :class="detail.state === 'ok' ? 'chip-ok' : 'chip-muted'">{{ stateLabel(detail.state) }}</span>
@@ -390,9 +393,9 @@
           <!-- The form falls back to a hardcoded username and empty notes, so a
                failed read must disable Save rather than let it overwrite the
                stored record with those defaults. -->
-          <div v-if="!credentialLoaded" class="placeholder" role="alert" style="margin-bottom:8px">
+          <div v-if="credentialError" class="placeholder" role="alert" style="margin-bottom:8px">
             <div>{{ t('apps.credential_load_failed') }}</div>
-            <div v-if="credentialError" class="sub mono" style="margin-top:4px">{{ credentialError }}</div>
+            <div class="sub mono" style="margin-top:4px">{{ finiteText(credentialError) }}</div>
           </div>
           <div class="credential-actions">
             <button
@@ -430,7 +433,13 @@
             <span class="chip" :class="cfStatus.running ? 'chip-ok' : 'chip-muted'">
               {{ cfStatus.running ? t('apps.cf_tunnel_running') : t('apps.cf_tunnel_stopped') }}
             </span>
-            <span v-if="cfStatus.active_tunnel" class="chip chip-muted mono">{{ cfStatus.active_tunnel }}</span>
+            <span v-if="cfStatus.has_token && cfStatus.token_ok === false" class="chip chip-warn">
+              {{ t('apps.cf_token_invalid') }}
+            </span>
+            <span v-else-if="!cfStatus.running && cfStatus.crash_loop" class="chip chip-warn">
+              {{ t('apps.cf_crash_loop') }}
+            </span>
+            <span v-if="cfStatus.active_tunnel" class="chip chip-muted mono">{{ finiteText(cfStatus.active_tunnel) }}</span>
           </div>
 
           <div class="credential-actions" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -446,7 +455,7 @@
 
           <div v-if="cfStatus.login_url" class="notes" style="margin-bottom:10px;word-break:break-all">
             {{ t('apps.cf_open_link') }}
-            <a :href="cfStatus.login_url" target="_blank" rel="noopener">{{ cfStatus.login_url }}</a>
+            <a :href="finiteText(cfStatus.login_url, '')" target="_blank" rel="noopener">{{ finiteText(cfStatus.login_url) }}</a>
             <div class="sub-line" style="margin-top:6px">{{ t('apps.cf_after_auth') }}</div>
           </div>
 
@@ -456,7 +465,7 @@
               <select v-model="cfSelectedTunnel" :disabled="cfBusy" style="width:100%;padding:8px;border-radius:8px" :aria-label="t('apps.cf_existing_tunnel')">
                 <option value="">{{ t('apps.cf_select_ph') }}</option>
                 <option v-for="tn in (cfStatus.tunnels || [])" :key="tn.id" :value="tn.name">
-                  {{ tn.name }} ({{ tn.id.slice(0, 8) }}…){{ tn.active ? ` · ${t('apps.cf_connected')}` : '' }}
+                  {{ finiteText(tn.name) }} ({{ String(finiteText(tn.id)).slice(0, 8) }}…){{ tn.active ? ` · ${t('apps.cf_connected')}` : '' }}
                 </option>
               </select>
               <div class="field-help" v-if="!(cfStatus.tunnels || []).length">
@@ -486,7 +495,7 @@
             </div>
             <div class="field-help">{{ t('apps.cf_dns_help') }}</div>
           </div>
-          <pre v-if="cfMsg" class="install-log" style="margin-top:12px;max-height:180px" role="log" aria-live="polite">{{ cfMsg }}</pre>
+          <pre v-if="cfMsg" class="install-log" style="margin-top:12px;max-height:180px" role="log" aria-live="polite">{{ finiteText(cfMsg) }}</pre>
         </section>
 
         <section class="drawer-sec" v-if="detail.kind !== 'vm'">
@@ -505,26 +514,26 @@
         <section class="drawer-sec" v-if="detail.path || detail.compose_file || detail.package || detail.plist_hint">
           <h3>{{ t('apps.sec_paths') }}</h3>
           <div class="kv-list mono">
-            <div v-if="detail.path"><span class="k">path</span>{{ detail.path }}</div>
-            <div v-if="detail.compose_file"><span class="k">compose</span>{{ detail.compose_file }}</div>
-            <div v-if="detail.package"><span class="k">package</span>{{ detail.package }}</div>
-            <div v-if="detail.plist_hint"><span class="k">plist</span>{{ detail.plist_hint }}</div>
-            <div v-if="detail.backend"><span class="k">backend</span>{{ detail.backend }}</div>
-            <div v-if="detail.uuid"><span class="k">uuid</span>{{ detail.uuid }}</div>
+            <div v-if="finiteText(detail.path, '')"><span class="k">path</span>{{ finiteText(detail.path) }}</div>
+            <div v-if="finiteText(detail.compose_file, '')"><span class="k">compose</span>{{ finiteText(detail.compose_file) }}</div>
+            <div v-if="finiteText(detail.package, '')"><span class="k">package</span>{{ finiteText(detail.package) }}</div>
+            <div v-if="finiteText(detail.plist_hint, '')"><span class="k">plist</span>{{ finiteText(detail.plist_hint) }}</div>
+            <div v-if="finiteText(detail.backend, '')"><span class="k">backend</span>{{ finiteText(detail.backend) }}</div>
+            <div v-if="finiteText(detail.uuid, '')"><span class="k">uuid</span>{{ finiteText(detail.uuid) }}</div>
           </div>
         </section>
 
         <section class="drawer-sec" v-if="(detail.data_paths||[]).length">
           <h3>{{ t('apps.sec_data') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(p,i) in detail.data_paths" :key="i">{{ p }}</li>
+            <li v-for="(p,i) in detail.data_paths" :key="i">{{ finiteText(p) }}</li>
           </ul>
         </section>
 
         <section class="drawer-sec" v-if="(detail.databases||[]).length">
           <h3>{{ t('apps.sec_db') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(d,i) in detail.databases" :key="i">{{ d.type }} · {{ d.path }} <span v-if="d.mount">→ {{ d.mount }}</span></li>
+            <li v-for="(d,i) in detail.databases" :key="i">{{ finiteText(d.type) }} · {{ finiteText(d.path) }} <span v-if="d.mount">→ {{ finiteText(d.mount) }}</span></li>
           </ul>
         </section>
 
@@ -534,15 +543,15 @@
             <thead><tr><th>{{ t('apps.col_ports') }}</th><th>target</th><th>ctr</th></tr></thead>
             <tbody>
               <tr v-for="(p,i) in detail.ports" :key="i">
-                <td class="mono">{{ p.published || '—' }}</td>
-                <td class="mono">{{ p.target }}</td>
-                <td class="mono">{{ p.container || '' }}</td>
+                <td class="mono">{{ finiteText(p.published) }}</td>
+                <td class="mono">{{ finiteText(p.target) }}</td>
+                <td class="mono">{{ finiteText(p.container, '') }}</td>
               </tr>
             </tbody>
           </table>
           <div v-if="(detail.listening||[]).length" class="sub-line" style="margin-top:8px">
             {{ t('apps.listening') }}:
-            <span v-for="(l,i) in detail.listening" :key="i" class="mono"> {{ l.name }} </span>
+            <span v-for="(l,i) in detail.listening" :key="i" class="mono"> {{ finiteText(l.name) }} </span>
           </div>
         </section>
 
@@ -552,9 +561,9 @@
             <thead><tr><th>network</th><th>IP</th><th>gw / ctr</th></tr></thead>
             <tbody>
               <tr v-for="(n,i) in detail.networks" :key="i">
-                <td class="mono">{{ n.network }}</td>
-                <td class="mono">{{ n.ip || '—' }}</td>
-                <td class="mono">{{ n.gateway || n.container || '' }}</td>
+                <td class="mono">{{ finiteText(n.network) }}</td>
+                <td class="mono">{{ finiteText(n.ip) }}</td>
+                <td class="mono">{{ finiteText(n.gateway, '') || finiteText(n.container, '') }}</td>
               </tr>
             </tbody>
           </table>
@@ -566,9 +575,9 @@
             <thead><tr><th>src</th><th>dst</th><th>type</th></tr></thead>
             <tbody>
               <tr v-for="(m,i) in detail.mounts" :key="i">
-                <td class="mono path-cell" :title="m.source">{{ m.source }}</td>
-                <td class="mono">{{ m.destination }}</td>
-                <td>{{ m.type }}</td>
+                <td class="mono path-cell" :title="finiteText(m.source)">{{ finiteText(m.source) }}</td>
+                <td class="mono">{{ finiteText(m.destination) }}</td>
+                <td>{{ finiteText(m.type) }}</td>
               </tr>
             </tbody>
           </table>
@@ -580,10 +589,10 @@
             <thead><tr><th>name</th><th>image</th><th>state</th><th>ports</th></tr></thead>
             <tbody>
               <tr v-for="(c,i) in detail.containers" :key="i">
-                <td class="mono">{{ c.name }}</td>
-                <td class="mono path-cell">{{ c.image }}</td>
-                <td>{{ c.state }}</td>
-                <td class="mono path-cell">{{ c.ports }}</td>
+                <td class="mono">{{ finiteText(c.name) }}</td>
+                <td class="mono path-cell">{{ finiteText(c.image) }}</td>
+                <td>{{ finiteText(c.state) }}</td>
+                <td class="mono path-cell">{{ finiteText(c.ports) }}</td>
               </tr>
             </tbody>
           </table>
@@ -591,20 +600,20 @@
 
         <section class="drawer-sec" v-if="(detail.ips||[]).length">
           <h3>VM IP</h3>
-          <div class="mono">{{ (detail.ips || []).join(', ') }}</div>
+          <div class="mono">{{ (detail.ips || []).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
         </section>
 
         <section class="drawer-sec" v-if="(detail.env_sample||[]).length">
           <h3>Env</h3>
-          <pre class="env-pre">{{ (detail.env_sample || []).join('\n') }}</pre>
+          <pre class="env-pre">{{ (detail.env_sample || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
         </section>
 
         <section class="drawer-sec" v-if="detail.notes">
           <h3>{{ t('apps.sec_notes') }}</h3>
-          <p class="notes">{{ detail.notes }}</p>
+          <p class="notes">{{ finiteText(detail.notes) }}</p>
         </section>
 
-        <p class="sub-line" v-if="detail.host_ip">Host IP: {{ detail.host_ip }}</p>
+        <p class="sub-line" v-if="detail.host_ip">Host IP: {{ finiteText(detail.host_ip) }}</p>
       </aside>
     </div>
 
@@ -612,36 +621,36 @@
     <div ref="installPanel" v-if="installTpl" class="modal-bg" @click.self="installTpl = null" role="presentation">
       <div class="modal install-modal" role="dialog" aria-modal="true" aria-labelledby="apps-install-title">
         <div class="modal-head">
-          <h3 id="apps-install-title" class="modal-title">{{ t('apps.deploy') }} · {{ installTpl.name }}</h3>
+          <h3 id="apps-install-title" class="modal-title">{{ t('apps.deploy') }} · {{ finiteText(installTpl.name) }}</h3>
           <button type="button" @click="installTpl = null">{{ t('common.close') }}</button>
         </div>
-        <p class="modal-desc">{{ installTpl.desc }}</p>
-        <p v-if="installTpl.notes" class="notes">{{ installTpl.notes }}</p>
+        <p class="modal-desc">{{ finiteText(installTpl.desc) }}</p>
+        <p v-if="finiteText(installTpl.notes, '')" class="notes">{{ finiteText(installTpl.notes) }}</p>
         <!-- Elevated-access compose directives found when the remote template
              was synced: accepted (the admin's source choice is the trust
              root), but never silently. -->
         <div v-if="(installTpl.compose_warnings || []).length" class="tpl-danger" role="alert">
           <strong>{{ t('catalog_remote.warn_title') }}</strong>
-          {{ (installTpl.compose_warnings || []).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
+          {{ (installTpl.compose_warnings || []).map((w) => finiteText(w, '')).filter(Boolean).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
         </div>
         <p v-if="installTpl.source === 'remote' && installTpl.builtin_available" class="tpl-danger" role="alert">
           {{ t('catalog_remote.overrides_builtin_note') }}
         </p>
         <p v-if="installTpl.kind === 'native'" class="path-line mono">
-          → {{ t('apps.native_install') }} · {{ installTpl.method || 'system' }}{{ installTpl.package ? ` · ${installTpl.package}` : '' }}
+          → {{ t('apps.native_install') }} · {{ finiteText(installTpl.method, '') || 'system' }}{{ finiteText(installTpl.package, '') ? ` · ${finiteText(installTpl.package)}` : '' }}
         </p>
-        <p v-else class="path-line mono">→ ~/Services/{{ installTpl.id }}/docker-compose.yml</p>
+        <p v-else class="path-line mono">→ ~/Services/{{ finiteText(installTpl.id) }}/docker-compose.yml</p>
 
         <div v-if="(installTpl.vars || []).length" class="form-grid">
           <template v-for="v in installTpl.vars" :key="v.name">
-            <label class="form-label">{{ v.label || v.name }}</label>
+            <label class="form-label">{{ finiteText(v.label, '') || finiteText(v.name) }}</label>
             <div class="form-field">
               <input
                 v-model="installVars[v.name]"
                 :type="v.secret ? 'password' : 'text'"
                 :placeholder="v.default === '' && v.secret ? t('apps.auto_password') : (v.required === false ? t('apps.optional') : '')"
               />
-              <div v-if="v.help" class="field-help">{{ v.help }}</div>
+              <div v-if="finiteText(v.help, '')" class="field-help">{{ finiteText(v.help) }}</div>
             </div>
           </template>
         </div>
@@ -651,22 +660,22 @@
           <button type="button" class="primary" :disabled="busy" @click="doInstall">{{ t('apps.confirm_deploy') }}</button>
           <button type="button" @click="installTpl = null">{{ t('common.cancel') }}</button>
         </div>
-        <pre v-if="installLog" class="install-log" role="log" aria-live="polite">{{ installLog }}</pre>
+        <pre v-if="installLog" class="install-log" role="log" aria-live="polite">{{ finiteText(installLog) }}</pre>
         <!-- Fixed upstream first-run login (cannot be preset via env): shown on
              the success panel so nobody has to dig it out of the notes, with a
              change-it-now reminder. -->
         <div v-if="installCreds" class="tpl-danger first-run-creds" role="alert">
           <strong>{{ t('apps.first_run_creds_title') }}</strong>
-          <span class="mono">{{ installCreds }}</span>
+          <span class="mono">{{ finiteText(installCreds) }}</span>
           <span>{{ t('apps.first_run_creds_hint') }}</span>
         </div>
         <a
           v-if="installUrl"
           class="btn primary open-url"
-          :href="installUrl"
+          :href="finiteText(installUrl, '')"
           target="_blank"
           rel="noopener"
-        >{{ t('apps.open_url') }} · {{ installUrl }}</a>
+        >{{ t('apps.open_url') }} · {{ finiteText(installUrl) }}</a>
       </div>
     </div>
 
@@ -700,8 +709,8 @@
         <p v-if="remoteInfo && !remoteInfo.configured && !remoteUrl" class="sub-line">
           {{ t('catalog_remote.not_configured') }}
         </p>
-        <p v-if="remoteInfo?.last_check" class="sub-line">
-          {{ t('catalog_remote.last_check') }}: {{ remoteInfo.last_check }}
+        <p v-if="finiteText(remoteInfo?.last_check, '')" class="sub-line">
+          {{ t('catalog_remote.last_check') }}: {{ finiteText(remoteInfo.last_check) }}
           <template v-if="remoteInfo.last_result">
             · {{ summaryLine(remoteInfo.last_result) }}
           </template>
@@ -710,7 +719,7 @@
           {{ summaryLine(remoteResult) }}
           <ul v-if="(remoteResult.rejected || []).length" class="plain-list mono" style="margin-top:6px">
             <li v-for="r in remoteResult.rejected" :key="r.id">
-              {{ r.id }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
+              {{ finiteText(r.id) }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
             </li>
           </ul>
         </div>
@@ -720,8 +729,8 @@
             <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th></th></tr></thead>
             <tbody>
               <tr v-for="o in remoteInfo.overrides" :key="o.id">
-                <td class="mono">{{ o.id }}</td>
-                <td class="mono">{{ o.version || '—' }}</td>
+                <td class="mono">{{ finiteText(o.id) }}</td>
+                <td class="mono">{{ finiteText(o.version) }}</td>
                 <td>
                   <button type="button" class="act-btn" :disabled="remoteBusy" @click="restoreBuiltin(o)">
                     {{ t('catalog_remote.restore_builtin') }}
@@ -741,10 +750,10 @@
     <div ref="logPanel" v-if="logOpen" class="modal-bg" @click.self="closeJobLog" role="presentation">
       <div class="modal install-modal" role="dialog" aria-modal="true" aria-labelledby="apps-log-title">
         <div class="modal-head">
-          <h3 id="apps-log-title" class="modal-title">📋 {{ logTitle }}</h3>
+          <h3 id="apps-log-title" class="modal-title">📋 {{ finiteText(logTitle) }}</h3>
           <button type="button" @click="closeJobLog">{{ t('common.close') }}</button>
         </div>
-        <pre class="install-log">{{ logText }}</pre>
+        <pre class="install-log">{{ finiteText(logText) }}</pre>
       </div>
     </div>
   </div>
@@ -786,6 +795,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -803,6 +813,8 @@ const categories = ref([{ id: 'all', label: t('common.all') }])
 const router = useRouter()
 const managed = ref({ items: [], counts: null })
 const autostart = ref({ items: [], counts: null, groups: [] })
+const autostartLoaded = ref(false)
+const autostartError = ref('')
 const detail = ref(null)
 const detailPanel = ref(null)
 const mq = ref('')
@@ -860,8 +872,10 @@ let jobPollGeneration = 0
 const refreshTimers = new Set()
 
 function later(fn, ms) {
+  const generation = appsDataGeneration
   const id = setTimeout(() => {
     refreshTimers.delete(id)
+    if (generation !== appsDataGeneration) return
     fn()
   }, ms)
   refreshTimers.add(id)
@@ -945,7 +959,7 @@ const autostartByGroup = computed(() => {
  * carrying it covers the page.
  */
 function firstLine(message) {
-  const text = String(message ?? '').trim()
+  const text = String(finiteText(message, '') || '').trim()
   if (!text) return t('common.fail')
   return text.split('\n')[0]
 }
@@ -955,7 +969,7 @@ function kindLabel(k) {
   if (k === 'docker') return t('apps.kind_docker')
   if (k === 'launchd') return t('apps.kind_launchd')
   if (k === 'vm') return t('apps.kind_vm')
-  return k
+  return finiteText(k)
 }
 function kindChip(k) {
   if (k === 'native') return 'chip-native'
@@ -967,7 +981,7 @@ function stateLabel(s) {
   if (s === 'ok') return t('common.running')
   if (s === 'stopped' || s === 'down') return t('common.stopped')
   if (s === 'warn') return t('common.warn')
-  return s || '—'
+  return finiteText(s)
 }
 /** Always allow common ops; never hide uninstall behind missing action flags */
 function canAct(it, act) {
@@ -995,35 +1009,34 @@ function isScreenSharing(it) {
     || it.open_protocol === 'vnc'
 }
 
+function browseHost() {
+  return finiteText(window.location.hostname, '')
+    || finiteText(managed.value?.host_ip, '')
+    || 'localhost'
+}
+
 /** Prefer url field; fall back to first host port in ports_summary */
 function openUrl(it) {
   if (!it) return ''
   // VNC / Screen Sharing: connect to the host you're browsing (panel host)
   if (isScreenSharing(it)) {
-    const host = window.location.hostname
-      || (managed.value && managed.value.host_ip)
-      || 'localhost'
-    return `vnc://${host}`
+    return `vnc://${browseHost()}`
   }
   const rawUrl = it.url || it.url_hint || ''
   if (rawUrl) {
-    const host = window.location.hostname
-      || (managed.value && managed.value.host_ip)
-      || 'localhost'
+    const host = browseHost()
     return rawUrl.replaceAll('{{HOST}}', host).replaceAll('{{HOST_IP}}', host)
   }
   const ps = it.ports_summary || ''
   const m = ps.match(/(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]):(\d+)->/) || ps.match(/^(\d{2,5})$/)
   if (m) {
-    const host = (managed.value && managed.value.host_ip) || window.location.hostname || 'localhost'
-    return `http://${host}:${m[1]}`
+    return `http://${browseHost()}:${m[1]}`
   }
   // native ports list like "8125"
   if (it.ports_summary && /^\d{2,5}/.test(it.ports_summary.trim())) {
     const port = it.ports_summary.trim().split(/[,\s]/)[0]
     if (!['1883', '5432', '6379', '3306', '5900', '9100'].includes(port)) {
-      const host = (managed.value && managed.value.host_ip) || window.location.hostname || 'localhost'
-      return `http://${host}:${port}`
+      return `http://${browseHost()}:${port}`
     }
   }
   return ''
@@ -1033,30 +1046,30 @@ function openUrl(it) {
 function catalogOpenUrl(tpl) {
   if (!tpl) return ''
   if (isScreenSharing(tpl)) {
-    const host = window.location.hostname || 'localhost'
+    const host = finiteText(window.location.hostname, '') || 'localhost'
     return `vnc://${host}`
   }
-  if (tpl.url_hint) return tpl.url_hint
-  if (tpl.url) return tpl.url
-  const ut = tpl.url_template || ''
+  const hinted = finiteText(tpl.url_hint, '') || finiteText(tpl.url, '')
+  if (hinted) return hinted
+  const ut = finiteText(tpl.url_template, '')
   if (!ut) {
     // ports-only fallback for web-ish services
     const ports = tpl.ports || []
     for (const p of ports) {
       const ps = String(p).split('/')[0]
       if (/^\d+$/.test(ps) && !['1883', '5432', '6379', '3306', '5900', '9100', '22000', '53'].includes(ps)) {
-        const host = window.location.hostname || 'localhost'
+        const host = finiteText(window.location.hostname, '') || 'localhost'
         return `http://${host}:${ps}`
       }
     }
     return ''
   }
-  const host = window.location.hostname || 'localhost'
+  const host = finiteText(window.location.hostname, '') || 'localhost'
   let out = ut.replaceAll('{{HOST_IP}}', host).replaceAll('{{HOST}}', host)
   const vars = tpl.vars || []
   for (const v of vars) {
     if (v && v.name && v.default != null && v.default !== '') {
-      out = out.replaceAll(`{{${v.name}}}`, String(v.default))
+      out = out.replaceAll(`{{${finiteText(v.name, '')}}}`, String(finiteText(v.default, '')))
     }
   }
   // leftover placeholders → not a usable URL
@@ -1075,15 +1088,17 @@ async function launchOpen(it) {
   // The trigger buttons are bound to `busy` but this never set it, so repeat
   // clicks fired concurrent manageApp(..., 'open') calls at the host.
   if (busy.value) return
+  const generation = appsDataGeneration
   busy.value = true
   try {
     await launchOpenInner(it, u)
   } finally {
-    busy.value = false
+    if (stillOnApps(generation)) busy.value = false
   }
 }
 
 async function launchOpenInner(it, u) {
+  const generation = appsDataGeneration
   const isProto = /^(vnc|ssh|rdp|smb|afp|vnc):\/\//i.test(u)
 
   if (isScreenSharing(it) || isProto) {
@@ -1105,15 +1120,20 @@ async function launchOpenInner(it, u) {
           ? it.id
           : `native:${it.source_id || it.id || 'native-screen-sharing'}`
         const result = await manageApp(id, 'open')
+        if (!stillOnApps(generation)) return
         if (result.ok) {
           toast(`✅ ${t('apps.open_url')} · ${result.url || u}`)
           return
         }
-      } catch {}
+      } catch {
+        if (!stillOnApps(generation)) return
+      }
     }
+    if (!stillOnApps(generation)) return
     toast(`→ ${u}`)
     return
   }
+  if (!stillOnApps(generation)) return
   window.open(u, '_blank', 'noopener')
 }
 function goManage(tpl) {
@@ -1128,20 +1148,28 @@ function goManage(tpl) {
   }, 400)
 }
 
+let managedGeneration = 0
+
 async function loadManaged(force = false) {
+  const generation = ++managedGeneration
   loading.value = true
   try {
-    managed.value = await getManagedApps(force)
+    const next = await getManagedApps(force)
+    if (generation !== managedGeneration) return
+    managed.value = next
     managedError.value = ''
   } catch (e) {
-    managedError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    if (generation !== managedGeneration) return false
+    managedError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
     // The 15s tick returns this promise, so a dead server engages the
     // lib/poll.js failure backoff instead of being polled at full rate.
     return false
   } finally {
-    loading.value = false
-    managedLoaded.value = true
+    if (generation === managedGeneration) {
+      loading.value = false
+      managedLoaded.value = true
+    }
   }
 }
 
@@ -1151,68 +1179,101 @@ function softText(j, fallbackKey = 'common.fail') {
     const translated = t(key, j.params || {})
     if (translated !== key) return translated
   }
-  return j?.message || t(fallbackKey)
+  return finiteText(j?.message, '') || t(fallbackKey)
+}
+
+let appsDataGeneration = 0
+let pageAlive = true
+
+function stillOnApps(generation) {
+  return pageAlive && generation === appsDataGeneration
 }
 
 async function loadAutostart(force = false) {
+  const generation = appsDataGeneration
   loading.value = true
   try {
-    autostart.value = await getAutostartApps(force)
+    const next = await getAutostartApps(force)
+    if (generation !== appsDataGeneration) return
+    autostart.value = next
+    autostartError.value = ''
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== appsDataGeneration) return
+    autostartError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    loading.value = false
+    if (generation === appsDataGeneration) {
+      loading.value = false
+      autostartLoaded.value = true
+    }
   }
 }
 
 async function setAutostartItem(it, enabled) {
+  const key = enabled ? 'apps.confirm_autostart_on' : 'apps.confirm_autostart_off'
+  if (!confirm(t(key, { name: finiteText(it.name) }))) return
+  const generation = appsDataGeneration
   busy.value = true
   try {
     const result = await setAppAutostart(it.id, enabled)
-    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${it.name}` : '❌ ' + softText(result))
+    if (!stillOnApps(generation)) return
+    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${finiteText(it.name)}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
     await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (stillOnApps(generation)) busy.value = false
   }
 }
 
 async function setDockerPolicy(it, policy) {
+  if (!confirm(t('apps.confirm_docker_policy', { name: finiteText(it.name, '') || finiteText(it.id), policy: finiteText(policy) }))) return
   const name = (it.id || '').replace(/^docker-ctr:/, '').replace(/^docker:/, '')
+  const generation = appsDataGeneration
   busy.value = true
   try {
     const result = await setDockerAutostartPolicy(name, policy)
-    toast(result.ok ? `✅ restart=${policy}` : '❌ ' + softText(result))
+    if (!stillOnApps(generation)) return
+    toast(result.ok ? `✅ restart=${finiteText(policy)}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
     await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (stillOnApps(generation)) busy.value = false
   }
 }
 
 async function runAutostartNow() {
   if (!confirm(t('apps.confirm_run_autostart'))) return
+  const generation = appsDataGeneration
   busy.value = true
   try {
     const result = await runAppAutostartNow()
-    toast(result.ok ? '✅ ' + (result.message || t('common.ok')) : '❌ ' + softText(result))
+    if (!stillOnApps(generation)) return
+    toast(result.ok ? '✅ ' + (finiteText(result.message, '') || t('common.ok')) : '❌ ' + softText(result))
     // This starts every autostart-enabled app, so the table it was launched from
     // is immediately out of date. Nothing reloaded it before: the 15s poll only
     // covers the Managed tab, so the Autostart rows kept their pre-run "stopped"
     // chips until the user switched tabs and back.
     await loadAutostart()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (stillOnApps(generation)) busy.value = false
   }
 }
 
 async function toggleManagedAutostart(it, enabled) {
+  if (!it.autostart_id) {
+    const key = enabled ? 'apps.confirm_autostart_on' : 'apps.confirm_autostart_off'
+    if (!confirm(t(key, { name: finiteText(it.name) }))) return
+  }
+  const generation = appsDataGeneration
   busy.value = true
   try {
     // Prefer dedicated autostart_id (brew:xxx) when present
@@ -1221,34 +1282,44 @@ async function toggleManagedAutostart(it, enabled) {
       return
     }
     const result = await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off')
+    if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')}` : '❌ ' + softText(result))
     await loadManaged(true)
+    if (!stillOnApps(generation)) return
     if (detail.value?.id === it.id) {
       detail.value = { ...detail.value, autostart: enabled }
     }
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (stillOnApps(generation)) busy.value = false
   }
 }
 
+let detailGeneration = 0
 async function openDetail(it) {
+  const generation = ++detailGeneration
   busy.value = true
   try {
     const d = await getManagedAppDetail(it.id)
+    if (generation !== detailGeneration) return
     // merge list-level autostart flags
     d.autostart = it.autostart
     d.autostart_id = it.autostart_id
     detail.value = d
-    await loadCredential(d)
+    await loadCredential(d, generation)
+    if (generation !== detailGeneration) return
     if (d.source_id === 'native-cloudflared' || d.cloudflared) {
       await cfRefresh()
     }
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== detailGeneration) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    // closeDetail() bumps detailGeneration; a generation match would leave
+    // the page stuck busy after the user closed the drawer mid-load.
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -1261,6 +1332,7 @@ function stopCfLoginPolling() {
 }
 
 function closeDetail() {
+  detailGeneration += 1
   detail.value = null
   credential.value = null
   credentialForm.value = { username: '', password: '', confirm: '', url: '', notes: '' }
@@ -1270,9 +1342,11 @@ function closeDetail() {
 }
 
 async function cfRefresh() {
+  const generation = appsDataGeneration
   cfBusy.value = true
   try {
     const status = await getCloudflareStatus()
+    if (!stillOnApps(generation)) return
     cfStatus.value = status
     if (status.active_tunnel && !cfSelectedTunnel.value) {
       cfSelectedTunnel.value = status.active_tunnel
@@ -1286,9 +1360,10 @@ async function cfRefresh() {
       }
     }
   } catch (e) {
-    cfMsg.value = '❌ ' + e.message
+    if (!stillOnApps(generation)) return
+    cfMsg.value = '❌ ' + finiteText(e.message)
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
@@ -1319,11 +1394,13 @@ function startCfLoginPolling() {
 }
 
 async function cfLogin() {
+  const generation = appsDataGeneration
   cfBusy.value = true
   cfMsg.value = ''
   try {
     const result = await startCloudflareLogin()
-    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = result.ok ? '✅ ' + (finiteText(result.message, '') || '') : '❌ ' + softText(result)
     if (result.login_url) {
       cfStatus.value = { ...cfStatus.value, login_url: result.login_url, login_pending: true }
       startCfLoginPolling()
@@ -1332,49 +1409,56 @@ async function cfLogin() {
       await cfRefresh()
     }
   } catch (e) {
-    cfMsg.value = '❌ ' + e.message
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = '❌ ' + finiteText(e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
 async function cfStartSelected() {
   if (!cfSelectedTunnel.value) return
+  const generation = appsDataGeneration
   cfBusy.value = true
   cfMsg.value = ''
   try {
     const result = await startCloudflareTunnel(cfSelectedTunnel.value)
-    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
-    toast(result.ok ? '✅ ' + t('apps.tunnel_started', { name: cfSelectedTunnel.value }) : '❌ ' + softText(result))
+    if (!stillOnApps(generation)) return
+    cfMsg.value = result.ok ? '✅ ' + (finiteText(result.message, '') || '') : '❌ ' + softText(result)
+    toast(result.ok ? '✅ ' + t('apps.tunnel_started', { name: finiteText(cfSelectedTunnel.value) }) : '❌ ' + softText(result))
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
     await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
-    cfMsg.value = '❌ ' + e.message
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = '❌ ' + finiteText(e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
 async function cfStartToken() {
   if (!cfToken.value) return
+  const generation = appsDataGeneration
   cfBusy.value = true
   cfMsg.value = ''
   try {
     const result = await startCloudflareToken(cfToken.value, cfSelectedTunnel.value || 'token')
-    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = result.ok ? '✅ ' + (finiteText(result.message, '') || '') : '❌ ' + softText(result)
     toast(result.ok ? '✅ ' + t('apps.token_tunnel_started') : '❌ ' + softText(result))
     cfToken.value = ''
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
     await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
-    cfMsg.value = '❌ ' + e.message
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = '❌ ' + finiteText(e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
@@ -1382,68 +1466,80 @@ async function cfStop() {
   // Stopping the tunnel drops every externally published hostname. The panel's
   // own service stop is confirmed (Settings.vue), so this is too.
   if (!confirm(t('apps.cf_confirm_stop'))) return
+  const generation = appsDataGeneration
   cfBusy.value = true
   try {
     const result = await stopCloudflare()
-    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = result.ok ? '✅ ' + (finiteText(result.message, '') || '') : '❌ ' + softText(result)
     toast(result.ok ? '✅ ' + t('apps.stopped') : '❌ ' + softText(result))
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
     await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
 async function cfRestart() {
+  const generation = appsDataGeneration
   cfBusy.value = true
   try {
     const result = await restartCloudflare()
-    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = result.ok ? '✅ ' + (finiteText(result.message, '') || '') : '❌ ' + softText(result)
     toast(result.ok ? '✅ ' + t('apps.restarted') : '❌ ' + softText(result))
     // cfRefresh() writes `cfStatus`, loadManaged() writes `managed`; the tunnel
     // action above already committed, so neither read depends on the other.
     await Promise.all([cfRefresh(), loadManaged(true)])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
 async function cfCreate() {
   if (!cfNewName.value) return
+  const generation = appsDataGeneration
   cfBusy.value = true
   try {
     const result = await createCloudflareTunnel(cfNewName.value)
-    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = result.ok ? '✅ ' + (finiteText(result.message, '') || '') : '❌ ' + softText(result)
     if (result.ok) {
       cfSelectedTunnel.value = cfNewName.value
       cfNewName.value = ''
     }
     await cfRefresh()
   } catch (e) {
-    cfMsg.value = '❌ ' + e.message
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = '❌ ' + finiteText(e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
 async function cfRouteDns() {
   if (!cfSelectedTunnel.value || !cfDnsHost.value) return
+  const generation = appsDataGeneration
   cfBusy.value = true
   try {
     const result = await routeCloudflareDns(cfSelectedTunnel.value, cfDnsHost.value)
-    cfMsg.value = result.ok ? '✅ ' + (result.message || '') : '❌ ' + softText(result)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = result.ok ? '✅ ' + (finiteText(result.message, '') || '') : '❌ ' + softText(result)
     toast(result.ok ? '✅ ' + t('apps.dns_bound') : '❌ ' + softText(result))
   } catch (e) {
-    cfMsg.value = '❌ ' + e.message
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    cfMsg.value = '❌ ' + finiteText(e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    cfBusy.value = false
+    if (stillOnApps(generation)) cfBusy.value = false
   }
 }
 
@@ -1464,7 +1560,8 @@ function credentialDefaultUsername(app) {
   return ''
 }
 
-async function loadCredential(app) {
+async function loadCredential(app, generation = detailGeneration) {
+  credentialLoaded.value = false
   credential.value = null
   credentialForm.value = {
     username: credentialDefaultUsername(app),
@@ -1475,6 +1572,7 @@ async function loadCredential(app) {
   }
   try {
     const result = await getAppCredential(app.id)
+    if (generation !== detailGeneration) return
     credential.value = result
     credentialForm.value = {
       username: result.username || credentialDefaultUsername(app),
@@ -1486,14 +1584,15 @@ async function loadCredential(app) {
     credentialLoaded.value = true
     credentialError.value = ''
   } catch (e) {
+    if (generation !== detailGeneration) return
     // Latch the failure and block Save. The form is pre-seeded with a hardcoded
     // default username and empty notes, and saveCredential sends both, so saving
     // on top of a failed read replaced the stored username and wiped the notes.
     // A missing credential is not this case: the API returns 200 with an empty
     // record for an app that has none, so a rejection here is a real failure.
     credentialLoaded.value = false
-    credentialError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    credentialError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
@@ -1515,40 +1614,49 @@ async function saveCredential(applyToService) {
     toast('❌ ' + t('auth.password_mismatch'))
     return
   }
+  const generation = detailGeneration
   credentialBusy.value = true
   try {
     const result = await saveAppCredential({
       service_id: detail.value.id,
-      display_name: detail.value.name || detail.value.id,
+      display_name: finiteText(detail.value.name, '') || finiteText(detail.value.id),
       username: f.username,
       password: f.password,
       url: f.url,
       notes: f.notes,
       apply_to_service: !!applyToService,
     })
+    if (generation !== detailGeneration || !pageAlive) return
     credential.value = result.credential
     credentialForm.value.password = ''
     credentialForm.value.confirm = ''
     showCredentialPassword.value = false
-    toast('✅ ' + (result.message || t('apps.credential_saved')))
+    toast('✅ ' + (finiteText(result.message, '') || t('apps.credential_saved')))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== detailGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    credentialBusy.value = false
+    // openDetail() / closeDetail() bump detailGeneration; a generation
+    // match would leave Save stuck after switching the drawer.
+    if (pageAlive) credentialBusy.value = false
   }
 }
 
 async function deleteCredential() {
   if (!confirm(t('apps.credential_delete_confirm'))) return
+  const generation = detailGeneration
   credentialBusy.value = true
   try {
     await deleteAppCredential(detail.value.id)
+    if (generation !== detailGeneration || !pageAlive) return
     await loadCredential(detail.value)
+    if (generation !== detailGeneration || !pageAlive) return
     toast('✅ ' + t('apps.credential_deleted'))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== detailGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    credentialBusy.value = false
+    if (pageAlive) credentialBusy.value = false
   }
 }
 
@@ -1559,32 +1667,40 @@ async function deleteCredential() {
 let managedLogGeneration = 0
 
 async function openManagedLogs(it) {
+  stopJobPolling()
+  curJob.value = null
   const generation = ++managedLogGeneration
   logOpen.value = true
-  logTitle.value = (it.name || it.id) + ' · logs'
+  logTitle.value = (finiteText(it.name, '') || finiteText(it.id)) + ' · logs'
   logText.value = t('common.loading')
   try {
     const result = await getManagedAppLogs(it.id, 150)
     if (generation !== managedLogGeneration) return
-    logText.value = result.log || result.message || '—'
+    logText.value = finiteText(result.log, '') || finiteText(result.message)
   } catch (e) {
     if (generation !== managedLogGeneration) return
-    logText.value = e.message
+    logText.value = finiteText(e.message, '')
   }
 }
 
 async function doManagedAction(it, action) {
   if (!it?.id) return
+  if (['stop', 'restart', 'update'].includes(action)
+    && !confirm(t('services.confirm_action', { name: finiteText(it.name, '') || finiteText(it.id), action: finiteText(action) }))) return
+  const generation = appsDataGeneration
   busy.value = true
   try {
     const result = await manageApp(it.id, action)
-    toast(result.ok !== false ? `✅ ${action}` : '❌ ' + softText(result))
+    if (!stillOnApps(generation)) return
+    toast(result.ok !== false ? `✅ ${finiteText(action)}` : '❌ ' + softText(result))
     await loadManaged(true)
+    if (!stillOnApps(generation)) return
     if (detail.value?.id === it.id) await openDetail(it)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (stillOnApps(generation)) busy.value = false
   }
 }
 
@@ -1593,22 +1709,25 @@ async function doManagedUninstall(it) {
   const confirmKey = it.kind === 'launchd'
     ? 'apps.confirm_uninstall_launchd'
     : 'apps.confirm_uninstall_managed'
-  if (!confirm(t(confirmKey, { name: it.name || it.id }))) return
+  if (!confirm(t(confirmKey, { name: finiteText(it.name, '') || finiteText(it.id) }))) return
   const removeData = it.kind === 'docker'
     ? confirm(t('apps.confirm_remove_data'))
     : it.kind === 'launchd'
       ? confirm(t('apps.confirm_remove_launchd_data'))
       : false
+  const generation = appsDataGeneration
   busy.value = true
   try {
     const result = await manageApp(it.id, 'uninstall', removeData)
+    if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + softText(result))
     detail.value = null
     await Promise.all([loadManaged(true), loadCatalog()])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (stillOnApps(generation)) busy.value = false
   }
 }
 
@@ -1648,45 +1767,60 @@ function catLabel(id) {
     if (tr && tr !== key) return tr
   }
   const c = (categories.value || []).find(x => x.id === id)
-  return c?.label || id || 'other'
+  return finiteText(c?.label, '') || finiteText(id, '') || 'other'
 }
 
 function countLabel(id) {
-  if (id === 'all') return overview.value.total != null ? ` (${overview.value.total})` : ''
+  if (id === 'all') {
+    const n = finiteN(overview.value.total, null)
+    return n != null ? ` (${n})` : ''
+  }
   if (id === 'featured') {
     const n = (catalog.value || []).filter(x => x.featured).length
     return n ? ` (${n})` : ''
   }
-  if (id === 'native' && overview.value.native_count != null) return ` (${overview.value.native_count})`
-  if (id === 'docker' && overview.value.docker_count != null) return ` (${overview.value.docker_count})`
-  const n = (overview.value.counts || {})[id]
+  if (id === 'native') {
+    const n = finiteN(overview.value.native_count, null)
+    return n != null ? ` (${n})` : ''
+  }
+  if (id === 'docker') {
+    const n = finiteN(overview.value.docker_count, null)
+    return n != null ? ` (${n})` : ''
+  }
+  const n = finiteN((overview.value.counts || {})[id], null)
   return n ? ` (${n})` : ''
 }
 
 async function refresh() {
+  const generation = appsDataGeneration
   loading.value = true
   try {
     const d = await getStacks()
+    if (generation !== appsDataGeneration) return
     stacks.value = d.stacks || []
     jobs.value = d.jobs || []
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== appsDataGeneration) return
+    toast('❌ ' + finiteText(e.message))
   }
-  loading.value = false
+  if (generation === appsDataGeneration) loading.value = false
 }
 
 async function loadCatalog() {
+  const generation = appsDataGeneration
   try {
     const d = await getCatalog()
+    if (generation !== appsDataGeneration) return
     catalog.value = d.templates || []
     overview.value = d
     if (d.categories?.length) categories.value = d.categories
     catalogError.value = ''
   } catch (e) {
-    catalogError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    if (generation !== appsDataGeneration) return
+    catalogError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    catalogLoaded.value = true
+    if (generation === appsDataGeneration) catalogLoaded.value = true
   }
 }
 
@@ -1704,19 +1838,23 @@ function openInstall(tpl) {
 
 function summaryLine(r) {
   return t('catalog_remote.result_summary', {
-    added: Array.isArray(r.added) ? r.added.length : (r.added ?? 0),
-    updated: Array.isArray(r.updated) ? r.updated.length : (r.updated ?? 0),
-    unchanged: r.unchanged ?? 0,
-    rejected: Array.isArray(r.rejected) ? r.rejected.length : (r.rejected ?? 0),
+    added: finiteN(Array.isArray(r.added) ? r.added.length : r.added, 0),
+    updated: finiteN(Array.isArray(r.updated) ? r.updated.length : r.updated, 0),
+    unchanged: finiteN(r.unchanged, 0),
+    rejected: finiteN(Array.isArray(r.rejected) ? r.rejected.length : r.rejected, 0),
   })
 }
 
 async function loadRemote() {
+  const generation = appsDataGeneration
   try {
-    remoteInfo.value = await getCatalogRemote()
-    remoteUrl.value = remoteInfo.value?.url || ''
+    const next = await getCatalogRemote()
+    if (generation !== appsDataGeneration) return
+    remoteInfo.value = next
+    remoteUrl.value = next?.url || ''
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== appsDataGeneration) return
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
@@ -1726,21 +1864,26 @@ function openRemoteModal() {
 }
 
 async function saveRemoteSource() {
+  const generation = appsDataGeneration
   remoteBusy.value = true
   try {
     await setCatalogRemoteSource(remoteUrl.value.trim())
+    if (!stillOnApps(generation)) return
     toast('✅ ' + t('catalog_remote.saved'))
     await loadRemote()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    remoteBusy.value = false
+    if (stillOnApps(generation)) remoteBusy.value = false
   }
 }
 
 async function checkRemoteUpdates() {
+  const generation = appsDataGeneration
   // Nothing configured yet: open the config dialog instead of a guaranteed 400.
   if (!remoteInfo.value) await loadRemote()
+  if (!stillOnApps(generation)) return
   if (!remoteInfo.value?.configured) {
     openRemoteModal()
     return
@@ -1748,29 +1891,34 @@ async function checkRemoteUpdates() {
   remoteBusy.value = true
   try {
     const result = await checkCatalogRemoteUpdates()
+    if (!stillOnApps(generation)) return
     remoteResult.value = result
     toast('✅ ' + summaryLine(result))
     // The listing changed server-side; both the store grid and the override
     // table must reflect it.
     await Promise.all([loadCatalog(), loadRemote()])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    remoteBusy.value = false
+    if (stillOnApps(generation)) remoteBusy.value = false
   }
 }
 
 async function restoreBuiltin(item) {
-  if (!confirm(t('catalog_remote.restore_confirm', { id: item.id }))) return
+  if (!confirm(t('catalog_remote.restore_confirm', { id: finiteText(item.id) }))) return
+  const generation = appsDataGeneration
   remoteBusy.value = true
   try {
     await restoreCatalogBuiltin(item.id)
+    if (!stillOnApps(generation)) return
     toast('✅ ' + t('catalog_remote.restored'))
     await Promise.all([loadCatalog(), loadRemote()])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    remoteBusy.value = false
+    if (stillOnApps(generation)) remoteBusy.value = false
   }
 }
 
@@ -1787,39 +1935,43 @@ async function doInstall() {
   if (!installTpl.value) return
   const isNative = installTpl.value.kind === 'native'
   const msg = isNative
-    ? t('apps.confirm_native', { name: installTpl.value.name })
-    : t('apps.confirm_msg', { name: installTpl.value.name, id: installTpl.value.id })
+    ? t('apps.confirm_native', { name: finiteText(installTpl.value.name) })
+    : t('apps.confirm_msg', { name: finiteText(installTpl.value.name), id: finiteText(installTpl.value.id) })
   if (!confirm(msg)) return
+  const generation = appsDataGeneration
   busy.value = true
   installLog.value = isNative ? t('apps.deploying_native') : t('apps.deploying')
   installUrl.value = ''
   installCreds.value = ''
   try {
     const r = await installCatalog(installTpl.value.id, installVars.value)
-    installLog.value = (r.ok ? '✅ ' : '❌ ') + (r.message || '') + (r.path ? `\n→ ${r.path}` : '')
-    if (r.notes) installLog.value += `\n\n${r.notes}`
-    if (r.url || r.url_hint) installUrl.value = r.url || r.url_hint
+    if (!stillOnApps(generation)) return
+    installLog.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n→ ${finiteText(r.path)}` : '')
+    if (finiteText(r.notes, '')) installLog.value += `\n\n${finiteText(r.notes)}`
+    const url = finiteText(r.url, '') || finiteText(r.url_hint, '')
+    if (url) installUrl.value = url
     // Surface the upstream default login only once something actually
     // deployed; the field also rides the listing, so fall back to it for
     // installs whose backend predates the response field.
     if (r.ok) {
-      installCreds.value = r.first_run_credentials || installTpl.value.first_run_credentials || ''
+      installCreds.value = finiteText(r.first_run_credentials, '') || finiteText(installTpl.value.first_run_credentials, '')
     }
     // First line only in the toast. A failure message can be several lines --
     // a pkg-based cask, for instance, explains that brew cannot be elevated and
     // prints the command to run on the Mac instead. The full text is right there
     // in installLog; a five-line toast just hides the rest of the page.
-    toast(r.ok ? `✅ ${installTpl.value.name}` : '❌ ' + firstLine(r.message))
+    toast(r.ok ? `✅ ${finiteText(installTpl.value.name)}` : '❌ ' + firstLine(r.message))
     if (r.ok) {
       // Three independent re-reads after a successful install: catalog, managed
       // list and stacks. refresh() was already fire-and-forget here.
       await Promise.all([loadCatalog(), loadManaged(true), refresh()])
     }
   } catch (e) {
+    if (!stillOnApps(generation)) return
     installLog.value = '❌ ' + e.message
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
   }
-  busy.value = false
+  if (stillOnApps(generation)) busy.value = false
 }
 
 async function doUninstall(tpl) {
@@ -1827,8 +1979,8 @@ async function doUninstall(tpl) {
   const isNative = tpl.kind === 'native'
   if (!confirm(
     isNative
-      ? t('apps.confirm_uninstall_native', { name: tpl.name })
-      : t('apps.confirm_uninstall', { name: tpl.name, id: tpl.id })
+      ? t('apps.confirm_uninstall_native', { name: finiteText(tpl.name) })
+      : t('apps.confirm_uninstall', { name: finiteText(tpl.name), id: finiteText(tpl.id) })
   )) return
 
   // Docker: optional keep compose dir (default remove)
@@ -1839,10 +1991,12 @@ async function doUninstall(tpl) {
     removeData = confirm(t('apps.confirm_remove_data'))
   }
 
+  const generation = appsDataGeneration
   busy.value = true
   try {
     const r = await uninstallCatalog(tpl.id, { remove_data: removeData })
-    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${tpl.name}` : '❌ ' + firstLine(r.message))
+    if (!stillOnApps(generation)) return
+    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${finiteText(tpl.name)}` : '❌ ' + firstLine(r.message))
     if (r.message && !r.ok) {
       // show detail in console-friendly toast only; full msg may be long
     }
@@ -1851,30 +2005,35 @@ async function doUninstall(tpl) {
     // uninstall paths disagreed -- doManagedUninstall() already reloads it.
     await Promise.all([loadCatalog(), refresh(), loadManaged(true)])
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   }
-  busy.value = false
+  if (stillOnApps(generation)) busy.value = false
 }
 
 async function run(s, action) {
-  if (action === 'down' && !confirm(t('apps.confirm_down', { name: s.name }))) return
-  if (action === 'update' && !confirm(t('apps.confirm_update', { name: s.name }))) return
+  if (action === 'down' && !confirm(t('apps.confirm_down', { name: finiteText(s.name) }))) return
+  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(s.name) }))) return
+  const generation = appsDataGeneration
   busy.value = true
   try {
     const r = await runStack(s.id, action)
-    toast('🚀 ' + (r.message || t('common.ok')))
+    if (!stillOnApps(generation)) return
+    toast('🚀 ' + (finiteText(r.message, '') || t('common.ok')))
     if (r.job_id) openJob(r.job_id, s.name)
     refresh()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnApps(generation)) return
+    toast('❌ ' + finiteText(e.message))
   }
-  busy.value = false
+  if (stillOnApps(generation)) busy.value = false
 }
 
 function openJob(jobId, title) {
   stopJobPolling()
+  managedLogGeneration += 1
   curJob.value = jobId
-  logTitle.value = title || jobId
+  logTitle.value = finiteText(title, '') || finiteText(jobId)
   logOpen.value = true
   logText.value = t('common.loading')
   const generation = jobPollGeneration
@@ -1888,7 +2047,7 @@ function openJob(jobId, title) {
     try {
       const j = await getStackJob(curJob.value)
       if (generation !== jobPollGeneration) return
-      logText.value = j.log + (j.running ? '\n⏳…' : '')
+      logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : '')
       if (!j.running) {
         stopJobPolling()
         refresh()
@@ -1896,7 +2055,7 @@ function openJob(jobId, title) {
       }
     } catch (e) {
       if (generation !== jobPollGeneration) return
-      logText.value = `${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${e.message || e}`.trim()
+      logText.value = `${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }
@@ -1906,10 +2065,12 @@ function openJob(jobId, title) {
 function closeJobLog() {
   logOpen.value = false
   curJob.value = null
+  managedLogGeneration += 1
   stopJobPolling()
 }
 
 onMounted(() => {
+  pageAlive = true
   loadManaged()
   loadCatalog()
   refresh()
@@ -1920,6 +2081,15 @@ onMounted(() => {
   }, 15000)
 })
 onUnmounted(() => {
+  pageAlive = false
+  managedGeneration += 1
+  appsDataGeneration += 1
+  // closeDetail / closeJobLog bump their own generations.  Leave used to
+  // invalidate only the list/catalog counters, so a late getManagedAppDetail
+  // / saveAppCredential / getManagedAppLogs still wrote into the unmounted
+  // drawer and log modal.
+  closeDetail()
+  closeJobLog()
   if (timer) timer()
   stopJobPolling()
   for (const id of refreshTimers) clearTimeout(id)
@@ -1933,7 +2103,7 @@ onUnmounted(() => {
 // Escape dismisses each dialog, focus returns to whatever opened it, and Tab
 // cannot wander to the page behind the overlay.
 useDismissable(installTpl, () => { installTpl.value = null }, installPanel)
-useDismissable(logOpen, () => { logOpen.value = false }, logPanel)
+useDismissable(logOpen, closeJobLog, logPanel)
 useDismissable(remoteModal, () => { remoteModal.value = false }, remotePanel)
 
 useDismissable(detail, () => { closeDetail() }, detailPanel)

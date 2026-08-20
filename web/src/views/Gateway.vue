@@ -18,10 +18,10 @@
         <div class="row">
           <span class="led" :class="data.running ? 'on' : 'err'"></span>
           <strong>{{ data.running ? t('gateway.running') : t('gateway.stopped') }}</strong>
-          <span v-if="data.pid" class="mono" style="color:var(--sub)">pid {{ data.pid }}</span>
+          <span v-if="finiteN(data.pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(data.pid) }}</span>
         </div>
-        <div class="sub" style="margin-top:8px">Label: {{ data.label }}</div>
-        <div class="mono sub" style="font-size:11px;margin-top:4px">{{ data.conf }}</div>
+        <div class="sub" style="margin-top:8px">Label: {{ finiteText(data.label) }}</div>
+        <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(data.conf) }}</div>
       </div>
       <div class="tile span-8">
         <h3>{{ t('gateway.about') }}</h3>
@@ -46,14 +46,14 @@
         <tbody>
           <tr v-for="s in data?.sites || []" :key="s.file">
             <td class="mono">
-              <strong>{{ s.file }}</strong>
-              <div v-if="(s.server_names || []).length" class="show-m sub">{{ (s.server_names || []).join(', ') }}</div>
-              <div v-if="(s.listens || []).length" class="show-m sub">{{ (s.listens || []).join(', ') }}</div>
-              <div v-if="(s.upstreams || []).length" class="show-m sub">{{ (s.upstreams || []).join(' · ') }}</div>
+              <strong>{{ finiteText(s.file) }}</strong>
+              <div v-if="(s.server_names || []).length" class="show-m sub">{{ (s.server_names || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+              <div v-if="(s.listens || []).length" class="show-m sub">{{ (s.listens || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+              <div v-if="(s.upstreams || []).length" class="show-m sub">{{ (s.upstreams || []).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</div>
             </td>
-            <td class="mono col-hide-m">{{ (s.listens || []).join(', ') }}</td>
-            <td class="mono col-hide-m">{{ (s.server_names || []).join(', ') || '—' }}</td>
-            <td class="mono col-hide-m" style="font-size:11px">{{ (s.upstreams || []).join(' · ') || '—' }}</td>
+            <td class="mono col-hide-m">{{ (s.listens || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+            <td class="mono col-hide-m">{{ (s.server_names || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ (s.upstreams || []).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</td>
           </tr>
           <tr v-if="!(data?.sites || []).length && !loadError">
             <td colspan="4" style="color:var(--sub)">{{ t('gateway.empty') }}</td>
@@ -61,14 +61,15 @@
         </tbody>
       </table>
     </div>
-    <pre v-if="msg" style="margin-top:10px;font-size:11px;white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:4px" role="status" aria-live="polite">{{ msg }}</pre>
+    <pre v-if="msg" style="margin-top:10px;font-size:11px;white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:4px" role="status" aria-live="polite">{{ finiteText(msg) }}</pre>
   </div>
 </template>
 
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { getNginx, reloadNginx, testNginx } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -81,16 +82,22 @@ const msg = ref('')
 // instant; the site table used to claim "no sites configured" until it returned.
 const loaded = ref(false)
 const loadError = ref('')
+let pageAlive = true
+let loadSeq = 0
 
 async function load() {
+  const seq = ++loadSeq
   try {
-    data.value = await getNginx()
+    const next = await getNginx()
+    if (seq !== loadSeq || !pageAlive) return
+    data.value = next
     loadError.value = ''
   } catch (e) {
+    if (seq !== loadSeq || !pageAlive) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    loaded.value = true
+    if (seq === loadSeq) loaded.value = true
   }
 }
 
@@ -98,28 +105,40 @@ async function test() {
   busy.value = true
   try {
     const j = await testNginx()
-    msg.value = j.message || ''
+    if (!pageAlive) return
+    msg.value = finiteText(j.message, '')
     toast(j.ok ? '✅ ' + t('gateway.conf_valid') : '❌ ' + t('gateway.conf_invalid'))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function reload() {
+  if (!confirm(t('gateway.confirm_reload'))) return
   busy.value = true
   try {
     const j = await reloadNginx()
-    msg.value = j.message || ''
+    if (!pageAlive) return
+    msg.value = finiteText(j.message, '')
     toast(j.ok ? '✅ ' + t('common.reloaded') : '❌ ' + t('common.reload_failed'))
-    load()
+    void load()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  pageAlive = true
+  void load()
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadSeq += 1
+})
 </script>

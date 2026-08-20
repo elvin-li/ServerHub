@@ -39,7 +39,6 @@ class InvalidationOnStoreActionsTests(unittest.TestCase):
         # reach `brew services stop syncthing` and `brew uninstall`: an earlier
         # version of this file spawned subprocesses against the host's Homebrew
         # and took 16s to run.  A test that can uninstall software is not a test.
-        completed = mock.Mock(returncode=0, stdout="", stderr="")
         for name, kwargs in (
             ("sh", {"return_value": (0, "", "")}),
             ("invalidate_brew_services", {}),
@@ -49,7 +48,8 @@ class InvalidationOnStoreActionsTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         run_patcher = mock.patch.object(
-            native_catalog.subprocess, "run", return_value=completed
+            native_catalog, "_run",
+            return_value={"ok": True, "message": "", "rc": 0},
         )
         run_patcher.start()
         self.addCleanup(run_patcher.stop)

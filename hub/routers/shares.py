@@ -228,13 +228,17 @@ def _share_directory(path: str) -> str:
     """
     try:
         resolved = str(Path(str(path or "")).resolve(strict=True))
-    except OSError:
+    except (OSError, ValueError, TypeError, RuntimeError):
         raise api_error("shares.bad_path")
-    shared = {
-        str(Path(str(share.get("path"))).resolve())
-        for share in shares_svc.list_smb_shares(include_sizes=False)
-        if share.get("path")
-    }
+    shared = set()
+    for share in shares_svc.list_smb_shares(include_sizes=False):
+        raw = share.get("path") if isinstance(share, dict) else None
+        if not raw:
+            continue
+        try:
+            shared.add(str(Path(str(raw)).resolve()))
+        except (OSError, ValueError, TypeError, RuntimeError):
+            continue
     if resolved not in shared:
         raise api_error("shares.acl_not_share")
     return resolved

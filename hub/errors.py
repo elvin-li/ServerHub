@@ -207,12 +207,14 @@ CODES: dict[str, tuple[int, str]] = {
     "settings.invalid_density": (400, "invalid density: {density}"),
     "settings.invalid_resource_mode": (400, "invalid resource mode: {mode}"),
     "settings.empty_patch": (400, "empty patch"),
+    "settings.save_failed": (503, "the configuration file could not be saved"),
     "metrics.bad_window": (400, "until must be greater than since"),
     "metrics.bad_range": (400, "invalid range (expected e.g. 48h, 30d, 1y)"),
     "actions.bad_process_name": (400, "invalid application process name"),
     "actions.empty_script": (400, "empty script command"),
     "actions.bad_action": (400, "unsupported action {action} for {kind}"),
     "actions.unknown_target": (404, "unknown target: {target}"),
+    "actions.crash_loop": (503, "LaunchAgent {label} is crash-looping (last exit {exit}); the start command ran but the process died. Check the service log."),
     "catalog.no_free_port": (409, "no free host port available at or above {port}"),
     "catalog.unknown_app": (404, "unknown native app: {app}"),
     "catalog.unsupported_script": (400, "unsupported script_id: {script}"),
@@ -328,7 +330,8 @@ CODES: dict[str, tuple[int, str]] = {
     "cloudflared.tunnel_required": (400, 'a tunnel name or UUID is required'),
     "cloudflared.not_logged_in": (400, 'not signed in to Cloudflare (cert.pem missing); sign in first'),
     "cloudflared.token_fetch_failed": (400, 'could not fetch the tunnel token: {error}'),
-    "cloudflared.invalid_token": (400, 'invalid token (too short)'),
+    "cloudflared.invalid_token": (400, 'invalid Cloudflare tunnel token; paste the connector token from Zero Trust → Tunnels (it starts with eyJ)'),
+    "cloudflared.start_failed": (503, 'the tunnel process died after start: {error}'),
     "cloudflared.no_token": (400, 'no tunnel token saved yet'),
     "cloudflared.invalid_name": (400, 'invalid tunnel name (letters, digits, . _ - only)'),
     "cloudflared.login_required": (400, 'sign in to Cloudflare first'),
@@ -365,6 +368,7 @@ CODES: dict[str, tuple[int, str]] = {
     "autostart.bad_id": (400, 'id must be kind:name'),
     "autostart.unknown_kind": (400, "unknown autostart kind: {kind}"),
     "autostart.plist_missing": (404, "plist not found for {label}"),
+    "autostart.bad_plist": (400, "the LaunchAgent plist for {label} is unreadable or has no Label"),
     "autostart.script_missing": (404, "autostart.sh not found"),
     "nginx.conf_missing": (404, "nginx.conf is missing"),
     "power.unknown_action": (400, 'unknown power action: {action} (choose one of {choices})'),
@@ -372,7 +376,9 @@ CODES: dict[str, tuple[int, str]] = {
     "power.bad_key": (400, "unsupported power setting: {key}"),
     "power.bad_value": (400, "value must be an integer"),
     "power.value_range": (400, "value is out of range 0–180"),
+    "identity.bad_name": (400, "computer name is invalid"),
     "vms.name_required": (400, 'a new name is required'),
+    "vms.bad_id": (400, "invalid virtual machine id"),
     "vms.utm_unavailable": (503, 'utmctl is not available; install UTM'),
     "vms.utm_unsupported_action": (400, 'UTM does not support action: {action}'),
     "vms.orb_unavailable": (503, 'orbctl is not available'),
@@ -441,6 +447,11 @@ CODES: dict[str, tuple[int, str]] = {
     "tools.empty_name": (400, "domain name is empty"),
     "tools.confirm_required": (400, "confirm=true is required"),
     "tools.bad_prune": (400, "unknown prune type: {what}"),
+    "tools.no_update": (409, "this panel is already on the latest GitHub release"),
+    "tools.dirty_tree": (409, "the checkout has local changes; commit, stash or reset before installing a GitHub update"),
+    "tools.not_a_git_checkout": (400, "this install is not a git checkout; re-run install.sh from a clone"),
+    "tools.github_unreachable": (503, "could not reach GitHub: {error}"),
+    "tools.brew_busy": (409, "Homebrew is busy or not installed; try again in a few minutes"),
     # ── PhotosHub ────────────────────────────────────────────────────────────
     "photoshub.status_failed": (500, "PhotosHub status could not be read: {detail}"),
     "photoshub.pending_failed": (502, "could not list pending-delete photos: {detail}"),
@@ -466,6 +477,63 @@ CODES: dict[str, tuple[int, str]] = {
 }
 
 
+def _jsonable_param(value, depth: int = 0):
+    """Coerce leftover params so Starlette's allow_nan=False encoder cannot 500.
+
+    A coded 409 whose ``port`` was YAML ``.inf`` used to become HTTP 500 while
+    encoding the error body.  ``bytes`` / dates / ``!!set`` in params did the
+    same via TypeError.
+    """
+    if depth > 8:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            k = k.encode("utf-8", "replace").decode("utf-8")
+            out[k] = _jsonable_param(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable_param(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 a coded error body.
+            return _jsonable_param(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return text.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return None
+
+
 def error_payload(code: str, /, **params) -> tuple[int, dict]:
     """(http status, response body) for *code* — the shape the SPA parses.
 
@@ -476,11 +544,31 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     status, template = CODES.get(code, (500, code))
     try:
         message = template.format(**params) if params else template
-    except (KeyError, IndexError):
+    except (KeyError, IndexError, ValueError, TypeError, RecursionError, OverflowError):
+        # RecursionError: leftover recursive ``__format__``/``__str__`` is not
+        # ValueError; OverflowError: leftover inf width/precision. Either used
+        # to 500 every coded error after callers already sanitized params.
         message = template
+    # Leftover ``\\ud800`` in a formatted param used to 500 the error body
+    # under Starlette's UTF-8 encode even after params themselves were cleaned.
+    if not isinstance(message, str):
+        try:
+            message = str(message)
+        except Exception:
+            message = template if isinstance(template, str) else code
+    message = message.encode("utf-8", "replace").decode("utf-8")
     detail: dict = {"code": code, "message": message}
     if params:
-        detail["params"] = params
+        clean = {}
+        for k, v in params.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            k = k.encode("utf-8", "replace").decode("utf-8")
+            clean[k] = _jsonable_param(v)
+        detail["params"] = clean
     return status, {"detail": detail}
 
 
@@ -497,6 +585,24 @@ def soft_fail(code: str, **params) -> dict:
     if "params" in detail:
         out["params"] = detail["params"]
     return out
+
+
+def exc_detail(exc, cap: int = 200) -> str:
+    """Safe exception text for coded errors.
+
+    RecursionError on ``str(e)`` is not ValueError; leftover ``\\ud800`` in
+    the message used to 500 Starlette's UTF-8 encode of GET /api/photoshub.
+    """
+    try:
+        text = str(exc)
+    except Exception:
+        return "error"
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return "error"
+    return text.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
 
 
 def api_error(code: str, /, **params) -> HTTPException:

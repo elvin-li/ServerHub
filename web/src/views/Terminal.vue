@@ -18,12 +18,12 @@
         <label v-if="target === 'container'" class="tsel">
           <span>{{ t('terminal.container') }}</span>
           <select v-if="containers.length" v-model="container" :disabled="connected">
-            <option v-for="c in containers" :key="c.id" :value="c.id">{{ c.label }}</option>
+            <option v-for="c in containers" :key="c.id" :value="c.id">{{ finiteText(c.label, '') || finiteText(c.id) }}</option>
           </select>
           <input v-else v-model="container" type="text" :disabled="connected" :placeholder="t('terminal.container_ph')"  :aria-label="t('terminal.container_ph')"/>
           <!-- Only when discovery actually failed. An empty list with no error is
                simply "no running containers" and needs no explanation. -->
-          <span v-if="containerListError" class="sub" style="color:var(--warn)">{{ containerListError }}</span>
+          <span v-if="containerListError" class="sub" style="color:var(--warn)">{{ finiteText(containerListError) }}</span>
         </label>
 
         <label v-if="target === 'container'" class="tsel">
@@ -50,12 +50,19 @@
 
     <Teleport to="body">
       <div v-if="dialogOpen" class="terminal-backdrop" role="presentation" @mousedown.self="closeTerminal">
-        <section class="terminal-dialog" role="dialog" aria-modal="true" :aria-label="t('terminal.title')">
+        <section
+          ref="terminalPanel"
+          class="terminal-dialog"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('terminal.title')"
+          tabindex="-1"
+        >
           <header class="terminal-head">
             <div class="terminal-title">
               <span class="status-dot" :class="{ live: connected }"></span>
-              <strong>{{ targetLabel }}</strong>
-              <span v-if="sessionId" class="session-id">{{ sessionId }}</span>
+              <strong>{{ finiteText(targetLabel) }}</strong>
+              <span v-if="sessionId" class="session-id">{{ finiteText(sessionId) }}</span>
             </div>
             <div class="terminal-actions">
               <button class="tiny terminal-action" type="button" @click="clearTerminal">{{ t('terminal.clear') }}</button>
@@ -64,7 +71,7 @@
           </header>
           <div ref="terminalEl" class="xterm-host" :aria-label="t('terminal.a11y_output')"></div>
           <footer class="terminal-foot">
-            <span>{{ connected ? targetLabel : t('terminal.cancel') }}</span>
+            <span>{{ connected ? finiteText(targetLabel) : t('terminal.cancel') }}</span>
             <span>{{ t('terminal.keys_hint') }}</span>
           </footer>
         </section>
@@ -80,6 +87,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getContainers, getTerminal } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
+import { useDismissable } from '../composables/useDismissable'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -96,15 +105,16 @@ const dialogOpen = ref(false)
 const opening = ref(false)
 const connected = ref(false)
 const terminalEl = ref(null)
+const terminalPanel = ref(null)
 const sessionId = ref('')
 
 let term = null
 let fitAddon = null
 let socket = null
 let resizeObserver = null
-let previousBodyOverflow = ''
 let intentionalClose = false
 let connectTimer = null
+let pageAlive = true
 
 function clearConnectTimer() {
   if (connectTimer) clearTimeout(connectTimer)
@@ -118,22 +128,27 @@ const canOpen = computed(() => {
 const targetLabel = computed(() => {
   if (target.value === 'host') return t('terminal.target_host')
   const item = containers.value.find(c => c.id === container.value)
-  return item?.label || container.value || t('terminal.target_container')
+  return finiteText(item?.label, '') || finiteText(container.value, '') || t('terminal.target_container')
 })
 
 watch(container, (id) => {
+  if (!pageAlive) return
   const item = containers.value.find(c => c.id === id)
   if (item?.shell) shell.value = item.shell
 })
 
 async function load() {
   try {
-    status.value = await getTerminal()
+    const next = await getTerminal()
+    if (!pageAlive) return
+    status.value = next
   } catch (error) {
-    toast?.('❌ ' + error.message)
+    if (!pageAlive) return
+    toast?.('❌ ' + finiteText(error.message))
   }
   try {
     const response = await getContainers(false)
+    if (!pageAlive) return
     containers.value = (response.containers || [])
       .filter(c => c.state === 'ok' || (c.status || '').startsWith('Up'))
       .map(c => ({
@@ -148,6 +163,7 @@ async function load() {
     // Container discovery is optional -- the template falls back to a free-text
     // container field -- but say why the picker is empty rather than leaving the
     // operator to guess whether Docker is down or they have no containers.
+    if (!pageAlive) return
     containerListError.value = error.message || String(error)
   }
 }
@@ -171,68 +187,91 @@ async function openTerminal() {
   opening.value = true
   intentionalClose = false
   dialogOpen.value = true
-  previousBodyOverflow = document.body.style.overflow
-  document.body.style.overflow = 'hidden'
-  await nextTick()
+  try {
+    await nextTick()
+    if (!pageAlive || !dialogOpen.value) return
 
-  term = new XTerm({
-    cursorBlink: true,
-    cursorStyle: 'block',
-    convertEol: true,
-    fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-    fontSize: 13,
-    lineHeight: 1.18,
-    scrollback: 5000,
-    allowProposedApi: false,
-    theme: {
-      background: '#0b0d10',
-      foreground: '#e8eaed',
-      cursor: '#f28c28',
-      selectionBackground: '#31506f',
-      black: '#111318',
-      red: '#ff6b6b',
-      green: '#69db7c',
-      yellow: '#ffd43b',
-      blue: '#74c0fc',
-      magenta: '#da77f2',
-      cyan: '#66d9e8',
-      white: '#f1f3f5',
-    },
-  })
-  fitAddon = new FitAddon()
-  term.loadAddon(fitAddon)
-  term.open(terminalEl.value)
-  fitTerminal()
-  term.focus()
-  term.writeln('\x1b[90mServerHub · connecting…\x1b[0m')
+    term = new XTerm({
+      cursorBlink: true,
+      cursorStyle: 'block',
+      convertEol: true,
+      fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      fontSize: 13,
+      lineHeight: 1.18,
+      scrollback: 5000,
+      allowProposedApi: false,
+      theme: {
+        background: '#0b0d10',
+        foreground: '#e8eaed',
+        cursor: '#f28c28',
+        selectionBackground: '#31506f',
+        black: '#111318',
+        red: '#ff6b6b',
+        green: '#69db7c',
+        yellow: '#ffd43b',
+        blue: '#74c0fc',
+        magenta: '#da77f2',
+        cyan: '#66d9e8',
+        white: '#f1f3f5',
+      },
+    })
+    fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(terminalEl.value)
+    fitTerminal()
+    term.writeln('\x1b[90mServerHub · connecting…\x1b[0m')
+    // useDismissable focuses the first chrome control one microtask after open.
+    await Promise.resolve()
+    if (!pageAlive || !dialogOpen.value) return
+    term.focus()
 
-  socket = new WebSocket(socketUrl())
-  socket.binaryType = 'arraybuffer'
-  term.onData(data => {
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'input', data }))
-    }
-  })
-  socket.addEventListener('message', onSocketMessage)
-  socket.addEventListener('close', onSocketClose)
-  socket.addEventListener('error', () => {
+    socket = new WebSocket(socketUrl())
+    socket.binaryType = 'arraybuffer'
+    term.onData(data => {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', data }))
+      }
+    })
+    socket.addEventListener('message', onSocketMessage)
+    socket.addEventListener('close', onSocketClose)
+    socket.addEventListener('error', () => {
+      if (!pageAlive) return
+      clearConnectTimer()
+      opening.value = false
+      term?.writeln('\r\n\x1b[31mWebSocket connection failed.\x1b[0m')
+    })
     clearConnectTimer()
-    opening.value = false
-    term?.writeln('\r\n\x1b[31mWebSocket connection failed.\x1b[0m')
-  })
-  clearConnectTimer()
-  connectTimer = setTimeout(() => {
-    if (!opening.value) return
-    opening.value = false
-    term?.writeln('\r\n\x1b[31mWebSocket connection timed out.\x1b[0m')
-    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(4000, 'terminal handshake timeout')
-  }, 10000)
+    connectTimer = setTimeout(() => {
+      if (!pageAlive || !opening.value) return
+      opening.value = false
+      term?.writeln('\r\n\x1b[31mWebSocket connection timed out.\x1b[0m')
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close(4000, 'terminal handshake timeout')
+    }, 10000)
 
-  resizeObserver = new ResizeObserver(() => fitTerminal())
-  resizeObserver.observe(terminalEl.value)
+    resizeObserver = new ResizeObserver(() => fitTerminal())
+    resizeObserver.observe(terminalEl.value)
+  } catch (error) {
+    clearConnectTimer()
+    resizeObserver?.disconnect()
+    resizeObserver = null
+    if (socket && socket.readyState < WebSocket.CLOSING) {
+      socket.removeEventListener('close', onSocketClose)
+      socket.removeEventListener('message', onSocketMessage)
+      socket.close(4000, 'terminal open failed')
+    }
+    socket = null
+    if (!pageAlive) return
+    opening.value = false
+    try {
+      term?.writeln(`\r\n\x1b[31m${error?.message || error}\x1b[0m`)
+    } catch {
+      closeTerminal()
+    }
+  }
 }
 
 function onSocketMessage(event) {
+  if (!pageAlive) return
   if (typeof event.data !== 'string') {
     term?.write(new Uint8Array(event.data))
     return
@@ -243,7 +282,7 @@ function onSocketMessage(event) {
       clearConnectTimer()
       connected.value = true
       opening.value = false
-      sessionId.value = message.session || ''
+      sessionId.value = finiteText(message.session, '')
       term?.write('\r\x1b[2K')
       fitTerminal()
       term?.focus()
@@ -262,6 +301,7 @@ function onSocketMessage(event) {
 
 function onSocketClose() {
   clearConnectTimer()
+  if (!pageAlive) return
   connected.value = false
   opening.value = false
   sessionId.value = ''
@@ -299,19 +339,16 @@ function closeTerminal() {
   connected.value = false
   opening.value = false
   sessionId.value = ''
-  document.body.style.overflow = previousBodyOverflow
 }
 
-function onKeydown(event) {
-  if (dialogOpen.value && event.key === 'Escape') closeTerminal()
-}
+useDismissable(dialogOpen, closeTerminal, terminalPanel)
 
 onMounted(() => {
+  pageAlive = true
   load()
-  window.addEventListener('keydown', onKeydown)
 })
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
+  pageAlive = false
   closeTerminal()
 })
 </script>

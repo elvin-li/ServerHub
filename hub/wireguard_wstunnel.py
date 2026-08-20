@@ -21,10 +21,39 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from hub.util import sh, ttl_memo
+from hub.util import read_bytes_capped, sh, ttl_memo
 
 LABEL = "com.elvin.wstunnel-wg-server"
+
+
+def _as_text(value) -> str:
+    """Drop leftover ``\\ud800`` so GET /api/wireguard cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _path_is_file(path) -> bool:
+    """``Path.is_file()`` re-raises EIO/ESTALE; that used to 500 GET /api/wireguard."""
+    try:
+        return Path(path).is_file()
+    except (OSError, ValueError, TypeError):
+        return False
 PLIST_PATH = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
+#: Leftover multi-MB wstunnel LaunchDaemon plist used to OOM GET /api/wireguard.
+_PLIST_CAP = 256 * 1024
 DEFAULT_LISTEN = "ws://0.0.0.0:8444"
 LOG_OUT = "/var/log/wstunnel-wg-server.log"
 LOG_ERR = "/var/log/wstunnel-wg-server.err.log"
@@ -98,7 +127,7 @@ def parse_argv(argv: list[str]) -> dict[str, str]:
 
 def parse_process_table(text: str) -> dict[str, Any]:
     """Find a ``wstunnel server`` row in ``ps -ax -o pid=,command=`` output."""
-    for line in (text or "").splitlines():
+    for line in _as_text(text).splitlines():
         raw = line.strip()
         if not raw:
             continue
@@ -109,13 +138,25 @@ def parse_process_table(text: str) -> dict[str, Any]:
             argv = shlex.split(command)
         except ValueError:
             continue
-        names = {Path(part).name for part in argv}
+        try:
+            names = {Path(part).name for part in argv}
+        except (TypeError, ValueError, OSError):
+            continue
         if "wstunnel" not in names or "server" not in argv:
             continue
         parsed = parse_argv(argv)
-        parsed["pid"] = int(pid_s)
+        try:
+            parsed["pid"] = int(pid_s)
+        except (TypeError, ValueError, OverflowError):
+            # Leftover ``pid: .inf`` OverflowError'd GET /api/wireguard wstunnel.
+            continue
         parsed["running"] = True
-        parsed["binary"] = next((part for part in argv if Path(part).name == "wstunnel"), "")
+        try:
+            parsed["binary"] = next(
+                (part for part in argv if Path(part).name == "wstunnel"), ""
+            )
+        except (TypeError, ValueError, OSError):
+            parsed["binary"] = ""
         return parsed
     return {"listen": "", "restrict_to": "", "pid": 0, "running": False, "binary": ""}
 
@@ -124,8 +165,12 @@ def read_plist(path: Path | None = None) -> dict[str, str]:
     """``listen`` / ``restrict_to`` from the LaunchDaemon, if readable."""
     target = path or PLIST_PATH
     try:
-        data = plistlib.loads(target.read_bytes())
-    except (OSError, plistlib.InvalidFileException, ValueError):
+        data = plistlib.loads(read_bytes_capped(target, _PLIST_CAP))
+    except (OSError, plistlib.InvalidFileException, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested LaunchDaemon plist is not
+        # ValueError; GET /api/wireguard and GET /api/system/network used to 500.
+        return {"listen": "", "restrict_to": ""}
+    if not isinstance(data, dict):
         return {"listen": "", "restrict_to": ""}
     argv = data.get("ProgramArguments") or []
     if not isinstance(argv, list):
@@ -149,7 +194,7 @@ def live(ps_text: str | None = None) -> dict[str, Any]:
         found["listen"] = plist.get("listen") or ""
     if not found.get("restrict_to"):
         found["restrict_to"] = plist.get("restrict_to") or ""
-    found["plist"] = str(PLIST_PATH) if PLIST_PATH.is_file() else ""
+    found["plist"] = str(PLIST_PATH) if _path_is_file(PLIST_PATH) else ""
     return found
 
 
@@ -159,13 +204,13 @@ def local_ipv4s() -> frozenset[str]:
     rc, out, _err = sh(["/sbin/ifconfig", "-a"], timeout=5)
     if rc != 0:
         return frozenset()
-    return frozenset(_INET_RE.findall(out or ""))
+    return frozenset(_INET_RE.findall(_as_text(out)))
 
 
 def find_binary() -> str:
     """First allowed wstunnel binary that exists on disk."""
     for path in ALLOWED_BINARIES:
-        if Path(path).is_file():
+        if _path_is_file(path):
             return path
     return ""
 
@@ -207,7 +252,7 @@ def client_command(*, public: str, restrict_to: str, local_port: int | str) -> s
     url = str(public or "").strip()
     try:
         port = int(local_port)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         port = 0
     if not dest or not url or not (1 <= port <= 65535):
         return ""
@@ -220,7 +265,7 @@ def local_endpoint(local_port: int | str) -> str:
     """``127.0.0.1:port`` the obfuscated WireGuard config should dial."""
     try:
         port = int(local_port)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return ""
     if not (1 <= port <= 65535):
         return ""
@@ -323,29 +368,29 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     generated command that names a dest the running process will refuse is
     worse than a slightly-unstable LAN address that still works today.
     """
-    cfg = dict(settings or {})
+    cfg = dict(settings) if isinstance(settings, dict) else {}
     found = live()
     try:
         listen_port = int(cfg.get("listen_port") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         listen_port = 0
-    desired_listen = str(cfg.get("wstunnel_listen") or DEFAULT_LISTEN)
-    desired_restrict = str(cfg.get("wstunnel_restrict_to") or "") or default_restrict_to(
+    desired_listen = _as_text(cfg.get("wstunnel_listen") or DEFAULT_LISTEN)
+    desired_restrict = _as_text(cfg.get("wstunnel_restrict_to") or "") or default_restrict_to(
         listen_port
     )
-    live_listen = str(found.get("listen") or "")
-    live_restrict = str(found.get("restrict_to") or "")
+    live_listen = _as_text(found.get("listen") or "")
+    live_restrict = _as_text(found.get("restrict_to") or "")
     running = bool(found.get("running"))
     # Export dest must match the process that will accept it.
     restrict_to = live_restrict if running and live_restrict else desired_restrict
     listen = live_listen if running and live_listen else desired_listen
-    stored_public = str(cfg.get("wstunnel_public") or "")
+    stored_public = _as_text(cfg.get("wstunnel_public") or "")
     public = stored_public or public_url(listen, str(cfg.get("endpoint") or ""))
     _scheme, _host, port = listen_parts(listen)
     if not listen_port:
         listen_port = int(port) if str(port).isdigit() else 0
     enabled = bool(cfg.get("wstunnel_enabled"))
-    binary = str(found.get("binary") or "") or find_binary()
+    binary = _as_text(found.get("binary") or "") or find_binary()
     aligned = (not running) or (
         live_listen == desired_listen and live_restrict == desired_restrict
     )
@@ -369,12 +414,12 @@ def status(settings: dict | None = None) -> dict[str, Any]:
         "enabled": enabled,
         "configured": configured,
         "running": running,
-        "pid": int(found.get("pid") or 0),
-        "listen": listen,
-        "desired_listen": desired_listen,
-        "public": public,
-        "restrict_to": restrict_to,
-        "desired_restrict_to": desired_restrict,
+        "pid": _int_or_zero(found.get("pid")),
+        "listen": _as_text(listen),
+        "desired_listen": _as_text(desired_listen),
+        "public": _as_text(public),
+        "restrict_to": _as_text(restrict_to),
+        "desired_restrict_to": _as_text(desired_restrict),
         "suggest_restrict_to": default_restrict_to(listen_port),
         "port": int(port) if str(port).isdigit() else 0,
         "local_port": listen_port,
@@ -382,9 +427,9 @@ def status(settings: dict | None = None) -> dict[str, Any]:
         "client_command": client_command(
             public=public, restrict_to=restrict_to, local_port=listen_port,
         ),
-        "plist": found.get("plist") or "",
-        "binary": binary,
-        "binary_ok": bool(binary) and Path(binary).is_file(),
+        "plist": _as_text(found.get("plist") or ""),
+        "binary": _as_text(binary),
+        "binary_ok": bool(binary) and _path_is_file(binary),
         "aligned": aligned,
         "stable_restrict": stable,
         "stale_restrict": stale,
@@ -394,20 +439,30 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     }
 
 
+def _int_or_zero(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def listener_row(snapshot: dict | None) -> dict[str, Any] | None:
     """A ports-tab row for a root wstunnel that ``lsof`` without sudo misses."""
-    if not snapshot:
+    if not isinstance(snapshot, dict):
         return None
     port = snapshot.get("port")
     if not port:
-        parsed = urlparse(str(snapshot.get("listen") or ""))
-        if parsed.port:
+        try:
+            parsed = urlparse(str(snapshot.get("listen") or ""))
             port = parsed.port
+        except ValueError:
+            return None
     if not port:
         return None
+    pid = _int_or_zero(snapshot.get("pid"))
     return {
         "process": "wstunnel",
-        "pid": snapshot.get("pid") or "",
+        "pid": pid or "",
         "user": "root",
         "address": snapshot.get("listen") or f"*:{port}",
         "port": str(port),

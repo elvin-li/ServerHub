@@ -32,7 +32,7 @@ from typing import Any
 
 from hub import secure_io
 from hub.paths import DATA_DIR
-from hub.util import tail_file_lines
+from hub.util import strftime_now, tail_file_lines
 
 AUDIT_PATH = DATA_DIR / "auth-audit.jsonl"
 
@@ -166,6 +166,68 @@ _PUBLIC_EXCEPTIONS = (
 )
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Infinity in a leftover auth-audit.jsonl field was already dropped; a
+    leftover ``\\ud800`` username or key still 500'd GET /api/audit/auth.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/audit.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 def _is_secret_key(key: str) -> bool:
     lowered = str(key).lower()
     if any(allowed in lowered for allowed in _PUBLIC_EXCEPTIONS):
@@ -220,17 +282,29 @@ def _trim(path: Path) -> None:
         pass
 
 
-def record(event: str, **fields: Any) -> dict:
+def record(event: str, /, **fields: Any) -> dict:
     """Append one audit entry and return what was written.
 
     The returned dict is the redacted record, so a caller (or a test) can assert
     on exactly what reached disk rather than on what was passed in.
     """
-    entry = {
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "event": str(event),
-        **redact(fields),
-    }
+    extra = redact(fields)
+    if not isinstance(extra, dict):
+        extra = {}
+    # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
+    # clobber the stamp or the event name the trail is queried by.
+    extra.pop("ts", None)
+    extra.pop("event", None)
+    entry = _jsonable({
+        "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
+        "event": _utf8_text(event),
+        **extra,
+    })
+    if not isinstance(entry, dict):
+        entry = {
+            "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
+            "event": _utf8_text(event),
+        }
     try:
         # secure_io creates the file 0600 from the first byte.  A plain
         # open("a") would leave it 0644 under the default umask until a later
@@ -242,33 +316,36 @@ def record(event: str, **fields: Any) -> dict:
         # config._bootstrap() destroyed a populated services.yaml on every test
         # run, and here the loss would be the security history specifically.
         secure_io.create_secret_text(AUDIT_PATH, "")
-        with AUDIT_PATH.open("a", encoding="utf-8") as fh:
-            # default=str: an audit write must not fail because a caller
-            # passed an object json cannot encode.  Losing fidelity on one
-            # field is strictly better than losing the whole record.
-            fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        # O_NOFOLLOW: open("a") would follow a replacement symlink onto
+        # another file this process can write.
+        secure_io.append_text(
+            AUDIT_PATH,
+            json.dumps(entry, ensure_ascii=False, allow_nan=False, default=str) + "\n",
+            mode=0o600,
+        )
         # chmod only when the mode drifted.  The create helper already
         # writes 0600; repeating chmod on every login is a metadata write
         # against an otherwise append-only file.
         if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
             os.chmod(AUDIT_PATH, 0o600)
         _trim(AUDIT_PATH)
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError, RecursionError):
         # An unwritable or unencodable log must never turn a valid sign-in
-        # into a 500.
+        # into a 500. RecursionError: leftover nested audit row is not ValueError.
         pass
     return entry
 
 
 def recent(limit: int = 100) -> list[dict]:
     """Tail of the audit trail, newest last."""
-    if not AUDIT_PATH.exists():
-        return []
     try:
         n = max(1, min(int(limit), 1000))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         n = 100
     try:
+        # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/audit/auth.
+        if not AUDIT_PATH.exists():
+            return []
         lines = tail_file_lines(AUDIT_PATH, n)
     except OSError:
         return []
@@ -276,8 +353,8 @@ def recent(limit: int = 100) -> list[dict]:
     for raw in lines:
         try:
             parsed = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if isinstance(parsed, dict):
-            out.append(parsed)
+            out.append(_jsonable(parsed))
     return out

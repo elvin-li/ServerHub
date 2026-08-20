@@ -141,6 +141,37 @@ class DispatchRoutingTests(_Sandbox):
         self.assertFalse(result["ok"])
         self.assertEqual(result["results"], [])
 
+    def test_unhashable_channel_type_does_not_500(self):
+        """``type: [ntfy]`` used to TypeError inside ``x in CHANNEL_TYPES``."""
+        raw = {"channels": [
+            {"id": "bad", "type": ["ntfy"]},
+            {"id": "also", "type": {"ntfy": 1}},
+            {"id": "ok", "type": "slack"},
+        ]}
+        self.assertEqual([c["id"] for c in notify_channels.channels(raw)], ["ok"])
+
+    def test_unhashable_type_does_not_sink_dispatch(self):
+        calls: list = []
+        self.use_cfg({"channels": [
+            {"id": "bad", "type": ["ntfy"]},
+            {"id": "ok", "type": "slack"},
+        ]})
+        with mock.patch.dict(notify_channels._SENDERS, {
+            "slack": _recording_sender(calls, "slack"),
+        }):
+            result = notify_channels.dispatch("T", "m", level="down")
+        self.assertEqual([c[1] for c in calls], ["ok"])
+        self.assertEqual(result["sent"], 1)
+
+    def test_sender_returning_none_does_not_raise(self):
+        """A None (or list) result used to AttributeError outside _send_via's try."""
+        self.use_cfg({"channels": [{"id": "x", "type": "slack"}]})
+        with mock.patch.dict(notify_channels._SENDERS, {"slack": lambda *a, **k: None}):
+            result = notify_channels.dispatch("T", "m", level="down")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failed"], 1)
+        self.assertIn("invalid sender response", result["results"][0]["message"])
+
 
 class DispatchBudgetTests(_Sandbox):
     """Channels send concurrently and the whole call is budget-bounded.
@@ -307,8 +338,12 @@ class SenderTests(_Sandbox):
     """Each sender against mocks — shapes, auth, SSRF, zero real traffic."""
 
     def test_email_uses_starttls_login_and_all_recipients(self):
+        import socket
+
         smtp = mock.MagicMock()
-        with mock.patch("smtplib.SMTP", return_value=smtp) as ctor:
+        resolved = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 0))]
+        with mock.patch("smtplib.SMTP", return_value=smtp) as ctor, \
+             mock.patch("hub.http_guard.socket.getaddrinfo", return_value=resolved):
             res = notify_channels._send_email(
                 {"host": "smtp.example.com", "port": 2525, "tls": "starttls",
                  "username": "u@example.com", "to": "a@x.com, b@y.com"},
@@ -316,16 +351,35 @@ class SenderTests(_Sandbox):
                 "Subject line", "Body text",
             )
         self.assertTrue(res["ok"], res)
-        ctor.assert_called_once_with("smtp.example.com", 2525, timeout=notify_channels.TIMEOUT)
+        # Connect is pinned to the checked IP; EHLO/SNI stay on the hostname.
+        ctor.assert_called_once_with(timeout=notify_channels.TIMEOUT)
+        smtp.connect.assert_called_once_with("smtp.example.com", 2525)
+        self.assertEqual(smtp._host, "smtp.example.com")
         smtp.starttls.assert_called_once()
+        starttls_ctx = smtp.starttls.call_args.kwargs.get("context")
+        self.assertIsNotNone(starttls_ctx)
+        import ssl
+        self.assertEqual(starttls_ctx.verify_mode, ssl.CERT_REQUIRED)
         smtp.login.assert_called_once_with("u@example.com", "pw")
         msg = smtp.send_message.call_args[0][0]
         self.assertEqual(msg["Subject"], "Subject line")
         self.assertEqual(msg["To"], "a@x.com, b@y.com")
         smtp.quit.assert_called_once()
 
+    def test_email_refuses_a_metadata_host(self):
+        with mock.patch("smtplib.SMTP") as ctor:
+            res = notify_channels._send_email(
+                {"host": "169.254.169.254", "to": "a@x.com"}, {}, "T", "M",
+            )
+        self.assertFalse(res["ok"])
+        ctor.assert_not_called()
+
     def test_email_failure_is_reported_not_raised(self):
-        with mock.patch("smtplib.SMTP", side_effect=OSError("connection refused")):
+        import socket
+
+        resolved = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 0))]
+        with mock.patch("smtplib.SMTP", side_effect=OSError("connection refused")), \
+             mock.patch("hub.http_guard.socket.getaddrinfo", return_value=resolved):
             res = notify_channels._send_email(
                 {"host": "smtp.example.com", "to": "a@x.com"}, {}, "T", "M",
             )
@@ -366,6 +420,10 @@ class SenderTests(_Sandbox):
         self.assertEqual(recorded[3][1]["level"], "warn")
         self.assertEqual(recorded[3][1]["text"], "T: M")
 
+    def test_http_url_ok_does_not_500_on_torn_ipv6(self):
+        for url in ("http://[::1", "http://[", "http://[]"):
+            self.assertFalse(notify_channels._http_url_ok(url), url)
+
     def test_post_refuses_non_http_schemes(self):
         # file:// or gopher:// must never leave the box (SSRF guard), and the
         # refusal happens before any socket is opened.
@@ -373,6 +431,32 @@ class SenderTests(_Sandbox):
             res = notify_channels._post("file:///etc/passwd", {"a": 1})
         self.assertFalse(res["ok"])
         opener.assert_not_called()
+
+    def test_post_dumps_recursion_is_not_500(self):
+        """json.dumps RecursionError is not ValueError; leftover nested body used to 500."""
+        with mock.patch.object(notify_channels.json, "dumps", side_effect=RecursionError), \
+             mock.patch.object(notify_channels._OPENER, "open") as opener:
+            res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
+        self.assertFalse(res["ok"])
+        opener.assert_not_called()
+        src = Path(notify_channels.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def _post"): src.index("\ndef _recipients")]
+        self.assertIn("_json_safe(payload)", body)
+        self.assertIn("RecursionError", body)
+
+    def test_post_recursing_exc_does_not_500(self):
+        """str(e) RecursionError used to 500 POST /api/alerts/test."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with mock.patch.object(
+            notify_channels, "_open_request", side_effect=Recursing(),
+        ):
+            res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
+        self.assertFalse(res["ok"])
+        json.dumps(res, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertEqual(res["message"], "error")
 
     def test_post_refuses_metadata_and_link_local(self):
         with mock.patch.object(notify_channels._OPENER, "open") as opener:
@@ -400,7 +484,10 @@ class SenderTests(_Sandbox):
                 return False
 
         huge = _Huge()
-        with mock.patch.object(notify_channels._OPENER, "open", return_value=huge):
+        with mock.patch.object(notify_channels, "_open_request", return_value=huge), \
+             mock.patch("hub.http_guard.socket.getaddrinfo", return_value=[
+                 (__import__("socket").AF_INET, __import__("socket").SOCK_STREAM, 0, "", ("203.0.113.10", 0)),
+             ]):
             res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
         self.assertTrue(res["ok"], res)
         self.assertEqual(huge.asked, 200)
@@ -413,7 +500,10 @@ class SenderTests(_Sandbox):
         err.read = lambda n=-1: b"y" * (n if n and n > 0 else 10_000_000)
         closed = []
         err.close = lambda: closed.append(True)
-        with mock.patch.object(notify_channels._OPENER, "open", side_effect=err):
+        with mock.patch.object(notify_channels, "_open_request", side_effect=err), \
+             mock.patch("hub.http_guard.socket.getaddrinfo", return_value=[
+                 (__import__("socket").AF_INET, __import__("socket").SOCK_STREAM, 0, "", ("203.0.113.10", 0)),
+             ]):
             res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
         self.assertFalse(res["ok"])
         self.assertIn("HTTP 500", res["message"])
@@ -424,12 +514,77 @@ class SenderTests(_Sandbox):
         from hub.http_guard import RedirectRefused
 
         with mock.patch.object(
-            notify_channels._OPENER, "open",
+            notify_channels, "_open_request",
             side_effect=RedirectRefused("redirect to http://evil/ refused"),
-        ):
+        ), mock.patch("hub.http_guard.socket.getaddrinfo", return_value=[
+            (__import__("socket").AF_INET, __import__("socket").SOCK_STREAM, 0, "", ("203.0.113.10", 0)),
+        ]):
             res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
         self.assertFalse(res["ok"])
         self.assertIn("redirect", res["message"])
+
+    def test_post_pins_connect_to_the_resolved_ip(self):
+        import socket
+
+        recorded = []
+
+        class _Ok:
+            status = 200
+            def read(self, n=-1):
+                return b"ok"
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+
+        def fake_open(req, timeout, dest_ip=None):
+            recorded.append(dest_ip)
+            return _Ok()
+
+        with mock.patch.object(notify_channels, "_open_request", fake_open), \
+             mock.patch("hub.http_guard.socket.getaddrinfo", return_value=[
+                 (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 0)),
+             ]):
+            res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(recorded, ["203.0.113.10"])
+
+    def test_post_does_not_follow_a_second_dns_lookup(self):
+        """The IP checked at allow-time is the IP passed to the opener.
+
+        A resolver that flips to metadata on the next getaddrinfo used to
+        be what urllib would connect to.  The pin keeps the first answer.
+        """
+        import socket
+
+        answers = [
+            [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 0))],
+            [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.169.254", 0))],
+        ]
+
+        def fake_gai(host, *args, **kwargs):
+            return answers.pop(0) if answers else answers[-1:]
+
+        recorded = []
+
+        class _Ok:
+            status = 200
+            def read(self, n=-1):
+                return b"ok"
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+
+        def fake_open(req, timeout, dest_ip=None):
+            recorded.append(dest_ip)
+            return _Ok()
+
+        with mock.patch.object(notify_channels, "_open_request", fake_open), \
+             mock.patch("hub.http_guard.socket.getaddrinfo", side_effect=fake_gai):
+            res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(recorded, ["203.0.113.10"])
 
     def test_missing_mandatory_secret_fails_cleanly(self):
         for sender, ch in (
@@ -473,6 +628,19 @@ class SecretStorageTests(_Sandbox):
             self.assertEqual(ctx.exception.detail["code"], "notify.secret_control_chars")
         self.assertEqual(notify_channels.channel_secrets("c1"), {},
                          "a refused write must not persist anything")
+
+    def test_recursing_secret_value_is_coded_not_500(self):
+        """leftover ``str(value)`` RecursionError used to 500 PUT notify secrets."""
+        from fastapi import HTTPException
+
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with self.assertRaises(HTTPException) as ctx:
+            notify_channels.set_channel_secrets("c1", {"bot_token": Recursing()})
+        self.assertEqual(ctx.exception.detail["code"], "notify.secret_control_chars")
+        json.dumps(ctx.exception.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 class ChannelApiTests(_Sandbox):
@@ -551,6 +719,13 @@ class ChannelApiTests(_Sandbox):
             "secrets": {"url": "http://169.254.169.254/latest/meta-data"},
         })
         self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["detail"]["code"], "notify.bad_url")
+
+        r = self.client.post("/api/alerts/channels", json={
+            "type": "webhook", "name": "v6",
+            "secrets": {"url": "http://[::1"},
+        })
+        self.assertEqual(r.status_code, 400, r.text)
         self.assertEqual(r.json()["detail"]["code"], "notify.bad_url")
         # The rejected secret must not linger in the store.
         self.assertEqual(notify_channels._load_secrets(), {})

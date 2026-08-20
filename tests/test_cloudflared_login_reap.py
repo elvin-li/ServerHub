@@ -70,6 +70,28 @@ class TestLoginPollReapsProcess(LoginProcessTestBase):
         self.assertFalse(cloudflared_svc.LOGIN_PID.exists())
         self.assert_reaped(proc)
 
+    def test_login_start_uses_a_new_session(self):
+        source = Path(cloudflared_svc.__file__).read_text(encoding="utf-8")
+        body = source[source.index("def login_start"): source.index("\ndef login_poll")]
+        self.assertIn("start_new_session=True", body)
+        self.assertIn("_signal_login", Path(cloudflared_svc.__file__).read_text(encoding="utf-8"))
+        self.assertNotIn("LOGIN_PID.write_text", body)
+        self.assertNotIn("LOGIN_LOG.write_text", body)
+        self.assertIn("replace_secret_text(LOGIN_PID", body)
+        self.assertIn("replace_secret_text(LOGIN_LOG", body)
+
+    def test_huge_login_pid_file_is_capped(self):
+        cloudflared_svc.LOGIN_PID.write_bytes(b"9" * (2 * 1024 * 1024))
+        self.assertIsNone(cloudflared_svc._read_login_pid())
+
+    def test_logged_in_vanished_cert_is_false_not_500(self):
+        cloudflared_svc.CERT.write_text("x" * 32)
+        with (
+            mock.patch.object(Path, "is_file", return_value=True),
+            mock.patch.object(Path, "stat", side_effect=FileNotFoundError),
+        ):
+            self.assertFalse(cloudflared_svc._logged_in())
+
 
 class TestLoginTerminationEscalation(LoginProcessTestBase):
     def test_sigterm_resistant_child_is_killed_and_reaped(self):

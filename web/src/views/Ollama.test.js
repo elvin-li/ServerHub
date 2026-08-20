@@ -248,6 +248,7 @@ describe('loaded page', () => {
     expect(putSettings).toHaveBeenCalledWith({
       ollama: { url: 'http://192.168.1.10:11434', label: 'com.kiro.ollama' },
     })
+    expect(save.attributes('disabled')).toBeUndefined()
   })
 })
 
@@ -338,6 +339,25 @@ describe('poll lifecycle', () => {
     expect(polls.disposed).toBe(0)
     wrapper.unmount()
     expect(polls.disposed).toBe(1)
+  })
+
+  it('does not toast a settings save that finishes after leave', async () => {
+    getOllamaStatus.mockResolvedValue(STATUS)
+    let finish
+    putSettings.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const toast = vi.fn()
+    const page = mount(Ollama, {
+      global: {
+        provide: { toast },
+        stubs: { RouterLink: true, SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+    await page.get('[data-test="ollama-settings"] button.primary').trigger('click')
+    page.unmount()
+    finish({ ok: true })
+    await flushPromises()
+    expect(toast).not.toHaveBeenCalled()
   })
 })
 
@@ -509,5 +529,6 @@ describe('in-panel chat', () => {
 
     expect(wrapper.html()).toContain('pondering the greeting…')
     expect(wrapper.html()).not.toContain('ollama.chat_sending')
+    expect(wrapper.find('.chat-msg.assistant .chat-body').exists()).toBe(false)
   })
 })

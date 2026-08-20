@@ -149,6 +149,17 @@ class SharePointsPlistParsingTests(unittest.TestCase):
         with patch("hub.shares_svc.sh", return_value=(0, "not a plist", "")):
             self.assertEqual(shares_svc.time_machine_records(), {})
 
+    def test_nested_plist_is_value_error_not_recursion(self):
+        """plistlib RecursionError is not ValueError."""
+        with patch.object(shares_svc.plistlib, "loads", side_effect=RecursionError):
+            with self.assertRaises(ValueError):
+                shares_svc.parse_time_machine_records("<plist/>")
+        with (
+            patch("hub.shares_svc.sh", return_value=(0, "<plist/>", "")),
+            patch.object(shares_svc.plistlib, "loads", side_effect=RecursionError),
+        ):
+            self.assertEqual(shares_svc.time_machine_records(), {})
+
     def test_records_read_uses_fixed_dscl_argv(self):
         with patch("hub.shares_svc.sh", return_value=(0, SHAREPOINTS_PLIST, "")) as run:
             shares_svc.time_machine_records()
@@ -455,6 +466,60 @@ class DiscoveryProbeTests(unittest.TestCase):
     def test_browse_spawn_failure_reports_none_not_false(self):
         with patch("hub.shares_svc.subprocess.Popen", side_effect=OSError("no dns-sd")):
             self.assertIsNone(shares_svc._dns_sd_advertised("_adisk._tcp", wait=0.1))
+
+    def test_browse_spawn_valueerror_reports_none_not_500(self):
+        """Leftover ``\\ud800`` env UnicodeEncodeError is ValueError, not OSError."""
+        with patch(
+            "hub.shares_svc.subprocess.Popen",
+            side_effect=UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed"),
+        ):
+            self.assertIsNone(shares_svc._dns_sd_advertised("_adisk._tcp", wait=0.1))
+
+    def test_browse_passes_utf8_env(self):
+        source = Path(shares_svc.__file__).read_text(encoding="utf-8")
+        start = source.index("def _dns_sd_advertised")
+        body = source[start: source.index("\n@ttl_memo", start)]
+        self.assertIn("env=utf8_env()", body)
+
+    def test_browse_uses_a_new_session(self):
+        source = Path(shares_svc.__file__).read_text(encoding="utf-8")
+        start = source.index("def _dns_sd_advertised")
+        body = source[start: source.index("\n@ttl_memo", start)]
+        self.assertIn("start_new_session=True", body)
+        self.assertIn("killpg", body)
+        self.assertIn("iter_capped_lines", body)
+        self.assertIn('errors="replace"', body)
+
+    def test_browse_does_not_buffer_an_unbounded_line(self):
+        """``for line in stdout`` kept a leftover huge dns-sd row in RAM."""
+        closed = []
+        chunks = ["x" * 4096, "Add leftover\n"]
+
+        class _CappedPipe:
+            def readline(self, n=-1):
+                return chunks.pop(0) if chunks else ""
+
+            def __iter__(self):
+                raise AssertionError("unbounded for-line on dns-sd stdout")
+
+            def close(self):
+                closed.append(True)
+
+        class _HugeDnsSd:
+            def __init__(self):
+                self.stdout = _CappedPipe()
+                self.pid = 9
+
+            def kill(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        with patch("hub.shares_svc.subprocess.Popen", lambda *a, **kw: _HugeDnsSd()):
+            answer = shares_svc._dns_sd_advertised("_adisk._tcp", wait=0.05)
+        self.assertIs(answer, False)
+        self.assertTrue(closed)
 
 
 class HealthCheckTests(unittest.TestCase):

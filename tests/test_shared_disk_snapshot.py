@@ -27,6 +27,7 @@ import plistlib
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from hub import disk_manage_svc, disk_power_svc, disk_snapshot, storage_svc
@@ -335,6 +336,40 @@ class DiskInvalidationTests(unittest.TestCase):
             host.count("df"), 1,
             f"the power listing re-read the mount table ({host.count('df')} total)",
         )
+
+
+class DiskPlistTypeTests(unittest.TestCase):
+    def test_power_info_rejects_a_list_plist(self):
+        class Done:
+            returncode = 0
+            stdout = plistlib.dumps(["WholeDisks"])
+
+        with mock.patch.object(disk_power_svc.subprocess, "run", return_value=Done()):
+            self.assertEqual(disk_power_svc._diskutil_info("disk0"), {})
+
+    def test_physical_list_falls_back_when_plist_is_not_a_dict(self):
+        class Done:
+            returncode = 0
+            stdout = plistlib.dumps(["disk0"])
+
+        disk_snapshot.invalidate_disks()
+        self.addCleanup(disk_snapshot.invalidate_disks)
+        with (
+            mock.patch.object(disk_snapshot.subprocess, "run", return_value=Done()),
+            mock.patch.object(
+                disk_snapshot, "sh",
+                return_value=(0, "/dev/disk0 x\n", ""),
+            ),
+        ):
+            self.assertEqual(disk_snapshot.physical_whole_disks(), ("disk0",))
+
+    def test_disk_plist_readers_do_not_capture_output(self):
+        for mod in (disk_snapshot, disk_power_svc, disk_manage_svc):
+            src = Path(mod.__file__).read_text(encoding="utf-8")
+            self.assertNotIn(
+                "capture_output=True", src, f"{mod.__name__} still buffers plists in RAM",
+            )
+            self.assertIn("run_bytes", src, f"{mod.__name__} should stream plists")
 
 
 if __name__ == "__main__":

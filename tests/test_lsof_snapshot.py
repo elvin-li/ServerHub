@@ -247,6 +247,19 @@ class TestOrphanScanBehaviourUnchanged(LsofSnapshotTestCase):
         self.assertEqual(node["state"], "ok")
 
 
+class TestPlistPortExtraction(unittest.TestCase):
+    def test_non_dict_env_and_sockets_do_not_500(self):
+        ports = adaptive.ports_from_plist({
+            "ProgramArguments": ["/bin/svc", "--port", "8123"],
+            "EnvironmentVariables": ["PORT=9"],
+            "Sockets": ["http"],
+        })
+        self.assertIn(8123, ports)
+        self.assertIsNone(adaptive.url_from_plist({
+            "EnvironmentVariables": ["URL=http://x"],
+        }))
+
+
 class TestVmListTtlOutlivesStatusTtl(unittest.TestCase):
     """A VM list TTL under the status TTL missed on every single refresh."""
 

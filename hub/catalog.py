@@ -15,7 +15,6 @@ import secrets
 import shutil
 import socket
 import string
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +26,25 @@ from hub import cli_args
 from hub import secure_io
 from hub.errors import CODES, api_error
 from hub.host_address import host_ip
-from hub.paths import BASE, DOCKER
-from hub.util import fan_out
+from hub.paths import BASE, DOCKER, user_home
+from hub.util import fan_out, read_text_capped, run_capped
 
 TEMPLATES = BASE / "templates"
-SERVICES_ROOT = Path.home() / "Services"
+
+
+def _default_services_root() -> Path:
+    """Services tree under ``~/Services``.  ``Path.home()`` leftover must not 500 import."""
+    home = user_home()
+    return (home / "Services") if home is not None else Path("/var/empty/serverhub-services")
+
+
+SERVICES_ROOT = _default_services_root()
+#: Leftover multi-MB ``*.yml`` used to OOM GET /api/catalog.
+_TEMPLATE_CAP = 64 * 1024
+#: Port scan only needs the compose ports block, not a leftover multi-MB file.
+_COMPOSE_SCAN_CAP = 256 * 1024
+#: Leftover huge ``.GlobalPreferences.plist`` used to OOM host_languages().
+_PREFS_CAP = 256 * 1024
 
 # Catalog-owned error codes.  Registered here (rather than inlined in
 # hub/errors.py) so the code -> status mapping travels with the module that
@@ -144,9 +157,81 @@ CATEGORIES = [
 ]
 
 
+def _plain_str(value, default: str = "") -> str:
+    """JSON-safe string. YAML leftover ``.inf`` / ``\\ud800`` used to 500 the store."""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", "replace")
+    elif isinstance(value, bool) or value is None:
+        return default
+    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return default
+    elif isinstance(value, (dict, list, tuple, set, frozenset)):
+        return default
+    else:
+        try:
+            text = str(value)
+        except Exception:
+            return default
+    try:
+        return text.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return default
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _plain_str_list(raw) -> list[str]:
+    if isinstance(raw, list):
+        items = raw
+    elif raw in (None, "", False):
+        return []
+    else:
+        items = [raw]
+    out: list[str] = []
+    for item in items:
+        text = _plain_str(item)
+        if text:
+            out.append(text)
+    return out
+
+
+def _plain_ports(raw) -> list:
+    if not isinstance(raw, list):
+        return []
+    out: list = []
+    for port in raw:
+        if port is None or port == "" or isinstance(port, bool):
+            continue
+        if isinstance(port, float) and (
+            port != port or port in (float("inf"), float("-inf"))
+        ):
+            continue
+        if isinstance(port, int):
+            out.append(port)
+        else:
+            text = _plain_str(port)
+            if text:
+                out.append(text)
+    return out
+
+
 def _guess_category(tid: str, meta: dict) -> str:
     if meta.get("category"):
-        return str(meta["category"])
+        return _plain_str(meta["category"], "other") or "other"
     low = (tid or "").lower()
     for key, cat in CATEGORY_HINTS.items():
         if key in low:
@@ -183,7 +268,15 @@ def host_timezone() -> str:
 # macOS keeps the user's ordered language preference here.  Reading the plist
 # directly avoids a `defaults read` subprocess on a path that runs for every
 # variable of every template on every catalog listing.
-_GLOBAL_PREFS = Path.home() / "Library/Preferences/.GlobalPreferences.plist"
+def _default_global_prefs() -> Path:
+    """``Path.home()`` leftover used to 500 import of catalog."""
+    home = user_home()
+    if home is None:
+        return Path("/var/empty/serverhub-global-prefs")
+    return home / "Library/Preferences/.GlobalPreferences.plist"
+
+
+_GLOBAL_PREFS = _default_global_prefs()
 
 #: BCP-47 primary subtag -> (tesseract OCR code, Stirling PDF locale).  Only
 #: languages both projects actually ship models/translations for; anything else
@@ -234,9 +327,16 @@ def host_languages() -> tuple[str, ...]:
     if cached and cached[0] == mtime:
         return cached[1]
     try:
-        prefs = plistlib.loads(_GLOBAL_PREFS.read_bytes())
-        raw = prefs.get("AppleLanguages") or []
+        with _GLOBAL_PREFS.open("rb") as fh:
+            blob = fh.read(_PREFS_CAP + 1)
+        if len(blob) > _PREFS_CAP:
+            raise OSError(errno.EFBIG, "file exceeds read cap", str(_GLOBAL_PREFS))
+        prefs = plistlib.loads(blob)
+        raw = prefs.get("AppleLanguages") if isinstance(prefs, dict) else []
     except Exception:
+        raw = []
+    if not isinstance(raw, list):
+        # A scalar leftover used to raise on `for tag in 3` and 500 the store.
         raw = []
     seen: list[str] = []
     for tag in raw:
@@ -272,9 +372,10 @@ def host_ui_languages() -> str:
 
 def auto_var_values() -> dict[str, str]:
     """Values for the placeholders the server fills in on its own."""
+    home = user_home()
     return {
         "HOST_IP": host_ip(),
-        "HOME": str(Path.home()),
+        "HOME": str(home) if home is not None else "",
         "SERVICES": str(SERVICES_ROOT),
         "TZ": host_timezone(),
         "OCR_LANG": host_ocr_languages(),
@@ -299,7 +400,7 @@ def _expand_auto(text: str) -> str:
 
 
 def _parse_template(path: Path) -> tuple[dict, str]:
-    text = path.read_text(errors="replace")
+    text = read_text_capped(path, _TEMPLATE_CAP, errors="replace")
     meta: dict[str, Any] = {
         "id": path.stem,
         "name": path.stem.replace("-", " ").title(),
@@ -309,25 +410,44 @@ def _parse_template(path: Path) -> tuple[dict, str]:
     m = FM_RE.match(text)
     if m:
         try:
-            meta.update(yaml.safe_load(m.group(1)) or {})
-        except Exception:
-            pass
+            loaded = yaml.safe_load(m.group(1)) or {}
+        except (
+            yaml.YAMLError, RecursionError, TypeError, ValueError, AttributeError, KeyError,
+        ):
+            # RecursionError: leftover deeply-nested front matter is not YAMLError.
+            # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
+            # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
+            loaded = {}
+        if isinstance(loaded, dict):
+            meta.update(loaded)
         body = m.group(2)
     found = sorted(set(VAR_RE.findall(body)))
-    declared = meta.get("vars") or []
+    declared = meta.get("vars")
+    if not isinstance(declared, list):
+        declared = []
     by_name: dict[str, dict] = {}
     for v in declared:
-        if isinstance(v, str):
-            by_name[v] = {"name": v, "default": "", "label": v, "required": True}
-        elif isinstance(v, dict) and v.get("name"):
-            # Keep __RANDOM__ literal until install time (never mint secrets on list)
-            default = v.get("default", "")
-            by_name[v["name"]] = {
-                "name": v["name"],
-                "default": _expand_auto(str(default if default is not None else "")),
-                "label": v.get("label") or v["name"],
+        if isinstance(v, str) and v:
+            name = _plain_str(v)
+            if not name:
+                continue
+            by_name[name] = {"name": name, "default": "", "label": name, "required": True}
+        elif isinstance(v, dict):
+            name = _plain_str(v.get("name"))
+            if not name:
+                continue
+            # Keep __RANDOM__ literal until install time (never mint secrets on list).
+            # Always _plain_str: leftover YAML ``"\\ud800"`` is a str and used to
+            # skip the inf-only branch, then 500 GET /api/catalog.
+            default = _plain_str(v.get("default", ""))
+            label = _plain_str(v.get("label")) or name
+            help_text = _plain_str(v.get("help"))
+            by_name[name] = {
+                "name": name,
+                "default": _plain_str(_expand_auto(default)),
+                "label": label,
                 "required": bool(v.get("required", True)),
-                "help": v.get("help", ""),
+                "help": help_text,
                 "secret": bool(v.get("secret", False) or default == "__RANDOM__"),
             }
     for name in found:
@@ -347,16 +467,22 @@ def _parse_template(path: Path) -> tuple[dict, str]:
         meta.setdefault("desc", f"Compose template {path.name}")
     meta["images"] = re.findall(r"image:\s*(\S+)", body)
     meta["category"] = _guess_category(path.stem, meta)
-    meta.setdefault("tags", [])
-    meta.setdefault("ports", [])
+    meta["tags"] = _plain_str_list(meta.get("tags"))
+    meta["ports"] = _plain_ports(meta.get("ports"))
     meta.setdefault("featured", False)
     meta.setdefault("notes", "")
-    meta.setdefault("url_template", "")
+    meta["url_template"] = _plain_str(meta.get("url_template"))
+    meta["name"] = _plain_str(
+        meta.get("name"), path.stem.replace("-", " ").title()
+    ) or path.stem.replace("-", " ").title()
+    meta["desc"] = _plain_str(meta.get("desc"))
+    meta["notes"] = _plain_str(meta.get("notes"))
     # Fixed first-run login the upstream image ships when it cannot be preset
     # through env vars (e.g. "admin / admin123").  Shown prominently on the
     # install success panel with a change-it-now reminder.
-    meta["first_run_credentials"] = str(meta.get("first_run_credentials") or "").strip()
+    meta["first_run_credentials"] = _plain_str(meta.get("first_run_credentials")).strip()
     return meta, body
+
 
 
 _list_cache: dict = {"t": 0.0, "sig": "", "items": None}
@@ -365,14 +491,18 @@ _LIST_TTL = 20.0
 
 def _templates_sig() -> str:
     """Cheap change detector for template dir + remote overrides + install dirs."""
-    if not TEMPLATES.is_dir():
+    if not _is_dir(TEMPLATES):
         return "empty"
     parts = []
     try:
         for p in sorted(TEMPLATES.iterdir()):
             if p.suffix in (".yml", ".yaml"):
                 st = p.stat()
-                parts.append(f"{p.name}:{int(st.st_mtime)}:{st.st_size}")
+                try:
+                    mtime = int(st.st_mtime)
+                except (TypeError, ValueError, OverflowError):
+                    mtime = 0
+                parts.append(f"{p.name}:{mtime}:{st.st_size}")
     except OSError:
         return "err"
     # Remote overrides change the merged listing without touching templates/,
@@ -381,13 +511,17 @@ def _templates_sig() -> str:
     try:
         for p in catalog_remote.remote_template_files():
             st = p.stat()
-            parts.append(f"r:{p.name}:{int(st.st_mtime)}:{st.st_size}")
+            try:
+                mtime = int(st.st_mtime)
+            except (TypeError, ValueError, OverflowError):
+                mtime = 0
+            parts.append(f"r:{p.name}:{mtime}:{st.st_size}")
     except OSError:
         pass
     # installed flags change when ~/Services/<id>/docker-compose.yml appears
     try:
         for p in SERVICES_ROOT.iterdir():
-            if (p / "docker-compose.yml").exists():
+            if _exists(p / "docker-compose.yml"):
                 parts.append(f"i:{p.name}")
     except OSError:
         pass
@@ -421,28 +555,47 @@ def list_templates(force: bool = False) -> list:
         return copy.deepcopy(_list_cache["items"])
 
     items = []
-    if not TEMPLATES.is_dir():
+    if not _is_dir(TEMPLATES):
         return _cache_store(now, sig, items)
-    builtin_ids = {
-        p.stem
-        for p in set(TEMPLATES.glob("*.yml")) | set(TEMPLATES.glob("*.yaml"))
-    }
+    try:
+        discovered = set(TEMPLATES.glob("*.yml")) | set(TEMPLATES.glob("*.yaml"))
+    except OSError:
+        discovered = set()
+    builtin_ids = {p.stem for p in discovered}
     # Remote overrides shadow the built-in template with the same id; the
     # built-in file stays on disk untouched so "restore built-in" is a delete.
-    by_id: dict[str, Path] = {}
-    for p in sorted(set(TEMPLATES.glob("*.yml")) | set(TEMPLATES.glob("*.yaml"))):
-        by_id[p.stem] = p
-    for p in catalog_remote.remote_template_files():
+    by_id: dict[str, Path] = {p.stem: p for p in sorted(discovered)}
+    try:
+        remote_files = catalog_remote.remote_template_files()
+    except OSError:
+        remote_files = []
+    for p in remote_files:
         by_id[p.stem] = p
     remote_versions = catalog_remote.remote_versions()
     remote_warnings = catalog_remote.remote_warnings()
     files = [by_id[k] for k in sorted(by_id)]
     for p in files:
-        meta, _ = _parse_template(p)
+        try:
+            # glob-then-read raced: a vanished override used to 500 the store.
+            meta, _ = _parse_template(p)
+        except OSError:
+            continue
         tid = meta.get("id") or p.stem
+        if not isinstance(tid, str) or not tid or "\x00" in tid:
+            tid = p.stem
+            meta["id"] = tid
         is_remote = p.parent != TEMPLATES
-        dest = SERVICES_ROOT / tid
-        installed = (dest / "docker-compose.yml").exists()
+        dest = None
+        installed = False
+        try:
+            dest = SERVICES_ROOT / tid
+            installed = _exists(dest / "docker-compose.yml")
+        except (TypeError, ValueError, OSError):
+            try:
+                dest = SERVICES_ROOT / p.stem
+            except (TypeError, ValueError, OSError):
+                dest = None
+            installed = False
         # UI defaults: show empty for __RANDOM__ so install mints once
         vars_out = []
         values_for_url: dict[str, str] = {}
@@ -452,9 +605,19 @@ def list_templates(force: bool = False) -> list:
                 vv["default"] = ""
                 vv["placeholder"] = "auto"
                 vv["secret"] = True
+            name = _plain_str(vv.get("name"))
+            default = _plain_str(vv.get("default"))
+            vv["name"] = name
+            vv["default"] = default
+            vv["label"] = _plain_str(vv.get("label")) or name
+            vv["help"] = _plain_str(vv.get("help"))
+            if vv.get("placeholder") is not None:
+                vv["placeholder"] = _plain_str(vv.get("placeholder"))
+            if not name:
+                continue
             vars_out.append(vv)
-            if v.get("name") and v.get("default") not in (None, "__RANDOM__"):
-                values_for_url[str(v["name"])] = str(v.get("default") or "")
+            if default not in ("", "__RANDOM__"):
+                values_for_url[name] = default
         # Resolve open URL for store / installed cards (frontend uses url_hint)
         url_hint = ""
         if meta.get("url_template"):
@@ -470,23 +633,26 @@ def list_templates(force: bool = False) -> list:
                 if ps.isdigit() and ps not in ("1883", "5432", "6379", "3306", "5672", "5900", "9100", "22000"):
                     url_hint = f"http://{hip}:{ps}"
                     break
+        path_out = None
+        if dest is not None:
+            path_out = str(dest) if _exists(dest) else None
         items.append({
-            "id": tid,
-            "name": meta.get("name") or tid,
-            "file": p.name,
-            "desc": meta.get("desc", ""),
+            "id": _plain_str(tid, p.stem) or _plain_str(p.stem),
+            "name": _plain_str(meta.get("name"), tid) or tid,
+            "file": _plain_str(p.name),
+            "desc": _plain_str(meta.get("desc")),
             "images": meta.get("images") or [],
             "vars": vars_out,
-            "category": meta.get("category") or "other",
+            "category": _plain_str(meta.get("category"), "other") or "other",
             "tags": meta.get("tags") or [],
             "ports": meta.get("ports") or [],
             "featured": bool(meta.get("featured")),
-            "notes": meta.get("notes") or "",
-            "first_run_credentials": meta.get("first_run_credentials") or "",
-            "url_template": meta.get("url_template") or "",
-            "url_hint": url_hint,
+            "notes": _plain_str(meta.get("notes")),
+            "first_run_credentials": _plain_str(meta.get("first_run_credentials")),
+            "url_template": _plain_str(meta.get("url_template")),
+            "url_hint": _plain_str(url_hint),
             "installed": installed,
-            "path": str(dest) if dest.exists() else None,
+            "path": path_out,
             "kind": "docker",
             "prefer_native": False,
             "source": "remote" if is_remote else "builtin",
@@ -496,7 +662,7 @@ def list_templates(force: bool = False) -> list:
             # install dialog lists them in red for remote templates.
             "compose_warnings": remote_warnings.get(p.stem, []) if is_remote else [],
         })
-    items.sort(key=lambda x: (0 if x.get("featured") else 1, x.get("name") or ""))
+    items.sort(key=lambda x: (0 if x.get("featured") else 1, str(x.get("name") or "")))
     return _cache_store(now, sig, items)
 
 
@@ -526,13 +692,19 @@ def catalog_overview() -> dict:
     docker, native = fan_out(
         lambda collect: collect(), [docker_templates, native_apps], max_workers=2
     )
+    docker = [d for d in docker if isinstance(d, dict)]
+    native = [a for a in native if isinstance(a, dict)]
     # Prefer native: if Cloudflared brew is installed, steer away from Docker twin
-    native_ids_installed = {a["id"] for a in native if a.get("installed")}
+    native_ids_installed = {
+        a["id"] for a in native if a.get("installed") and isinstance(a.get("id"), str)
+    }
     for d in docker:
         if d.get("id") == "cloudflared" and "native-cloudflared" in native_ids_installed:
+            existing = d.get("notes")
+            existing = existing if isinstance(existing, str) else str(existing or "")
             d["notes"] = (
-                (d.get("notes") or "")
-                + (" · " if d.get("notes") else "")
+                existing
+                + (" · " if existing else "")
                 + "The native cloudflared CLI is already installed on this machine, "
                 "so the Docker version is usually unnecessary; use it only when you "
                 "have a Zero Trust token and want it containerized."
@@ -543,14 +715,18 @@ def catalog_overview() -> dict:
         key=lambda x: (
             0 if x.get("kind") == "native" else 1,
             0 if x.get("featured") else 1,
-            x.get("name") or "",
+            str(x.get("name") or ""),
         )
     )
     by_cat: dict[str, int] = {}
     for t in templates:
-        c = t.get("category") or "other"
+        # A list leftover in category/kind used to raise on `by_cat[c]`
+        # and 500 the store after the row filter already accepted the dict.
+        c = t.get("category")
+        c = c if isinstance(c, str) and c else "other"
         by_cat[c] = by_cat.get(c, 0) + 1
-        k = t.get("kind") or "docker"
+        k = t.get("kind")
+        k = k if isinstance(k, str) and k else "docker"
         by_cat[k] = by_cat.get(k, 0) + 1
     return {
         "templates": templates,
@@ -576,8 +752,10 @@ def render_template(body: str, values: dict[str, str]) -> str:
         # volumes, devices...) into the rendered docker-compose.yml.  No install
         # variable — password, path, port, username — legitimately contains a
         # line break, so refusing them closes the escape without constraining
-        # any real value.
-        if "\n" in value or "\r" in value:
+        # any real value.  ``!!python`` is the same class on one line: the
+        # newline guard does not see it, and a FullLoader consumer of the
+        # rendered compose would execute it.
+        if "\n" in value or "\r" in value or "!!python" in value.lower():
             raise api_error("catalog.bad_var_value", name=key)
         return value
 
@@ -606,18 +784,17 @@ def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
 
 
 def _suggest_url(meta: dict, values: dict) -> str | None:
-    tpl = meta.get("url_template") or ""
-    if not tpl:
+    tpl = meta.get("url_template")
+    if not isinstance(tpl, str) or not tpl:
         return None
-    host = (values.get("HOST_IP") or "").strip()
-    if not host:
-        host = host_ip()
-    port = values.get("HOST_PORT") or values.get("WEB_PORT") or ""
-    out = tpl.replace("{{HOST_IP}}", host).replace("{{HOST_PORT}}", str(port))
+    host = str(values.get("HOST_IP") or "").strip() or host_ip()
+    port = str(values.get("HOST_PORT") or values.get("WEB_PORT") or "")
+    out = tpl.replace("{{HOST_IP}}", host).replace("{{HOST_PORT}}", port)
     out = out.replace("{{WEB_PORT}}", str(values.get("WEB_PORT") or port))
     for k, v in values.items():
-        out = out.replace("{{" + k + "}}", str(v))
-    return out
+        out = out.replace("{{" + str(k) + "}}", str(v))
+    cleaned = _plain_str(out)
+    return cleaned or None
 
 
 #: host side of a compose "ports:" entry, e.g. "8080:80", "127.0.0.1:8080:80",
@@ -699,13 +876,13 @@ def _ports_claimed_by_stacks(exclude_id: str = "") -> dict[int, str]:
     except OSError:
         return claimed
     for d in entries:
-        if not d.is_dir() or d.name == exclude_id:
+        if not _is_dir(d) or d.name == exclude_id:
             continue
         compose = d / "docker-compose.yml"
-        if not compose.exists():
+        if not _exists(compose):
             continue
         try:
-            text = compose.read_text(errors="replace")
+            text = read_text_capped(compose, _COMPOSE_SCAN_CAP, errors="replace")
         except OSError:
             continue
         for p in _host_ports(text):
@@ -811,7 +988,7 @@ def template_file(template_id: str) -> Path | None:
         return remote
     for suffix in (".yml", ".yaml"):
         p = TEMPLATES / f"{template_id}{suffix}"
-        if p.exists():
+        if _exists(p):
             return p
     return None
 
@@ -827,7 +1004,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     src = template_file(template_id)
     if src is None:
         raise api_error("catalog.unknown_template", id=str(template_id))
-    meta, body = _parse_template(src)
+    try:
+        meta, body = _parse_template(src)
+    except OSError:
+        raise api_error("catalog.unknown_template", id=str(template_id))
     values: dict[str, str] = {}
     # Ports the operator typed themselves are honoured exactly; ports that came
     # from a template default (or that we had to invent) may be moved when taken.
@@ -838,7 +1018,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     def resolve_port(name: str, preferred: str | int, explicit: bool) -> str:
         try:
             wanted = int(str(preferred).strip())
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             wanted = 0
         if explicit:
             # An explicit choice is a requirement, not a hint: silently moving it
@@ -905,17 +1085,21 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     # developer-specific absolute paths that would make templates non-portable.
     if "HOST_IP" not in values:
         values["HOST_IP"] = host_ip()
-    values.setdefault("HOME", str(Path.home()))
+    home = user_home()
+    values.setdefault("HOME", str(home) if home is not None else "")
     values.setdefault("SERVICES", str(SERVICES_ROOT))
     values.setdefault("TZ", host_timezone())
     values.setdefault("OCR_LANG", host_ocr_languages())
     values.setdefault("UI_LANGS", host_ui_languages())
+    # Leftover ``\ud800`` in a pasted var used to UnicodeEncodeError compose
+    # writes, ``.serverhub-vars.json``, the README, and the install JSON body.
+    values = {_plain_str(k): _plain_str(v) for k, v in values.items()}
 
     rendered = render_template(body, values) if VAR_RE.search(body) else body
 
     dest_dir = SERVICES_ROOT / template_id
     dest = dest_dir / "docker-compose.yml"
-    if dest.exists():
+    if _exists(dest):
         raise api_error("catalog.already_installed", path=str(dest))
 
     # Refuse before touching the filesystem when a host port is unavailable,
@@ -924,7 +1108,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
 
     # Only a directory *we* created may be removed during rollback: the user may
     # have pre-seeded ~/Services/<id>/ with data before installing.
-    created_dir = not dest_dir.exists()
+    created_dir = not _exists(dest_dir)
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
         # Compose commonly contains generated database/admin secrets.
@@ -938,7 +1122,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             if f"./{d}" in rendered or f"/{d}" in rendered:
                 (dest_dir / d).mkdir(exist_ok=True)
         # optional bootstrap files from frontmatter
-        for bf in meta.get("bootstrap_files") or []:
+        for bf in meta.get("bootstrap_files") if isinstance(meta.get("bootstrap_files"), list) else []:
             if not isinstance(bf, dict) or not bf.get("path"):
                 continue
             rel = str(bf["path"]).lstrip("/")
@@ -953,21 +1137,37 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             # files the operator may have edited by hand, and a check-then-write
             # trusts exists() with no way back if it answers wrongly.
             try:
-                with fp.open("x", encoding="utf-8") as fh:
-                    fh.write(content)
-            except FileExistsError:
+                dest_root = dest_dir.resolve()
+                resolved = fp.resolve()
+                resolved.relative_to(dest_root)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            try:
+                secure_io.create_secret_text(resolved, content)
+            except OSError:
                 pass
         vars_file = dest_dir / ".serverhub-vars.json"
-        secure_io.write_secret_text(
-            vars_file, json.dumps(values, ensure_ascii=False, indent=2)
-        )
+        # Leftover HOST_IP inf / TZ dates / ``\\ud800`` used to TypeError
+        # json.dumps or leak Infinity into the install JSON body.
+        values = {
+            _plain_str(k): _plain_str(v) for k, v in values.items()
+        }
+        try:
+            vars_json = json.dumps(
+                values, ensure_ascii=False, indent=2, allow_nan=False,
+            )
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            vars_json = "{}"
+        secure_io.replace_secret_text(vars_file, vars_json)
         # README with notes
-        notes = meta.get("notes") or ""
+        notes = _plain_str(meta.get("notes"))
         url = _suggest_url(meta, values)
+        desc = meta.get("desc")
+        desc = desc if isinstance(desc, str) else str(desc or "")
         readme = [
             f"# {meta.get('name') or template_id}",
             "",
-            meta.get("desc") or "",
+            desc,
             "",
         ]
         if url:
@@ -980,15 +1180,27 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             if isinstance(v, dict) and v.get("secret")
         }
         redacted = {
-            k: ("***" if k in secret_names or any(x in k.upper() for x in ("PASSWORD", "TOKEN", "SECRET")) else v)
+            _plain_str(k): (
+                "***"
+                if k in secret_names or any(x in str(k).upper() for x in ("PASSWORD", "TOKEN", "SECRET"))
+                else _plain_str(v)
+            )
             for k, v in values.items()
         }
-        readme += ["## Variables (secrets redacted)", "```json", json.dumps(redacted, ensure_ascii=False, indent=2), "```"]
-        (dest_dir / "README.serverhub.md").write_text("\n".join(readme))
+        try:
+            redacted_json = json.dumps(
+                redacted, ensure_ascii=False, indent=2, allow_nan=False,
+            )
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            redacted_json = "{}"
+        readme += ["## Variables (secrets redacted)", "```json", redacted_json, "```"]
+        (dest_dir / "README.serverhub.md").write_text(
+            "\n".join(readme), encoding="utf-8", errors="replace",
+        )
 
         _register_stack(template_id, meta.get("name") or template_id, dest_dir)
 
-        docker_bin = DOCKER if DOCKER and Path(DOCKER).exists() else (shutil.which("docker") or "")
+        docker_bin = DOCKER if DOCKER and _exists(Path(DOCKER)) else (shutil.which("docker") or "")
         if not docker_bin:
             # Not a failed install: the stack is registered and startable later
             # from "Apps -> Managed", so keep the files instead of rolling back.
@@ -1002,20 +1214,19 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
                 "variables": values,
                 "url": url,
                 "notes": notes,
-                "first_run_credentials": meta.get("first_run_credentials") or "",
+                "first_run_credentials": _plain_str(meta.get("first_run_credentials")),
                 "stack_id": template_id,
             }
         env = dict(os.environ)
-        p = subprocess.run(
+        rc, msg = run_capped(
             [docker_bin, "compose", "-f", str(dest), "up", "-d"],
             cwd=str(dest_dir),
-            capture_output=True,
-            text=True,
             timeout=600,
             env=env,
+            cap=4000,
         )
-        msg = ((p.stdout or "") + (p.stderr or "")).strip() or f"exit {p.returncode}"
-        if p.returncode != 0:
+        msg = (_plain_str(msg) or f"exit {rc}").strip()
+        if rc != 0:
             raise _InstallFailed(msg)
         if remapped:
             # The app is not on the port the template advertises, so say so here
@@ -1030,7 +1241,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "variables": values,
             "url": url,
             "notes": notes,
-            "first_run_credentials": meta.get("first_run_credentials") or "",
+            "first_run_credentials": _plain_str(meta.get("first_run_credentials")),
             "stack_id": template_id,
             "remapped_ports": remapped,
         }
@@ -1046,7 +1257,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "message": f"{e}\n\n{detail}",
             "variables": values,
             "url": None,
-            "notes": meta.get("notes") or "",
+            "notes": _plain_str(meta.get("notes")),
             "stack_id": None,
         }
     except Exception as e:
@@ -1057,7 +1268,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "message": f"{e}\n\n{detail}",
             "variables": values,
             "url": None,
-            "notes": meta.get("notes") or "",
+            "notes": _plain_str(meta.get("notes")),
             "stack_id": None,
         }
 
@@ -1098,7 +1309,7 @@ def uninstall_template(
 
     dest_dir = SERVICES_ROOT / template_id
     compose = dest_dir / "docker-compose.yml"
-    if not compose.exists():
+    if not _exists(compose):
         # still try unregister
         _unregister_stack(template_id, dest_dir)
         _list_cache["t"] = 0
@@ -1112,18 +1323,13 @@ def uninstall_template(
         args = [DOCKER, "compose", "-f", str(compose), "down", "--remove-orphans"]
         if remove_data:
             args.append("-v")
-        p = subprocess.run(
-            args,
-            cwd=str(dest_dir),
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env=env,
+        rc, text = run_capped(
+            args, cwd=str(dest_dir), timeout=300, env=env, cap=4000,
         )
-        logs.append(((p.stdout or "") + (p.stderr or "")).strip() or f"down exit {p.returncode}")
-        down_ok = p.returncode == 0
+        logs.append((_plain_str(text) or f"down exit {rc}").strip())
+        down_ok = rc == 0
     except Exception as e:
-        logs.append(str(e))
+        logs.append(_plain_str(e) or "error")
         down_ok = False
 
     removed_path = False
@@ -1134,7 +1340,7 @@ def uninstall_template(
             removed_path = True
             logs.append(f"Removed directory {dest_dir}")
         except Exception as e:
-            logs.append(f"Failed to remove directory: {e}")
+            logs.append(f"Failed to remove directory: {_plain_str(e) or 'error'}")
     else:
         # keep files; user can re-up later
         logs.append(f"Kept directory {dest_dir} (remove data was not selected)")
@@ -1143,11 +1349,11 @@ def uninstall_template(
     _list_cache["t"] = 0
     _list_cache["items"] = None
 
-    ok = down_ok or not compose.exists()
+    ok = down_ok or not _exists(compose)
     return {
         "ok": ok,
         "message": "\n".join(logs)[-2000:],
-        "path": str(dest_dir) if dest_dir.exists() else None,
+        "path": str(dest_dir) if _exists(dest_dir) else None,
         "removed_data": removed_path,
         "kind": "docker",
         "stack_id": template_id,

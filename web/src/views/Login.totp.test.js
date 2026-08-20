@@ -117,6 +117,41 @@ describe('two-factor login step', () => {
     expect(wrapper.find('.login-error').text()).toBe('window expired')
   })
 
+  it('does not finish a TOTP verify that returns after going back', async () => {
+    const wrapper = await mountAtTotpStep()
+    let resolveVerify
+    api.verifyTotpLogin.mockImplementation(() => new Promise((resolve) => { resolveVerify = resolve }))
+
+    await codeInput(wrapper).setValue('123456')
+    await wrapper.find('form').trigger('submit')
+    await wrapper.vm.$nextTick()
+    await wrapper.find('button.totp-back').trigger('click')
+    resolveVerify({ ok: true })
+    await flushPromises()
+
+    expect(routing.replace).not.toHaveBeenCalled()
+    expect(api.resetAuthLost).not.toHaveBeenCalled()
+    expect(wrapper.find('input[type="password"]').exists()).toBe(true)
+    expect(wrapper.find('button.login-submit').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not finish a TOTP verify that returns after leave', async () => {
+    const wrapper = await mountAtTotpStep()
+    let resolveVerify
+    api.verifyTotpLogin.mockImplementation(() => new Promise((resolve) => { resolveVerify = resolve }))
+
+    await codeInput(wrapper).setValue('123456')
+    await wrapper.find('form').trigger('submit')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+    resolveVerify({ ok: true })
+    await flushPromises()
+
+    expect(routing.replace).not.toHaveBeenCalled()
+    expect(api.resetAuthLost).not.toHaveBeenCalled()
+  })
+
   it('offers a way back to the password form', async () => {
     const wrapper = await mountAtTotpStep()
 

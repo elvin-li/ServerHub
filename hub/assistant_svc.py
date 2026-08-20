@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.errors import CODES, api_error
+from hub.util import read_text_capped
 
 CODES.setdefault("assistant.query_required", (400, "a question or page name is required"))
 CODES.setdefault("assistant.bad_action", (400, "action must be auto, find, brief, ask, or page"))
@@ -27,21 +28,135 @@ MAX_HISTORY = 6
 MAX_NUM_PREDICT = 192
 
 _HERE = Path(__file__).resolve().parent
+#: Leftover multi-MB catalog next to this module used to OOM import / ask.
+_CATALOG_CAP = 256 * 1024
 
 
 def _load_json(name: str):
-    return json.loads((_HERE / name).read_text(encoding="utf-8"))
+    try:
+        return json.loads(
+            read_text_capped(_HERE / name, _CATALOG_CAP, encoding="utf-8")
+        )
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested catalog JSON is not ValueError.
+        return None
 
 
-_INTENTS = _load_json("assistant_intents.json")
-_LEADIN_RE = re.compile(_INTENTS["leadin"], re.I)
-_FIND_RE = re.compile(_INTENTS["find"], re.I)
-_BRIEF_RE = re.compile(_INTENTS["brief"], re.I)
-_QUESTION_RE = re.compile(_INTENTS["question"], re.I)
-_PANEL_WORDS = tuple(str(w).lower() for w in _INTENTS["panel_word"])
-_PAGE_RE = re.compile(_INTENTS["page"], re.I)
-PANELS: tuple[dict[str, Any], ...] = tuple(_load_json("assistant_panels.json"))
-_BLURBS: dict[str, dict[str, str]] = _load_json("assistant_blurbs.json")
+def _safe_int(raw, default: int = 0) -> int:
+    if isinstance(raw, bool) or raw is None:
+        return default
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Finite floats, dicts and lists were already walked; a bytes load string or a
+    tuple of ``inf`` (``os.getloadavg``-shaped leftovers) still leaked into the
+    POST /api/assistant/ask body and failed the encoder. A leftover ``\\ud800``
+    in the snapshot, the find-query echo, or a catalog title still 500'd the
+    same body (``ensure_ascii=False`` then UTF-8).
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            try:
+                k = _utf8_text(k)
+            except Exception:
+                continue
+            out[k] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 POST /api/assistant/ask.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    return None
+
+
+def _load_object(name: str) -> dict:
+    data = _load_json(name)
+    return data if isinstance(data, dict) else {}
+
+
+def _load_list(name: str) -> list[dict]:
+    data = _load_json(name)
+    if not isinstance(data, list):
+        return []
+    return [row for row in data if isinstance(row, dict)]
+
+
+def _compile(pattern: object) -> re.Pattern[str]:
+    text = str(pattern or "")
+    if not text:
+        return re.compile(r"(?!)")
+    try:
+        return re.compile(text, re.I)
+    except re.error:
+        return re.compile(r"(?!)")
+
+
+_INTENTS = _load_object("assistant_intents.json")
+_LEADIN_RE = _compile(_INTENTS.get("leadin"))
+_FIND_RE = _compile(_INTENTS.get("find"))
+_BRIEF_RE = _compile(_INTENTS.get("brief"))
+_QUESTION_RE = _compile(_INTENTS.get("question"))
+_PAGE_RE = _compile(_INTENTS.get("page"))
+_panel_word = _INTENTS.get("panel_word")
+_PANEL_WORDS = tuple(
+    str(w).lower() for w in _panel_word
+) if isinstance(_panel_word, list) else ()
+PANELS: tuple[dict[str, Any], ...] = tuple(_load_list("assistant_panels.json"))
+_BLURBS: dict[str, dict[str, str]] = {
+    str(key): value
+    for key, value in _load_object("assistant_blurbs.json").items()
+    if isinstance(value, dict)
+}
 
 
 def normalize_locale(raw: str | None) -> str:
@@ -54,7 +169,7 @@ def normalize_locale(raw: str | None) -> str:
 
 
 def _title(panel: dict, locale: str) -> str:
-    titles = panel.get("title") or {}
+    titles = panel.get("title") if isinstance(panel.get("title"), dict) else {}
     return str(titles.get(locale) or titles.get("en") or panel.get("id") or "")
 
 
@@ -73,44 +188,62 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
         raw = raw.rstrip("/")
     hit = None
     for panel in PANELS:
-        if panel["path"] == raw:
+        if not isinstance(panel, dict):
+            continue
+        if panel.get("path") == raw:
             hit = panel
             break
     if hit is None:
         for panel in PANELS:
-            if panel["path"] != "/" and raw.startswith(panel["path"] + "/"):
+            if not isinstance(panel, dict):
+                continue
+            pth = panel.get("path")
+            if isinstance(pth, str) and pth != "/" and raw.startswith(pth + "/"):
                 hit = panel
                 break
     if hit is None:
         return None
+    pid, pth = hit.get("id"), hit.get("path")
+    if not isinstance(pid, str) or not isinstance(pth, str):
+        return None
     return {
-        "id": hit["id"],
-        "path": hit["path"],
+        "id": pid,
+        "path": pth,
         "title": _title(hit, loc),
-        "blurb": _blurb(hit["id"], loc),
+        "blurb": _blurb(pid, loc),
     }
 
 
 def catalog(locale: str | None = None) -> list[dict]:
     loc = normalize_locale(locale)
-    return [
-        {
-            "id": panel["id"],
-            "path": panel["path"],
+    out = []
+    for panel in PANELS:
+        if not isinstance(panel, dict):
+            continue
+        pid = panel.get("id")
+        path = panel.get("path")
+        aliases = panel.get("aliases")
+        if not isinstance(pid, str) or not isinstance(path, str):
+            continue
+        if not isinstance(aliases, list):
+            aliases = []
+        out.append({
+            "id": pid,
+            "path": path,
             "title": _title(panel, loc),
-            "aliases": list(panel["aliases"]),
-        }
-        for panel in PANELS
-    ]
+            "aliases": [str(a) for a in aliases],
+        })
+    return out
 
 
 def _score_panel(panel: dict, needle: str, locale: str) -> int:
     if not needle:
         return 0
     title = _title(panel, locale).lower()
-    path = str(panel["path"]).lower()
-    aliases = [str(a).lower() for a in panel["aliases"]]
-    if needle == title or needle == panel["id"] or needle == path.lstrip("/"):
+    path = str(panel.get("path") or "").lower()
+    raw_aliases = panel.get("aliases")
+    aliases = [str(a).lower() for a in raw_aliases] if isinstance(raw_aliases, list) else []
+    if needle == title or needle == str(panel.get("id") or "") or needle == path.lstrip("/"):
         return 100
     if needle in aliases:
         return 90
@@ -139,12 +272,17 @@ def match_panels(query: str, locale: str | None = None, limit: int = 6) -> list[
         return []
     scored: list[tuple[int, dict]] = []
     for panel in PANELS:
+        if not isinstance(panel, dict):
+            continue
+        pid, pth = panel.get("id"), panel.get("path")
+        if not isinstance(pid, str) or not isinstance(pth, str):
+            continue
         score = _score_panel(panel, needle, loc)
         if score <= 0:
             continue
         scored.append((score, {
-            "id": panel["id"],
-            "path": panel["path"],
+            "id": pid,
+            "path": pth,
             "title": _title(panel, loc),
             "score": score,
         }))
@@ -188,11 +326,18 @@ def build_snapshot() -> dict:
     """Compact host facts for the model — cached collectors only when possible."""
     from hub.status import full_status, peek_status
 
-    status = peek_status() or full_status()
-    system = status.get("system") or {}
-    counts = status.get("counts") or {}
+    try:
+        status = peek_status() or full_status()
+    except Exception:
+        status = {}
+    if not isinstance(status, dict):
+        status = {}
+    system = status.get("system") if isinstance(status.get("system"), dict) else {}
+    counts = status.get("counts") if isinstance(status.get("counts"), dict) else {}
     problems = []
-    for row in (status.get("problems") or [])[:8]:
+    for row in (status.get("problems") if isinstance(status.get("problems"), list) else [])[:8]:
+        if not isinstance(row, dict):
+            continue
         problems.append({
             "name": row.get("name") or row.get("id"),
             "state": row.get("state"),
@@ -207,7 +352,9 @@ def build_snapshot() -> dict:
         "disk_root": f"{system.get('disk_used_gb')}/{system.get('disk_total_gb')} GB",
         "uptime": system.get("uptime"),
         "engine_up": status.get("engine_up"),
-        "counts": {key: int(counts.get(key) or 0) for key in ("ok", "warn", "down", "stopped")},
+        "counts": {
+            key: _safe_int(counts.get(key)) for key in ("ok", "warn", "down", "stopped")
+        },
         "problems": problems,
     }
     try:
@@ -230,45 +377,51 @@ def build_snapshot() -> dict:
             }
     except Exception:
         pass
-    return snap
+    return _jsonable(snap)
 
 
 def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     """Pages that match the current snapshot — no model required."""
     loc = normalize_locale(locale)
     wanted: list[str] = []
-    counts = snapshot.get("counts") or {}
-    if int(counts.get("down") or 0) or int(counts.get("warn") or 0):
+    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+    if _safe_int(counts.get("down")) or _safe_int(counts.get("warn")):
         wanted.extend(["services", "health", "logs"])
     disk = snapshot.get("disk_root_pct")
     if isinstance(disk, (int, float)) and disk >= 85:
         wanted.append("main")
-    ollama = snapshot.get("ollama") or {}
+    ollama = snapshot.get("ollama") if isinstance(snapshot.get("ollama"), dict) else {}
     if ollama and not ollama.get("reachable"):
         wanted.append("ollama")
-    ups = snapshot.get("ups") or {}
+    ups = snapshot.get("ups") if isinstance(snapshot.get("ups"), dict) else {}
     if ups.get("source") in {"battery", "ups"}:
         wanted.append("dashboard")
     if not wanted:
         wanted.extend(["dashboard", "health"])
-    by_id = {panel["id"]: panel for panel in PANELS}
+    by_id = {
+        pid: panel
+        for panel in PANELS
+        if isinstance(panel, dict) and isinstance((pid := panel.get("id")), str)
+    }
     out: list[dict] = []
     seen: set[str] = set()
     for panel_id in wanted:
         panel = by_id.get(panel_id)
-        if not panel or panel["path"] in seen:
+        path = panel.get("path") if panel else None
+        if not panel or not isinstance(path, str) or path in seen:
             continue
-        seen.add(panel["path"])
-        out.append({"id": panel["id"], "path": panel["path"], "title": _title(panel, loc)})
+        seen.add(path)
+        out.append({"id": panel["id"], "path": path, "title": _title(panel, loc)})
     return out
 
 
 def fallback_brief(snapshot: dict, locale: str | None = None) -> str:
     """English template status when Ollama is down.  The SPA localizes this."""
     del locale  # locale is applied by the drawer; keep the signature stable.
-    counts = snapshot.get("counts") or {}
+    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
     engine = "on" if snapshot.get("engine_up") else "off"
-    problems = snapshot.get("problems") or []
+    raw_problems = snapshot.get("problems")
+    problems = [p for p in raw_problems if isinstance(p, dict)] if isinstance(raw_problems, list) else []
     lines = [
         f"Overview: load {snapshot.get('load') or '—'} (~{snapshot.get('cpu_load_pct') if snapshot.get('cpu_load_pct') is not None else '—'}%)"
         f" · memory used {snapshot.get('mem_used_pct') if snapshot.get('mem_used_pct') is not None else '—'}%"
@@ -292,16 +445,16 @@ def _pick_model() -> str | None:
     from hub import ollama_svc
 
     snap = ollama_svc.status()
-    if not snap.get("reachable"):
+    if not isinstance(snap, dict) or not snap.get("reachable"):
         return None
-    for row in snap.get("resident") or []:
-        name = str(row.get("name") or "").strip()
-        if name:
-            return name
-    for row in snap.get("models") or []:
-        name = str(row.get("name") or "").strip()
-        if name:
-            return name
+    for key in ("resident", "models"):
+        rows = snap.get(key)
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if name:
+                return name
     return None
 
 
@@ -311,12 +464,26 @@ def _lang_name(locale: str) -> str:
 
 def _system_prompt(snapshot: dict, locale: str) -> str:
     loc = normalize_locale(locale)
-    pages = ", ".join(f"{_title(p, loc)} {p['path']}" for p in PANELS)
+    pages = ", ".join(
+        f"{_title(p, loc)} {p['path']}"
+        for p in PANELS
+        if isinstance(p, dict) and isinstance(p.get("path"), str)
+    )
+    try:
+        snap_json = json.dumps(
+            _jsonable(snapshot),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover nested snapshot after _jsonable is not ValueError.
+        snap_json = "{}"
     return (
         f"You are ServerHub's local assistant on this Mac. Answer in {_lang_name(loc)}. "
         "Be concise (4-8 short lines). Do not invent numbers; use only the snapshot. "
         "If a page would help, name it and its path.\n"
-        f"Snapshot:\n{json.dumps(snapshot, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"Snapshot:\n{snap_json}\n"
         f"Pages: {pages}"
     )
 
@@ -339,21 +506,24 @@ def _page_user_prompt() -> str:
 def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | None) -> dict:
     from hub import ollama_svc
 
-    model = _pick_model()
-    if not model:
-        return {}
-    messages = [{"role": "system", "content": _system_prompt(snapshot, locale)}]
-    for raw in (history or [])[-MAX_HISTORY:]:
-        if not isinstance(raw, dict):
-            continue
-        role = str(raw.get("role") or "")
-        content = str(raw.get("content") or "").strip()
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content[:MAX_QUERY_CHARS]})
-    messages.append({"role": "user", "content": user_text})
     try:
+        model = _pick_model()
+        if not model:
+            return {}
+        messages = [{"role": "system", "content": _system_prompt(snapshot, locale)}]
+        raw_hist = history if isinstance(history, list) else []
+        for raw in raw_hist[-MAX_HISTORY:]:
+            if not isinstance(raw, dict):
+                continue
+            role = str(raw.get("role") or "")
+            content = str(raw.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content[:MAX_QUERY_CHARS]})
+        messages.append({"role": "user", "content": user_text})
         result = ollama_svc.chat(model, messages, MAX_NUM_PREDICT)
     except Exception:
+        return {}
+    if not isinstance(result, dict):
         return {}
     text = str(result.get("content") or "").strip() or str(result.get("thinking") or "").strip()
     if not text:
@@ -362,7 +532,7 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
         "text": text,
         "thinking": str(result.get("thinking") or ""),
         "model": result.get("model") or model,
-        "duration_s": result.get("duration_s"),
+        "duration_s": _jsonable(result.get("duration_s")),
     }
 
 
@@ -397,7 +567,7 @@ def ask(
 
     if kind == "find":
         hits = match_panels(text, loc) if text else catalog(loc)[:12]
-        return {
+        return _jsonable({
             "ok": True,
             "kind": "find",
             "text": _find_text(hits, text),
@@ -407,7 +577,7 @@ def ask(
             "model": None,
             "used_llm": False,
             "duration_s": 0,
-        }
+        })
 
     if kind == "page":
         page = here or resolve_path("/", loc)
@@ -415,7 +585,7 @@ def ask(
         fallback = (page or {}).get("blurb") or fallback_brief(snapshot, loc)
         llm = _run_llm(_page_user_prompt(), loc, snapshot, history)
         if llm:
-            return {
+            return _jsonable({
                 "ok": True,
                 "kind": "page",
                 "text": llm["text"],
@@ -425,8 +595,8 @@ def ask(
                 "model": llm.get("model"),
                 "used_llm": True,
                 "duration_s": llm.get("duration_s"),
-            }
-        return {
+            })
+        return _jsonable({
             "ok": True,
             "kind": "page",
             "text": fallback,
@@ -436,14 +606,14 @@ def ask(
             "model": None,
             "used_llm": False,
             "duration_s": 0,
-        }
+        })
 
     user_prompt = text if kind == "ask" else (_brief_user_prompt() if not text else text)
     llm = _run_llm(user_prompt, loc, snapshot, history)
     if llm:
         extra = match_panels(text, loc) if text else []
         panels = extra or suggested
-        return {
+        return _jsonable({
             "ok": True,
             "kind": "brief" if kind == "brief" else "answer",
             "text": llm["text"],
@@ -453,9 +623,9 @@ def ask(
             "model": llm.get("model"),
             "used_llm": True,
             "duration_s": llm.get("duration_s"),
-        }
+        })
 
-    return {
+    return _jsonable({
         "ok": True,
         "kind": "brief" if kind == "brief" else "answer",
         "text": fallback_brief(snapshot, loc),
@@ -465,4 +635,4 @@ def ask(
         "model": None,
         "used_llm": False,
         "duration_s": 0,
-    }
+    })

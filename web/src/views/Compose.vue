@@ -28,15 +28,18 @@
                 @click="select(s)"
               >
                 <td>
-                  <strong>{{ s.name }}</strong>
-                  <div class="mono" style="color:var(--sub);font-size:10px">{{ s.path || '—' }}</div>
+                  <strong>{{ finiteText(s.name) }}</strong>
+                  <div class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(s.path) }}</div>
                 </td>
-                <td><span class="badge" :class="s.status==='ok'?'ok':''">{{ s.status }}</span></td>
+                <td><span class="badge" :class="s.status==='ok'?'ok':''">{{ finiteText(s.status) }}</span></td>
                 <td class="ops">
                   <button class="tiny" :disabled="!s.compose_path || busy" @click.stop="run(s,'up')">{{ t('compose.up') }}</button>
                   <button class="tiny hide-m" :disabled="!s.compose_path || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
                   <button class="tiny danger" :disabled="!s.compose_path || busy" @click.stop="run(s,'down')">{{ t('compose.down') }}</button>
                 </td>
+              </tr>
+              <tr v-if="!stacks.length && !loadError">
+                <td colspan="3" style="color:var(--sub)">{{ t('common.none') }}</td>
               </tr>
             </tbody>
           </table>
@@ -46,7 +49,7 @@
       <div class="tile">
         <h3>
           {{ t('compose.yaml_editor') }}
-          <span v-if="compose" class="sub" style="text-transform:none">{{ compose.compose_path }}</span>
+          <span v-if="compose" class="sub" style="text-transform:none">{{ finiteText(compose.compose_path) }}</span>
         </h3>
         <div v-if="!compose" class="placeholder" style="padding:24px">{{ t('compose.pick_stack') }}</div>
         <template v-else>
@@ -60,14 +63,14 @@
             <button :disabled="busy" @click="reloadCompose">{{ t('compose.reload_file') }}</button>
             <button :disabled="busy" @click="run({id:selected},'up')">{{ t('compose.up_full') }}</button>
           </div>
-          <pre v-if="msg" style="margin-top:8px;font-size:11px;white-space:pre-wrap;max-height:140px;overflow:auto;background:var(--bg);padding:8px;border-radius:4px" role="status" aria-live="polite">{{ msg }}</pre>
+          <pre v-if="msg" style="margin-top:8px;font-size:11px;white-space:pre-wrap;max-height:140px;overflow:auto;background:var(--bg);padding:8px;border-radius:4px" role="status" aria-live="polite">{{ finiteText(msg) }}</pre>
         </template>
       </div>
     </div>
 
     <div v-if="jobLog" class="tile" style="margin-top:10px">
-      <div class="row"><strong style="font-size:12px">{{ t('docker.job_log') }}</strong><button class="tiny" @click="jobLog=''">{{ t('common.close') }}</button></div>
-      <pre class="log" style="max-height:180px;margin-top:6px" role="log" aria-live="polite">{{ jobLog }}</pre>
+      <div class="row"><strong style="font-size:12px">{{ t('docker.job_log') }}</strong><button class="tiny" @click="closeJobLog">{{ t('common.close') }}</button></div>
+      <pre v-if="jobLog" class="log" style="max-height:180px;margin-top:6px" role="log" aria-live="polite">{{ finiteText(jobLog) }}</pre>
     </div>
 
     <!-- create modal -->
@@ -107,6 +110,7 @@ import {
   validateCompose,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -136,6 +140,9 @@ const newContent = ref(`services:
 `)
 let jobTimer = null
 let jobPollGeneration = 0
+let pageAlive = true
+let stacksGeneration = 0
+let composeGeneration = 0
 
 function stopJobPolling() {
   jobPollGeneration += 1
@@ -147,16 +154,24 @@ function stopJobPolling() {
   busy.value = false
 }
 
+function closeJobLog() {
+  stopJobPolling()
+  jobLog.value = ''
+}
+
 async function loadStacks() {
+  const generation = ++stacksGeneration
   try {
     const d = await getStacks()
-    stacks.value = d.stacks || []
+    if (generation !== stacksGeneration || !pageAlive) return
+    stacks.value = Array.isArray(d.stacks) ? d.stacks : []
     loadError.value = ''
   } catch (e) {
+    if (generation !== stacksGeneration || !pageAlive) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    loaded.value = true
+    if (generation === stacksGeneration) loaded.value = true
   }
 }
 
@@ -167,69 +182,95 @@ async function select(s) {
 
 async function reloadCompose() {
   if (!selected.value) return
+  const id = selected.value
+  const generation = ++composeGeneration
   busy.value = true
   try {
-    const j = await getCompose(selected.value)
+    const j = await getCompose(id)
+    if (generation !== composeGeneration || !pageAlive || selected.value !== id) return
     compose.value = j
     editor.value = j.content
     msg.value = ''
   } catch (e) {
+    if (generation !== composeGeneration || !pageAlive || selected.value !== id) return
     compose.value = null
     editor.value = ''
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === composeGeneration) busy.value = false
   }
-  busy.value = false
 }
 
 async function save() {
+  const id = selected.value
+  if (!id) return
+  const generation = composeGeneration
   busy.value = true
   try {
-    const j = await putCompose(selected.value, editor.value, true)
+    const j = await putCompose(id, editor.value, true)
+    if (generation !== composeGeneration || !pageAlive) return
     toast('✅ ' + t('compose.saved'))
-    msg.value = j.message + (j.backup ? `\n${t('compose.backup')}: ${j.backup}` : '')
+    const backup = finiteText(j.backup, '')
+    msg.value = (finiteText(j.message, '') || '') + (backup ? `\n${t('compose.backup')}: ${backup}` : '')
   } catch (e) {
-    toast('❌ ' + e.message)
-    msg.value = e.message
+    if (generation !== composeGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+    msg.value = finiteText(e.message, '')
+  } finally {
+    if (generation === composeGeneration) busy.value = false
   }
-  busy.value = false
 }
 
 async function validate() {
+  const generation = composeGeneration
   busy.value = true
   try {
     const j = await validateCompose(editor.value, compose.value?.path)
-    msg.value = (j.ok ? `✅ ${t('compose.valid_ok')}\n` : `❌ ${t('compose.valid_fail')}\n`) + (j.message || '')
+    if (generation !== composeGeneration || !pageAlive) return
+    msg.value = (j.ok ? `✅ ${t('compose.valid_ok')}\n` : `❌ ${t('compose.valid_fail')}\n`) + finiteText(j.message, '')
     toast(j.ok ? '✅ ' + t('compose.valid_toast_ok') : '❌ ' + t('compose.valid_toast_fail'))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== composeGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === composeGeneration) busy.value = false
   }
-  busy.value = false
 }
 
 async function create() {
   if (!newId.value.trim()) return toast('❌ ' + t('compose.id_required'))
+  const generation = stacksGeneration
   busy.value = true
   try {
     const j = await createCompose(newId.value.trim(), newName.value || newId.value, newContent.value)
-    toast('✅ ' + t('compose.created', { id: j.id }))
+    if (generation !== stacksGeneration || !pageAlive) return
+    toast('✅ ' + t('compose.created', { id: finiteText(j.id) }))
     showCreate.value = false
     await loadStacks()
+    if (!pageAlive) return
     selected.value = j.id
     await reloadCompose()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== stacksGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
   }
-  busy.value = false
 }
 
 async function run(s, action) {
   const id = s.id || selected.value
-  if (!id) return
+  if (!id || busy.value) return
   if (action === 'down' && !confirm(t('compose.confirm_down'))) return
+  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(s.name, '') || finiteText(id) }))) return
+  const generation = stacksGeneration
   busy.value = true
+  let holdBusy = false
   try {
     const r = await runStack(id, action)
-    toast('🚀 ' + (r.message || 'started'))
+    if (!pageAlive) return
+    if (generation !== stacksGeneration) return
+    toast('🚀 ' + (finiteText(r.message, '') || t('compose.started')))
     if (r.job_id) {
       // Stay busy until the job actually ends, not merely until the server
       // acknowledged it. runStack returns as soon as the job is queued, so
@@ -237,12 +278,18 @@ async function run(s, action) {
       // running and let a second operation be issued against the same stack
       // mid-flight. watchJob clears it when the job reports not-running.
       watchJob(r.job_id)
+      holdBusy = true
       return
     }
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!pageAlive) return
+    if (generation !== stacksGeneration) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    // loadStacks() (Refresh) bumps stacksGeneration; a generation match
+    // would leave Up/Down stuck after a refresh during the run.
+    if (pageAlive && !holdBusy) busy.value = false
   }
-  busy.value = false
 }
 
 function watchJob(id) {
@@ -262,10 +309,10 @@ function watchJob(id) {
     try {
       const j = await getStackJob(id)
       if (generation !== jobPollGeneration) return
-      jobLog.value = j.log || ''
+      jobLog.value = finiteText(j.log, '')
       if (!j.running) {
         stopJobPolling()
-        busy.value = false
+        if (pageAlive) busy.value = false
         void loadStacks()
         return
       }
@@ -273,7 +320,7 @@ function watchJob(id) {
       if (generation !== jobPollGeneration) return
       // Surface it rather than leaving jobLog frozen on '…' forever, which is
       // what a failed first poll looked like.
-      jobLog.value = `${jobLog.value === '…' ? '' : jobLog.value || ''}\n⚠ ${e.message || e}`.trim()
+      jobLog.value = `${jobLog.value === '…' ? '' : finiteText(jobLog.value, '')}\n⚠ ${finiteText(e.message, '') || finiteText(e)}`.trim()
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }
@@ -281,8 +328,16 @@ function watchJob(id) {
   void poll()
 }
 
-onMounted(loadStacks)
-onUnmounted(stopJobPolling)
+onMounted(() => {
+  pageAlive = true
+  loadStacks()
+})
+onUnmounted(() => {
+  pageAlive = false
+  stacksGeneration += 1
+  composeGeneration += 1
+  stopJobPolling()
+})
 
 
 // Escape dismisses each dialog, focus returns to whatever opened it, and Tab

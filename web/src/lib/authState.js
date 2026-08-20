@@ -29,6 +29,16 @@ export function applyAuthStatus(status) {
   authState.canManage = !!status.can_manage
 }
 
+/** Drop the last session so a later failed status probe cannot keep admin chrome. */
+export function clearAuthState() {
+  authState.known = false
+  authState.authenticated = false
+  authState.username = ''
+  authState.role = null
+  authState.resources = []
+  authState.canManage = false
+}
+
 /**
  * Routes a member session may open, by route name.  Mirrors the backend
  * whitelist (status/services reads + per-account self-service): everything

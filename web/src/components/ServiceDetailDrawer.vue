@@ -24,16 +24,16 @@
     <aside ref="panel" class="drawer svc-drawer" role="dialog" aria-modal="true" aria-labelledby="svc-detail-title" tabindex="-1">
       <div class="drawer-head">
         <div>
-          <h2 id="svc-detail-title" class="drawer-title">{{ service.name }}</h2>
+          <h2 id="svc-detail-title" class="drawer-title">{{ finiteText(service.name) }}</h2>
           <div class="app-badges" style="margin-top:6px">
             <span class="chip">{{ kindLabel(service.kind) }}</span>
             <span class="chip" :class="stateChipClass(service.state)">{{ stateLabel(service.state) }}</span>
             <span v-if="service.auto" class="chip chip-muted">auto</span>
-            <span v-if="sig" class="chip chip-sig" :title="sig.confidence === 'high' ? sig.name : `${sig.name}?`">
-              {{ sig.confidence === 'high' ? sig.name : `${sig.name}?` }}
+            <span v-if="sig" class="chip chip-sig" :title="sig.confidence === 'high' ? finiteText(sig.name) : `${finiteText(sig.name)}?`">
+              {{ sig.confidence === 'high' ? finiteText(sig.name) : `${finiteText(sig.name)}?` }}
             </span>
           </div>
-          <div class="mono sub-id">{{ service.id }}</div>
+          <div class="mono sub-id">{{ finiteText(service.id) }}</div>
         </div>
         <button type="button" @click="emit('close')">{{ t('common.close') }}</button>
       </div>
@@ -46,42 +46,42 @@
       <section class="drawer-sec">
         <h3>{{ t('services.sec_info') }}</h3>
         <div class="kv">
-          <div class="k">{{ t('services.detail') }}</div><div>{{ service.detail || '—' }}</div>
-          <div class="k">{{ t('services.group') }}</div><div>{{ service.group || '—' }}</div>
-          <div class="k">URL</div><div class="mono">{{ service.url || '—' }}</div>
+          <div class="k">{{ t('services.detail') }}</div><div>{{ finiteText(service.detail) }}</div>
+          <div class="k">{{ t('services.group') }}</div><div>{{ finiteText(service.group) }}</div>
+          <div class="k">URL</div><div class="mono">{{ finiteText(service.url) }}</div>
           <div class="k">{{ t('services.port') }}</div><div class="mono">{{ portOf(service) }}</div>
-          <div v-if="service.image" class="k">Image</div><div v-if="service.image" class="mono">{{ service.image }}</div>
-          <div v-if="service.restart_policy" class="k">Restart</div><div v-if="service.restart_policy">{{ service.restart_policy }}</div>
-          <div v-if="service.compose_project" class="k">Compose</div><div v-if="service.compose_project" class="mono">{{ service.compose_project }} / {{ service.compose_service }}</div>
-          <div v-if="service.plist" class="k">plist</div><div v-if="service.plist" class="mono break">{{ service.plist }}</div>
-          <div v-if="service.program" class="k">Program</div><div v-if="service.program" class="mono break">{{ service.program }}</div>
+          <div v-if="service.image" class="k">Image</div><div v-if="service.image" class="mono">{{ finiteText(service.image) }}</div>
+          <div v-if="service.restart_policy" class="k">Restart</div><div v-if="service.restart_policy">{{ finiteText(service.restart_policy) }}</div>
+          <div v-if="service.compose_project" class="k">Compose</div><div v-if="service.compose_project" class="mono">{{ finiteText(service.compose_project) }} / {{ finiteText(service.compose_service) }}</div>
+          <div v-if="service.plist" class="k">plist</div><div v-if="service.plist" class="mono break">{{ finiteText(service.plist) }}</div>
+          <div v-if="service.program" class="k">Program</div><div v-if="service.program" class="mono break">{{ finiteText(service.program) }}</div>
           <div v-if="service.run_at_load != null" class="k">RunAtLoad</div><div v-if="service.run_at_load != null">{{ service.run_at_load ? t('common.yes') : t('common.no') }}</div>
-          <div v-if="service.start_cmd" class="k">start</div><div v-if="service.start_cmd" class="mono break">{{ service.start_cmd }}</div>
-          <div v-if="service.stop_cmd" class="k">stop</div><div v-if="service.stop_cmd" class="mono break">{{ service.stop_cmd }}</div>
+          <div v-if="service.start_cmd" class="k">start</div><div v-if="service.start_cmd" class="mono break">{{ finiteText(service.start_cmd) }}</div>
+          <div v-if="service.stop_cmd" class="k">stop</div><div v-if="service.stop_cmd" class="mono break">{{ finiteText(service.stop_cmd) }}</div>
         </div>
         <div v-if="(service.ports || []).length" class="ports-list mono">
-          <div v-for="(p, i) in service.ports" :key="i">{{ typeof p === 'object' ? JSON.stringify(p) : p }}</div>
+          <div v-for="(p, i) in service.ports" :key="i">{{ finiteText(typeof p === 'object' ? JSON.stringify(p) : p) }}</div>
         </div>
         <div v-if="(service.links || []).length" class="quick-links" style="margin-top:8px">
-          <a v-for="l in service.links" :key="l.url" class="btn tiny" :href="l.url" target="_blank" rel="noopener">{{ l.name }}</a>
+          <a v-for="l in service.links" :key="l.url" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
         </div>
       </section>
 
       <section class="drawer-sec" v-if="(service.mounts || []).length">
         <h3>{{ t('services.sec_mounts') }}</h3>
         <ul class="plain-list mono">
-          <li v-for="(m, i) in service.mounts.slice(0, 12)" :key="i">{{ m.source }} → {{ m.destination }} {{ m.rw === false ? '(ro)' : '' }}</li>
+          <li v-for="(m, i) in service.mounts.slice(0, 12)" :key="i">{{ finiteText(m.source) }} → {{ finiteText(m.destination) }} {{ m.rw === false ? '(ro)' : '' }}</li>
         </ul>
       </section>
 
       <section class="drawer-sec" v-if="(service.env_sample || []).length">
         <h3>{{ t('services.sec_env') }}</h3>
-        <pre class="log mini-log">{{ (service.env_sample || []).join('\n') }}</pre>
+        <pre class="log mini-log">{{ (service.env_sample || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
       </section>
 
       <section class="drawer-sec" v-if="service.launchctl">
         <h3>launchctl</h3>
-        <pre class="log mini-log">{{ service.launchctl }}</pre>
+        <pre class="log mini-log">{{ finiteText(service.launchctl) }}</pre>
       </section>
 
       <!-- Adopt auto-discovered listener into services.yaml -->
@@ -90,13 +90,13 @@
         <p class="hint-line">{{ t('services.adopt_hint') }}</p>
         <div v-if="sig" class="hint-line">
           {{ t('services.identified_as', {
-            name: sig.name,
-            category: sig.category,
+            name: finiteText(sig.name),
+            category: finiteText(sig.category),
           }) }}
           <span v-if="sig.confidence !== 'high'">({{ t('services.identified_guess') }})</span>
         </div>
         <div v-if="adoptForm.control_via === 'brew'" class="hint-line">
-          {{ t('services.adopt_control_brew', { formula: adoptForm.formula }) }}
+          {{ t('services.adopt_control_brew', { formula: finiteText(adoptForm.formula) }) }}
         </div>
         <div v-else class="hint-line">{{ t('services.adopt_control_none') }}</div>
         <div class="form-grid adopt-form">
@@ -124,7 +124,7 @@
           {{ t('services.adopt_remember') }}
         </label>
         <p class="hint-line">{{ t('services.adopt_remember_hint') }}</p>
-        <div class="mono sub-id" style="margin-top:4px">id: {{ adoptForm.id }}</div>
+        <div class="mono sub-id" style="margin-top:4px">id: {{ finiteText(adoptForm.id) }}</div>
         <div class="drawer-actions" style="margin-top:8px">
           <button type="button" class="primary" :disabled="busy" @click="submitAdopt">{{ t('services.adopt') }}</button>
         </div>
@@ -186,22 +186,23 @@
 
       <!-- Logs in drawer -->
       <section class="drawer-sec" v-if="log !== null">
-        <h3>{{ t('services.logs') }} <span class="meta-count mono">{{ logSource }}</span></h3>
+        <h3>{{ t('services.logs') }} <span class="meta-count mono">{{ finiteText(logSource) }}</span></h3>
         <div class="drawer-actions" style="margin-bottom:6px">
           <button type="button" class="tiny" @click="emit('load-logs')">{{ t('common.refresh') }}</button>
           <button type="button" class="tiny" @click="copyLog">{{ t('services.copy_log') }}</button>
         </div>
-        <pre class="log">{{ log || t('services.log_empty') }}</pre>
+        <pre class="log">{{ finiteText(log, '') || t('services.log_empty') }}</pre>
       </section>
     </aside>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, reactive, ref, watch } from 'vue'
+import { computed, inject, onUnmounted, reactive, ref, watch } from 'vue'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
+import { finiteText } from '../lib/finite'
 import { portOf, serviceLabels, signatureOf, stateChipClass } from '../lib/serviceActions'
 import ServiceActions from './ServiceActions.vue'
 
@@ -256,7 +257,7 @@ function resetForms() {
   adoptForm.name = ad.name || ''
   adoptForm.group = ad.group || ''
   adoptForm.url = ad.url || ''
-  adoptForm.ports = (ad.ports || []).join(', ')
+  adoptForm.ports = (ad.ports || []).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
   adoptForm.start = ad.start || ''
   adoptForm.stop = ad.stop || ''
   adoptForm.control_via = ad.control_via || ''
@@ -266,13 +267,18 @@ function resetForms() {
   scriptForm.name = sc.name || d.name || ''
   scriptForm.group = sc.group || d.group || ''
   scriptForm.url = sc.url || d.url || ''
-  scriptForm.ports = (sc.ports || []).join(', ')
+  scriptForm.ports = (sc.ports || []).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
   scriptForm.start = sc.start || ''
   scriptForm.stop = sc.stop || ''
 }
 
+let pageAlive = true
+
 // Every detail (re-)read hands down a fresh object; the forms follow it.
-watch(() => props.service, resetForms, { immediate: true })
+watch(() => props.service, () => {
+  if (!pageAlive) return
+  resetForms()
+}, { immediate: true })
 
 function submitAdopt() {
   const ports = parsePorts(adoptForm.ports)
@@ -309,8 +315,12 @@ function submitOverride() {
   })
 }
 
+onUnmounted(() => { pageAlive = false })
+
 async function copyLog() {
-  toast(await copyToClipboard(props.log) ? '✅' : '❌')
+  const ok = await copyToClipboard(props.log)
+  if (!pageAlive) return
+  toast(ok ? '✅' : '❌')
 }
 
 // Escape dismisses, focus moves in on open and back to the trigger on close,

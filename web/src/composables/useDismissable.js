@@ -21,6 +21,14 @@ function focusableWithin(root) {
   return Array.from(root.querySelectorAll(FOCUSABLE)).filter((el) => !isHidden(el))
 }
 
+function isConsoleSurface(el) {
+  // xterm and noVNC need Tab to reach the remote session. Wrapping from the
+  // helper textarea / screen back to Close stole it.
+  if (!el || el === document.body || el === document.documentElement) return false
+  if (el.classList?.contains('vnc-screen') || el.classList?.contains('xterm-helper-textarea')) return true
+  return Boolean(el.closest?.('.xterm, .vnc-screen'))
+}
+
 /**
  * Wire the keyboard contract every dialog owes the user: Escape closes it,
  * focus moves in on open and returns to the trigger on close, and Tab cannot
@@ -31,6 +39,12 @@ function focusableWithin(root) {
  */
 export function useDismissable(isOpen, close, panel) {
   let lastFocused = null
+  let pageAlive = true
+  let loadGeneration = 0
+
+  function stillOn(generation) {
+    return pageAlive && generation === loadGeneration
+  }
 
   function onKeydown(event) {
     if (event.key === 'Escape') {
@@ -39,6 +53,7 @@ export function useDismissable(isOpen, close, panel) {
       return
     }
     if (event.key !== 'Tab') return
+    if (isConsoleSurface(event.target) || isConsoleSurface(document.activeElement)) return
     // Without this, Tab escapes into the page behind the overlay, where a
     // sighted keyboard user cannot see where the caret went.
     const items = focusableWithin(panel?.value)
@@ -67,11 +82,13 @@ export function useDismissable(isOpen, close, panel) {
   watch(
     () => (typeof isOpen === 'function' ? isOpen() : isOpen.value),
     async (open) => {
+      const generation = ++loadGeneration
       if (open) {
         lastFocused = document.activeElement
         document.addEventListener('keydown', onKeydown, true)
         document.body.style.overflow = 'hidden'
         await Promise.resolve()
+        if (!stillOn(generation)) return
         const items = focusableWithin(panel?.value)
         ;(items[0] || panel?.value)?.focus?.()
       } else {
@@ -81,5 +98,9 @@ export function useDismissable(isOpen, close, panel) {
     { immediate: true },
   )
 
-  onBeforeUnmount(teardown)
+  onBeforeUnmount(() => {
+    pageAlive = false
+    loadGeneration += 1
+    teardown()
+  })
 }

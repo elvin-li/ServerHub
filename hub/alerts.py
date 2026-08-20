@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
@@ -10,13 +9,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from hub.config import cfg
+from hub import secure_io
 from hub.paths import DATA_DIR
 from hub.status import full_status
-from hub.util import tail_file_lines
+from hub.util import read_text_capped, strftime_now, tail_file_lines
 
 ALERTS_FILE = DATA_DIR / "alerts.jsonl"
 STATE_FILE = DATA_DIR / "alert_state.json"
+#: Leftover multi-MB alert_state.json used to OOM GET /api/alerts.
+_STATE_CAP = 256 * 1024
 MAX_ALERTS = 500
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
@@ -34,16 +35,20 @@ _TRIM_EVERY = 50
 
 
 def _load_state() -> dict:
-    if STATE_FILE.exists():
-        try:
-            data = json.loads(STATE_FILE.read_text())
-        except Exception:
+    try:
+        # Path.exists() only swallows ENOENT/ELOOP.  EIO/ESTALE on a dying
+        # mount used to raise out of GET /api/alerts and POST /api/alerts/check.
+        if not STATE_FILE.exists():
             return {}
-        # A list/string leftover from a torn write used to raise
-        # ``prev.get(...)`` on every sweep and silence the alerter,
-        # UPS policy, and stale-runtime kickstarts for good.
-        if isinstance(data, dict):
-            return data
+        data = json.loads(read_text_capped(STATE_FILE, _STATE_CAP))
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested alert_state.json is not ValueError.
+        return {}
+    # A list/string leftover from a torn write used to raise
+    # ``prev.get(...)`` on every sweep and silence the alerter,
+    # UPS policy, and stale-runtime kickstarts for good.
+    if isinstance(data, dict):
+        return data
     return {}
 
 
@@ -56,25 +61,44 @@ def _save_state(st: dict):
     the write-if-changed path exists to prevent.
     """
     STATE_FILE.parent.mkdir(exist_ok=True)
-    payload = json.dumps(st, ensure_ascii=False, indent=2)
-    tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(payload)
-        os.replace(tmp, STATE_FILE)
-    except Exception:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+        payload = json.dumps(
+            _jsonable_alert(st) if isinstance(st, dict) else {},
+            ensure_ascii=False, indent=2, allow_nan=False,
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover circular state after _jsonable_alert is not
+        # ValueError; POST /api/alerts/check used to 500 before the OSError guard.
+        return
+    # replace_bytes: O_EXCL|O_NOFOLLOW tmp so a planted `{name}.{pid}.tmp`
+    # symlink cannot redirect the write, then atomic replace onto the live file.
+    secure_io.drop_leftover_nonfile(STATE_FILE)
+    try:
+        secure_io.replace_bytes(STATE_FILE, payload.encode("utf-8"))
+    except OSError:
+        # Leftover directory occupying alert_state.json must not 500
+        # POST /api/alerts/check.
+        pass
 
 
 def _append_alert(alert: dict):
     global _appends_since_trim
+    if not isinstance(alert, dict):
+        return
+    alert = _jsonable_alert(alert)
+    if not isinstance(alert, dict):
+        return
+    alert["t"] = _alert_ts(alert.get("t"))
     ALERTS_FILE.parent.mkdir(exist_ok=True)
+    try:
+        line = json.dumps(alert, ensure_ascii=False, allow_nan=False) + "\n"
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return
     with _lock:
-        with open(ALERTS_FILE, "a") as f:
-            f.write(json.dumps(alert, ensure_ascii=False) + "\n")
+        secure_io.append_text(
+            ALERTS_FILE,
+            line,
+        )
         _appends_since_trim += 1
         if _appends_since_trim < _TRIM_EVERY:
             return
@@ -83,32 +107,105 @@ def _append_alert(alert: dict):
             # errors="replace": one torn/binary write must not raise
             # UnicodeDecodeError past the OSError guard and disable trimming
             # forever; the per-line json parse skips mangled lines instead.
-            lines = ALERTS_FILE.read_text(errors="replace").splitlines()
-            if len(lines) > MAX_ALERTS:
+            lines = tail_file_lines(ALERTS_FILE, MAX_ALERTS, max_bytes=1024 * 1024)
+            if len(lines) >= MAX_ALERTS:
                 # Atomic trim: a crash mid-write_text used to empty the trail.
                 payload = "\n".join(lines[-MAX_ALERTS:]) + "\n"
-                tmp = ALERTS_FILE.with_name(f"{ALERTS_FILE.name}.{os.getpid()}.tmp")
-                try:
-                    tmp.write_text(payload)
-                    os.replace(tmp, ALERTS_FILE)
-                except Exception:
-                    try:
-                        tmp.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    raise
+                secure_io.replace_bytes(ALERTS_FILE, payload.encode("utf-8"))
         except OSError:
             pass
 
 
+def _alert_ts(raw) -> int | None:
+    """Epoch for the Alerts page.  Leftover ``t: 2026-08-19`` / ``.inf``
+    used to stringify and render as Invalid Date; ``t: null`` is dropped.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return None
+        try:
+            return int(raw)
+        except OverflowError:
+            return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            try:
+                return int(text)
+            except OverflowError:
+                return None
+        return None
+    return None
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable_alert(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Leftover YAML ``name: 2026-08-19`` / ``kind: .inf`` used to land in the
+    ``check_once`` payload and 500 POST /api/alerts/check at encode time.
+    A leftover ``\\ud800`` in alerts.jsonl still 500'd GET /api/alerts.
+    """
+    if depth > 32:
+        return None
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {
+            _utf8_text(k): _jsonable_alert(v, depth + 1)
+            for k, v in value.items() if isinstance(k, str)
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable_alert(v, depth + 1) for v in value]
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (int, bool)) or value is None:
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/alerts.
+            return _jsonable_alert(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 def list_alerts(limit: int = 50) -> list:
-    if not ALERTS_FILE.exists():
-        return []
     try:
         n = max(1, min(int(limit), MAX_ALERTS))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         n = 50
     try:
+        if not ALERTS_FILE.exists():
+            return []
         # Tail rather than slurp: ``lines[-limit:]`` after a full read loaded
         # the whole journal, and ``limit=0`` is ``[-0:]`` — the entire file.
         lines = [ln for ln in tail_file_lines(ALERTS_FILE, n) if ln.strip()]
@@ -118,10 +215,13 @@ def list_alerts(limit: int = 50) -> list:
     for ln in lines:
         try:
             parsed = json.loads(ln)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         if isinstance(parsed, dict):
-            out.append(parsed)
+            row = _jsonable_alert(parsed)
+            if isinstance(row, dict):
+                row["t"] = _alert_ts(row.get("t"))
+                out.append(row)
     out.reverse()
     return out
 
@@ -135,12 +235,13 @@ def notify_settings() -> dict:
     happens inside notify_channels.dispatch().  Pure-legacy configs pass
     through unchanged.
     """
-    raw = ((cfg().get("settings") or {}).get("notify") or {})
+    from hub.config import settings_section
+    raw = settings_section("notify")
     try:
         from hub import notify_channels
         return notify_channels.effective_settings(raw)
     except Exception:
-        return raw
+        return raw if isinstance(raw, dict) else {}
 
 
 def _http_url_ok(url: str) -> bool:
@@ -185,7 +286,7 @@ def emit_alert(*, kind: str, level: str, alert_id: str, message: str,
     ``ok`` follows notify_resolve, everything else follows include_warn.
     """
     alert = {
-        "t": int(time.time()),
+        "t": _as_epoch(time.time()),
         "level": level,
         "kind": kind,
         "id": alert_id,
@@ -232,7 +333,7 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             latest = hist[-1] if hist else None
     except Exception:
         latest = None
-    if not latest:
+    if not isinstance(latest, dict):
         return []
     cpu_val = latest.get("cpu_used_pct")
     if cpu_val is None:
@@ -242,7 +343,10 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         ("mem", latest.get("mem_used_pct"), th.get("mem_pct", 90), "Memory"),
         ("disk", latest.get("disk_pct"), th.get("disk_pct", 90), "Disk"),
     ]
-    cooldown = int(th.get("cooldown_sec") or 1800)
+    try:
+        cooldown = int(th.get("cooldown_sec") or 1800)
+    except (TypeError, ValueError, OverflowError):
+        cooldown = 1800
     last_fire = prev.get("_resource_last") or {}
     if not isinstance(last_fire, dict):
         last_fire = {}
@@ -258,13 +362,22 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         try:
             val_f = float(val)
             limit_f = float(limit)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # Leftover ``cpu_used_pct: 10**10000`` OverflowError'd the sweep
+            # (``int too large to convert to float`` is not ValueError).
+            continue
+        if (
+            val_f != val_f or limit_f != limit_f
+            or val_f in (float("inf"), float("-inf"))
+            or limit_f in (float("inf"), float("-inf"))
+        ):
+            # ``float(inf)`` succeeds and used to emit "CPU usage inf%".
             continue
         key = f"resource:{rid}"
         over = val_f >= limit_f
         recovered = val_f <= (limit_f - hysteresis)
         old = prev.get(key)
-        last_t = int(last_fire.get(rid) or 0)
+        last_t = _as_epoch(last_fire.get(rid))
         if over and old != "warn" and (now - last_t) < cooldown:
             # Still inside the last alert's quiet window: a 100→70→100
             # flap must not reprint.  Keep the recovered state.
@@ -362,10 +475,75 @@ _SMART_ALERT_TEXT = {
 }
 
 
+def _format_alert(template: str, **kw) -> str:
+    """Fill an alert template without letting leftover values 500 the sweep.
+
+    ``str.format`` parses only the template, so a model named ``SSD {990}`` is
+    fine as a *value*.  A numeric spec (``{v:.0f}``) applied to a non-number
+    leftover — or a template field the caller forgot — used to raise and abort
+    the whole SMART pass (the sweep catches it, so the disk just goes silent).
+    """
+    try:
+        return _utf8_text(template.format(**kw))
+    except (KeyError, IndexError, ValueError, TypeError, RecursionError, OverflowError):
+        # RecursionError: leftover recursive ``__format__``/``__str__`` is not
+        # ValueError; that used to abort the SMART pass (and 500 the check
+        # when the sweep wrapper was not in place). OverflowError: leftover inf.
+        out = template
+        for key, val in kw.items():
+            try:
+                token = "{" + _utf8_text(key)
+            except Exception:
+                continue
+            start = 0
+            pieces: list[str] = []
+            while True:
+                idx = out.find(token, start)
+                if idx < 0:
+                    pieces.append(out[start:])
+                    break
+                end = out.find("}", idx)
+                if end < 0:
+                    pieces.append(out[start:])
+                    break
+                pieces.append(out[start:idx])
+                pieces.append(_utf8_text(val))
+                start = end + 1
+            out = "".join(pieces)
+        return _utf8_text(out)
+
+
 def _smart_reason(kind: str, **kw) -> tuple[str, str]:
     """One tripped check, rendered both ways from the same values."""
     detail, sentence = _SMART_REASON_TEXT[kind]
-    return detail.format(**kw), sentence.format(**kw)
+    return _format_alert(detail, **kw), _format_alert(sentence, **kw)
+
+
+def _as_epoch(raw, default: int = 0) -> int:
+    """Cooldown stamps from alert_state.json; garbage must not raise."""
+    if isinstance(raw, bool) or raw is None:
+        return default
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return default
+        try:
+            return int(raw)
+        except (OverflowError, ValueError):
+            return default
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return default
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return _as_epoch(float(text), default)
+            except ValueError:
+                return default
+    return default
 
 
 _SMART_TEMP_READING = re.compile(r"^temp=\d+C")
@@ -403,7 +581,16 @@ def _smart_num(raw) -> float | None:
     if isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
-        return float(raw)
+        try:
+            val = float(raw)
+        except OverflowError:
+            # Leftover ``10**400`` OverflowError'd the SMART pass (``int`` too
+            # large to convert to float is not ValueError).  Inf/NaN used to
+            # render as "media errors=inf" after ``float(inf)`` succeeded.
+            return None
+        if val != val or val in (float("inf"), float("-inf")):
+            return None
+        return val
     s = str(raw).strip()
     if not s:
         return None
@@ -413,16 +600,19 @@ def _smart_num(raw) -> float | None:
     if low.startswith("0x"):
         try:
             return float(int(low, 16))
-        except ValueError:
+        except (ValueError, OverflowError):
             return None
     # A few smartctl counters are printed with thousands separators ("1,234").
     m = _NUM_RE.search(s.replace(",", ""))
     if not m:
         return None
     try:
-        return float(m.group(0))
-    except ValueError:
+        val = float(m.group(0))
+    except (ValueError, OverflowError):
         return None
+    if val != val or val in (float("inf"), float("-inf")):
+        return None
+    return val
 
 
 def _smart_key(dev: dict) -> str:
@@ -496,7 +686,8 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
     # operator who is shown one of those stops reading disk alerts -- which is worse
     # than having none.  So "raw count is non-zero" is a warn below, and *crossing
     # the vendor's own threshold* is what counts as fatal.
-    for attr in smart.get("attrs") or []:
+    attrs = smart.get("attrs") if isinstance(smart.get("attrs"), list) else []
+    for attr in attrs:
         if not isinstance(attr, dict) or str(attr.get("type") or "") != "Pre-fail":
             continue
         value = _smart_num(attr.get("value"))
@@ -571,7 +762,10 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
     except Exception:
         return []
 
-    cooldown = int(th.get("cooldown_sec") or 1800)
+    try:
+        cooldown = int(th.get("cooldown_sec") or 1800)
+    except (TypeError, ValueError, OverflowError):
+        cooldown = 1800
     last_fire = prev.get("_smart_last")
     if not isinstance(last_fire, dict):
         last_fire = {}
@@ -611,13 +805,13 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
         sid = f"smart:{key}"
         new_state[sid] = level
         old = prev.get(sid)
-        last_t = int(last_fire.get(key) or 0)
+        last_t = _as_epoch(last_fire.get(key))
         model = str(smart.get("model") or dev.get("name") or dev.get("id") or key).strip()
         device = str(dev.get("device") or "").strip()
         # /dev/diskN is useless as an identity (see _smart_key) but is exactly what
         # an operator needs to find the disk right now, so it belongs in the prose.
         label = f"{model} {device}".strip()
-        name = _SMART_ALERT_TEXT["name"].format(model=model)
+        name = _format_alert(_SMART_ALERT_TEXT["name"], model=model)
 
         if level != "ok":
             # Edge-triggered plus a cooldown re-announce, same semantics as
@@ -656,8 +850,8 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
             fatal = level == "down"
             if old != level or grew or (fatal and (now - last_t) >= cooldown):
                 title, template = _SMART_ALERT_TEXT[level]
-                message = template.format(
-                    label=label, body="; ".join(s for _, s in reasons)
+                message = _format_alert(
+                    template, label=label, body="; ".join(s for _, s in reasons)
                 )
                 alert = {
                     "t": now,
@@ -690,7 +884,7 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
                 "level": "ok",
                 "event": "resolved",
                 "detail": _SMART_ALERT_TEXT["ok_detail"],
-                "message": template.format(label=label),
+                "message": _format_alert(template, label=label),
             }
             _append_alert(alert)
             emitted.append(alert)
@@ -739,7 +933,11 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
     n = notify_settings()
     name = str(st.get("name") or "UPS")
     pct = st.get("battery_percent")
-    pct_text = f"{pct}%" if pct is not None else "unknown charge"
+    try:
+        pct_f = None if pct is None or isinstance(pct, bool) else float(pct)
+    except (TypeError, ValueError, OverflowError):
+        pct_f = None
+    pct_text = f"{pct}%" if pct_f is not None else "unknown charge"
     on_battery = bool(st.get("on_battery"))
 
     key = "ups:power"
@@ -782,9 +980,9 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
 
     try:
         floor = float(settings.get("low_battery_pct") or 20)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         floor = 20.0
-    low = on_battery and pct is not None and float(pct) <= floor
+    low = on_battery and pct_f is not None and pct_f <= floor
     key2 = "ups:battery"
     new_state[key2] = "down" if low else "ok"
     if low and prev.get(key2) != "down":
@@ -839,7 +1037,11 @@ def _service_transition_alerts(
                 notify_title, alert["message"], level=alert["level"], **extra,
             )
 
+    if not isinstance(services, dict):
+        return emitted
     for sid, s in services.items():
+        if not isinstance(s, dict):
+            continue
         state = s.get("state", "unknown")
         new_state[sid] = state
         old = prev.get(sid)
@@ -902,10 +1104,25 @@ def check_once(force_status: bool = False) -> list:
     st = full_status(force=force_status)
     prev = _load_state()
     services = {}
-    for g in st.get("groups") or []:
-        for s in g.get("services") or []:
-            services[s["id"]] = s
-    now = int(time.time())
+    groups = st.get("groups") if isinstance(st, dict) else None
+    if not isinstance(groups, list):
+        groups = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        rows = g.get("services")
+        if not isinstance(rows, list):
+            continue
+        for s in rows:
+            # Status still groups a leftover ``id: [foo]`` / ``id: .inf``.
+            # Using that as a dict key TypeError'd POST /api/alerts/check,
+            # and an inf id leaked into the emitted JSON (allow_nan=False).
+            sid = s.get("id")
+            if isinstance(s, dict) and isinstance(sid, str) and sid:
+                services[sid] = s
+    # ``int(time.time())`` OverflowError on leftover inf used to 500
+    # POST /api/alerts/check before any check's try/except ran.
+    now = _as_epoch(time.time())
     emitted = []
     new_state = {}
     # `new_state` is rebuilt from scratch every sweep, so any bookkeeping sub-dict
@@ -925,7 +1142,10 @@ def check_once(force_status: bool = False) -> list:
         new_state["_freshness_last"] = prev["_freshness_last"]
     if isinstance(prev.get("_service_pending"), dict):
         new_state["_service_pending"] = dict(prev["_service_pending"])
-    emitted.extend(_service_transition_alerts(prev, new_state, services, now))
+    try:
+        emitted.extend(_service_transition_alerts(prev, new_state, services, now))
+    except Exception:
+        pass
     try:
         emitted.extend(_check_resource_thresholds(prev, new_state, now))
     except Exception:
@@ -972,8 +1192,13 @@ def check_once(force_status: bool = False) -> list:
         pass
     # Only rewrite state file when map actually changed (huge SSD win)
     if new_state != prev:
-        _save_state(new_state)
-    return emitted
+        try:
+            _save_state(new_state)
+        except (OSError, TypeError, ValueError):
+            pass
+    # Non-dict leftovers (inf / a YAML date / !!binary / !!set) used to
+    # skip sanitization and 500 POST /api/alerts/check at encode time.
+    return [_jsonable_alert(a) for a in emitted]
 
 
 def _loop(interval: int = 90):
@@ -983,8 +1208,11 @@ def _loop(interval: int = 90):
         st = full_status(force=False)
         baseline = {}
         for g in st.get("groups") or []:
+            if not isinstance(g, dict):
+                continue
             for s in g.get("services") or []:
-                baseline[s["id"]] = s.get("state")
+                if isinstance(s, dict) and isinstance(s.get("id"), str):
+                    baseline[s["id"]] = s.get("state")
         # Seed a baseline only on a genuinely fresh install.  Keyed on the state
         # actually loading rather than on STATE_FILE.exists(): a false negative
         # there would replace the operator's saved state with a fresh baseline,
@@ -1001,7 +1229,7 @@ def _loop(interval: int = 90):
             check_once(force_status=False)
         except Exception:
             pass
-        _stop.wait(max(30, int(interval)))
+        _stop.wait(interval)
 
 
 def start_alerter(interval: int = 90):
@@ -1009,8 +1237,9 @@ def start_alerter(interval: int = 90):
     if _thread and _thread.is_alive():
         return
     _stop.clear()
+    from hub.worker_health import loop_interval
     _thread = threading.Thread(
-        target=_loop, args=(max(30, int(interval)),), daemon=True, name="alert-engine"
+        target=_loop, args=(loop_interval(interval),), daemon=True, name="alert-engine"
     )
     _thread.start()
 
@@ -1031,6 +1260,6 @@ def stop_alerter(timeout: float = 3.0) -> None:
 def test_notify() -> dict:
     return send_ha_notify(
         "ServerHub test",
-        f"Notification channel test {time.strftime('%H:%M:%S')}",
+        f"Notification channel test {strftime_now('%H:%M:%S')}",
         event="test",
     )

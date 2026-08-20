@@ -33,15 +33,25 @@ from pathlib import Path
 from hub.docker_cli import engine_up
 from hub.http_guard import RedirectRefused, no_redirect_opener
 from hub.launchd_cache import loaded_labels
-from hub.util import cached_snapshot, port_open, sh
+from hub.paths import user_home
+from hub.util import cached_snapshot, port_open, read_text_capped, sh, strftime_now
 
 _OPENER = no_redirect_opener()
 
 _TTL = 30.0
 
-BASE = Path.home() / "Services" / "immich"
-ACCEL = Path.home() / ".immich-accelerator"
+
+def _home_dir() -> Path:
+    """Best-effort HOME.  ``Path.home()`` leftover must not 500 import."""
+    return user_home() or Path("/var/empty/serverhub-immich")
+
+
+_HOME = _home_dir()
+BASE = _HOME / "Services" / "immich"
+ACCEL = _HOME / ".immich-accelerator"
 WORKER_PID = ACCEL / "pids" / "worker.pid"
+#: Leftover multi-MB start-worker-native.sh used to OOM GET /api/health.
+_SCRIPT_CAP = 256 * 1024
 #: Explicit quarantine marker written by ops/keepalive when the media volume
 #: shows write faults; keep-immich-alive.sh refuses to start the worker while
 #: it exists, so "worker stopped" has a different meaning in that state.
@@ -56,14 +66,100 @@ REDIS_PORT = 6379
 PG_PORT = 5433
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _as_text(value) -> str:
+    """docker ps / ping leftovers: bytes used to TypeError ``partition`` / ``in``."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif not isinstance(value, str):
+        return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Inf in a leftover ping body was already dropped; a leftover ``\\ud800`` in
+    docker ps / ping text still 500'd GET /api/health at UTF-8 encode time.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _path_is_file(path: Path) -> bool:
+    """``is_file()`` EIO on a dying volume used to 500 GET /api/health."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _path_is_exec(path: Path) -> bool:
+    try:
+        return path.is_file() and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
 def _check(id_: str, name: str, level: str, ok: bool, detail: str, fix: str = "") -> dict:
     return {
         "id": id_,
         "name": name,
         "level": "ok" if ok else level,
         "ok": ok,
-        "detail": detail,
-        "fix": "" if ok else fix,
+        "detail": _as_text(detail),
+        "fix": "" if ok else _as_text(fix),
     }
 
 
@@ -72,13 +168,13 @@ def _http(url: str, timeout: float = 3.0):
     try:
         req = urllib.request.Request(url, method="GET")
         with _OPENER.open(req, timeout=timeout) as r:
-            return r.status, r.read(4096).decode("utf-8", "replace")
+            return r.status, _as_text(r.read(4096))
     except urllib.error.HTTPError as e:
         return e.code, ""
     except RedirectRefused as e:
-        return None, str(e)
+        return None, _utf8_text(e)
     except Exception as e:  # URLError, socket.timeout, ...
-        return None, str(e)
+        return None, _utf8_text(e)
 
 
 def worker_pid() -> int | None:
@@ -92,16 +188,25 @@ def worker_pid() -> int | None:
     try:
         # Line 1 is the pid; start-worker-native.sh writes the process' `lstart`
         # on line 2 so a recycled pid can be told apart from the real worker.
-        raw = WORKER_PID.read_text().splitlines()
-        pid = int(raw[0].strip())
-    except (OSError, ValueError, IndexError):
+        # Cap the read: ``read_text()`` of a leftover multi-MB pidfile used
+        # to OOM GET /api/photoshub.
+        with open(WORKER_PID, encoding="utf-8", errors="replace") as fh:
+            raw = fh.read(256)
+        line = raw.splitlines()[0].strip()
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+    if isinstance(line, float) and (line != line or line in (float("inf"), float("-inf"))):
+        return None
+    try:
+        pid = int(line)
+    except (TypeError, ValueError, OverflowError):
         return None
     if pid <= 1:
         return None
     rc, out, _ = sh(["/bin/ps", "-o", "lstart=,command=", "-p", str(pid)], timeout=4)
-    if rc != 0 or not out.strip():
+    line = _as_text(out).strip()
+    if rc != 0 or not line:
         return None
-    line = out.strip()
     # `ps -o lstart=` prints a fixed-width 24-char date, then the command.
     started, cmd = line[:24].strip(), line[24:].strip()
 
@@ -127,7 +232,8 @@ def worker_pid() -> int | None:
 
 def _worker_uptime(pid: int) -> str:
     rc, out, _ = sh(["/bin/ps", "-o", "etime=", "-p", str(pid)], timeout=4)
-    return out.strip() if rc == 0 else "?"
+    text = _as_text(out).strip()
+    return text if rc == 0 and text else "?"
 
 
 #: One definition so the four worker states cannot drift apart in the UI.
@@ -184,9 +290,10 @@ def _container_state(name: str) -> tuple[bool, str]:
          "--format", "{{.State}}\t{{.Status}}"],
         timeout=8,
     )
-    if rc != 0 or not out.strip():
+    text = _as_text(out).strip()
+    if rc != 0 or not text:
         return False, "container not found"
-    state, _, status = out.strip().partition("\t")
+    state, _, status = text.partition("\t")
     return state == "running" and "unhealthy" not in status, status or state
 
 
@@ -212,6 +319,7 @@ def run_checks(force: bool = False) -> dict:
 
     # --- web UI ---
     status, body = _http(f"http://127.0.0.1:{WEB_PORT}/api/server/ping")
+    body = _as_text(body)
     pong = status == 200 and "pong" in body
     checks.append(_check(
         "immich_web", f"Immich Web/API :{WEB_PORT}", "error", pong,
@@ -223,10 +331,11 @@ def run_checks(force: bool = False) -> dict:
     # Failure prose lives in errors.CODES + the SPA's err.* i18n keys (the
     # panel translates codes like api_error payloads); hub/ must not grow
     # hardcoded user-facing Chinese.
-    checks.append(_worker_check(worker_pid(), QUARANTINE.is_file()))
+    checks.append(_worker_check(worker_pid(), _path_is_file(QUARANTINE)))
 
     # --- native ML ---
     status, body = _http(f"http://127.0.0.1:{ML_PORT}/ping", timeout=3)
+    body = _as_text(body)
     ml_ok = status == 200
     checks.append(_check(
         "immich_ml", f"Native ML service :{ML_PORT} (CLIP/faces/OCR)", "error", ml_ok,
@@ -251,7 +360,7 @@ def run_checks(force: bool = False) -> dict:
     ))
 
     # --- VideoToolbox ffmpeg shim ---
-    shim_ok = FFMPEG_SHIM.is_file() and os.access(FFMPEG_SHIM, os.X_OK)
+    shim_ok = _path_is_exec(FFMPEG_SHIM)
     checks.append(_check(
         "immich_ffmpeg_shim", "VideoToolbox ffmpeg wrapper", "warn", shim_ok,
         str(FFMPEG_SHIM) if shim_ok else "missing or not executable — transcoding falls back to CPU software encoding",
@@ -266,10 +375,14 @@ def run_checks(force: bool = False) -> dict:
     shim_js = BASE / "hooks" / "ml_url_shim.js"
     wired = False
     try:
-        wired = "ml_url_shim" in (BASE / "start-worker-native.sh").read_text()
+        # Leftover multi-MB start-worker-native.sh used to OOM GET /api/health.
+        wired = "ml_url_shim" in read_text_capped(
+            BASE / "start-worker-native.sh", _SCRIPT_CAP,
+            encoding="utf-8", errors="replace",
+        )
     except OSError:
         pass
-    guard_ok = shim_js.is_file() and wired
+    guard_ok = _path_is_file(shim_js) and wired
     checks.append(_check(
         "immich_ml_url_shim", "ML URL contamination guard", "warn", guard_ok,
         "loaded (saving settings will not break ML)" if guard_ok
@@ -295,7 +408,7 @@ def run_checks(force: bool = False) -> dict:
     errors = sum(1 for c in checks if not c["ok"] and c["level"] == "error")
     warns = sum(1 for c in checks if not c["ok"] and c["level"] == "warn")
     v = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "summary": {
             "ok": sum(1 for c in checks if c["ok"]),
             "warn": warns,
@@ -305,8 +418,8 @@ def run_checks(force: bool = False) -> dict:
         "checks": checks,
         "healthy": errors == 0,
     }
-    return v
+    return _jsonable(v)
 
 
 if __name__ == "__main__":
-    print(json.dumps(run_checks(force=True), ensure_ascii=False, indent=2))
+    print(json.dumps(run_checks(force=True), ensure_ascii=False, indent=2, allow_nan=False))

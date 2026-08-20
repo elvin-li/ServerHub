@@ -11,6 +11,8 @@
  * without binding this module to a component lifecycle.
  */
 
+import { finiteText } from './finite'
+
 /** Verbs that mutate service state (as opposed to open/logs/detail). */
 const CONTROL_ACTS = new Set(['start', 'stop', 'restart', 'run', 'pause', 'unpause', 'remove', 'kill'])
 
@@ -49,7 +51,12 @@ export function primaryActs(s) {
 export function canLogs(s) {
   if (!s) return false
   if (s.can_logs === false) return false
+  if (s.can_logs === true) return true
   if ((s.actions || []).includes('logs')) return true
+  // A served action list without `logs` is authoritative. Member rows are
+  // stripped to open/detail and omit can_logs; guessing from kind painted
+  // Logs (and 403'd) for those accounts.
+  if (Array.isArray(s.actions)) return false
   return ['container', 'launchd', 'script'].includes(s.kind)
 }
 
@@ -72,18 +79,20 @@ export function portOf(s) {
   const nums = []
   const push = (p) => {
     const n = typeof p === 'number' ? p : (typeof p === 'string' && /^\d+$/.test(p) ? Number(p) : null)
-    if (n != null && !nums.includes(n)) nums.push(n)
+    if (n != null && Number.isFinite(n) && !nums.includes(n)) nums.push(n)
   }
   if (s?.port != null) push(s.port)
   if (Array.isArray(s?.ports)) {
     for (const p of s.ports) push(p)
     if (!nums.length && s.ports.length) {
       const first = s.ports[0]
-      return typeof first === 'object' ? JSON.stringify(first) : String(first)
+      if (typeof first === 'number' && !Number.isFinite(first)) return '—'
+      if (typeof first === 'object') return JSON.stringify(first)
+      return String(finiteText(first))
     }
   }
   if (nums.length) return nums.map((p) => `:${p}`).join(' ')
-  const m = (s?.detail || '').match(/:(\d{2,5})\b/)
+  const m = String(finiteText(s?.detail, '')).match(/:(\d{2,5})\b/)
   return m ? `:${m[1]}` : '—'
 }
 
@@ -121,8 +130,8 @@ const STATE_LABEL_KEYS = {
 /** Localised display names, unknown values passed through verbatim. */
 export function serviceLabels(t) {
   return {
-    actLabel: (a) => (ACT_LABEL_KEYS[a] ? t(ACT_LABEL_KEYS[a]) : a),
-    kindLabel: (k) => (KIND_LABEL_KEYS[k] ? t(KIND_LABEL_KEYS[k]) : (k || '—')),
-    stateLabel: (st) => (STATE_LABEL_KEYS[st] ? t(STATE_LABEL_KEYS[st]) : (st || '—')),
+    actLabel: (a) => (ACT_LABEL_KEYS[a] ? t(ACT_LABEL_KEYS[a]) : finiteText(a)),
+    kindLabel: (k) => (KIND_LABEL_KEYS[k] ? t(KIND_LABEL_KEYS[k]) : finiteText(k)),
+    stateLabel: (st) => (STATE_LABEL_KEYS[st] ? t(STATE_LABEL_KEYS[st]) : finiteText(st)),
   }
 }

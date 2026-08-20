@@ -133,6 +133,14 @@ class IdentifyTests(unittest.TestCase):
         sig = service_signatures.identify(image="python:3.12")
         self.assertEqual(sig["confidence"], "runtime")
 
+    def test_parse_signature_tolerates_non_list_procs_and_ports(self):
+        sig = service_signatures.parse_signature({
+            "slug": "x", "procs": 1, "ports": 8080,
+        })
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig["procs"], ())
+        self.assertEqual(sig["ports"], ())
+
     def test_parse_signature_rejects_option_shaped_brew(self):
         sig = service_signatures.parse_signature({
             "slug": "x", "procs": ["x"], "brew": "--all",
@@ -309,6 +317,65 @@ class AdoptTests(unittest.TestCase):
         _, data = self._adopt(_auto_service())
         self.assertNotIn("auto.port.8079", data["overrides"])
 
+    def test_adopt_survives_overrides_that_are_not_a_map(self):
+        svc = _auto_service()
+        data = {
+            "scripts": [],
+            "overrides": ["not-a-map"],
+            "apps": {"not": "a-list"},
+        }
+
+        def fake_mutate(mutator):
+            mutator(data)
+            return data
+
+        with patch.object(services_manage_svc, "find_service", return_value=svc), \
+                patch.object(services_manage_svc, "_full_process_name", return_value="redis-server"), \
+                patch.object(services_manage_svc, "_process_command_path", return_value=""), \
+                patch.object(services_manage_svc, "configured_signatures", return_value=[]), \
+                patch.object(services_manage_svc, "cfg", return_value=data), \
+                patch.object(services_manage_svc, "invalidate_status"), \
+                patch.object(config, "mutate", side_effect=fake_mutate):
+            result = services_manage_svc.adopt_service(svc["id"], {})
+        self.assertTrue(result["ok"])
+        self.assertEqual(data["overrides"], ["not-a-map"])
+
+    def test_adopt_survives_scripts_that_are_not_a_list(self):
+        """`scripts: null` (or a leftover map) used to AttributeError on append."""
+        for scripts in (None, {"redis": {}}, "nope"):
+            with self.subTest(scripts=scripts):
+                svc = _auto_service()
+                data = {"scripts": scripts, "overrides": {}}
+
+                def fake_mutate(mutator, captured=data):
+                    mutator(captured)
+                    return captured
+
+                with patch.object(services_manage_svc, "find_service", return_value=svc), \
+                        patch.object(services_manage_svc, "_full_process_name", return_value="redis-server"), \
+                        patch.object(services_manage_svc, "_process_command_path", return_value=""), \
+                        patch.object(services_manage_svc, "configured_signatures", return_value=[]), \
+                        patch.object(services_manage_svc, "cfg", return_value=data), \
+                        patch.object(services_manage_svc, "invalidate_status"), \
+                        patch.object(config, "mutate", side_effect=fake_mutate):
+                    result = services_manage_svc.adopt_service(svc["id"], {})
+                self.assertTrue(result["ok"])
+                self.assertIsInstance(data["scripts"], list)
+                self.assertEqual(data["scripts"][0]["id"], "redis")
+
+    def test_adopt_defaults_survives_a_non_dict_signature(self):
+        svc = _auto_service()
+        svc["meta"]["signature"] = "redis"
+        svc["signature"] = ["oops"]
+        with patch.object(services_manage_svc, "_full_process_name", return_value="mystery"), \
+                patch.object(services_manage_svc, "_process_command_path", return_value=""), \
+                patch.object(services_manage_svc, "configured_signatures", return_value=[]), \
+                patch.object(services_manage_svc, "identify", return_value=None), \
+                patch.object(services_manage_svc, "cfg", return_value={}):
+            defaults = services_manage_svc.adopt_defaults(svc)
+        self.assertEqual(defaults["process"], "mystery")
+        self.assertEqual(defaults["group"], "Adopted")
+
     def test_adopt_respects_caller_overrides_and_deduplicates_id(self):
         result, data = self._adopt(
             _auto_service(),
@@ -388,6 +455,32 @@ class AdoptTests(unittest.TestCase):
         self.assertIs(row["http"], False)
         self.assertEqual(result["signature"]["slug"], "redis")
 
+    def test_service_detail_tolerates_list_meta(self):
+        svc = {
+            "id": "auto.port.9",
+            "kind": "auto",
+            "name": "mystery :9",
+            "meta": ["not", "a", "map"],
+            "actions": [],
+        }
+        with (
+            patch.object(services_manage_svc, "find_service", return_value=svc),
+            patch.object(services_manage_svc, "override", return_value={}),
+            patch.object(services_manage_svc, "adopt_defaults", return_value={}),
+        ):
+            detail = services_manage_svc.service_detail("auto.port.9")
+        self.assertEqual(detail["meta"], {})
+        self.assertIsNone(detail["process"])
+
+    def test_adopt_tolerates_list_meta(self):
+        svc = _auto_service()
+        svc["meta"] = ["oops"]
+        result, data = self._adopt(
+            svc, patch_body={"ports": [8079], "id": "redis", "name": "Redis"},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(data["scripts"][0]["adopted_from"]["auto_id"], svc["id"])
+
     def test_adopt_remember_omits_generic_runtime_from_procs(self):
         svc = {
             "id": "auto.port.3999", "kind": "auto", "name": "node :3999",
@@ -464,6 +557,16 @@ class ScriptManageTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             self._run(data, lambda: services_manage_svc.forget_script("missing"))
         self.assertEqual(ctx.exception.detail["code"], "services.script_not_found")
+
+    def test_forget_script_survives_overrides_that_are_not_a_map(self):
+        data = {
+            "scripts": [{"id": "redis", "name": "Redis", "ports": [6379]}],
+            "overrides": ["not-a-map"],
+        }
+        result = self._run(data, lambda: services_manage_svc.forget_script("redis"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(data["scripts"], [])
+        self.assertEqual(data["overrides"], ["not-a-map"])
 
 
 class SignatureManageTests(unittest.TestCase):

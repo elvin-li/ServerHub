@@ -244,6 +244,19 @@ async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: boo
                     if not follow:
                         break
                     continue
+                except ValueError:
+                    # asyncio StreamReader.readline() raises ValueError when a
+                    # leftover log line exceeds the 64KiB limit — that used to
+                    # 500 GET /api/containers/{name}/logs.
+                    try:
+                        while True:
+                            chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=5)
+                            if not chunk or b"\n" in chunk:
+                                break
+                    except Exception:
+                        pass
+                    yield "data: …[line truncated]\n\n"
+                    continue
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()

@@ -7,12 +7,68 @@ from hub import cli_args
 from hub.errors import api_error
 from hub.brew_cache import brew_services_list, invalidate_brew_services
 from hub.status import invalidate_status
-from hub.util import sh
+from hub.util import run_capped, sh
 
 # One definition, in hub.paths: it tries `which brew` before the two standard
 # prefixes, so a Homebrew in a custom prefix is found too. Local copies of this
 # fallback drifted from it and disagreed about whether brew existed.
 from hub.paths import BREW  # noqa: E402
+
+
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", "replace")
+    elif isinstance(value, str):
+        text = value
+    elif value is None:
+        return ""
+    else:
+        try:
+            text = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _json_safe(value):
+    """Starlette encodes with allow_nan=False; leftover NaN/bytes 500 the list.
+
+    ``exit_code`` was the first field brew put NaN in.  ``user`` / ``file``
+    still passed through, so a non-finite or bytes leftover 500'd GET
+    ``/api/brew/services`` the same way.  A leftover ``\\ud800`` in ``name``
+    still 500'd the UTF-8 encode.
+    """
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return None
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/brew/services.
+            stamped = iso()
+        except Exception:
+            return None
+        if stamped is value:
+            return None
+        return _json_safe(stamped)
+    return None
 
 
 def _brew_env() -> dict:
@@ -31,20 +87,34 @@ def _brew_env() -> dict:
 _HIDE_BREW = {"nginx"}
 
 
+def _brew_present() -> bool:
+    """``os.path.isfile`` re-raises EIO/ESTALE; that used to 500 GET /api/brew."""
+    try:
+        return os.path.isfile(BREW)
+    except OSError:
+        return False
+
+
 def list_services() -> list:
-    if not os.path.isfile(BREW):
+    if not _brew_present():
         return []
     # Shared TTL cache: `brew services list --json` costs ~1.3s and four
     # modules ask for it while rendering one page.
     items = []
-    data = brew_services_list()
-    if data:
+    try:
+        data = brew_services_list()
+    except Exception:
+        data = []
+    if isinstance(data, list) and data:
         try:
             for s in data:
-                name = s.get("name") or ""
-                if name in _HIDE_BREW:
+                if not isinstance(s, dict):
                     continue
-                status = (s.get("status") or "").lower()
+                name = _as_text(s.get("name")).strip()
+                if not name or name in _HIDE_BREW:
+                    continue
+                status = _as_text(s.get("status")).lower()
+
                 # started|stopped|error|none
                 state = "ok" if status in ("started", "running") else (
                     "warn" if status in ("error",) else "down"
@@ -54,32 +124,43 @@ def list_services() -> list:
                     "name": name,
                     "status": status or "unknown",
                     "state": state,
-                    "user": s.get("user"),
-                    "file": s.get("file"),
-                    "exit_code": s.get("exit_code"),
+                    "user": _json_safe(s.get("user")),
+                    "file": _json_safe(s.get("file")),
+                    "exit_code": _json_safe(s.get("exit_code")),
                     "actions": ["restart", "stop"] if state == "ok" else ["start"],
                 })
             return items
         except Exception:
-            pass
+            items = []
     # fallback text parse
-    rc, out, err = sh([BREW, "services", "list"], timeout=20)
+    try:
+        rc, out, err = sh([BREW, "services", "list"], timeout=20)
+    except Exception:
+        return items
     if rc != 0:
         return []
+    if isinstance(out, (bytes, bytearray)):
+        out = out.decode("utf-8", "replace")
+    elif not isinstance(out, str):
+        return items
     for line in out.splitlines()[1:]:
         parts = line.split()
         if len(parts) < 2:
             continue
-        name, status = parts[0], parts[1].lower()
-        if name in _HIDE_BREW:
+        # Fallback used to pass leftover ``\ud800`` / bytes straight through
+        # and UnicodeEncodeError GET /api/brew/services.  The JSON path
+        # already runs name/status/user through _as_text/_json_safe.
+        name = _as_text(parts[0]).strip()
+        if not name or name in _HIDE_BREW:
             continue
+        status = _as_text(parts[1]).lower()
         state = "ok" if status == "started" else "down"
         items.append({
             "id": name,
             "name": name,
-            "status": status,
+            "status": status or "unknown",
             "state": state,
-            "user": parts[2] if len(parts) > 2 else None,
+            "user": _json_safe(parts[2] if len(parts) > 2 else None),
             "file": None,
             "actions": ["restart", "stop"] if state == "ok" else ["start"],
         })
@@ -93,14 +174,12 @@ def service_action(name: str, action: str) -> dict:
     # service on the host instead of one.  The shared guard anchors the first
     # character to an alphanumeric.
     name = cli_args.require_positional(name, label="service name")
-    if not os.path.isfile(BREW):
+    if not _brew_present():
         raise api_error("brew.not_found")
-    import subprocess
     try:
-        p = subprocess.run(
+        rc, msg = run_capped(
             [BREW, "services", action, name],
-            capture_output=True, text=True, timeout=120,
-            env=_brew_env(),
+            timeout=120, env=_brew_env(), cap=2000,
         )
         # The shared `brew services list --json` snapshot has a 6s TTL, so
         # without this the UI re-reads the pre-action state right after a
@@ -109,9 +188,14 @@ def service_action(name: str, action: str) -> dict:
         # that follows the action is truthful.
         invalidate_brew_services()
         invalidate_status()
+        # run_capped is str; a bytes leftover from a stub (or a future
+        # binary-capped helper) used to TypeError Starlette's encoder.
+        text = _as_text(msg).strip()
         return {
-            "ok": p.returncode == 0,
-            "message": (p.stdout or p.stderr or "").strip() or f"exit {p.returncode}",
+            "ok": rc == 0,
+            "message": text or f"exit {rc}",
         }
     except Exception as e:
-        return {"ok": False, "message": str(e)}
+        # Leftover ``\ud800`` in a raised message used to 500 the action
+        # JSON the same way a leftover brew-list name 500'd the list.
+        return {"ok": False, "message": _as_text(e)}

@@ -3,21 +3,46 @@ from __future__ import annotations
 
 import json
 
-from hub.docker_cli import docker, engine_up
+from hub.docker_cli import _jsonable, docker, engine_up
 from hub.paths import DOCKER, ORB
 from hub.util import fan_out, sh
+
+
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _payload(value) -> dict:
+    cleaned = _jsonable(value)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _slim_info() -> dict:
     rc, out, err = docker("info", "--format", "{{json .}}", timeout=15)
     info = {}
-    if rc == 0 and out.strip():
+    text = _as_text(out).strip()
+    if rc == 0 and text:
         try:
-            parsed = json.loads(out)
-        except json.JSONDecodeError:
-            info = {"raw": out[:2000]}
+            parsed = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+            # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
+            info = {"raw": text[:2000]}
         else:
-            info = parsed if isinstance(parsed, dict) else {"raw": out[:2000]}
+            info = parsed if isinstance(parsed, dict) else {"raw": text[:2000]}
     # slim fields like Unraid docker settings summary
     slim = {
         "ServerVersion": info.get("ServerVersion"),
@@ -46,10 +71,11 @@ def _slim_info() -> dict:
 
 def _version() -> dict:
     rc, ver, _ = docker("version", "--format", "{{json .}}", timeout=10)
-    if rc == 0 and ver.strip():
+    text = _as_text(ver).strip()
+    if rc == 0 and text:
         try:
-            parsed = json.loads(ver)
-        except json.JSONDecodeError:
+            parsed = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
@@ -57,17 +83,21 @@ def _version() -> dict:
 
 def _orb_version() -> str:
     rc, orb_v, _ = sh([ORB, "version"], timeout=5)
-    return orb_v if rc == 0 else ""
+    return _as_text(orb_v) if rc == 0 else ""
 
 
 def engine_info() -> dict:
-    if not engine_up():
-        return {
+    try:
+        up = bool(engine_up())
+    except Exception:
+        up = False
+    if not up:
+        return _payload({
             "engine_up": False,
             "docker_cli": DOCKER,
             "orb_cli": ORB,
             "message": "engine is not running",
-        }
+        })
 
     # `docker info`, `docker version` and `orb version` ask three unrelated questions
     # of two different binaries, so the page waited out the sum of their timeouts
@@ -86,11 +116,11 @@ def engine_info() -> dict:
         [(_slim_info, {}), (_version, {}), (_orb_version, "")],
         max_workers=3,
     )
-    return {
+    return _payload({
         "engine_up": True,
         "docker_cli": DOCKER,
         "orb_cli": ORB,
         "orb_version": orb_v,
         "info": slim,
         "version": version,
-    }
+    })

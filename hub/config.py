@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import os
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -12,13 +13,18 @@ from typing import Any
 import yaml
 
 from hub import secure_io
+from hub.errors import api_error
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR, ensure_state_dirs
+from hub.util import read_text_capped
 
 _cfg = {"mtime": 0.0, "data": {}}
 _write_lock = threading.Lock()
 _cfg_lock = threading.RLock()
 YAML_PATH = CONFIG_FILE
 ensure_state_dirs()
+
+#: Leftover multi-MB services.yaml used to OOM every cfg() request.
+_YAML_CAP = 1024 * 1024
 
 #: Cross-process write lock for services.yaml.
 #:
@@ -40,10 +46,59 @@ _LOCK_PATH = DATA_DIR / ".services.yaml.lock"
 BACKUP_RETENTION = 30
 
 
+def _drop_leftover_nonfile(path, *, keep_symlink: bool = False) -> None:
+    """Unlink a leftover directory/socket occupying services.yaml or its lock."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.S_ISREG(st.st_mode):
+        return
+    if keep_symlink and stat.S_ISLNK(st.st_mode):
+        return
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _lock_fd() -> int | None:
+    """flock fd, or None when a leftover node / EIO blocks creating it."""
+    try:
+        _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            st = os.lstat(_LOCK_PATH)
+        except FileNotFoundError:
+            st = None
+        if st is not None and not stat.S_ISREG(st.st_mode):
+            try:
+                if stat.S_ISDIR(st.st_mode):
+                    os.rmdir(_LOCK_PATH)
+                else:
+                    os.unlink(_LOCK_PATH)
+            except OSError:
+                return None
+        return os.open(_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+
+
 @contextmanager
 def _file_lock():
-    """Hold an exclusive flock across every process writing services.yaml."""
-    fd = os.open(_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    """Hold an exclusive flock across every process writing services.yaml.
+
+    A leftover directory named ``.services.yaml.lock``, or EIO creating it,
+    must not 500 PUT /api/settings — fall back to the in-process write lock.
+    """
+    fd = _lock_fd()
+    if fd is None:
+        yield
+        return
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
@@ -54,6 +109,41 @@ def _file_lock():
         os.close(fd)
 
 
+#: Top-level keys every route indexes with ``.get`` / ``.items``.  A hand-edit
+#: or torn write leaving ``settings: []`` used to 500 the lifespan (metrics
+#: interval) and every page that did ``(cfg().get("settings") or {}).get(...)``.
+_MAP_KEYS = ("settings", "overrides")
+_LIST_KEYS = (
+    "apps", "stacks", "quick_links", "log_sources",
+    "maintenance", "scripts", "groups_order", "schedules",
+)
+
+
+def _as_config(data) -> dict:
+    """YAML that is not a mapping cannot answer ``.get`` and 500s every route."""
+    if not isinstance(data, dict):
+        return {}
+    patch = {}
+    for key in _MAP_KEYS:
+        if key in data and not isinstance(data[key], dict):
+            patch[key] = {}
+    for key in _LIST_KEYS:
+        if key not in data:
+            continue
+        raw = data[key]
+        if not isinstance(raw, list):
+            patch[key] = []
+        elif key != "groups_order":
+            cleaned = [x for x in raw if isinstance(x, dict)]
+            if cleaned != raw:
+                patch[key] = cleaned
+    if not patch:
+        return data
+    out = dict(data)
+    out.update(patch)
+    return out
+
+
 def _read_disk() -> dict:
     """Parse services.yaml straight from disk, bypassing the mtime cache.
 
@@ -61,8 +151,17 @@ def _read_disk() -> dict:
     now, not onto a snapshot this process may have taken minutes ago.
     """
     try:
-        return yaml.safe_load(YAML_PATH.read_text()) or {}
-    except FileNotFoundError:
+        return _as_config(yaml.safe_load(read_text_capped(YAML_PATH, _YAML_CAP)) or {})
+    except (
+        OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
+        TypeError, ValueError, AttributeError, KeyError,
+    ):
+        # UnicodeDecodeError is a ValueError, not an OSError or YAMLError: a
+        # torn write after power loss used to raise out of mutate()/cfg() and
+        # 500 every route that touches settings.  RecursionError is leftover
+        # deeply nested YAML — not YAMLError.  TypeError/ValueError/AttributeError
+        # /KeyError: leftover ``!!timestamp .inf``, ``2026-13-01``, a 5000-digit
+        # int, or ``!!bool 2`` are not YAMLError.
         return {}
 
 
@@ -125,8 +224,11 @@ def _bootstrap() -> None:
         # the admin account, both apps, three stacks and twelve bookmarks with it.
         # With O_EXCL the kernel decides, and a wrong guess is a no-op.
         try:
-            body = example.read_text(encoding="utf-8")
-        except OSError:
+            # Leftover multi-MB / non-UTF-8 example used to OOM or
+            # UnicodeDecodeError out of cfg() on first boot (decode is
+            # ValueError, not OSError).
+            body = read_text_capped(example, _YAML_CAP)
+        except (OSError, UnicodeDecodeError):
             body = _dump(copy.deepcopy(DEFAULT_CONFIG))
         secure_io.create_secret_text(YAML_PATH, body)
     except OSError:
@@ -137,19 +239,59 @@ def _bootstrap() -> None:
 def cfg():
     with _cfg_lock:
         p = YAML_PATH
-        if not p.exists():
+        # Path.exists() only swallows ENOENT/ELOOP.  EIO/ESTALE on a dying
+        # mount used to raise out of the unguarded lifespan ``cfg()`` call
+        # and abort the LaunchAgent before uvicorn bound the port.
+        try:
+            missing = not p.exists()
+        except OSError:
+            missing = False
+        if missing:
             _bootstrap()
-        m = p.stat().st_mtime
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            return _cfg["data"]
         if m != _cfg["mtime"]:
-            data = yaml.safe_load(p.read_text()) or {}
+            try:
+                data = _as_config(yaml.safe_load(read_text_capped(p, _YAML_CAP)) or {})
+            except (
+                OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
+                TypeError, ValueError, AttributeError, KeyError,
+            ):
+                data = {}
             # Publish a complete parse atomically; readers never see half-loaded data.
             _cfg["data"] = data
             _cfg["mtime"] = m
         return _cfg["data"]
 
 
+def settings_section(name: str) -> dict:
+    """``settings.<name>`` as a mapping, or ``{}`` if missing or the wrong type.
+
+    Nested sections (``notify``, ``files``, ``wireguard``, ``thresholds``,
+    ``maintenance_env``) are not covered by :func:`_as_config`.  A hand-edit
+    like ``notify: []`` used to 500 the alerter, Settings, file manager, and
+    every job that merged ``maintenance_env``.
+    """
+    s = cfg().get("settings")
+    if not isinstance(s, dict):
+        return {}
+    raw = s.get(name)
+    return raw if isinstance(raw, dict) else {}
+
+
+def maintenance_env() -> dict:
+    """Extra env for backups / scheduled jobs / container updates."""
+    return {str(k): str(v) for k, v in settings_section("maintenance_env").items()}
+
+
 def override(sid):
-    return (cfg().get("overrides") or {}).get(sid, {})
+    ov = cfg().get("overrides")
+    if not isinstance(ov, dict):
+        return {}
+    val = ov.get(sid, {})
+    return val if isinstance(val, dict) else {}
 
 
 def set_override(sid: str, patch: dict) -> dict:
@@ -159,8 +301,12 @@ def set_override(sid: str, patch: dict) -> dict:
     result: dict = {}
 
     def apply(data: dict) -> None:
-        ov = data.setdefault("overrides", {})
-        cur = dict(ov.get(sid) or {})
+        ov = data.get("overrides")
+        if not isinstance(ov, dict):
+            ov = {}
+            data["overrides"] = ov
+        cur = ov.get(sid)
+        cur = dict(cur) if isinstance(cur, dict) else {}
         for k, v in (patch or {}).items():
             if v is None:
                 cur.pop(k, None)
@@ -179,7 +325,9 @@ def drop_override(sid: str) -> None:
         return
 
     def apply(data: dict) -> None:
-        (data.get("overrides") or {}).pop(sid, None)
+        ov = data.get("overrides")
+        if isinstance(ov, dict):
+            ov.pop(sid, None)
 
     mutate(apply)
 
@@ -191,13 +339,22 @@ def reload_cfg():
 
 
 def _dump(data: dict) -> str:
-    return yaml.dump(
-        data,
-        allow_unicode=True,
-        sort_keys=False,
-        width=120,
-        default_flow_style=False,
-    )
+    # SafeDumper, not Dumper: a leftover tuple in a hand-built patch used to
+    # emit ``!!python/tuple`` into services.yaml.  The next yaml.safe_load then
+    # ConstructorError'd and cfg() returned {}, wiping the admin account from
+    # the in-process view; Dumper is also the representer that would write a
+    # real ``!!python/object`` if any non-plain type ever landed in the dict.
+    try:
+        return yaml.safe_dump(
+            data,
+            allow_unicode=True,
+            sort_keys=False,
+            width=120,
+            default_flow_style=False,
+        )
+    except RecursionError:
+        # Leftover deeply nested services.yaml used to RecursionError PUT /api/settings.
+        raise api_error("settings.save_failed")
 
 
 def save_full(data: dict) -> None:
@@ -213,14 +370,30 @@ def save_full(data: dict) -> None:
 
 def _save_full_locked(data: dict) -> None:
     """Body of :func:`save_full`; assumes both write locks are held."""
-    if YAML_PATH.exists():
+    # A leftover empty directory occupying services.yaml used to
+    # IsADirectoryError copy_secret_file / replace and 500 every settings save.
+    _drop_leftover_nonfile(YAML_PATH, keep_symlink=True)
+    try:
+        is_file = YAML_PATH.is_file()
+    except OSError:
+        is_file = False
+    if is_file:
         # Nanoseconds, not seconds: two save_full() calls in the same second
         # used to overwrite one backup and silently shrink the recovery window.
         # Under the write lock a collision is still possible on a very fast
         # host, so step the suffix until the name is free.
         suffix = time.time_ns()
         bak = DATA_DIR / f"services.yaml.bak.{suffix}"
-        while bak.exists():
+        while True:
+            try:
+                taken = bak.exists()
+            except OSError:
+                # Dying FUSE/SMB: exists() re-raises EIO/ESTALE and used to
+                # 500 PUT /api/settings.  Treat as a free name so the save
+                # can still land; copy_secret_file already swallows OSError.
+                taken = False
+            if not taken:
+                break
             suffix += 1
             bak = DATA_DIR / f"services.yaml.bak.{suffix}"
         # Not shutil.copy2: it creates the destination at the umask and
@@ -228,30 +401,40 @@ def _save_full_locked(data: dict) -> None:
         # password hash and every service credential sits at 0644 for the
         # length of the copy.  The backup is exactly as sensitive as the
         # original, so it is 0600 from its first byte.
-        secure_io.copy_secret_file(YAML_PATH, bak)
-        # Retention is a recovery window, not just churn control. At 5 copies a
-        # burst of writes rotates the whole history within minutes: the admin
-        # username and password_hash were once lost from services.yaml and by the
-        # time it was noticed every one of the 5 pre-images had already rotated
-        # past the point where the credential still existed, leaving a months-old
-        # archive as the only source. These files are a few KB, so a deeper
-        # window costs almost nothing next to being unable to recover at all.
-        #
-        # Sorted by name, which is sound because the suffix is a fixed-width
-        # epoch: lexicographic and numeric order coincide.
-        baks = sorted(DATA_DIR.glob("services.yaml.bak.*"), reverse=True)
-        for old in baks[BACKUP_RETENTION:]:
-            try:
-                old.unlink()
-            except OSError:
-                pass
+        try:
+            secure_io.copy_secret_file(YAML_PATH, bak, max_bytes=_YAML_CAP)
+        except OSError:
+            # Dying FUSE / leftover node: skip the pre-image rather than
+            # 500 PUT /api/settings while the new file can still be written.
+            pass
+        else:
+            # Retention is a recovery window, not just churn control. At 5 copies a
+            # burst of writes rotates the whole history within minutes: the admin
+            # username and password_hash were once lost from services.yaml and by the
+            # time it was noticed every one of the 5 pre-images had already rotated
+            # past the point where the credential still existed, leaving a months-old
+            # archive as the only source. These files are a few KB, so a deeper
+            # window costs almost nothing next to being unable to recover at all.
+            #
+            # Sorted by name, which is sound because the suffix is a fixed-width
+            # epoch: lexicographic and numeric order coincide.
+            baks = sorted(DATA_DIR.glob("services.yaml.bak.*"), reverse=True)
+            for old in baks[BACKUP_RETENTION:]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
     # services.yaml carries service credentials, tunnel tokens and admin
     # passwords.  The previous write_text()+chmod() left the staging file
     # world-readable at the default umask for the whole duration of the
     # write, which is exactly the window hub.secure_io exists to close: the
     # file is now 0600 from the moment it first exists.  The replace stays
     # atomic, so a reader never observes a half-written config.
-    secure_io.replace_secret_text(YAML_PATH, _dump(data))
+    try:
+        secure_io.replace_secret_text(YAML_PATH, _dump(data))
+    except OSError:
+        # Leftover nonempty directory / EIO replacing the file must not 500.
+        raise api_error("settings.save_failed")
     reload_cfg()
 
 
@@ -294,7 +477,9 @@ def panel_locale() -> str:
     ``zh-Hans-CN``, so a first-match would keep the menu in English while
     the panel is zh-CN.
     """
-    ui = (cfg().get("settings") or {}).get("ui") or {}
+    settings = cfg().get("settings")
+    ui = settings.get("ui") if isinstance(settings, dict) else None
+    ui = ui if isinstance(ui, dict) else {}
     raw = str(ui.get("locale") or DEFAULT_UI_LOCALE).strip()
     if raw in UI_LOCALES:
         return raw

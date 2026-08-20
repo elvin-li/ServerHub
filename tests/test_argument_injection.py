@@ -403,6 +403,115 @@ class FileBrowserCredentialTests(unittest.TestCase):
                 )
 
 
+class VmArgvTests(unittest.TestCase):
+    """``utmctl start --help`` / ``orbctl create --help`` must be unreachable."""
+
+    def test_option_like_vm_id_is_refused_before_utmctl(self):
+        from hub import vms_svc
+
+        for value in ["--help", "-f", "orb:--all"]:
+            with self.subTest(value=value):
+                with mock.patch.object(vms_svc, "sh") as sh:
+                    with self.assertRaises(HTTPException) as caught:
+                        vms_svc.vm_action(value, "start")
+                self.assertEqual(caught.exception.status_code, 400)
+                sh.assert_not_called()
+
+    def test_option_like_distro_is_refused_before_orbctl(self):
+        from hub import vms_svc
+
+        with (
+            mock.patch.object(vms_svc, "_orb_available", return_value=True),
+            mock.patch.object(vms_svc, "sh") as sh,
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                vms_svc.create_orb_machine("--help")
+        self.assertEqual(caught.exception.status_code, 400)
+        sh.assert_not_called()
+
+    def test_ubuntu_versioned_distro_is_still_accepted(self):
+        from hub import vms_svc
+
+        with (
+            mock.patch.object(vms_svc, "_orb_available", return_value=True),
+            mock.patch.object(vms_svc, "sh", return_value=(0, "ok", "")),
+            mock.patch.object(vms_svc, "_invalidate"),
+        ):
+            out = vms_svc.create_orb_machine("ubuntu:24.04")
+        self.assertTrue(out["ok"])
+
+    def test_option_like_clone_name_is_refused(self):
+        from hub import vms_svc
+
+        uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        with (
+            mock.patch.object(vms_svc, "_utm_available", return_value=True),
+            mock.patch.object(vms_svc, "sh") as sh,
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                vms_svc.vm_action(uuid, "clone", name="--help")
+        self.assertEqual(caught.exception.status_code, 400)
+        sh.assert_not_called()
+
+    def test_spaced_utm_name_is_still_a_positional(self):
+        from hub import vms_svc
+
+        self.assertEqual(vms_svc._argv_name("Windows 11"), "Windows 11")
+
+
+class CloudflaredTunnelArgvTests(unittest.TestCase):
+    def test_create_refuses_option_like_name(self):
+        from hub import cloudflared_svc
+
+        with mock.patch.object(cloudflared_svc, "sh") as sh:
+            with self.assertRaises(HTTPException) as caught:
+                cloudflared_svc.create_tunnel("--help")
+        self.assertEqual(caught.exception.status_code, 400)
+        sh.assert_not_called()
+
+    def test_token_fetch_refuses_option_like_name(self):
+        from hub import cloudflared_svc
+
+        with mock.patch.object(cloudflared_svc, "sh") as sh:
+            with self.assertRaises(HTTPException) as caught:
+                cloudflared_svc.fetch_token("--help")
+        self.assertEqual(caught.exception.status_code, 400)
+        sh.assert_not_called()
+
+    def test_route_dns_refuses_option_like_hostname(self):
+        from hub import cloudflared_svc
+
+        with (
+            mock.patch.object(cloudflared_svc, "_logged_in", return_value=True),
+            mock.patch.object(cloudflared_svc, "sh") as sh,
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                cloudflared_svc.route_dns("my-tunnel", "--help")
+        self.assertEqual(caught.exception.status_code, 400)
+        sh.assert_not_called()
+
+
+class IdentityComputerNameTests(unittest.TestCase):
+    def test_option_like_computer_name_is_refused_before_scutil(self):
+        from hub import identity_svc
+
+        with mock.patch.object(identity_svc, "sh") as sh:
+            with self.assertRaises(HTTPException) as caught:
+                identity_svc.set_identity(computer_name="--help")
+        self.assertEqual(caught.exception.status_code, 400)
+        sh.assert_not_called()
+
+    def test_spaced_computer_name_is_still_accepted(self):
+        from hub import identity_svc
+
+        with (
+            mock.patch.object(identity_svc, "sh", return_value=(0, "", "")),
+            mock.patch.object(identity_svc, "get_identity", return_value={}),
+        ):
+            out = identity_svc.set_identity(computer_name="Studio Mac")
+        self.assertTrue(out["ok"])
+
+
 class RegressionSurfaceTests(unittest.TestCase):
     """Guard the shape of the fix, so it cannot be quietly undone."""
 

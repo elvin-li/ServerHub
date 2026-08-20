@@ -36,6 +36,25 @@ from types import MappingProxyType
 
 from hub.util import cached_snapshot, sh
 
+
+def _as_text(value) -> str:
+    """``launchctl`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 health/apps JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
 #: Deliberately short.  This is a dependency cache, not a page cache: every
 #: consumer already sits behind a much longer TTL of its own (the health snapshot,
 #: the app inventory, the autostart overview), so the only window this has to cover
@@ -65,20 +84,40 @@ class Listing:
         #: label -> (pid column, status column), verbatim.  ``nginx_svc`` reports the
         #: pid and the discovery pass reports both, so dropping the columns and
         #: keeping only label sets would have left those two shelling out again.
-        self.jobs = MappingProxyType(dict(jobs))
+        #:
+        #: Coerce pid/status to str: a fixture that stuffed ints used to
+        #: AttributeError on ``pid.isdigit()`` and 500 every launchd reader.
+        clean: dict[str, tuple[str, str]] = {}
+        try:
+            items = list((jobs or {}).items())
+        except Exception:
+            items = []
+        for label, entry in items:
+            name = _as_text(label).strip()
+            if not name or name == "Label":
+                continue
+            if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                pid, status = _as_text(entry[0]), _as_text(entry[1])
+            else:
+                continue
+            clean[name] = (pid, status)
+        self.jobs = MappingProxyType(clean)
         #: Every label in the listing, running or not.
-        self.loaded = frozenset(jobs)
+        self.loaded = frozenset(clean)
         #: Labels whose pid column is a live pid.
         self.running = frozenset(
-            label for label, (pid, _status) in jobs.items() if pid.isdigit()
+            label for label, (pid, _status) in clean.items() if pid.isdigit()
         )
 
     def pid_for(self, label: str) -> str | None:
         """The pid of *label*, or None when it is not listed or not running."""
         entry = self.jobs.get(label)
-        if entry is None or not entry[0].isdigit():
+        if entry is None:
             return None
-        return entry[0]
+        pid = entry[0]
+        if not pid or not pid.isdigit():
+            return None
+        return pid
 
 
 _EMPTY = Listing({})
@@ -86,7 +125,7 @@ _EMPTY = Listing({})
 
 def _parse(out: str) -> Listing:
     jobs: dict[str, tuple[str, str]] = {}
-    for line in (out or "").splitlines():
+    for line in _as_text(out).splitlines():
         parts = line.split("\t")
         if len(parts) != 3:
             continue

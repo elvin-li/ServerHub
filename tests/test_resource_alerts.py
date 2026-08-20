@@ -76,6 +76,27 @@ class ResourceThresholdHysteresisTests(_IsolateAlertsFile):
         self.assertEqual([a["event"] for a in emitted], ["problem"])
         self.assertEqual(state["resource:cpu"], "warn")
 
+    def test_garbage_cooldown_stamp_does_not_raise(self):
+        prev = {
+            "resource:cpu": "ok",
+            "_resource_last": {"cpu": "soon"},
+        }
+        emitted, state = _run(prev, 100, now=1_001_900)
+        self.assertEqual([a["event"] for a in emitted], ["problem"])
+        self.assertEqual(state["resource:cpu"], "warn")
+
+    def test_huge_and_nonfinite_cpu_do_not_500(self):
+        """Leftover ``cpu_used_pct: 10**10000`` OverflowError'd the sweep."""
+        emitted, state = _run({}, 10 ** 10000)
+        self.assertEqual(emitted, [])
+        self.assertNotIn("resource:cpu", state)
+        emitted, state = _run({}, float("inf"))
+        self.assertEqual(emitted, [])
+        self.assertNotIn("resource:cpu", state)
+        emitted, state = _run({}, float("nan"))
+        self.assertEqual(emitted, [])
+        self.assertNotIn("resource:cpu", state)
+
 
 if __name__ == "__main__":
     unittest.main()

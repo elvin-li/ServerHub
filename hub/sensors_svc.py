@@ -10,7 +10,121 @@ import time
 from pathlib import Path
 
 from hub.proc_cache import ps_lines
-from hub.util import LazyPool, sh
+from hub.util import LazyPool, sh, strftime_now
+
+
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if value is None:
+        return ""
+    try:
+        value = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Inf CPU / huge RSS were already dropped at parse; leftover ``\\ud800``
+    in a process name, leftover bytes, or a leftover inf planted in the
+    peek cache still 500'd GET /api/system/sensors?light=1.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/system/sensors.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _sysctl_int(value) -> int | None:
+    """int from a sysctl `-n` payload that may be str, bytes, or already int."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    text = _as_text(value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _finite_float(value) -> float | None:
+    """float from a sensor token, or None for inf/NaN/overflow."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if n != n or n in (float("inf"), float("-inf")):
+        return None
+    return n
+
+
+def _safe_div(num, den) -> float | None:
+    """num/den as a finite float. Huge ints used to OverflowError the dashboard."""
+    try:
+        return _finite_float(num / den)
+    except (TypeError, ZeroDivisionError, OverflowError):
+        return None
+
+
+def _bytes_to_gb(n, digits: int = 1) -> float | None:
+    ratio = _safe_div(n, 2**30)
+    return None if ratio is None else round(ratio, digits)
 
 # ── Mach host CPU ticks — accurate, non-blocking CPU% via cumulative deltas ──
 # host_statistics(HOST_CPU_LOAD_INFO) returns lifetime ticks in
@@ -130,14 +244,19 @@ def shutdown_executor() -> None:
 
 def _parse_size_to_gb(token: str) -> float | None:
     """Parse 30G / 2548M / 975M / 1.2T into GB."""
-    token = token.strip().replace(",", "")
+    token = _as_text(token).strip().replace(",", "")
     m = re.match(r"^([\d.]+)\s*([KMGTP]?)B?$", token, re.I)
     if not m:
         return None
-    n = float(m.group(1))
+    n = _finite_float(m.group(1))
+    if n is None:
+        return None
     u = (m.group(2) or "G").upper()
     mul = {"": 1 / 1024**3, "K": 1 / 1024**2, "M": 1 / 1024, "G": 1, "T": 1024, "P": 1024**2}
-    return round(n * mul.get(u, 1), 2)
+    out = n * mul.get(u, 1)
+    if out != out or out in (float("inf"), float("-inf")):
+        return None
+    return round(out, 2)
 
 
 def _cpu_and_mem_from_top_cached() -> dict:
@@ -160,33 +279,33 @@ def _cpu_and_mem_from_top() -> dict:
     if rc != 0:
         return {}
     data: dict = {}
-    for line in out.splitlines():
+    for line in _as_text(out).splitlines():
         if "CPU usage" in line:
             for part in line.split(":")[-1].split(","):
                 part = part.strip()
                 if "% user" in part:
-                    try:
-                        data["user"] = float(part.replace("% user", "").strip())
-                    except ValueError:
-                        pass
+                    n = _finite_float(part.replace("% user", "").strip())
+                    if n is not None:
+                        data["user"] = n
                 elif "% sys" in part:
-                    try:
-                        data["sys"] = float(part.replace("% sys", "").strip())
-                    except ValueError:
-                        pass
+                    n = _finite_float(part.replace("% sys", "").strip())
+                    if n is not None:
+                        data["sys"] = n
                 elif "% idle" in part:
-                    try:
-                        data["idle"] = float(part.replace("% idle", "").strip())
-                    except ValueError:
-                        pass
+                    n = _finite_float(part.replace("% idle", "").strip())
+                    if n is not None:
+                        data["idle"] = n
         if line.startswith("Load Avg:"):
             nums = line.split(":")[-1].replace(" ", "").split(",")
-            try:
-                data["load1"] = float(nums[0])
-                data["load5"] = float(nums[1])
-                data["load15"] = float(nums[2])
-            except (IndexError, ValueError):
-                pass
+            n1 = _finite_float(nums[0]) if nums else None
+            n5 = _finite_float(nums[1]) if len(nums) > 1 else None
+            n15 = _finite_float(nums[2]) if len(nums) > 2 else None
+            if n1 is not None:
+                data["load1"] = n1
+            if n5 is not None:
+                data["load5"] = n5
+            if n15 is not None:
+                data["load15"] = n15
         if line.startswith("PhysMem:"):
             raw = line.split(":", 1)[1].strip()
             data["physmem_raw"] = raw
@@ -232,50 +351,65 @@ def _static_hw() -> dict:
     rc, ncpu, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=2)
     rc2, memsize, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=2)
     rc3, pgsz, _ = sh(["/usr/sbin/sysctl", "-n", "hw.pagesize"], timeout=2)
-    ncpu_i = int(ncpu) if rc == 0 and ncpu.isdigit() else None
-    mem_gb = round(int(memsize) / 2**30, 1) if rc2 == 0 and memsize.isdigit() else None
-    page_size = int(pgsz) if rc3 == 0 and pgsz.isdigit() else 16384
+    ncpu_i = _sysctl_int(ncpu) if rc == 0 else None
+    mem_n = _sysctl_int(memsize) if rc2 == 0 else None
+    mem_gb = _bytes_to_gb(mem_n) if mem_n is not None else None
+    page_n = _sysctl_int(pgsz) if rc3 == 0 else None
+    page_size = page_n if page_n else 16384
     _static.update(t=now, ncpu=ncpu_i, mem_gb=mem_gb, page_size=page_size)
     return {"ncpu": ncpu_i, "mem_total_gb": mem_gb, "page_size": page_size}
 
 
 def _memory_base() -> dict:
-    load1, load5, load15 = os.getloadavg()
+    try:
+        raw_load = os.getloadavg()
+    except OSError:
+        load1 = load5 = load15 = None
+    else:
+        load1 = _finite_float(raw_load[0])
+        load5 = _finite_float(raw_load[1])
+        load15 = _finite_float(raw_load[2])
     rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
     free_pct = None
     pages_free = pages_spec = pages_inactive = pages_wired = None
-    for line in out.splitlines():
+    for line in _as_text(out).splitlines():
         low = line.lower()
         if "free percentage" in low:
-            try:
-                free_pct = int(line.rstrip("%").split(":")[-1].strip().rstrip("%"))
-            except ValueError:
-                pass
+            # ``int(float('inf'))`` OverflowError'd collect_light / the
+            # dashboard light poll; skip a matching line that is not finite.
+            m = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
+            raw = m.group(1) if m else line.split(":")[-1].strip().rstrip("%")
+            n = _finite_float(raw)
+            if n is not None:
+                try:
+                    free_pct = int(n)
+                except (TypeError, ValueError, OverflowError):
+                    pass
         elif "pages free" in low:
             try:
                 pages_free = int(re.findall(r"\d+", line)[-1])
-            except (IndexError, ValueError):
+            except (IndexError, TypeError, ValueError):
                 pass
         elif "pages speculative" in low:
             try:
                 pages_spec = int(re.findall(r"\d+", line)[-1])
-            except (IndexError, ValueError):
+            except (IndexError, TypeError, ValueError):
                 pass
         elif "pages inactive" in low:
             try:
                 pages_inactive = int(re.findall(r"\d+", line)[-1])
-            except (IndexError, ValueError):
+            except (IndexError, TypeError, ValueError):
                 pass
         elif "pages wired down" in low:
             try:
                 pages_wired = int(re.findall(r"\d+", line)[-1])
-            except (IndexError, ValueError):
+            except (IndexError, TypeError, ValueError):
                 pass
     hw = _static_hw()
     return {
-        "load1": round(load1, 2),
-        "load5": round(load5, 2),
-        "load15": round(load15, 2),
+        "load1": None if load1 is None else round(load1, 2),
+        "load5": None if load5 is None else round(load5, 2),
+        "load15": None if load15 is None else round(load15, 2),
         "mem_free_pct": free_pct,
         "mem_used_pct": (100 - free_pct) if free_pct is not None else None,
         "ncpu": hw["ncpu"],
@@ -289,12 +423,29 @@ def _memory_base() -> dict:
 
 
 def _disk() -> dict:
-    du = shutil.disk_usage("/")
+    try:
+        du = shutil.disk_usage("/")
+    except OSError:
+        # A dying root mount used to OSError collect_light / the dashboard.
+        return {
+            "root_pct": 0,
+            "root_used_gb": None,
+            "root_total_gb": None,
+            "root_free_gb": None,
+        }
+    total = du.total or 0
+    used = du.used or 0
+    free = du.free or 0
+    pct = 0
+    if total:
+        ratio = _safe_div(used, total)
+        if ratio is not None:
+            pct = round(min(100.0, max(0.0, ratio * 100)), 1)
     return {
-        "root_pct": round(du.used / du.total * 100, 1),
-        "root_used_gb": round(du.used / 2**30, 1),
-        "root_total_gb": round(du.total / 2**30, 1),
-        "root_free_gb": round(du.free / 2**30, 1),
+        "root_pct": pct,
+        "root_used_gb": _bytes_to_gb(used),
+        "root_total_gb": _bytes_to_gb(total),
+        "root_free_gb": _bytes_to_gb(free),
     }
 
 
@@ -315,11 +466,21 @@ def _top_processes(limit: int = 8) -> list:
             continue
         try:
             pid = int(parts[1])
-            cpu = float(parts[2])
-            mem = float(parts[3])
-            rss_kb = int(parts[5])
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
             continue
+        # inf/nan %CPU in `ps aux` used to leak into GET /api/system/sensors
+        # (Starlette allow_nan=False). A 400-digit RSS OverflowError'd / 1024.
+        cpu = _finite_float(parts[2])
+        mem = _finite_float(parts[3])
+        if cpu is None or mem is None:
+            continue
+        try:
+            rss_kb = int(parts[5])
+        except (TypeError, ValueError, OverflowError):
+            rss_mb = None
+        else:
+            rss = _safe_div(rss_kb, 1024)
+            rss_mb = None if rss is None else round(rss, 1)
         name = parts[10].strip()
         if "/" in name:
             name = name.split(None, 1)[0].rsplit("/", 1)[-1]
@@ -327,11 +488,15 @@ def _top_processes(limit: int = 8) -> list:
             "pid": pid,
             "cpu": round(cpu, 1),
             "mem": round(mem, 1),
-            "rss_mb": round(rss_kb / 1024, 1),
+            "rss_mb": rss_mb,
             "name": name[:40],
         })
     rows.sort(key=lambda r: (r["cpu"], r["mem"]), reverse=True)
-    return rows[: max(1, int(limit))]
+    try:
+        cap = max(1, int(limit))
+    except (TypeError, ValueError, OverflowError):
+        cap = 8
+    return rows[:cap]
 
 
 def _network_rates() -> dict:
@@ -342,7 +507,7 @@ def _network_rates() -> dict:
         return {}
     # netstat -ibn: multiple rows per iface. Prefer Link# rows (have MAC) and real NICs.
     by_name: dict[str, dict] = {}
-    for line in out.splitlines()[1:]:
+    for line in _as_text(out).splitlines()[1:]:
         parts = line.split()
         if len(parts) < 10:
             continue
@@ -358,7 +523,7 @@ def _network_rates() -> dict:
             # When Network is <Link#N>, Address is MAC → same column indices still hold on macOS
             ibytes = int(parts[6])
             obytes = int(parts[9])
-        except (ValueError, IndexError):
+        except (ValueError, TypeError, IndexError):
             continue
         prev = by_name.get(name)
         if not prev or ibytes + obytes > prev["rx_bytes"] + prev["tx_bytes"]:
@@ -371,8 +536,13 @@ def _network_rates() -> dict:
     if _net_prev["t"] and now > _net_prev["t"]:
         dt = now - _net_prev["t"]
         if dt > 0.5:
-            rx_bps = max(0, int((total_rx - _net_prev["rx"]) / dt))
-            tx_bps = max(0, int((total_tx - _net_prev["tx"]) / dt))
+            # A leftover 400-digit Ibytes counter used to OverflowError
+            # `int((total - prev) / dt)` on the second sample.
+            try:
+                rx_bps = max(0, int((total_rx - _net_prev["rx"]) / dt))
+                tx_bps = max(0, int((total_tx - _net_prev["tx"]) / dt))
+            except (OverflowError, ValueError, TypeError):
+                rx_bps = tx_bps = None
     _net_prev = {"t": now, "rx": total_rx, "tx": total_tx}
     return {
         "rx_bytes": total_rx,
@@ -401,7 +571,7 @@ def _thermal() -> dict | None:
             continue
         rc, out, _ = sh([binary, *args], timeout=4)
         if rc == 0:
-            m = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:°?C)?", out or "", re.I)
+            m = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:°?C)?", _as_text(out), re.I)
             if m:
                 value = float(m.group(1))
                 if 0 < value < 130:
@@ -410,8 +580,9 @@ def _thermal() -> dict | None:
                     break
 
     rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "machdep.xcpm.cpu_thermal_level"], timeout=2)
-    if rc == 0 and out.strip().isdigit():
-        level = int(out.strip())
+    level_n = _sysctl_int(out) if rc == 0 else None
+    if level_n is not None:
+        level = level_n
         return {
             "cpu_temp_c": temp_c,
             "temp_source": source,
@@ -421,7 +592,7 @@ def _thermal() -> dict | None:
         }
 
     rc, out, _ = sh(["/usr/bin/pmset", "-g", "therm"], timeout=3)
-    text = (out or "").lower()
+    text = _as_text(out).lower()
     if rc != 0 or "error:" in text or "failed to get" in text:
         pressure = "unknown"
     elif "no thermal warning" in text:
@@ -441,16 +612,21 @@ def _thermal() -> dict | None:
 def _uptime() -> dict:
     rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
     hours = 0.0
-    if rc == 0 and "sec =" in out:
+    text = _as_text(out)
+    if rc == 0 and "sec =" in text:
         try:
-            boot = int(out.split("sec =")[1].split(",")[0].strip())
-        except (IndexError, ValueError):
-            boot = 0
-        if boot:
-            hours = (time.time() - boot) / 3600
-    days = int(hours // 24)
-    h = int(hours % 24)
-    m = int((hours * 60) % 60)
+            boot = int(text.split("sec =")[1].split(",")[0].strip())
+            hours = (time.time() - boot) / 3600 if boot else 0.0
+        except (IndexError, TypeError, ValueError, OverflowError):
+            hours = 0.0
+    hours = _finite_float(hours) or 0.0
+    try:
+        days = int(hours // 24)
+        h = int(hours % 24)
+        m = int((hours * 60) % 60)
+    except (TypeError, ValueError, OverflowError):
+        days, h, m = 0, 0, 0
+        hours = 0.0
     if days:
         text = f"{days}d {h}h"
     elif h:
@@ -465,10 +641,12 @@ def peek_sensors() -> dict | None:
 
     The metrics sampler uses this so a 5-minute idle tick does not spawn
     ``top`` (1.6s on this host) just to write one jsonl point.
+    Re-sanitizes: leftover inf / bytes / ``\\ud800`` in the peek cache
+    used to 500 GET /api/system/sensors?light=1 at encode time.
     """
     v = _cache["v"]
     if v is not None and time.time() - _cache["t"] < _sensors_ttl():
-        return v
+        return _jsonable(v)
     return None
 
 
@@ -487,23 +665,31 @@ def collect_light() -> dict:
     load1 = mem.get("load1")
     load5 = mem.get("load5")
     load15 = mem.get("load15")
-    load_pct = round(min(200, (load1 or 0) / ncpu * 100), 1) if ncpu else None
-    cpu_used = cpu_ticks.get("used_pct")
+    ratio = _safe_div(load1 or 0, ncpu) if ncpu else None
+    load_pct = None if ratio is None else round(min(200.0, ratio * 100), 1)
+    cpu_used = _finite_float(cpu_ticks.get("used_pct"))
     if cpu_used is None:
         cpu_used = load_pct
     if cpu_used is not None:
-        cpu_used = min(100.0, max(0.0, float(cpu_used)))
+        cpu_used = min(100.0, max(0.0, cpu_used))
     pressure_free = mem.get("mem_free_pct")
     pressure_used = (100 - pressure_free) if pressure_free is not None else None
     mem_total = mem.get("mem_total_gb")
     available_gb = None
     if mem_total is not None and pressure_free is not None:
-        available_gb = round(mem_total * pressure_free / 100, 1)
+        try:
+            held = _finite_float(mem_total * pressure_free / 100)
+        except (TypeError, OverflowError):
+            held = None
+        available_gb = None if held is None else round(held, 1)
     used_gb = None
     if mem_total is not None and available_gb is not None:
-        used_gb = round(max(0.0, mem_total - available_gb), 1)
-    return {
-        "ts": time.strftime("%H:%M:%S"),
+        try:
+            used_gb = round(max(0.0, mem_total - available_gb), 1)
+        except (TypeError, OverflowError):
+            used_gb = None
+    return _jsonable({
+        "ts": strftime_now("%H:%M:%S"),
         "cpu": {
             "user": cpu_ticks.get("user"),
             "sys": cpu_ticks.get("sys"),
@@ -533,19 +719,23 @@ def collect_light() -> dict:
         "load5": load5,
         "load15": load15,
         "light": True,
-    }
+    })
 
 
 def collect_sensors(force: bool = False) -> dict:
     if not force and _cache["v"] and time.time() - _cache["t"] < _sensors_ttl():
-        return _cache["v"]
+        # Re-sanitize: leftover inf / ``\ud800`` planted in the cache used
+        # to 500 GET /api/system/sensors (the light peek already re-sanitized).
+        cleaned = _jsonable(_cache["v"])
+        return cleaned if isinstance(cleaned, dict) else {}
 
     with _refresh_lock:
         # Single-flight: concurrent dashboard/metrics callers share one sample.
         # Coalesce back-to-back force=True (metrics + UI) within 1s.
         age = time.time() - _cache["t"] if _cache["v"] else 1e9
         if _cache["v"] is not None and ((not force and age < _sensors_ttl()) or age < 1.0):
-            return _cache["v"]
+            cleaned = _jsonable(_cache["v"])
+            return cleaned if isinstance(cleaned, dict) else {}
         return _collect_sensors_uncached()
 
 
@@ -582,7 +772,8 @@ def _collect_sensors_uncached() -> dict:
     load15 = top.get("load15", mem.get("load15"))
 
     # load as % of core capacity (Unraid / Glances style)
-    load_pct = round(min(200, (load1 or 0) / ncpu * 100), 1) if ncpu else None
+    ratio = _safe_div(load1 or 0, ncpu) if ncpu else None
+    load_pct = None if ratio is None else round(min(200.0, ratio * 100), 1)
 
     # Prefer Mach-tick deltas (accurate, matches Activity Monitor); fall back
     # to top's single-frame CPU line, then to load-based estimate.
@@ -590,11 +781,13 @@ def _collect_sensors_uncached() -> dict:
     cpu_sys = cpu_ticks.get("sys", top.get("sys"))
     cpu_idle = cpu_ticks.get("idle", top.get("idle"))
     if cpu_ticks.get("used_pct") is not None:
-        cpu_used_pct = cpu_ticks["used_pct"]
+        cpu_used_pct = _finite_float(cpu_ticks["used_pct"])
     elif cpu_idle is not None:
-        cpu_used_pct = round(100 - cpu_idle, 1)
+        cpu_used_pct = _finite_float(100 - cpu_idle)
+        cpu_used_pct = None if cpu_used_pct is None else round(cpu_used_pct, 1)
     elif cpu_user is not None and cpu_sys is not None:
-        cpu_used_pct = round(cpu_user + cpu_sys, 1)
+        cpu_used_pct = _finite_float(cpu_user + cpu_sys)
+        cpu_used_pct = None if cpu_used_pct is None else round(cpu_used_pct, 1)
     else:
         cpu_used_pct = load_pct
 
@@ -610,7 +803,8 @@ def _collect_sensors_uncached() -> dict:
 
     # Primary stress metric from Apple memory_pressure
     if pressure_free_pct is not None:
-        pressure_used_pct = round(100 - pressure_free_pct, 1)
+        used = _finite_float(100 - pressure_free_pct)
+        pressure_used_pct = None if used is None else round(used, 1)
         free_pct = pressure_free_pct
         used_pct = pressure_used_pct
     else:
@@ -622,24 +816,37 @@ def _collect_sensors_uncached() -> dict:
     app_gb = None
     cache_gb = None
     if wired_gb is not None or compressor_gb is not None:
-        app_gb = round((wired_gb or 0) + (compressor_gb or 0), 2)
+        try:
+            app_gb = round((wired_gb or 0) + (compressor_gb or 0), 2)
+        except (TypeError, OverflowError):
+            app_gb = None
         if phys_used_gb is not None and app_gb is not None:
-            cache_gb = round(max(0.0, phys_used_gb - app_gb), 2)
+            try:
+                cache_gb = round(max(0.0, phys_used_gb - app_gb), 2)
+            except (TypeError, OverflowError):
+                cache_gb = None
 
     # Available ≈ total * free_pct / 100 (pressure free), fallback unused
     available_gb = None
     if mem_total is not None and free_pct is not None:
-        available_gb = round(mem_total * free_pct / 100, 1)
+        try:
+            held = _finite_float(mem_total * free_pct / 100)
+        except (TypeError, OverflowError):
+            held = None
+        available_gb = None if held is None else round(held, 1)
     elif phys_unused_gb is not None:
         available_gb = phys_unused_gb
 
     # "In use" under pressure ≈ total - available
     pressure_used_gb = None
     if mem_total is not None and available_gb is not None:
-        pressure_used_gb = round(max(0.0, mem_total - available_gb), 1)
+        try:
+            pressure_used_gb = round(max(0.0, mem_total - available_gb), 1)
+        except (TypeError, OverflowError):
+            pressure_used_gb = None
 
     v = {
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
         "uptime": up,
         "cpu": {
             "user": cpu_user,
@@ -685,5 +892,6 @@ def _collect_sensors_uncached() -> dict:
         "load5": load5,
         "load15": load15,
     }
+    v = _jsonable(v)
     _cache.update(t=time.time(), v=v)
     return v

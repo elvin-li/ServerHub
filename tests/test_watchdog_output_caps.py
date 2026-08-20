@@ -99,6 +99,14 @@ class RunWatchdogCapTests(unittest.TestCase):
         self.assertEqual(rc, 0, f"binary bytes must be replaced, not raised: {log}")
         self.assertIn("done", log)
 
+    def test_infinite_timeout_is_clamped_not_500(self):
+        """``int(inf)`` used to OverflowError the Timer before the watchdog try/except."""
+        for junk in (float("inf"), float("-inf"), float("nan"), None):
+            log: list[str] = []
+            rc = jobs.run_watchdog(["/bin/echo", "hi"], timeout=junk, log=log)
+            self.assertEqual(rc, 0, junk)
+            self.assertTrue(any("hi" in line for line in log), log)
+
 
 class StreamJobCommandTests(unittest.TestCase):
     def test_silent_hang_hits_the_deadline(self):

@@ -5,17 +5,17 @@
       class="modal vnc-modal"
       role="dialog"
       aria-modal="true"
-      :aria-label="t('vms.console_title', { name: vm.name })"
+      :aria-label="t('vms.console_title', { name: finiteText(vm.name) })"
     >
       <header class="vnc-header">
         <div>
-          <div class="name">{{ t('vms.console_title', { name: vm.name }) }}</div>
+          <div class="name">{{ t('vms.console_title', { name: finiteText(vm.name) }) }}</div>
           <div class="vnc-meta">
-            {{ t('vms.console_protocol', { protocol: vm.console?.protocol || 'VNC' }) }}
+            {{ t('vms.console_protocol', { protocol: finiteText(vm.console?.protocol, '') || 'VNC' }) }}
             <span v-if="sessionInfo">
               · {{ t('vms.console_session_limits', {
-                expires: sessionInfo.expires_in ?? '—',
-                max: sessionInfo.max_session_seconds ?? '—',
+                expires: finiteSecs(sessionInfo.expires_in),
+                max: finiteSecs(sessionInfo.max_session_seconds),
               }) }}
             </span>
           </div>
@@ -26,7 +26,7 @@
       <div class="vnc-toolbar">
         <span class="vnc-status" aria-live="polite">
           <span class="status-dot" :class="status"></span>
-          {{ statusLabel }}
+          {{ finiteText(statusLabel) }}
         </span>
         <label class="vnc-option">
           <input v-model="autoScale" type="checkbox" />
@@ -57,16 +57,17 @@
       </div>
 
       <div ref="screenEl" class="vnc-screen" tabindex="0"></div>
-      <p v-if="errorMessage" class="vnc-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="errorMessage" class="vnc-error" role="alert">{{ finiteText(errorMessage) }}</p>
       <p class="vnc-policy">{{ t('vms.console_policy') }}</p>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createVmConsoleSession } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -90,7 +91,12 @@ let disposed = false
 
 const connected = computed(() => status.value === 'connected')
 const viewOnlyLocked = computed(() => Boolean(props.vm.console?.view_only || sessionViewOnly.value))
-const statusLabel = computed(() => t(`vms.console_status_${status.value}`))
+const statusLabel = computed(() => t(`vms.console_status_${finiteText(status.value, 'failed')}`))
+
+function finiteSecs(value) {
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 0 ? n : '—'
+}
 
 function sameOriginWebSocketUrl(rawUrl) {
   const parsed = new URL(rawUrl, window.location.href)
@@ -118,7 +124,7 @@ async function connect() {
 
     status.value = 'connecting'
     const client = new RFB(screenEl.value, sameOriginWebSocketUrl(session.ws_url), { shared: true })
-    rfbClient.value = client
+    rfbClient.value = markRaw(client)
     client.scaleViewport = autoScale.value
     client.viewOnly = viewOnly.value
 
@@ -138,7 +144,7 @@ async function connect() {
     client.addEventListener('securityfailure', (event) => {
       if (disposed) return
       status.value = 'failed'
-      errorMessage.value = event.detail?.reason || t('vms.console_connection_failed')
+      errorMessage.value = finiteText(event.detail?.reason, '') || t('vms.console_connection_failed')
     })
 
     // No retry loop or browser clipboard integration is registered; both
@@ -146,7 +152,7 @@ async function connect() {
   } catch (error) {
     if (disposed) return
     status.value = 'failed'
-    errorMessage.value = error?.message || t('vms.console_connection_failed')
+    errorMessage.value = finiteText(error?.message, '') || t('vms.console_connection_failed')
   }
 }
 
@@ -174,8 +180,13 @@ async function toggleFullscreen() {
     } else {
       await panelEl.value?.requestFullscreen()
     }
+    if (disposed) {
+      if (document.fullscreenElement) await document.exitFullscreen().catch(() => {})
+      return
+    }
   } catch (error) {
-    errorMessage.value = error?.message || t('vms.console_fullscreen_failed')
+    if (disposed) return
+    errorMessage.value = finiteText(error?.message, '') || t('vms.console_fullscreen_failed')
   }
 }
 
@@ -191,9 +202,11 @@ function close() {
 // The console is mounted only while open, so it is always dismissable:
 
 watch(autoScale, (enabled) => {
+  if (disposed) return
   if (rfbClient.value) rfbClient.value.scaleViewport = enabled
 })
 watch(viewOnly, (enabled) => {
+  if (disposed) return
   if (rfbClient.value) rfbClient.value.viewOnly = enabled
 })
 

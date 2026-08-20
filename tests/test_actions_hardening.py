@@ -65,6 +65,33 @@ class ScriptActionTests(unittest.TestCase):
         source = Path(actions.__file__).read_text(encoding="utf-8")
         self.assertNotIn("shell=True", source)
 
+    def test_unmatched_quotes_are_a_400_not_a_500(self):
+        with self.assertRaises(HTTPException) as raised:
+            actions._script_argv('echo "unterminated')
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail["code"], "actions.empty_script")
+
+    def test_surrogate_start_command_does_not_500(self):
+        """Leftover ``\\ud800`` used to UnicodeEncodeError ``Popen`` on script start."""
+        with (
+            patch.object(actions, "registry", return_value={
+                "backup": ("script", {"start": "/usr/bin/true \ud800flag"}),
+            }),
+            patch.object(actions.subprocess, "Popen") as popen,
+        ):
+            rc, _out, _err = actions.run_action("backup", "start")
+        self.assertEqual(rc, 0)
+        popen.assert_called_once()
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[0], "/usr/bin/true")
+        self.assertTrue(all("\ud800" not in part for part in argv))
+
+    def test_nul_start_command_is_a_400_not_a_500(self):
+        with self.assertRaises(HTTPException) as raised:
+            actions._script_argv(["/usr/bin/true", "ok\x00"])
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail["code"], "actions.empty_script")
+
 
 if __name__ == "__main__":
     unittest.main()

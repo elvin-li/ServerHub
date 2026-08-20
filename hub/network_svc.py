@@ -1,7 +1,6 @@
 """Host + Docker network management (macOS networksetup + docker)."""
 from __future__ import annotations
 
-import json
 import re
 import threading
 import time
@@ -13,7 +12,7 @@ from hub.errors import api_error
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
 from hub.service_signatures import unescape_proc_name
-from hub.util import LazyPool, fan_out, sh, ttl_memo
+from hub.util import LazyPool, fan_out, sh, strftime_now, ttl_memo
 
 _cache = {"t": 0.0, "v": None}
 _CACHE_TTL = 6.0
@@ -51,15 +50,46 @@ _ORDER_CACHE_TTL = 6.0
 NS = "/usr/sbin/networksetup"
 
 
+def _as_text(value) -> str:
+    """Drop leftover ``\\ud800`` so GET /api/system/network cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
+            return ""
+    try:
+        return value.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _sh(cmd, timeout=10, **kwargs):
+    # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
+    rc, out, err = sh(cmd, timeout=timeout, **kwargs)
+    return rc, _as_text(out), _as_text(err)
+
+
 def _hex_netmask_to_dotted(mask: str) -> str:
     """0xffffff00 → 255.255.255.0"""
+    if not isinstance(mask, str):
+        mask = _as_text(mask)
     if not mask:
         return ""
     if mask.startswith("0x"):
         try:
             n = int(mask, 16)
             return ".".join(str((n >> (8 * i)) & 0xFF) for i in (3, 2, 1, 0))
-        except ValueError:
+        except (ValueError, OverflowError, TypeError):
             return mask
     if re.match(r"^\d+\.\d+\.\d+\.\d+$", mask):
         return mask
@@ -68,7 +98,7 @@ def _hex_netmask_to_dotted(mask: str) -> str:
 
 def _interfaces_uncached() -> list:
     items = []
-    rc, out, _ = sh(["/sbin/ifconfig", "-a"], timeout=8)
+    rc, out, _ = _sh(["/sbin/ifconfig", "-a"], timeout=8)
     if rc != 0:
         return items
     cur = None
@@ -102,10 +132,12 @@ def _interfaces_uncached() -> list:
             ip = parts[1] if len(parts) > 1 else ""
             mask = ""
             if "netmask" in parts:
-                mask = _hex_netmask_to_dotted(parts[parts.index("netmask") + 1])
+                ni = parts.index("netmask")
+                mask = _hex_netmask_to_dotted(parts[ni + 1]) if ni + 1 < len(parts) else ""
             bcast = ""
             if "broadcast" in parts:
-                bcast = parts[parts.index("broadcast") + 1]
+                bi = parts.index("broadcast")
+                bcast = parts[bi + 1] if bi + 1 < len(parts) else ""
             cur["ipv4"].append({"ip": ip, "netmask": mask, "broadcast": bcast})
         elif s.startswith("inet6 "):
             parts = s.split()
@@ -113,7 +145,12 @@ def _interfaces_uncached() -> list:
             if ip and not ip.startswith("fe80"):
                 cur["ipv6"].append(ip)
         elif "ether " in s:
-            cur["mac"] = s.split("ether")[1].strip().split()[0]
+            # `ifconfig` can emit a trailing "ether" with no address (virtual
+            # interfaces, truncated output).  split()[0] on that empty token
+            # list was IndexError and 500'd /api/system/network.
+            mac_tokens = s.split("ether", 1)[1].strip().split()
+            if mac_tokens:
+                cur["mac"] = mac_tokens[0]
         elif s.startswith("status:"):
             cur["status"] = s.split(":", 1)[1].strip()
             if cur["status"] == "active":
@@ -171,7 +208,7 @@ def interfaces() -> list:
 
 
 def _hardware_ports_uncached() -> list:
-    rc, out, _ = sh([NS, "-listallhardwareports"], timeout=8)
+    rc, out, _ = _sh([NS, "-listallhardwareports"], timeout=8)
     if rc != 0:
         return []
     items = []
@@ -219,7 +256,7 @@ def _network_service_order_entries() -> list[dict]:
 
 
 def _network_service_order_uncached() -> list[dict]:
-    rc, out, _ = sh([NS, "-listnetworkserviceorder"], timeout=10)
+    rc, out, _ = _sh([NS, "-listnetworkserviceorder"], timeout=10)
     if rc != 0:
         return []
     entries = []
@@ -299,7 +336,7 @@ def network_services(force: bool = False) -> list:
 
 def service_info(service: str) -> dict:
     """Parse networksetup -getinfo / DNS for one service."""
-    rc, out, err = sh([NS, "-getinfo", service], timeout=8)
+    rc, out, err = _sh([NS, "-getinfo", service], timeout=8)
     info: dict[str, Any] = {
         "mode": "unknown",  # dhcp | manual | off | unknown
         "ip": "",
@@ -332,12 +369,12 @@ def service_info(service: str) -> dict:
         elif low.startswith("ipv6:"):
             info["ipv6"] = line.split(":", 1)[1].strip()
     # DNS
-    rc2, dns_out, _ = sh([NS, "-getdnsservers", service], timeout=5)
+    rc2, dns_out, _ = _sh([NS, "-getdnsservers", service], timeout=5)
     dns = []
     if rc2 == 0 and dns_out and "aren't any" not in dns_out.lower() and "there aren't" not in dns_out.lower():
         dns = [ln.strip() for ln in dns_out.splitlines() if ln.strip() and not ln.lower().startswith("there")]
     info["dns"] = dns
-    rc3, search_out, _ = sh([NS, "-getsearchdomains", service], timeout=5)
+    rc3, search_out, _ = _sh([NS, "-getsearchdomains", service], timeout=5)
     search = []
     if rc3 == 0 and search_out and "aren't any" not in search_out.lower():
         search = [ln.strip() for ln in search_out.splitlines() if ln.strip() and not ln.lower().startswith("there")]
@@ -356,7 +393,7 @@ def _service_actions(name: str, info: dict, disabled: bool) -> list:
 
 def set_service_dhcp(service: str) -> dict:
     service = _validate_service(service)
-    rc, out, err = sh([NS, "-setdhcp", service], timeout=15)
+    rc, out, err = _sh([NS, "-setdhcp", service], timeout=15)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("Switched to DHCP" if rc == 0 else f"exit {rc}")}
 
@@ -373,7 +410,7 @@ def set_service_manual(service: str, ip: str, subnet: str, router: str = "") -> 
     else:
         # networksetup requires router for setmanual on some versions — use 0.0.0.0
         args.append(router or "0.0.0.0")
-    rc, out, err = sh(args, timeout=15)
+    rc, out, err = _sh(args, timeout=15)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("Static IP configured" if rc == 0 else f"exit {rc}")}
 
@@ -392,12 +429,12 @@ def set_service_dns(service: str, servers: list[str] | None = None) -> dict:
     service = _validate_service(service)
     servers = [s.strip() for s in (servers or []) if s and s.strip()]
     if not servers:
-        rc, out, err = sh([NS, "-setdnsservers", service, "Empty"], timeout=10)
+        rc, out, err = _sh([NS, "-setdnsservers", service, "Empty"], timeout=10)
     else:
         for s in servers:
             if not _valid_dns_server(s):
                 raise api_error("network.invalid_dns", server=s)
-        rc, out, err = sh([NS, "-setdnsservers", service, *servers], timeout=10)
+        rc, out, err = _sh([NS, "-setdnsservers", service, *servers], timeout=10)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("DNS updated" if rc == 0 else f"exit {rc}")}
 
@@ -405,8 +442,14 @@ def set_service_dns(service: str, servers: list[str] | None = None) -> dict:
 def _wifi_devices() -> list[str]:
     devices = []
     for port in hardware_ports():
+        if not isinstance(port, dict):
+            continue
         label = port.get("port") or ""
         device = port.get("device") or ""
+        if not isinstance(label, str):
+            label = str(label)
+        if not isinstance(device, str):
+            continue
         if device and re.search(r"wi-?fi|airport|无线", label, re.I):  # cjk-input: networksetup port names are localized
             devices.append(device)
     return devices
@@ -417,9 +460,9 @@ def wifi_power_status() -> dict:
     if not devices:
         return {"ok": False, "on": None, "device": None, "message": "No Wi-Fi adapter found"}
     device = devices[0]
-    rc, out, err = sh([NS, "-getairportpower", device], timeout=8)
+    rc, out, err = _sh([NS, "-getairportpower", device], timeout=8)
     if rc != 0:
-        rc, out, err = sh(["/usr/bin/sudo", "-n", NS, "-getairportpower", device], timeout=8)
+        rc, out, err = _sh(["/usr/bin/sudo", "-n", NS, "-getairportpower", device], timeout=8)
     message = out or err or ""
     match = re.search(r":\s*(On|Off)\s*$", message, re.I)
     return {
@@ -436,9 +479,9 @@ def set_wifi_power(on: bool) -> dict:
     if not devices:
         return {"ok": False, "on": None, "device": None, "message": "No Wi-Fi adapter found"}
     device = devices[0]
-    rc, out, err = sh([NS, "-setairportpower", device, arg], timeout=10)
+    rc, out, err = _sh([NS, "-setairportpower", device, arg], timeout=10)
     if rc != 0:
-        rc, out, err = sh(
+        rc, out, err = _sh(
             ["/usr/bin/sudo", "-n", NS, "-setairportpower", device, arg], timeout=10
         )
     _bust()
@@ -453,7 +496,7 @@ def set_wifi_power(on: bool) -> dict:
 def set_service_enabled(service: str, enabled: bool) -> dict:
     """Enable/disable a networksetup service (does not delete it)."""
     service = _validate_service(service)
-    rc, out, err = sh(
+    rc, out, err = _sh(
         [NS, "-setnetworkserviceenabled", service, "on" if enabled else "off"],
         timeout=15,
     )
@@ -484,7 +527,7 @@ def set_service_order(services: list[str]) -> dict:
     for n in names:
         if n not in cleaned:
             cleaned.append(n)
-    rc, out, err = sh([NS, "-ordernetworkservices", *cleaned], timeout=20)
+    rc, out, err = _sh([NS, "-ordernetworkservices", *cleaned], timeout=20)
     _bust()
     return {
         "ok": rc == 0,
@@ -501,14 +544,14 @@ def switch_profile(profile: str) -> dict:
         raise api_error("network.services_unreadable")
 
     def is_wifi(s: dict) -> bool:
-        n = (s.get("name") or "") + " " + (s.get("hardware_port") or "")
+        n = " ".join(v for v in (s.get("name"), s.get("hardware_port")) if isinstance(v, str) and v)
         return bool(re.search(r"wi-?fi|airport|无线", n, re.I))  # cjk-input: networksetup port names are localized
 
     def is_ethernet(s: dict) -> bool:
         if is_wifi(s):
             return False
-        d = s.get("device") or ""
-        n = (s.get("name") or "") + " " + (s.get("hardware_port") or "")
+        d = s.get("device") if isinstance(s.get("device"), str) else ""
+        n = " ".join(v for v in (s.get("name"), s.get("hardware_port")) if isinstance(v, str) and v)
         if d.startswith("en") and d != "en0":
             # en0 often Wi-Fi on MacBooks; other en* often dongles
             return True
@@ -520,9 +563,9 @@ def switch_profile(profile: str) -> dict:
         return False
 
     def is_junk(s: dict) -> bool:
-        n = s.get("name") or ""
-        d = s.get("device") or ""
-        if "modem" in d.lower() or "Monitor" in n or "iPhone" in n:
+        n = s.get("name") if isinstance(s.get("name"), str) else ""
+        d = (s.get("device") if isinstance(s.get("device"), str) else "").lower()
+        if "modem" in d or "Monitor" in n or "iPhone" in n:
             return True
         return False
 
@@ -591,7 +634,7 @@ def switch_profile(profile: str) -> dict:
         time.sleep(1.5)  # allow link/DHCP to settle slightly
         alias_r = ensure_aliases_on_preferred(force=True)
     except Exception as e:
-        alias_r = {"ok": False, "message": str(e)}
+        alias_r = {"ok": False, "message": _as_text(e)}
     record("rebind aliases", alias_r, critical=False)
 
     return {
@@ -615,14 +658,21 @@ def interface_addresses() -> list:
     """All IPv4 addresses per interface, mark primary vs alias (host netmask or secondary)."""
     ifaces = interfaces()
     out = []
-    for iface in ifaces:
+    for iface in ifaces if isinstance(ifaces, list) else []:
+        if not isinstance(iface, dict):
+            continue
         addrs = []
-        ipv4s = iface.get("ipv4") or []
+        raw_v4 = iface.get("ipv4")
+        ipv4s = [x for x in (raw_v4 if isinstance(raw_v4, list) else []) if isinstance(x, dict)]
         for idx, a in enumerate(ipv4s):
-            mask = a.get("netmask") or ""
+            raw_mask = a.get("netmask") or ""
+            mask = raw_mask if isinstance(raw_mask, str) else str(raw_mask)
+            first_mask = ipv4s[0].get("netmask") or "" if idx > 0 else ""
+            if not isinstance(first_mask, str):
+                first_mask = str(first_mask)
             # /32 or 255.255.255.255 typically alias; first non-/32 is primary-ish
             is_alias = mask in ("255.255.255.255", "0xffffffff", "0xFFFFFFFF") or (
-                idx > 0 and mask == (ipv4s[0].get("netmask") or "")
+                idx > 0 and mask == first_mask
             )
             # if first is /32 and second is normal, still treat /32 as alias
             if mask in ("255.255.255.255", "0xffffffff", "0xFFFFFFFF"):
@@ -641,8 +691,11 @@ def interface_addresses() -> list:
             if not a["alias"]:
                 a["primary"] = True
                 break
+        name = iface.get("name")
+        if not isinstance(name, str) or not name:
+            continue
         out.append({
-            "device": iface["name"],
+            "device": name,
             "up": iface.get("up"),
             "mac": iface.get("mac"),
             "status": iface.get("status"),
@@ -659,9 +712,9 @@ def add_ip_alias(device: str, ip: str, netmask: str = "255.255.255.255") -> dict
     if not _valid_ip(netmask):
         raise api_error("network.invalid_netmask")
     # try without sudo first
-    rc, out, err = sh(["/sbin/ifconfig", device, "alias", ip, "netmask", netmask], timeout=10)
+    rc, out, err = _sh(["/sbin/ifconfig", device, "alias", ip, "netmask", netmask], timeout=10)
     if rc != 0:
-        rc, out, err = sh(
+        rc, out, err = _sh(
             ["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "alias", ip, "netmask", netmask],
             timeout=10,
         )
@@ -677,9 +730,9 @@ def remove_ip_alias(device: str, ip: str) -> dict:
     device = _validate_device(device)
     if not _valid_ip(ip):
         raise api_error("network.invalid_ip")
-    rc, out, err = sh(["/sbin/ifconfig", device, "-alias", ip], timeout=10)
+    rc, out, err = _sh(["/sbin/ifconfig", device, "-alias", ip], timeout=10)
     if rc != 0:
-        rc, out, err = sh(["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "-alias", ip], timeout=10)
+        rc, out, err = _sh(["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "-alias", ip], timeout=10)
     _bust()
     msg = out or err
     if rc != 0:
@@ -714,17 +767,21 @@ def _coerce_int(value, default: int) -> int:
     """
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # YAML ``.inf`` / ``.nan``: ``int(inf)`` is OverflowError, not ValueError,
+        # and both settings readers sit on GET /api/system/network.
         return default
 
 
 def _alias_settings() -> dict:
-    from hub.config import cfg
+    from hub.config import settings_section
 
-    s = (cfg().get("settings") or {}).get("ip_aliases") or {}
+    s = settings_section("ip_aliases")
     ips = s.get("ips") or []
     if isinstance(ips, str):
         ips = [x.strip() for x in ips.replace(",", " ").split() if x.strip()]
+    elif not isinstance(ips, list):
+        ips = []
     # sanitize
     clean = []
     for ip in ips:
@@ -743,9 +800,9 @@ def _alias_settings() -> dict:
 
 
 def _failover_settings() -> dict:
-    from hub.config import cfg
+    from hub.config import settings_section
 
-    settings = (cfg().get("settings") or {}).get("network_failover") or {}
+    settings = settings_section("network_failover")
     return {
         "enabled": bool(settings.get("enabled", False)),
         "power_save_wifi": bool(settings.get("power_save_wifi", True)),
@@ -764,15 +821,18 @@ def _iface_by_name(name: str) -> dict | None:
 
 
 def _iface_usable(iface: dict | None) -> bool:
-    if not iface:
+    if not isinstance(iface, dict):
         return False
     if not iface.get("up"):
         return False
-    st = (iface.get("status") or "").lower()
+    st = iface.get("status") or ""
+    if not isinstance(st, str):
+        st = str(st)
+    st = st.lower()
     if st in ("inactive", "not present"):
         return False
     # need at least one IPv4 (primary or already has connectivity)
-    ipv4 = iface.get("ipv4") or []
+    ipv4 = iface.get("ipv4") if isinstance(iface.get("ipv4"), list) else []
     if not ipv4:
         return False
     # skip pure virtual without real en status active when marked
@@ -785,8 +845,12 @@ def _iface_usable(iface: dict | None) -> bool:
 
 
 def _is_junk_service(s: dict) -> bool:
-    n = (s.get("name") or "") + " " + (s.get("hardware_port") or s.get("port") or "")
-    d = (s.get("device") or "").lower()
+    n = " ".join(
+        v for v in (s.get("name"), s.get("hardware_port"), s.get("port"))
+        if isinstance(v, str) and v
+    )
+    d = s.get("device") if isinstance(s.get("device"), str) else ""
+    d = d.lower()
     if re.search(r"modem|monitor|iphone|ipad|apple.?watch|thunderbolt bridge", n, re.I):
         return True
     if "modem" in d or d.startswith("bridge"):
@@ -803,14 +867,21 @@ def preferred_active_device() -> dict | None:
         svcs = _network_service_order_entries()
     except Exception:
         svcs = []
-    iface_map = {iface.get("name"): iface for iface in interfaces()}
+    iface_map = {
+        iface.get("name"): iface
+        for iface in interfaces()
+        if isinstance(iface, dict)
+    }
     candidates = []
     for order, s in enumerate(svcs):
+        if not isinstance(s, dict):
+            continue
         if s.get("disabled"):
             continue
         if _is_junk_service(s):
             continue
-        device = (s.get("device") or "").strip()
+        device = s.get("device") if isinstance(s.get("device"), str) else ""
+        device = device.strip()
         if not device:
             continue
         iface = iface_map.get(device)
@@ -818,15 +889,19 @@ def preferred_active_device() -> dict | None:
             continue
         # prefer interfaces with a non-/32 primary address
         primary_ip = None
-        for a in iface.get("ipv4") or []:
+        ipv4 = iface.get("ipv4") if isinstance(iface.get("ipv4"), list) else []
+        for a in ipv4:
+            if not isinstance(a, dict):
+                continue
             mask = a.get("netmask") or ""
+            if not isinstance(mask, str):
+                mask = str(mask)
             dotted = _hex_netmask_to_dotted(mask)
-            if dotted not in ("255.255.255.255",) and not mask.lower() in ("0xffffffff",):
+            if dotted not in ("255.255.255.255",) and mask.lower() not in ("0xffffffff",):
                 primary_ip = a.get("ip")
                 break
-        if not primary_ip:
-            # only /32s — still bindable but lower score
-            primary_ip = (iface.get("ipv4") or [{}])[0].get("ip")
+        if not primary_ip and ipv4 and isinstance(ipv4[0], dict):
+            primary_ip = ipv4[0].get("ip")
         candidates.append({
             "order": order,
             "service": s.get("name"),
@@ -851,10 +926,16 @@ def find_ip_locations(ip: str, addresses: list | None = None) -> list[dict]:
     """
     found = []
     for iface in addresses if addresses is not None else interface_addresses():
-        for a in iface.get("addresses") or []:
+        if not isinstance(iface, dict):
+            continue
+        raw = iface.get("addresses")
+        rows = raw if isinstance(raw, list) else []
+        for a in rows:
+            if not isinstance(a, dict):
+                continue
             if a.get("ip") == ip:
                 found.append({
-                    "device": iface["device"],
+                    "device": iface.get("device"),
                     "alias": bool(a.get("alias")),
                     "netmask": a.get("netmask"),
                     "up": iface.get("up"),
@@ -864,7 +945,7 @@ def find_ip_locations(ip: str, addresses: list | None = None) -> list[dict]:
 
 def _alias_local_route(ip: str) -> dict:
     """Return whether macOS considers an alias a real local address."""
-    rc, out, err = sh(["/sbin/route", "-n", "get", ip], timeout=5)
+    rc, out, err = _sh(["/sbin/route", "-n", "get", ip], timeout=5)
     interface = ""
     flags = ""
     if rc == 0:
@@ -1045,7 +1126,7 @@ def alias_auto_status() -> dict:
         try:
             return _alias_local_route(ip)
         except Exception as exc:  # noqa: BLE001 - surfaced in the row
-            return {"ok": False, "reason": f"route lookup failed: {exc}"}
+            return {"ok": False, "reason": "route lookup failed: " + _as_text(exc)}
 
     # `route -n get` is genuinely per IP, so those overlap; order follows the
     # configured list, which is what the page renders.
@@ -1074,11 +1155,14 @@ def alias_auto_status() -> dict:
 
 def _primary_ipv4_for_device(device: str, iface: dict | None = None) -> str | None:
     iface = iface or _iface_by_name(device)
-    if not iface or (iface.get("status") or "").lower() != "active":
+    if not isinstance(iface, dict) or str(iface.get("status") or "").lower() != "active":
         return None
-    for address in iface.get("ipv4") or []:
-        ip = address.get("ip") or ""
-        mask = _hex_netmask_to_dotted(address.get("netmask") or "")
+    addrs = iface.get("ipv4")
+    for address in addrs if isinstance(addrs, list) else []:
+        if not isinstance(address, dict):
+            continue
+        ip = str(address.get("ip") or "")
+        mask = _hex_netmask_to_dotted(str(address.get("netmask") or ""))
         if ip and not ip.startswith("169.254.") and mask != "255.255.255.255":
             return ip
     return None
@@ -1088,9 +1172,15 @@ def _wired_devices() -> list[dict]:
     """Discover physical LAN adapters; never assumes a fixed en-number."""
     devices = []
     for port in hardware_ports():
+        if not isinstance(port, dict):
+            continue
         label = port.get("port") or ""
         device = port.get("device") or ""
-        if not device or re.search(r"wi-?fi|airport|无线|bridge|thunderbolt", label, re.I):  # cjk-input: networksetup port names are localized
+        if not isinstance(label, str):
+            label = str(label)
+        if not isinstance(device, str) or not device:
+            continue
+        if re.search(r"wi-?fi|airport|无线|bridge|thunderbolt", label, re.I):  # cjk-input: networksetup port names are localized
             continue
         if re.search(r"ethernet|\blan\b|10/100|usb.*network", label, re.I):
             devices.append({"device": device, "port": label})
@@ -1104,7 +1194,7 @@ def _service_gateway_for_device(device: str) -> dict:
     )
     if not entry:
         return {"service": None, "gateway": None}
-    rc, out, _ = sh([NS, "-getinfo", entry["name"]], timeout=8)
+    rc, out, _ = _sh([NS, "-getinfo", entry["name"]], timeout=8)
     gateway = None
     if rc == 0:
         match = re.search(r"^Router:\s*(\S+)", out, re.M | re.I)
@@ -1129,12 +1219,13 @@ def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None)
             "service": service.get("service"),
             "reason": "the wired service has no valid gateway",
         }
-    rc, out, err = sh(
+    ms = _coerce_int(timeout_ms, 1200)
+    rc, out, err = _sh(
         [
-            "/sbin/ping", "-c", "1", "-W", str(timeout_ms),
+            "/sbin/ping", "-c", "1", "-W", str(ms),
             "-S", ip, gateway,
         ],
-        timeout=max(3, int(timeout_ms / 1000) + 2),
+        timeout=max(3, ms // 1000 + 2),
     )
     return {
         "ok": rc == 0,
@@ -1152,7 +1243,7 @@ def network_failover_tick(force: bool = False) -> dict:
     with _failover_lock:
         if not conf["enabled"]:
             result = {"ok": True, "enabled": False, "mode": "disabled", "action": None}
-            _failover_state.update(mode="disabled", last_check_at=time.strftime("%Y-%m-%d %H:%M:%S"), last_result=result)
+            _failover_state.update(mode="disabled", last_check_at=strftime_now("%Y-%m-%d %H:%M:%S"), last_result=result)
             return result
 
         wired = _wired_devices()
@@ -1172,7 +1263,7 @@ def network_failover_tick(force: bool = False) -> dict:
                 # translation, and hub/errors.py is for text we author.
                 return {
                     "ok": False, "device": device, "ip": None, "gateway": None,
-                    "reason": f"probe failed: {exc}",
+                    "reason": "probe failed: " + _as_text(exc),
                 }
 
         # Every wired device is probed regardless -- the healthy pick below reads the
@@ -1206,7 +1297,7 @@ def network_failover_tick(force: bool = False) -> dict:
 
         if action:
             _failover_state["last_action"] = action
-            _failover_state["last_action_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            _failover_state["last_action_at"] = strftime_now("%Y-%m-%d %H:%M:%S")
             if action_result and action_result.get("ok"):
                 wifi = {**wifi, "on": action == "wifi_on"}
         result = {
@@ -1224,7 +1315,7 @@ def network_failover_tick(force: bool = False) -> dict:
         }
         _failover_state.update(
             mode=mode,
-            last_check_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            last_check_at=strftime_now("%Y-%m-%d %H:%M:%S"),
             last_result=result,
         )
         return result
@@ -1243,9 +1334,9 @@ def update_alias_auto_config(
     netmask: str | None = None,
     interval: int | None = None,
 ) -> dict:
-    from hub.config import cfg, update_settings
+    from hub.config import settings_section, update_settings
 
-    cur = dict((cfg().get("settings") or {}).get("ip_aliases") or {})
+    cur = dict(settings_section("ip_aliases"))
     if auto_bind is not None:
         cur["auto_bind"] = bool(auto_bind)
     if ips is not None:
@@ -1254,7 +1345,7 @@ def update_alias_auto_config(
     if netmask is not None and _valid_ip(netmask):
         cur["netmask"] = netmask
     if interval is not None:
-        cur["interval"] = max(30, min(600, int(interval)))
+        cur["interval"] = max(30, min(600, _coerce_int(interval, 60)))
     update_settings({"ip_aliases": cur})
     return alias_auto_status()
 
@@ -1349,7 +1440,7 @@ def _validate_service(service: str) -> str:
     names = {s["name"] for s in network_services()}
     if service not in names:
         # allow even if cache empty
-        rc, out, _ = sh([NS, "-listallnetworkservices"], timeout=8)
+        rc, out, _ = _sh([NS, "-listallnetworkservices"], timeout=8)
         listed = {ln.strip().lstrip("* ").strip() for ln in (out or "").splitlines()[1:] if ln.strip()}
         if service not in listed:
             raise api_error("network.service_not_found", service=service)
@@ -1363,18 +1454,34 @@ def _valid_ip(ip: str) -> bool:
     ``0 <= int(p) <= 255`` form treated ``-0.0.0.0`` as valid and let a value
     starting with ``-`` reach an argv positional, where ifconfig and
     networksetup read it as an option.
+
+    YAML leftover ``netmask: 2026-08-19`` used to AttributeError ``.strip``
+    on GET /api/system/network and GET /api/system/network/alias/auto.
+    Unicode digits pass ``str.isdigit()`` (``١`` / ``²``) and used to
+    ValueError ``int()`` or become a leftover "valid" octet the same way
+    non-ASCII dword hosts did in http_guard.
     """
-    parts = (ip or "").strip().split(".")
+    if isinstance(ip, (bytes, bytearray)):
+        ip = ip.decode("utf-8", "replace")
+    elif not isinstance(ip, str):
+        return False
+    parts = ip.strip().split(".")
     if len(parts) != 4:
         return False
     for p in parts:
-        if not p.isdigit() or not 0 <= int(p) <= 255:
+        if not p.isascii() or not p.isdigit():
+            return False
+        try:
+            n = int(p)
+        except (ValueError, OverflowError):
+            return False
+        if not 0 <= n <= 255:
             return False
     return True
 
 
 def listening_ports(limit: int = 100) -> list:
-    rc, out, _ = sh(["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], timeout=12)
+    rc, out, _ = _sh(["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], timeout=12)
     if rc != 0:
         return []
     rows = []
@@ -1402,7 +1509,7 @@ def listening_ports(limit: int = 100) -> list:
 
 
 def routes(limit: int = 40) -> list:
-    rc, out, _ = sh(["/usr/sbin/netstat", "-rn", "-f", "inet"], timeout=8)
+    rc, out, _ = _sh(["/usr/sbin/netstat", "-rn", "-f", "inet"], timeout=8)
     if rc != 0:
         return []
     rows = []
@@ -1461,9 +1568,9 @@ def dns_resolve(host: str) -> dict:
     host = (host or "").strip()
     if not _valid_lookup_target(host):
         raise api_error("network.invalid_hostname")
-    rc, out, err = sh(["/usr/bin/dscacheutil", "-q", "host", "-a", "name", host], timeout=8)
+    rc, out, err = _sh(["/usr/bin/dscacheutil", "-q", "host", "-a", "name", host], timeout=8)
     if rc != 0 or not out.strip():
-        rc2, out2, err2 = sh(["/usr/bin/dig", "+short", host], timeout=8)
+        rc2, out2, err2 = _sh(["/usr/bin/dig", "+short", host], timeout=8)
         return {
             "ok": rc2 == 0 and bool(out2.strip()),
             "host": host,
@@ -1570,13 +1677,18 @@ def docker_networks_detail() -> list:
         rc2, jout, _ = docker("network", "inspect", name, timeout=10)
         if rc2 == 0:
             try:
-                arr = json.loads(jout)
-                n = arr[0] if arr else {}
-                ipam = (n.get("IPAM") or {}).get("Config") or []
-                if ipam:
-                    subnet = ipam[0].get("Subnet") or ""
-                    gateway = ipam[0].get("Gateway") or ""
-                for cname, c in (n.get("Containers") or {}).items():
+                # docker inspect is a list; a dict/string leftover used to
+                # AttributeError on ``.get`` inside this page collector.
+                n = inspect_object(jout) or {}
+                ipam_obj = n.get("IPAM") if isinstance(n.get("IPAM"), dict) else {}
+                ipam = ipam_obj.get("Config") if isinstance(ipam_obj.get("Config"), list) else []
+                first = ipam[0] if ipam and isinstance(ipam[0], dict) else {}
+                subnet = first.get("Subnet") or ""
+                gateway = first.get("Gateway") or ""
+                attached = n.get("Containers") if isinstance(n.get("Containers"), dict) else {}
+                for cname, c in attached.items():
+                    if not isinstance(c, dict):
+                        continue
                     containers.append({
                         "id": cname[:12],
                         "name": (c.get("Name") or "").lstrip("/"),
@@ -1634,22 +1746,25 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
     data = inspect_object(out)
     if data is None:
         raise api_error("network.container_not_found", name=container)
-    image = ((data.get("Config") or {}).get("Image")) or ""
+    cfg_ = data.get("Config") if isinstance(data.get("Config"), dict) else {}
+    image = cfg_.get("Image") or ""
     if not image:
         raise api_error("network.image_unresolvable")
-    host = data.get("HostConfig") or {}
-    cfg_ = data.get("Config") or {}
+    host = data.get("HostConfig") if isinstance(data.get("HostConfig"), dict) else {}
     # build run body
     env = []
-    for e in cfg_.get("Env") or []:
-        if e.startswith("PATH="):
+    for e in cfg_.get("Env") if isinstance(cfg_.get("Env"), list) else []:
+        if isinstance(e, str) and e.startswith("PATH="):
             continue
-        env.append(e)
-    volumes = list(host.get("Binds") or [])
+        if isinstance(e, str):
+            env.append(e)
+    binds = host.get("Binds")
+    volumes = list(binds) if isinstance(binds, list) else []
     network = host.get("NetworkMode") or "bridge"
-    if network.startswith("container:"):
+    if isinstance(network, str) and network.startswith("container:"):
         network = "bridge"
-    restart = ((host.get("RestartPolicy") or {}).get("Name")) or "unless-stopped"
+    rp = host.get("RestartPolicy") if isinstance(host.get("RestartPolicy"), dict) else {}
+    restart = rp.get("Name") or "unless-stopped"
     # normalize ports
     port_list = []
     for p in ports or []:
@@ -1712,8 +1827,15 @@ def _with_wstunnel_listener(rows: list, snapshot: dict | None) -> list:
     extra = listener_row(snapshot)
     if not extra:
         return rows
+    if not isinstance(rows, list):
+        rows = []
     port = str(extra.get("port") or "")
-    if port and any(str(row.get("port")) == port and "wstunnel" in str(row.get("process") or "").lower() for row in rows):
+    if port and any(
+        isinstance(row, dict)
+        and str(row.get("port")) == port
+        and "wstunnel" in str(row.get("process") or "").lower()
+        for row in rows
+    ):
         return rows
     return list(rows) + [extra]
 
@@ -1747,16 +1869,21 @@ def _build_overview(force_services: bool = False) -> dict:
     f_wstunnel = _overview_pool.submit(_safe, _wstunnel_snapshot, None)
 
     ifaces = _safe(f_ifaces.result, [])
+    if not isinstance(ifaces, list):
+        ifaces = []
     try:
         services = f_services.result()
         svc_error = None
     except Exception as e:
         services = []
-        svc_error = str(e)
+        svc_error = _as_text(e)
 
     primary = None
     for i in ifaces:
-        if i.get("up") and i.get("ipv4") and i["name"].startswith("en"):
+        if not isinstance(i, dict):
+            continue
+        name = i.get("name")
+        if isinstance(name, str) and i.get("up") and i.get("ipv4") and name.startswith("en"):
             primary = i
             break
 
@@ -1778,7 +1905,7 @@ def _build_overview(force_services: bool = False) -> dict:
         "alias_auto": _safe(f_alias.result, None),
         "network_failover": _safe(f_failover.result, None),
         "wstunnel": _safe(f_wstunnel.result, None),
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
         "profiles": [
             {"id": "wifi", "label": "Prefer Wi-Fi (wired as fallback)"},
             {"id": "ethernet", "label": "Prefer wired (Wi-Fi as fallback)"},

@@ -31,16 +31,16 @@
                  read as urgently as a service that is down, so `smart` + `down`
                  lands on the same red .badge.down as a service down. The kind tag
                  below says what broke without competing with that. -->
-            <td><span class="badge" :class="a.level === 'ok' ? 'ok' : a.level">{{ a.level }}</span></td>
+            <td><span class="badge" :class="a.level === 'ok' ? 'ok' : a.level">{{ finiteText(a.level) }}</span></td>
             <td>
               <span v-if="kindLabel(a)" class="badge" style="margin-right:4px">{{ kindLabel(a) }}</span>
-              <strong>{{ a.name }}</strong>
+              <strong>{{ finiteText(a.name) }}</strong>
               <div class="show-m sub">{{ fmt(a.t) }}</div>
-              <div v-if="a.event" class="show-m sub">{{ a.event }}</div>
-              <div v-if="a.message" class="show-m sub">{{ a.message }}</div>
+              <div v-if="a.event" class="show-m sub">{{ finiteText(a.event) }}</div>
+              <div v-if="a.message" class="show-m sub">{{ finiteText(a.message) }}</div>
             </td>
-            <td class="col-hide-m">{{ a.event }}</td>
-            <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ a.message }}</td>
+            <td class="col-hide-m">{{ finiteText(a.event) }}</td>
+            <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(a.message) }}</td>
           </tr>
         </tbody>
       </table>
@@ -49,9 +49,10 @@
 </template>
 
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText, fmtTs } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -63,9 +64,11 @@ const busy = ref(false)
 // response lands is the most misleading possible placeholder.
 const loaded = ref(false)
 const loadError = ref('')
+let pageAlive = true
+let loadGeneration = 0
 
 function fmt(t) {
-  return t ? new Date(t * 1000).toLocaleString() : ''
+  return fmtTs(t, '')
 }
 
 //: Alert `kind` -> the i18n leaf naming what the row is about.  The list mixes
@@ -82,47 +85,66 @@ function kindLabel(a) {
 
 async function refresh() {
   if (busy.value) return
+  const generation = ++loadGeneration
   busy.value = true
   try {
     const d = await getAlerts(100)
-    alerts.value = d.alerts || []
+    if (generation !== loadGeneration || !pageAlive) return
+    alerts.value = Array.isArray(d.alerts) ? d.alerts : []
     loadError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
-    loaded.value = true
+    if (generation === loadGeneration && pageAlive) {
+      busy.value = false
+      loaded.value = true
+    }
   }
 }
 
 async function check() {
   if (busy.value) return
+  const generation = ++loadGeneration
   busy.value = true
   try {
     const r = await forceAlertCheck()
-    toast(t('alerts.inspect_done', { n: r.emitted?.length || 0 }))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(t('alerts.inspect_done', { n: finiteN(r.emitted?.length, 0) }))
     const d = await getAlerts(100)
-    alerts.value = d.alerts || []
+    if (generation !== loadGeneration || !pageAlive) return
+    alerts.value = Array.isArray(d.alerts) ? d.alerts : []
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (generation === loadGeneration && pageAlive) busy.value = false
   }
 }
 
 async function test() {
   if (busy.value) return
+  const generation = ++loadGeneration
   busy.value = true
   try {
     const r = await testNotify()
-    toast(r.ok ? '✅ ' + t('common.sent') : '❌ ' + (r.message || ''))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(r.ok ? '✅ ' + t('common.sent') : '❌ ' + finiteText(r.message, ''))
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (generation === loadGeneration && pageAlive) busy.value = false
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  pageAlive = true
+  void refresh()
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+})
 </script>

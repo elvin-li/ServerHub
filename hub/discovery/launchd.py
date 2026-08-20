@@ -21,8 +21,10 @@ from hub.launchd_cache import listing as launchd_listing
 from hub.paths import AGENTS_DIR
 from hub.service_signatures import configured_signatures, identify
 from hub.stale_runtime import pid_exe_path
-from hub.util import fan_out, port_open
+from hub.util import fan_out, port_open, read_bytes_capped
 
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/status.
+_PLIST_CAP = 256 * 1024
 #: Match adaptive._PROBE_TIMEOUT_S: a local UI answers in milliseconds, and
 #: stacking a TLS handshake after a hang used to add a second full wait to
 #: every /api/status poll (the ESPHome-on-deleted-python case).
@@ -80,7 +82,10 @@ def _http_alive(port) -> bool:
     """
     try:
         port_n = int(port)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # YAML leftover ``port: .inf``: ``int(inf)`` is OverflowError, not
+        # ValueError.  This probe runs behind ``fan_out``, which re-raises
+        # and would empty GET /api/status rather than skip one agent.
         return False
     timed_out = False
     head = b""
@@ -211,8 +216,7 @@ def discover_launchd():
     seen_labels: set[str] = set()
     for path in sorted(glob.glob(f"{AGENTS_DIR}/*.plist")):
         try:
-            with open(path, "rb") as f:
-                pl = plistlib.load(f)
+            pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         except Exception:
             pl = {}
         if not isinstance(pl, dict):
@@ -232,6 +236,8 @@ def discover_launchd():
             continue
         interval = bool(pl.get("StartInterval") or pl.get("StartCalendarInterval"))
         arguments = pl.get("ProgramArguments") or []
+        if not isinstance(arguments, list):
+            arguments = []
         # Login helpers that delegate to LaunchServices are intentionally
         # one-shot: /usr/bin/open exits after handing the bundle to macOS. A
         # loaded job with exit code 0 is healthy even though it has no PID.
@@ -261,10 +267,12 @@ def discover_launchd():
         # generic "Native Services" group yields to the signature category.
         # Overrides and more specific groups (Gateway, Homebrew, …) win.
         prog = ""
-        if pl.get("Program"):
-            prog = Path(str(pl["Program"])).name
-        elif arguments:
-            prog = Path(str(arguments[0])).name
+        raw_prog = pl.get("Program") or (arguments[0] if arguments else "")
+        try:
+            prog = Path(str(raw_prog)).name if raw_prog else ""
+        except (OSError, ValueError, TypeError):
+            text = str(raw_prog)
+            prog = text.rsplit("/", 1)[-1] if text else ""
         sig = identify(prog, port, extras=extras)
         if not (sig and sig.get("confidence") == "high"):
             sig = None
@@ -351,7 +359,13 @@ def discover_launchd():
                     exe = pid_exe_path(pid)
                 except Exception:
                     exe = None
-            if exe and not Path(exe).exists():
+            exe_missing = False
+            if exe:
+                try:
+                    exe_missing = not Path(exe).exists()
+                except (OSError, ValueError, TypeError):
+                    exe_missing = True
+            if exe_missing:
                 state = "warn"
                 detail = f"Running on missing interpreter · pid {pid}"
                 actions = ["restart", "stop", "logs"]
@@ -366,7 +380,21 @@ def discover_launchd():
         elif running:
             state, detail, actions = "warn", f"Process alive but port :{port} not responding", ["restart", "stop", "logs"]
         else:
-            state, detail, actions = "down", ("Loaded but not running" if loaded else "Not loaded"), ["start", "logs"]
+            keep = bool(pl.get("KeepAlive"))
+            if loaded and last not in ("0", None, "-", "") and keep:
+                state, detail, actions = (
+                    "down",
+                    f"Crash-looping · last exit {last}",
+                    ["start", "logs"],
+                )
+            elif loaded and last not in ("0", None, "-", ""):
+                state, detail, actions = (
+                    "down",
+                    f"Exited · last exit {last}",
+                    ["start", "logs"],
+                )
+            else:
+                state, detail, actions = "down", ("Loaded but not running" if loaded else "Not loaded"), ["start", "logs"]
         if url and "open" not in actions:
             actions = list(actions) + ["open"]
 

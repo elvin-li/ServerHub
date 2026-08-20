@@ -265,6 +265,20 @@ class RemoveDataTests(unittest.TestCase):
         self.assertEqual(Path(info["remove_data_path"]), self.tree.resolve())
         self.assertIn("program files", info["keeps"])
 
+    def test_preview_survives_an_unreadable_agents_glob(self):
+        """`_other_agents_in` used Path.glob without a guard; chmod/EPERM 500'd."""
+        real_glob = Path.glob
+
+        def boom(self, pattern):
+            if Path(self) == Path(svc.AGENTS_DIR):
+                raise PermissionError("nope")
+            return real_glob(self, pattern)
+
+        with patch.object(Path, "glob", boom):
+            info = svc.preview("com.example.app")
+        self.assertEqual(info["label"], "com.example.app")
+        self.assertEqual(info["remove_data_shared_with"], [])
+
     def test_remove_data_deletes_only_the_services_tree(self):
         result = svc.uninstall("com.example.app", remove_data=True)
         self.assertEqual(Path(result["removed_tree"]), self.tree.resolve())
@@ -273,6 +287,32 @@ class RemoveDataTests(unittest.TestCase):
     def test_default_uninstall_keeps_the_tree(self):
         result = svc.uninstall("com.example.app", remove_data=False)
         self.assertEqual(result["removed_tree"], "")
+        self.assertTrue(self.tree.exists())
+
+    def test_mkdir_failure_does_not_bootout(self):
+        path = self.agents / "com.example.app.plist"
+        self.assertTrue(path.is_file())
+
+        def fail_mkdir(self, *args, **kwargs):
+            raise OSError("read-only")
+
+        with (
+            patch.object(Path, "mkdir", fail_mkdir),
+            self.assertRaises(HTTPException) as caught,
+        ):
+            svc.uninstall("com.example.app")
+        detail = caught.exception.detail
+        code = detail.get("code") if isinstance(detail, dict) else detail
+        self.assertEqual(code, "services.uninstall_failed")
+        svc.sh.assert_not_called()
+        self.assertTrue(path.is_file(), "plist must stay when backup dir cannot be created")
+
+    def test_rmtree_failure_does_not_fail_an_archived_uninstall(self):
+        with patch.object(svc.shutil, "rmtree", side_effect=OSError("busy")):
+            result = svc.uninstall("com.example.app", remove_data=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["removed_tree"], "")
+        self.assertFalse((self.agents / "com.example.app.plist").is_file())
         self.assertTrue(self.tree.exists())
 
     def test_a_tree_outside_services_is_never_deleted(self):

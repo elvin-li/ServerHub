@@ -216,6 +216,23 @@ class LoopInstrumentationTests(_Registry):
         self.assertEqual(worker_health.problems(), ["doomed-loop: thread died"])
 
 
+class InfClockLeftoverTests(_Registry):
+    def test_leftover_inf_clock_does_not_500_snapshot(self):
+        """Leftover ``time.time() = inf`` used to poison worker age math."""
+        import json
+
+        with mock.patch.object(worker_health.time, "time", return_value=float("inf")):
+            worker_health.register("w-inf", 60, thread=_FakeThread(alive=True))
+            worker_health.beat("w-inf")
+            snap = worker_health.snapshot()
+            problems = worker_health.problems()
+        json.dumps(snap, allow_nan=False)
+        json.dumps(problems, allow_nan=False)
+        self.assertEqual(len(snap), 1)
+        self.assertTrue(all(row.get("age_sec") == row.get("age_sec") for row in snap))
+        self.assertNotIn(float("inf"), [row.get("age_sec") for row in snap])
+
+
 def _tempdir():
     import tempfile
     return tempfile.TemporaryDirectory()

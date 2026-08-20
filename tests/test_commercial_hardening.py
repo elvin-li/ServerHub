@@ -138,13 +138,21 @@ class ProxyClientIdentityTests(unittest.TestCase):
         )
         self.assertEqual(auth.request_client_id(req), "198.51.100.7")
 
-    def test_cf_connecting_ip_is_preferred(self):
+    def test_xff_wins_over_a_client_supplied_cf_header(self):
+        """nginx does not overwrite CF-Connecting-IP; XFF is the hop it appends."""
         req = request(
             client="127.0.0.1",
             headers=[
                 (b"cf-connecting-ip", b"198.51.100.4"),
                 (b"x-forwarded-for", b"203.0.113.9"),
             ],
+        )
+        self.assertEqual(auth.request_client_id(req), "203.0.113.9")
+
+    def test_cf_connecting_ip_is_used_when_xff_is_absent(self):
+        req = request(
+            client="127.0.0.1",
+            headers=[(b"cf-connecting-ip", b"198.51.100.4")],
         )
         self.assertEqual(auth.request_client_id(req), "198.51.100.4")
 
@@ -199,10 +207,24 @@ class CatalogSecretWriteTests(unittest.TestCase):
         self.assertNotIn("dest.write_text(rendered)", src)
         self.assertNotIn("vars_file.write_text", src)
 
+    def test_catalog_compose_up_is_capped(self):
+        src = (Path(__file__).resolve().parent.parent / "hub" / "catalog.py").read_text()
+        self.assertIn("run_capped", src)
+        self.assertNotIn("capture_output=True", src)
+
     def test_compose_create_is_excl(self):
         src = (Path(__file__).resolve().parent.parent / "hub" / "compose_svc.py").read_text()
         self.assertIn("secure_io.create_secret_text(compose, content)", src)
         self.assertNotIn("secure_io.write_secret_text(compose, content)", src)
+
+    def test_compose_validate_is_private_and_capped(self):
+        src = (Path(__file__).resolve().parent.parent / "hub" / "compose_svc.py").read_text()
+        body = src[src.index("def validate_compose_text"): src.index("\ndef validate_stack")]
+        self.assertIn("create_secret_text(tmp, content)", body)
+        self.assertNotIn("write_secret_text(tmp, content)", body)
+        self.assertIn("run_capped", body)
+        self.assertNotIn("NamedTemporaryFile(", body)
+        self.assertNotIn("capture_output=True", body)
 
 
 class FilesRootFilterTests(unittest.TestCase):

@@ -15,6 +15,28 @@ from hub.host_address import default_interface, host_ip, interface_address
 from hub.paths import DOCKER, ORB
 from hub.util import LazyPool, cached_snapshot, fan_out, sh
 
+
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as bytes/None; ``.isdigit`` / JSON need text."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    try:
+        return value.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
+
 #: Dashboard heavy tick is 90s in low mode. A 20s snapshot expired before
 #: every sit tick, so each one re-ran engine_up (~800ms) plus the iface
 #: sweep. 100s lets the 90s poll hit; Settings reopen and first paint still
@@ -119,6 +141,19 @@ def _iface_addresses(route_iface: str) -> list[dict]:
     ]
 
 
+def _mem_gb(rc, memsize):
+    """``hw.memsize`` as GiB, or None.  A 400-digit leftover OverflowError'd ``/``."""
+    try:
+        if rc != 0 or not memsize.isdigit():
+            return None
+        gb = round(int(memsize) / 2**30, 1)
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return None
+    if gb != gb or gb in (float("inf"), float("-inf")):
+        return None
+    return gb
+
+
 @cached_snapshot(_HOST_TTL)
 def _host_snapshot() -> dict:
     # The dashboard re-reads this on every heavy tick and Settings on every open.
@@ -150,6 +185,8 @@ def _host_snapshot() -> dict:
     rc, hostname, _ = _result(f_hostname, (1, "", ""))
     rc3, model, _ = _result(f_model, (1, "", ""))
     rc4, ncpu, rc_m, memsize = _result(f_hw, (1, "", 1, ""))
+    hostname, model = _as_text(hostname), _as_text(model)
+    ncpu, memsize = _as_text(ncpu), _as_text(memsize)
     if f_engine is not None:
         orbstack = _result(f_engine, bool(peek_engine()))
     else:
@@ -160,15 +197,13 @@ def _host_snapshot() -> dict:
     # times and both fields are documented to carry it.
     ip = host_ip()
     return {
-        "hostname": hostname if rc == 0 else platform.node(),
-        "platform": platform.platform(),
-        "arch": platform.machine(),
-        "python": platform.python_version(),
+        "hostname": hostname if rc == 0 else _as_text(platform.node()),
+        "platform": _as_text(platform.platform()),
+        "arch": _as_text(platform.machine()),
+        "python": _as_text(platform.python_version()),
         "cpu": model if rc3 == 0 else "",
         "ncpu": int(ncpu) if rc4 == 0 and ncpu.isdigit() else None,
-        "mem_total_gb": (
-            round(int(memsize) / 2**30, 1) if rc_m == 0 and memsize.isdigit() else None
-        ),
+        "mem_total_gb": _mem_gb(rc_m, memsize),
         "host_ip": ip,
         "lan_ip": ip,
         "interfaces": ifaces,
@@ -404,13 +439,32 @@ def tools_hardware():
 
 
 @router.get("/api/tools/updates")
-def tools_updates():
+def tools_updates(force: bool = False):
     # First Tools visit pays the probe; later visits and the warmer share it.
     try:
         tools_svc.start_updates_warmer()
     except Exception:
         pass
-    return tools_svc.check_updates()
+    return tools_svc.check_updates(force=force)
+
+
+class ApplyUpdateBody(BaseModel):
+    confirm: bool = False
+    stash: bool = False
+
+
+@router.post("/api/tools/updates/apply")
+def tools_apply_update(body: ApplyUpdateBody):
+    return tools_svc.apply_github_update(confirm=body.confirm, stash=body.stash)
+
+
+class BrewUpgradeBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/api/tools/updates/brew")
+def tools_brew_upgrade(body: BrewUpgradeBody):
+    return tools_svc.apply_brew_upgrade(confirm=body.confirm)
 
 
 @router.get("/api/tools/about")

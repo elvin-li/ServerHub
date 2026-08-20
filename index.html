@@ -145,8 +145,8 @@ function card(s){
 
 function render(d){
   const c=d.counts;
-  $("summary").textContent=`${c.ok} 正常 · ${c.warn} 警告 · ${c.down} 停止`;
-  document.title=(c.down?`🔴${c.down} `: c.warn?`🟡 `:"🟢 ")+"ServerHub";
+  $("summary").textContent=`${num(c.ok,"?")} 正常 · ${num(c.warn,"?")} 警告 · ${num(c.down,"?")} 停止`;
+  document.title=(num(c.down,0)>0?`🔴${num(c.down,"?")} `: num(c.warn,0)>0?`🟡 `:"🟢 ")+"ServerHub";
   const sys=d.system||{},sm=sys.smart||{};
   // Every value here is escaped. These come from `uptime`, smartctl and df
   // output rather than from a form, but they are still API-supplied strings

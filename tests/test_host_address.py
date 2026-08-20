@@ -35,6 +35,25 @@ class HostAddressTests(unittest.TestCase):
                 "https://backup.local:8443",
             )
 
+    def test_list_address_book_does_not_500(self):
+        with (
+            patch.object(host_address, "host_ip", return_value="192.0.2.40"),
+            patch("hub.config.cfg", return_value={
+                "settings": {"address_book": ["oops"]}
+            }),
+        ):
+            self.assertEqual(
+                host_address.resolve_template("http://{host}:8086"),
+                "http://192.0.2.40:8086",
+            )
+
+    def test_list_extra_does_not_500(self):
+        with patch.object(host_address, "host_ip", return_value="192.0.2.40"):
+            self.assertEqual(
+                host_address.resolve_template("http://{host}:8086", extra=["oops"]),
+                "http://192.0.2.40:8086",
+            )
+
     def test_recursive_expansion_keeps_unknown_variables(self):
         with patch.object(host_address, "host_ip", return_value="server.local"):
             value = host_address.resolve_value({
@@ -81,6 +100,54 @@ class HostAddressTests(unittest.TestCase):
                 host_address.normalize_local_url("https://external.example:8443"),
                 "https://external.example:8443",
             )
+
+    def test_normalize_local_url_leftovers_do_not_500(self):
+        """Leftover ``\\ud800`` / bytes / gethostname OSError used to 500 writes."""
+        import json
+
+        def starlette(payload):
+            json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+        with patch.object(host_address, "host_ip", return_value="192.0.2.40"):
+            cleaned = host_address.normalize_local_url("http://example.com/\ud800")
+            starlette(cleaned)
+            self.assertNotIn("\ud800", cleaned)
+            self.assertEqual(
+                host_address.normalize_local_url(b"http://192.0.2.40:4000/path"),
+                "http://{host}:4000/path",
+            )
+            with patch(
+                "hub.host_address.socket.gethostname", side_effect=OSError("boom")
+            ):
+                self.assertEqual(
+                    host_address.normalize_local_url("http://192.0.2.40:4000/"),
+                    "http://{host}:4000/",
+                )
+
+    def test_int_none_bytes_route_payloads_do_not_500(self):
+        for payload in (None, 123, b"gateway: 1.1.1.1\ninterface: en0\n"):
+            host_address.invalidate_routing()
+            with patch.object(host_address, "sh", return_value=(0, payload, "")):
+                route = host_address.default_route()
+            self.assertIsInstance(route.get("raw"), dict)
+        host_address.invalidate_routing()
+        with patch.object(
+            host_address, "sh",
+            return_value=(0, b"gateway: 1.1.1.1\ninterface: en0\n", ""),
+        ):
+            route = host_address.default_route()
+        self.assertEqual(route["interface"], "en0")
+        self.assertEqual(route["gateway"], "1.1.1.1")
+
+    def test_int_none_bytes_ifaddr_do_not_500(self):
+        for payload in (None, 123, b"192.0.2.40"):
+            host_address.invalidate_routing()
+            with patch.object(host_address, "sh", return_value=(0, payload, "")):
+                addr = host_address.interface_address("en0")
+            self.assertIsInstance(addr, str)
+        host_address.invalidate_routing()
+        with patch.object(host_address, "sh", return_value=(0, b"192.0.2.40", "")):
+            self.assertEqual(host_address.interface_address("en0"), "192.0.2.40")
 
 
 if __name__ == "__main__":

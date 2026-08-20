@@ -160,5 +160,179 @@ class LaunchdActionTests(unittest.TestCase):
         self.assertEqual(code, "apps.launchd_not_found")
 
 
+class DockerRelatedRowTests(unittest.TestCase):
+    """Junk rows in the container list used to 500 Apps detail and autostart."""
+
+    def test_detail_skips_non_dict_and_numeric_ids(self):
+        junk = {
+            "containers": [
+                "not-a-row",
+                None,
+                {"id": 12, "name": "immich_server", "project": "immich", "state": "ok"},
+                {"id": "immich_postgres", "project": "immich", "ports": "5432"},
+            ]
+        }
+        with (
+            patch("hub.containers_svc.list_containers", return_value=junk),
+            patch("hub.containers_svc.list_stacks", return_value=[]),
+            patch.object(apps_manage_svc, "fan_out", return_value=[(1, ""), (1, "")]),
+        ):
+            detail = apps_manage_svc._docker_detail("immich")
+        names = {c["name"] for c in detail["containers"]}
+        self.assertIn("12", names)
+        self.assertIn("immich_postgres", names)
+        self.assertNotIn(None, names)
+
+    def test_autostart_skips_junk_rows_instead_of_500(self):
+        junk = {
+            "containers": [
+                "nope",
+                {"id": 7, "project": "immich"},
+                {"id": "immich_server", "project": "immich"},
+            ]
+        }
+        calls = []
+
+        def fake_set(name, enabled):
+            calls.append(name)
+            return {"ok": True, "message": f"set {name}"}
+
+        with (
+            patch("hub.containers_svc.list_containers", return_value=junk),
+            patch("hub.autostart_svc.set_docker_autostart", side_effect=fake_set),
+            patch.object(apps_manage_svc, "invalidate_inventory"),
+        ):
+            result = apps_manage_svc.action("docker:immich", "autostart_on")
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, ["7", "immich_server"])
+
+    def test_autostart_overview_skips_junk_container_rows(self):
+        from hub import autostart_svc
+
+        junk = {
+            "containers": [
+                "nope",
+                None,
+                {"id": True, "name": "bool-id"},
+                {"id": 7, "name": "numeric", "restart_policy": "always", "autostart": True},
+                {"id": "immich_server", "name": "immich", "raw_state": "running"},
+            ]
+        }
+        with (
+            patch.object(autostart_svc, "engine_up", return_value=True),
+            patch("hub.containers_svc.list_containers", return_value=junk),
+        ):
+            items = autostart_svc._docker_autostart_items()
+        labels = [i["label"] for i in items]
+        self.assertEqual(labels, ["7", "immich_server"])
+
+    def test_docker_stacks_tolerate_non_str_path_and_junk_rows(self):
+        stacks = [
+            "not-a-stack",
+            {"id": ["bad"], "path": ["/not", "a", "path"]},
+            {"id": "immich", "path": "/tmp/immich", "running_containers": {"web": 1}},
+        ]
+        junk = {"containers": ["x", {"id": "immich_server", "project": "immich", "state": "ok"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch("hub.containers_svc.list_stacks", return_value=stacks),
+                patch("hub.containers_svc.list_containers", return_value=junk),
+                patch.object(apps_manage_svc, "SERVICES_ROOT", root),
+            ):
+                items = apps_manage_svc._docker_stacks()
+        ids = [i["id"] for i in items]
+        self.assertIn("docker:immich", ids)
+        self.assertTrue(all(isinstance(i, dict) for i in items))
+
+
+class AppsLeftoverTypingTests(unittest.TestCase):
+    def test_native_detail_scalar_ports_do_not_500(self):
+        from hub import native_catalog
+
+        app = {
+            "id": "native-htop", "name": "htop", "ports": 8080,
+            "package": "btop", "method": "brew_formula",
+        }
+        with (
+            patch.object(native_catalog, "NATIVE_APPS", [app]),
+            patch.object(
+                native_catalog, "list_native_apps",
+                return_value=["oops", {"id": "native-htop", "running": False}],
+            ),
+        ):
+            detail = apps_manage_svc._native_detail("native-htop")
+        self.assertEqual(detail["ports"][0]["target"], 8080)
+
+    def test_native_detail_glob_oserror_does_not_500(self):
+        from hub import native_catalog
+
+        app = {
+            "id": "native-htop", "name": "htop", "ports": ["8080"],
+            "package": "btop", "method": "brew_formula",
+        }
+
+        def boom(self, pattern):
+            raise PermissionError("nope")
+
+        with (
+            patch.object(native_catalog, "NATIVE_APPS", [app]),
+            patch.object(
+                native_catalog, "list_native_apps",
+                return_value=[{"id": "native-htop"}],
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch.object(Path, "glob", boom),
+        ):
+            detail = apps_manage_svc._native_detail("native-htop")
+        self.assertEqual(detail["source_id"], "native-htop")
+
+    def test_native_apps_skip_junk_rows_instead_of_500(self):
+        from hub import native_catalog
+
+        with patch.object(
+            native_catalog, "list_native_apps",
+            return_value=["oops", {"id": "native-x", "installed": True, "name": "X"}],
+        ):
+            items = apps_manage_svc._native_apps()
+        self.assertEqual([i["id"] for i in items], ["native:native-x"])
+
+    def test_launchd_glob_oserror_does_not_500(self):
+        tmp = Path(tempfile.mkdtemp())
+        agents = tmp / "LaunchAgents"
+        agents.mkdir()
+
+        def boom(self, pattern):
+            raise PermissionError("nope")
+
+        with (
+            patch("hub.paths.AGENTS_DIR", agents),
+            patch.object(Path, "glob", boom),
+        ):
+            self.assertEqual(apps_manage_svc._launchd_apps(), [])
+
+    def test_docker_detail_and_logs_tolerate_junk_payloads(self):
+        with patch("hub.containers_svc.list_containers", return_value=["nope"]):
+            detail = apps_manage_svc._docker_detail("immich")
+        self.assertEqual(detail["source_id"], "immich")
+        self.assertEqual(detail["containers"], [])
+
+        with (
+            patch("hub.containers_svc.list_containers", return_value={"containers": 5}),
+            patch.object(Path, "exists", return_value=False),
+        ):
+            logs = apps_manage_svc._docker_logs("immich")
+        self.assertIn("log", logs)
+
+    def test_vm_detail_scalar_ips_do_not_500(self):
+        with patch(
+            "hub.vms_svc.list_all_vms",
+            return_value={"vms": [{"id": "u1", "name": "vm", "ips": 1}]},
+        ):
+            detail = apps_manage_svc._vm_detail("u1")
+        self.assertEqual(detail["ips"], [])
+        self.assertEqual(detail["networks"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

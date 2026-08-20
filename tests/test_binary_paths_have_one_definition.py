@@ -149,5 +149,56 @@ class OneDefinitionTests(unittest.TestCase):
         self.assertEqual(_module_level_string_assignments(imported), {})
 
 
+def _is_path_home_call(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr != "home":
+        return False
+    value = node.func.value
+    if isinstance(value, ast.Name) and value.id == "Path":
+        return True
+    return (
+        isinstance(value, ast.Attribute)
+        and value.attr == "Path"
+        and isinstance(value.value, ast.Name)
+        and value.value.id == "pathlib"
+    )
+
+
+class ImportTimeHomeTests(unittest.TestCase):
+    def test_no_hub_module_calls_path_home_at_import(self):
+        """``Path.home()`` at import RuntimeError/ValueError 500s every importer."""
+        offenders = []
+        for path in sorted(HUB.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text())
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                for child in ast.walk(node):
+                    if _is_path_home_call(child):
+                        offenders.append(f"{path.relative_to(BASE)}:{child.lineno}")
+        self.assertEqual(
+            offenders,
+            [],
+            "import-time Path.home() 500s the module; use user_home():\n"
+            + "\n".join(offenders),
+        )
+
+    def test_the_detector_catches_module_level_path_home(self):
+        tree = ast.parse('ROOT = Path.home() / "Services"\n')
+        calls = [n for n in ast.walk(tree) if _is_path_home_call(n)]
+        self.assertEqual(len(calls), 1)
+        safe = ast.parse(
+            "def user_home():\n"
+            "    return Path.home()\n"
+        )
+        for node in safe.body:
+            if isinstance(node, ast.FunctionDef):
+                continue
+            self.assertFalse(any(_is_path_home_call(n) for n in ast.walk(node)))
+
+
 if __name__ == "__main__":
     unittest.main()

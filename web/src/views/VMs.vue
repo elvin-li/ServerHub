@@ -3,7 +3,7 @@
     <div class="page-title">
       <h1>{{ t('vms.title') }}</h1>
       <span class="meta">
-        {{ t('vms.meta', { utm: data?.utm_available ? '✓' : '—', orb: data?.orb_available ? '✓' : '—', n: vms.length }) }}
+        {{ t('vms.meta', { utm: data?.utm_available ? '✓' : '—', orb: data?.orb_available ? '✓' : '—', n: finiteN(vms.length) }) }}
       </span>
     </div>
 
@@ -16,7 +16,7 @@
     </div>
 
     <div v-if="msg" class="tile" style="margin-bottom:10px">
-      <pre class="log-pre" role="status" aria-live="polite">{{ msg }}</pre>
+      <pre class="log-pre" role="status" aria-live="polite">{{ finiteText(msg) }}</pre>
     </div>
 
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
@@ -33,20 +33,20 @@
         <div class="vm-head">
           <span class="led" :class="led(v.state)" aria-hidden="true"></span>
           <div class="vm-titles">
-            <div class="vm-name">{{ v.name }}</div>
-            <div class="vm-sub mono">{{ v.backend }} · {{ v.status }} · {{ stateLabel(v.state) }}</div>
+            <div class="vm-name">{{ finiteText(v.name) }}</div>
+            <div class="vm-sub mono">{{ finiteText(v.backend) }} · {{ finiteText(v.status) }} · {{ stateLabel(v.state) }}</div>
           </div>
-          <span class="badge" :class="stateBadge(v.state)">{{ v.backend }}</span>
+          <span class="badge" :class="stateBadge(v.state)">{{ finiteText(v.backend) }}</span>
         </div>
-        <div class="vm-detail">{{ v.detail }}</div>
+        <div class="vm-detail">{{ finiteText(v.detail) }}</div>
         <div v-if="v.ips?.length" class="mono" style="font-size:11px;margin-bottom:6px">
-          IP: {{ v.ips.join(', ') }}
+          IP: {{ (v.ips || []).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}
         </div>
         <div v-if="v.backend === 'orb'" class="console-note">
           {{ t('vms.console_unavailable_orbstack') }}
         </div>
         <div class="btns">
-          <a v-if="webUrl(v)" class="btn tiny primary" :href="webUrl(v)" target="_blank" rel="noopener">WebUI</a>
+          <a v-if="webUrl(v)" class="btn tiny primary" :href="finiteText(webUrl(v), '')" target="_blank" rel="noopener">WebUI</a>
           <button
             v-if="hasWebConsole(v)"
             class="tiny primary"
@@ -61,7 +61,7 @@
             :class="{ primary: a==='start'||a==='restart', danger: a==='delete'||a==='kill' }"
             :disabled="busy"
             @click="act(v, a)"
-          >{{ labels[a] || a }}</button>
+          >{{ finiteText(labels[a], '') || finiteText(a) }}</button>
         </div>
       </div>
     </div>
@@ -85,7 +85,7 @@
         <div class="field-grid">
           <label for="vm-create-distro">{{ t('vms.distro') }}</label>
           <select id="vm-create-distro" v-model="createForm.distro" :aria-label="t('vms.distro')">
-            <option v-for="d in (data?.orb_distros || distros)" :key="d" :value="d">{{ d }}</option>
+            <option v-for="d in (data?.orb_distros || distros)" :key="finiteText(d)" :value="d">{{ finiteText(d) }}</option>
           </select>
           <label for="vm-create-version">{{ t('vms.version') }}</label>
           <input id="vm-create-version" v-model="createForm.version" type="text" :placeholder="t('vms.version_ph')"  :aria-label="t('vms.version_ph')"/>
@@ -113,7 +113,7 @@
         ref="clonePanel"
       >
         <div class="row" style="margin-bottom:12px">
-          <span id="vm-clone-title" class="name">{{ t('vms.clone') }} · {{ cloneTarget.name }}</span>
+          <span id="vm-clone-title" class="name">{{ t('vms.clone') }} · {{ finiteText(cloneTarget.name) }}</span>
           <button class="tiny" @click="cloneTarget=null">{{ t('common.close') }}</button>
         </div>
         <label for="vm-clone-name" style="font-size:12px;color:var(--sub)">{{ t('vms.new_name') }}</label>
@@ -136,7 +136,7 @@
         ref="renamePanel"
       >
         <div class="row" style="margin-bottom:12px">
-          <span id="vm-rename-title" class="name">{{ t('vms.rename') }} · {{ renameTarget.id }}</span>
+          <span id="vm-rename-title" class="name">{{ t('vms.rename') }} · {{ finiteText(renameTarget.id) }}</span>
           <button class="tiny" @click="renameTarget=null">{{ t('common.close') }}</button>
         </div>
         <label for="vm-rename-name" style="font-size:12px;color:var(--sub)">{{ t('vms.display_name') }}</label>
@@ -157,6 +157,7 @@ import VncConsole from '../components/VncConsole.vue'
 import { createVm, getVms, vmAction } from '../api/client'
 import { startVisibleInterval } from '../lib/poll'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -185,8 +186,10 @@ let timer = null
 const refreshTimers = new Set()
 
 function scheduleRefresh(delay) {
+  const generation = loadGeneration
   const id = setTimeout(() => {
     refreshTimers.delete(id)
+    if (generation !== loadGeneration || !pageAlive) return
     void refresh()
   }, delay)
   refreshTimers.add(id)
@@ -232,15 +235,15 @@ function hasWebConsole(v) {
  * Returns '' when the URL is missing or still unresolved, so the button hides.
  */
 function webUrl(v) {
-  const raw = (v && v.url ? String(v.url) : '').trim()
+  const raw = finiteText(v && v.url, '').trim()
   if (!raw) return ''
-  const host = window.location.hostname || data.value?.host_ip || 'localhost'
+  const host = finiteText(window.location.hostname, '') || finiteText(data.value?.host_ip, '') || 'localhost'
   const out = raw
     .replaceAll('${host}', host)
     .replaceAll('{host}', host)
     .replaceAll('{{HOST_IP}}', host)
     .replaceAll('{{HOST}}', host)
-  return /\{[A-Za-z]/.test(out) ? '' : out
+  return /\{[A-Za-z]/.test(out) ? '' : finiteText(out, '')
 }
 
 function requireOk(result) {
@@ -248,17 +251,24 @@ function requireOk(result) {
   return result
 }
 
+let pageAlive = true
+let loadGeneration = 0
+
 async function refresh() {
+  const generation = ++loadGeneration
   try {
-    data.value = await getVms()
+    const next = await getVms()
+    if (generation !== loadGeneration || !pageAlive) return
+    data.value = next
     loadError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   } finally {
-    loaded.value = true
+    if (generation === loadGeneration) loaded.value = true
   }
 }
 
@@ -273,79 +283,92 @@ async function act(v, action) {
     renameName.value = v.name || ''
     return
   }
-  if (action === 'delete' && !confirm(t('vms.confirm_delete', { name: v.name }))) return
-  if (action === 'stop' && !confirm(t('vms.confirm_stop', { name: v.name }))) return
-  if (action === 'kill' && !confirm(t('vms.confirm_kill', { name: v.name }))) return
+  if (action === 'delete' && !confirm(t('vms.confirm_delete', { name: finiteText(v.name) }))) return
+  if (action === 'stop' && !confirm(t('vms.confirm_stop', { name: finiteText(v.name) }))) return
+  if (action === 'kill' && !confirm(t('vms.confirm_kill', { name: finiteText(v.name) }))) return
   // force:true is sent for every action except stop (see the vmAction call below),
   // so restart and suspend are hard operations on every backend -- not just UTM.
   // Gating the confirmation on backend === 'utm' let an orb restart/suspend go out
   // forcibly on a single click.
-  if (action === 'restart' && !confirm(t('vms.confirm_restart_force', { name: v.name }))) return
-  if (action === 'suspend' && !confirm(t('vms.confirm_restart_force', { name: v.name }))) return
+  if (action === 'restart' && !confirm(t('vms.confirm_restart_force', { name: finiteText(v.name) }))) return
+  if (action === 'suspend' && !confirm(t('vms.confirm_restart_force', { name: finiteText(v.name) }))) return
   if (action === 'shell') {
     try {
       const j = requireOk(await vmAction(v.id, { action: 'shell' }))
-      msg.value = j.message || j.command || ''
+      if (!pageAlive) return
+      msg.value = finiteText(j.message, '') || finiteText(j.command, '')
       toast('✅ ' + t('vms.shell_below'))
     } catch (e) {
-      toast('❌ ' + e.message)
+      if (!pageAlive) return
+      toast('❌ ' + finiteText(e.message))
     }
     return
   }
+  const generation = loadGeneration
   busy.value = true
   msg.value = t('vms.working')
   try {
     const j = requireOk(await vmAction(v.id, { action, force: action !== 'stop' }))
-    msg.value = j.message || ''
-    if (j.ips) msg.value = t('vms.ip_result', { ips: j.ips.join(', ') })
+    if (generation !== loadGeneration || !pageAlive) return
+    msg.value = finiteText(j.message, '')
+    if (j.ips) msg.value = t('vms.ip_result', { ips: (j.ips || []).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') })
     toast(`✅ ${labels.value[action] || action}`)
     scheduleRefresh(action === 'restart' ? 3000 : 1000)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
     msg.value = e.message
   } finally {
-    busy.value = false
+    // The 15s poll's refresh() bumps loadGeneration while an action is in flight.
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doClone() {
   if (!cloneTarget.value || !cloneName.value.trim()) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = requireOk(await vmAction(cloneTarget.value.id, {
       action: 'clone',
       name: cloneName.value.trim(),
     }))
+    if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('vms.cloned'))
-    msg.value = j.message || ''
+    msg.value = finiteText(j.message, '')
     cloneTarget.value = null
     scheduleRefresh(1500)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doRename() {
   if (!renameTarget.value || !renameName.value.trim()) return
+  const generation = loadGeneration
   busy.value = true
   try {
     const j = requireOk(await vmAction(renameTarget.value.id, {
       action: 'rename',
       name: renameName.value.trim(),
     }))
-    toast('✅ ' + (j.message || t('vms.renamed')))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('✅ ' + (finiteText(j.message, '') || t('vms.renamed')))
     renameTarget.value = null
     await refresh()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doCreate() {
+  const generation = loadGeneration
   busy.value = true
   msg.value = t('vms.creating')
   try {
@@ -357,23 +380,28 @@ async function doCreate() {
       distro,
       name: createForm.value.name.trim() || null,
     }))
+    if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('vms.created'))
-    msg.value = j.message || ''
+    msg.value = finiteText(j.message, '')
     showCreate.value = false
     scheduleRefresh(2000)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
     msg.value = e.message
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 onMounted(() => {
+  pageAlive = true
   refresh()
   timer = startVisibleInterval(refresh, 15000)
 })
 onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
   consoleTarget.value = null
   if (typeof timer === 'function') timer()
   timer = null

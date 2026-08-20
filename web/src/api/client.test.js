@@ -624,5 +624,47 @@ describe('api client', () => {
         chatOllamaModel('-rf', [{ role: 'user', content: 'hi' }]),
       ).rejects.toThrow(en.err.ollama.bad_model_name.replace('{model}', '-rf'))
     })
+
+    it('reports a user abort as cancelled, not a timeout', async () => {
+      const ctrl = new AbortController()
+      fetchMock.mockImplementation(
+        (_url, opts) =>
+          new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => {
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            })
+          }),
+      )
+      const pending = chatOllamaModel(
+        'qwen3.5:4b',
+        [{ role: 'user', content: 'hi' }],
+        32,
+        { signal: ctrl.signal },
+      )
+      ctrl.abort()
+      let caught
+      await pending.catch((e) => { caught = e })
+      expect(caught.code).toBe('cancelled')
+      expect(caught.message).toBe(en.err.cancelled)
+    })
+
+    it('does not deliver chunks after the caller aborts', async () => {
+      const ctrl = new AbortController()
+      const onChunk = vi.fn()
+      fetchMock.mockResolvedValue(ndjsonRes([
+        { message: { role: 'assistant', content: 'Hel' }, done: false },
+        { message: { role: 'assistant', content: 'lo' }, done: true },
+      ]))
+      ctrl.abort()
+      await expect(
+        chatOllamaModel(
+          'qwen3.5:4b',
+          [{ role: 'user', content: 'hi' }],
+          32,
+          { signal: ctrl.signal, onChunk },
+        ),
+      ).rejects.toMatchObject({ code: 'cancelled' })
+      expect(onChunk).not.toHaveBeenCalled()
+    })
   })
 })

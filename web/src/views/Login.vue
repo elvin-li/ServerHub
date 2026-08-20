@@ -30,9 +30,7 @@
           />
           <small>{{ t('auth.totp_recovery_hint') }}</small>
         </label>
-        <div class="login-error-live" role="alert" aria-live="assertive">
-          <p v-if="error" class="login-error">{{ error }}</p>
-        </div>
+        <div class="login-error-live" role="alert" aria-live="assertive"><p v-if="error" class="login-error">{{ finiteText(error) }}</p></div>
         <button class="primary login-submit" :disabled="busy || !totpCode">
           {{ busy ? t('auth.processing') : t('auth.totp_submit') }}
         </button>
@@ -52,15 +50,13 @@
              another excludes nobody. -->
         <div v-if="setupMode && tokenNeeded && autoToken" class="token-card">
           <span class="token-label">{{ t('auth.your_token') }}</span>
-          <code class="token-value">{{ autoToken }}</code>
+          <code class="token-value">{{ finiteText(autoToken) }}</code>
           <button type="button" class="token-copy" @click="copyToken" :title="t('common.copy')">
             {{ copied ? t('common.copied') : t('common.copy') }}
           </button>
         </div>
-        <div class="token-error-live" role="alert" aria-live="assertive">
-          <div v-if="setupMode && tokenNeeded && tokenError" class="token-error">
-            {{ t('auth.token_fetch_failed') }}
-          </div>
+        <div v-if="setupMode && tokenNeeded && tokenError" class="token-error" role="alert">
+          {{ t('auth.token_fetch_failed') }}
         </div>
         <label>
           <span>{{ t('auth.username') }}</span>
@@ -85,17 +81,15 @@
              alert that appears with the node is announced varies by screen
              reader -- a failed login would then be silent for the one user who
              cannot see the red box. -->
-        <div class="login-error-live" role="alert" aria-live="assertive">
-          <p v-if="error" class="login-error">{{ error }}</p>
-        </div>
+        <div class="login-error-live" role="alert" aria-live="assertive"><p v-if="error" class="login-error">{{ finiteText(error) }}</p></div>
         <button class="primary login-submit" :disabled="busy">
           {{ busy ? t('auth.processing') : (setupMode ? t('auth.create_admin') : t('auth.login')) }}
         </button>
       </form>
       <p class="login-foot">{{ t('auth.local_only') }}</p>
       <div class="login-locale">
-        <select :value="locale" @change="onLocale" :title="t('appearance.language')">
-          <option v-for="l in locales" :key="l.id" :value="l.id">{{ l.native }}</option>
+        <select :value="locale" @change="onLocale" :title="t('appearance.language')" :aria-label="t('appearance.language')">
+          <option v-for="l in locales" :key="l.id" :value="l.id">{{ finiteText(l.native) }}</option>
         </select>
       </div>
     </section>
@@ -103,11 +97,13 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAuthStatus, getSetupToken, loginAuth, resetAuthLost, setupAuth, verifyTotpLogin } from '../api/client'
+import { applyAuthStatus } from '../lib/authState'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
+import { finiteText } from '../lib/finite'
 
 const { t, locale, locales, setLocale } = injectI18n()
 const route = useRoute()
@@ -121,6 +117,7 @@ const password = ref('')
 const confirmPassword = ref('')
 const autoToken = ref('')
 const copied = ref(false)
+let copyTimer = 0
 const tokenError = ref(false)
 // The server decides, because only it knows where the request came from and what
 // mode is configured. Defaults to true so a status call that fails cannot drop the
@@ -134,37 +131,68 @@ const totpStep = ref(false)
 const totpPending = ref('')
 const totpCode = ref('')
 
+let pageAlive = true
+let loginGeneration = 0
+
 onMounted(async () => {
+  pageAlive = true
   try {
     const state = await getAuthStatus()
+    if (!pageAlive) return
     setupMode.value = !!state.setup_required
-    username.value = state.username || 'admin'
+    username.value = finiteText(state.username, '') || 'admin'
     // Absent on an older backend, where a token was always required.
     tokenNeeded.value = state.setup_token_required !== false
     if (setupMode.value && tokenNeeded.value) {
       try {
         const tokenResp = await getSetupToken()
-        autoToken.value = tokenResp.setup_token || ''
+        if (!pageAlive) return
+        autoToken.value = finiteText(tokenResp.setup_token, '')
         if (autoToken.value) setupToken.value = autoToken.value
       } catch {
+        if (!pageAlive) return
         tokenError.value = true
       }
     }
   } catch (e) {
-    error.value = e.message
+    if (!pageAlive) return
+    error.value = finiteText(e.message, '')
   }
-  loading.value = false
+  if (pageAlive) loading.value = false
+})
+
+onUnmounted(() => {
+  pageAlive = false
+  loginGeneration += 1
+  clearTimeout(copyTimer)
 })
 
 function onLocale(e) { setLocale(e.target.value) }
 
 async function copyToken() {
   if (!await copyToClipboard(autoToken.value)) return
+  if (!pageAlive) return
   copied.value = true
-  setTimeout(() => copied.value = false, 2000)
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    if (!pageAlive) return
+    copied.value = false
+  }, 2000)
+}
+
+function rememberSession(result) {
+  if (!result || typeof result !== 'object') return
+  applyAuthStatus({
+    authenticated: true,
+    username: finiteText(result.username, '') || finiteText(username.value),
+    role: result.role,
+    can_manage: result.can_manage,
+    resources: result.resources,
+  })
 }
 
 async function finishLogin() {
+  if (!pageAlive) return
   // Re-arm the session-lost redirect for the new session.
   resetAuthLost()
   // Only same-origin relative paths, so ?next= cannot be used to bounce a
@@ -175,6 +203,7 @@ async function finishLogin() {
 }
 
 async function submit() {
+  if (busy.value) return
   error.value = ''
   if (setupMode.value && password.value !== confirmPassword.value) {
     error.value = t('auth.password_mismatch')
@@ -184,37 +213,57 @@ async function submit() {
     error.value = t('auth.password_length')
     return
   }
+  const generation = loginGeneration
   busy.value = true
   try {
     if (setupMode.value) {
-      await setupAuth(username.value, password.value, setupToken.value)
+      const result = await setupAuth(username.value, password.value, setupToken.value)
+      if (!pageAlive) return
+      if (generation !== loginGeneration) return
+      rememberSession(result)
     } else {
       const result = await loginAuth(username.value, password.value)
+      if (!pageAlive) return
+      if (generation !== loginGeneration) return
       if (result && result.totp_required) {
         // Password accepted; the account demands a code before any session
         // exists. Keep the pending token in memory and swap the form.
-        totpPending.value = result.pending || ''
+        totpPending.value = finiteText(result.pending, '')
         totpCode.value = ''
+        password.value = ''
         totpStep.value = true
-        busy.value = false
+        if (pageAlive) busy.value = false
         return
       }
+      rememberSession(result)
     }
     await finishLogin()
   } catch (e) {
-    error.value = e.message
+    if (!pageAlive) return
+    if (generation !== loginGeneration) return
+    error.value = finiteText(e.message, '')
+  } finally {
+    // leaveTotpStep / unmount bump loginGeneration so a late reply must
+    // not re-enable (or keep stuck) the password form after leave.
+    if (pageAlive && generation === loginGeneration) busy.value = false
   }
-  busy.value = false
 }
 
 async function submitTotp() {
+  if (busy.value) return
   error.value = ''
+  const generation = loginGeneration
   busy.value = true
   try {
-    await verifyTotpLogin(totpPending.value, totpCode.value)
+    const result = await verifyTotpLogin(totpPending.value, totpCode.value)
+    if (!pageAlive) return
+    if (generation !== loginGeneration) return
+    rememberSession(result)
     await finishLogin()
   } catch (e) {
-    error.value = e.message
+    if (!pageAlive) return
+    if (generation !== loginGeneration) return
+    error.value = finiteText(e.message, '')
     // An expired pending window can only be fixed by re-entering the
     // password; bounce back so the retry starts at the right step.
     if (e.code === 'auth.totp_pending_invalid') {
@@ -222,15 +271,18 @@ async function submitTotp() {
       totpPending.value = ''
       totpCode.value = ''
     }
+  } finally {
+    if (pageAlive && generation === loginGeneration) busy.value = false
   }
-  busy.value = false
 }
 
 function leaveTotpStep() {
+  loginGeneration += 1
   totpStep.value = false
   totpPending.value = ''
   totpCode.value = ''
   error.value = ''
+  busy.value = false
 }
 </script>
 
@@ -271,7 +323,7 @@ label input { width: 100%; min-height: 44px; font-size: 16px; border-radius: 8px
    -- either one drops the element out of the accessibility tree, so the error
    would once again arrive as a *new* live region rather than as content added to
    one already being watched, which is the announcement browsers miss. */
-.login-error-live:empty, .token-error-live:empty {
+.login-error-live:empty {
   position: absolute;
   width: 0;
   height: 0;

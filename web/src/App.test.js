@@ -195,6 +195,42 @@ describe('App shell session loss', () => {
     expect(statusCalls(fetchMock)).toBe(0)
   })
 
+  it('does not bounce a new session when a late logout returns', async () => {
+    // logout() awaits /api/auth/logout. If the session dies while that POST
+    // is in flight, onAuthLost already sent the user to /login; they may
+    // sign back in before the original logout settles. Finishing that POST
+    // must not clearAuth + replace /login on top of the new session.
+    let finishLogout
+    fetchMock.mockImplementation((url) => {
+      if (String(url).includes('/api/auth/logout')) {
+        return new Promise((resolve) => {
+          finishLogout = () => resolve({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({}),
+          })
+        })
+      }
+      return Promise.resolve(statusRes({ services: [] }))
+    })
+    wrapper = mountShell(router)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pending = wrapper.find('.logout-btn').trigger('click')
+    loseSession()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(router.currentRoute.value.path).toBe('/login')
+
+    await router.replace('/containers')
+    await vi.advanceTimersByTimeAsync(0)
+
+    finishLogout()
+    await pending
+    await vi.advanceTimersByTimeAsync(0)
+    expect(router.currentRoute.value.path).toBe('/containers')
+  })
+
   it('stops polling when the user signs out deliberately', async () => {
     // Distinct from session loss: logout() navigates to /login without firing
     // the auth-lost event, so the route watcher is the only thing that can stop
@@ -322,6 +358,19 @@ describe('App shell global error toast', () => {
       window.dispatchEvent(new CustomEvent(APP_ERROR_EVENT, {
         detail: { error: new Error('late'), context: 'render' },
       }))
+    }).not.toThrow()
+  })
+
+  it('stops reacting to connectivity and SW-update events after the shell unmounts', async () => {
+    wrapper = mountShell(router)
+    await vi.advanceTimersByTimeAsync(0)
+    wrapper.unmount()
+    wrapper = undefined
+
+    expect(() => {
+      window.dispatchEvent(new Event('offline'))
+      window.dispatchEvent(new Event('online'))
+      window.dispatchEvent(new Event('sw-update-ready'))
     }).not.toThrow()
   })
 })

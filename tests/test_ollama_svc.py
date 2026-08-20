@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -28,6 +29,10 @@ from hub import ollama_svc  # noqa: E402
 
 def _code(exc: HTTPException) -> str:
     return (exc.detail or {}).get("code", "")
+
+
+def _starlette(payload) -> None:
+    json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 #: /api/tags, ollama 0.32.9, verbatim (one entry trimmed to the parsed fields).
@@ -167,6 +172,64 @@ class TagsParsing(_NoRealConfig):
         self.assertEqual(ollama_svc.parse_tags({"models": None}), [])
         self.assertEqual(ollama_svc.parse_tags(None), [])
 
+    def test_non_object_model_rows_are_skipped(self):
+        models = ollama_svc.parse_tags({
+            "models": ["oops", {"name": "ok", "size": "nope", "capabilities": "x"}],
+        })
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0]["name"], "ok")
+        self.assertEqual(models[0]["size"], 0)
+        self.assertEqual(models[0]["capabilities"], [])
+
+    def test_infinite_size_and_context_do_not_500(self):
+        """JSON 1e400 is inf; int(inf) OverflowError and Starlette allow_nan=False."""
+        models = ollama_svc.parse_tags({
+            "models": [{
+                "name": float("inf"),
+                "size": float("inf"),
+                "details": {"family": float("nan"), "context_length": float("inf")},
+            }],
+        })
+        json.dumps(models, allow_nan=False)
+        self.assertEqual(models[0]["name"], "")
+        self.assertEqual(models[0]["size"], 0)
+        self.assertEqual(models[0]["family"], "")
+        self.assertIsNone(models[0]["context_length"])
+
+    def test_surrogate_model_name_does_not_500(self):
+        """A leftover ``\\ud800`` in /api/tags used to 500 Starlette's UTF-8 encode."""
+        models = ollama_svc.parse_tags({
+            "models": [{
+                "name": "qwen\ud800",
+                "details": {"family": "qwen\ud800"},
+                "capabilities": ["tools\ud800"],
+            }],
+        })
+        json.dumps(models, allow_nan=False)
+        _starlette(models)
+        self.assertNotIn("\ud800", models[0]["name"])
+        self.assertNotIn("\ud800", models[0]["family"])
+        self.assertNotIn("\ud800", models[0]["capabilities"][0])
+
+    def test_yaml_dates_and_bytes_do_not_500(self):
+        """``_jsonable`` used to walk dict/list/float only; YAML leftovers leaked."""
+        when = datetime(2026, 8, 19, 12, 0, 0)
+        models = ollama_svc.parse_tags({
+            "models": [{
+                "name": b"qwen",
+                "size": b"12",
+                "modified_at": when,
+                "details": {"family": b"qwen", "context_length": when},
+                "capabilities": [b"tools"],
+            }],
+        })
+        json.dumps(models, allow_nan=False)
+        self.assertEqual(models[0]["name"], "qwen")
+        self.assertEqual(models[0]["family"], "qwen")
+        self.assertEqual(models[0]["context_length"], when.isoformat())
+        self.assertEqual(models[0]["capabilities"], ["tools"])
+        self.assertEqual(models[0]["modified"], "")
+
 
 class PsParsing(_NoRealConfig):
     def test_parses_the_captured_payload(self):
@@ -188,6 +251,29 @@ class PsParsing(_NoRealConfig):
 
     def test_missing_expiry_is_not_forever(self):
         self.assertFalse(ollama_svc.parse_ps({"models": [{"name": "m"}]})[0]["forever"])
+
+    def test_object_expires_at_does_not_500(self):
+        """A leftover mapping in expires_at used to raise in re.match."""
+        row = ollama_svc.parse_ps({
+            "models": [{"name": "m", "expires_at": {"iso": "2318-01-01"}}],
+        })[0]
+        self.assertEqual(row["name"], "m")
+        self.assertFalse(row["forever"])
+        self.assertEqual(row["expires_at"], "")
+
+    def test_infinite_size_vram_and_context_do_not_500(self):
+        row = ollama_svc.parse_ps({
+            "models": [{
+                "name": "m",
+                "size": float("inf"),
+                "size_vram": float("inf"),
+                "context_length": float("inf"),
+            }],
+        })[0]
+        json.dumps(row, allow_nan=False)
+        self.assertEqual(row["size"], 0)
+        self.assertEqual(row["size_vram"], 0)
+        self.assertIsNone(row["context_length"])
 
 
 class StatusSnapshot(_NoRealConfig):
@@ -245,6 +331,98 @@ class StatusSnapshot(_NoRealConfig):
         ):
             snap = ollama_svc.status(force=True)
         self.assertFalse(snap["installed"])
+
+    def test_leftover_settings_list_does_not_500(self):
+        """``(cfg().get("settings") or {}).get("ollama")`` 500'd on a leftover list."""
+        for settings in ("nope", [1], 3, True):
+            with mock.patch.object(ollama_svc, "cfg", lambda s=settings: {"settings": s}):
+                self.assertEqual(ollama_svc._settings(), {})
+                self.assertEqual(ollama_svc.base_url(), ollama_svc.DEFAULT_URL)
+
+    def test_yaml_date_and_bytes_url_do_not_500(self):
+        """YAML ``url: 2026-08-19`` / ``!!binary`` used to leak into status JSON."""
+        with mock.patch.object(
+            ollama_svc, "cfg",
+            lambda: {"settings": {"ollama": {"url": datetime(2026, 8, 19)}}},
+        ):
+            self.assertEqual(ollama_svc.configured_url(), ollama_svc.DEFAULT_URL)
+            self.assertEqual(ollama_svc.base_url(), ollama_svc.DEFAULT_URL)
+            self.assertFalse(ollama_svc.url_was_rejected())
+        with mock.patch.object(
+            ollama_svc, "cfg",
+            lambda: {"settings": {"ollama": {"url": b"http://127.0.0.1:11434"}}},
+        ):
+            self.assertEqual(ollama_svc.configured_url(), "http://127.0.0.1:11434")
+            self.assertEqual(ollama_svc.base_url(), "http://127.0.0.1:11434")
+            self.assertFalse(ollama_svc.url_was_rejected())
+
+    def test_yaml_date_label_is_not_a_launchd_label(self):
+        with mock.patch.object(
+            ollama_svc, "cfg",
+            lambda: {"settings": {"ollama": {"label": date(2026, 8, 19)}}},
+        ), mock.patch.object(ollama_svc, "_candidate_labels", return_value=[]):
+            self.assertIsNone(ollama_svc.discover_label(loaded=frozenset()))
+
+    def test_jsonable_bytes_dates_and_inf_keys_do_not_500(self):
+        cleaned = ollama_svc._jsonable({
+            float("inf"): 1,
+            "blob": b"qwen",
+            "when": datetime(2026, 8, 19),
+            "load": (float("inf"), 1.0),
+            "name": "qwen\ud800",
+            "\ud800": 1,
+        })
+        json.dumps(cleaned, allow_nan=False)
+        _starlette(cleaned)
+        self.assertEqual(cleaned["blob"], "qwen")
+        self.assertEqual(cleaned["load"], [None, 1.0])
+        self.assertTrue(str(cleaned["when"]).startswith("2026-08-19"))
+        self.assertNotIn("\ud800", cleaned["name"])
+        self.assertNotIn("\ud800", "".join(cleaned))
+
+    def test_unreadable_launchagents_does_not_500(self):
+        def boom(self, pattern):
+            raise PermissionError("nope")
+
+        with mock.patch.object(Path, "glob", boom):
+            self.assertEqual(ollama_svc._candidate_labels(), [])
+
+    def test_binary_stat_eio_does_not_500_status(self):
+        """``/opt/homebrew/bin/ollama`` ``is_file()`` EIO used to 500 GET /api/ollama/status."""
+        self.addCleanup(ollama_svc.status.invalidate)
+        with (
+            mock.patch.object(Path, "is_file", side_effect=OSError(5, "I/O error")),
+            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(ollama_svc, "_api", side_effect=OSError("refused")),
+            mock.patch.object(
+                ollama_svc, "_service_state",
+                return_value={
+                    "label": None, "loaded": False, "running": False, "pid": None,
+                    "candidates": [], "inferred": False,
+                },
+            ),
+        ):
+            snap = ollama_svc.status(force=True)
+        json.dumps(snap, allow_nan=False)
+        self.assertFalse(snap["installed"])
+        self.assertIsNone(snap["binary"])
+
+    def test_infinite_context_length_does_not_500_status(self):
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "/api/version": {"version": "0.32.9"},
+                "/api/tags": {"models": [{"name": "m", "details": {"context_length": float("inf")}}]},
+                "/api/ps": {"models": [{"name": "m", "context_length": float("inf")}]},
+            }[path]
+
+        with (
+            mock.patch.object(ollama_svc, "_api", side_effect=fake_api),
+            mock.patch.object(ollama_svc, "binary_path", return_value="/opt/homebrew/bin/ollama"),
+        ):
+            snap = ollama_svc.status(force=True)
+        json.dumps(snap, allow_nan=False)
+        self.assertIsNone(snap["models"][0]["context_length"])
+        self.assertIsNone(snap["resident"][0]["context_length"])
 
 
 class _PullSandbox(_NoRealConfig):
@@ -429,11 +607,69 @@ class QuickTest(_NoRealConfig):
         self.assertEqual(result["response"], "hello")
         self.assertEqual(result["tokens_per_s"], 5.0)
 
+    def test_infinite_eval_counts_do_not_500_quick_test(self):
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "response": "hello",
+                "eval_count": float("inf"),
+                "eval_duration": float("nan"),
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.quick_test("m:1", "hi")
+        json.dumps(result, allow_nan=False)
+        self.assertEqual(result["eval_count"], 0)
+        self.assertIsNone(result["tokens_per_s"])
+
+    def test_huge_eval_counts_do_not_500_quick_test(self):
+        """JSON ``1e308`` is finite; the rate still overflowed to inf and 500'd encode."""
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "response": "hello",
+                "eval_count": 1e308,
+                "eval_duration": 1,
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.quick_test("m:1", "hi")
+        json.dumps(result, allow_nan=False)
+        self.assertIsNone(result["tokens_per_s"])
+
+        def huge_api(path, payload=None, timeout=None):
+            return {
+                "response": "hello",
+                "eval_count": 10 ** 400,
+                "eval_duration": 10 ** 400,
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=huge_api):
+            result = ollama_svc.quick_test("m:1", "hi")
+        json.dumps(result, allow_nan=False)
+        self.assertIsNone(result["tokens_per_s"])
+
     def test_daemon_failure_becomes_a_coded_502(self):
         with mock.patch.object(ollama_svc, "_api", side_effect=OSError("timed out")):
             with self.assertRaises(HTTPException) as ctx:
                 ollama_svc.quick_test("m:1", "hi")
         self.assertEqual(_code(ctx.exception), "ollama.generate_failed")
+
+    def test_surrogate_generate_text_does_not_500(self):
+        """A leftover ``\\ud800`` in /api/generate ``response`` used to 500 POST /api/ollama/test."""
+
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "response": "hello\ud800",
+                "thinking": "trace\ud800",
+                "eval_count": 4,
+                "eval_duration": 1_000_000_000,
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.quick_test("m:1", "hi")
+        json.dumps(result, allow_nan=False)
+        _starlette(result)
+        self.assertNotIn("\ud800", result["response"])
+        self.assertNotIn("\ud800", result["thinking"])
 
     def test_thinking_only_output_is_surfaced(self):
         # Real-daemon behaviour (qwen3.5:4b, num_predict=32): the entire capped
@@ -532,6 +768,73 @@ class ChatTurn(_NoRealConfig):
         self.assertEqual(result["tokens_per_s"], 4.0)
         self.assertTrue(result["ok"])
 
+    def test_non_numeric_eval_counts_do_not_500_chat(self):
+        """Displayed eval_count was hardened; tokens_per_s still called int() raw."""
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "message": {"role": "assistant", "content": "ok"},
+                "eval_count": "n/a",
+                "eval_duration": ["nope"],
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.chat("qwen3.5:4b", [{"role": "user", "content": "hi"}])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], "ok")
+        self.assertEqual(result["eval_count"], 0)
+        self.assertIsNone(result["tokens_per_s"])
+
+    def test_infinite_eval_counts_do_not_500_chat(self):
+        """JSON 1e400 is inf; int(inf) OverflowError is not ValueError."""
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "message": {"role": "assistant", "content": "ok"},
+                "eval_count": float("inf"),
+                "eval_duration": float("inf"),
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.chat("qwen3.5:4b", [{"role": "user", "content": "hi"}])
+        json.dumps(result, allow_nan=False)
+        self.assertEqual(result["eval_count"], 0)
+        self.assertIsNone(result["tokens_per_s"])
+
+    def test_huge_eval_counts_do_not_500_chat(self):
+        """A leftover 400-digit eval_duration OverflowError'd the tokens/s division."""
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "message": {"role": "assistant", "content": "ok"},
+                "eval_count": 10 ** 400,
+                "eval_duration": 1,
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.chat("qwen3.5:4b", [{"role": "user", "content": "hi"}])
+        json.dumps(result, allow_nan=False)
+        self.assertIsNone(result["tokens_per_s"])
+
+    def test_surrogate_chat_text_does_not_500(self):
+        """A leftover ``\\ud800`` in /api/chat ``content`` used to 500 the encoder."""
+
+        def fake_api(path, payload=None, timeout=None):
+            return {
+                "message": {
+                    "role": "assistant\ud800",
+                    "content": "hello\ud800",
+                    "thinking": "trace\ud800",
+                },
+                "eval_count": 4,
+                "eval_duration": 1_000_000_000,
+            }
+
+        with mock.patch.object(ollama_svc, "_api", side_effect=fake_api):
+            result = ollama_svc.chat("qwen3.5:4b", [{"role": "user", "content": "hi"}])
+        json.dumps(result, allow_nan=False)
+        _starlette(result)
+        self.assertNotIn("\ud800", result["role"])
+        self.assertNotIn("\ud800", result["content"])
+        self.assertNotIn("\ud800", result["thinking"])
+
     def test_num_predict_is_clamped(self):
         seen = {}
 
@@ -603,7 +906,7 @@ class ChatStream(_NoRealConfig):
             b'{"message":{"role":"assistant","content":""},"done":true}\n',
         ]
         fake = _FakeHttp(chunks)
-        with mock.patch.object(ollama_svc._OPENER, "open", return_value=fake):
+        with mock.patch.object(ollama_svc, "_ollama_open", return_value=fake):
             lines = list(ollama_svc.start_chat_stream(
                 "qwen3.5:4b", [{"role": "user", "content": "hi"}],
             ))
@@ -619,7 +922,7 @@ class ChatStream(_NoRealConfig):
             seen["body"] = json.loads(req.data.decode("utf-8"))
             return fake
 
-        with mock.patch.object(ollama_svc._OPENER, "open", side_effect=fake_open):
+        with mock.patch.object(ollama_svc, "_ollama_open", side_effect=fake_open):
             list(ollama_svc.start_chat_stream("m:1", [{"role": "user", "content": "hi"}]))
         self.assertTrue(seen["url"].endswith("/api/chat"))
         self.assertIs(seen["body"]["stream"], True)
@@ -627,7 +930,7 @@ class ChatStream(_NoRealConfig):
 
     def test_connect_failure_is_a_coded_502_before_any_bytes(self):
         with mock.patch.object(
-            ollama_svc._OPENER, "open",
+            ollama_svc, "_ollama_open",
             side_effect=OSError("connection refused"),
         ):
             with self.assertRaises(HTTPException) as ctx:
@@ -637,7 +940,7 @@ class ChatStream(_NoRealConfig):
     def test_bad_name_never_opens_a_socket(self):
         opened = []
         with mock.patch.object(
-            ollama_svc._OPENER, "open",
+            ollama_svc, "_ollama_open",
             side_effect=lambda *a, **k: opened.append(True),
         ):
             with self.assertRaises(HTTPException):
@@ -741,6 +1044,15 @@ class LabelDiscovery(_NoRealConfig):
         (agents / "broken.plist").write_bytes(b"not a plist at all")
         with mock.patch.object(ollama_svc, "AGENTS_DIR", agents):
             self.assertIsNone(ollama_svc.discover_label(loaded=frozenset()))
+
+    def test_huge_plist_does_not_oom_candidate_labels(self):
+        """``open(rb)`` of leftover multi-MB LaunchAgent used to OOM GET /api/ollama/status."""
+        agents = self._agents_dir({"com.kiro.ollama.plist": self.KIRO})
+        (agents / "huge.plist").write_bytes(b"x" * (2 * 1024 * 1024))
+        with mock.patch.object(ollama_svc, "AGENTS_DIR", agents):
+            labels = ollama_svc._candidate_labels()
+        json.dumps(labels, allow_nan=False)
+        self.assertEqual(labels, ["com.kiro.ollama"])
 
     def test_candidate_labels_lists_every_ollama_agent(self):
         agents = self._agents_dir({
@@ -850,6 +1162,7 @@ class HealthGating(_NoRealConfig):
             mock.patch.object(ollama_svc, "discover_label", return_value="com.kiro.ollama"),
             mock.patch.object(ollama_svc, "_candidate_labels", return_value=["com.kiro.ollama"]),
             mock.patch.object(ollama_svc, "_api", side_effect=fake_api),
+            mock.patch.object(ollama_svc, "_agent_origins", return_value="*"),
         ):
             rows = ollama_svc.health_checks()
         self.assertEqual(len(rows), 1)
@@ -882,6 +1195,7 @@ class HealthGating(_NoRealConfig):
                 return_value=["com.kiro.ollama", "homebrew.mxcl.ollama"],
             ),
             mock.patch.object(ollama_svc, "_api", side_effect=fake_api),
+            mock.patch.object(ollama_svc, "_agent_origins", return_value="*"),
         ):
             rows = ollama_svc.health_checks()
         ids = [r["id"] for r in rows]
@@ -889,6 +1203,35 @@ class HealthGating(_NoRealConfig):
         self.assertFalse(rows[0]["ok"])
         self.assertIn("homebrew.mxcl.ollama", rows[0]["detail"])
         self.assertTrue(rows[1]["ok"])
+
+    def test_extension_only_origins_add_a_lan_cors_warn(self):
+        def fake_api(path, payload=None, timeout=None):
+            return {"/api/version": {"version": "0.32.9"}, "/api/ps": PS_PAYLOAD}[path]
+
+        with (
+            mock.patch.object(ollama_svc, "binary_path", return_value="/fake/bin/ollama"),
+            mock.patch.object(ollama_svc, "discover_label", return_value="com.kiro.ollama"),
+            mock.patch.object(ollama_svc, "_candidate_labels", return_value=["com.kiro.ollama"]),
+            mock.patch.object(ollama_svc, "_api", side_effect=fake_api),
+            mock.patch.object(
+                ollama_svc, "_agent_origins",
+                return_value="chrome-extension://*,moz-extension://*",
+            ),
+        ):
+            rows = ollama_svc.health_checks()
+        ids = [r["id"] for r in rows]
+        self.assertEqual(ids, ["ollama_api", "ollama_lan_origins"])
+        self.assertFalse(rows[1]["ok"])
+        self.assertIn("403", rows[1]["detail"])
+
+    def test_star_origins_do_not_warn_about_lan_cors(self):
+        self.assertTrue(ollama_svc.origins_allow_lan("*"))
+        self.assertTrue(ollama_svc.origins_allow_lan(
+            "*,chrome-extension://*,moz-extension://*",
+        ))
+        self.assertTrue(ollama_svc.origins_allow_lan("http://192.168.1.*"))
+        self.assertFalse(ollama_svc.origins_allow_lan("chrome-extension://*"))
+        self.assertFalse(ollama_svc.origins_allow_lan(""))
 
     def test_health_svc_probe_never_raises(self):
         from hub import health_svc
@@ -1186,11 +1529,78 @@ class OriginGuard(_NoRealConfig):
         from hub.http_guard import RedirectRefused
 
         with mock.patch.object(
-            ollama_svc._OPENER, "open",
+            ollama_svc, "_ollama_open",
             side_effect=RedirectRefused("redirect to http://evil/ refused"),
         ):
             with self.assertRaises(ValueError):
                 ollama_svc._api("/api/version")
+
+    def test_recursing_redirect_refused_does_not_500_api(self):
+        """``str(e)`` RecursionError used to 500 GET /api/ollama/*."""
+        from hub.http_guard import RedirectRefused
+
+        class Recursing(RedirectRefused):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with mock.patch.object(
+            ollama_svc, "_ollama_open", side_effect=Recursing("x"),
+        ):
+            with self.assertRaises(ValueError) as raised:
+                ollama_svc._api("/api/version")
+        json.dumps(
+            {"error": str(raised.exception)},
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+        self.assertEqual(str(raised.exception), "error")
+
+    def test_leftover_inf_payload_does_not_500_api(self):
+        """``json.dumps(payload)`` without allow_nan=False used to send Infinity."""
+        captured = []
+
+        class _Resp:
+            def read(self, n):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_open(req, timeout=None):
+            captured.append(req.data)
+            return _Resp()
+
+        with mock.patch.object(ollama_svc, "_ollama_open", side_effect=fake_open):
+            ollama_svc._api("/api/generate", {
+                "model": "m:1",
+                "keep_alive": float("inf"),
+                "blob": b"x",
+            })
+        raw = json.loads(captured[0])
+        json.dumps(raw, allow_nan=False)
+        self.assertEqual(raw["model"], "m:1")
+        self.assertIsNone(raw["keep_alive"])
+        self.assertEqual(raw["blob"], "x")
+
+    def test_leftover_inf_payload_does_not_500_open_chat_http(self):
+        captured = []
+
+        def fake_open(req, timeout=None):
+            captured.append(req.data)
+            return object()
+
+        with mock.patch.object(ollama_svc, "_ollama_open", side_effect=fake_open):
+            ollama_svc._open_chat_http({
+                "model": "m:1",
+                "stream": True,
+                "n": float("nan"),
+            })
+        raw = json.loads(captured[0])
+        json.dumps(raw, allow_nan=False)
+        self.assertIs(raw["stream"], True)
+        self.assertIsNone(raw["n"])
 
     def test_api_refuses_a_json_array(self):
         """``payload.get`` on a list 500'd generate/chat."""
@@ -1205,10 +1615,62 @@ class OriginGuard(_NoRealConfig):
             def __exit__(self, *exc):
                 return False
 
-        with mock.patch.object(ollama_svc._OPENER, "open", return_value=_Resp()):
+        with mock.patch.object(ollama_svc, "_ollama_open", return_value=_Resp()):
             with self.assertRaises(ValueError) as raised:
                 ollama_svc._api("/api/version")
         self.assertIn("object", str(raised.exception))
+
+    def test_deeply_nested_daemon_json_is_not_json(self):
+        """``json.loads`` RecursionError is not ValueError; leftover nested
+        daemon JSON used to escape ``_api`` past the ValueError contract."""
+
+        class _Resp:
+            def read(self, n):
+                return ('{"k":' * 12000 + "1" + "}" * 12000).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        ollama_svc.status.invalidate()
+        self.addCleanup(ollama_svc.status.invalidate)
+        with mock.patch.object(ollama_svc, "_ollama_open", return_value=_Resp()):
+            with self.assertRaises(ValueError) as raised:
+                ollama_svc._api("/api/version")
+            snap = ollama_svc.status()
+        self.assertIn("json", str(raised.exception))
+        json.dumps(snap, allow_nan=False)
+        self.assertFalse(snap["reachable"])
+
+    def test_leftover_dumps_recursion_does_not_500_api(self):
+        """json.dumps RecursionError is not ValueError; leftover nested generate used to 500."""
+        with mock.patch.object(ollama_svc.json, "dumps", side_effect=RecursionError):
+            with self.assertRaises(ValueError) as raised:
+                ollama_svc._api("/api/generate", {"model": "m:1"})
+        self.assertIn("json", str(raised.exception))
+
+    def test_leftover_dumps_recursion_does_not_500_open_chat_http(self):
+        """json.dumps RecursionError used to 500 POST /api/ollama/chat before the HTTP open."""
+        with mock.patch.object(ollama_svc.json, "dumps", side_effect=RecursionError):
+            with self.assertRaises(HTTPException) as raised:
+                ollama_svc._open_chat_http({"model": "m:1", "stream": True})
+        self.assertEqual(_code(raised.exception), "ollama.chat_failed")
+
+    def test_status_recursing_exc_does_not_500(self):
+        """str(e) RecursionError used to 500 GET /api/ollama/status."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        ollama_svc.status.invalidate()
+        self.addCleanup(ollama_svc.status.invalidate)
+        with mock.patch.object(ollama_svc, "_api", side_effect=Recursing()):
+            snap = ollama_svc.status()
+        _starlette(snap)
+        self.assertFalse(snap["reachable"])
+        self.assertEqual(snap.get("error"), "error")
 
 
 if __name__ == "__main__":

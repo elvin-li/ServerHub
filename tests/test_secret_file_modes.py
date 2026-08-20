@@ -21,6 +21,7 @@ eventually.
 """
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import sys
@@ -97,6 +98,60 @@ class SecureWriteHelperTests(unittest.TestCase):
         secure_io.write_secret_text(target, "b\n")
         self.assertEqual(target.read_text(), "b\n")
 
+    def test_append_text_creates_and_appends(self):
+        target = self.tmp / "trail.jsonl"
+        secure_io.append_text(target, "one\n", mode=0o600)
+        secure_io.append_text(target, "two\n", mode=0o600)
+        self.assertEqual(target.read_text(), "one\ntwo\n")
+        self.assertEqual(mode_of(target), 0o600)
+
+    def test_append_text_refuses_to_follow_a_last_component_symlink(self):
+        target = self.tmp / "real.jsonl"
+        target.write_text("keep\n")
+        link = self.tmp / "alias.jsonl"
+        link.symlink_to(target)
+        with self.assertRaises(OSError) as ctx:
+            secure_io.append_text(link, "stolen\n")
+        self.assertEqual(ctx.exception.errno, __import__("errno").ELOOP)
+        self.assertEqual(target.read_text(), "keep\n")
+
+    def test_refuses_to_follow_a_last_component_symlink(self):
+        target = self.tmp / "real.token"
+        target.write_text("keep\n")
+        os.chmod(target, 0o600)
+        link = self.tmp / "alias.token"
+        link.symlink_to(target)
+        with self.assertRaises(OSError) as ctx:
+            secure_io.write_secret_text(link, "stolen\n")
+        self.assertEqual(ctx.exception.errno, __import__("errno").ELOOP)
+        self.assertEqual(target.read_text(), "keep\n")
+
+    def test_copy_secret_file_leftover_multi_mb_raises_efbig(self):
+        """``Path.read_bytes()`` of leftover multi-MB source used to OOM settings save."""
+        src = self.tmp / "huge.yaml"
+        dst = self.tmp / "bak.yaml"
+        src.write_bytes(b"x" * (2 * 1024 * 1024))
+        with self.assertRaises(OSError) as ctx:
+            secure_io.copy_secret_file(src, dst)
+        self.assertEqual(ctx.exception.errno, errno.EFBIG)
+        self.assertFalse(dst.exists())
+
+    def test_copy_secret_file_copies_a_small_secret(self):
+        src = self.tmp / "services.yaml"
+        dst = self.tmp / "services.yaml.bak"
+        src.write_text("settings: {}\n", encoding="utf-8")
+        os.chmod(src, 0o644)
+        with NoChmod():
+            secure_io.copy_secret_file(src, dst)
+        self.assertEqual(dst.read_text(encoding="utf-8"), "settings: {}\n")
+        self.assertEqual(mode_of(dst), 0o600)
+
+    def test_copy_secret_file_does_not_use_unbounded_read_bytes(self):
+        src = Path(secure_io.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def copy_secret_file"): src.index("\ndef append_text")]
+        self.assertIn("read_bytes_capped", body)
+        self.assertNotIn(".read_bytes()", body)
+
     def test_creates_missing_parent_directories_privately(self):
         # NoChmod is deliberately NOT used here.  It proves "private at
         # creation", which is a property of the O_CREAT mode and only applies to
@@ -140,7 +195,9 @@ class CallSiteTests(unittest.TestCase):
         with mock.patch.object(cloudflared_svc, "TOKEN_FILE", token_file), \
                 mock.patch.object(cloudflared_svc, "_ensure_dirs", lambda: None):
             with NoChmod():
-                cloudflared_svc._write_token("t" * 64)
+                cloudflared_svc._write_token(
+                    "eyJhIjoiYWNjdGFjY3RhY2N0YWNjdGFjY3RhY2N0YWNjdGFjY3QiLCJzIjoic2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0IiwidCI6IjAxMjM0NTY3LTg5YWItY2RlZi0wMTIzLTQ1Njc4OWFiY2RlZiJ9"
+                )
 
         self.assertEqual(
             mode_of(token_file),

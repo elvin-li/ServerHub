@@ -36,7 +36,7 @@ import subprocess
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from hub.util import cached_snapshot, fan_out, sh
+from hub.util import cached_snapshot, fan_out, run_bytes, sh
 
 #: Short, and for the usual reason: these are dependency reads whose consumers
 #: already sit behind their own caches (the power-disk listing, the SMART snapshot).
@@ -48,6 +48,56 @@ _TTL = 5.0
 _DISKUTIL_TIMEOUT = 5
 
 _DISK_RE = re.compile(r"/dev/(disk\d+)")
+_WHOLE_RE = re.compile(r"(disk\d+)")
+
+
+def _as_text(value) -> str:
+    """diskutil / df leftovers arrive as bytes / int / inf, not str.
+
+    A leftover ``\\ud800`` in a FUSE volume name used to 500 GET /api/storage
+    under Starlette's UTF-8 encode of ``df`` mount fields.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    elif value in (None, False, True, "") or isinstance(value, (dict, set, frozenset)):
+        return ""
+    elif not isinstance(value, str):
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _disk_token(value) -> str:
+    """Plist disk identifier as text.
+
+    ``WholeDisks`` / ``ParentWholeDisk`` / ``APFSPhysicalStore`` are strings in
+    a healthy diskutil plist.  Leftover ``bytes`` used to stringify as
+    ``b'disk0'`` (so the boot disk dropped out of the safety union);
+    array-shaped leftovers used to ``re.match`` / ``set.add`` 500.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    if not isinstance(value, str):
+        return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _whole_id(value) -> str:
+    match = _WHOLE_RE.match(_disk_token(value))
+    return match.group(1) if match else ""
 
 
 #: Why every read here is wrapped: ``cached_snapshot`` keeps any value that is not
@@ -70,7 +120,7 @@ def _forget_if_empty(cached, value):
 @cached_snapshot(_TTL)
 def _df_table() -> tuple[str, ...]:
     rc, out, _ = sh(["/bin/df", "-P", "-k"], timeout=8)
-    return tuple((out or "").splitlines()) if rc == 0 else ()
+    return tuple(_as_text(out).splitlines()) if rc == 0 else ()
 
 
 def df_lines(force: bool = False) -> tuple[str, ...]:
@@ -108,23 +158,28 @@ def root_devices() -> frozenset[str]:
 @cached_snapshot(_TTL)
 def _physical_whole_disks() -> tuple[str, ...]:
     try:
-        p = subprocess.run(
+        rc, stdout, _ = run_bytes(
             ["/usr/sbin/diskutil", "list", "-plist", "physical"],
-            capture_output=True, timeout=_DISKUTIL_TIMEOUT,
+            timeout=_DISKUTIL_TIMEOUT,
+            runner=subprocess.run,
         )
     except Exception:
-        p = None
-    if p is not None and p.returncode == 0 and p.stdout:
+        rc, stdout = -1, b""
+    if rc == 0 and stdout:
         try:
-            parsed = plistlib.loads(p.stdout)
-            return tuple(str(x) for x in (parsed.get("WholeDisks") or []))
+            parsed = plistlib.loads(stdout)
+            if isinstance(parsed, dict):
+                wholes = parsed.get("WholeDisks")
+                if not isinstance(wholes, list):
+                    wholes = []
+                return tuple(t for x in wholes if (t := _disk_token(x)))
         except Exception:
             pass
     rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=_DISKUTIL_TIMEOUT)
     if rc != 0:
         return ()
     ids: list[str] = []
-    for match in re.finditer(r"/dev/(disk\d+)\s", out or ""):
+    for match in re.finditer(r"/dev/(disk\d+)\s", _as_text(out)):
         if match.group(1) not in ids:
             ids.append(match.group(1))
     return tuple(ids)
@@ -133,12 +188,13 @@ def _physical_whole_disks() -> tuple[str, ...]:
 @cached_snapshot(_TTL)
 def _root_info() -> Mapping[str, Any]:
     try:
-        p = subprocess.run(
+        rc, stdout, _ = run_bytes(
             ["/usr/sbin/diskutil", "info", "-plist", "/"],
-            capture_output=True, timeout=_DISKUTIL_TIMEOUT,
+            timeout=_DISKUTIL_TIMEOUT,
+            runner=subprocess.run,
         )
-        if p.returncode == 0 and p.stdout:
-            parsed = plistlib.loads(p.stdout)
+        if rc == 0 and stdout:
+            parsed = plistlib.loads(stdout)
             if isinstance(parsed, dict):
                 return MappingProxyType(parsed)
     except Exception:
@@ -192,24 +248,38 @@ def root_whole_disks() -> frozenset[str]:
     one failed read from emptying the whole union.
     """
     def from_text() -> set[str]:
-        rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
-        return set(_DISK_RE.findall(out or "")) if rc == 0 else set()
+        try:
+            rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
+            return set(_DISK_RE.findall(_as_text(out))) if rc == 0 else set()
+        except Exception:
+            return set()
 
     def from_mount_table() -> set[str]:
-        return set(root_devices())
+        try:
+            return set(root_devices())
+        except Exception:
+            return set()
 
     def from_plist() -> set[str]:
         found: set[str] = set()
-        info = root_info()
-        parent = info.get("ParentWholeDisk") or ""
-        if parent:
-            found.add(str(parent))
-        for store in info.get("APFSPhysicalStores") or []:
-            device = store.get("APFSPhysicalStore") if isinstance(store, dict) else store
-            if isinstance(device, str):
-                match = re.match(r"(disk\d+)", device)
-                if match:
-                    found.add(match.group(1))
+        try:
+            info = root_info()
+            parent = _whole_id(info.get("ParentWholeDisk"))
+            if parent:
+                found.add(parent)
+            stores = info.get("APFSPhysicalStores") or []
+            if not isinstance(stores, list):
+                stores = []
+            for store in stores:
+                if isinstance(store, dict):
+                    device = store.get("APFSPhysicalStore") or store.get("DeviceIdentifier")
+                else:
+                    device = store
+                whole = _whole_id(device)
+                if whole:
+                    found.add(whole)
+        except Exception:
+            return set()
         return found
 
     found: set[str] = set()

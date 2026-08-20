@@ -8,7 +8,7 @@
           :key="'yl'+i"
           class="y-lbl"
           :style="{ top: g.pct + '%' }"
-        >{{ g.label }}</span>
+        >{{ finiteText(g.label) }}</span>
       </div>
 
       <div class="plot-body">
@@ -32,14 +32,17 @@
 
           <g v-for="(s, si) in drawn" :key="'s'+si">
             <polyline
-              v-if="s.area"
-              :points="s.area"
+              v-for="(area, ai) in s.areas"
+              :key="'a'+ai"
+              :points="area"
               :fill="s.color"
               opacity="0.1"
               stroke="none"
             />
             <polyline
-              :points="s.line"
+              v-for="(line, li) in s.lines"
+              :key="'l'+li"
+              :points="line"
               fill="none"
               :stroke="s.color"
               stroke-width="2"
@@ -66,17 +69,17 @@
           v-if="refY != null"
           class="ref-tag"
           :style="{ top: refPct + '%' }"
-        >{{ refLabel }}</span>
+        >{{ finiteText(refLabel) }}</span>
       </div>
     </div>
 
     <div class="lc-legend" v-if="legend.length">
       <span v-for="(s, i) in legend" :key="i" class="leg">
         <i :style="{ background: s.color }"></i>
-        <span class="leg-name">{{ s.name }}</span>
+        <span class="leg-name">{{ finiteText(s.name) }}</span>
         <b v-if="s.latest != null">{{ formatLegend(s.latest) }}</b>
       </span>
-      <span v-if="unit" class="leg-unit">{{ unitHint }}</span>
+      <span v-if="unit" class="leg-unit">{{ finiteText(unitHint) }}</span>
     </div>
   </div>
 </template>
@@ -84,6 +87,7 @@
 <script setup>
 import { computed } from 'vue'
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 
 // refLabel formats the reference line, which is a localized string.  Without
 // this the component threw a ReferenceError the moment any caller passed a
@@ -92,6 +96,10 @@ const { t } = injectI18n()
 
 const props = defineProps({
   series: { type: Array, default: () => [] },
+  // Epoch seconds aligned with series values. When two or more finite
+  // timestamps exist, x is (t - tMin) / (tMax - tMin) so a rollup that
+  // omitted a window leaves a gap instead of compressing time.
+  times: { type: Array, default: null },
   height: { type: Number, default: 120 },
   min: { type: Number, default: null },
   max: { type: Number, default: null },
@@ -111,7 +119,7 @@ const isPercent = computed(() => props.percent || props.unit === '%')
 const cleaned = computed(() =>
   (props.series || []).map(s => ({
     ...s,
-    values: (s.values || []).map(v => (typeof v === 'number' && !Number.isNaN(v) ? v : null)),
+    values: (s.values || []).map(v => (typeof v === 'number' && Number.isFinite(v) ? v : null)),
   })).filter(s => s.values.some(v => v != null))
 )
 
@@ -199,8 +207,30 @@ function yPct(v) {
   return (yOf(v) / H) * 100
 }
 
+const timeExtent = computed(() => {
+  const ts = props.times
+  if (!Array.isArray(ts) || !ts.length) return null
+  let lo = Infinity
+  let hi = -Infinity
+  for (const t of ts) {
+    if (typeof t === 'number' && Number.isFinite(t)) {
+      if (t < lo) lo = t
+      if (t > hi) hi = t
+    }
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null
+  return { lo, hi }
+})
+
 function xOf(i, n) {
   const plotW = W - PAD.l - PAD.r
+  const ext = timeExtent.value
+  if (ext) {
+    const t = Array.isArray(props.times) ? props.times[i] : null
+    if (typeof t === 'number' && Number.isFinite(t)) {
+      return PAD.l + ((t - ext.lo) / (ext.hi - ext.lo)) * plotW
+    }
+  }
   if (n <= 1) return PAD.l
   return PAD.l + (i / (n - 1)) * plotW
 }
@@ -240,16 +270,27 @@ const drawn = computed(() => {
   return cleaned.value.map(s => {
     const vals = s.values
     const n = vals.length
-    const pts = []
+    const lines = []
+    const areas = []
+    let pts = []
+    const flush = () => {
+      if (pts.length >= 2) {
+        const line = pts.join(' ')
+        lines.push(line)
+        areas.push(`${pts[0].split(',')[0]},${H - PAD.b} ${line} ${pts[pts.length - 1].split(',')[0]},${H - PAD.b}`)
+      }
+      pts = []
+    }
     for (let i = 0; i < n; i++) {
-      if (vals[i] == null) continue
+      if (vals[i] == null) {
+        flush()
+        continue
+      }
       const vv = Math.min(scale.value.hi, Math.max(scale.value.lo, vals[i]))
       pts.push(`${xOf(i, n)},${yOf(vv)}`)
     }
-    if (pts.length < 2) return { line: '', area: '', color: s.color }
-    const line = pts.join(' ')
-    const area = `${pts[0].split(',')[0]},${H - PAD.b} ${line} ${pts[pts.length - 1].split(',')[0]},${H - PAD.b}`
-    return { line, area, color: s.color || 'var(--accent)' }
+    flush()
+    return { lines, areas, color: s.color || 'var(--accent)' }
   })
 })
 
@@ -261,8 +302,8 @@ const refPct = computed(() =>
 )
 
 const refLabel = computed(() => {
-  if (props.reference == null) return ''
-  const r = props.reference
+  if (props.reference == null || !Number.isFinite(Number(props.reference))) return ''
+  const r = Number(props.reference)
   return Number.isInteger(r) ? t('common.cores_n', { n: r }) : r.toFixed(1)
 })
 
@@ -282,7 +323,7 @@ const unitHint = computed(() => {
 })
 
 function formatTick(v) {
-  if (v == null || Number.isNaN(v)) return ''
+  if (v == null || !Number.isFinite(v)) return ''
   if (isPercent.value) return String(Math.round(v))
   const abs = Math.abs(v)
   if (abs >= 100) return String(Math.round(v))
@@ -293,7 +334,7 @@ function formatTick(v) {
 }
 
 function formatLegend(v) {
-  if (v == null || Number.isNaN(v)) return '—'
+  if (v == null || !Number.isFinite(v)) return '—'
   if (isPercent.value) {
     const rounded = Math.round(v * 10) / 10
     if (Math.abs(rounded - Math.round(rounded)) < 0.05) return `${Math.round(rounded)}%`

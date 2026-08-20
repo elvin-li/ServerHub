@@ -8,6 +8,26 @@ from pydantic import BaseModel, Field
 from hub import disk_manage_svc, disk_power_svc, storage_pool_svc, storage_svc
 from hub.util import LazyPool
 
+
+def _as_text(value) -> str:
+    """Drop leftover ``\\ud800`` in ``str(e)`` so GET /api/storage cannot UTF-8 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 router = APIRouter(tags=["storage"])
 
 #: Page composer only.  Overview fans out SMART on the shared probe pool.
@@ -33,16 +53,18 @@ def storage(light: bool = False):
     try:
         data = f_overview.result()
     except Exception as e:
-        data = {"volumes": [], "disks": [], "error": str(e)}
+        data = {"volumes": [], "disks": [], "error": _as_text(e)}
+    if not isinstance(data, dict):
+        data = {"volumes": [], "disks": [], "error": _as_text(data)}
     try:
         data["power_disks"] = f_power.result()
     except Exception as e:
         data["power_disks"] = []
-        data["power_error"] = str(e)
+        data["power_error"] = _as_text(e)
     try:
         data["managed"] = f_managed.result()
     except Exception as e:
-        data["managed"] = {"volumes": [], "error": str(e)}
+        data["managed"] = {"volumes": [], "error": _as_text(e)}
     return data
 
 

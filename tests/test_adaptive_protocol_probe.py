@@ -391,6 +391,11 @@ class HeadClassifierTests(unittest.TestCase):
         self.assertEqual(adaptive._classify_head(b""), "")
         self.assertEqual(adaptive._classify_head(b"SSH-2.0-OpenSSH_9.0"), "")
 
+    def test_https_probe_drains_a_bounded_body(self):
+        import inspect
+        src = inspect.getsource(adaptive._https_url)
+        self.assertIn("r.read(256)", src)
+
 
 if __name__ == "__main__":
     unittest.main()

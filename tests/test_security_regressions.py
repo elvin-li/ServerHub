@@ -109,6 +109,19 @@ class NonAsciiCredentialTests(unittest.TestCase):
                 auth.complete_setup("t\u00f6ken", "long-enough-pw", "admin")
             )
 
+    def test_a_lone_surrogate_setup_token_is_rejected_not_crashed(self):
+        """JSON ``\\ud800`` is a legal body character; strict UTF-8 is not."""
+        with (
+            mock.patch.object(auth, "setup_required", return_value=True),
+            mock.patch.object(auth, "setup_token", return_value="expected-token"),
+        ):
+            self.assertFalse(
+                auth.complete_setup("\ud800", "long-enough-pw", "admin")
+            )
+        self.assertFalse(auth.constant_time_equals("\ud800", "expected-token"))
+        digest = auth.hash_password("\ud800" * 10)
+        self.assertTrue(digest.startswith("scrypt$"))
+
     def test_a_non_ascii_password_against_a_legacy_plaintext_config(self):
         with mock.patch.object(
             auth, "_auth_cfg", return_value={"password": "legacy-plaintext"}
@@ -482,6 +495,10 @@ class BookmarkProbeTests(unittest.TestCase):
     def test_the_scheme_allowlist_is_exactly_http_and_https(self):
         self.assertEqual(set(bookmarks_svc._ALLOWED_SCHEMES), {"http", "https"})
 
+    def test_the_probe_disables_env_proxy(self):
+        source = (BASE / "hub" / "bookmarks_svc.py").read_text()
+        self.assertIn("ProxyHandler({})", source)
+
 
 class CloudflaredPlistTests(unittest.TestCase):
     """The LaunchAgent plist must be serialised, not string-formatted.
@@ -497,7 +514,9 @@ class CloudflaredPlistTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="serverhub-plist-test-"))
         self.addCleanup(shutil.rmtree, tmp, True)
         token_file = tmp / "tunnel.token"
-        token_file.write_text("t" * 64)
+        token_file.write_text(
+            "eyJhIjoiYWNjdGFjY3RhY2N0YWNjdGFjY3RhY2N0YWNjdGFjY3QiLCJzIjoic2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0IiwidCI6IjAxMjM0NTY3LTg5YWItY2RlZi0wMTIzLTQ1Njc4OWFiY2RlZiJ9\n"
+        )
         with (
             mock.patch.object(cloudflared_svc, "PLIST", tmp / "agent.plist"),
             mock.patch.object(cloudflared_svc, "TOKEN_FILE", token_file),
@@ -996,6 +1015,29 @@ class ComposeFilePrivacyTests(unittest.TestCase):
         self._save(self.SECRET, existing="services: {}\n")
         leftovers = [p.name for p in self.stack.iterdir() if p.name.endswith(".tmp")]
         self.assertEqual(leftovers, [], f"leftover temp file: {leftovers}")
+
+    def test_validate_writes_a_private_check_file_and_unlinks_it(self):
+        """The check copy used to be NamedTemporaryFile at umask 0644."""
+        seen = []
+
+        def fake_create(path, content, **kwargs):
+            p = Path(path)
+            seen.append(p)
+            p.write_text(content)
+            os.chmod(p, 0o600)
+            return True
+
+        with mock.patch.object(self.svc.secure_io, "create_secret_text", side_effect=fake_create), \
+             mock.patch.object(self.svc, "run_capped", return_value=(0, "")):
+            result = self.svc.validate_compose_text(self.SECRET, cwd=str(self.stack))
+        self.assertTrue(result["ok"])
+        self.assertTrue(seen)
+        self.assertTrue(str(seen[0]).endswith(".yml"))
+        self.assertFalse(seen[0].exists(), "the check file must not linger")
+        self.assertEqual(
+            list(self.stack.glob(".compose-check.*.yml")),
+            [],
+        )
 
     def test_a_compose_path_outside_services_is_refused(self):
         outside = self.tmp / "elsewhere" / "docker-compose.yml"

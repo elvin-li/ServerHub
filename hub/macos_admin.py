@@ -26,12 +26,28 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterator
 
-from hub.util import sh
+from hub.util import sh, utf8_env
+
+
+def _as_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
 
 SUDO = "/usr/bin/sudo"
 
@@ -81,6 +97,57 @@ def _validate(commands: Sequence[Sequence[str]]) -> str | None:
     )
 
 
+#: Privileged CLIs (``tmutil``, ``diskutil``, ``wg-quick``) can chatter for the
+#: full timeout.  ``capture_output=True`` used to keep that pipe in RAM.
+_ADMIN_CAP = 64 * 1024
+
+
+def _sudo_run(argv, *, timeout: int, password: str | None = None) -> tuple[int, str, str]:
+    """Run *argv*, keep at most :data:`_ADMIN_CAP` trailing bytes of each stream."""
+    from hub.cli_args import as_argv
+
+    argv = as_argv(argv)
+    if argv is None:
+        return -1, "", "invalid argv"
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.run(
+                argv,
+                input=(_as_text(password) + "\n").encode("utf-8")
+                if password is not None
+                else None,
+                stdout=out,
+                stderr=err,
+                timeout=timeout,
+                env=utf8_env(),
+            )
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            return -1, "", "timeout"
+        except (OSError, ValueError, TypeError) as exc:
+            return -1, "", _as_text(exc)[:200]
+
+        # Tests (and any caller that stubs ``subprocess.run``) return a
+        # CompletedProcess with captured strings.  A real run redirected
+        # the pipes into *out*/*err*, so ``proc.stdout`` is None.
+        if proc.stdout is not None or proc.stderr is not None:
+            return (
+                rc,
+                _as_text(proc.stdout).strip()[-_ADMIN_CAP:],
+                _as_text(proc.stderr).strip()[-_ADMIN_CAP:],
+            )
+
+        def _tail(fh) -> str:
+            try:
+                size = fh.seek(0, 2)
+                fh.seek(max(0, size - _ADMIN_CAP))
+                return fh.read().decode("utf-8", "replace").strip()
+            except OSError:
+                return ""
+
+        return rc, _tail(out), _tail(err)
+
+
 def _run_with_password(shell_command: str, password: str, timeout: int) -> dict:
     """Run the sequence as root via ``sudo -S`` with the web-entered password.
 
@@ -90,23 +157,17 @@ def _run_with_password(shell_command: str, password: str, timeout: int) -> dict:
     multi-command line against sudoers rules — authentication here is the
     password itself, validated by sudo against the account's real credentials.
     """
-    try:
-        proc = subprocess.run(
-            [SUDO, "-S", "-p", "", "/bin/sh", "-c", _PATH_PREFIX + shell_command],
-            input=password + "\n",
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
+    rc, output, error = _sudo_run(
+        [SUDO, "-S", "-p", "", "/bin/sh", "-c", _PATH_PREFIX + shell_command],
+        timeout=timeout,
+        password=password,
+    )
+    if rc == -1 and error == "timeout":
         log.warning("sudo timeout: %s", shell_command)
         return {"ok": False, "error": "failed", "message": "sudo timeout"}
-    except (OSError, ValueError) as exc:
-        return {"ok": False, "error": "unavailable", "message": str(exc)[:200]}
-
-    output = (proc.stdout or "").strip()
-    error = (proc.stderr or "").strip()
-    if proc.returncode == 0:
+    if rc == -1:
+        return {"ok": False, "error": "unavailable", "message": _as_text(error)[:200]}
+    if rc == 0:
         return {"ok": True}
     # sudo prints these to stderr when the password does not validate; the
     # command itself never ran, so this is an authorization failure, not an
@@ -121,8 +182,8 @@ def _run_with_password(shell_command: str, password: str, timeout: int) -> dict:
     lowered = error.lower()
     if any(marker in lowered for marker in auth_failure_markers):
         return {"ok": False, "error": "password_incorrect"}
-    log.warning("privileged command failed (rc=%s): %s | %s", proc.returncode, shell_command, (error or output)[:500])
-    return {"ok": False, "error": "failed", "message": (error or output)[-500:]}
+    log.warning("privileged command failed (rc=%s): %s | %s", rc, shell_command, (error or output)[:500])
+    return {"ok": False, "error": "failed", "message": _as_text(error or output)[-500:]}
 
 
 def run_admin_sequence(
@@ -169,21 +230,16 @@ def prime_sudo_ticket(*, timeout: int = 30) -> dict:
     password = _admin_password.get()
     if not password:
         return {"ok": False, "error": "password_required"}
-    try:
-        proc = subprocess.run(
-            [SUDO, "-S", "-p", "", "-v"],
-            input=password + "\n",
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
+    rc, _, error = _sudo_run(
+        [SUDO, "-S", "-p", "", "-v"],
+        timeout=timeout,
+        password=password,
+    )
+    if rc == -1 and error == "timeout":
         return {"ok": False, "error": "failed", "message": "sudo timeout"}
-    except (OSError, ValueError) as exc:
-        return {"ok": False, "error": "unavailable", "message": str(exc)[:200]}
-
-    error = (proc.stderr or "").strip()
-    if proc.returncode == 0:
+    if rc == -1:
+        return {"ok": False, "error": "unavailable", "message": _as_text(error)[:200]}
+    if rc == 0:
         return {"ok": True}
     lowered = error.lower()
     if any(
@@ -195,7 +251,7 @@ def prime_sudo_ticket(*, timeout: int = 30) -> dict:
         )
     ):
         return {"ok": False, "error": "password_incorrect"}
-    return {"ok": False, "error": "failed", "message": error[-500:]}
+    return {"ok": False, "error": "failed", "message": _as_text(error)[-500:]}
 
 
 #: What sudo says when it declines to run something at all, as opposed to running
@@ -224,7 +280,7 @@ def sudo_refused(stderr: str) -> bool:
     and reporting ``password_required`` when it also failed -- put a password
     prompt in front of problems no password could fix, and hid the real cause.
     """
-    lowered = str(stderr or "").lower()
+    lowered = _as_text(stderr).lower()
     return any(marker in lowered for marker in _SUDO_REFUSALS)
 
 
@@ -239,21 +295,9 @@ def sudo_capture(command: Sequence[str], *, timeout: int = 10) -> tuple[int, str
     argv = [str(part) for part in command]
     password = _admin_password.get()
     if password:
-        try:
-            proc = subprocess.run(
-                [SUDO, "-S", "-p", "", *argv],
-                input=password + "\n",
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            return (
-                proc.returncode,
-                (proc.stdout or "").strip(),
-                (proc.stderr or "").strip(),
-            )
-        except subprocess.TimeoutExpired:
-            return -1, "", "timeout"
-        except (OSError, ValueError):
-            return -1, "", "not found"
+        return _sudo_run(
+            [SUDO, "-S", "-p", "", *argv],
+            timeout=timeout,
+            password=password,
+        )
     return sh([SUDO, "-n", *argv], timeout=timeout)

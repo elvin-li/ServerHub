@@ -79,13 +79,13 @@ class ResolutionTests(unittest.TestCase):
         """
         self._record("wg0", "utun8", mtime=1000.0)
         self._socket("utun8", mtime=1000.5)
-        with patch.object(Path, "read_text", side_effect=PermissionError):
+        with patch.object(wireguard_svc, "read_text_capped", side_effect=PermissionError):
             self.assertEqual(wireguard_svc.real_interface("wg0"), "utun8")
 
     def test_a_socket_from_an_unrelated_time_is_not_paired(self):
         self._record("wg0", "utun8", mtime=1000.0)
         self._socket("utun3", mtime=50.0)
-        with patch.object(Path, "read_text", side_effect=PermissionError):
+        with patch.object(wireguard_svc, "read_text_capped", side_effect=PermissionError):
             self.assertEqual(wireguard_svc.real_interface("wg0"), "")
 
     def test_two_contemporaneous_sockets_are_not_guessed_between(self):
@@ -98,8 +98,16 @@ class ResolutionTests(unittest.TestCase):
         self._record("wg0", "utun8", mtime=1000.0)
         self._socket("utun8", mtime=1000.2)
         self._socket("utun9", mtime=1000.3)
-        with patch.object(Path, "read_text", side_effect=PermissionError):
+        with patch.object(wireguard_svc, "read_text_capped", side_effect=PermissionError):
             self.assertEqual(wireguard_svc.real_interface("wg0"), "")
+
+    def test_huge_name_file_falls_back_to_timestamp(self):
+        """``read_text()`` of leftover multi-MB ``wg0.name`` used to OOM status."""
+        path = self.run_dir / "wg0.name"
+        path.write_bytes(b"x" * (2 * 1024 * 1024))
+        os.utime(path, (1000.0, 1000.0))
+        self._socket("utun8", mtime=1000.5)
+        self.assertEqual(wireguard_svc.real_interface("wg0"), "utun8")
 
     def test_a_lone_unclaimed_socket_is_ours(self):
         self._socket("utun8")

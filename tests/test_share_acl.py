@@ -256,6 +256,15 @@ class SetUserAccessTests(unittest.TestCase):
             result = share_acl_svc.set_user_access("/share", "alice", "none")
         self.assertTrue(result["ok"])
 
+    def test_unprivileged_chmod_does_not_capture_output(self):
+        import inspect
+        src = inspect.getsource(share_acl_svc._run_unprivileged)
+        impl = src.split('"""', 2)[-1] if '"""' in src else src
+        # Comments mention the old call; the implementation must not.
+        self.assertNotIn("capture_output=True)", impl)
+        self.assertNotIn("capture_output=True,", impl)
+        self.assertIn("sh(", src)
+
     def test_bad_level_is_refused_before_touching_anything(self):
         with self.assertRaises(share_acl_svc.ShareAclError) as raised:
             share_acl_svc.set_user_access("/share", "alice", "everything")

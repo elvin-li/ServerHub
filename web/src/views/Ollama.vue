@@ -2,7 +2,7 @@
   <div>
     <div class="page-title">
       <h1>{{ t('ollama.title') }}</h1>
-      <span class="meta">{{ t('ollama.meta') }} · {{ data?.ts || '…' }}</span>
+      <span class="meta">{{ t('ollama.meta') }} · {{ finiteText(data?.ts, '…') }}</span>
     </div>
 
     <div class="toolbar">
@@ -29,37 +29,37 @@
           <span class="badge" :class="serviceBadge.cls">{{ serviceBadge.text }}</span>
         </div>
         <div v-if="duplicateLabels.length" class="notice warn" role="alert">
-          {{ t('ollama.duplicate_agents', { labels: duplicateLabels.join(', ') }) }}
+          {{ t('ollama.duplicate_agents', { labels: duplicateLabels.map(l => finiteText(l, '')).filter(Boolean).join(', ') }) }}
         </div>
         <div v-if="data.url_rejected" class="notice warn" role="alert" data-test="ollama-url-rejected">
-          {{ t('ollama.url_rejected', { url: data.url }) }}
+          {{ t('ollama.url_rejected', { url: finiteText(data.url) }) }}
         </div>
         <div class="svc-grid">
           <div>
             <div class="meta">{{ t('ollama.service_label') }}</div>
-            <div class="mono">{{ data.service?.label || '—' }}</div>
+            <div class="mono">{{ finiteText(data.service?.label) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.version') }}</div>
-            <div class="mono">{{ data.version || '—' }}</div>
+            <div class="mono">{{ finiteText(data.version) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.api') }}</div>
             <div class="mono api-line">
-              <span>{{ data.url }}</span>
+              <span>{{ finiteText(data.url) }}</span>
               <button class="tiny" type="button" @click="copyText(data.url)">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.openai_api') }}</div>
             <div class="mono api-line">
-              <span>{{ openaiCompatUrl }}</span>
+              <span>{{ finiteText(openaiCompatUrl) }}</span>
               <button class="tiny" type="button" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div v-if="data.service?.pid">
             <div class="meta">{{ t('ollama.pid') }}</div>
-            <div class="mono">{{ data.service.pid }}</div>
+            <div class="mono">{{ finiteN(data.service.pid) }}</div>
           </div>
         </div>
         <p v-if="data.service?.inferred" class="meta" style="margin:8px 0 0">
@@ -92,11 +92,11 @@
             <tbody>
               <tr v-for="m in resident" :key="m.name">
                 <td class="mono">
-                  {{ m.name }}
-                  <div class="show-m sub">{{ m.context_length || '—' }} · {{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</div>
+                  {{ finiteText(m.name) }}
+                  <div class="show-m sub">{{ finiteN(m.context_length) }} · {{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</div>
                 </td>
                 <td>{{ fmtSize(m.size_vram || m.size) }}</td>
-                <td class="mono col-hide-m">{{ m.context_length || '—' }}</td>
+                <td class="mono col-hide-m">{{ finiteN(m.context_length) }}</td>
                 <td class="col-hide-m">{{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</td>
                 <td class="ops">
                   <button class="tiny" :disabled="unloading" @click="unload(m)">{{ t('ollama.act_unload') }}</button>
@@ -116,7 +116,7 @@
       <div class="card-block" style="margin-bottom:14px">
         <div class="section-head">
           <h2>{{ t('ollama.models_title') }}</h2>
-          <span class="meta">{{ models.length ? t('ollama.models_count', { n: models.length }) : '' }}</span>
+          <span v-if="models.length" class="meta">{{ t('ollama.models_count', { n: finiteN(models.length) }) }}</span>
         </div>
         <div class="table-wrap">
           <table class="dense fit-m">
@@ -134,15 +134,15 @@
             <tbody>
               <tr v-for="m in models" :key="m.name">
                 <td class="mono">
-                  {{ m.name }}
-                  <div class="show-m sub">{{ m.family || '—' }}{{ m.parameter_size ? ' ' + m.parameter_size : '' }} · {{ m.quantization || '—' }}</div>
-                  <div v-if="(m.capabilities || []).length" class="show-m sub">{{ (m.capabilities || []).join(', ') }}</div>
+                  {{ finiteText(m.name) }}
+                  <div class="show-m sub">{{ finiteText(m.family) }}{{ finiteText(m.parameter_size, '') ? ' ' + finiteText(m.parameter_size) : '' }} · {{ finiteText(m.quantization) }}</div>
+                  <div v-if="(m.capabilities || []).length" class="show-m sub">{{ (m.capabilities || []).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
                 </td>
                 <td>{{ fmtSize(m.size) }}</td>
-                <td class="col-hide-m">{{ m.family || '—' }} <span v-if="m.parameter_size" class="meta">{{ m.parameter_size }}</span></td>
-                <td class="mono col-hide-m">{{ m.quantization || '—' }}</td>
+                <td class="col-hide-m">{{ finiteText(m.family) }} <span v-if="finiteText(m.parameter_size, '')" class="meta">{{ finiteText(m.parameter_size) }}</span></td>
+                <td class="mono col-hide-m">{{ finiteText(m.quantization) }}</td>
                 <td class="col-hide-m">
-                  <span v-for="c in m.capabilities" :key="c" class="badge cap">{{ c }}</span>
+                  <span v-for="c in m.capabilities" :key="c" class="badge cap">{{ finiteText(c) }}</span>
                   <span v-if="!(m.capabilities || []).length">—</span>
                 </td>
                 <td class="meta col-hide-m">{{ fmtDate(m.modified) }}</td>
@@ -181,11 +181,11 @@
         </div>
         <div v-if="pullInfo && (pullInfo.running || pullInfo.log)">
           <div class="meta" style="margin-bottom:6px">
-            <span v-if="pullInfo.running">⏳ {{ t('ollama.pull_running', { name: pullInfo.model || '' }) }}</span>
+            <span v-if="pullInfo.running">⏳ {{ t('ollama.pull_running', { name: finiteText(pullInfo.model, '') }) }}</span>
             <span v-else-if="pullInfo.rc === 0">✅ {{ t('ollama.pull_done_ok') }}</span>
-            <span v-else-if="pullInfo.rc != null">❌ {{ t('ollama.pull_done_fail', { rc: pullInfo.rc }) }}</span>
+            <span v-else-if="pullInfo.rc != null">❌ {{ t('ollama.pull_done_fail', { rc: finiteN(pullInfo.rc) }) }}</span>
           </div>
-          <pre class="logbox" aria-live="polite">{{ pullInfo.log || t('maintenance.log_loading') }}</pre>
+          <pre class="logbox" aria-live="polite">{{ finiteText(pullInfo.log, '') || t('maintenance.log_loading') }}</pre>
         </div>
       </div>
 
@@ -197,7 +197,7 @@
         </div>
         <p v-if="!data.reachable" class="meta" style="margin:0 0 8px">{{ t('ollama.chat_unreachable') }}</p>
         <p v-else-if="!models.length" class="meta" style="margin:0 0 8px">{{ t('ollama.chat_no_model') }}</p>
-        <div ref="chatLog" class="chat-log" aria-live="polite">
+        <div ref="chatLog" class="chat-log" :aria-live="chatMessages.length ? 'polite' : undefined">
           <div v-if="!chatMessages.length" class="meta">{{ t('ollama.chat_empty') }}</div>
           <div
             v-for="(m, i) in chatMessages"
@@ -206,18 +206,18 @@
             :class="m.role"
           >
             <div class="chat-role">{{ m.role === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
-            <pre v-if="m.thinking && !m.content" class="chat-thinking">{{ m.thinking }}</pre>
+            <pre v-if="m.thinking && !m.content" class="chat-thinking">{{ finiteText(m.thinking) }}</pre>
             <details v-else-if="m.thinking" class="chat-thinking-wrap">
               <summary>{{ t('ollama.chat_thinking') }}</summary>
-              <pre class="chat-thinking">{{ m.thinking }}</pre>
+              <pre class="chat-thinking">{{ finiteText(m.thinking) }}</pre>
             </details>
-            <div class="chat-body">{{ m.content || (m.pending ? t('ollama.chat_sending') : '') }}</div>
-            <div v-if="m.error" class="chat-error">{{ m.error }}</div>
+            <div v-if="m.content || m.pending" class="chat-body">{{ finiteText(m.content, '') || t('ollama.chat_sending') }}</div>
+            <div v-if="m.error" class="chat-error">{{ finiteText(m.error) }}</div>
           </div>
         </div>
         <div class="toolbar" style="flex-wrap:wrap">
           <select v-model="chatModel" :aria-label="t('ollama.chat_model_label')" :disabled="chatBusy">
-            <option v-for="m in models" :key="'chat-' + m.name" :value="m.name">{{ m.name }}</option>
+            <option v-for="m in models" :key="'chat-' + m.name" :value="m.name">{{ finiteText(m.name) }}</option>
           </select>
           <textarea
             v-model="chatInput"
@@ -246,7 +246,7 @@
         </div>
         <div class="toolbar" style="margin-bottom:8px;flex-wrap:wrap">
           <select v-model="testModel" :aria-label="t('ollama.test_model_label')">
-            <option v-for="m in models" :key="m.name" :value="m.name">{{ m.name }}</option>
+            <option v-for="m in models" :key="m.name" :value="m.name">{{ finiteText(m.name) }}</option>
           </select>
           <input
             v-model="testPrompt"
@@ -263,8 +263,8 @@
         </div>
         <div v-if="testResult" class="meta" style="margin-bottom:6px">
           <span v-if="testResult.ok">
-            ✅ {{ testResult.model }} ·
-            {{ t('ollama.test_stats', { s: testResult.duration_s, tps: testResult.tokens_per_s ?? '—' }) }}
+            ✅ {{ finiteText(testResult.model) }} ·
+            {{ t('ollama.test_stats', { s: finiteN(testResult.duration_s), tps: finiteN(testResult.tokens_per_s) }) }}
             <span v-if="testShowsThinking"> · {{ t('ollama.test_thinking_note') }}</span>
           </span>
           <span v-else>❌ {{ t('ollama.test_failed') }}</span>
@@ -320,14 +320,14 @@
           <button class="tiny" @click="closeDelete">{{ t('common.close') }}</button>
         </div>
         <p style="margin:0 0 10px">
-          {{ t('ollama.delete_body', { name: deleteTarget.name, size: fmtSize(deleteTarget.size) }) }}
+          {{ t('ollama.delete_body', { name: finiteText(deleteTarget.name), size: fmtSize(deleteTarget.size) }) }}
         </p>
         <input
           v-model="deleteText"
           type="text"
           class="mono"
           style="width:100%;margin-bottom:10px"
-          :placeholder="deleteTarget.name"
+          :placeholder="finiteText(deleteTarget.name, '')"
           :aria-label="t('ollama.delete_type_label')"
         />
         <div class="row">
@@ -359,6 +359,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
+import { finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -412,8 +413,8 @@ const duplicateLabels = computed(() => {
 })
 
 const openaiCompatUrl = computed(() => {
-  const base = String(data.value?.url || 'http://127.0.0.1:11434').replace(/\/$/, '')
-  return `${base}/v1`
+  const base = (finiteText(data.value?.url, '') || 'http://127.0.0.1:11434').replace(/\/$/, '')
+  return finiteText(`${base}/v1`, '')
 })
 
 const serviceBadge = computed(() => {
@@ -431,8 +432,8 @@ const testShowsThinking = computed(() =>
 const testText = computed(() => {
   if (testBusy.value) return t('ollama.testing')
   const r = testResult.value
-  if (!r) return ''
-  return r.response || r.thinking || r.error || ''
+  if (!r) return t('ollama.testing')
+  return finiteText(r.response, '') || finiteText(r.thinking, '') || finiteText(r.error, '') || (r.ok ? '—' : t('ollama.test_failed'))
 })
 
 const chatSendDisabled = computed(() =>
@@ -450,36 +451,50 @@ function defaultChatModel(j) {
 
 async function scrollChat() {
   await nextTick()
+  if (!pageAlive) return
   const el = chatLog.value
   if (el) el.scrollTop = el.scrollHeight
 }
 
+function finiteN(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : '—'
+}
+
 function fmtSize(n) {
-  const v = Number(n) || 0
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return '—'
   if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB'
   if (v >= 1e6) return (v / 1e6).toFixed(0) + ' MB'
-  if (v > 0) return (v / 1e3).toFixed(0) + ' KB'
-  return '—'
+  return (v / 1e3).toFixed(0) + ' KB'
 }
 
 function fmtDate(s) {
-  return (s || '').slice(0, 16).replace('T', ' ') || '—'
+  if (s == null || s === '') return '—'
+  if (typeof s === 'number') return Number.isFinite(s) ? finiteText(new Date(s).toISOString().slice(0, 16).replace('T', ' ')) : '—'
+  const text = String(s)
+  if (text === 'Infinity' || text === '-Infinity' || text === 'NaN') return '—'
+  return text.slice(0, 16).replace('T', ' ') || '—'
 }
 
 async function copyText(text) {
   if (!text) return
   const ok = await copyToClipboard(text)
+  if (!pageAlive) return
   toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
 async function loadOllamaSettings() {
+  const generation = loadGeneration
   try {
     const s = await getSettings()
+    if (generation !== loadGeneration || !pageAlive) return
     ollamaForm.value = {
       url: s.ollama?.url || data.value?.url || 'http://127.0.0.1:11434',
       label: s.ollama?.label || '',
     }
   } catch {
+    if (generation !== loadGeneration || !pageAlive) return
     ollamaForm.value = {
       url: data.value?.url || 'http://127.0.0.1:11434',
       label: ollamaForm.value.label || '',
@@ -488,6 +503,7 @@ async function loadOllamaSettings() {
 }
 
 async function saveOllamaSettings() {
+  const generation = loadGeneration
   ollamaSaving.value = true
   try {
     await putSettings({
@@ -496,13 +512,17 @@ async function saveOllamaSettings() {
         label: ollamaForm.value.label.trim(),
       },
     })
+    if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('ollama.settings_saved'))
     await refresh(true)
     await loadOllamaSettings()
   } catch (e) {
-    toast('❌ ' + (e.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    ollamaSaving.value = false
+    // refresh() bumps loadGeneration, so a generation match here would leave
+    // Save stuck disabled after a successful write.
+    if (pageAlive) ollamaSaving.value = false
   }
 }
 
@@ -510,9 +530,11 @@ async function saveOllamaSettings() {
 async function refresh(force = false) {
   // Background 10s polls must not flip `loading`: that disables Refresh and
   // made the page feel like it was reloading on every tick.
+  const generation = ++loadGeneration
   if (!loaded.value || force) loading.value = true
   try {
     const j = await getOllamaStatus(force)
+    if (generation !== loadGeneration || !pageAlive) return false
     data.value = j
     loadError.value = ''
     if (!testModel.value && Array.isArray(j?.models) && j.models.length) {
@@ -520,14 +542,17 @@ async function refresh(force = false) {
     }
     if (!chatModel.value) chatModel.value = defaultChatModel(j)
     // A pull started elsewhere (or before a navigation) resumes its log tail.
-    if (j?.pull?.running && !pullTimer) startPullPolling()
+    if (generation === loadGeneration && pageAlive && j?.pull?.running && !pullTimer) startPullPolling()
     return true
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
     return false
   } finally {
-    loaded.value = true
-    loading.value = false
+    if (generation === loadGeneration && pageAlive) {
+      loaded.value = true
+      loading.value = false
+    }
   }
 }
 
@@ -537,39 +562,49 @@ function refreshNow() {
 
 // ── service control (existing /api/action channel; target = launchd label) ──
 async function act(action) {
-  const label = data.value?.service?.label
+  const label = finiteText(data.value?.service?.label, '')
   if (!label) return
-  if (action === 'stop' && !confirm(t('ollama.confirm_stop', { name: label }))) return
+  if (action === 'stop' && !confirm(t('ollama.confirm_stop', { name: finiteText(label) }))) return
+  if (action === 'restart' && !confirm(t('services.confirm_restart', { name: finiteText(label) }))) return
+  const generation = loadGeneration
   svcBusy.value = true
   try {
     const r = await doAction(label, action)
-    toast(r.ok ? `✅ ${label} · ${action}` : `❌ ${r.message || action}`)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast(r.ok ? `✅ ${label} · ${action}` : `❌ ${finiteText(r.message, '') || action}`)
     if (r.ok) {
       if (actionTimer) clearTimeout(actionTimer)
       actionTimer = setTimeout(() => {
         actionTimer = null
+        if (generation !== loadGeneration || !pageAlive) return
         void refresh(true)
       }, 1200)
     }
   } catch (e) {
-    toast('❌ ' + (e.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    svcBusy.value = false
+    // refresh() bumps loadGeneration on the 10s poll, so a generation match
+    // would leave Start/Stop stuck after a successful action.
+    if (pageAlive) svcBusy.value = false
   }
 }
 
 // ── resident model unload ────────────────────────────────────────────────────
 async function unload(m) {
-  if (!confirm(t('ollama.confirm_unload', { name: m.name }))) return
+  if (!confirm(t('ollama.confirm_unload', { name: finiteText(m.name) }))) return
+  const generation = loadGeneration
   unloading.value = true
   try {
     await unloadOllamaModel(m.name)
-    toast('✅ ' + t('ollama.unloaded', { name: m.name }))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('✅ ' + t('ollama.unloaded', { name: finiteText(m.name) }))
     void refresh(true)
   } catch (e) {
-    toast('❌ ' + (e.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    unloading.value = false
+    if (pageAlive) unloading.value = false
   }
 }
 
@@ -585,16 +620,19 @@ function closeDelete() {
 async function doDelete() {
   const target = deleteTarget.value
   if (!target || deleteText.value.trim() !== target.name) return
+  const generation = loadGeneration
   deleting.value = true
   try {
     await deleteOllamaModel(target.name)
-    toast('✅ ' + t('ollama.deleted', { name: target.name }))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('✅ ' + t('ollama.deleted', { name: finiteText(target.name) }))
     closeDelete()
     void refresh(true)
   } catch (e) {
-    toast('❌ ' + (e.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    deleting.value = false
+    if (pageAlive) deleting.value = false
   }
 }
 
@@ -630,6 +668,7 @@ async function pollPullLog(generation) {
 }
 
 function startPullPolling() {
+  if (!pageAlive) return
   stopPullPolling()
   const generation = pullGeneration
   void pollPullLog(generation)
@@ -638,16 +677,19 @@ function startPullPolling() {
 async function startPull() {
   const name = pullName.value.trim()
   if (!name || pullBusy.value || pullInfo.value?.running) return
+  const generation = loadGeneration
   pullBusy.value = true
   try {
     await startOllamaPull(name)
-    toast('🚀 ' + t('ollama.pull_started', { name }))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('🚀 ' + t('ollama.pull_started', { name: finiteText(name) }))
     pullName.value = ''
     startPullPolling()
   } catch (e) {
-    toast('❌ ' + (e.message || e))
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    pullBusy.value = false
+    if (pageAlive) pullBusy.value = false
   }
 }
 
@@ -658,6 +700,7 @@ async function startPull() {
 async function resumePullTail() {
   try {
     const j = await getOllamaPullLog()
+    if (!pageAlive) return
     if (j?.running) {
       pullInfo.value = j
       stopPullPolling()
@@ -688,20 +731,25 @@ async function sendChat() {
     await chatOllamaModel(chatModel.value, payload, 128, {
       signal: chatAbort.signal,
       onChunk(snap) {
+        if (!pageAlive) return
         pending.content = snap.content || ''
         pending.thinking = snap.thinking || ''
         pending.pending = !snap.done
         void scrollChat()
       },
     })
+    if (!pageAlive) return
     pending.pending = false
   } catch (e) {
+    if (!pageAlive) return
     pending.pending = false
     pending.error = e.message || String(e)
   } finally {
-    chatBusy.value = false
-    chatAbort = null
-    void scrollChat()
+    if (pageAlive) {
+      chatBusy.value = false
+      chatAbort = null
+      void scrollChat()
+    }
   }
 }
 
@@ -715,18 +763,25 @@ function clearChat() {
 // ── quick test ───────────────────────────────────────────────────────────────
 async function runTest() {
   if (testBusy.value || !testModel.value || !testPrompt.value.trim()) return
+  const generation = loadGeneration
   testBusy.value = true
   testResult.value = null
   try {
-    testResult.value = await testOllamaModel(testModel.value, testPrompt.value)
+    const next = await testOllamaModel(testModel.value, testPrompt.value)
+    if (generation !== loadGeneration || !pageAlive) return
+    testResult.value = next
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     testResult.value = { ok: false, error: e.message || String(e) }
   } finally {
-    testBusy.value = false
+    if (pageAlive) testBusy.value = false
   }
 }
 
+let pageAlive = true
+let loadGeneration = 0
 onMounted(() => {
+  pageAlive = true
   void refresh()
   void loadOllamaSettings()
   void resumePullTail()
@@ -734,6 +789,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
   if (typeof statusTimer === 'function') statusTimer()
   statusTimer = null
   if (actionTimer) clearTimeout(actionTimer)

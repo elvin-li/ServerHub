@@ -62,9 +62,11 @@ def compose_get(stack_id: str):
 def compose_put(stack_id: str, body: ComposeSave):
     # accept legacy {validate: true} via model_extra if clients still send it
     do_check = body.check
-    extra = getattr(body, "model_extra", None) or {}
+    extra = getattr(body, "model_extra", None)
+    if not isinstance(extra, dict):
+        extra = {}
     if "validate" in extra:
-        do_check = bool(extra["validate"])
+        do_check = bool(extra.get("validate"))
     return compose_svc.save_compose(stack_id, body.content, validate=do_check)
 
 

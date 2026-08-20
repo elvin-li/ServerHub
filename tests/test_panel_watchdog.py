@@ -54,6 +54,8 @@ class WatchdogScript(unittest.TestCase):
         )
         self.assertGreaterEqual(default, 3, "grace window is too short")
         self.assertIn('[ "$fails" -lt "$FAIL_THRESHOLD" ] && exit 0', self.text)
+        # Garbage or 0 must not skip the comparison and kickstart on miss 1.
+        self.assertIn('*[!0-9]*|0) FAIL_THRESHOLD=3', self.text)
 
     def test_counter_is_cleared_after_a_restart(self):
         # Without this the next tick would already sit at the threshold and
@@ -93,9 +95,15 @@ class WatchdogScript(unittest.TestCase):
         code = "\n".join(
             line for line in self.text.splitlines() if not line.lstrip().startswith("#")
         )
-        idx_kill = code.index("xpcproxy $LABEL")
+        self.assertNotIn('pgrep -f', code)
+        idx_kill = code.index("awk -v label=")
         idx_kick = code.index("kickstart -k")
         self.assertLess(idx_kill, idx_kick, "must clear xpcproxy before kickstart")
+        self.assertIn("xpcproxy", code)
+        # PATH-relative so tests can shim them; absolute /bin/ps would
+        # SIGKILL a live xpcproxy on the machine running the suite.
+        self.assertIn('ps -u', code)
+        self.assertNotIn("/bin/ps", code)
 
     def test_log_is_rotated(self):
         self.assertIn("tail -n 500", self.text)

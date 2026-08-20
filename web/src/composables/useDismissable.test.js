@@ -115,4 +115,48 @@ describe('useDismissable', () => {
     wrapper.unmount()
     expect(document.body.style.overflow).toBe('')
   })
+
+  it('does not trap Tab when focus is on a console surface', async () => {
+    const host = defineComponent({
+      setup() {
+        const open = ref(true)
+        const panel = ref(null)
+        useDismissable(open, () => { open.value = false }, panel)
+        return { open, panel }
+      },
+      render() {
+        return h('div', { ref: 'panel', role: 'dialog' }, [
+          h('button', { id: 'chrome' }, 'close'),
+          h('textarea', { id: 'term', class: 'xterm-helper-textarea' }),
+        ])
+      },
+    })
+    const wrapper = mount(host, { attachTo: document.body })
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+    const term = document.getElementById('term')
+    term.focus()
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    term.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not steal focus after unmount before the open microtask lands', async () => {
+    const wrapper = mount(makeHost(), { attachTo: document.body })
+    const trigger = document.getElementById('trigger')
+    const other = document.createElement('button')
+    other.id = 'elsewhere'
+    document.body.appendChild(other)
+    trigger.focus()
+
+    wrapper.vm.open = true
+    wrapper.unmount()
+    other.focus()
+    await Promise.resolve()
+    await nextTick()
+    expect(document.activeElement).toBe(other)
+    other.remove()
+  })
 })

@@ -13,8 +13,91 @@ from hub.util import sh
 SENSITIVE = re.compile(r"(PASSWORD|SECRET|TOKEN|API_KEY|KEY|PASS|CREDENTIAL)", re.I)
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Drop leftover inf/NaN/bytes/``\\ud800`` so Starlette cannot 500.
+
+    Python ``json.loads`` accepts ``Infinity`` in inspect / ``{{json .}}``
+    NDJSON; Starlette's encoder does not. A leftover ``\\ud800`` name still
+    500'd ``ensure_ascii=False`` then UTF-8 on GET /api/docker/info and
+    GET /api/apps/managed.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 def docker(*args, timeout=30) -> tuple[int, str, str]:
-    return sh([DOCKER, *args], timeout=timeout)
+    rc, out, err = sh([DOCKER, *args], timeout=timeout)
+    return rc, _as_text(out), _as_text(err)
 
 
 def inspect_object(out: str) -> dict | None:
@@ -26,35 +109,57 @@ def inspect_object(out: str) -> dict | None:
     """
     try:
         parsed = json.loads(out)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     if isinstance(parsed, list):
         parsed = parsed[0] if parsed else None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    cleaned = _jsonable(parsed)
+    return cleaned if isinstance(cleaned, dict) else None
 
 
 def docker_json(args: list[str], timeout=30) -> Any:
     rc, out, err = docker(*args, timeout=timeout)
+    out, err = _as_text(out), _as_text(err)
     if rc != 0:
         return None, rc, err or out
     if not out.strip():
-        return [] if "--format" in " ".join(args) else None, 0, ""
+        argv = args if isinstance(args, (list, tuple)) else ()
+        return [] if "--format" in " ".join(str(a) for a in argv) else None, 0, ""
     try:
         # docker --format '{{json .}}' produces NDJSON
         lines = [ln for ln in out.splitlines() if ln.strip()]
         if len(lines) > 1 or (lines and lines[0].startswith("{") and "\n" not in out.strip()):
             # multi-line NDJSON or single object
             if all(ln.lstrip().startswith("{") or ln.lstrip().startswith("[") for ln in lines):
-                objs = []
+                objs: list[dict] = []
                 for ln in lines:
-                    objs.append(json.loads(ln))
-                # if single array line
-                if len(objs) == 1 and isinstance(objs[0], list):
-                    return objs[0], 0, ""
-                return objs, 0, ""
-        return json.loads(out), 0, ""
-    except json.JSONDecodeError:
-        return out, 0, ""
+                    try:
+                        parsed = json.loads(ln)
+                    except (TypeError, ValueError, RecursionError):
+                        # RecursionError: leftover nested NDJSON row is not
+                        # ValueError; skip it so siblings still list.
+                        continue
+                    if isinstance(parsed, list):
+                        objs.extend(
+                            _jsonable(x) for x in parsed if isinstance(x, dict)
+                        )
+                    elif isinstance(parsed, dict):
+                        objs.append(_jsonable(parsed))
+                return [x for x in objs if isinstance(x, dict)], 0, ""
+        parsed = json.loads(out)
+        if isinstance(parsed, list):
+            return [
+                x for x in (_jsonable(row) for row in parsed if isinstance(row, dict))
+                if isinstance(x, dict)
+            ], 0, ""
+        if isinstance(parsed, dict):
+            cleaned = _jsonable(parsed)
+            return cleaned if isinstance(cleaned, dict) else {}, 0, ""
+        return [], 0, ""
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+        return [], 0, ""
 
 
 #: Liveness of the Docker engine, memoised.
@@ -137,7 +242,9 @@ def peek_engine() -> bool | None:
 
 def redact_env(env_list: list[str] | None) -> list[str]:
     out = []
-    for e in env_list or []:
+    for e in env_list if isinstance(env_list, list) else []:
+        if not isinstance(e, str):
+            continue
         if "=" in e:
             k, v = e.split("=", 1)
             if SENSITIVE.search(k):

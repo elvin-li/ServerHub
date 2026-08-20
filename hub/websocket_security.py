@@ -15,6 +15,8 @@ def origin_allowed(origin: str | None, host: str | None) -> bool:
     headers and an exact authority match prevents a third-party page from using
     a logged-in browser to open a privileged socket.
     """
+    if not isinstance(origin, str) or not isinstance(host, str):
+        return False
     if not origin or not host:
         return False
     try:

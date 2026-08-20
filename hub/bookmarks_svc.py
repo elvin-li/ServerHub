@@ -15,7 +15,8 @@ import urllib.request
 from hub.config import cfg
 from hub.host_address import resolve_value
 from hub.http_guard import _ip_from_host
-from hub.util import LazyPool, cached_snapshot, fan_out
+from hub.errors import exc_detail
+from hub.util import LazyPool, cached_snapshot, fan_out, strftime_now
 
 _TTL = 120.0
 _pool = LazyPool(2, "hub-bookmarks")
@@ -121,6 +122,17 @@ class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _probe_ms(t0: float) -> int:
+    """Finite elapsed ms. Leftover ``time.time() = inf`` OverflowError'd GET /api/bookmarks."""
+    try:
+        ms = int((time.time() - t0) * 1000)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if ms != ms or ms in (float("inf"), float("-inf")):
+        return 0
+    return ms
+
+
 def _probe(url: str, timeout: float = 3.0) -> dict:
     t0 = time.time()
     try:
@@ -148,22 +160,26 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
                 # the dashboard reports about an internet-facing service.
                 ctx = ssl.create_default_context()
             handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        # Empty ProxyHandler so HTTP(S)_PROXY cannot take this probe (and its
+        # Host decision) to a resolver we did not check — the same hole notify
+        # and the remote catalog already closed.
+        handlers.append(urllib.request.ProxyHandler({}))
         # One opener so the scheme-safe redirect handler applies on every path.
         opener = urllib.request.build_opener(*handlers)
         with opener.open(req, timeout=timeout) as r:
             code = r.status
             r.read(256)
-        ms = int((time.time() - t0) * 1000)
+        ms = _probe_ms(t0)
         ok = 200 <= code < 400
         return {"ok": ok, "status": code, "ms": ms, "error": None}
     except urllib.error.HTTPError as e:
-        ms = int((time.time() - t0) * 1000)
+        ms = _probe_ms(t0)
         # 401/403 still means service is up
         ok = e.code in (401, 403)
-        return {"ok": ok, "status": e.code, "ms": ms, "error": str(e.reason)}
+        return {"ok": ok, "status": e.code, "ms": ms, "error": exc_detail(getattr(e, "reason", e), 120)}
     except Exception as e:
-        ms = int((time.time() - t0) * 1000)
-        return {"ok": False, "status": None, "ms": ms, "error": str(e)[:120]}
+        ms = _probe_ms(t0)
+        return {"ok": False, "status": None, "ms": ms, "error": exc_detail(e, 120)}
 
 
 def _backend_index() -> dict:
@@ -256,8 +272,14 @@ def _backend_index() -> dict:
         pass
 
     # overrides: map sid + url → best-effort (may fill gaps for launchd etc.)
-    for sid, raw in (cfg().get("overrides") or {}).items():
-        ov = resolve_value(raw)
+    raw_ov = cfg().get("overrides")
+    for sid, raw in (raw_ov.items() if isinstance(raw_ov, dict) else ()):
+        try:
+            ov = resolve_value(raw)
+        except Exception:
+            continue
+        if not isinstance(ov, dict):
+            continue
         if sid in idx:
             continue
         # only mark intentionally hidden/disabled as stopped if flag set
@@ -271,35 +293,63 @@ def _backend_index() -> dict:
             }
             put(sid, info)
             if ov.get("url"):
-                put(f"url:{ov['url'].rstrip('/')}", info)
+                put(f"url:{str(ov['url']).rstrip('/')}", info)
 
     return idx
 
 
+def _index_lookup(idx: dict, key) -> dict | None:
+    """Look up a backend row. YAML leftovers like ``service: [nginx]`` are unhashable."""
+    if not isinstance(idx, dict):
+        return None
+    if isinstance(key, bool) or not isinstance(key, (str, int)):
+        return None
+    s = key if isinstance(key, str) else str(key)
+    if not s:
+        return None
+    row = idx.get(s)
+    return row if isinstance(row, dict) else None
+
+
 def _resolve_backend(link: dict, idx: dict) -> dict | None:
     """Find linked backend for a bookmark entry."""
+    if not isinstance(link, dict):
+        return None
     for key in (
         link.get("service"),
         link.get("id"),
         link.get("vm"),
         link.get("backend_id"),
     ):
-        if key and key in idx:
-            return idx[key]
-    url = (link.get("url") or "").rstrip("/")
-    if url and f"url:{url}" in idx:
-        return idx[f"url:{url}"]
+        hit = _index_lookup(idx, key)
+        if hit is not None:
+            return hit
+    url = str(link.get("url") or "").rstrip("/")
+    if url:
+        hit = _index_lookup(idx, f"url:{url}")
+        if hit is not None:
+            return hit
     # match override sid by identical url
-    for sid, raw in (cfg().get("overrides") or {}).items():
-        ov = resolve_value(raw)
-        ou = (ov.get("url") or "").rstrip("/")
-        if ou and ou == url and sid in idx:
-            return idx[sid]
+    raw_ov = cfg().get("overrides")
+    for sid, raw in (raw_ov.items() if isinstance(raw_ov, dict) else ()):
+        try:
+            ov = resolve_value(raw)
+        except Exception:
+            continue
+        if not isinstance(ov, dict):
+            continue
+        ou = str(ov.get("url") or "").rstrip("/")
+        if ou and ou == url:
+            hit = _index_lookup(idx, sid)
+            if hit is not None:
+                return hit
     return None
 
 
 def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dict:
     """Merge HTTP probe + backend expected-state into tri-state health."""
+    if not isinstance(backend, dict):
+        backend = None
     base = {
         "name": link.get("name"),
         "url": link.get("url"),
@@ -377,6 +427,73 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
     }
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Unhashable YAML ``service: [nginx]`` was already isolated at lookup;
+    ``name: 2026-08-19``, ``!!binary`` ids, ``id: .inf``, a ``!!set`` service,
+    and leftover backend ``datetime`` / bytes / inf still leaked into
+    GET /api/bookmarks. A leftover ``\\ud800`` in ``name`` still 500'd the
+    same encoder (``ensure_ascii=False`` then UTF-8).
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            try:
+                k = _utf8_text(k)
+            except Exception:
+                continue
+            out[k] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 @cached_snapshot(_TTL)
 def list_bookmarks() -> dict:
     """Bookmark health, cached for _TTL with one in-flight refresh.
@@ -398,13 +515,26 @@ def list_bookmarks() -> dict:
     # first; the link resolution is then this thread's own work rather than a wait.
     f_idx = _pool.submit(_backend_index)
 
-    links = resolve_value(list(cfg().get("quick_links") or []))
+    raw_links = cfg().get("quick_links")
+    try:
+        links = resolve_value(list(raw_links) if isinstance(raw_links, list) else [])
+    except Exception:
+        links = list(raw_links) if isinstance(raw_links, list) else []
+    if not isinstance(links, list):
+        links = []
+    raw_ov = cfg().get("overrides")
+    overrides = raw_ov if isinstance(raw_ov, dict) else {}
     # also from overrides urls
-    for sid, raw in (cfg().get("overrides") or {}).items():
-        ov = resolve_value(raw)
+    for sid, raw in overrides.items():
+        try:
+            ov = resolve_value(raw)
+        except Exception:
+            continue
+        if not isinstance(ov, dict):
+            continue
         if ov.get("url") and ov.get("hide") is not True:
             name = ov.get("name") or sid
-            if not any(l.get("url") == ov["url"] for l in links):
+            if not any(isinstance(l, dict) and l.get("url") == ov["url"] for l in links):
                 links.append({
                     "name": name,
                     "url": ov["url"],
@@ -418,19 +548,21 @@ def list_bookmarks() -> dict:
         # `_backend_index` already absorbs per-CLI failures; this is the
         # last net so a raise there still leaves the bookmark list.
         idx = {}
+    if not isinstance(idx, dict):
+        idx = {}
 
     # decide which need probe
     to_probe = []
     preassigned: dict[int, dict] = {}  # link index → result without probe
     for i, link in enumerate(links):
-        if not link.get("url"):
+        if not isinstance(link, dict) or not link.get("url"):
             continue
         backend = _resolve_backend(link, idx)
         b_state = (backend or {}).get("state")
         if b_state == "stopped" or (
             backend
             and backend.get("kind") == "vm"
-            and (backend.get("status") or "").lower() in (
+            and str(backend.get("status") or "").lower() in (
                 "stopped", "stop", "exited", "created", "shutdown"
             )
         ):
@@ -443,7 +575,7 @@ def list_bookmarks() -> dict:
         try:
             return _probe(url)
         except Exception as e:  # noqa: BLE001 -- surfaced in the row
-            return {"ok": False, "status": None, "ms": 0, "error": str(e)}
+            return {"ok": False, "status": None, "ms": 0, "error": exc_detail(e, 120)}
 
     probes: dict[int, dict] = {
         i: _compose_result(link, result, backend)
@@ -455,8 +587,10 @@ def list_bookmarks() -> dict:
     ordered = []
     seen = set()
     for i, link in enumerate(links):
+        if not isinstance(link, dict):
+            continue
         u = link.get("url")
-        if not u or u in seen:
+        if not isinstance(u, str) or not u or u in seen:
             continue
         if i in preassigned:
             ordered.append(preassigned[i])
@@ -473,6 +607,7 @@ def list_bookmarks() -> dict:
         "up": up,
         "stopped": stopped,
         "down": down,
-        "checked_at": time.strftime("%H:%M:%S"),
+        "checked_at": strftime_now("%H:%M:%S"),
     }
-    return v
+    cleaned = _jsonable(v)
+    return cleaned if isinstance(cleaned, dict) else v

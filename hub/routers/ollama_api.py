@@ -15,7 +15,7 @@ from starlette.concurrency import iterate_in_threadpool
 
 from hub import audit, ollama_svc
 from hub.auth import request_username
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 
 router = APIRouter(tags=["ollama"])
 
@@ -58,7 +58,7 @@ def get_status(force: bool = False):
     try:
         return ollama_svc.status(force=force)
     except Exception as e:
-        raise api_error("ollama.status_failed", detail=str(e)[:200])
+        raise api_error("ollama.status_failed", detail=exc_detail(e))
 
 
 @router.post("/api/ollama/pull")

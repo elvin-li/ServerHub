@@ -41,7 +41,8 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
-from hub.config import cfg, mutate
+from hub import secure_io
+from hub.config import cfg, maintenance_env, mutate
 from hub.jobs import run_watchdog
 from hub.paths import DATA_DIR
 from hub.util import tail_file_lines
@@ -100,6 +101,34 @@ _FIELD_RANGES = (
 )
 
 
+def _cron_field_tokens(expr) -> list[str]:
+    """Normalise a cron payload to five field strings, or raise ValueError.
+
+    Hand-edited YAML often stores the five fields as a list
+    (``[0, 4, "*", "*", "*"]``) rather than one string.  ``str(list).split()``
+    produces five tokens that look the right *shape* and then fail as
+    ``"['0',"` — the job silently never fires.  Non-string leftovers
+    (``True``, a job mapping) used to stringify into garbage too.
+    """
+    if isinstance(expr, (list, tuple)):
+        if len(expr) != 5:
+            raise ValueError("a cron expression has five fields: min hour dom month dow")
+        try:
+            return [str(part).strip() for part in expr]
+        except RecursionError as e:
+            # Leftover cyclic YAML field used to RecursionError
+            # GET /api/scheduler/jobs via next_run_ts (not ValueError).
+            raise ValueError(
+                "a cron expression has five fields: min hour dom month dow"
+            ) from e
+    if not isinstance(expr, str):
+        raise ValueError("a cron expression has five fields: min hour dom month dow")
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError("a cron expression has five fields: min hour dom month dow")
+    return fields
+
+
 def _parse_field(spec: str, lo: int, hi: int) -> tuple[frozenset[int], bool]:
     """One cron field -> (allowed values, was it a bare ``*``).
 
@@ -143,14 +172,13 @@ def _parse_field(spec: str, lo: int, hi: int) -> tuple[frozenset[int], bool]:
     return frozenset(values), spec == "*"
 
 
-def parse_cron(expr: str) -> dict:
+def parse_cron(expr: str | list | tuple) -> dict:
     """Parse a five-field cron expression or raise ValueError.
 
     Day-of-week accepts both 0 and 7 as Sunday; values are normalised to 0-6.
+    *expr* may be the usual string or a five-item sequence (YAML list form).
     """
-    fields = str(expr or "").split()
-    if len(fields) != 5:
-        raise ValueError("a cron expression has five fields: min hour dom month dow")
+    fields = _cron_field_tokens(expr)
     parsed: dict = {}
     for (name, lo, hi), field in zip(_FIELD_RANGES, fields):
         values, star = _parse_field(field, lo, hi)
@@ -169,6 +197,70 @@ def valid_cron(expr: str) -> bool:
         return False
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Finite floats in dicts/lists were already walked; YAML ``!!binary`` names,
+    ``!!set`` of ``.nan``, ``.inf`` keys, and tuple-inf still leaked into
+    GET /api/scheduler/jobs and failed the encoder. A leftover ``\\ud800``
+    job name still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/scheduler/jobs.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 def _day_matches(parsed: dict, *, month: int, dom: int, dow: int) -> bool:
     """Vixie day rule: when *both* dom and dow are restricted, either may match."""
     if month not in parsed["month"]:
@@ -184,9 +276,15 @@ def _day_matches(parsed: dict, *, month: int, dom: int, dow: int) -> bool:
     return dom_ok or dow_ok
 
 
-def cron_matches(expr: str | dict, t: time.struct_time) -> bool:
+def cron_matches(expr: str | dict | list | tuple, t: time.struct_time) -> bool:
     """Whether *t* (a local struct_time) is a matching minute for *expr*."""
-    parsed = expr if isinstance(expr, dict) else parse_cron(expr)
+    # A parsed matcher carries frozensets; a job mapping also looks like a
+    # dict and must go through parse_cron (ValueError) instead of
+    # ``5 not in "*"`` TypeError, which used to abort the whole tick.
+    if isinstance(expr, dict) and isinstance(expr.get("minute"), (set, frozenset)):
+        parsed = expr
+    else:
+        parsed = parse_cron(expr)
     if t.tm_min not in parsed["minute"] or t.tm_hour not in parsed["hour"]:
         return False
     # struct_time: Monday=0..Sunday=6; cron: Sunday=0..Saturday=6.
@@ -194,7 +292,7 @@ def cron_matches(expr: str | dict, t: time.struct_time) -> bool:
     return _day_matches(parsed, month=t.tm_mon, dom=t.tm_mday, dow=dow)
 
 
-def next_run_ts(expr: str, after_ts: float | None = None) -> int | None:
+def next_run_ts(expr: str | list | tuple, after_ts: float | None = None) -> int | None:
     """Epoch seconds of the next matching minute after *after_ts* (local time).
 
     Scans day-by-day (cheap day-level filter, then hours, then minutes) rather
@@ -203,9 +301,16 @@ def next_run_ts(expr: str, after_ts: float | None = None) -> int | None:
     """
     try:
         parsed = parse_cron(expr)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
-    base = datetime.fromtimestamp(after_ts if after_ts is not None else time.time())
+    try:
+        base = datetime.fromtimestamp(
+            after_ts if after_ts is not None else time.time()
+        )
+    except (OSError, OverflowError, TypeError, ValueError):
+        # Leftover ``after_ts: .inf`` / a 400-digit epoch OverflowError'd
+        # ``fromtimestamp`` on GET /api/scheduler/jobs.
+        return None
     cur = base.replace(second=0, microsecond=0) + timedelta(minutes=1)
     first_day = cur.replace(hour=0, minute=0)
     hours = sorted(parsed["hour"])
@@ -229,7 +334,9 @@ def next_run_ts(expr: str, after_ts: float | None = None) -> int | None:
 # ── job storage (services.yaml → schedules:) ─────────────────────────────────
 
 def list_jobs() -> list[dict]:
-    return [dict(j) for j in (cfg().get("schedules") or []) if isinstance(j, dict)]
+    raw = cfg().get("schedules")
+    rows = raw if isinstance(raw, list) else []
+    return [dict(j) for j in rows if isinstance(j, dict)]
 
 
 def get_job(job_id: str) -> dict | None:
@@ -246,7 +353,10 @@ def new_job_id() -> str:
 def save_job(record: dict) -> None:
     """Insert or replace one job record under the cross-process config lock."""
     def apply(data: dict) -> None:
-        jobs = data.setdefault("schedules", [])
+        jobs = data.get("schedules")
+        if not isinstance(jobs, list):
+            jobs = []
+            data["schedules"] = jobs
         for i, j in enumerate(jobs):
             if isinstance(j, dict) and j.get("id") == record["id"]:
                 jobs[i] = record
@@ -292,9 +402,15 @@ def _record_run(entry: dict) -> None:
     with _runs_lock:
         try:
             RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with RUNS_PATH.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-        except OSError:
+            payload = _jsonable(entry) if isinstance(entry, dict) else None
+            if not isinstance(payload, dict):
+                return
+            secure_io.append_text(
+                RUNS_PATH,
+                json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False) + "\n",
+            )
+        except (OSError, TypeError, ValueError, RecursionError):
+            # RecursionError: leftover circular run record after _jsonable is not ValueError.
             return
         now = time.time()
         if now - _last_trim < _TRIM_INTERVAL:
@@ -309,15 +425,7 @@ def _record_run(entry: dict) -> None:
             if not lines:
                 return
             payload = "\n".join(lines) + "\n"
-            tmp = RUNS_PATH.with_name(f"{RUNS_PATH.name}.{os.getpid()}.tmp")
-            try:
-                tmp.write_text(payload)
-                os.replace(tmp, RUNS_PATH)
-            except Exception:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            secure_io.replace_bytes(RUNS_PATH, payload.encode("utf-8"))
         except OSError:
             pass
 
@@ -336,14 +444,15 @@ def runs(job_id: str | None = None, limit: int = 50) -> list[dict]:
     """Newest-first run records, optionally filtered to one job."""
     try:
         cap = max(1, min(int(limit), MAX_RUNS))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         cap = 50
     out: list[dict] = []
     for raw in reversed(_journal_lines()):
         try:
             rec = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
+        rec = _jsonable(rec) if isinstance(rec, dict) else None
         if not isinstance(rec, dict):
             continue
         if job_id and rec.get("job") != job_id:
@@ -371,8 +480,9 @@ def last_runs_by_job() -> dict[str, dict]:
     for raw in reversed(_journal_lines()):
         try:
             rec = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
+        rec = _jsonable(rec) if isinstance(rec, dict) else None
         if not isinstance(rec, dict):
             continue
         jid = str(rec.get("job") or "")
@@ -385,21 +495,110 @@ def last_runs_by_job() -> dict[str, dict]:
 
 def _job_env() -> dict:
     env = dict(os.environ)
-    env.update({k: str(v) for k, v in
-                ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()})
+    env.update(maintenance_env())
     return env
 
 
 def _job_timeout(job: dict) -> int:
     try:
         t = int(job.get("timeout") or DEFAULT_TIMEOUT)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         t = DEFAULT_TIMEOUT
     return max(1, min(t, MAX_TIMEOUT))
 
 
+def _epoch_int(raw, default: int = 0) -> int:
+    """Finite epoch seconds. Leftover ``time.time() = inf`` OverflowError'd ``int()``."""
+    if isinstance(raw, bool) or raw is None:
+        return default
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _finite_duration(ended, started) -> float:
+    """Seconds between two clocks, or 0 when leftover inf/NaN would 500 JSON."""
+    try:
+        duration = round(float(ended) - float(started), 1)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if duration != duration or duration in (float("inf"), float("-inf")):
+        return 0.0
+    return duration
+
+
+def _job_params(job: dict) -> dict:
+    p = job.get("params")
+    return p if isinstance(p, dict) else {}
+
+
+def _job_id(job: dict) -> str:
+    """Stable job identity.  A missing/bool/mapping id must not become ``'None'``."""
+    raw = job.get("id")
+    if isinstance(raw, bool) or raw is None:
+        return ""
+    if isinstance(raw, int):
+        return str(raw)
+    if isinstance(raw, float):
+        # YAML ``id: .inf``: ``float('inf').is_integer()`` is True and
+        # ``int(inf)`` OverflowError used to 500 GET /api/scheduler/jobs.
+        if raw != raw or raw in (float("inf"), float("-inf")) or not raw.is_integer():
+            return ""
+        try:
+            return str(int(raw))
+        except (OverflowError, ValueError):
+            return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    return ""
+
+
+def job_enabled(job: dict) -> bool:
+    """Whether *job* should fire.  YAML ``"false"`` / ``"0"`` are off, not on."""
+    raw = job.get("enabled")
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"", "0", "false", "no", "off", "n", "f"}
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return False
+        return raw != 0
+    return False
+
+
+def _command_text(raw) -> str:
+    """Shell text for a scheduled command.  Leftover non-str is not argv.
+
+    YAML ``!!binary`` is bytes under SafeLoader.  ``str(bytes)`` is the
+    repr, not the payload, but leftover lists of non-str parts were still
+    joined into ``bash -c`` and leftover mappings stringified.  Only real
+    strings.
+    """
+    if isinstance(raw, (list, tuple)):
+        parts: list[str] = []
+        for part in raw:
+            if not isinstance(part, str):
+                return ""
+            text = part.strip()
+            if not text:
+                continue
+            if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
+                return ""
+            parts.append(text)
+        return " ".join(parts)
+    if not isinstance(raw, str):
+        return ""
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
+        return ""
+    return raw.strip()
+
+
 def _run_command(job: dict, log: list[str]) -> int:
-    command = str((job.get("params") or {}).get("command") or "")
+    command = _command_text(_job_params(job).get("command"))
     if not command.strip():
         log.append("!! no command configured")
         return -1
@@ -410,20 +609,20 @@ def _run_command(job: dict, log: list[str]) -> int:
 
 def _run_rsync(job: dict, log: list[str]) -> int:
     from hub import rsync_svc
-    return rsync_svc.run_job(job.get("params") or {}, log=log,
+    return rsync_svc.run_job(_job_params(job), log=log,
                              timeout=_job_timeout(job), job_id=str(job.get("id") or ""))
 
 
 def _run_stack_backup(job: dict, log: list[str]) -> int:
     from hub import backups
-    params = job.get("params") or {}
+    params = _job_params(job)
     stack_id = str(params.get("stack_id") or "")
     if not stack_id:
         log.append("!! no stack configured")
         return -1
     try:
         retain = int(params.get("retain") or backups.RETAIN)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         retain = backups.RETAIN
     result = backups.backup_stack(stack_id, retain=retain, log=log)
     return 0 if result.get("ok") else 1
@@ -457,7 +656,9 @@ def _alert_on_failure(job: dict, entry: dict) -> None:
     scheduler thread with it, mirroring how the alerter itself never lets a
     channel exception escape.
     """
-    jid = str(job.get("id"))
+    jid = _job_id(job)
+    if not jid:
+        return
     if entry.get("status") == "ok":
         _fail_counts.pop(jid, None)
         return
@@ -484,12 +685,14 @@ def _alert_on_failure(job: dict, entry: dict) -> None:
 
 def _execute(job: dict, trigger: str) -> dict:
     """Run *job* to completion and journal the outcome.  Never raises."""
-    jid = str(job.get("id"))
+    jid = _job_id(job)
+    if not jid:
+        return {"ok": False, "error": "no_id"}
     started = time.time()
     with _running_guard:
         if jid in _running:
             entry = {
-                "ts": int(started), "end": int(started), "job": jid,
+                "ts": _epoch_int(started), "end": _epoch_int(started), "job": jid,
                 "name": job.get("name") or jid, "type": job.get("type"),
                 "trigger": trigger, "status": "skipped", "rc": None,
                 "tail": "previous run still in progress", "duration": 0,
@@ -507,7 +710,7 @@ def _execute(job: dict, trigger: str) -> dict:
         else:
             rc = runner(job, log)
     except Exception as e:  # a runner bug must not kill the engine thread
-        log.append(f"!! error: {e}")
+        log.append(f"!! error: {_utf8_text(e)}")
         rc = -1
     finally:
         with _running_guard:
@@ -515,10 +718,11 @@ def _execute(job: dict, trigger: str) -> dict:
     ended = time.time()
     status = "ok" if rc == 0 else ("timeout" if rc == 124 else "failed")
     entry = {
-        "ts": int(started), "end": int(ended), "job": jid,
+        "ts": _epoch_int(started), "end": _epoch_int(ended), "job": jid,
         "name": job.get("name") or jid, "type": job.get("type"),
         "trigger": trigger, "status": status, "rc": rc,
-        "tail": "\n".join(log)[-TAIL_CHARS:], "duration": round(ended - started, 1),
+        "tail": "\n".join(log)[-TAIL_CHARS:],
+        "duration": _finite_duration(ended, started),
     }
     _record_run(entry)
     _alert_on_failure(job, entry)
@@ -581,7 +785,15 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
     mark-evaluated-not-fired semantics as boot, so the stall is bounded.
     """
     global _last_minute
-    now = time.localtime(now_ts if now_ts is not None else time.time())
+    try:
+        raw = now_ts if now_ts is not None else time.time()
+        n = float(raw)
+        if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
+            return []
+        now = time.localtime(n)
+    except (OverflowError, OSError, ValueError, TypeError):
+        # Leftover ``time.time() = inf`` OverflowError'd the scheduler tick.
+        return []
     key = _minute_key(now)
     if key == _last_minute:
         return []
@@ -595,19 +807,43 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
     _last_minute = key
     launched: list[str] = []
     for job in list_jobs():
-        if not job.get("enabled"):
+        jid = _job_id(job)
+        if not jid or not job_enabled(job):
             continue
         try:
-            if not cron_matches(str(job.get("cron") or ""), now):
+            if not cron_matches(job.get("cron"), now):
                 continue
-        except ValueError:
+        except (ValueError, TypeError):
             continue  # an unparsable expression can never fire
-        launched.append(str(job.get("id")))
+        launched.append(jid)
         threading.Thread(
             target=_execute, args=(job, "schedule"), daemon=True,
             name=f"sched-{job.get('id')}",
         ).start()
     return launched
+
+
+def _delay_until_next_minute(now: float | None = None) -> float:
+    """Seconds to wait until just past the next local minute.
+
+    A flat 60s wait drifts and eventually straddles a boundary, silently
+    skipping a minute for an every-minute job.  Leftover ``time.time() = inf``
+    used to compute ``Event.wait(nan)`` *outside* ``_tick_once``'s try/except
+    and kill the scheduler thread.  A huge finite remainder OverflowError's
+    ``Event.wait`` the same way leftover ``metrics_interval: 1e308`` did.
+    """
+    fallback = 30.0
+    try:
+        raw = now if now is not None else time.time()
+        n = float(raw)
+        if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
+            return fallback
+        delay = 60.0 - (n % 60.0) + 0.5
+        if delay != delay or delay <= 0.0 or delay > 61.0:
+            return fallback
+        return delay
+    except (OverflowError, OSError, ValueError, TypeError):
+        return fallback
 
 
 def _loop() -> None:
@@ -620,11 +856,16 @@ def _loop() -> None:
         except Exception:
             # The engine thread must survive anything a tick throws.
             pass
-        # Sleep to just past the next minute boundary rather than a flat 60s:
-        # a flat wait drifts and eventually straddles a boundary, silently
-        # skipping a minute for an every-minute job.
-        delay = 60.0 - (time.time() % 60.0) + 0.5
-        if _stop.wait(delay):
+        delay = _delay_until_next_minute()
+        try:
+            stopped = _stop.wait(delay)
+        except (OverflowError, ValueError, TypeError, OSError):
+            # Leftover nan/inf timeout still OverflowError's Event.wait.
+            try:
+                stopped = _stop.wait(30.0)
+            except (OverflowError, ValueError, TypeError, OSError):
+                stopped = _stop.is_set()
+        if stopped:
             return
 
 
@@ -635,7 +876,13 @@ def start_scheduler() -> None:
     _stop.clear()
     # The boot minute is marked evaluated, not fired: triggers missed while
     # the panel was down (including "right now") are not back-filled.
-    _last_minute = _minute_key(time.localtime())
+    try:
+        _last_minute = _minute_key(time.localtime())
+    except (OverflowError, OSError, ValueError, TypeError):
+        # Leftover ``time.localtime()`` OverflowError (inf clock) used to
+        # abort start; the lifespan ``except Exception`` then skipped the
+        # engine entirely.
+        _last_minute = None
     _thread = threading.Thread(target=_loop, daemon=True, name="panel-scheduler")
     _thread.start()
 

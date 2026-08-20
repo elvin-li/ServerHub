@@ -100,6 +100,30 @@ class LegacyContract(MetricsApiBase):
         self.assertEqual(body["points"], rows)  # raw rows, unmodified
         self.assertEqual(body["latest"], rows[-1])
 
+    def test_leftover_inf_fields_do_not_500(self):
+        """Starlette encodes with allow_nan=False; Infinity used to 500 GET /api/metrics."""
+        self.seed(self.raw, [
+            {"t": self.now - 30, "cpu_used_pct": float("inf"), "mem_used_pct": float("nan")},
+        ])
+        status, body = get("/api/metrics")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["points"]), 1)
+        self.assertIsNone(body["points"][0]["cpu_used_pct"])
+        self.assertIsNone(body["points"][0]["mem_used_pct"])
+        json.dumps(body, allow_nan=False)
+
+    def test_leftover_surrogate_field_does_not_500(self):
+        """JSON ``\\ud800`` used to UnicodeEncodeError GET /api/metrics."""
+        self.seed(self.raw, [
+            {"t": self.now - 30, "cpu_used_pct": 1.0, "note": "ok\ud800", "\ud800": 2},
+        ])
+        status, body = get("/api/metrics")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["points"]), 1)
+        json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertNotIn("\ud800", body["points"][0].get("note", ""))
+        self.assertNotIn("\ud800", body["points"][0])
+
     def test_minutes_still_filters(self):
         self.seed(self.raw, [
             {"t": self.now - 7200, "cpu_used_pct": 1.0},

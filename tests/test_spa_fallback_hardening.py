@@ -18,6 +18,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -40,6 +41,13 @@ class SpaFallbackTests(unittest.TestCase):
     def test_an_over_long_path_serves_the_shell(self):
         resp = self.client.get("/" + "a" * 4096)
         self.assertEqual(resp.status_code, 200, "over-long path raised instead")
+        self.assertIn(b"<!doctype html", resp.content[:64].lower())
+
+    def test_a_symlink_loop_serves_the_shell(self):
+        """``Path.resolve`` RuntimeError on a leftover loop used to 500 the SPA catch-all."""
+        with mock.patch.object(Path, "resolve", side_effect=RuntimeError("symlink loop")):
+            resp = self.client.get("/wireguard")
+        self.assertEqual(resp.status_code, 200, "symlink loop raised instead")
         self.assertIn(b"<!doctype html", resp.content[:64].lower())
 
     def test_a_percent_encoded_null_serves_the_shell(self):

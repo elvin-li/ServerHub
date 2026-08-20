@@ -65,7 +65,7 @@ class BrewCacheInvalidationTests(unittest.TestCase):
         from hub import brew_svc
 
         with patch("os.path.isfile", return_value=True), \
-                patch("subprocess.run", return_value=_FakeProc()), \
+                patch.object(brew_svc, "run_capped", return_value=(0, "")), \
                 patch("hub.brew_svc.invalidate_status"):
             result = brew_svc.service_action("syncthing", "stop")
 
@@ -84,7 +84,7 @@ class BrewCacheInvalidationTests(unittest.TestCase):
         from hub import brew_svc
 
         with patch("os.path.isfile", return_value=True), \
-                patch("subprocess.run", return_value=_FakeProc(returncode=1, stderr="boom")), \
+                patch.object(brew_svc, "run_capped", return_value=(1, "boom")), \
                 patch("hub.brew_svc.invalidate_status"):
             result = brew_svc.service_action("syncthing", "restart")
 
@@ -106,7 +106,7 @@ class BrewCacheInvalidationTests(unittest.TestCase):
         from hub import autostart_svc
 
         with patch.object(Path, "is_file", return_value=True), \
-                patch("subprocess.run", return_value=_FakeProc()):
+                patch.object(autostart_svc, "run_capped", return_value=(0, "")):
             result = autostart_svc.set_brew_autostart("syncthing", False)
 
         self.assertTrue(result["ok"])
@@ -120,7 +120,7 @@ class BrewCacheInvalidationTests(unittest.TestCase):
         from hub import autostart_svc
 
         with patch.object(Path, "is_file", return_value=True), \
-                patch("subprocess.run", return_value=_FakeProc(returncode=1, stderr="nope")):
+                patch.object(autostart_svc, "run_capped", return_value=(1, "nope")):
             result = autostart_svc.set_brew_autostart("syncthing", True)
 
         self.assertFalse(result["ok"])
@@ -259,6 +259,93 @@ class BrewCacheTimeoutKeepsSnapshotTests(unittest.TestCase):
             got = brew_cache._load()
         self.assertEqual(got, [{"name": "syncthing", "status": "started"}])
 
+    def test_busy_without_a_snapshot_does_not_cache_emptiness(self):
+        """invalidate + busy used to `_publish([])` and hide every brew row."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "brew-services.cache.json"
+            with (
+                patch.object(brew_cache, "_DISK", path),
+                patch.object(brew_cache, "_brew_busy", return_value=True),
+                patch.object(brew_cache, "sh", side_effect=AssertionError("brew must not start")),
+            ):
+                brew_cache.invalidate_brew_services()
+                got = brew_cache._load()
+        self.assertEqual(got, [])
+        with brew_cache._lock:
+            self.assertIsNone(brew_cache._cache["v"])
+
+    def test_timeout_after_invalidate_serves_disk_not_empty(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "brew-services.cache.json"
+            path.write_text('[{"name":"x","status":"started"}]', encoding="utf-8")
+            with (
+                patch.object(brew_cache, "_DISK", path),
+                patch.object(brew_cache, "sh", return_value=(-1, "", "timeout")),
+            ):
+                brew_cache.invalidate_brew_services()
+                got = brew_cache._load()
+            self.assertEqual(got[0]["status"], "started")
+            self.assertEqual(json.loads(path.read_text())[0]["status"], "started")
+
+    def test_none_and_list_payloads_do_not_500(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "brew-services.cache.json"
+            with (
+                patch.object(brew_cache, "_DISK", path),
+                patch.object(brew_cache, "_brew_busy", return_value=False),
+            ):
+                brew_cache.invalidate_brew_services()
+                with patch.object(brew_cache, "sh", return_value=(0, None, "")):
+                    self.assertEqual(brew_cache._load(), [])
+                with patch.object(
+                    brew_cache, "sh",
+                    return_value=(0, [{"name": "syncthing", "status": "started"}], ""),
+                ):
+                    got = brew_cache._load()
+        self.assertEqual(got[0]["name"], "syncthing")
+
+    def test_in_flight_load_does_not_republish_after_invalidate(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_sh(*args, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(2), "in-flight load never released")
+            return 0, '[{"name":"old","status":"started"}]', ""
+
+        brew_cache.invalidate_brew_services()
+        result = {}
+
+        def worker():
+            result["v"] = brew_cache.brew_services()
+
+        with (
+            patch.object(brew_cache, "_brew_busy", return_value=False),
+            patch.object(brew_cache, "sh", slow_sh),
+        ):
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(started.wait(2), "load never started")
+            brew_cache.invalidate_brew_services()
+            release.set()
+            thread.join(timeout=2)
+        self.assertTrue(thread.is_alive() is False)
+        with brew_cache._lock:
+            self.assertIsNone(
+                brew_cache._cache["v"],
+                "in-flight brew list republished the pre-invalidate snapshot",
+            )
+        self.assertEqual(result["v"][0]["name"], "old")
+
 
 class BrewBusyPatternTests(unittest.TestCase):
     """``pgrep -f /opt/homebrew/bin/brew`` matches any argv that mentions brew."""
@@ -295,6 +382,41 @@ class BrewBusyPatternTests(unittest.TestCase):
         with patch("subprocess.run", side_effect=fake_run):
             self.assertTrue(brew_cache._brew_busy())
         self.assertEqual(calls["n"], 2)
+
+    def test_busy_reads_pids_from_the_temp_file_not_proc_stdout(self):
+        def fake_run(argv, **kwargs):
+            stdout = kwargs.get("stdout")
+            stdout.write(b"4242\n")
+            return _FakeProc(returncode=0, stdout=None)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            self.assertTrue(brew_cache._brew_busy())
+
+    def test_busy_check_does_not_capture_output(self):
+        src = Path(brew_cache.__file__).read_text(encoding="utf-8")
+        start = src.index("def _brew_busy")
+        body = src[start: src.index("\ndef _load")]
+        self.assertNotIn("capture_output=True", body)
+        self.assertIn("TemporaryFile", body)
+
+
+class BrewListTypingTests(unittest.TestCase):
+    def test_non_string_status_does_not_500(self):
+        from hub import brew_svc
+
+        rows = [
+            {"name": "syncthing", "status": True},
+            {"name": "nginx", "status": "started"},
+            "nope",
+        ]
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch.object(brew_svc, "brew_services_list", return_value=rows),
+        ):
+            items = brew_svc.list_services()
+        by_id = {i["id"]: i for i in items}
+        self.assertEqual(by_id["syncthing"]["status"], "true")
+        self.assertNotIn("nginx", by_id)
 
 
 if __name__ == "__main__":

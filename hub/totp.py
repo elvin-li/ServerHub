@@ -61,9 +61,33 @@ def hotp(key: bytes, counter: int, digits: int = DIGITS) -> str:
     return str(code % (10 ** digits)).zfill(digits)
 
 
+def _step_counter(timestamp, step: int) -> int | None:
+    """HOTP counter for *timestamp*, or None when leftover input would OverflowError.
+
+    JSON ``1e309`` is ``inf``; ``int(inf)`` is not ValueError.  A huge finite
+    stamp then OverflowError'd ``struct.pack('>Q', counter)`` on verify /
+    enroll confirm.
+    """
+    if isinstance(timestamp, bool) or timestamp is None:
+        return None
+    if isinstance(step, bool) or not isinstance(step, int) or step <= 0:
+        return None
+    try:
+        now = int(timestamp)
+        counter = now // step
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if counter < 0 or counter > 0xFFFFFFFFFFFFFFFF:
+        return None
+    return counter
+
+
 def totp_at(secret: str, timestamp: float, *, step: int = STEP_SECONDS, digits: int = DIGITS) -> str:
     """The code a correct authenticator shows at *timestamp*."""
-    return hotp(decode_secret(secret), int(timestamp) // step, digits)
+    counter = _step_counter(timestamp, step)
+    if counter is None:
+        raise ValueError("invalid TOTP timestamp")
+    return hotp(decode_secret(secret), counter, digits)
 
 
 def verify(
@@ -94,11 +118,18 @@ def verify(
         key = decode_secret(secret)
     except ValueError:
         return None
-    now = int(time.time() if timestamp is None else timestamp)
-    counter = now // step
+    if isinstance(window, bool) or not isinstance(window, int) or window < 0:
+        return None
+    stamp = time.time() if timestamp is None else timestamp
+    counter = _step_counter(stamp, step)
+    if counter is None:
+        return None
     matched: int | None = None
     for candidate in range(counter - window, counter + window + 1):
-        if candidate < 0:
+        # `_step_counter` allows uint64 max; the +window step then
+        # OverflowError'd ``struct.pack('>Q', candidate)`` on leftover
+        # huge timestamps (``(2**64-1)*30``).
+        if candidate < 0 or candidate > 0xFFFFFFFFFFFFFFFF:
             continue
         if hmac.compare_digest(hotp(key, candidate, digits), supplied):
             matched = candidate
@@ -111,7 +142,11 @@ def otpauth_uri(secret: str, account: str, issuer: str = "ServerHub") -> str:
     Label and issuer are percent-encoded; the issuer also rides as a query
     parameter because some apps only read one of the two places.
     """
-    label = urllib.parse.quote(f"{issuer}:{account}", safe="")
+    # quote() encodes as UTF-8 strict; leftover ``\\ud800`` in an account
+    # name used to UnicodeEncodeError POST /api/auth/totp/enroll.
+    label = urllib.parse.quote_from_bytes(
+        f"{issuer}:{account}".encode("utf-8", "surrogatepass"), safe=""
+    )
     query = urllib.parse.urlencode({
         "secret": secret,
         "issuer": issuer,

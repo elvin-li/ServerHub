@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -122,6 +123,66 @@ class ImmichInfoTests(unittest.TestCase):
         self.assertEqual(layers["bridge"]["exported_files"], 3703)
         self.assertNotIn("secret", json.dumps(layers))
 
+    def test_non_finite_panel_pct_does_not_500_the_page(self):
+        hub = Path(self.tmp.name) / "PhotosHub"
+        (hub / "state").mkdir(parents=True)
+        (hub / "state" / "panel_status.json").write_text(
+            '{"originals": {"local_original_pct": 1e400, "assets_active": 3}}',
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(backups, "PHOTOSHUB_CFG", hub / "missing.json"),
+            mock.patch.object(backups, "PHOTOSHUB_STATE", hub / "state"),
+        ):
+            layers = backups.immich_layers()
+        json.dumps(layers, allow_nan=False)
+        self.assertNotIn("pct", layers["originals"])
+        self.assertEqual(layers["originals"]["assets"], 3)
+
+    def test_vanished_dump_does_not_500(self):
+        ghost = self.backup_root / "immich_gone.sql.gz"
+        with mock.patch.object(Path, "glob", lambda self, p: [ghost] if p.startswith("immich_") else []):
+            self.assertIsNone(backups._immich_latest())
+
+    def test_unreadable_generated_dir_does_not_500(self):
+        media = Path(self.tmp.name) / "media"
+        media.mkdir()
+        hub = Path(self.tmp.name) / "PhotosHub"
+        (hub / "config").mkdir(parents=True)
+        (hub / "config" / "config.json").write_text(
+            json.dumps({"immich": {"media_location": str(media)}}),
+            encoding="utf-8",
+        )
+        real = Path.is_dir
+
+        def flaky(self):
+            if self.name in backups._GENERATED_DIRS:
+                raise PermissionError("nope")
+            return real(self)
+
+        with (
+            mock.patch.object(backups, "PHOTOSHUB_CFG", hub / "config" / "config.json"),
+            mock.patch.object(backups, "PHOTOSHUB_STATE", Path(self.tmp.name) / "state"),
+            mock.patch.object(Path, "is_dir", flaky),
+        ):
+            layers = backups.immich_layers()
+        self.assertEqual(
+            [d["present"] for d in layers["generated"]["dirs"]],
+            [False] * len(backups._GENERATED_DIRS),
+        )
+
+    def test_scan_rglob_oserror_does_not_500(self):
+        def boom(self, pattern):
+            raise PermissionError("nope")
+
+        with (
+            mock.patch.object(backups, "BACKUP_ROOT", self.backup_root),
+            mock.patch.object(Path, "home", return_value=Path(self.tmp.name) / "nohome"),
+            mock.patch.object(backups, "DATA_DIR", Path(self.tmp.name) / "nodata"),
+            mock.patch.object(Path, "rglob", boom),
+        ):
+            self.assertEqual(backups.scan_backups(), [])
+
 
 class ImmichDumpTests(unittest.TestCase):
     def setUp(self):
@@ -213,6 +274,34 @@ class ImmichDumpTests(unittest.TestCase):
         self.assertEqual(recorded[:6], ["-h", "127.0.0.1", "-p", "5433", "-U", "immich"])
         self.assertNotIn("s3cret", " ".join(recorded[:-1]))
         self.assertEqual(recorded[-1], "PGPASSWORD=s3cret")
+
+    def test_leftover_env_surrogate_does_not_500_native_dump(self):
+        """Leftover ``\\ud800`` in os.environ UnicodeEncodeError'd pg_dump Popen."""
+        payload = "-- header\n-- PostgreSQL database dump complete\n"
+        pg18 = self._fake_pg_dump(f"printf '%s' '{payload}'")
+        leftover_env = {**dict(os.environ), "LEFTOVER": "x\ud800"}
+        with (
+            mock.patch.object(backups, "_PG18_DUMPS", (pg18,)),
+            mock.patch.object(backups.os, "environ", leftover_env),
+        ):
+            result = backups.backup_immich()
+        self.assertTrue(result["ok"], result)
+        json.dumps(result, allow_nan=False)
+
+    def test_popen_str_recursion_does_not_500_native_dump(self):
+        """leftover ``str(e)`` RecursionError used to 500 POST /api/backups/immich."""
+        class Boom(OSError):
+            def __str__(self):
+                raise RecursionError
+
+        pg18 = self._fake_pg_dump("true")
+        with (
+            mock.patch.object(backups, "_PG18_DUMPS", (pg18,)),
+            mock.patch.object(backups.subprocess, "Popen", side_effect=Boom()),
+        ):
+            result = backups.backup_immich()
+        self.assertFalse(result["ok"])
+        json.dumps(result, allow_nan=False)
 
     def test_a_chatty_dump_does_not_deadlock(self):
         """pg_dump warnings must not wedge the dump.
@@ -316,6 +405,179 @@ class ImmichDumpTests(unittest.TestCase):
         src = Path(backups.__file__).read_text(encoding="utf-8")
         self.assertIn("errfile.read(2048)", src)
         self.assertNotIn("errfile.read().decode", src)
+
+    def test_stack_and_config_tar_do_not_capture_unbounded_output(self):
+        src = Path(backups.__file__).read_text(encoding="utf-8")
+        seam = src[src.index("def _run_argv"): src.index("def _engine_up")]
+        self.assertIn("run_capped", seam)
+        self.assertNotIn("capture_output=True", seam)
+
+    def test_script_and_pg_dump_do_not_capture_unbounded_output(self):
+        src = Path(backups.__file__).read_text(encoding="utf-8")
+        self.assertIn("run_capped", src)
+        script = src[src.index("def _backup_immich_script"): src.index("def _kill_tree")]
+        dump = src[src.index("def _dump_one_postgres"): src.index("def agent_keywords")]
+        self.assertIn("run_capped", script)
+        self.assertNotIn("capture_output=True", script)
+        self.assertIn("run_capped", dump)
+        self.assertNotIn("capture_output=True", dump)
+
+
+class ImmichChecksLeftoverTests(unittest.TestCase):
+    """GET /api/health fans out to immich_svc.run_checks; leftovers used to 500 encode."""
+
+    def test_surrogate_docker_ps_and_ping_do_not_500(self):
+        """A leftover ``\\ud800`` in docker ps / ping text used to 500 GET /api/health."""
+        from hub import immich_svc
+
+        def _starlette(payload) -> None:
+            json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+        with mock.patch.object(immich_svc, "sh", return_value=(0, "running\tUp\ud800 2 hours", b"")):
+            ok, detail = immich_svc._container_state("immich_server")
+        self.assertTrue(ok)
+        self.assertNotIn("\ud800", detail)
+        _starlette({"ok": ok, "detail": detail})
+
+        with (
+            mock.patch.object(immich_svc, "engine_up", return_value=False),
+            mock.patch.object(immich_svc, "_http", return_value=(None, "down\ud800")),
+            mock.patch.object(immich_svc, "worker_pid", return_value=None),
+            mock.patch.object(immich_svc, "port_open", return_value=False),
+            mock.patch.object(immich_svc, "loaded_labels", return_value=frozenset()),
+            mock.patch.object(immich_svc, "_path_is_file", return_value=False),
+            mock.patch.object(immich_svc, "_path_is_exec", return_value=False),
+        ):
+            snap = immich_svc.run_checks(force=True)
+        json.dumps(snap, allow_nan=False)
+        _starlette(snap)
+        blob = json.dumps(snap, ensure_ascii=False)
+        self.assertNotIn("\ud800", blob)
+
+    def test_bytes_and_none_docker_ps_do_not_500(self):
+        from hub import immich_svc
+
+        with mock.patch.object(immich_svc, "sh", return_value=(0, b"running\tUp 2 hours", b"")):
+            ok, detail = immich_svc._container_state("immich_server")
+        self.assertTrue(ok)
+        self.assertEqual(detail, "Up 2 hours")
+        json.dumps({"ok": ok, "detail": detail}, allow_nan=False)
+
+        with mock.patch.object(immich_svc, "sh", return_value=(0, None, "")):
+            ok, detail = immich_svc._container_state("immich_server")
+        self.assertFalse(ok)
+        self.assertEqual(detail, "container not found")
+
+    def test_bytes_ping_body_does_not_500(self):
+        from hub import immich_svc
+
+        with (
+            mock.patch.object(immich_svc, "engine_up", return_value=False),
+            mock.patch.object(immich_svc, "_http", return_value=(200, b"pong")),
+            mock.patch.object(immich_svc, "worker_pid", return_value=None),
+            mock.patch.object(immich_svc, "port_open", return_value=False),
+            mock.patch.object(immich_svc, "loaded_labels", return_value=frozenset()),
+            mock.patch.object(immich_svc, "_path_is_file", return_value=False),
+            mock.patch.object(immich_svc, "_path_is_exec", return_value=False),
+        ):
+            snap = immich_svc.run_checks(force=True)
+        json.dumps(snap, allow_nan=False)
+        web = next(c for c in snap["checks"] if c["id"] == "immich_web")
+        self.assertTrue(web["ok"])
+
+    def test_stat_eio_does_not_500_run_checks(self):
+        """Quarantine / ffmpeg / shim ``is_file()`` EIO used to 500 the health page."""
+        from hub import immich_svc
+
+        with (
+            mock.patch.object(immich_svc, "engine_up", return_value=False),
+            mock.patch.object(immich_svc, "_http", return_value=(None, "down")),
+            mock.patch.object(immich_svc, "worker_pid", return_value=None),
+            mock.patch.object(immich_svc, "port_open", return_value=False),
+            mock.patch.object(immich_svc, "loaded_labels", return_value=frozenset()),
+            mock.patch.object(Path, "is_file", side_effect=OSError(5, "I/O error")),
+            mock.patch.object(Path, "read_text", side_effect=OSError(5, "I/O error")),
+        ):
+            snap = immich_svc.run_checks(force=True)
+        json.dumps(snap, allow_nan=False)
+        self.assertIn("checks", snap)
+        self.assertGreater(snap["summary"]["total"], 0)
+
+    def test_infinite_pid_does_not_500(self):
+        """``int(inf)`` OverflowError is not ValueError; a leftover pid used to 500."""
+        from hub import immich_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "worker.pid"
+            path.write_text("inf\n")
+            with mock.patch.object(immich_svc, "WORKER_PID", path):
+                self.assertIsNone(immich_svc.worker_pid())
+
+    def test_huge_pidfile_is_capped_not_read_whole(self):
+        from hub import immich_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "worker.pid"
+            path.write_bytes(b"9" * (2 * 1024 * 1024))
+            with mock.patch.object(immich_svc, "WORKER_PID", path):
+                self.assertIsNone(immich_svc.worker_pid())
+
+    def test_huge_start_worker_script_does_not_oom_health(self):
+        """``Path.read_text()`` of leftover start-worker-native.sh used to OOM GET /api/health."""
+        from hub import immich_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "start-worker-native.sh").write_bytes(b"x" * (2 * 1024 * 1024))
+            (root / "hooks").mkdir()
+            (root / "hooks" / "ml_url_shim.js").write_text("/* shim */")
+            with (
+                mock.patch.object(immich_svc, "BASE", root),
+                mock.patch.object(immich_svc, "engine_up", return_value=False),
+                mock.patch.object(immich_svc, "_http", return_value=(None, "down")),
+                mock.patch.object(immich_svc, "worker_pid", return_value=None),
+                mock.patch.object(immich_svc, "port_open", return_value=False),
+                mock.patch.object(immich_svc, "loaded_labels", return_value=frozenset()),
+                mock.patch.object(immich_svc, "_path_is_file", return_value=False),
+                mock.patch.object(immich_svc, "_path_is_exec", return_value=False),
+            ):
+                snap = immich_svc.run_checks(force=True)
+            json.dumps(snap, allow_nan=False)
+            guard = next(c for c in snap["checks"] if c["id"] == "immich_ml_url_shim")
+            self.assertFalse(guard["ok"])
+
+    def test_overflow_strftime_does_not_500_checks_ts(self):
+        """Leftover inf clock OverflowError'd GET /api/health Immich ``ts``."""
+        from hub import immich_svc
+
+        with (
+            mock.patch("hub.util.time.strftime", side_effect=OverflowError),
+            mock.patch.object(immich_svc, "engine_up", return_value=False),
+            mock.patch.object(immich_svc, "_http", return_value=(None, "down")),
+            mock.patch.object(immich_svc, "worker_pid", return_value=None),
+            mock.patch.object(immich_svc, "port_open", return_value=False),
+            mock.patch.object(immich_svc, "loaded_labels", return_value=frozenset()),
+            mock.patch.object(immich_svc, "_path_is_file", return_value=False),
+            mock.patch.object(immich_svc, "_path_is_exec", return_value=False),
+        ):
+            snap = immich_svc.run_checks(force=True)
+        json.dumps(snap, allow_nan=False)
+        json.dumps(snap, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertEqual(snap["ts"], "")
+
+    def test_utf8_text_recursing_does_not_500(self):
+        from hub import immich_svc, smart_test_svc
+
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        self.assertEqual(immich_svc._utf8_text(Recursing()), "Recursing")
+        self.assertEqual(smart_test_svc._utf8_text(Recursing()), "Recursing")
+        json.dumps(
+            {"k": immich_svc._utf8_text(Recursing())},
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
 
 
 if __name__ == "__main__":

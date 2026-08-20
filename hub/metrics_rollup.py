@@ -48,11 +48,18 @@ import os
 import threading
 import time
 
+from hub import secure_io
 from hub.paths import DATA_DIR
+from hub.util import read_text_capped
 
 FILE_5M = DATA_DIR / "metrics-5m.jsonl"
 FILE_1H = DATA_DIR / "metrics-1h.jsonl"
 STATE_FILE = DATA_DIR / "metrics-rollup-state.json"
+#: Leftover multi-MB metrics-rollup-state.json used to OOM GET /api/metrics?range=.
+_STATE_CAP = 256 * 1024
+#: Leftover multi-GB metrics-5m.jsonl used to OOM GET /api/metrics?range= via
+#: unbounded ``_rows_since`` (chunk *= 4 until the whole file was in RAM).
+_ROWS_CAP = 16 * 1024 * 1024
 
 WIN_5M = 300
 WIN_1H = 3600
@@ -89,6 +96,121 @@ RAW_QUERY_SPAN = 48 * 3600
 # --------------------------------------------------------------------------
 # small file helpers
 
+def _sample_ts(raw) -> int | None:
+    """Finite epoch seconds, or None.  Same rules as metrics.sample_ts."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            raw = int(text)
+        except ValueError:
+            try:
+                raw = float(text)
+            except ValueError:
+                return None
+    if not isinstance(raw, (int, float)):
+        return None
+    # Same leftover as metrics.sample_ts: a 400-digit int is not inf, but
+    # ``time.time() - since`` and ``float(n)`` OverflowError it.
+    try:
+        as_float = float(raw)
+    except OverflowError:
+        return None
+    if as_float != as_float or as_float in (float("inf"), float("-inf")):
+        return None
+    try:
+        return int(raw)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _finite_num(raw):
+    """Finite int/float, or None.  Bools and inf/nan are not numbers here."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            raw = float(text)
+        except ValueError:
+            return None
+    if not isinstance(raw, (int, float)):
+        return None
+    if raw != raw or raw in (float("inf"), float("-inf")):
+        return None
+    try:
+        return float(raw)
+    except OverflowError:
+        return None
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Infinity in a leftover rollup row was already dropped; a leftover
+    ``\\ud800`` field or key still 500'd ``GET /api/metrics?range=``.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/metrics?range=.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 def _first_row_ts(path) -> int | None:
     """Timestamp of the first parseable row, reading only the file head."""
     try:
@@ -98,11 +220,11 @@ def _first_row_ts(path) -> int | None:
         return None
     for ln in head.decode(errors="replace").splitlines():
         try:
-            t = json.loads(ln).get("t")
-        except (json.JSONDecodeError, AttributeError):
+            t = _sample_ts(json.loads(ln).get("t"))
+        except (json.JSONDecodeError, AttributeError, RecursionError):
             continue
-        if isinstance(t, (int, float)):
-            return int(t)
+        if t is not None:
+            return t
     return None
 
 
@@ -118,11 +240,11 @@ def _last_row_ts(path) -> int | None:
         return None
     for ln in reversed(tail.decode(errors="replace").splitlines()):
         try:
-            t = json.loads(ln).get("t")
-        except (json.JSONDecodeError, AttributeError):
+            t = _sample_ts(json.loads(ln).get("t"))
+        except (json.JSONDecodeError, AttributeError, RecursionError):
             continue
-        if isinstance(t, (int, float)):
-            return int(t)
+        if t is not None:
+            return t
     return None
 
 
@@ -140,7 +262,7 @@ def _rows_since(path, since_ts: int) -> list[dict]:
         size = os.path.getsize(path)
     except OSError:
         return []
-    chunk = 64 * 1024
+    chunk = min(64 * 1024, _ROWS_CAP)
     while True:
         offset = max(0, size - chunk)
         try:
@@ -157,31 +279,28 @@ def _rows_since(path, since_ts: int) -> list[dict]:
         for ln in lines:
             try:
                 o = json.loads(ln)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 continue
-            t = o.get("t") if isinstance(o, dict) else None
-            if not isinstance(t, (int, float)):
+            t = _sample_ts(o.get("t") if isinstance(o, dict) else None)
+            if t is None:
                 continue
+            o = _jsonable(o) if isinstance(o, dict) else None
+            if not isinstance(o, dict):
+                continue
+            o["t"] = t
             if t < since_ts:
                 covered = True
                 continue
             rows.append(o)
-        if covered:
+        if covered or offset == 0 or chunk >= _ROWS_CAP:
             return rows
-        chunk *= 4
+        chunk = min(chunk * 4, _ROWS_CAP)
 
 
 def _atomic_write(path, payload: str) -> None:
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(payload)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    # Predictable `{name}.{pid}.tmp` + write_text followed a planted symlink
+    # and then os.replace'd it onto the live journal.
+    secure_io.replace_bytes(path, payload.encode("utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -190,6 +309,8 @@ def _atomic_write(path, payload: str) -> None:
 def _round(v: float):
     """Compact on-disk numbers: 2 decimals normally, integers once the value
     is large enough (network bps) that decimals are noise."""
+    if v != v or v in (float("inf"), float("-inf")):
+        return 0
     if abs(v) >= 1000:
         return int(round(v))
     return round(float(v), 2)
@@ -211,21 +332,22 @@ def _aggregate_window(rows: list[dict], window_start: int) -> dict:
     maxes: dict[str, float] = {}
     total_n = 0
     for row in rows:
-        w = row.get("n", 1)
-        w = int(w) if isinstance(w, (int, float)) and w > 0 else 1
+        w = _finite_num(row.get("n", 1))
+        w = int(w) if w is not None and w > 0 else 1
         total_n += w
         for key, val in row.items():
             if key in ("t", "n") or key.endswith("_max"):
                 continue
-            if isinstance(val, bool) or not isinstance(val, (int, float)):
+            num = _finite_num(val)
+            if num is None:
                 continue
-            sums[key] = sums.get(key, 0.0) + float(val) * w
+            sums[key] = sums.get(key, 0.0) + num * w
             weights[key] = weights.get(key, 0.0) + w
-            peak = row.get(f"{key}_max", val)
-            if isinstance(peak, bool) or not isinstance(peak, (int, float)):
-                peak = val
+            peak = _finite_num(row.get(f"{key}_max", num))
+            if peak is None:
+                peak = num
             if key not in maxes or peak > maxes[key]:
-                maxes[key] = float(peak)
+                maxes[key] = peak
     out: dict = {"t": int(window_start), "n": total_n}
     for key in sums:
         out[key] = _round(sums[key] / weights[key])
@@ -242,14 +364,15 @@ def _load_state_locked() -> None:
         return
     saved: dict = {}
     try:
-        loaded = json.loads(STATE_FILE.read_text())
+        loaded = json.loads(read_text_capped(STATE_FILE, _STATE_CAP))
         if isinstance(loaded, dict):
             saved = loaded
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested watermark is not ValueError.
         saved = {}
     for key, path, win in (("w5", FILE_5M, WIN_5M), ("w1h", FILE_1H, WIN_1H)):
         from_state = saved.get(key)
-        from_state = int(from_state) if isinstance(from_state, (int, float)) else 0
+        from_state = _sample_ts(from_state) or 0
         # A row for window t means everything through t+win is aggregated.
         # Taking the max of both sources makes the watermark survive a lost
         # state file (no re-aggregation) and a state file written just before
@@ -264,10 +387,11 @@ def _load_state_locked() -> None:
 def _save_state_locked() -> None:
     try:
         STATE_FILE.parent.mkdir(exist_ok=True)
-        _atomic_write(STATE_FILE, json.dumps(_state))
-    except OSError:
+        _atomic_write(STATE_FILE, json.dumps(_jsonable(_state), allow_nan=False))
+    except (OSError, ValueError, TypeError, RecursionError):
         # Non-fatal: the last-row recovery in _load_state_locked keeps a stale
         # state file from causing duplicates.
+        # RecursionError: leftover nested rollup state after _jsonable is not ValueError.
         pass
 
 
@@ -294,10 +418,9 @@ def _rollup_tier_locked(src_path, dst_path, win: int, key: str, target: int) -> 
         return 0
     buckets: dict[int, list[dict]] = {}
     for row in _rows_since(src_path, start):
-        t = row.get("t")
-        if not isinstance(t, (int, float)):
+        t = _sample_ts(row.get("t"))
+        if t is None:
             continue
-        t = int(t)
         # Upper bound excludes the still-open window; lower bound drops rows
         # stamped before the watermark (already aggregated, or re-stamped by
         # a clock step backwards -- counting them again would double them).
@@ -305,13 +428,17 @@ def _rollup_tier_locked(src_path, dst_path, win: int, key: str, target: int) -> 
             continue
         buckets.setdefault((t // win) * win, []).append(row)
     if buckets:
-        lines = "".join(
-            json.dumps(_aggregate_window(rows, wt), ensure_ascii=False) + "\n"
-            for wt, rows in sorted(buckets.items())
-        )
-        dst_path.parent.mkdir(exist_ok=True)
-        with open(dst_path, "a") as f:
-            f.write(lines)
+        try:
+            lines = "".join(
+                json.dumps(_jsonable(_aggregate_window(rows, wt)), ensure_ascii=False, allow_nan=False) + "\n"
+                for wt, rows in sorted(buckets.items())
+            )
+            dst_path.parent.mkdir(exist_ok=True)
+            secure_io.append_text(dst_path, lines)
+        except (OSError, TypeError, ValueError, RecursionError):
+            # RecursionError: leftover nested aggregate after _jsonable is not
+            # ValueError. Do not advance the watermark — retry next sweep.
+            return 0
     _state[key] = target
     return len(buckets)
 
@@ -332,14 +459,31 @@ def _maybe_trim_locked(tier: str, path, now: float) -> bool:
         return False
     cutoff = now - _RETAIN[tier]
     try:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return False
         kept = []
-        for ln in path.read_text().splitlines():
-            try:
-                t = json.loads(ln).get("t")
-            except (json.JSONDecodeError, AttributeError):
-                continue  # corrupt line: dropped with the trim
-            if isinstance(t, (int, float)) and t >= cutoff:
-                kept.append(ln)
+        # Stream: ``read_text().splitlines()`` loaded the whole tier just to
+        # drop the old prefix.  errors="replace" so a torn/binary byte does
+        # not raise UnicodeDecodeError past the OSError guard and disable
+        # trim forever (same failure class as metrics.py's ring buffer).
+        # Leftover multi-GB jsonl: only the tail is kept (trim is dropping
+        # the old prefix anyway) so the rewrite cannot OOM the sampler.
+        with open(path, "rb") as fh:
+            if size > _ROWS_CAP:
+                fh.seek(max(0, size - _ROWS_CAP))
+                if fh.tell() > 0:
+                    fh.readline()
+            for raw in fh:
+                ln = raw.decode("utf-8", "replace").rstrip("\n")
+                try:
+                    parsed = json.loads(ln)
+                except (json.JSONDecodeError, RecursionError):
+                    continue  # corrupt / leftover nested line: dropped with the trim
+                t = _sample_ts(parsed.get("t") if isinstance(parsed, dict) else None)
+                if t is not None and t >= cutoff:
+                    kept.append(ln)
         _atomic_write(path, "\n".join(kept) + "\n" if kept else "")
         return True
     except OSError:
@@ -357,7 +501,18 @@ def maybe_rollup(now: float | None = None) -> dict:
     """
     from hub import metrics  # late import: metrics imports us lazily too
 
-    now = time.time() if now is None else now
+    if now is None:
+        now = time.time()
+    else:
+        # Leftover YAML ``now: .inf`` / ``!!binary`` used to raise
+        # ``int(now // 300)`` and take down the first rollup pass.
+        try:
+            now_f = float(now)
+        except (TypeError, ValueError, OverflowError):
+            now_f = time.time()
+        if isinstance(now, bool) or now_f != now_f or now_f in (float("inf"), float("-inf")) or abs(now_f) > 1e18:
+            now_f = time.time()
+        now = now_f
     done = {"w5": 0, "w1h": 0}
     with _lock:
         _load_state_locked()
@@ -406,7 +561,7 @@ def maybe_rollup(now: float | None = None) -> dict:
 
 def parse_range(text: str) -> int:
     """'48h' / '30d' / '1y' -> seconds.  Raises ValueError on anything else."""
-    s = (text or "").strip().lower()
+    s = str(text or "").strip().lower()
     if len(s) < 2 or not s[:-1].isdigit():
         raise ValueError(f"invalid range: {text!r}")
     n, unit = int(s[:-1]), s[-1]
@@ -470,7 +625,10 @@ def _decimate(rows: list[dict], since: int, until: int, max_points: int) -> list
     bucket_sec = -(-span // max_points)  # ceil
     buckets: dict[int, list[dict]] = {}
     for row in rows:
-        idx = (int(row["t"]) - since) // bucket_sec
+        t = _sample_ts(row.get("t") if isinstance(row, dict) else None)
+        if t is None:
+            continue
+        idx = (t - since) // bucket_sec
         buckets.setdefault(idx, []).append(row)
     return [
         _aggregate_window(group, since + idx * bucket_sec)
@@ -487,16 +645,34 @@ def query_range(since: int, until: int, max_points: int = MAX_QUERY_POINTS) -> d
     """
     from hub import metrics
 
-    since, until = int(since), int(until)
-    max_points = max(1, min(int(max_points), MAX_QUERY_POINTS))
+    since_i, until_i = _sample_ts(since), _sample_ts(until)
+    if since_i is None or until_i is None:
+        return {"points": [], "tier": "raw"}
+    since, until = since_i, until_i
+    try:
+        max_points = max(1, min(int(max_points), MAX_QUERY_POINTS))
+    except (TypeError, ValueError, OverflowError):
+        max_points = MAX_QUERY_POINTS
     tier = _pick_tier(since, until)
     if tier == "raw":
         # history() merges the on-disk file with the not-yet-flushed buffer;
         # minutes is measured back from *now*, so stretch it to reach since.
-        minutes = max(1, int((time.time() - since) // 60) + 2)
-        rows = [o for o in metrics.history(minutes) if since <= o.get("t", 0) <= until]
+        # Leftover inf ``time.time()`` OverflowError'd ``int(inf)`` and 500'd
+        # GET /api/metrics?range=.
+        now_ts = _sample_ts(time.time())
+        try:
+            minutes = max(1, int(((now_ts if now_ts is not None else 0) - since) // 60) + 2)
+        except (TypeError, ValueError, OverflowError):
+            minutes = max(1, RAW_QUERY_SPAN // 60)
+        rows = [
+            o for o in metrics.history(minutes)
+            if _sample_ts(o.get("t")) is not None and since <= o["t"] <= until
+        ]
     else:
         path = FILE_5M if tier == "5m" else FILE_1H
-        rows = [o for o in _rows_since(path, since) if o.get("t", 0) <= until]
-    rows.sort(key=lambda o: o.get("t", 0))
+        rows = [
+            o for o in _rows_since(path, since)
+            if _sample_ts(o.get("t")) is not None and o["t"] <= until
+        ]
+    rows.sort(key=lambda o: _sample_ts(o.get("t")) or 0)
     return {"points": _decimate(rows, since, until, max_points), "tier": tier}

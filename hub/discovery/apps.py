@@ -36,6 +36,8 @@ def collect_apps(engine_up):
     plans: list[dict] = []
     for raw in cfg().get("apps") or []:
         a = resolve_value(raw)
+        if not isinstance(a, dict) or not a.get("id"):
+            continue
         if a.get("container_engine") or a.get("docker_engine"):
             plans.append({"kind": "engine", "app": a})
             continue
@@ -84,12 +86,24 @@ def _probe_port(port):
 
 
 def collect_scripts():
-    scripts = [resolve_value(raw) for raw in cfg().get("scripts") or []]
+    scripts = []
+    for raw in cfg().get("scripts") or []:
+        s = resolve_value(raw)
+        if isinstance(s, dict):
+            scripts.append(s)
     # Flattened across scripts *and* their ports, so a machine with several
     # multi-port scripts overlaps every check rather than only the outer loop.
     # The (index, port) pairing is what lets the flat results be put back
     # together in configuration order.
-    checks = [(i, port) for i, s in enumerate(scripts) for port in (s.get("ports") or [])]
+    def _ports(s):
+        raw = s.get("ports")
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, int):
+            return [raw]
+        return []
+
+    checks = [(i, port) for i, s in enumerate(scripts) for port in _ports(s)]
     states = list(fan_out(_probe_port, [port for _, port in checks]))
     # Gravity's watchdogs bounce :3001/:3010/:8765 for a few seconds.  One
     # missed connect used to paint 需关注 until the next poll.  Retry only
@@ -106,7 +120,7 @@ def collect_scripts():
 
     items = []
     for index, s in enumerate(scripts):
-        ports = s.get("ports") or []
+        ports = _ports(s)
         live = reachable.get(index, set())
         up = [p for p in ports if p in live]
         if len(up) == len(ports) and ports:
@@ -126,7 +140,10 @@ def collect_scripts():
             acts = (["restart"] if has_start and has_stop else []) + (["stop"] if has_stop else [])
         else:
             acts = ["start"] if has_start else []
-        items.append({"id": s["id"], "kind": "script", "name": s.get("name", s["id"]),
+        sid = s.get("id")
+        if not sid:
+            continue
+        items.append({"id": sid, "kind": "script", "name": s.get("name", sid),
                       "state": state, "detail": detail, "url": s.get("url"),
                       "group": s.get("group", "Custom"), "links": s.get("links"),
                       "ports": list(ports),

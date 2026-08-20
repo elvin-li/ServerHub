@@ -14,17 +14,143 @@ import platform
 import re
 import time
 from hub import __version__
-from hub.config import cfg
+from hub.config import cfg, settings_section
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
 from hub.errors import soft_fail
-from hub.util import LazyPool, cached_snapshot, fan_out, sh, ttl_memo
+from hub.secure_io import replace_bytes
+from hub.util import LazyPool, cached_snapshot, fan_out, sh, strftime_now, ttl_memo
 
 _pool = LazyPool(12, "hub-syssettings")
 
 
 def shutdown_executor() -> None:
     _pool.shutdown()
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _as_text(value) -> str:
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    if value is None or isinstance(value, (dict, list, tuple, set, bool)):
+        return ""
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return ""
+
+
+def _finite_number(value, default=None):
+    """YAML leftover ``.inf`` / a date used to 500 GET /api/settings/other."""
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return default
+        return value
+    return default
+
+
+def _json_bool(value, default: bool = True) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _json_atom(value):
+    """Drop leftover inf/bytes/dates/sets/``\\ud800`` so Starlette cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        return None
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            stamped = iso()
+        except Exception:
+            return None
+        if stamped is value:
+            return None
+        return _json_atom(stamped)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _json_tree(value, depth: int = 0):
+    """Drop leftover inf/bytes/``\\ud800`` so diagnostics cannot 500 UTF-8.
+
+    ``isoformat()`` returning inf used to skip the float sanitizer.
+    Unknown leftovers (Path, complex) used to TypeError Starlette.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            else:
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _json_tree(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_tree(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return _json_tree(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 DEFAULT_THRESHOLDS = {
     "enabled": True,
     "cpu_pct": 90,
@@ -54,18 +180,21 @@ _BUNDLE_TTL = 25.0  # settings page is interactive but not real-time
 
 def _clock_now() -> str:
     rc, now, _ = sh(["/bin/date", "+%Y-%m-%d %H:%M:%S %Z"], timeout=3)
-    return now if rc == 0 else time.strftime("%Y-%m-%d %H:%M:%S")
+    text = _as_text(now)
+    return text if rc == 0 else strftime_now("%Y-%m-%d %H:%M:%S")
 
 
 def _ntp_enabled() -> bool | None:
     """None when systemsetup would not say, which the page renders as unknown."""
     rc, out, _ = sh(["/usr/sbin/systemsetup", "-getusingnetworktime"], timeout=4)
-    return "on" in out.lower() if rc == 0 and out else None
+    text = _as_text(out)
+    return "on" in text.lower() if rc == 0 and text else None
 
 
 def _ntp_server() -> str | None:
     rc, out, _ = sh(["/usr/sbin/systemsetup", "-getnetworktimeserver"], timeout=4)
-    return out.split(":", 1)[-1].strip() if rc == 0 and out and ":" in out else None
+    text = _as_text(out)
+    return text.split(":", 1)[-1].strip() if rc == 0 and text and ":" in text else None
 
 
 def get_datetime_info() -> dict:
@@ -87,27 +216,32 @@ def get_datetime_info() -> dict:
     now, tz, ntp_on, ntp_server = fan_out(
         _safe,
         [
-            (_clock_now, time.strftime("%Y-%m-%d %H:%M:%S")),
+            (_clock_now, strftime_now("%Y-%m-%d %H:%M:%S")),
             (time_zone, ""),
             (_ntp_enabled, None),
             (_ntp_server, None),
         ],
         max_workers=4,
     )
-    return {
-        "now": now,
-        "timezone": tz or "",
+    try:
+        unix = int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        # Leftover ``time.time() = inf`` OverflowError'd GET /api/settings datetime.
+        unix = 0
+    return _json_tree({
+        "now": _as_text(now),
+        "timezone": _as_text(tz or ""),
         "ntp_enabled": ntp_on,
-        "ntp_server": ntp_server,
-        "unix": int(time.time()),
+        "ntp_server": _as_text(ntp_server) if ntp_server is not None else None,
+        "unix": unix,
         "hint": "Changing the system time zone / NTP usually requires administrator rights (System Settings → General → Date & Time)",
-    }
+    })
 
 
 def get_ups_info() -> dict:
     """Power source / battery (Unraid UPS-ish; Mac uses AC + internal battery)."""
     rc, out, _ = sh(["/usr/bin/pmset", "-g", "batt"], timeout=5)
-    lines = (out or "").strip().splitlines() if rc == 0 else []
+    lines = _as_text(out).strip().splitlines() if rc == 0 else []
     source = "unknown"
     percent = None
     charging = None
@@ -140,7 +274,7 @@ def _pmset_settings() -> dict:
     rc, out, _ = sh(["/usr/bin/pmset", "-g"], timeout=5)
     settings: dict = {}
     if rc == 0:
-        for line in out.splitlines():
+        for line in _as_text(out).splitlines():
             line = line.strip()
             if not line or line.startswith("System-wide") or line.startswith("Currently"):
                 continue
@@ -171,7 +305,7 @@ def _pmset_assertions() -> list[str]:
     sleep_prevented_by: list[str] = []
     rc, out, _ = sh(["/usr/bin/pmset", "-g", "assertions"], timeout=5)
     if rc == 0:
-        for line in out.splitlines():
+        for line in _as_text(out).splitlines():
             if "pid " in line and "named:" in line:
                 sleep_prevented_by.append(line.strip()[:160])
             if "sleep prevented by" in line.lower():
@@ -210,7 +344,7 @@ def get_power_info() -> dict:
         ],
         max_workers=3,
     )
-    return {
+    cleaned = _json_tree({
         "settings": settings,
         "displaysleep": settings.get("displaysleep"),
         "disksleep": settings.get("disksleep"),
@@ -221,7 +355,8 @@ def get_power_info() -> dict:
         "assertion_count": len(sleep_prevented_by),
         "ups": ups,
         "hint": "disksleep=0 means disks never sleep (common for a home NAS). Changing pmset may require sudo.",
-    }
+    })
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def set_power_pref(key: str, value: int) -> dict:
@@ -235,14 +370,14 @@ def set_power_pref(key: str, value: int) -> dict:
         return soft_fail("power.bad_key", key=key)
     try:
         value = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return soft_fail("power.bad_value")
     if value < 0 or value > 180:
         return soft_fail("power.value_range")
     rc, out, err = sh(["/usr/bin/pmset", "-a", key, str(value)], timeout=8)
     if rc != 0:
         rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", key, str(value)], timeout=8)
-    msg = out or err or ""
+    msg = _as_text(out) or _as_text(err)
     if rc != 0:
         msg = (msg or "failed") + f" · run manually: sudo pmset -a {key} {value}"
     # Bust the caches so the UI sees the new pmset values. Order matters: the return
@@ -279,49 +414,83 @@ def get_disk_settings() -> dict:
     absorbs its own failure, as it did serially -- a missing storage module left
     the disk list empty rather than failing the settings page.
     """
-    power, (smart, disks), power_disks = fan_out(
-        lambda probe: probe(),
-        [get_power_info, _storage_snapshot, _power_disks],
-        max_workers=3,
-    )
+    try:
+        power, storage, power_disks = fan_out(
+            lambda probe: probe(),
+            [get_power_info, _storage_snapshot, _power_disks],
+            max_workers=3,
+        )
+    except Exception:
+        power, storage, power_disks = {}, ({}, []), []
+    if not isinstance(power, dict):
+        power = {}
+    if isinstance(storage, (tuple, list)) and len(storage) >= 2:
+        smart, disks = storage[0], storage[1]
+    else:
+        smart, disks = {}, []
+    if not isinstance(disks, list):
+        disks = []
+    if not isinstance(power_disks, list):
+        power_disks = []
+    rows = []
+    for d in power_disks[:20]:
+        if not isinstance(d, dict):
+            continue
+        rows.append({
+            "id": _json_atom(d.get("id")),
+            "name": _json_atom(d.get("name")) or _json_atom(d.get("id")),
+            "power_state": _json_atom(d.get("power_state")),
+            "size_gb": _finite_number(d.get("size_gb")),
+        })
     return {
-        "disksleep_minutes": power.get("disksleep"),
+        "disksleep_minutes": _finite_number(power.get("disksleep")),
         "smart": smart,
         "disk_count": len(disks) or len(power_disks),
-        "power_disks": [
-            {
-                "id": d.get("id"),
-                "name": d.get("name") or d.get("id"),
-                "power_state": d.get("power_state"),
-                "size_gb": d.get("size_gb"),
-            }
-            for d in (power_disks or [])[:20]
-        ],
+        "power_disks": rows,
         "hint": "Sleep / wake HDDs from the Storage Array page; this adjusts the system disksleep policy.",
     }
+
+
+def _panel_update_snapshot() -> dict:
+    """Cached GitHub panel version.  Never fetches; never raises."""
+    try:
+        from hub.tools_svc import github_update_status
+        snap = github_update_status(fetch=False, checkout=False)
+    except Exception:
+        return {}
+    return snap if isinstance(snap, dict) else {}
 
 
 def get_management_access() -> dict:
     """Unraid Management Access style summary."""
     s = cfg().get("settings") or {}
-    auth = s.get("auth") or {}
-    return {
+    if not isinstance(s, dict):
+        s = {}
+    auth = settings_section("auth")
+    username = _json_atom(auth.get("username"))
+    if not isinstance(username, str) or not username:
+        username = "admin"
+    # leftover ``\ud800`` in host_ip() / configured_host() used to 500
+    # GET /api/settings/system and the Management Access tile.
+    cleaned = _json_tree({
         "panel_port": 8086,
         "auth_enabled": bool(auth.get("enabled")),
-        "allow_localhost": auth.get("allow_localhost", True),
-        "username": auth.get("username") or "admin",
+        "allow_localhost": _json_bool(auth.get("allow_localhost", True), True),
+        "username": username,
         "host_ip": host_ip(),
         "host_ip_config": configured_host(),
         "ssl_via_nginx": True,
         "nginx_https": f"https://{host_ip()}:8281",
         "export_yaml": "/api/export/services-yaml",
         "version": __version__,
+        "panel_update": _panel_update_snapshot(),
         "paths": {
             "base": str(BASE),
             "services_yaml": str(CONFIG_FILE),
             "data": str(DATA_DIR),
         },
-    }
+    })
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def get_share_globals() -> dict:
@@ -329,9 +498,9 @@ def get_share_globals() -> dict:
     rc, out, _ = sh(["/usr/sbin/sharing", "-l"], timeout=8)
     share_count = 0
     if rc == 0:
-        share_count = len(re.findall(r"name:\s+", out or "", re.I))
+        share_count = len(re.findall(r"name:\s+", _as_text(out), re.I))
     rc2, out2, _ = sh(["/bin/launchctl", "print", "system/com.apple.smbd"], timeout=4)
-    smb_running = rc2 == 0 and "state = running" in (out2 or "")
+    smb_running = rc2 == 0 and "state = running" in _as_text(out2)
     return {
         "smb_running": smb_running,
         "share_count": share_count,
@@ -340,29 +509,50 @@ def get_share_globals() -> dict:
 
 
 def get_thresholds() -> dict:
-    s = (cfg().get("settings") or {}).get("thresholds") or {}
+    s = settings_section("thresholds")
     out = dict(DEFAULT_THRESHOLDS)
-    out.update({k: v for k, v in s.items() if v is not None})
+    for k, v in s.items():
+        if v is None:
+            continue
+        if k in ("enabled", "smart_enabled"):
+            if isinstance(v, bool):
+                out[k] = v
+            continue
+        n = _finite_number(v)
+        if n is not None:
+            out[k] = n
     return out
 
 
 def get_other_settings() -> dict:
     """Unraid Other Settings + OMV-style toggles."""
     s = cfg().get("settings") or {}
-    alias = s.get("ip_aliases") or {}
+    if not isinstance(s, dict):
+        s = {}
+    alias = settings_section("ip_aliases")
+    ips = alias.get("ips")
+    clean_ips = []
+    if isinstance(ips, list):
+        for item in ips:
+            text = _json_atom(item)
+            if isinstance(text, str) and text:
+                clean_ips.append(text)
+    netmask = _json_atom(alias.get("netmask")) or "255.255.255.255"
+    if not isinstance(netmask, str):
+        netmask = "255.255.255.255"
     return {
-        "adaptive": s.get("adaptive", True),
-        "metrics_interval": s.get("metrics_interval", 90),
-        "alert_interval": s.get("alert_interval", 90),
+        "adaptive": _json_bool(s.get("adaptive", True), True),
+        "metrics_interval": _finite_number(s.get("metrics_interval"), 90),
+        "alert_interval": _finite_number(s.get("alert_interval"), 90),
         "resource_mode": (
             s.get("resource_mode") if s.get("resource_mode") in ("low", "high") else "low"
         ),
         "ip_aliases": {
-            "auto_bind": alias.get("auto_bind", True),
-            "prefer_wired": alias.get("prefer_wired", True),
-            "interval": alias.get("interval", 60),
-            "ips": list(alias.get("ips") or []),
-            "netmask": alias.get("netmask") or "255.255.255.255",
+            "auto_bind": _json_bool(alias.get("auto_bind", True), True),
+            "prefer_wired": _json_bool(alias.get("prefer_wired", True), True),
+            "interval": _finite_number(alias.get("interval"), 60),
+            "ips": clean_ips,
+            "netmask": netmask,
         },
         "thresholds": get_thresholds(),
         "ssd_friendly": {
@@ -380,14 +570,17 @@ def get_scheduler_summary() -> dict:
         from hub.tools_svc import launchd_timers
         timers = launchd_timers() or []
     except Exception as e:
-        return {"timers": [], "count": 0, "error": str(e)}
+        # leftover ``str(e)`` RecursionError / ``\\ud800`` used to 500 GET /api/settings.
+        return {"timers": [], "count": 0, "error": _as_text(e)}
     slim = []
     for t in timers[:40]:
+        if not isinstance(t, dict):
+            continue
         slim.append({
-            "label": t.get("label") or t.get("id") or t.get("name"),
-            "interval": t.get("interval") or t.get("StartInterval"),
-            "calendar": t.get("calendar") or t.get("StartCalendarInterval"),
-            "path": t.get("path") or t.get("plist"),
+            "label": _json_atom(t.get("label") or t.get("id") or t.get("name")),
+            "interval": _finite_number(t.get("interval") or t.get("StartInterval")),
+            "calendar": _json_tree(t.get("calendar") or t.get("StartCalendarInterval")),
+            "path": _json_atom(t.get("path") or t.get("plist")),
         })
     return {
         "timers": slim,
@@ -401,36 +594,55 @@ def get_vm_settings() -> dict:
     try:
         from hub import vms_svc
         data = vms_svc.list_all_vms()
+        if not isinstance(data, dict):
+            data = {}
         utm = data.get("utm") or data.get("utm_vms") or []
         orb = data.get("orb") or data.get("orb_machines") or []
+        if not isinstance(utm, list):
+            utm = []
+        if not isinstance(orb, list):
+            orb = []
         if isinstance(data.get("vms"), list):
             # fallback if different shape
-            items = data["vms"]
-            running = sum(1 for v in items if v.get("state") in ("ok", "running", "started"))
+            items = []
+            for v in data["vms"]:
+                if not isinstance(v, dict):
+                    continue
+                items.append({
+                    "id": _json_atom(v.get("id")),
+                    "name": _json_atom(v.get("name")),
+                    "state": _json_atom(v.get("state")),
+                    "backend": _json_atom(v.get("backend")),
+                })
+            running = sum(
+                1 for v in items
+                if str(v.get("state") or "").lower() in ("ok", "running", "started")
+            )
             return {
                 "utm_available": vms_svc._utm_available(),
                 "orb_available": vms_svc._orb_available(),
                 "total": len(items),
                 "running": running,
-                "items": [
-                    {"id": v.get("id"), "name": v.get("name"), "state": v.get("state"), "backend": v.get("backend")}
-                    for v in items[:20]
-                ],
+                "items": items[:20],
                 "hint": "Manage VMs on the Virtual Machines page",
             }
         items = []
         for v in utm:
+            if not isinstance(v, dict):
+                continue
             items.append({
-                "id": v.get("id") or v.get("uuid") or v.get("name"),
-                "name": v.get("display_name") or v.get("name"),
-                "state": v.get("state") or v.get("status"),
+                "id": _json_atom(v.get("id") or v.get("uuid") or v.get("name")),
+                "name": _json_atom(v.get("display_name") or v.get("name")),
+                "state": _json_atom(v.get("state") or v.get("status")),
                 "backend": "utm",
             })
         for v in orb:
+            if not isinstance(v, dict):
+                continue
             items.append({
-                "id": v.get("id") or v.get("name"),
-                "name": v.get("display_name") or v.get("name"),
-                "state": v.get("state") or v.get("status"),
+                "id": _json_atom(v.get("id") or v.get("name")),
+                "name": _json_atom(v.get("display_name") or v.get("name")),
+                "state": _json_atom(v.get("state") or v.get("status")),
                 "backend": "orb",
             })
         running = sum(
@@ -446,7 +658,7 @@ def get_vm_settings() -> dict:
             "hint": "UTM + OrbStack virtual machines",
         }
     except Exception as e:
-        return {"error": str(e), "total": 0, "running": 0, "items": []}
+        return {"error": _as_text(e), "total": 0, "running": 0, "items": []}
 
 
 def _diag_host() -> dict:
@@ -459,9 +671,9 @@ def _diag_host() -> dict:
     from hub.identity_svc import platform_string
 
     return {
-        "platform": platform_string(),
-        "python": platform.python_version(),
-        "hostname": platform.node(),
+        "platform": _as_text(platform_string()),
+        "python": _as_text(platform.python_version()),
+        "hostname": _as_text(platform.node()),
     }
 
 
@@ -470,14 +682,14 @@ def _diag_identity() -> dict:
         from hub import identity_svc
         return {"identity": identity_svc.get_identity()}
     except Exception as e:
-        return {"identity": {"error": str(e)}}
+        return {"identity": {"error": _as_text(e)}}
 
 
 def _diag_datetime() -> dict:
     try:
         return {"datetime": get_datetime_info()}
     except Exception as e:
-        return {"datetime": {"error": str(e)}}
+        return {"datetime": {"error": _as_text(e)}}
 
 
 def _diag_power() -> dict:
@@ -489,7 +701,7 @@ def _diag_power() -> dict:
     try:
         info = get_power_info()
     except Exception as e:
-        return {"power": {"error": str(e)}}
+        return {"power": {"error": _as_text(e)}}
     return {"power": {
         **{k: v for k, v in info.items() if k != "assertions"},
         "assertions_count": len(info.get("assertions") or []),
@@ -500,14 +712,14 @@ def _diag_management() -> dict:
     try:
         return {"management": get_management_access()}
     except Exception as e:
-        return {"management": {"error": str(e)}}
+        return {"management": {"error": _as_text(e)}}
 
 
 def _diag_other() -> dict:
     try:
         return {"other": get_other_settings()}
     except Exception as e:
-        return {"other": {"error": str(e)}}
+        return {"other": {"error": _as_text(e)}}
 
 
 def _diag_docker() -> dict:
@@ -521,7 +733,7 @@ def _diag_docker() -> dict:
             "orb_version": di.get("orb_version"),
         }}
     except Exception as e:
-        return {"docker": {"error": str(e)}}
+        return {"docker": {"error": _as_text(e)}}
 
 
 def _diag_alias_auto() -> dict:
@@ -529,7 +741,7 @@ def _diag_alias_auto() -> dict:
         from hub import network_svc
         return {"alias_auto": network_svc.alias_auto_status()}
     except Exception as e:
-        return {"alias_auto": {"error": str(e)}}
+        return {"alias_auto": {"error": _as_text(e)}}
 
 
 def _diag_alerts() -> dict:
@@ -545,14 +757,15 @@ def _diag_health() -> dict:
         from hub import health_svc
         return {"health": health_svc.run_checks()}
     except Exception as e:
-        return {"health": {"error": str(e)}}
+        return {"health": {"error": _as_text(e)}}
 
 
 def _diag_metrics() -> dict:
     try:
         from hub import metrics
         hist = metrics.history(30)
-        return {"metrics_latest": hist[-1] if hist else None}
+        latest = hist[-1] if hist else None
+        return {"metrics_latest": _json_tree(latest) if isinstance(latest, dict) else None}
     except Exception:
         return {"metrics_latest": None}
 
@@ -607,7 +820,7 @@ def collect_diagnostics() -> dict:
     ``fan_out`` returns results in submission order, so the saved JSON keeps its
     section order.
     """
-    bundle: dict = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    bundle: dict = {"generated_at": strftime_now("%Y-%m-%dT%H:%M:%S%z")}
     # `platform.platform()` is not the pure string-formatting call it looks like: on
     # macOS it shells out to `uname -p` and then `file -b` on the Python binary, and
     # both ran before the wave started, adding two serial spawns to the front of the
@@ -619,24 +832,35 @@ def collect_diagnostics() -> dict:
         max_workers=len(_DIAG_SECTIONS) + 1,
     ):
         bundle.update(section)
+    cleaned = _json_tree(bundle)
+    if not isinstance(cleaned, dict):
+        cleaned = {}
     # Persist last diagnostics for download convenience.  Generation and
     # persistence are separate outcomes: callers can still render the in-memory
     # snapshot when the state directory is full or read-only, but must not claim
     # that a downloadable file was saved.
-    saved_path, save_error = _persist_diagnostics(bundle)
-    bundle["saved_path"] = saved_path
-    bundle["save_error"] = save_error
-    return bundle
+    saved_path, save_error = _persist_diagnostics(cleaned)
+    cleaned["saved_path"] = saved_path
+    cleaned["save_error"] = save_error
+    return cleaned
 
 
 def _persist_diagnostics(bundle: dict) -> tuple[str | None, str | None]:
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         path = DATA_DIR / "diagnostics-latest.json"
-        path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2, default=str))
+        payload = _json_tree(bundle)
+        replace_bytes(
+            path,
+            json.dumps(
+                payload, ensure_ascii=False, indent=2, default=str, allow_nan=False,
+            ).encode("utf-8"),
+        )
         return str(path), None
     except Exception as e:
-        return None, str(e)
+        # Assigned onto the JSON body after ``_json_tree``; leftover ``\\ud800``
+        # / RecursionError on ``str(e)`` used to 500 GET /api/diagnostics.
+        return None, _as_text(e) or "save failed"
 
 
 @cached_snapshot(_BUNDLE_TTL)
@@ -668,7 +892,7 @@ def unraid_settings_bundle(force: bool = False) -> dict:
     try:
         identity = f_identity.result()
     except Exception as e:
-        identity = {"error": str(e)}
+        identity = {"error": _as_text(e)}
     try:
         alias = f_alias.result()
     except Exception:
@@ -676,42 +900,42 @@ def unraid_settings_bundle(force: bool = False) -> dict:
     try:
         shares = f_shares.result()
     except Exception as e:
-        shares = {"error": str(e), "smb_running": False, "share_count": 0}
+        shares = {"error": _as_text(e), "smb_running": False, "share_count": 0}
     try:
         sched = f_sched.result()
     except Exception as e:
-        sched = {"timers": [], "count": 0, "error": str(e)}
+        sched = {"timers": [], "count": 0, "error": _as_text(e)}
     try:
         vms = f_vms.result()
     except Exception as e:
-        vms = {"total": 0, "running": 0, "items": [], "error": str(e)}
+        vms = {"total": 0, "running": 0, "items": [], "error": _as_text(e)}
     try:
         datetime_info = f_datetime.result()
     except Exception as e:
-        datetime_info = {"error": str(e)}
+        datetime_info = {"error": _as_text(e)}
     try:
         power = f_power.result()
     except Exception as e:
-        power = {"error": str(e)}
+        power = {"error": _as_text(e)}
     try:
         disk = f_disk.result()
     except Exception as e:
-        disk = {"error": str(e)}
+        disk = {"error": _as_text(e)}
     try:
         mgmt = f_mgmt.result()
     except Exception as e:
-        mgmt = {"error": str(e)}
+        mgmt = {"error": _as_text(e)}
     try:
         other = f_other.result()
     except Exception as e:
-        other = {"error": str(e)}
+        other = {"error": _as_text(e)}
     try:
         thresholds = f_thresholds.result()
     except Exception as e:
-        thresholds = {**DEFAULT_THRESHOLDS, "error": str(e)}
+        thresholds = {**DEFAULT_THRESHOLDS, "error": _as_text(e)}
 
     v = {
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
         "identity": identity,
         "datetime": datetime_info,
         "power": power,
@@ -742,4 +966,8 @@ def unraid_settings_bundle(force: bool = False) -> dict:
         ],
         "cached_ttl": _BUNDLE_TTL,
     }
-    return v
+    # identity / alias_auto / exception strings used to skip the sanitizer
+    # that collect_diagnostics already applies; leftover inf / ``\ud800``
+    # 500'd GET /api/settings/system.
+    cleaned = _json_tree(v)
+    return cleaned if isinstance(cleaned, dict) else v

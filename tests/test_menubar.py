@@ -1,11 +1,17 @@
 import copy
+import subprocess
 import unittest
+from pathlib import Path
+from unittest import mock
+
+_MENUBAR = Path(__file__).resolve().parent.parent / "menubar.py"
 
 try:
-    from menubar import _menu_signature
+    from menubar import _kickstart_panel, _menu_signature
 except ModuleNotFoundError as exc:
     if exc.name != "rumps":
         raise
+    _kickstart_panel = None
     _menu_signature = None
 
 
@@ -53,6 +59,31 @@ class MenuBarSignatureTests(unittest.TestCase):
         after = copy.deepcopy(before)
         after["locale"] = "en"
         self.assertNotEqual(_menu_signature(before, []), _menu_signature(after, []))
+
+
+class MenuBarKickstartCapTests(unittest.TestCase):
+    def test_kickstart_does_not_capture_unbounded_output(self):
+        src = _MENUBAR.read_text(encoding="utf-8")
+        self.assertNotIn("capture_output=True", src)
+        kick = src[src.index("def _kickstart_panel"): src.index("def _menu_signature")]
+        self.assertIn("DEVNULL", kick)
+        self.assertIn("timeout=10", kick)
+
+    def test_kickstart_discards_child_pipes(self):
+        if _kickstart_panel is None:
+            raise unittest.SkipTest(
+                "rumps is macOS-only and is not installed on this host"
+            )
+        completed = subprocess.CompletedProcess(
+            args=["/bin/launchctl"], returncode=0, stdout=b"", stderr=b"",
+        )
+        with mock.patch("menubar.subprocess.run", return_value=completed) as run:
+            _kickstart_panel()
+        kwargs = run.call_args.kwargs
+        self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertNotIn("capture_output", kwargs)
 
 
 if __name__ == "__main__":

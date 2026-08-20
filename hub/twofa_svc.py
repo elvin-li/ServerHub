@@ -26,17 +26,61 @@ import hmac
 import json
 import os
 import secrets
+import stat
 import threading
 import time
 from contextlib import contextmanager
 
 from hub import secure_io, totp
 from hub.paths import DATA_DIR
+from hub.util import read_text_capped
 
 #: Module-level so tests can point it at a scratch directory, same pattern as
 #: notify_channels.SECRETS_FILE.
 STORE_FILE = DATA_DIR / "twofa.json"
+#: Leftover multi-MB store used to OOM login / TOTP verify.
+_STORE_CAP = 256 * 1024
 _lock = threading.Lock()
+
+
+def _drop_leftover_nonfile(path) -> None:
+    """Unlink a leftover directory/socket occupying the store path."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.S_ISREG(st.st_mode):
+        return
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _lock_fd(lock_path) -> int | None:
+    """flock fd, or None when a leftover node / EIO blocks creating it."""
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            st = os.lstat(lock_path)
+        except FileNotFoundError:
+            st = None
+        if st is not None and not stat.S_ISREG(st.st_mode):
+            try:
+                if stat.S_ISDIR(st.st_mode):
+                    os.rmdir(lock_path)
+                else:
+                    os.unlink(lock_path)
+            except OSError:
+                return None
+        return os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
 
 
 @contextmanager
@@ -53,10 +97,15 @@ def _file_lock():
     ``config._file_lock``: a separate ``.lock`` file rather than the store
     itself, because ``secure_io.replace_secret_text`` swaps in a new inode and
     a lock on the old one would silently stop excluding anybody.
+
+    A leftover directory named ``twofa.json.lock``, or EIO creating it, must
+    not 500 enroll / TOTP verify — fall back to the in-process lock.
     """
     lock_path = STORE_FILE.with_name(STORE_FILE.name + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = _lock_fd(lock_path)
+    if fd is None:
+        yield
+        return
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
@@ -74,25 +123,150 @@ _RECOVERY_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 _RECOVERY_GROUP = 5
 
 
+def _as_int(raw, default: int | None = 0) -> int | None:
+    """Parse last_counter / confirmed_at.  JSON ``1e309`` is inf and must not 500."""
+    if raw is None or isinstance(raw, bool):
+        return default
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return default
+        try:
+            return int(raw)
+        except (OverflowError, ValueError):
+            return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so json.dumps(ensure_ascii=False) cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _json_safe(value, depth: int = 0):
+    """Make a leftover twofa.json row re-serializable with allow_nan=False.
+
+    ``last_counter`` / ``confirmed_at`` inf is already coerced, but a leftover
+    ``secret`` / ``recovery`` / extra field of ``1e309``, a sibling row of
+    Infinity, or a ``\\ud800`` string still 500'd enroll / TOTP verify / disable
+    at ``json.dumps(..., allow_nan=False)``.  A nest just under the JSON
+    parser's recursion cap then RecursionError'd the Python walker on save.
+    """
+    if depth > 32:
+        return None
+    if isinstance(value, dict):
+        return {_utf8_text(k): _json_safe(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(v, depth + 1) for v in value]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 enroll / TOTP verify.
+            return _json_safe(iso(), depth + 1)
+        except Exception:
+            return None
+    return _utf8_text(value)
+
+
+def _persistable_entry(entry: dict) -> dict:
+    row = _json_safe(dict(entry))
+    if "last_counter" in row:
+        row["last_counter"] = _as_int(row.get("last_counter"))
+    if "confirmed_at" in row:
+        row["confirmed_at"] = _as_int(row.get("confirmed_at"), default=None)
+    return row
+
+
 def _load() -> dict[str, dict]:
     try:
-        raw = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
-    except (OSError, ValueError):
+        raw = json.loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); the login path reads this.
+        # RecursionError: a leftover deeply-nested document is not ValueError.
         return {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for name, entry in raw.items():
+        if isinstance(entry, dict):
+            out[_utf8_text(name)] = _persistable_entry(entry)
+    return out
+
+
+def _user_entry(data: dict, username: str) -> dict:
+    """One account's 2FA row.  A list/string leftover must not 500 login."""
+    raw = data.get(str(username))
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _save(data: dict[str, dict]) -> None:
-    secure_io.replace_secret_text(
-        STORE_FILE, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    )
+    clean = {
+        _utf8_text(name): _persistable_entry(entry)
+        for name, entry in data.items()
+        if isinstance(entry, dict)
+    }
+    try:
+        payload = json.dumps(clean, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover circular twofa.json after _json_safe is not
+        # ValueError; enroll / TOTP verify used to 500 before the OSError guard.
+        return
+    _drop_leftover_nonfile(STORE_FILE)
+    try:
+        secure_io.replace_secret_text(STORE_FILE, payload)
+    except OSError:
+        # Leftover directory / EIO must not 500 enroll or TOTP verify.
+        pass
 
 
 def _hash_recovery(code: str) -> str:
     normalized = str(code or "").replace("-", "").replace(" ", "").upper()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(normalized.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _as_secret(raw) -> str:
+    """TOTP secret must be a string.  A list leftover stringifies to junk."""
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _digest_eq(stored: str, supplied: str) -> bool:
+    """compare_digest raises on length/non-ASCII mismatch — that 500s login."""
+    if not isinstance(stored, str) or not isinstance(supplied, str):
+        return False
+    if not stored.isascii() or not supplied.isascii():
+        return False
+    if len(stored) != len(supplied):
+        return False
+    return hmac.compare_digest(stored, supplied)
 
 
 def _new_recovery_codes() -> list[str]:
@@ -106,18 +280,19 @@ def _new_recovery_codes() -> list[str]:
 def status(username: str) -> dict:
     """API-safe view: never contains the secret or any code material."""
     with _lock:
-        entry = _load().get(str(username)) or {}
+        entry = _user_entry(_load(), username)
+    rec = entry.get("recovery")
     return {
         "enabled": bool(entry.get("enabled")),
         "pending": bool(entry.get("pending_secret")) and not entry.get("enabled"),
-        "recovery_remaining": len(entry.get("recovery") or []),
-        "confirmed_at": entry.get("confirmed_at"),
+        "recovery_remaining": len(rec) if isinstance(rec, list) else 0,
+        "confirmed_at": _as_int(entry.get("confirmed_at"), default=None),
     }
 
 
 def enabled(username: str) -> bool:
     with _lock:
-        entry = _load().get(str(username)) or {}
+        entry = _user_entry(_load(), username)
     return bool(entry.get("enabled"))
 
 
@@ -132,7 +307,7 @@ def begin_enrollment(username: str) -> dict:
     secret = totp.generate_secret()
     with _lock, _file_lock():
         data = _load()
-        entry = dict(data.get(username) or {})
+        entry = _user_entry(data, username)
         if entry.get("enabled"):
             raise AlreadyEnabled(username)
         entry["pending_secret"] = secret
@@ -154,8 +329,8 @@ def confirm_enrollment(username: str, code: str, *, timestamp: float | None = No
     username = str(username)
     with _lock, _file_lock():
         data = _load()
-        entry = dict(data.get(username) or {})
-        pending = str(entry.get("pending_secret") or "")
+        entry = _user_entry(data, username)
+        pending = _as_secret(entry.get("pending_secret"))
         if entry.get("enabled") or not pending:
             raise NotPending(username)
         matched = totp.verify(pending, code, timestamp=timestamp)
@@ -165,7 +340,7 @@ def confirm_enrollment(username: str, code: str, *, timestamp: float | None = No
         data[username] = {
             "secret": pending,
             "enabled": True,
-            "confirmed_at": int(time.time()),
+            "confirmed_at": _as_int(time.time(), default=0),
             "recovery": [_hash_recovery(c) for c in codes],
             "last_counter": matched,
         }
@@ -178,16 +353,14 @@ def verify_totp_code(username: str, code: str, *, timestamp: float | None = None
     username = str(username)
     with _lock, _file_lock():
         data = _load()
-        entry = dict(data.get(username) or {})
-        if not entry.get("enabled") or not entry.get("secret"):
+        entry = _user_entry(data, username)
+        secret = _as_secret(entry.get("secret"))
+        if not entry.get("enabled") or not secret:
             return False
-        matched = totp.verify(str(entry["secret"]), code, timestamp=timestamp)
+        matched = totp.verify(secret, code, timestamp=timestamp)
         if matched is None:
             return False
-        try:
-            last = int(entry.get("last_counter") or 0)
-        except (TypeError, ValueError):
-            last = 0
+        last = _as_int(entry.get("last_counter")) or 0
         # Strictly greater: the same window (= the same code) can be spent once.
         if matched <= last:
             return False
@@ -203,15 +376,18 @@ def use_recovery_code(username: str, code: str) -> bool:
     supplied = _hash_recovery(code)
     with _lock, _file_lock():
         data = _load()
-        entry = dict(data.get(username) or {})
+        entry = _user_entry(data, username)
         if not entry.get("enabled"):
             return False
-        stored = [str(h) for h in (entry.get("recovery") or [])]
+        rec = entry.get("recovery")
+        stored = [h for h in rec if isinstance(h, str)] if isinstance(rec, list) else []
         # Compare against every stored digest so the duration does not say
-        # which position (if any) matched.
+        # which position (if any) matched.  Wrong-type leftovers (plaintext
+        # codes, numbers) used to raise ValueError on length mismatch and
+        # 500 the login form.
         matched_index = -1
         for index, digest in enumerate(stored):
-            if hmac.compare_digest(digest, supplied):
+            if _digest_eq(digest, supplied):
                 matched_index = index
         if matched_index < 0:
             return False
@@ -241,7 +417,7 @@ def regenerate_recovery(username: str) -> list[str]:
     codes = _new_recovery_codes()
     with _lock, _file_lock():
         data = _load()
-        entry = dict(data.get(username) or {})
+        entry = _user_entry(data, username)
         if not entry.get("enabled"):
             raise NotEnabled(username)
         entry["recovery"] = [_hash_recovery(c) for c in codes]
@@ -260,7 +436,7 @@ def disable(username: str) -> bool:
     username = str(username)
     with _lock, _file_lock():
         data = _load()
-        entry = data.get(username) or {}
+        entry = _user_entry(data, username)
         was_enabled = bool(entry.get("enabled"))
         if username in data:
             del data[username]

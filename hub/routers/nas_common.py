@@ -20,6 +20,67 @@ from fastapi import Request
 from hub import auth
 from hub.errors import api_error
 
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    try:
+        return text.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so a privileged ok payload cannot 500 the encoder."""
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 a privileged NAS body.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
 #: run_admin() error string → API error code.
 _ADMIN_ERRORS = {
     "cancelled": "admin.cancelled",
@@ -53,13 +114,18 @@ def raise_for_admin_result(result: dict) -> dict:
     because the same helpers are called from background threads where an
     HTTPException would be meaningless.  Translation happens here instead.
     """
+    # Leftover None / inf from a privileged helper AttributeError'd GET/POST
+    # NAS routes; leftover inf / ``\\ud800`` in an ok payload 500'd the encoder.
+    if not isinstance(result, dict):
+        raise api_error("admin.failed")
     if result.get("ok"):
-        return result
+        cleaned = _jsonable(result)
+        return cleaned if isinstance(cleaned, dict) else {"ok": True}
     code = _ADMIN_ERRORS.get(str(result.get("error") or "failed"), "admin.failed")
     # The command's stderr tail (e.g. wg-quick's own failure line) rides along as
     # ``detail``: the SPA appends it to the translated message, and the generic
     # "operation failed" text stops hiding the actual cause.
-    detail = str(result.get("message") or "").strip()[:300]
+    detail = _utf8_text(result.get("message") or "").strip()[:300]
     if detail:
         raise api_error(code, detail=detail)
     raise api_error(code)
@@ -72,11 +138,18 @@ def raise_service_error(result: dict, mapping: dict[str, str]) -> dict:
     (``bad_action``, ``bad_device``, …).  Anything not listed falls back to the
     shared authorization codes.
     """
+    if not isinstance(result, dict):
+        raise api_error("admin.failed")
     if result.get("ok"):
-        return result
+        cleaned = _jsonable(result)
+        return cleaned if isinstance(cleaned, dict) else {"ok": True}
     error = str(result.get("error") or "failed")
     code = mapping.get(error)
     if code:
-        params = {k: v for k, v in result.items() if k not in ("ok", "error")}
-        raise api_error(code, **{k: v for k, v in params.items() if isinstance(v, (str, int, float))})
+        raise api_error(code, **{
+            k: v for k, v in result.items()
+            if k not in ("ok", "error")
+            and isinstance(k, str)
+            and isinstance(v, (str, int, float))
+        })
     return raise_for_admin_result(result)

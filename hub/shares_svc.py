@@ -10,6 +10,7 @@ import json
 import os
 import plistlib
 import re
+import signal
 import socket
 import subprocess
 import threading
@@ -19,8 +20,8 @@ from uuid import uuid4
 from hub.config import cfg
 from hub.host_address import host_ip, resolve_value
 from hub.macos_admin import run_admin, run_admin_sequence
-from hub.paths import BASE, STATE_ROOT
-from hub.util import fan_out, port_open, sh, ttl_memo
+from hub.paths import BASE, STATE_ROOT, user_home
+from hub.util import fan_out, iter_capped_lines, port_open, sh, ttl_memo, utf8_env
 
 SHARING = "/usr/sbin/sharing"
 DSCL = "/usr/bin/dscl"
@@ -36,28 +37,66 @@ SETTINGS_URL = "x-apple.systempreferences:com.apple.Sharing-Settings.extension"
 VNC_PORT = 5900
 
 _NAME_RE = re.compile(r"^[^/\\\x00-\x1f\x7f]{1,64}$")
+
+
+def _safe_resolve(path: Path) -> Path:
+    """``Path.resolve`` leftover symlink loops raise RuntimeError, not OSError."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return path
+
+
 _SYSTEM_ROOTS = tuple(
-    Path(value).resolve()
+    _safe_resolve(Path(value))
     for value in (
         "/System", "/Library", "/bin", "/sbin", "/usr", "/private",
         "/etc", "/var", "/dev",
     )
 )
+def _home_sensitive_roots() -> tuple[Path, ...]:
+    """Skip leftover HOME unset/NUL instead of failing the shares import."""
+    home = user_home()
+    if home is None:
+        return ()
+    out: list[Path] = []
+    for parts in ((".ssh",), (".aws",), (".gnupg",), (".kube",), ("Library", "Keychains")):
+        try:
+            out.append(home.joinpath(*parts).resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return tuple(out)
+
+
 _SENSITIVE_ROOTS = (
-    BASE.resolve(),
-    STATE_ROOT.resolve(),
-    (Path.home() / ".ssh").resolve(),
-    (Path.home() / ".aws").resolve(),
-    (Path.home() / ".gnupg").resolve(),
-    (Path.home() / ".kube").resolve(),
-    (Path.home() / "Library" / "Keychains").resolve(),
-)
+    _safe_resolve(BASE),
+    _safe_resolve(STATE_ROOT),
+) + _home_sensitive_roots()
 
 
 class ShareValidationError(ValueError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def _as_text(value) -> str:
+    """``sharing`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
 
 
 def _field_value(line: str, key: str) -> str | None:
@@ -76,7 +115,7 @@ def _legacy_shares(output: str) -> list[dict]:
     shares: list[dict] = []
     current: dict | None = None
     in_smb = False
-    for line in output.splitlines():
+    for line in _as_text(output).splitlines():
         stripped = line.strip()
         if stripped.startswith("name:") and not in_smb:
             name = _field_value(line, "name") or ""
@@ -126,7 +165,12 @@ def _flag(value: object) -> bool:
 
 
 def _json_shares(output: str) -> list[dict]:
-    parsed = json.loads(output)
+    try:
+        parsed = json.loads(output)
+    except (TypeError, ValueError, RecursionError) as e:
+        # RecursionError: leftover deeply-nested ``sharing -l -f json`` is
+        # not ValueError; GET /api/shares used to 500.
+        raise ValueError("sharing JSON is not an object") from e
     if not isinstance(parsed, dict):
         raise ValueError("sharing JSON is not an object")
     result = []
@@ -136,10 +180,10 @@ def _json_shares(output: str) -> list[dict]:
         path = raw.get("path")
         smb_name = raw.get("smb_name") or str(record_name)
         result.append({
-            "record_name": str(record_name),
-            "name": str(record_name),
-            "path": str(path) if path else None,
-            "smb_name": str(smb_name),
+            "record_name": _as_text(record_name),
+            "name": _as_text(record_name),
+            "path": _as_text(path) if path else None,
+            "smb_name": _as_text(smb_name),
             "shared": _flag(raw.get("smb_shared")),
             "guest": _flag(raw.get("smb_guest_access")),
             "readonly": _flag(raw.get("smb_read_only")),
@@ -192,7 +236,13 @@ def _plist_first(record: dict, key: str) -> str | None:
 def parse_time_machine_records(plist_text: str | bytes) -> dict[str, dict]:
     """RecordName -> Time Machine attributes, from `dscl -plist . -readall`."""
     data = plist_text.encode() if isinstance(plist_text, str) else plist_text
-    records = plistlib.loads(data)
+    try:
+        records = plistlib.loads(data)
+    except RecursionError as e:
+        # RecursionError: leftover deeply-nested SharePoints plist is not
+        # ValueError.  The live reader swallows Exception; this parser is
+        # also used on leftover dscl dumps and used to raise untyped.
+        raise ValueError("SharePoints plist is not an array") from e
     if not isinstance(records, list):
         raise ValueError("SharePoints plist is not an array")
     result: dict[str, dict] = {}
@@ -214,10 +264,17 @@ def parse_time_machine_records(plist_text: str | bytes) -> dict[str, dict]:
         )
         try:
             quota_bytes = int(quota_raw) if quota_raw is not None else 0
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
             quota_bytes = 0
         # 0 and absent both mean "no cap" (server-era backupQuota = 0).
-        quota_gb = round(quota_bytes / _GB) if quota_bytes > 0 else 0
+        # A 400-digit leftover used to OverflowError the float division and
+        # drop every share's TM attributes (the reader wraps this parse).
+        try:
+            quota_gb = round(quota_bytes / _GB) if quota_bytes > 0 else 0
+        except (OverflowError, ValueError):
+            quota_gb = 0
+        if quota_gb in (float("inf"), float("-inf")) or quota_gb != quota_gb:
+            quota_gb = 0
         result[name] = {
             "time_machine": _flag(flag) if flag is not None else False,
             "tm_quota_gb": quota_gb or None,
@@ -276,16 +333,25 @@ def _dns_sd_advertised(service_type: str, *, wait: float = 2.5) -> bool | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            errors="replace",
+            env=utf8_env(),
+            start_new_session=True,
         )
-    except OSError:
+    except (OSError, ValueError, TypeError):
+        # Leftover ``\\ud800`` env UnicodeEncodeError is ValueError, not OSError;
+        # GET /api/shares used to 500 the Bonjour browse.
+        return None
+    if proc.stdout is None:
         return None
     found = threading.Event()
 
     def _scan():
         # Reader thread because the pipe read blocks and dns-sd never exits
         # on its own; the main thread waits on the event with a deadline.
+        # ``for line in stdout`` buffered a whole line — a leftover huge
+        # instance name RSS-bombed GET /api/shares for the browse window.
         try:
-            for line in proc.stdout:
+            for line in iter_capped_lines(proc.stdout, 4096):
                 if dns_sd_instances(line):
                     found.set()
                     return
@@ -296,7 +362,14 @@ def _dns_sd_advertised(service_type: str, *, wait: float = 2.5) -> bool | None:
     reader.start()
     found.wait(wait)
     try:
-        proc.kill()
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = None
+        if pgid is not None and pgid == proc.pid and pgid != os.getpgrp():
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.kill()
         proc.wait(timeout=2)
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -343,16 +416,27 @@ def time_machine_status(shares: list[dict] | None = None) -> dict:
 
 
 def _dir_size_mb(path: str) -> float | None:
-    expanded = os.path.expanduser(path)
-    if not os.path.isdir(expanded):
+    try:
+        expanded = os.path.expanduser(str(path or ""))
+        if not os.path.isdir(expanded):
+            return None
+    except (TypeError, ValueError, OSError, RuntimeError):
+        # RuntimeError: leftover HOME unset on a ``~/…`` share path.
+        # ``fan_out`` re-raises, so one row used to 500 GET /api/shares.
         return None
     rc, output, _ = sh(["/usr/bin/du", "-sm", expanded], timeout=15)
+    output = _as_text(output)
     if rc != 0 or not output:
         return None
     try:
-        return float(output.split()[0])
+        value = float(output.split()[0])
     except (ValueError, IndexError):
         return None
+    # Starlette JSON-encodes with allow_nan=False; inf from a garbled `du`
+    # used to 500 GET /api/shares.
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return value
 
 
 def _connection_url(smb_name: str | None) -> str | None:
@@ -366,8 +450,11 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     shares: list[dict]
     if rc == 0 and output:
         try:
-            shares = _json_shares(output)
-        except (TypeError, ValueError, json.JSONDecodeError):
+            shares = _json_shares(_as_text(output))
+        except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+            # RecursionError: leftover deeply-nested ``sharing -l -f json`` is
+            # not ValueError; GET /api/shares/acl and /api/storage/usage used
+            # to 500.
             shares = []
     else:
         shares = []
@@ -424,14 +511,23 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def validate_share_path(value: str) -> Path:
-    raw = Path(str(value or "")).expanduser()
+    try:
+        raw = Path(str(value or "")).expanduser()
+    except (ValueError, TypeError, RuntimeError, OSError) as error:
+        # RuntimeError: leftover HOME unset on ``~/Media``.
+        # ValueError: leftover ``\\ud800`` (UnicodeEncodeError).
+        raise ShareValidationError("shares.bad_path") from error
     if not raw.is_absolute():
         raise ShareValidationError("shares.bad_path")
     try:
         resolved = raw.resolve(strict=True)
-    except OSError as error:
+        is_dir = resolved.is_dir()
+    except (OSError, ValueError, RuntimeError) as error:
+        # Symlink loops raise RuntimeError, not OSError — that used to 500 create.
+        # resolve() raises ValueError on an embedded NUL (Path() itself does not).
+        # is_dir() still raises EIO/ESTALE on a dying mount after resolve().
         raise ShareValidationError("shares.bad_path") from error
-    if not resolved.is_dir() or resolved == Path("/"):
+    if not is_dir or resolved == Path("/"):
         raise ShareValidationError("shares.bad_path")
     if any(_inside(resolved, root) for root in _SYSTEM_ROOTS):
         raise ShareValidationError("shares.protected_path")
@@ -629,10 +725,20 @@ def file_services() -> list[dict]:
         {"id": "onedrive-share", "name": "OneDrive Share", "port": 8281, "url": None},
     ]
     host = host_ip()
-    links = {
-        link["name"]: link["url"]
-        for link in resolve_value(cfg().get("quick_links") or [])
-    }
+    raw_links = resolve_value(cfg().get("quick_links") or [])
+    links = {}
+    for link in raw_links if isinstance(raw_links, list) else []:
+        if not isinstance(link, dict):
+            continue
+        name = link.get("name")
+        url = link.get("url")
+        # YAML `.inf` / bytes leftover used to land in the payload and 500
+        # Starlette's allow_nan=False JSON encoder. Leftover ``\\ud800`` in a
+        # URL did the same via UnicodeEncodeError.
+        if isinstance(name, str) and isinstance(url, str) and name and url:
+            name, url = _as_text(name), _as_text(url)
+            if name and url:
+                links[name] = url
     # Each probe waits out the full connect timeout when nothing is listening, so
     # in series the shares page paid that once per service before rendering.
     # Only the socket waits fan out -- no privileged call is involved here, which
@@ -648,11 +754,13 @@ def file_services() -> list[dict]:
 
 def _launchd_state(label: str) -> tuple[bool | None, str]:
     rc, output, error = sh([LAUNCHCTL, "print", f"system/{label}"], timeout=4)
+    output, error = _as_text(output), _as_text(error)
     if rc == 0:
         match = re.search(r"^\s*state\s*=\s*(\S+)", output, re.MULTILINE)
         state = match.group(1) if match else "loaded"
         return True, state
     rc, output, _ = sh([LAUNCHCTL, "print-disabled", "system"], timeout=4)
+    output = _as_text(output)
     if rc == 0:
         match = re.search(rf'"?{re.escape(label)}"?\s*=>\s*(enabled|disabled|true|false)', output)
         if match:
@@ -663,7 +771,7 @@ def _launchd_state(label: str) -> tuple[bool | None, str]:
 
 def _systemsetup_state(option: str, label: str) -> tuple[bool | None, str]:
     rc, output, error = sh([SYSTEMSETUP, option], timeout=8)
-    combined = (output or error or "").strip()
+    combined = _as_text(output or error).strip()
     if rc == 0:
         lowered = combined.lower()
         if ": on" in lowered or lowered.endswith(" on"):
@@ -676,6 +784,7 @@ def _systemsetup_state(option: str, label: str) -> tuple[bool | None, str]:
 
 def _content_cache_state() -> tuple[bool | None, str]:
     rc, output, error = sh([ASSET_CACHE, "status"], timeout=12)
+    output, error = _as_text(output), _as_text(error)
     combined = (output or error or "").strip()
     if rc != 0:
         return None, combined[-300:] or "unknown"
@@ -806,7 +915,7 @@ def open_system_settings() -> dict:
         rc, output, error = sh([OPEN, "-a", "System Settings"], timeout=12)
     return {
         "ok": rc == 0,
-        "message": (error or output or "")[-300:],
+        "message": _as_text(error or output)[-300:],
     }
 
 
@@ -821,7 +930,7 @@ def shares_overview() -> dict:
     identical lists.
     """
     try:
-        hostname = socket.gethostname()
+        hostname = _as_text(socket.gethostname())
     except OSError:
         hostname = ""
     def _safe(item):

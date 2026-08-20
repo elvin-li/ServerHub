@@ -26,6 +26,25 @@ from __future__ import annotations
 
 from hub.util import cached_snapshot, sh
 
+
+def _as_text(value) -> str:
+    """``ps`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 sensors/Tools JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
 #: Long enough to collapse the readers inside one request, short enough that the
 #: Tools process table still looks live.  ``tools_svc`` had settled on 5s for the
 #: same command and the same reason.
@@ -42,7 +61,7 @@ def _ps_table() -> tuple[str, ...]:
     rc, out, _ = sh(["/bin/ps", "aux"], timeout=_TIMEOUT)
     # An empty tuple on failure, matching what every hand-written copy did with a
     # non-zero rc: no rows, so no process is reported as running.
-    return tuple((out or "").splitlines()) if rc == 0 else ()
+    return tuple(_as_text(out).splitlines()) if rc == 0 else ()
 
 
 def ps_lines(force: bool = False) -> tuple[str, ...]:
@@ -87,12 +106,14 @@ def ps_pid_commands(force: bool = False) -> tuple[tuple[int, str], ...]:
         return ()
     rows: list[tuple[int, str]] = []
     for line in lines[1:]:
-        parts = line.split(None, 10)
+        text = _as_text(line)
+        parts = text.split(None, 10)
         if len(parts) < 11:
             continue
         try:
             pid = int(parts[1])
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
+            # YAML ``.inf`` as a planted pid column: ``int(inf)`` OverflowError.
             continue
         rows.append((pid, parts[10]))
     return tuple(rows)
@@ -105,11 +126,11 @@ def process_matches(needle: str, *, force: bool = False) -> bool:
     predicate did: a `ps aux` row for `ps aux` itself would otherwise answer yes
     to a needle that happens to appear in the panel's own argv.
     """
-    if not needle:
+    if not isinstance(needle, str) or not needle:
         return False
     needle = needle.lower()
     for line in ps_lines(force=force):
-        low = line.lower()
+        low = _as_text(line).lower()
         if needle in low and "ps aux" not in low:
             return True
     return False

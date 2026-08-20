@@ -91,6 +91,18 @@ class TestSystemVolumesAreNeverEligible(PoolTestBase):
         mounts = {c["mount"] for c in storage_pool_svc.pool_overview(force=True)["unassigned"]}
         self.assertEqual(mounts, {"/Volumes/PhotoVault", "/Volumes/Archive"})
 
+    def test_junk_volume_rows_do_not_500_the_planner(self):
+        junk = list(VOLS) + [
+            "not-a-row",
+            {"kind": "external", "mount": "/Volumes/Broken", "total_gb": "huge"},
+        ]
+        with mock.patch.object(storage_svc, "list_volumes", return_value=junk):
+            overview = storage_pool_svc.pool_overview(force=True)
+        mounts = {c["mount"] for c in overview["unassigned"]}
+        self.assertIn("/Volumes/Broken", mounts)
+        broken = next(c for c in overview["unassigned"] if c["mount"] == "/Volumes/Broken")
+        self.assertEqual(broken["total_gb"], 0.0)
+
     def test_a_system_volume_cannot_be_planned_into_a_pool(self):
         with self.assertRaises(HTTPException) as ctx:
             storage_pool_svc.plan_pool(["/", "/Volumes/PhotoVault"])

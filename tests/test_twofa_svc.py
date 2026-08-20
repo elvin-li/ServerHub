@@ -40,6 +40,20 @@ class _Sandbox(unittest.TestCase):
 
 
 class EnrollmentTests(_Sandbox):
+    def test_non_list_recovery_does_not_500_status(self):
+        self.store.write_text(json.dumps({
+            "admin": {"enabled": True, "recovery": 3},
+        }))
+        self.assertEqual(twofa_svc.status("admin")["recovery_remaining"], 0)
+
+    def test_non_object_user_row_does_not_500_status(self):
+        self.store.write_text(json.dumps({"admin": ["not", "a", "mapping"]}))
+        self.assertFalse(twofa_svc.enabled("admin"))
+        self.assertEqual(twofa_svc.status("admin")["enabled"], False)
+        # Enrollment must replace the garbage row, not ``dict([...])``.
+        twofa_svc.begin_enrollment("admin")
+        self.assertTrue(twofa_svc.status("admin")["pending"])
+
     def test_pending_enrollment_enforces_nothing(self):
         twofa_svc.begin_enrollment("admin")
         self.assertFalse(twofa_svc.enabled("admin"))
@@ -154,6 +168,50 @@ class RecoveryCodeTests(_Sandbox):
     def test_unknown_recovery_code_is_refused(self):
         self.enroll()
         self.assertFalse(twofa_svc.use_recovery_code("admin", "AAAAA-AAAAA"))
+
+    def test_typed_wrong_secret_and_codes_do_not_500_login(self):
+        """A leftover list secret or plaintext recovery used to raise on login."""
+        self.store.write_text(json.dumps({
+            "admin": {
+                "enabled": True,
+                "secret": ["not", "a", "string"],
+                "recovery": ["PLAIN-CODE", 3, {"h": 1}, "cafe" + "é"],
+                "last_counter": "oops",
+            },
+        }))
+        self.assertFalse(twofa_svc.verify_totp_code("admin", "123456", timestamp=NOW))
+        self.assertFalse(twofa_svc.use_recovery_code("admin", "AAAAA-AAAAA"))
+        self.assertIsNone(twofa_svc.verify_second_factor("admin", "123456"))
+
+    def test_json_1e309_last_counter_and_confirmed_at_do_not_500(self):
+        """JSON ``1e309`` is inf; ``int(inf)`` 500'd TOTP login, and
+        confirmed_at inf 500'd GET /api/auth/totp (allow_nan=False)."""
+        secret, codes = self.enroll(timestamp=NOW)
+        raw = json.loads(self.store.read_text())
+        huge = json.loads("1e309")
+        raw["admin"]["last_counter"] = huge
+        raw["admin"]["confirmed_at"] = huge
+        self.store.write_text(json.dumps(raw))
+        status = twofa_svc.status("admin")
+        json.dumps(status, allow_nan=False)
+        self.assertIsNone(status["confirmed_at"])
+        code = code_at(secret, NOW + 60)
+        self.assertTrue(twofa_svc.verify_totp_code("admin", code, timestamp=NOW + 60))
+        # A successful verify must not rewrite Infinity and poison the store.
+        stored = json.loads(self.store.read_text())
+        self.assertIsInstance(stored["admin"]["last_counter"], int)
+        self.assertNotEqual(stored["admin"]["confirmed_at"], huge)
+
+    def test_lone_surrogate_recovery_code_does_not_500(self):
+        self.enroll()
+        self.assertFalse(twofa_svc.use_recovery_code("admin", "\ud800"))
+        self.assertIsNone(twofa_svc.verify_second_factor("admin", "\ud800"))
+
+    def test_save_dumps_recursion_does_not_500(self):
+        """json.dumps RecursionError is not OSError; enroll used to 500."""
+        with mock.patch.object(twofa_svc.json, "dumps", side_effect=RecursionError):
+            twofa_svc._save({"admin": {"enabled": True, "secret": "A"}})
+        self.assertFalse(self.store.exists())
 
     def test_regeneration_invalidates_every_old_code(self):
         _, old = self.enroll()

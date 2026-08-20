@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import plistlib
 import re
-import time
 
 from hub.macos_admin import run_admin
-from hub.util import cached_snapshot, fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh, strftime_now
 
 DISKUTIL = "/usr/sbin/diskutil"
 
@@ -56,12 +55,24 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict:
     rc, out, _ = sh(argv, timeout=timeout)
     if rc != 0 or not out:
         return {}
+    if isinstance(out, (bytes, bytearray)):
+        out = bytes(out).decode("utf-8", "replace")
+    elif not isinstance(out, str):
+        try:
+            out = str(out)
+        except RecursionError:
+            return {}
+        except Exception:
+            return {}
     start = out.find("<?xml")
     if start < 0:
         return {}
     try:
         parsed = plistlib.loads(out[start:].encode())
-    except (plistlib.InvalidFileException, ValueError):
+    except Exception:
+        # Torn XML (``sh`` cap, diagnostics ahead of a truncated plist)
+        # raises xml.parsers.expat.ExpatError, which is not ValueError —
+        # that used to 500 /api/raid.
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -73,10 +84,121 @@ def _disk_info(device: str) -> dict:
     return _plist([DISKUTIL, "info", "-plist", device], timeout=10)
 
 
+def _ident(value) -> str:
+    """Plist device / mount field as text.
+
+    ``DeviceIdentifier`` / ``APFSPhysicalStore`` / ``SnapshotMountPoint`` are
+    strings in a healthy diskutil plist.  Leftover ``bytes`` used to stringify
+    as ``b'disk0s2'`` and drop the APFS physical store from the boot-disk
+    union; array-shaped leftovers used to skip the store the same way.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    if not isinstance(value, str):
+        return ""
+    # Leftover ``\\ud800`` in a plist Name used to 500 GET /api/raid.
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
+
+    Plist names were already scrubbed; leftover ``\\ud800`` / ``Infinity`` in
+    a ``run_admin`` message still 500'd POST /api/raid.
+    """
+    if depth > 16:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _ident(value)
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_ident(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/raid.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _ident(value) or str(value).encode("utf-8", "replace").decode("utf-8")
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _admin_result(result) -> dict:
+    cleaned = _jsonable(result) if isinstance(result, dict) else {}
+    return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
+
+
 def _whole_disk(device: str) -> str:
     """``disk0s2`` → ``disk0``; a whole-disk id passes through unchanged."""
-    m = re.match(r"^(disk\d{1,3})", str(device or ""))
+    m = re.match(r"^(disk\d{1,3})", _ident(device))
     return m.group(1) if m else ""
+
+
+def _size_fields(raw) -> tuple:
+    """JSON-safe ``(size_bytes, size_gb)``.
+
+    ``Size: inf`` used to 500 GET /api/raid under Starlette's ``allow_nan=False``
+    encoder (disk_manage already dropped inf sizes; this module still emitted
+    the raw plist number).  A huge finite integer OverflowError'd the GB
+    conversion the same way a 400-digit ``df`` block count did.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None, None
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return None, None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None, None
+    try:
+        gb = round(n / 2**30, 1)
+    except OverflowError:
+        return n, None
+    if gb != gb or gb in (float("inf"), float("-inf")):
+        gb = None
+    return n, gb
+
+
+def _finite_float(raw):
+    if isinstance(raw, bool) or raw in (None, ""):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return value
 
 
 def disk_topology() -> dict[str, dict]:
@@ -96,37 +218,42 @@ def disk_topology() -> dict[str, dict]:
     def slot(whole: str) -> dict:
         return topology.setdefault(whole, {"volumes": [], "system": False, "containers": []})
 
-    entries = [d for d in (data.get("AllDisksAndPartitions") or []) if isinstance(d, dict)]
+    raw_disks = data.get("AllDisksAndPartitions")
+    entries = [d for d in raw_disks if isinstance(d, dict)] if isinstance(raw_disks, list) else []
 
     # Pass 1: plain partition tables — a mount here belongs to this disk directly.
     for disk in entries:
-        whole = str(disk.get("DeviceIdentifier") or "")
+        whole = _ident(disk.get("DeviceIdentifier"))
         if not whole:
             continue
         record = slot(whole)
-        for part in disk.get("Partitions") or []:
+        for part in disk.get("Partitions") if isinstance(disk.get("Partitions"), list) else []:
             if not isinstance(part, dict):
                 continue
-            mount = str(part.get("MountPoint") or "")
+            mount = _ident(part.get("MountPoint"))
             if mount:
                 record["volumes"].append({
-                    "device": str(part.get("DeviceIdentifier") or ""),
+                    "device": _ident(part.get("DeviceIdentifier")),
                     "mount": mount,
-                    "name": str(part.get("VolumeName") or ""),
+                    "name": _ident(part.get("VolumeName")),
                 })
 
     # Pass 2: APFS containers — attribute their volumes to the physical stores.
     for disk in entries:
-        stores = disk.get("APFSPhysicalStores") or []
-        volumes = disk.get("APFSVolumes") or []
+        stores = disk.get("APFSPhysicalStores") if isinstance(disk.get("APFSPhysicalStores"), list) else []
+        volumes = disk.get("APFSVolumes") if isinstance(disk.get("APFSVolumes"), list) else []
         if not stores:
             continue
-        backing = {
-            _whole_disk(str(s.get("DeviceIdentifier") or ""))
-            for s in stores if isinstance(s, dict)
-        }
-        backing.discard("")
-        container = str(disk.get("DeviceIdentifier") or "")
+        backing: set[str] = set()
+        for store in stores:
+            if isinstance(store, dict):
+                raw = store.get("DeviceIdentifier") or store.get("APFSPhysicalStore")
+            else:
+                raw = store
+            whole = _whole_disk(raw)
+            if whole:
+                backing.add(whole)
+        container = _ident(disk.get("DeviceIdentifier"))
         container_internal = bool(disk.get("OSInternal"))
         for whole in backing:
             record = slot(whole)
@@ -136,17 +263,17 @@ def disk_topology() -> dict[str, dict]:
             for vol in volumes:
                 if not isinstance(vol, dict):
                     continue
-                mounts = [str(vol.get("MountPoint") or "")]
+                mounts = [_ident(vol.get("MountPoint"))]
                 # A sealed system volume is mounted as a snapshot, so its own
                 # MountPoint is empty and `/` only appears under MountedSnapshots.
-                for snap in vol.get("MountedSnapshots") or []:
+                for snap in vol.get("MountedSnapshots") if isinstance(vol.get("MountedSnapshots"), list) else []:
                     if isinstance(snap, dict):
-                        mounts.append(str(snap.get("SnapshotMountPoint") or ""))
+                        mounts.append(_ident(snap.get("SnapshotMountPoint")))
                 for mount in [m for m in mounts if m]:
                     record["volumes"].append({
-                        "device": str(vol.get("DeviceIdentifier") or ""),
+                        "device": _ident(vol.get("DeviceIdentifier")),
                         "mount": mount,
-                        "name": str(vol.get("VolumeName") or ""),
+                        "name": _ident(vol.get("VolumeName")),
                     })
                 if bool(vol.get("OSInternal")):
                     record["system"] = True
@@ -160,20 +287,23 @@ def disk_topology() -> dict[str, dict]:
     return topology
 
 
-def _parse_members(raw: list) -> list[dict]:
+def _parse_members(raw) -> list[dict]:
     members = []
-    for entry in raw or []:
+    if not isinstance(raw, list):
+        return members
+    for entry in raw:
         if not isinstance(entry, dict):
             continue
-        status = str(entry.get("MemberStatus") or entry.get("AppleRAIDMemberStatus") or "")
+        status = _ident(entry.get("MemberStatus") or entry.get("AppleRAIDMemberStatus") or "")
+        size_bytes, size_gb = _size_fields(entry.get("Size"))
         members.append({
-            "device": str(entry.get("AppleRAIDMemberDeviceNode") or entry.get("DeviceIdentifier") or "").replace("/dev/", ""),
-            "uuid": str(entry.get("AppleRAIDMemberUUID") or ""),
+            "device": _ident(entry.get("AppleRAIDMemberDeviceNode") or entry.get("DeviceIdentifier") or "").replace("/dev/", ""),
+            "uuid": _ident(entry.get("AppleRAIDMemberUUID") or ""),
             "status": status,
             "healthy": status.lower() in ("online", "ok"),
-            "rebuild_percent": entry.get("AppleRAIDMemberRebuildPercent"),
-            "size_bytes": entry.get("Size"),
-            "size_gb": round(int(entry["Size"]) / 2**30, 1) if str(entry.get("Size") or "").isdigit() else None,
+            "rebuild_percent": _finite_float(entry.get("AppleRAIDMemberRebuildPercent")),
+            "size_bytes": size_bytes,
+            "size_gb": size_gb,
         })
     return members
 
@@ -181,26 +311,29 @@ def _parse_members(raw: list) -> list[dict]:
 def list_sets() -> list[dict]:
     data = _plist([DISKUTIL, "appleRAID", "list", "-plist"], timeout=15)
     sets = []
-    for entry in data.get("AppleRAIDSets") or []:
+    raw_sets = data.get("AppleRAIDSets")
+    if not isinstance(raw_sets, list):
+        raw_sets = []
+    for entry in raw_sets:
         if not isinstance(entry, dict):
             continue
         members = _parse_members(entry.get("AppleRAIDMembers") or entry.get("Members") or [])
-        status = str(entry.get("Status") or entry.get("AppleRAIDSetStatus") or "")
-        level = str(entry.get("Level") or entry.get("AppleRAIDSetLevel") or "").lower()
-        size = entry.get("Size")
+        status = _ident(entry.get("Status") or entry.get("AppleRAIDSetStatus") or "")
+        level = _ident(entry.get("Level") or entry.get("AppleRAIDSetLevel") or "").lower()
+        size_bytes, size_gb = _size_fields(entry.get("Size"))
         degraded = status.lower() in ("degraded", "failed") or any(not m["healthy"] for m in members)
         sets.append({
-            "uuid": str(entry.get("AppleRAIDSetUUID") or entry.get("SetUUID") or ""),
-            "name": str(entry.get("Name") or entry.get("AppleRAIDSetName") or ""),
+            "uuid": _ident(entry.get("AppleRAIDSetUUID") or entry.get("SetUUID") or ""),
+            "name": _ident(entry.get("Name") or entry.get("AppleRAIDSetName") or ""),
             "level": level,
             "status": status,
             "degraded": degraded,
             # Only a mirror survives losing a member; say so rather than letting
             # the UI imply that any RAID level is protection.
             "redundant": level == "mirror",
-            "device": str(entry.get("AppleRAIDSetDeviceNode") or "").replace("/dev/", ""),
-            "size_bytes": size,
-            "size_gb": round(int(size) / 2**30, 1) if str(size or "").isdigit() else None,
+            "device": _ident(entry.get("AppleRAIDSetDeviceNode") or "").replace("/dev/", ""),
+            "size_bytes": size_bytes,
+            "size_gb": size_gb,
             "members": members,
             "member_count": len(members),
             "rebuilding": any(
@@ -222,9 +355,10 @@ def candidate_devices() -> list[dict]:
     topology = disk_topology()
     data = _plist([DISKUTIL, "list", "-plist", "physical"], timeout=12)
 
+    raw_disks = data.get("AllDisksAndPartitions")
     disks = [
-        (str(disk.get("DeviceIdentifier") or ""), disk)
-        for disk in data.get("AllDisksAndPartitions") or []
+        (_ident(disk.get("DeviceIdentifier")), disk)
+        for disk in (raw_disks if isinstance(raw_disks, list) else [])
         if isinstance(disk, dict)
     ]
     disks = [(device, disk) for device, disk in disks if _DEV_RE.fullmatch(device)]
@@ -240,7 +374,7 @@ def candidate_devices() -> list[dict]:
 
     out = []
     for (device, disk), info in zip(disks, infos):
-        size = info.get("TotalSize") or disk.get("Size")
+        size_bytes, size_gb = _size_fields(info.get("TotalSize") or disk.get("Size"))
         record = topology.get(device) or {"volumes": [], "system": False}
         mounted = [
             {"mount": v["mount"], "name": v["name"], "device": v["device"]}
@@ -249,12 +383,12 @@ def candidate_devices() -> list[dict]:
         blocked = "system" if record["system"] else ""
         out.append({
             "device": device,
-            "name": str(info.get("MediaName") or info.get("IORegistryEntryName") or device),
-            "size_bytes": size,
-            "size_gb": round(int(size) / 2**30, 1) if str(size or "").isdigit() else None,
+            "name": _ident(info.get("MediaName")) or _ident(info.get("IORegistryEntryName")) or device,
+            "size_bytes": size_bytes,
+            "size_gb": size_gb,
             "internal": bool(info.get("Internal")),
             "solid_state": bool(info.get("SolidState")),
-            "protocol": str(info.get("BusProtocol") or ""),
+            "protocol": _ident(info.get("BusProtocol")),
             "mounted_volumes": mounted,
             "has_data": bool(mounted),
             "eligible": not blocked,
@@ -267,7 +401,7 @@ def candidate_devices() -> list[dict]:
 def overview(force: bool = False) -> dict:
     sets = list_sets()
     data = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "sets": sets,
         "count": len(sets),
         "degraded": sum(1 for s in sets if s["degraded"]),
@@ -338,9 +472,10 @@ def create_set(
         timeout=900,
     )
     invalidate()
-    if result.get("ok"):
+    if isinstance(result, dict) and result.get("ok"):
+        result = dict(result)
         result.update(level=level, name=name, members=members)
-    return result
+    return _admin_result(result)
 
 
 def delete_set(*, set_uuid: str, confirm: bool, confirm_phrase: str) -> dict:
@@ -352,7 +487,7 @@ def delete_set(*, set_uuid: str, confirm: bool, confirm_phrase: str) -> dict:
         raise RaidError("raid.confirm_name_mismatch", name=target["name"])
     result = run_admin([DISKUTIL, "appleRAID", "delete", target["uuid"]], timeout=600)
     invalidate()
-    return result
+    return _admin_result(result)
 
 
 def _resolve_set(set_uuid: str) -> dict:
@@ -379,7 +514,7 @@ def repair_mirror(*, set_uuid: str, device: str, confirm: bool) -> dict:
         timeout=900,
     )
     invalidate()
-    return result
+    return _admin_result(result)
 
 
 def add_member(*, set_uuid: str, device: str, confirm: bool) -> dict:
@@ -395,7 +530,7 @@ def add_member(*, set_uuid: str, device: str, confirm: bool) -> dict:
         timeout=900,
     )
     invalidate()
-    return result
+    return _admin_result(result)
 
 
 def remove_member(*, set_uuid: str, member_uuid: str, confirm: bool) -> dict:
@@ -414,4 +549,4 @@ def remove_member(*, set_uuid: str, member_uuid: str, confirm: bool) -> dict:
         timeout=600,
     )
     invalidate()
-    return result
+    return _admin_result(result)

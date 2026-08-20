@@ -26,9 +26,25 @@ from pathlib import Path
 
 from hub.launchd_cache import invalidate_launchd, listing as launchd_listing
 from hub.paths import AGENTS_DIR, UID
-from hub.util import sh
+from hub.util import read_bytes_capped, sh
 
 log = logging.getLogger("serverhub.stale_runtime")
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/health/checks.
+_PLIST_CAP = 256 * 1024
+
+
+def _as_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
 
 #: Same three spellings as ``hub.launcher_svc.PANEL_LABEL`` /
 #: ``PANEL_LABEL_ALTERNATES``.  Kickstarted last so other daemons come back
@@ -46,6 +62,7 @@ KICK_FAIL_COOLDOWN_SEC = 60
 
 _PROC_PIDPATH_MAX = 4096
 _last_kick: dict[str, float] = {}
+_kick_lock = threading.Lock()
 #: ``proc_pidpath`` is cheap; the lsof fallback is not.  Status and health
 #: both ask this question for the same PIDs within one poll window.
 _EXE_TTL = 30.0
@@ -74,10 +91,11 @@ def _exe_from_lsof(pid: int) -> str | None:
     )
     # Deleted Cellar binaries often make lsof exit 1 while still printing
     # the vanished path on stdout — that is the row we need.
-    if not (out or "").strip():
+    text = _as_text(out)
+    if not text.strip():
         return None
     skip_suffixes = (".dylib", ".so", ".bundle")
-    for line in out.splitlines():
+    for line in text.splitlines():
         if not line.startswith("n/"):
             continue
         path = line[1:].strip()
@@ -110,7 +128,7 @@ def pid_exe_path(pid) -> str | None:
     """
     try:
         n = int(pid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if n <= 0:
         return None
@@ -144,10 +162,9 @@ def _pid_exe_path_uncached(n: int) -> str | None:
             if path:
                 return path
     rc, out, _ = sh(["/bin/ps", "-p", str(n), "-o", "command="], timeout=3)
-    if rc == 0 and (out or "").strip():
-        cmd = out.strip()
-        if cmd.startswith("/"):
-            return cmd.split(None, 1)[0]
+    cmd = _as_text(out).strip()
+    if rc == 0 and cmd.startswith("/"):
+        return cmd.split(None, 1)[0]
     return _exe_from_lsof(n)
 
 
@@ -160,15 +177,16 @@ def scan() -> list[dict]:
     """
     listing = launchd_listing()
     stale: list[dict] = []
-    agents = Path(AGENTS_DIR)
     try:
+        agents = Path(AGENTS_DIR)
         paths = sorted(agents.glob("*.plist"))
-    except OSError:
+    except (OSError, TypeError, ValueError):
+        # A None/NUL AGENTS_DIR used to TypeError health_checks() and
+        # empty GET /api/health/checks once the wrapper was not in place.
         return []
     for path in paths:
         try:
-            with open(path, "rb") as fh:
-                pl = plistlib.load(fh)
+            pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         except Exception:
             continue
         if not isinstance(pl, dict):
@@ -177,7 +195,7 @@ def scan() -> list[dict]:
             continue
         if pl.get("StartInterval") or pl.get("StartCalendarInterval"):
             continue
-        label = str(pl.get("Label") or path.stem)
+        label = _as_text(pl.get("Label") or path.stem)
         pid = listing.pid_for(label)
         if not pid:
             continue
@@ -186,15 +204,15 @@ def scan() -> list[dict]:
             continue
         try:
             missing = not Path(exe).exists()
-        except OSError:
+        except (OSError, ValueError, TypeError):
             missing = True
         if not missing:
             continue
         try:
             pid_n = int(pid)
-        except (TypeError, ValueError):
-            pid_n = pid
-        stale.append({"label": label, "pid": pid_n, "exe": exe})
+        except (TypeError, ValueError, OverflowError):
+            pid_n = 0
+        stale.append({"label": label, "pid": pid_n, "exe": _as_text(exe)})
     return stale
 
 
@@ -203,18 +221,18 @@ def health_checks() -> list[dict]:
     stale = scan()
     if not stale:
         return []
-    labels = ", ".join(item["label"] for item in stale)
+    labels = ", ".join(_as_text(item.get("label")) for item in stale)
     detail = f"{len(stale)} running on deleted binaries: {labels}"
     return [{
         "id": "stale_runtime",
         "name": "LaunchAgents on missing interpreter",
         "level": "warn",
         "ok": False,
-        "detail": detail[:160],
-        "fix": "; ".join(
-            f"launchctl kickstart -k gui/$(id -u)/{item['label']}"
+        "detail": _as_text(detail)[:160],
+        "fix": _as_text("; ".join(
+            f"launchctl kickstart -k gui/$(id -u)/{_as_text(item.get('label'))}"
             for item in stale[:4]
-        ),
+        )),
     }]
 
 
@@ -225,7 +243,14 @@ def remediate(now: int | float | None = None) -> list:
     thread, which has no action-registry session.  Returns the alerts
     ``emit_alert`` recorded so ``check_once`` can include them in its list.
     """
-    now = int(time.time() if now is None else now)
+    try:
+        now = int(time.time() if now is None else now)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            now = int(time.time())
+        except (TypeError, ValueError, OverflowError):
+            # Leftover ``time.time() = inf`` OverflowError'd the alerter kickstart.
+            now = 0
     stale = scan()
     if not stale:
         return []
@@ -237,19 +262,22 @@ def remediate(now: int | float | None = None) -> list:
     kicked = False
     for item in ordered:
         label = item["label"]
-        last = _last_kick.get(label, 0)
-        if now - last < KICK_COOLDOWN_SEC:
-            continue
-        # Claim the slot so two overlapping sweeps cannot double-kick.
-        _last_kick[label] = now
+        # Claim under the lock: a bare get-then-set let two overlapping
+        # alerter sweeps both see last=0 and kickstart the same agent.
+        with _kick_lock:
+            last = _last_kick.get(label, 0)
+            if now - last < KICK_COOLDOWN_SEC:
+                continue
+            _last_kick[label] = now
         rc, _, err = sh(
             ["/bin/launchctl", "kickstart", "-k", f"gui/{UID}/{label}"],
             timeout=20,
         )
         kicked = True
         if rc != 0:
-            _last_kick[label] = now - KICK_COOLDOWN_SEC + KICK_FAIL_COOLDOWN_SEC
-            log.warning("kickstart %s failed rc=%s %s", label, rc, (err or "")[:160])
+            with _kick_lock:
+                _last_kick[label] = now - KICK_COOLDOWN_SEC + KICK_FAIL_COOLDOWN_SEC
+            log.warning("kickstart %s failed rc=%s %s", label, rc, _as_text(err)[:160])
         try:
             from hub.alerts import emit_alert
             if rc == 0:
@@ -258,7 +286,7 @@ def remediate(now: int | float | None = None) -> list:
                     f"on missing interpreter {item['exe']}"
                 )
             else:
-                detail = (err or "").strip() or f"rc={rc}"
+                detail = _as_text(err).strip() or f"rc={rc}"
                 message = (
                     f"Could not restart {label} (pid {item['pid']} on missing "
                     f"interpreter {item['exe']}): {detail[:120]}"

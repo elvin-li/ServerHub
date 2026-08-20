@@ -63,6 +63,34 @@ class ParseArgvTests(unittest.TestCase):
         self.assertEqual(parsed["listen"], "ws://0.0.0.0:8444")
         self.assertEqual(parsed["restrict_to"], "192.168.1.206:51821")
 
+    def test_array_plist_does_not_500(self):
+        import plistlib
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wstunnel.plist"
+            path.write_bytes(plistlib.dumps(["not", "a", "dict"]))
+            parsed = wst.read_plist(path)
+        self.assertEqual(parsed["listen"], "")
+        self.assertEqual(parsed["restrict_to"], "")
+
+    def test_huge_plist_does_not_oom_read(self):
+        """``Path.read_bytes()`` of leftover multi-MB LaunchDaemon used to OOM GET /api/wireguard."""
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wstunnel.plist"
+            path.write_bytes(b"x" * (2 * 1024 * 1024))
+            parsed = wst.read_plist(path)
+        self.assertEqual(parsed["listen"], "")
+        self.assertEqual(parsed["restrict_to"], "")
+
+    def test_nested_plist_does_not_500(self):
+        """plistlib RecursionError is not ValueError; GET /api/wireguard used to 500."""
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wstunnel.plist"
+            path.write_bytes(b"plist")
+            with patch.object(wst.plistlib, "loads", side_effect=RecursionError):
+                parsed = wst.read_plist(path)
+        self.assertEqual(parsed["listen"], "")
+        self.assertEqual(parsed["restrict_to"], "")
+
 
 class UrlAndCommandTests(unittest.TestCase):
     def test_public_url_keeps_the_listen_port_and_takes_the_endpoint_host(self):
@@ -179,6 +207,19 @@ class StatusMergeTests(unittest.TestCase):
         self.assertTrue(snap["needs_stabilize"])
         self.assertFalse(snap["needs_apply"])
 
+    def test_status_tolerates_a_list_settings_blob(self):
+        with (
+            patch.object(wst, "live", return_value={
+                "listen": "", "restrict_to": "", "pid": 0, "running": False,
+                "binary": "", "plist": "",
+            }),
+            patch.object(wst, "local_ipv4s", return_value=frozenset()),
+        ):
+            snap = wst.status(["not", "a", "map"])
+        self.assertFalse(snap["enabled"])
+        self.assertFalse(snap["running"])
+        self.assertFalse(snap["configured"])
+
     def test_a_default_listen_alone_does_not_count_as_configured(self):
         with (
             patch.object(wst, "live", return_value={
@@ -214,6 +255,30 @@ class StatusMergeTests(unittest.TestCase):
         self.assertEqual(row["process"], "wstunnel")
         self.assertEqual(row["port"], "8444")
         self.assertEqual(row["user"], "root")
+
+    def test_listener_row_out_of_range_port_does_not_500(self):
+        """urlparse().port raises on 99999; listen_parts already rejected the path."""
+        self.assertIsNone(wst.listener_row({
+            "listen": "ws://0.0.0.0:99999/secret",
+            "port": 0,
+        }))
+        self.assertIsNone(wst.listener_row(["not", "a", "map"]))
+        from hub.network_svc import _with_wstunnel_listener
+        rows = _with_wstunnel_listener(
+            [{"process": "nginx", "pid": "1", "user": "a", "address": "*:80", "port": "80"}],
+            {"listen": "ws://0.0.0.0:99999/x", "port": 0},
+        )
+        self.assertEqual(len(rows), 1)
+
+    def test_unicode_pid_and_nul_argv_are_skipped(self):
+        self.assertFalse(wst.parse_process_table(
+            "\u00b2 /opt/homebrew/bin/wstunnel server "
+            "--restrict-to 127.0.0.1:51821 ws://0.0.0.0:8444\n"
+        )["running"])
+        self.assertFalse(wst.parse_process_table(
+            "99 /opt/homebrew/bin/wstunnel\x00evil server "
+            "--restrict-to 127.0.0.1:51821 ws://0.0.0.0:8444\n"
+        )["running"])
 
 
 class SettingsAndExportTests(unittest.TestCase):
@@ -399,7 +464,7 @@ class ReadinessAndApplyTests(unittest.TestCase):
                 "desired_listen": "ws://0.0.0.0:8444",
                 "desired_restrict_to": "127.0.0.1:51821",
             }),
-            patch.object(net, "write_secret_text") as staged,
+            patch.object(net, "replace_secret_text") as staged,
             patch.object(net, "run_admin_sequence", return_value={"ok": True}) as admin,
             patch.object(wst, "read_plist", return_value={
                 "listen": "ws://0.0.0.0:8444",
@@ -434,7 +499,7 @@ class ReadinessAndApplyTests(unittest.TestCase):
                 "desired_listen": "ws://0.0.0.0:8444",
                 "desired_restrict_to": "127.0.0.1:51821",
             }),
-            patch.object(net, "write_secret_text"),
+            patch.object(net, "replace_secret_text"),
             patch.object(net, "run_admin_sequence", return_value={"ok": True}),
             # The stale plist a previous install left in place.
             patch.object(wst, "read_plist", return_value={
@@ -461,7 +526,7 @@ class ReadinessAndApplyTests(unittest.TestCase):
                 "desired_listen": "ws://0.0.0.0:8444",
                 "desired_restrict_to": "0.0.0.0:51821",
             }),
-            patch.object(net, "write_secret_text"),
+            patch.object(net, "replace_secret_text"),
             patch.object(net, "run_admin_sequence", return_value={"ok": True}),
             patch.object(wst, "read_plist", return_value={
                 "listen": "ws://0.0.0.0:8444",

@@ -117,6 +117,15 @@ SECRET_PATHS = [
         "the staged root wstunnel LaunchDaemon: host listen address and the "
         "WireGuard restrict-to target, written 0600 under data/ before sudo cp",
     ),
+    (
+        "data/twofa.json",
+        "TOTP secret and recovery hashes; leaking it disables two-factor "
+        "for every enrolled account",
+    ),
+    (
+        "data/twofa.json.lock",
+        "the 2FA write mutex; runtime state that must not travel with a clone",
+    ),
 ]
 
 

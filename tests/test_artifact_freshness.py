@@ -201,6 +201,14 @@ class FreshnessTests(_Harness):
 
     # -- state machine ---------------------------------------------------
 
+    def test_a_junk_last_fire_stamp_does_not_abort_the_sweep(self):
+        """A torn `_freshness_last` used to raise `int("oops")` and skip the job."""
+        self.write_artifact("example_x.tgz", age_hours=26)
+        prev = {"freshness:t1": "down", "_freshness_last": {"t1": "yesterday"}}
+        alert = self.one([self.target()], prev=prev)
+        self.assertEqual(alert["level"], "down")
+        self.assertEqual(alert["id"], "freshness:t1")
+
     def test_ongoing_staleness_does_not_repeat_every_sweep(self):
         """Second sweep 90s later: still stale, already announced, quiet."""
         self.write_artifact("example_x.tgz", age_hours=26)

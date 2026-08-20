@@ -34,6 +34,11 @@ services.yaml
 services.yaml.*
 !services.yaml.example
 
+# TOTP secret and recovery hashes.  A committed copy forges 2FA.
+data/twofa.json
+data/twofa.json.*
+data/.metadata_never_index
+
 # ---- Runtime data / telemetry ----
 data/metrics.jsonl
 data/alerts.jsonl

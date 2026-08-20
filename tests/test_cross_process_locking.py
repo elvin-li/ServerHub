@@ -29,7 +29,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from hub import api_keys, totp, twofa_svc
+from hub import api_keys, config, totp, twofa_svc
 
 NOW = 1_700_000_000
 _MP = multiprocessing.get_context("spawn")
@@ -86,6 +86,33 @@ def _revoke_key(store: str, key_id: str, barrier, queue) -> None:
         barrier.wait(timeout=30)
         record = keys.revoke(key_id)
     queue.put(record is not None)
+
+
+def _race_setup(
+    yaml_path: str,
+    data_dir: str,
+    lock_path: str,
+    token_file: str,
+    token: str,
+    username: str,
+    password: str,
+    barrier,
+    queue,
+) -> None:
+    from hub import auth as auth_mod
+    from hub import config as cfg_mod
+
+    with (
+        mock.patch.object(cfg_mod, "YAML_PATH", Path(yaml_path)),
+        mock.patch.object(cfg_mod, "DATA_DIR", Path(data_dir)),
+        mock.patch.object(cfg_mod, "_LOCK_PATH", Path(lock_path)),
+        mock.patch.object(auth_mod, "SETUP_TOKEN_FILE", Path(token_file)),
+    ):
+        cfg_mod.reload_cfg()
+        barrier.wait(timeout=30)
+        time.sleep(0.05)
+        ok = auth_mod.complete_setup(token, password, username, require_token=True)
+    queue.put((bool(ok), username))
 
 
 class _Sandbox(unittest.TestCase):
@@ -205,6 +232,38 @@ class ApiKeyCrossProcessTests(_Sandbox):
         worker.join(timeout=10)
         self.assertTrue(done.is_set())
         self.assertEqual(len(api_keys.list_public()), 1)
+
+
+class SetupClaimCrossProcessTests(_Sandbox):
+    def test_exactly_one_process_claims_a_fresh_install(self):
+        """Two ServerHubs sharing services.yaml used to both return True."""
+        yaml_path = self.dir / "services.yaml"
+        data_dir = self.dir / "data"
+        data_dir.mkdir()
+        lock_path = data_dir / ".services.yaml.lock"
+        token_file = data_dir / ".setup-token"
+        yaml_path.write_text("settings:\n  auth: {enabled: true}\n", encoding="utf-8")
+        token = "T" * 43
+        token_file.write_text(token + "\n", encoding="utf-8")
+        results = self.run_pair(
+            _race_setup,
+            (str(yaml_path), str(data_dir), str(lock_path), str(token_file),
+             token, "alice", "alice-password-1"),
+            _race_setup,
+            (str(yaml_path), str(data_dir), str(lock_path), str(token_file),
+             token, "bob", "bob-password-xx"),
+        )
+        wins = [name for ok, name in results if ok]
+        self.assertEqual(len(wins), 1, results)
+        with (
+            mock.patch.object(config, "YAML_PATH", yaml_path),
+            mock.patch.object(config, "DATA_DIR", data_dir),
+            mock.patch.object(config, "_LOCK_PATH", lock_path),
+        ):
+            stored = config.reload_cfg()["settings"]["auth"]["username"]
+        self.assertEqual(stored, wins[0])
+        # And the loser must not have left the panel unclaimed.
+        self.assertTrue(stored in {"alice", "bob"})
 
 
 if __name__ == "__main__":

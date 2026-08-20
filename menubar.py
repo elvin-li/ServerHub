@@ -22,6 +22,11 @@ _PANEL_LABELS = (
     "com.elvin.serverhub",
 )
 LOCAL_TOKEN_FILE = Path(__file__).resolve().parent / "data" / ".local-client-token"
+#: Leftover multi-MB junk in the token file used to OOM every 30s poll.
+_TOKEN_CAP = 4096
+#: ``json.load(urlopen(...))`` of leftover multi-MB /api/status used to OOM
+#: the same rumps timer.  A full status peek is tens of KB.
+_BODY_CAP = 256 * 1024
 REFRESH_SECONDS = 30
 DOT = {"ok": "🟢", "warn": "🟡", "down": "🔴"}
 _SCHEME_PORTS = {"http": 80, "https": 443}
@@ -114,21 +119,98 @@ def _port_of(url):
         return None
 
 
+def _utf8_text(value):
+    """Drop leftover lone surrogates so dumps(ensure_ascii=False) can encode."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    return str(value).encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth=0):
+    """Coerce leftovers so json.dumps(..., allow_nan=False) cannot crash.
+
+    Leftover ``inf`` / ``bytes`` / ``\\ud800`` in a status peek, sensors
+    light row, or action body used to TypeError / ValueError the menu
+    signature and POST body dumps.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _as_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value):
+    return value if isinstance(value, list) else []
+
+
+def _local_token() -> str:
+    """Loopback token. Leftover multi-MB junk used to OOM every poll."""
+    try:
+        with open(LOCAL_TOKEN_FILE, "rb") as fh:
+            raw = fh.read(_TOKEN_CAP + 1)
+    except OSError:
+        return ""
+    if len(raw) > _TOKEN_CAP:
+        return ""
+    return raw.decode("utf-8", "replace").strip()
+
+
 def _json(url, method="GET", data=None, timeout=10):
     body = None
     headers = {}
-    try:
-        token = LOCAL_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        token = ""
+    token = _local_token()
     if token:
         headers["X-ServerHub-Local-Token"] = token
     if data is not None:
-        body = json.dumps(data).encode()
+        try:
+            body = json.dumps(
+                _jsonable(data), ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, OverflowError) as exc:
+            return {"ok": False, "message": str(exc)}
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, method=method, data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+        try:
+            raw = r.read(_BODY_CAP + 1)
+        except OSError:
+            return {}
+        if len(raw) > _BODY_CAP:
+            return {}
+        try:
+            return json.loads(raw)
+        except (ValueError, RecursionError, TypeError):
+            return {}
 
 
 def api_status():
@@ -150,7 +232,9 @@ def _kickstart_panel():
         try:
             result = subprocess.run(
                 ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
-                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=10,
             )
         except subprocess.TimeoutExpired:
@@ -164,11 +248,18 @@ def _menu_signature(status, tasks):
 
     Volatile metrics such as load average are deliberately excluded so a
     normal polling tick does not rebuild the native NSMenu object graph.
+    Leftover inf / bytes / ``\\ud800`` used to crash ``json.dumps`` here
+    (no ``allow_nan=False``) and take the rumps timer down with it.
     """
+    status = _as_dict(status)
     groups = []
-    for group in status.get("groups") or []:
+    for group in _as_list(status.get("groups")):
+        if not isinstance(group, dict):
+            continue
         services = []
-        for service in group.get("services") or []:
+        for service in _as_list(group.get("services")):
+            if not isinstance(service, dict):
+                continue
             services.append({
                 "id": service.get("id"),
                 "name": service.get("name"),
@@ -176,16 +267,22 @@ def _menu_signature(status, tasks):
                 "url": service.get("url"),
                 # Part of the row label now, so a port change must rebuild.
                 "port": service.get("port"),
-                "actions": service.get("actions") or [],
-                "links": service.get("links") or [],
+                "actions": _as_list(service.get("actions")),
+                "links": _as_list(service.get("links")),
             })
         groups.append({"group": group.get("group"), "services": services})
     shape = {
         "locale": _normalize_locale(status.get("locale")),
-        "counts": status.get("counts") or {},
+        "counts": _as_dict(status.get("counts")),
         "groups": groups,
-        "problems": [p.get("id") for p in (status.get("problems") or [])],
-        "links": status.get("links") or [],
+        "problems": [
+            p.get("id") for p in _as_list(status.get("problems"))
+            if isinstance(p, dict)
+        ],
+        "links": [
+            link for link in _as_list(status.get("links"))
+            if isinstance(link, dict)
+        ],
         "tasks": [
             {
                 "id": task.get("id"),
@@ -193,10 +290,17 @@ def _menu_signature(status, tasks):
                 "running": bool(task.get("running")),
                 "confirm": bool(task.get("confirm")),
             }
-            for task in tasks
+            for task in _as_list(tasks)
+            if isinstance(task, dict)
         ],
     }
-    return json.dumps(shape, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        _jsonable(shape),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _forget_callbacks(menu):
@@ -288,11 +392,12 @@ class ServerHubBar(rumps.App):
         # opening the panel just to read a number is a detour.  Prefer the
         # port the API reports, else recover it from the URL (an explicit
         # :port, otherwise the scheme default).
+        s = _as_dict(s)
         port = s.get("port") or _port_of(s.get("url"))
-        title = f"{DOT.get(s['state'], '⚪')} {s['name']}"
+        title = f"{DOT.get(s.get('state'), '⚪')} {s.get('name') or s.get('id') or '?'}"
         if port:
             title += f"  :{port}"
-        item = rumps.MenuItem(title)
+        item = rumps.MenuItem(_utf8_text(title))
         act = _act(self._locale)
         if s.get("url"):
             # Spell out the target so the click is predictable, and so the LAN
@@ -301,16 +406,18 @@ class ServerHubBar(rumps.App):
                 _t(self._locale, "open_url", url=s["url"]),
                 callback=lambda _, u=s["url"]: webbrowser.open(u),
             ))
-        for l in s.get("links") or []:
+        for l in _as_list(s.get("links")):
+            if not isinstance(l, dict) or not l.get("url"):
+                continue
             item.add(rumps.MenuItem(
-                f"🌐 {l['name']}",
+                f"🌐 {_utf8_text(l.get('name') or l.get('url'))}",
                 callback=lambda _, u=l["url"]: webbrowser.open(u),
             ))
-        for a in s.get("actions") or []:
+        for a in _as_list(s.get("actions")):
             if a not in act:
                 continue
             item.add(rumps.MenuItem(
-                act[a], callback=self.make_action(s["id"], a, s["name"]),
+                act[a], callback=self.make_action(s.get("id"), a, s.get("name") or s.get("id")),
             ))
         return item
 
@@ -329,22 +436,26 @@ class ServerHubBar(rumps.App):
                 ], "offline")
             return
 
-        self._locale = _normalize_locale(d.get("locale"))
+        self._locale = _normalize_locale(d.get("locale") if isinstance(d, dict) else None)
         loc = self._locale
-        c = d["counts"]
+        c = _as_dict(_as_dict(d).get("counts"))
+        down, warn, ok_n = c.get("down") or 0, c.get("warn") or 0, c.get("ok") or 0
         self.title = (
-            "🖥" if not (c["down"] or c["warn"])
-            else f"🖥{'🔴' + str(c['down']) if c['down'] else '🟡'}"
+            "🖥" if not (down or warn)
+            else f"🖥{'🔴' + str(down) if down else '🟡'}"
         )
 
         try:
             tasks = _json(f"{API}/api/maintenance", timeout=4)
         except Exception:
             tasks = []
+        if not isinstance(tasks, list):
+            tasks = []
 
-        summary_title = _t(loc, "summary", ok=c["ok"], warn=c["warn"], down=c["down"])
-        if d.get("system"):
-            summary_title += f" · load {d.get('system', {}).get('load1', '')}"
+        summary_title = _t(loc, "summary", ok=ok_n, warn=warn, down=down)
+        system = _as_dict(_as_dict(d).get("system"))
+        if system:
+            summary_title += f" · load {system.get('load1', '')}"
         state = _menu_signature(d, tasks)
         if state == self._menu_state and self._summary_item is not None:
             self._summary_item.title = summary_title
@@ -360,7 +471,9 @@ class ServerHubBar(rumps.App):
         ]
 
         # Problems first (Unraid-style attention)
-        problems = d.get("problems") or []
+        problems = [
+            s for s in _as_list(_as_dict(d).get("problems")) if isinstance(s, dict)
+        ]
         if problems:
             pi = rumps.MenuItem(_t(loc, "needs_attention", n=len(problems)))
             for s in problems[:12]:
@@ -368,17 +481,21 @@ class ServerHubBar(rumps.App):
             menu.append(pi)
             menu.append(None)
 
-        for grp in d["groups"]:
-            items = grp["services"]
-            bad = [s for s in items if s["state"] not in ("ok", "stopped")]
+        for grp in _as_list(_as_dict(d).get("groups")):
+            if not isinstance(grp, dict):
+                continue
+            items = [s for s in _as_list(grp.get("services")) if isinstance(s, dict)]
+            bad = [s for s in items if s.get("state") not in ("ok", "stopped")]
             if len(items) == 1:
                 menu.append(self.svc_item(items[0]))
                 continue
+            if not items:
+                continue
             head = DOT["ok"] if not bad else DOT[
-                "down" if any(s["state"] == "down" for s in bad) else "warn"
+                "down" if any(s.get("state") == "down" for s in bad) else "warn"
             ]
             gi = rumps.MenuItem(
-                f"{head} {grp['group']}（{len(items)-len(bad)}/{len(items)}）"
+                f"{head} {grp.get('group') or 'Other'}（{len(items)-len(bad)}/{len(items)}）"
             )
             for s in items:
                 gi.add(self.svc_item(s))
@@ -394,13 +511,17 @@ class ServerHubBar(rumps.App):
         if tasks:
             mi = rumps.MenuItem("🧰 维护与更新")
             for t in tasks:
-                lbl = ("⏳ " if t.get("running") else "") + t["name"]
+                if not isinstance(t, dict):
+                    continue
+                lbl = ("⏳ " if t.get("running") else "") + str(t.get("name") or t.get("id") or "")
                 mi.add(rumps.MenuItem(lbl, callback=self.make_maint(t)))
             menu.append(mi)
 
-        for l in (d.get("links") or [])[:6]:
+        for l in _as_list(_as_dict(d).get("links"))[:6]:
+            if not isinstance(l, dict) or not l.get("url"):
+                continue
             menu.append(rumps.MenuItem(
-                f"🔗 {l['name']}",
+                f"🔗 {l.get('name') or l.get('url')}",
                 callback=lambda _, u=l["url"]: webbrowser.open(u),
             ))
         menu += [

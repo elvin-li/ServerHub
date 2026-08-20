@@ -47,6 +47,92 @@ _REMAIN_RE = re.compile(r"(\d+):(\d{2})\s+remaining")
 _SOURCE_RE = re.compile(r"now drawing from\s+'([^']+)'", re.I)
 
 
+def _as_text(value) -> str:
+    """pmset stdout as text.  Leftover ``str()`` RecursionError used to 500 GET /api/ups."""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            text = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Drop leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    YAML ``low_battery_pct: .inf`` / ``trigger_pct: .nan`` used to 500 GET /api/ups.
+    A leftover ``name: 2026-08-19`` / ``!!binary`` / ``!!set`` still leaked
+    ``datetime.date`` / bytes / set into the GET /api/ups body.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[k] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/ups.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return str(value).encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return None
+
+
+def _finite_int(raw, default: int | None):
+    """``int(inf)`` OverflowError is not ValueError; leftover ``.inf`` must fall back.
+
+    A 400-digit leftover integer is a valid ``int`` but ``float()`` OverflowError's
+    it — the shutdown trigger comparison used to 500 GET /api/ups/shutdown/plan.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return default
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return default
+    try:
+        n = int(raw)
+        float(n)
+        return n
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _parse_batt(text: str) -> dict:
     """One pmset -g batt dump -> power-source + device fields.
 
@@ -54,6 +140,7 @@ def _parse_batt(text: str) -> dict:
     (one "Now drawing from" line), a MacBook (``-InternalBattery-0 …``) and
     an external UPS (``-APC Back-UPS ES 750 …`` with source ``'UPS Power'``).
     """
+    text = _as_text(text)
     source = "unknown"
     device_name = None
     kind = None
@@ -95,7 +182,11 @@ def _parse_batt(text: str) -> dict:
         charging = ("charging" in low) and ("discharging" not in low) and ("not charging" not in low)
         m = _REMAIN_RE.search(low)
         if m:
-            remaining_min = int(m.group(1)) * 60 + int(m.group(2))
+            try:
+                remaining_min = int(m.group(1)) * 60 + int(m.group(2))
+                float(remaining_min)
+            except (TypeError, ValueError, OverflowError):
+                remaining_min = None
 
     # A UPS device implies UPS wall-power semantics even when pmset words the
     # source line as generic "Battery Power".
@@ -120,7 +211,7 @@ def _parse_ups_thresholds(text: str) -> dict | None:
     only the thresholds that actually exist.
     """
     out: dict = {}
-    for line in (text or "").splitlines():
+    for line in _as_text(text).splitlines():
         parts = line.strip().split()
         if len(parts) == 2 and parts[0] in ("haltlevel", "haltafter", "haltremain"):
             try:
@@ -155,18 +246,32 @@ def _normalized_shutdown(raw: dict | None) -> dict:
     out = dict(SHUTDOWN_DEFAULTS)
     if isinstance(raw, dict):
         out.update({k: v for k, v in raw.items() if k in SHUTDOWN_DEFAULTS})
+    # Explicit null still means "condition off"; leftover inf must not leak
+    # into GET /api/ups (Starlette allow_nan=False) or fire the policy.
+    if out.get("trigger_pct") is not None:
+        out["trigger_pct"] = _finite_int(out["trigger_pct"], None)
+    if out.get("trigger_remaining_min") is not None:
+        out["trigger_remaining_min"] = _finite_int(out["trigger_remaining_min"], None)
     return out
 
 
 def ups_settings() -> dict:
-    raw = (cfg().get("settings") or {}).get("ups") or {}
+    settings = cfg().get("settings")
+    raw = settings.get("ups") if isinstance(settings, dict) else None
+    if not isinstance(raw, dict):
+        raw = {}
     out = dict(UPS_DEFAULTS)
     out.update({
         k: v for k, v in raw.items()
         if k in UPS_DEFAULTS and k != "shutdown" and v is not None
     })
+    if "alerts_enabled" in out:
+        out["alerts_enabled"] = bool(out["alerts_enabled"])
+    if "low_battery_pct" in out:
+        pct = _finite_int(out["low_battery_pct"], UPS_DEFAULTS["low_battery_pct"])
+        out["low_battery_pct"] = UPS_DEFAULTS["low_battery_pct"] if pct is None else pct
     out["shutdown"] = _normalized_shutdown(raw.get("shutdown"))
-    return out
+    return _jsonable(out)
 
 
 def save_ups_settings(patch: dict) -> dict:
@@ -182,4 +287,4 @@ def save_ups_settings(patch: dict) -> dict:
 
 def ups_status(force: bool = False) -> dict:
     """Snapshot + policy, the shape /api/ups serves and the alert sweep reads."""
-    return {**ups_snapshot(force=force), "settings": ups_settings()}
+    return _jsonable({**ups_snapshot(force=force), "settings": ups_settings()})

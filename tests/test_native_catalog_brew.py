@@ -114,6 +114,15 @@ class BrewRootRefusalTests(unittest.TestCase):
         self.assertEqual(len(caught), 1, "the detector stopped detecting the call")
 
 
+class BrewRunCapTests(unittest.TestCase):
+    def test_run_does_not_capture_unbounded_output(self):
+        from hub import native_catalog
+        src = Path(native_catalog.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def _run"): src.index("\ndef _needs_admin_retry")]
+        self.assertIn("run_capped", body)
+        self.assertNotIn("capture_output=True", body)
+
+
 class BrewSudoPrimeTests(unittest.TestCase):
     """Pkg cask installs retry brew after priming a sudo ticket from the web password."""
 
@@ -192,6 +201,24 @@ class NativeRedisBrewSkip(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("already serving", result["message"])
         run.assert_not_called()
+
+
+class PortListTests(unittest.TestCase):
+    def test_a_scalar_port_does_not_500_url_resolution(self):
+        from hub import native_catalog
+
+        self.assertEqual(native_catalog._port_list(8080), [8080])
+        self.assertEqual(native_catalog._port_list("8080/tcp"), ["8080/tcp"])
+        self.assertEqual(native_catalog._port_list(None), [])
+        url = native_catalog._resolve_url("", "10.0.0.5", native_catalog._port_list(8080))
+        self.assertIn("8080", url)
+
+    def test_a_mapping_url_hint_does_not_500_url_resolution(self):
+        from hub import native_catalog
+
+        url = native_catalog._resolve_url({"host": "x"}, "10.0.0.5", [8080])
+        self.assertIn("8080", url)
+        self.assertIn("10.0.0.5", url)
 
 
 if __name__ == "__main__":

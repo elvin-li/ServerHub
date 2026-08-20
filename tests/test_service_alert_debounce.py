@@ -86,6 +86,16 @@ class ServiceAlertDebounceTests(unittest.TestCase):
         self.assertEqual([a["event"] for a in emitted], ["problem"])
         self.assertEqual(emitted[0]["level"], "down")
 
+    def test_junk_service_rows_do_not_abort_the_sweep(self):
+        emitted, state = _run(
+            {"ok-svc": "ok"},
+            {"ok-svc": "not-a-row", "other": {"id": "other", "state": "ok"}},
+        )
+        self.assertEqual(emitted, [])
+        self.assertNotIn("ok-svc", state)
+        emitted, _ = _run({"x": "ok"}, ["not-a-map"])
+        self.assertEqual(emitted, [])
+
 
 if __name__ == "__main__":
     unittest.main()

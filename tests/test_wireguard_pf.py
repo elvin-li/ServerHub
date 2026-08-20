@@ -384,7 +384,7 @@ class DaemonPlistTests(unittest.TestCase):
             patch.object(net, "sh", return_value=(1, "", "")),
             patch.object(net, "sudo_capture", return_value=(1, "", "")),
             patch.object(Path, "exists", return_value=True),
-            patch.object(Path, "read_text", return_value=homebrew_style),
+            patch.object(net, "read_text_capped", return_value=homebrew_style),
             patch.object(net.wireguard_svc, "settings", return_value={"interface": "wg0"}),
         ):
             state = net.daemon_state()
@@ -513,6 +513,11 @@ class DaemonDetailTests(unittest.TestCase):
         detail = net._daemon_detail(self._daemon(managed=False, respawn_loop=True))
         self.assertIn("loop", detail)
         self.assertNotIn("not the job", detail)
+
+    def test_junk_defects_do_not_500(self):
+        self.assertEqual(net._defects_of({"defects": {"loop": True}}), [])
+        self.assertEqual(net._defects_of({"defects": "respawn_loop"}), ["respawn_loop"])
+        self.assertEqual(net._defects_of({"respawn_loop": True}), ["respawn_loop"])
 
     def test_an_absent_job_reports_where_it_would_go(self):
         detail = net._daemon_detail(self._daemon(installed=False, managed=False))

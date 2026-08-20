@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from pathlib import Path
 
 from hub import macos_admin
@@ -70,6 +69,25 @@ _ACL_LINE = re.compile(
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
 
 
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares/acl."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 class ShareAclError(Exception):
     """Validation failure with a stable API error code."""
 
@@ -85,7 +103,7 @@ def parse_acl_listing(output: str) -> dict:
     is ``{"index", "kind", "name", "effect", "perms", "inherited", "level"}``.
     ``level`` classifies an *allow* entry as read / readwrite from its tokens.
     """
-    lines = [line for line in str(output or "").splitlines() if line.strip()]
+    lines = [line for line in _as_text(output).splitlines() if line.strip()]
     if not lines:
         raise ShareAclError("shares.acl_read_failed")
     head = lines[0].split()
@@ -103,25 +121,36 @@ def parse_acl_listing(output: str) -> dict:
             level = "readwrite" if any(p in _WRITE_TOKENS for p in perms) else "read"
         entries.append({
             "index": int(match.group("index")),
-            "kind": match.group("kind"),
-            "name": match.group("name"),
-            "effect": match.group("effect"),
-            "perms": perms,
+            "kind": _as_text(match.group("kind")),
+            "name": _as_text(match.group("name")),
+            "effect": _as_text(match.group("effect")),
+            "perms": [_as_text(p) for p in perms],
             "inherited": bool(match.group("inherited")),
             "level": level,
         })
-    return {"mode": mode, "owner": owner, "group": group, "entries": entries}
+    return {
+        "mode": _as_text(mode),
+        "owner": _as_text(owner),
+        "group": _as_text(group),
+        "entries": entries,
+    }
 
 
 def _validated_dir(path: str) -> Path:
-    raw = Path(str(path or ""))
+    try:
+        raw = Path(str(path or ""))
+    except ValueError as error:
+        raise ShareAclError("shares.bad_path") from error
     if not raw.is_absolute():
         raise ShareAclError("shares.bad_path")
     try:
         resolved = raw.resolve(strict=True)
-    except OSError as error:
+        is_dir = resolved.is_dir()
+    except (OSError, ValueError, RuntimeError) as error:
+        # Path.resolve() raises RuntimeError on a symlink loop.
+        # is_dir() still raises EIO/ESTALE on a dying mount after resolve().
         raise ShareAclError("shares.bad_path") from error
-    if not resolved.is_dir() or resolved == Path("/"):
+    if not is_dir or resolved == Path("/"):
         raise ShareAclError("shares.bad_path")
     return resolved
 
@@ -139,7 +168,7 @@ def read_acl(path: str) -> dict:
     except OSError:
         owned = False
     return {
-        "path": str(resolved),
+        "path": _as_text(resolved),
         **parsed,
         # Whether the panel process can edit without the admin password.
         "owned_by_panel": owned,
@@ -157,13 +186,14 @@ def local_users() -> list[dict]:
     if rc != 0:
         return []
     users: list[dict] = []
-    for line in output.splitlines():
+    for line in _as_text(output).splitlines():
         parts = line.split()
         if len(parts) < 2 or parts[0].startswith("_"):
             continue
         try:
             uid = int(parts[1])
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
+            # Leftover UniqueID ``inf`` OverflowError'd GET /api/shares/acl.
             continue
         if uid < 500:
             continue
@@ -175,7 +205,7 @@ def local_users() -> list[dict]:
         if rc_name == 0:
             # Two shapes: "RealName: Alice" on one line, or the value alone on
             # the following line when it contains spaces.
-            lines = [l.strip() for l in name_out.splitlines() if l.strip()]
+            lines = [l.strip() for l in _as_text(name_out).splitlines() if l.strip()]
             if lines:
                 first = lines[0]
                 real_name = (
@@ -185,7 +215,11 @@ def local_users() -> list[dict]:
                 )
                 if not real_name and len(lines) > 1:
                     real_name = lines[1]
-        users.append({"username": username, "uid": uid, "real_name": real_name})
+        users.append({
+            "username": _as_text(username),
+            "uid": uid,
+            "real_name": _as_text(real_name),
+        })
     return sorted(users, key=lambda u: u["uid"])
 
 
@@ -222,16 +256,18 @@ def _removal_then_grant(entries: list[dict], username: str, level: str) -> list[
 
 def _run_unprivileged(commands: list[list[str]]) -> dict:
     for command in commands:
-        try:
-            proc = subprocess.run(command, capture_output=True, text=True, timeout=15)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return {"ok": False, "error": "failed", "message": str(exc)[:200]}
-        if proc.returncode != 0:
-            message = (proc.stderr or proc.stdout or "").strip()
+        # ``capture_output=True`` used to keep chmod chatter in RAM for the
+        # full timeout.  ``sh`` streams to a tempfile and already maps
+        # timeout/OSError to rc=-1 instead of raising into the Shares page.
+        rc, out, err = sh(command, timeout=15)
+        if rc != 0:
+            # int/bytes/date leftovers used to AttributeError ``.strip`` /
+            # TypeError ``"denied" in bytes`` on PUT /api/shares/acl.
+            message = _as_text(err or out or "failed").strip()[:200]
             lowered = message.lower()
             if "operation not permitted" in lowered or "permission denied" in lowered:
-                return {"ok": False, "error": "needs_root", "message": message[:200]}
-            return {"ok": False, "error": "failed", "message": message[:200]}
+                return {"ok": False, "error": "needs_root", "message": message}
+            return {"ok": False, "error": "failed", "message": message or "failed"}
     return {"ok": True}
 
 

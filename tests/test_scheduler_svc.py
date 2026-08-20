@@ -77,6 +77,24 @@ class TickTests(_Sandbox):
         fired = scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30))
         self.assertEqual(fired, ["j1"])
 
+    def test_leftover_inf_clock_does_not_raise_tick(self):
+        """Leftover ``time.time() = inf`` OverflowError'd ``time.localtime``."""
+        self.use_jobs([self.JOB])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(float("inf")), [])
+        self.assertEqual(scheduler_svc._tick_once(float("-inf")), [])
+        self.assertEqual(scheduler_svc._tick_once(float("nan")), [])
+
+    def test_leftover_inf_clock_does_not_nan_the_wait(self):
+        """``inf % 60`` is nan; ``Event.wait(nan)`` OverflowError'd the loop."""
+        self.assertEqual(scheduler_svc._delay_until_next_minute(float("inf")), 30.0)
+        self.assertEqual(scheduler_svc._delay_until_next_minute(float("-inf")), 30.0)
+        self.assertEqual(scheduler_svc._delay_until_next_minute(float("nan")), 30.0)
+        self.assertEqual(scheduler_svc._delay_until_next_minute(1e308), 30.0)
+        self.assertAlmostEqual(
+            scheduler_svc._delay_until_next_minute(100.0), 20.5,
+        )
+
     def test_disabled_job_never_fires(self):
         self.use_jobs([{**self.JOB, "enabled": False}])
         self.capture_launches()
@@ -91,6 +109,30 @@ class TickTests(_Sandbox):
         self.use_jobs([{**self.JOB, "cron": "banana"}])
         self.capture_launches()
         self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), [])
+
+    def test_yaml_list_cron_fires(self):
+        self.use_jobs([{**self.JOB, "cron": ["*", "*", "*", "*", "*"]}])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), ["j1"])
+
+    def test_string_false_enabled_does_not_fire(self):
+        self.use_jobs([{**self.JOB, "enabled": "false"}])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), [])
+
+    def test_job_without_id_is_skipped(self):
+        self.use_jobs([{k: v for k, v in self.JOB.items() if k != "id"}])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), [])
+
+    def test_mapping_cron_does_not_abort_the_tick(self):
+        """A job-shaped cron dict used to TypeError past the ValueError guard."""
+        self.use_jobs([
+            {**self.JOB, "id": "bad", "cron": {"minute": "*", "hour": "*"}},
+            {**self.JOB, "id": "good"},
+        ])
+        self.capture_launches()
+        self.assertEqual(scheduler_svc._tick_once(_ts(2026, 8, 13, 3, 30)), ["good"])
 
     def test_same_minute_is_evaluated_once(self):
         self.use_jobs([self.JOB])
@@ -203,6 +245,13 @@ class ExecuteTests(_Sandbox):
         self.assertEqual(entry["status"], "ok")
         self.assertEqual(entry["rc"], 0)
         self.assertIn("scheduled-hello", entry["tail"])
+
+    def test_command_list_payload_joins_and_runs(self):
+        job = {"id": "echo", "name": "echo", "type": "command", "timeout": 30,
+               "params": {"command": ["echo", "list-payload-hello"]}}
+        entry = scheduler_svc._execute(job, "manual")
+        self.assertEqual(entry["status"], "ok")
+        self.assertIn("list-payload-hello", entry["tail"])
         self.assertEqual(entry["trigger"], "manual")
         self.assertFalse(scheduler_svc.is_running("echo"))
 
@@ -225,6 +274,23 @@ class ExecuteTests(_Sandbox):
             entry = scheduler_svc._execute(job, "schedule")
         self.assertEqual(entry["status"], "failed")
         self.assertIn("kapow", entry["tail"])
+        self.assertFalse(scheduler_svc.is_running("boom"))
+
+    def test_runner_recursing_exc_does_not_500(self):
+        """leftover ``str(e)`` RecursionError used to 500 POST run-now wait=True."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        job = {"id": "boom", "name": "boom", "type": "command", "params": {}}
+        with mock.patch.dict(
+            scheduler_svc._RUNNERS,
+            {"command": mock.Mock(side_effect=Recursing())},
+        ):
+            entry = scheduler_svc._execute(job, "schedule")
+        json.dumps(entry, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("Recursing", entry["tail"])
         self.assertFalse(scheduler_svc.is_running("boom"))
 
 
@@ -350,6 +416,29 @@ class RunNowTests(_Sandbox):
             result = scheduler_svc.run_job_now("now", wait=True)
         self.assertTrue(result["ok"])
         self.assertIn("ran-now", result["run"]["tail"])
+
+
+class EngineStartLeftoverTests(_Sandbox):
+    def tearDown(self):
+        scheduler_svc.stop_scheduler()
+        super().tearDown()
+
+    def test_leftover_localtime_overflow_still_starts_the_engine(self):
+        """``time.localtime()`` OverflowError used to skip starting the thread."""
+        self.use_jobs([])
+        scheduler_svc.stop_scheduler()
+        with (
+            mock.patch.object(scheduler_svc, "_tick_once", return_value=[]),
+            mock.patch.object(
+                scheduler_svc.time, "localtime",
+                side_effect=OverflowError("clock"),
+            ),
+        ):
+            scheduler_svc.start_scheduler()
+            self.assertTrue(
+                scheduler_svc._thread and scheduler_svc._thread.is_alive(),
+            )
+            self.assertIsNone(scheduler_svc._last_minute)
 
 
 if __name__ == "__main__":

@@ -27,10 +27,10 @@ from pathlib import Path
 from typing import Any
 
 from hub import cli_args, secure_io
-from hub.config import cfg
+from hub.config import settings_section
 from hub.errors import CODES, api_error
-from hub.paths import DATA_DIR, DOCKER
-from hub.util import iter_capped_lines, tail_file_lines
+from hub.paths import DATA_DIR, DOCKER, user_home
+from hub.util import iter_capped_lines, tail_file_lines, utf8_env
 
 AUDIT_PATH = DATA_DIR / "terminal-audit.jsonl"
 
@@ -48,6 +48,7 @@ CODES.setdefault("terminal.host_disabled", (
     "that it grants full command access to this machine",
 ))
 CODES.setdefault("terminal.empty_command", (400, "command is empty"))
+CODES.setdefault("terminal.bad_command", (400, "command contains invalid characters"))
 CODES.setdefault("terminal.no_container", (400, "no container selected"))
 CODES.setdefault("terminal.bad_target", (400, "unknown target: {target}"))
 CODES.setdefault("terminal.timeout", (504, "command timed out after {seconds}s"))
@@ -81,7 +82,7 @@ def _color_env() -> dict[str, str]:
         "GIT_PAGER": "cat",
         "LESS": "FRX",
     })
-    return env
+    return utf8_env(env)
 
 
 def _sh_quote(value: str) -> str:
@@ -128,6 +129,15 @@ def _split_cwd(stdout: str, fallback: str) -> tuple[str, str]:
     return body, (tail or fallback)
 
 
+def _home_dir() -> str:
+    """Best-effort home.  ``Path.home()`` RuntimeError must not 500 the terminal."""
+    home = user_home()
+    if home is not None:
+        return str(home)
+    # HOME unset: expanduser raises RuntimeError, not OSError.
+    return (os.environ.get("HOME") or "").strip() or "/"
+
+
 def _resolve_cwd(requested: str | None) -> str:
     """Pick a working directory: caller's, then configured, then $HOME.
 
@@ -136,15 +146,23 @@ def _resolve_cwd(requested: str | None) -> str:
     ``cd`` anywhere the user can — it just keeps a stale tab from failing every
     command against a directory that has since been deleted.
     """
-    for candidate in (requested, _terminal_cfg().get("cwd"), str(Path.home())):
+    for candidate in (requested, _terminal_cfg().get("cwd"), _home_dir()):
         value = str(candidate or "").strip()
-        if value and Path(value).expanduser().is_dir():
-            return str(Path(value).expanduser())
-    return str(Path.home())
+        if not value:
+            continue
+        try:
+            resolved = Path(value).expanduser()
+            if resolved.is_dir():
+                return str(resolved)
+        except (OSError, ValueError, RuntimeError):
+            # is_dir() raises EIO/ESTALE on a dying mount; expanduser("~")
+            # RuntimeError's when HOME cannot be resolved.
+            continue
+    return _home_dir()
 
 
 def _terminal_cfg() -> dict:
-    return dict(((cfg().get("settings") or {}).get("terminal") or {}))
+    return dict(settings_section("terminal"))
 
 
 def host_enabled() -> bool:
@@ -155,10 +173,11 @@ def host_enabled() -> bool:
 def status() -> dict:
     """What the Terminal page needs to render its target picker."""
     tc = _terminal_cfg()
-    return {
+    cwd = tc.get("cwd")
+    payload = {
         "host_enabled": host_enabled(),
         "shell": str(tc.get("shell") or _default_shell()),
-        "cwd": str(tc.get("cwd") or str(Path.home())),
+        "cwd": str(cwd) if cwd else _home_dir(),
         "default_timeout": DEFAULT_TIMEOUT,
         "max_timeout": MAX_TIMEOUT,
         # Advertised so the UI can explain *why* the host tab is locked without
@@ -169,11 +188,20 @@ def status() -> dict:
         "interactive": True,
         "max_output": MAX_OUTPUT,
     }
+    # Leftover YAML ``cwd: "\\ud800"`` / ``shell: .inf`` used to 500 GET /api/terminal.
+    cleaned = _jsonable(payload)
+    return cleaned if isinstance(cleaned, dict) else payload
 
 
 def _default_shell() -> str:
     shell = os.environ.get("SHELL") or "/bin/zsh"
-    return shell if Path(shell).exists() else "/bin/sh"
+    try:
+        ok = Path(shell).exists()
+    except (OSError, ValueError):
+        # exists() still raises EIO/ESTALE on a dying mount; pathlib only
+        # swallows ENOENT/ELOOP.
+        ok = False
+    return shell if ok else "/bin/sh"
 
 
 #: Rotation bounds for the audit trail.  Append-only with no trim, the log grew
@@ -183,9 +211,91 @@ _AUDIT_MAX_BYTES = 512 * 1024
 _AUDIT_KEEP_LINES = 1000
 
 
+def _now() -> int:
+    """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd run/audit."""
+    try:
+        return int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    Python ``json.loads`` accepts ``Infinity`` in a leftover audit line;
+    Starlette's response encoder does not.  ``!!binary`` / bytes ``who`` and
+    a lone-surrogate command used to raise out of ``_audit`` after the
+    command had already run.  A leftover ``\\ud800`` *key* on an audit line
+    still 500'd GET /api/terminal/history (values were scrubbed, keys were not).
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 POST /api/terminal/run.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _response(result: dict) -> dict:
+    """JSON-safe run payload. Leftover ``cwd: \\ud800`` used to 500 the encoder."""
+    cleaned = _jsonable(result)
+    return cleaned if isinstance(cleaned, dict) else result
+
+
 def _audit(entry: dict[str, Any]) -> None:
     """Append one line to the audit log; never let logging break the request."""
     try:
+        payload = _jsonable(entry)
+        if not isinstance(payload, dict):
+            return
         # create_secret_text first, so the file is 0600 from the moment it
         # exists.  Appending and *then* chmod'ing left the first write at the
         # umask default -- 0644 on this host -- and this log holds whatever the
@@ -193,8 +303,11 @@ def _audit(entry: dict[str, Any]) -> None:
         # that cannot be un-leaked.  Create-if-absent rather than write, because
         # write_secret_text opens with O_TRUNC and would empty the trail.
         secure_io.create_secret_text(AUDIT_PATH, "")
-        with AUDIT_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        secure_io.append_text(
+            AUDIT_PATH,
+            json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str) + "\n",
+            mode=0o600,
+        )
         os.chmod(AUDIT_PATH, 0o600)
         if AUDIT_PATH.stat().st_size > _AUDIT_MAX_BYTES:
             # Tail + atomic replace: a full slurp of a 512KB+ trail was
@@ -206,7 +319,9 @@ def _audit(entry: dict[str, Any]) -> None:
             secure_io.replace_secret_text(
                 AUDIT_PATH, "\n".join(lines) + ("\n" if lines else "")
             )
-    except OSError:
+    except (OSError, ValueError, TypeError, OverflowError, UnicodeError, RecursionError):
+        # RecursionError: leftover nested terminal audit after _jsonable is not
+        # ValueError; POST /api/terminal/run used to 500 after the command ran.
         pass
 
 
@@ -265,6 +380,7 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
     panel for up to :data:`MAX_TIMEOUT` seconds before ``_clip`` ran.
     """
     started = time.time()
+    timeout = _clamp_timeout(timeout)
     try:
         proc = subprocess.Popen(
             list(argv),
@@ -282,6 +398,13 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
             "ok": False, "rc": 127, "stdout": "", "stderr": f"not found: {argv[0]}",
             "truncated": False, "duration_ms": 0,
         }
+    except (OSError, ValueError, TypeError):
+        # cwd EIO/ESTALE is OSError, not FileNotFoundError.  NUL argv is
+        # ValueError.  Either used to 500 POST /api/terminal/run.
+        return {
+            "ok": False, "rc": 127, "stdout": "", "stderr": "invalid argument",
+            "truncated": False, "duration_ms": 0,
+        }
     timed_out = threading.Event()
 
     def _on_deadline():
@@ -289,7 +412,7 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
             timed_out.set()
             _reap_group(proc)
 
-    watchdog = threading.Timer(max(1, int(timeout)), _on_deadline)
+    watchdog = threading.Timer(timeout, _on_deadline)
     watchdog.daemon = True
     watchdog.start()
     out_box: list[tuple[str, bool]] = []
@@ -337,17 +460,24 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
 
 
 def _clamp_timeout(timeout: int | None) -> int:
-    try:
-        value = int(timeout or DEFAULT_TIMEOUT)
-    except (TypeError, ValueError):
+    if isinstance(timeout, bool) or timeout is None:
         value = DEFAULT_TIMEOUT
+    else:
+        try:
+            value = int(timeout)
+        except (TypeError, ValueError, OverflowError):
+            value = DEFAULT_TIMEOUT
     return max(1, min(value, MAX_TIMEOUT))
 
 
 def _check_command(command: str) -> str:
-    cmd = (command or "").strip()
+    if not isinstance(command, str):
+        raise api_error("terminal.empty_command")
+    cmd = command.strip()
     if not cmd:
         raise api_error("terminal.empty_command")
+    if "\x00" in cmd:
+        raise api_error("terminal.bad_command")
     if len(cmd) > MAX_COMMAND_LEN:
         raise api_error("terminal.command_too_long", max=MAX_COMMAND_LEN)
     return cmd
@@ -382,7 +512,7 @@ def run_host(
     result = _run([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd)
     result["stdout"], end_cwd = _split_cwd(result["stdout"], start_cwd)
     _audit({
-        "ts": int(time.time()),
+        "ts": _now(),
         "target": "host",
         "who": who,
         # The directory the command *ran in* is the useful audit fact; where it
@@ -397,7 +527,7 @@ def run_host(
     # Echoed back so the client can carry it into the next command, making `cd`
     # appear to persist across an inherently stateless transport.
     result["cwd"] = end_cwd
-    return result
+    return _response(result)
 
 
 def run_container(
@@ -417,6 +547,8 @@ def run_container(
     *cwd* is the directory inside the container, carried between commands the
     same way the host shell does it.
     """
+    if not isinstance(container, str):
+        raise api_error("terminal.no_container")
     name = (container or "").strip()
     if not name:
         raise api_error("terminal.no_container")
@@ -434,7 +566,7 @@ def run_container(
     result = _run([DOCKER, "exec", "--", name, sh, "-c", wrapped], secs)
     result["stdout"], end_cwd = _split_cwd(result["stdout"], start_cwd)
     _audit({
-        "ts": int(time.time()),
+        "ts": _now(),
         "target": "container",
         "container": name,
         "who": who,
@@ -447,7 +579,7 @@ def run_container(
     result["target"] = "container"
     result["container"] = name
     result["cwd"] = end_cwd
-    return result
+    return _response(result)
 
 
 def execute(
@@ -459,6 +591,8 @@ def execute(
     who: str = "",
     cwd: str = "",
 ) -> dict:
+    if not isinstance(target, str):
+        raise api_error("terminal.bad_target", target="")
     tgt = (target or "host").strip().lower()
     if tgt == "host":
         return run_host(command, timeout=timeout, who=who, cwd=cwd)
@@ -472,18 +606,28 @@ def execute(
 
 def recent_audit(limit: int = 50) -> list[dict]:
     """Tail of the audit log, newest last.  Used by the Terminal history pane."""
-    if not AUDIT_PATH.exists():
-        return []
+    if isinstance(limit, bool) or limit is None:
+        n = 50
+    else:
+        try:
+            n = int(limit)
+        except (TypeError, ValueError, OverflowError):
+            n = 50
+    n = max(1, min(n, 500))
     try:
-        lines = tail_file_lines(AUDIT_PATH, max(1, min(limit, 500)))
+        if not AUDIT_PATH.exists():
+            return []
+        lines = tail_file_lines(AUDIT_PATH, n)
     except OSError:
         return []
     out: list[dict] = []
     for raw in lines:
         try:
             parsed = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if isinstance(parsed, dict):
-            out.append(parsed)
+            cleaned = _jsonable(parsed)
+            if isinstance(cleaned, dict):
+                out.append(cleaned)
     return out

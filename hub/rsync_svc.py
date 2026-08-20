@@ -30,7 +30,7 @@ from hub import secure_io
 from hub.errors import api_error
 from hub.jobs import run_watchdog
 from hub.paths import DATA_DIR
-from hub.util import cached_snapshot, iter_capped_lines, sh
+from hub.util import cached_snapshot, iter_capped_lines, sh, strftime_now, utf8_env
 
 #: Probe order: brew's rsync 3.x first (both prefixes), Apple's last.
 CANDIDATES = (
@@ -53,18 +53,41 @@ _REMOTE_RE = re.compile(
 )
 
 def _has_control_chars(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # Leftover ``\ud800`` used to UnicodeEncodeError Popen on POST preview.
+        return True
     return any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
+
+
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 rsync preview JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
 
 
 def probe_rsync() -> dict:
     """Locate a usable rsync and record what it can do.  Uncached."""
     for path in CANDIDATES:
-        if not Path(path).is_file():
+        try:
+            if not Path(path).is_file():
+                continue
+        except (OSError, ValueError):
+            # Dying FUSE/SMB: is_file() re-raises EIO/ESTALE; leftover NUL is ValueError.
             continue
         rc, out, err = sh([path, "--version"], timeout=10)
         if rc != 0:
             continue
-        blob = f"{out}\n{err}"
+        blob = f"{_as_text(out)}\n{_as_text(err)}"
         lowered = blob.lower()
         if "openrsync" in lowered:
             variant = "openrsync"
@@ -134,7 +157,10 @@ def validated(params: dict) -> dict:
     Returns ``{direction, src, dest, delete, compress, bwlimit_kbps, exclude}``
     with exactly the values that will be placed into the argv.
     """
-    params = params or {}
+    if params is None:
+        params = {}
+    elif not isinstance(params, dict):
+        raise api_error("rsync.bad_params", field="params")
     direction = str(params.get("direction") or "push").strip().lower()
     if direction not in DIRECTIONS:
         raise api_error("rsync.bad_direction", direction=direction)
@@ -156,7 +182,10 @@ def validated(params: dict) -> dict:
             raise api_error("rsync.bad_path", field="dest")
 
     exclude: list[str] = []
-    for raw in params.get("exclude") or []:
+    raw_ex = params.get("exclude")
+    if not isinstance(raw_ex, list):
+        raw_ex = []
+    for raw in raw_ex:
         pat = str(raw).strip()
         if not pat:
             continue
@@ -168,7 +197,7 @@ def validated(params: dict) -> dict:
     if bwlimit not in (None, "", 0):
         try:
             bwlimit = int(bwlimit)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise api_error("rsync.bad_params", field="bwlimit_kbps")
         if not 1 <= bwlimit <= 10_000_000:
             raise api_error("rsync.bad_params", field="bwlimit_kbps")
@@ -193,7 +222,8 @@ def build_argv(params: dict, *, dry_run: bool = False, info: dict | None = None)
     if not info.get("available"):
         raise api_error("rsync.unavailable")
     p = validated(params)
-    supports = info.get("supports") or {}
+    supports = info.get("supports")
+    supports = supports if isinstance(supports, dict) else {}
     argv = [info["path"], "-a"]
     if dry_run:
         argv.append("-n")
@@ -250,7 +280,7 @@ class _DryRunCounter:
         self.samples: list[str] = []
 
     def feed(self, raw: str) -> None:
-        line = raw.rstrip()
+        line = _as_text(raw).rstrip()
         if not line:
             return
         if line.startswith("*deleting") or line.startswith("deleting "):
@@ -283,7 +313,7 @@ class _DryRunCounter:
 def parse_dry_run(out: str, *, itemize: bool) -> dict:
     """Summarise a ``--dry-run`` listing into create/update/delete counts."""
     counter = _DryRunCounter(itemize=itemize)
-    for raw in (out or "").splitlines():
+    for raw in _as_text(out).splitlines():
         counter.feed(raw)
     return counter.result()
 
@@ -330,11 +360,13 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, errors="replace", start_new_session=True,
+            text=True, errors="replace", env=utf8_env(), start_new_session=True,
         )
-    except OSError as e:
+    except (OSError, ValueError, TypeError, RecursionError) as e:
+        # UnicodeEncodeError (a ValueError) on leftover ``\ud800`` in argv/env.
+        # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
         summary = counter.result()
-        summary.update({"ok": False, "rc": -1, "message": str(e)})
+        summary.update({"ok": False, "rc": -1, "message": _as_text(e)})
         return summary
 
     stderr_tail: list[str] = []
@@ -388,7 +420,7 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
         "message": (
             f"timeout: dry-run exceeded {timeout}s and was terminated"
             if timed_out.is_set()
-            else "\n".join(stderr_tail).strip()[-500:]
+            else "\n".join(_as_text(x) for x in stderr_tail).strip()[-500:]
         ),
     })
     return summary
@@ -403,6 +435,14 @@ def preview(params: dict, *, timeout: int = PREVIEW_TIMEOUT) -> dict:
     concurrent preview of the same job is refused with ``rsync.preview_busy``,
     and the deadline kills the rsync process group rather than abandoning it.
     """
+    if isinstance(timeout, bool) or timeout is None:
+        timeout = PREVIEW_TIMEOUT
+    else:
+        try:
+            timeout = int(timeout)
+        except (TypeError, ValueError, OverflowError):
+            timeout = PREVIEW_TIMEOUT
+    timeout = max(1, min(timeout, PREVIEW_TIMEOUT))
     info = binary_info()
     argv = build_argv(params, dry_run=True, info=info)
     key = _preview_key(validated(params))
@@ -413,7 +453,10 @@ def preview(params: dict, *, timeout: int = PREVIEW_TIMEOUT) -> dict:
     try:
         summary = _run_preview(
             argv,
-            itemize=bool((info.get("supports") or {}).get("itemize")),
+            itemize=bool(
+                (info.get("supports") if isinstance(info.get("supports"), dict) else {})
+                .get("itemize")
+            ),
             timeout=timeout,
         )
     finally:
@@ -435,8 +478,8 @@ def _write_run_log(job_id: str, lines: list[str]) -> None:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", job_id)[:64] or "job"
     try:
         job_dir = secure_io.make_secret_dir(RUN_LOG_ROOT / safe)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        secure_io.write_secret_text(job_dir / f"{stamp}.log", "\n".join(lines) + "\n")
+        stamp = strftime_now("%Y%m%d_%H%M%S", "0")
+        secure_io.replace_secret_text(job_dir / f"{stamp}.log", "\n".join(lines) + "\n")
         # Fixed-width stamp: lexicographic == chronological, as in backups._prune.
         old = sorted(job_dir.glob("*.log"), reverse=True)[KEEP_LOGS:]
         for p in old:
@@ -458,17 +501,26 @@ def run_job(params: dict, *, log: list[str], timeout: int = 3600,
     """
     try:
         argv = build_argv(params)
+    except RecursionError:
+        log.append("!! rsync failed")
+        return -1
     except Exception as e:
         detail = getattr(e, "detail", None)
-        message = detail.get("message") if isinstance(detail, dict) else str(e)
+        message = detail.get("message") if isinstance(detail, dict) else _as_text(e)
         log.append(f"!! {message}")
         return -1
     p = validated(params)
-    if p["src"].startswith("/") and not Path(p["src"]).exists():
-        # Refusing beats an rsync error: with --delete a vanished source can
-        # otherwise translate into "empty the destination".
-        log.append(f"!! source does not exist: {p['src']}")
-        return -1
+    if p["src"].startswith("/"):
+        try:
+            missing = not Path(p["src"]).exists()
+        except (OSError, ValueError):
+            # Dying mount EIO; leftover NUL / ``\ud800`` is ValueError, not OSError.
+            missing = True
+        if missing:
+            # Refusing beats an rsync error: with --delete a vanished source can
+            # otherwise translate into "empty the destination".
+            log.append(f"!! source does not exist: {p['src']}")
+            return -1
     log.append(f"$ {' '.join(argv)}")
     rc = run_watchdog(argv, timeout=timeout, log=log, env=dict(os.environ))
     log.append(f"== rsync exit {rc}")

@@ -17,9 +17,32 @@ from hub.config import cfg
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
-from hub.util import sh
+from hub.util import read_bytes_capped, sh, utf8_env
 
 _PROCESS_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
+#: Leftover multi-MB LaunchAgent plist used to OOM start/stop and GET registry.
+_PLIST_CAP = 256 * 1024
+
+
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 action JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _path_is_file(path) -> bool:
+    try:
+        return Path(path).is_file()
+    except OSError:
+        return False
 
 
 def _app_process_name(name: str) -> str:
@@ -32,12 +55,23 @@ def _app_process_name(name: str) -> str:
 
 def _script_argv(command) -> list[str]:
     if isinstance(command, (list, tuple)):
+        # ``str()`` not ``_as_text``: leftover ``!!binary`` ``b'--all'`` must
+        # stay ``"b'--all'"``, not decode into a real ``--all`` option.
         argv = [str(part) for part in command]
     else:
-        argv = shlex.split(str(command))
+        try:
+            argv = shlex.split(str(command))
+        except ValueError:
+            # Unmatched quotes (and other shlex parse errors) used to 500
+            # start/stop of a script target instead of a 400.
+            raise api_error("actions.empty_script")
     if not argv:
         raise api_error("actions.empty_script")
-    return argv
+    # Leftover ``\ud800`` used to UnicodeEncodeError ``Popen`` on start.
+    checked = cli_args.as_argv([_as_text(part) for part in argv])
+    if checked is None:
+        raise api_error("actions.empty_script")
+    return checked
 
 
 def _launchctl(args: list[str]):
@@ -67,20 +101,76 @@ def _bootstrap_ok_to_kickstart(rc: int, out: str = "", err: str = "") -> bool:
     return "already" in f"{err} {out}".lower()
 
 
-def _plist_disabled(path: str) -> bool:
+def _job_pid_and_status(label: str) -> tuple[str, str] | None:
+    """``(pid, last_exit)`` from the shared listing, or None if not loaded."""
     try:
-        with open(path, "rb") as f:
-            pl = plistlib.load(f)
-        return bool(isinstance(pl, dict) and pl.get("Disabled"))
+        from hub.launchd_cache import listing
+        entry = listing(force=True).jobs.get(label)
     except Exception:
-        return False
+        return None
+    if entry is None:
+        return None
+    return entry[0], entry[1]
+
+
+def _confirm_launchd_alive(label: str, rc: int, out: str, err: str,
+                           *, attempts: int = 6, delay: float = 0.25):
+    """After kickstart, treat a KeepAlive crash loop as a failed start.
+
+    ``launchctl kickstart`` returns 0 even when the process exits immediately.
+    The Services page then toasted success while the job sat at
+    ``state = spawn scheduled`` / last exit 255 — the same UX as Cloudflare
+    with an invalid token.
+    """
+    if rc != 0:
+        return rc, out, err
+    last = None
+    for i in range(max(1, attempts)):
+        last = _job_pid_and_status(label)
+        if last is None:
+            time.sleep(delay)
+            continue
+        pid, status = last
+        if str(pid).isdigit():
+            return 0, out, err
+        if status not in ("", "-", "0") and i >= 1:
+            raise api_error(
+                "actions.crash_loop",
+                label=_as_text(label),
+                exit=_as_text(status),
+            )
+        time.sleep(delay)
+    if last is None:
+        return 1, "", "Start command issued but the job is not loaded; check the log"
+    pid, status = last
+    if str(pid).isdigit():
+        return 0, out, err
+    if status not in ("", "-", "0"):
+        raise api_error(
+            "actions.crash_loop",
+            label=_as_text(label),
+            exit=_as_text(status),
+        )
+    return 0, out, err
+
+
+def _plist_dict(path) -> dict | None:
+    try:
+        data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _plist_disabled(path: str) -> bool:
+    pl = _plist_dict(path)
+    return bool(pl and pl.get("Disabled"))
 
 
 def _set_plist_disabled(path: str, disabled: bool) -> None:
     """Persist the Disabled key so the services page matches launchctl."""
-    with open(path, "rb") as f:
-        pl = plistlib.load(f)
-    if not isinstance(pl, dict):
+    pl = _plist_dict(path)
+    if pl is None:
         return
     if bool(pl.get("Disabled")) == bool(disabled):
         return
@@ -92,33 +182,50 @@ def _set_plist_disabled(path: str, disabled: bool) -> None:
 def registry():
     reg = {}
     for a in cfg().get("apps") or []:
+        if not isinstance(a, dict):
+            continue
+        sid = a.get("id")
+        if not isinstance(sid, str) or not sid:
+            continue
+        sid = _as_text(sid).strip()
+        if not sid:
+            continue
         if a.get("container_engine") or a.get("docker_engine"):
-            reg[a["id"]] = ("app-engine", a)
+            reg[sid] = ("app-engine", a)
         else:
-            reg[a["id"]] = ("app", a)
+            reg[sid] = ("app", a)
     for s in cfg().get("scripts") or []:
-        reg[s["id"]] = ("script", s)
-    for path in glob.glob(f"{AGENTS_DIR}/*.plist"):
+        if not isinstance(s, dict):
+            continue
+        sid = s.get("id")
+        if not isinstance(sid, str) or not sid:
+            continue
+        sid = _as_text(sid).strip()
+        if not sid:
+            continue
+        reg[sid] = ("script", s)
+    try:
+        plist_paths = glob.glob(f"{AGENTS_DIR}/*.plist")
+    except OSError:
+        plist_paths = []
+    for path in plist_paths:
         stem = Path(path).stem
         label = stem
-        try:
-            with open(path, "rb") as fh:
-                pl = plistlib.load(fh) or {}
-            if isinstance(pl, dict) and pl.get("Label"):
-                label = str(pl["Label"])
-        except Exception:
-            pass
+        pl = _plist_dict(path)
+        if pl and pl.get("Label"):
+            label = _as_text(pl["Label"]).strip() or stem
         meta = ("launchd", {"label": label, "path": path})
         reg.setdefault(label, meta)
         if stem != label:
             reg.setdefault(stem, meta)
     rc, out, _ = sh([DOCKER, "ps", "-a", "--format", "{{.Names}}"], timeout=8)
     if rc == 0:
-        for n in out.splitlines():
-            reg.setdefault(n, ("container", {}))
+        for n in _as_text(out).splitlines():
+            if n:
+                reg.setdefault(n, ("container", {}))
     rc, out, _ = sh([UTMCTL, "list"], timeout=6)
     if rc == 0:
-        for line in out.splitlines()[1:]:
+        for line in _as_text(out).splitlines()[1:]:
             parts = line.split(None, 2)
             if len(parts) == 3:
                 reg.setdefault(parts[2], ("vm", {"backend": "utm"}))
@@ -127,9 +234,14 @@ def registry():
     try:
         from hub import vms_svc
         for m in vms_svc.list_orb_machines():
-            reg.setdefault(m["id"], ("vm", {"backend": "orb", "name": m.get("orb_name")}))
-            if m.get("orb_name"):
-                reg.setdefault(m["orb_name"], ("vm", {"backend": "orb", "name": m["orb_name"]}))
+            if not isinstance(m, dict):
+                continue
+            oid = _as_text(m.get("id")).strip()
+            oname = _as_text(m.get("orb_name")).strip()
+            if oid:
+                reg.setdefault(oid, ("vm", {"backend": "orb", "name": oname or oid}))
+            if oname:
+                reg.setdefault(oname, ("vm", {"backend": "orb", "name": oname}))
     except Exception:
         pass
     return reg
@@ -154,6 +266,10 @@ def vm_restart_async(name):
 
 
 def run_action(target, action):
+    # YAML leftover ``.inf`` / ``\\ud800`` used to AttributeError
+    # ``startswith`` or UnicodeEncodeError the action JSON.
+    target = _as_text(target)
+    action = _as_text(action)
     reg = registry()
     if target not in reg:
         # allow orb:name / direct vm action via vms_svc
@@ -166,7 +282,7 @@ def run_action(target, action):
             try:
                 from hub import vms_svc
                 r = vms_svc.vm_action(target, action)
-                return (0 if r.get("ok") else 1, r.get("message") or "", "")
+                return (0 if r.get("ok") else 1, _as_text(r.get("message") or ""), "")
             except HTTPException:
                 raise
             except Exception:
@@ -180,7 +296,8 @@ def run_action(target, action):
         # listing (hub/launchd_cache.py) once the command has actually run, so that
         # refetch cannot be served a snapshot taken before it.
         if action == "restart":
-            return _launchctl(["kickstart", "-k", f"{dom}/{label}"])
+            rc, o, e = _launchctl(["kickstart", "-k", f"{dom}/{label}"])
+            return _confirm_launchd_alive(label, rc, o, e)
         if action == "run":
             return _launchctl(["kickstart", f"{dom}/{label}"])
         if action == "stop":
@@ -195,7 +312,8 @@ def run_action(target, action):
             rc, o, e = _launchctl(["bootstrap", dom, meta["path"]])
             if not _bootstrap_ok_to_kickstart(rc, o, e):
                 return rc, o, e
-            return _launchctl(["kickstart", f"{dom}/{label}"])
+            rc, o, e = _launchctl(["kickstart", f"{dom}/{label}"])
+            return _confirm_launchd_alive(label, rc, o, e)
     if kind == "container" and action in ("start", "stop", "restart", "pause", "unpause", "remove", "kill"):
         # Registry keys are container names. An option-shaped name (or a
         # caller-supplied target that somehow landed here) must not become
@@ -214,7 +332,7 @@ def run_action(target, action):
         # that form has no /usr/local fallback, so on an Intel host with brew off
         # PATH this branch found nothing and the service silently never started.
         brew = BREW
-        if Path(brew).exists():
+        if _path_is_file(brew):
             act = "restart" if action == "run" else action
             return sh([brew, "services", act, pkg], timeout=90)
     if kind == "vm":
@@ -226,16 +344,17 @@ def run_action(target, action):
             elif meta.get("name") and meta.get("backend") == "utm":
                 vid = meta.get("name") or target
             r = vms_svc.vm_action(vid, action)
-            return (0 if r.get("ok") else 1, r.get("message") or "", "")
+            return (0 if r.get("ok") else 1, _as_text(r.get("message") or ""), "")
         except HTTPException:
             raise
         except Exception:
+            name = cli_args.require_positional(target, label="vm")
             if action == "start":
-                return sh([UTMCTL, "start", target], timeout=60)
+                return sh([UTMCTL, "start", name], timeout=60)
             if action == "stop":
-                return sh([UTMCTL, "stop", target, "--force"], timeout=120)
+                return sh([UTMCTL, "stop", name, "--force"], timeout=120)
             if action == "restart":
-                return vm_restart_async(target)
+                return vm_restart_async(name)
     if kind == "app":
         process = _app_process_name(meta.get("process") or "")
         if action in ("stop", "restart"):
@@ -261,14 +380,19 @@ def run_action(target, action):
             time.sleep(1)
         if action in ("start", "restart") and meta.get("start"):
             argv = _script_argv(meta["start"])
-            subprocess.Popen(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                close_fds=True,
-            )
+            try:
+                subprocess.Popen(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    close_fds=True,
+                    env=utf8_env(),
+                )
+            except (OSError, ValueError, TypeError) as exc:
+                # Leftover ``\\ud800`` env UnicodeEncodeError is ValueError, not OSError.
+                return 1, "", _as_text(exc)
             return 0, "started", ""
         return 0, "stopped", ""
     raise api_error("actions.bad_action", action=action, kind=kind)

@@ -327,15 +327,16 @@ describe('Settings native launcher controls', () => {
     const card = wrapper.find('.launcher-card')
 
     expect(card.attributes('aria-busy')).toBe('false')
-    expect(card.find('.launcher-unavailable').attributes('role')).toBe('status')
-    expect(card.find('.launcher-unavailable').text()).toBe('settings.launcher_unavailable')
+    expect(card.find('.load-failure').exists()).toBe(true)
+    expect(card.find('.load-failure').text()).toContain('offline')
+    expect(card.find('.launcher-unavailable').exists()).toBe(false)
     expect(card.text()).not.toContain('common.loading')
     expect(toast).toHaveBeenCalledWith('❌ offline')
 
     await button(wrapper, 'common.refresh').trigger('click')
     await flushPromises()
 
-    expect(card.find('.launcher-unavailable').exists()).toBe(false)
+    expect(card.find('.load-failure').exists()).toBe(false)
     expect(card.findAll('.launcher-status-item')).toHaveLength(4)
     expect(api.getLauncherStatus).toHaveBeenCalledTimes(2)
     wrapper.unmount()

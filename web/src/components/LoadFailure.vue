@@ -17,19 +17,20 @@
 <template>
   <div class="load-failure" role="alert">
     <div class="row">
-      <span class="name">{{ message || t('common.load_failed') }}</span>
+      <span class="name">{{ finiteText(message, '') || t('common.load_failed') }}</span>
       <button v-if="retry" class="tiny" :disabled="busy" @click="retry">
         {{ t('common.retry') }}
       </button>
     </div>
     <!-- The server's own wording, kept verbatim: it names the failing tool and is
          usually the only actionable detail. -->
-    <div v-if="detail" class="sub mono load-failure-detail">{{ detail }}</div>
+    <div v-if="detail" class="sub mono load-failure-detail">{{ finiteText(detail) }}</div>
   </div>
 </template>
 
 <script setup>
 import { injectI18n } from '../i18n'
+import { finiteText } from '../lib/finite'
 
 const { t } = injectI18n()
 

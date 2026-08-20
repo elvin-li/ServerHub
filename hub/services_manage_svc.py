@@ -10,7 +10,7 @@ from hub import cli_args, config
 from hub.config import cfg, override, set_override
 from hub.errors import api_error
 from hub.host_address import host_ip, normalize_local_url, resolve_value
-from hub.paths import AGENTS_DIR, DOCKER, UID
+from hub.paths import AGENTS_DIR, DOCKER, UID, user_home
 from hub.service_signatures import (
     builtin_count,
     configured_signatures,
@@ -24,16 +24,57 @@ from hub.service_signatures import (
     unescape_proc_name,
     yaml_signature,
 )
-from hub.status import full_status, invalidate_status
-from hub.util import sh, tail_file_lines
+from hub.status import _jsonable, full_status, invalidate_status
+from hub.util import read_bytes_capped, sh, tail_file_lines
+
+
+def _as_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if value is None:
+        return ""
+    try:
+        return str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+
+
+def _as_int(value):
+    """Finite int, or None.  ``int(inf)`` OverflowError is not ValueError."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _clamp_lines(raw, default: int = 150) -> int:
+    value = _as_int(raw)
+    if value is None:
+        value = default
+    return max(10, min(value, 2000))
 
 
 def _flat_services(force: bool = False) -> list[dict]:
     st = full_status(force=force)
     items = []
     for g in st.get("groups") or []:
-        for s in g.get("services") or []:
-            items.append(s)
+        if not isinstance(g, dict):
+            continue
+        rows = g.get("services")
+        if not isinstance(rows, list):
+            continue
+        for s in rows:
+            if isinstance(s, dict):
+                items.append(s)
     return items
 
 
@@ -47,14 +88,28 @@ def find_service(sid: str, force: bool = False) -> dict | None:
     return None
 
 
+def _svc_meta(svc: dict | None) -> dict:
+    """Discovery ``meta`` must be a mapping; a list leftover must not 500."""
+    raw = (svc or {}).get("meta")
+    return raw if isinstance(raw, dict) else {}
+
+
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/services.
+_PLIST_CAP = 256 * 1024
+
+
+def _plist_dict(path: Path) -> dict | None:
+    try:
+        data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _plist_label(path: Path) -> str:
     """The job launchd registered, not the filename stem."""
-    try:
-        with open(path, "rb") as f:
-            pl = plistlib.load(f) or {}
-    except Exception:
-        return path.stem
-    if isinstance(pl, dict) and pl.get("Label"):
+    pl = _plist_dict(path)
+    if pl and pl.get("Label"):
         return str(pl["Label"])
     return path.stem
 
@@ -69,8 +124,11 @@ def _plist_path(label: str) -> Path | None:
     if not wanted:
         return None
     p = Path(AGENTS_DIR) / f"{wanted}.plist"
-    if p.is_file() and _plist_label(p) == wanted:
-        return p
+    try:
+        if p.is_file() and _plist_label(p) == wanted:
+            return p
+    except OSError:
+        pass
     try:
         paths = sorted(glob.glob(f"{AGENTS_DIR}/*.plist"))
     except OSError:
@@ -86,27 +144,30 @@ def _load_plist(label: str) -> dict:
     p = _plist_path(label)
     if not p:
         return {}
-    try:
-        with open(p, "rb") as f:
-            pl = plistlib.load(f)
-        return pl if isinstance(pl, dict) else {}
-    except Exception:
-        return {}
+    return _plist_dict(p) or {}
 
 
 def _tail_file(path: str | Path, lines: int = 150) -> str:
-    p = Path(os.path.expanduser(str(path)))
-    if not p.is_file():
-        return f"(log file does not exist: {p})"
-    lines = max(10, min(int(lines), 2000))
     try:
-        return "\n".join(tail_file_lines(p, lines))
-    except Exception as e:
-        return f"(read failed: {e})"
+        p = Path(os.path.expanduser(_as_text(path)))
+    except (OSError, ValueError, TypeError, RuntimeError):
+        # RuntimeError: leftover HOME unset on a ``~/…`` StandardOutPath.
+        return f"(invalid log path: {path!s})"
+    try:
+        if not p.is_file():
+            return f"(log file does not exist: {p})"
+        return "\n".join(tail_file_lines(p, _clamp_lines(lines)))
+    except (OSError, ValueError, RuntimeError, RecursionError) as e:
+        # leftover ``str(e)`` RecursionError used to 500 GET /api/services logs.
+        return f"(read failed: {_as_text(e)})"
 
 
 def _docker_inspect(name: str) -> dict:
-    if not DOCKER or not Path(DOCKER).exists():
+    try:
+        docker_ok = bool(DOCKER) and Path(DOCKER).exists()
+    except (OSError, ValueError, TypeError):
+        docker_ok = False
+    if not docker_ok:
         return {}
     if not cli_args.is_safe_positional(name):
         return {}
@@ -118,19 +179,32 @@ def _docker_inspect(name: str) -> dict:
     try:
         import json
         parsed = json.loads(out)
-    except Exception:
+    except (TypeError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    if not isinstance(parsed, dict):
+        return {}
+    cleaned = _jsonable(parsed)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _docker_ports_summary(insp: dict) -> list[str]:
     out = []
-    net = (insp.get("NetworkSettings") or {}).get("Ports") or {}
+    ns = insp.get("NetworkSettings") or {}
+    if not isinstance(ns, dict):
+        ns = {}
+    net = ns.get("Ports") or {}
+    if not isinstance(net, dict):
+        return out
     for cont_port, binds in net.items():
         if not binds:
             out.append(f"{cont_port} (not published)")
             continue
+        if not isinstance(binds, list):
+            continue
         for b in binds:
+            if not isinstance(b, dict):
+                continue
             host = b.get("HostIp") or "0.0.0.0"
             hp = b.get("HostPort") or "?"
             out.append(f"{host}:{hp}→{cont_port}")
@@ -140,14 +214,21 @@ def _docker_ports_summary(insp: dict) -> list[str]:
 def _url_from_inspect(insp: dict) -> str | None:
     host = host_ip()
     skip = {"1883", "5432", "6379", "3306", "5672", "9092", "9100"}
-    net = (insp.get("NetworkSettings") or {}).get("Ports") or {}
+    ns = insp.get("NetworkSettings") or {}
+    if not isinstance(ns, dict):
+        ns = {}
+    net = ns.get("Ports") or {}
+    if not isinstance(net, dict):
+        return None
     for cont_port, binds in net.items():
-        if not binds:
+        if not binds or not isinstance(binds, list):
             continue
         cp = str(cont_port).split("/")[0]
         if cp in skip:
             continue
         for b in binds:
+            if not isinstance(b, dict):
+                continue
             hp = b.get("HostPort")
             if hp:
                 return f"http://{host}:{hp}"
@@ -170,10 +251,10 @@ def service_detail(sid: str) -> dict:
         "url": svc.get("url"),
         "group": svc.get("group"),
         "port": svc.get("port"),
-        "ports": svc.get("ports") or [],
-        "links": svc.get("links") or [],
-        "actions": list(svc.get("actions") or []),
-        "meta": svc.get("meta") or {},
+        "ports": svc.get("ports") if isinstance(svc.get("ports"), list) else [],
+        "links": svc.get("links") if isinstance(svc.get("links"), list) else [],
+        "actions": [a for a in svc.get("actions") if isinstance(a, str)] if isinstance(svc.get("actions"), list) else [],
+        "meta": _svc_meta(svc),
         "auto": bool(svc.get("auto")),
         "backend": svc.get("backend"),
         "override": ov,
@@ -203,9 +284,9 @@ def service_detail(sid: str) -> dict:
         pl = _load_plist(sid)
         pp = _plist_path(sid)
         detail["plist"] = str(pp) if pp else None
-        detail["program"] = pl.get("Program") or (
-            " ".join(pl.get("ProgramArguments") or []) if pl.get("ProgramArguments") else None
-        )
+        argv = pl.get("ProgramArguments")
+        argv = [str(a) for a in argv] if isinstance(argv, list) else []
+        detail["program"] = pl.get("Program") or (" ".join(argv) if argv else None)
         detail["working_dir"] = pl.get("WorkingDirectory")
         detail["run_at_load"] = bool(pl.get("RunAtLoad"))
         detail["keep_alive"] = pl.get("KeepAlive")
@@ -215,36 +296,41 @@ def service_detail(sid: str) -> dict:
         detail["stderr_path"] = pl.get("StandardErrorPath")
         # launchctl print snapshot (short)
         rc, out, err = sh(["/bin/launchctl", "print", f"gui/{UID}/{sid}"], timeout=6)
+        out, err = _as_text(out), _as_text(err)
         if rc == 0 and out:
             # keep first ~40 lines
             detail["launchctl"] = "\n".join(out.splitlines()[:40])
         elif err:
             detail["launchctl"] = err[:500]
         # live ports from meta
-        if not detail.get("port") and (svc.get("meta") or {}).get("detected_ports"):
-            detail["ports"] = (svc.get("meta") or {}).get("detected_ports")
+        meta = _svc_meta(svc)
+        if not detail.get("port") and meta.get("detected_ports"):
+            detail["ports"] = meta.get("detected_ports")
 
     elif kind == "container":
         insp = _docker_inspect(sid)
         if insp:
-            cfg_c = insp.get("Config") or {}
-            state = insp.get("State") or {}
-            host_cfg = insp.get("HostConfig") or {}
+            cfg_c = insp.get("Config") if isinstance(insp.get("Config"), dict) else {}
+            state = insp.get("State") if isinstance(insp.get("State"), dict) else {}
+            host_cfg = insp.get("HostConfig") if isinstance(insp.get("HostConfig"), dict) else {}
             detail["image"] = cfg_c.get("Image")
             detail["created"] = insp.get("Created")
             detail["status_raw"] = state.get("Status")
             detail["started_at"] = state.get("StartedAt")
             detail["finished_at"] = state.get("FinishedAt")
-            detail["restart_policy"] = (host_cfg.get("RestartPolicy") or {}).get("Name")
+            rp = host_cfg.get("RestartPolicy") if isinstance(host_cfg.get("RestartPolicy"), dict) else {}
+            detail["restart_policy"] = rp.get("Name")
             detail["network_mode"] = host_cfg.get("NetworkMode")
             detail["ports"] = _docker_ports_summary(insp)
             if not detail.get("url"):
                 detail["url"] = ov.get("url") or _url_from_inspect(insp)
-            labels = cfg_c.get("Labels") or {}
+            labels = cfg_c.get("Labels") if isinstance(cfg_c.get("Labels"), dict) else {}
             detail["compose_project"] = labels.get("com.docker.compose.project")
             detail["compose_service"] = labels.get("com.docker.compose.service")
             mounts = []
-            for m in insp.get("Mounts") or []:
+            for m in insp.get("Mounts") if isinstance(insp.get("Mounts"), list) else []:
+                if not isinstance(m, dict):
+                    continue
                 mounts.append({
                     "source": m.get("Source"),
                     "destination": m.get("Destination"),
@@ -252,7 +338,7 @@ def service_detail(sid: str) -> dict:
                     "rw": m.get("RW"),
                 })
             detail["mounts"] = mounts[:30]
-            env = cfg_c.get("Env") or []
+            env = cfg_c.get("Env") if isinstance(cfg_c.get("Env"), list) else []
             # Redact by key AND by value.  This detail is reachable by member
             # accounts for services on their list, and a key-name allowlist
             # leaks secrets carried under innocuous names: DATABASE_URL=
@@ -261,7 +347,7 @@ def service_detail(sid: str) -> dict:
             # or is a long opaque token.
             redacted = []
             for e in env[:40]:
-                if "=" in e:
+                if isinstance(e, str) and "=" in e:
                     k, v = e.split("=", 1)
                     if any(x in k.upper() for x in ("PASS", "SECRET", "TOKEN", "KEY", "PWD", "CRED", "AUTH")):
                         redacted.append(f"{k}=***")
@@ -300,6 +386,8 @@ def service_detail(sid: str) -> dict:
     elif kind in ("app", "app-engine"):
         # from services.yaml apps section
         for a in cfg().get("apps") or []:
+            if not isinstance(a, dict):
+                continue
             if a.get("id") == sid:
                 detail["process"] = a.get("process")
                 detail["config"] = {k: a.get(k) for k in a if k not in ("id",)}
@@ -307,6 +395,8 @@ def service_detail(sid: str) -> dict:
 
     elif kind == "script":
         for s in cfg().get("scripts") or []:
+            if not isinstance(s, dict):
+                continue
             if s.get("id") == sid:
                 detail["start_cmd"] = s.get("start")
                 detail["stop_cmd"] = s.get("stop")
@@ -318,7 +408,7 @@ def service_detail(sid: str) -> dict:
                     "name": s.get("name") or sid,
                     "group": s.get("group") or "Custom",
                     "url": s.get("url") or "",
-                    "ports": list(s.get("ports") or []),
+                    "ports": list(s.get("ports")) if isinstance(s.get("ports"), list) else [],
                     "start": s.get("start") or "",
                     "stop": s.get("stop") or "",
                     "adopted": bool(s.get("adopted_from")),
@@ -329,7 +419,7 @@ def service_detail(sid: str) -> dict:
     elif kind == "auto":
         detail["notes"] = "Auto-discovered listening port; you can edit the display name/URL, or hide it."
         detail["can_logs"] = False
-        meta = svc.get("meta") or {}
+        meta = _svc_meta(svc)
         detail["process"] = meta.get("process")
         detail["pid"] = meta.get("pid")
         detail["signature"] = meta.get("signature")
@@ -343,14 +433,15 @@ def service_detail(sid: str) -> dict:
     if detail.get("url") and "open" not in detail["actions"]:
         detail["actions"] = list(detail["actions"]) + ["open"]
 
-    return detail
+    cleaned = _jsonable(detail)
+    return cleaned if isinstance(cleaned, dict) else {"id": sid}
 
 
 def service_logs(sid: str, lines: int = 150) -> dict:
     sid = cli_args.require_positional(sid, label="service id")
     svc = find_service(sid, force=False) or find_service(sid, force=True)
     kind = (svc or {}).get("kind") or ""
-    lines = max(10, min(int(lines), 2000))
+    lines = _clamp_lines(lines)
     log = ""
     source = ""
 
@@ -358,7 +449,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
         if not DOCKER:
             raise api_error("services.docker_unavailable")
         rc, out, err = sh([DOCKER, "logs", "--tail", str(lines), sid], timeout=30)
-        log = (out or err or "").strip() or f"(no output · exit {rc})"
+        log = (_as_text(out) or _as_text(err)).strip() or f"(no output · exit {rc})"
         source = f"docker logs {sid}"
         kind = kind or "container"
 
@@ -369,21 +460,27 @@ def service_logs(sid: str, lines: int = 150) -> dict:
             if pl.get(key):
                 paths.append(pl[key])
         # common defaults
-        home_logs = Path.home() / "Library/Logs"
-        for guess in (
-            home_logs / f"{sid}.err.log",
-            home_logs / f"{sid}.log",
-            home_logs / f"{sid}.out.log",
-        ):
-            if guess.is_file() and str(guess) not in paths:
-                paths.append(str(guess))
+        home = user_home()
+        home_logs = None if home is None else home / "Library/Logs"
+        if home_logs is not None:
+            for guess in (
+                home_logs / f"{sid}.err.log",
+                home_logs / f"{sid}.log",
+                home_logs / f"{sid}.out.log",
+            ):
+                try:
+                    exists = guess.is_file()
+                except OSError:
+                    exists = False
+                if exists and str(guess) not in paths:
+                    paths.append(str(guess))
         chunks = []
         for p in paths[:4]:
             chunks.append(f"===== {p} =====\n{_tail_file(p, lines)}")
         if not chunks:
             # launchctl print as fallback diagnostic
             rc, out, err = sh(["/bin/launchctl", "print", f"gui/{UID}/{sid}"], timeout=6)
-            chunks.append(out or err or "(no StandardErrorPath / log file)")
+            chunks.append(_as_text(out) or _as_text(err) or "(no StandardErrorPath / log file)")
             source = "launchctl print"
         else:
             source = "plist log paths"
@@ -395,7 +492,13 @@ def service_logs(sid: str, lines: int = 150) -> dict:
         try:
             from hub import logs_svc
             sources = logs_svc.log_sources()
-            hit = next((s for s in sources if s["id"] == sid or sid in (s.get("name") or "").lower()), None)
+            def _src_name(row):
+                n = row.get("name")
+                return n.lower() if isinstance(n, str) else ""
+            hit = next(
+                (s for s in sources if s["id"] == sid or sid in _src_name(s)),
+                None,
+            )
             if not hit:
                 # fuzzy
                 for s in sources:
@@ -410,7 +513,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
                 log = "(no script log source configured; add one under settings / log_sources)"
                 source = "none"
         except Exception as e:
-            log = str(e)
+            log = _as_text(e)
             source = "error"
 
     elif kind in ("app", "app-engine"):
@@ -421,14 +524,15 @@ def service_logs(sid: str, lines: int = 150) -> dict:
         # try docker then launchd without recursion
         if DOCKER:
             rc, out, err = sh([DOCKER, "logs", "--tail", str(lines), sid], timeout=20)
-            if rc == 0 and (out or err):
-                return {
+            text = (_as_text(out) or _as_text(err)).strip()
+            if rc == 0 and text:
+                return _jsonable({
                     "id": sid,
                     "kind": "container",
                     "source": f"docker logs {sid}",
-                    "log": (out or err).strip(),
+                    "log": text,
                     "lines": lines,
-                }
+                })
         pp = _plist_path(sid)
         if pp:
             pl = _load_plist(sid)
@@ -438,28 +542,28 @@ def service_logs(sid: str, lines: int = 150) -> dict:
                     chunks.append(f"===== {pl[key]} =====\n{_tail_file(pl[key], lines)}")
             if not chunks:
                 rc, out, err = sh(["/bin/launchctl", "print", f"gui/{UID}/{sid}"], timeout=6)
-                chunks.append(out or err or "(no log paths)")
+                chunks.append(_as_text(out) or _as_text(err) or "(no log paths)")
                 source = "launchctl print"
             else:
                 source = "plist log paths"
-            return {
+            return _jsonable({
                 "id": sid,
                 "kind": "launchd",
                 "name": (svc or {}).get("name") or sid,
                 "source": source,
                 "log": "\n\n".join(chunks),
                 "lines": lines,
-            }
+            })
         raise api_error("services.no_logs", id=sid)
 
-    return {
+    return _jsonable({
         "id": sid,
         "kind": kind,
         "name": (svc or {}).get("name") or sid,
         "source": source,
         "log": log,
         "lines": lines,
-    }
+    })
 
 
 def update_override(sid: str, patch: dict) -> dict:
@@ -474,10 +578,10 @@ def update_override(sid: str, patch: dict) -> dict:
             if v is None or v == "":
                 clean[k] = None
             else:
-                try:
-                    clean[k] = int(v)
-                except (TypeError, ValueError):
+                n = _as_int(v)
+                if n is None:
                     raise api_error("services.bad_port")
+                clean[k] = n
         elif k == "hide":
             clean[k] = bool(v) if v is not None else None
         elif k in ("name", "group", "url"):
@@ -500,16 +604,19 @@ def hide_service(sid: str, hide: bool = True) -> dict:
 
 def _full_process_name(pid) -> str:
     """The process's real image name — lsof truncates COMMAND to ~9 chars."""
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return ""
-    if pid <= 0:
+    pid = _as_int(pid)
+    if pid is None or pid <= 0:
         return ""
     rc, out, _ = sh(["/bin/ps", "-p", str(pid), "-o", "comm="], timeout=5)
+    out = _as_text(out)
     if rc != 0 or not out.strip():
         return ""
-    return unescape_proc_name(Path(out.strip().splitlines()[0]).name)
+    comm = out.strip().splitlines()[0]
+    try:
+        name = Path(comm).name
+    except (OSError, ValueError, TypeError):
+        name = comm.rsplit("/", 1)[-1]
+    return unescape_proc_name(name)
 
 
 def _process_command_path(pid) -> str:
@@ -520,13 +627,11 @@ def _process_command_path(pid) -> str:
     services.yaml provenance.  The path alone is enough to recover a
     Homebrew formula (``…/opt/postgresql@17/bin/postgres``).
     """
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return ""
-    if pid <= 0:
+    pid = _as_int(pid)
+    if pid is None or pid <= 0:
         return ""
     rc, out, _ = sh(["/bin/ps", "-p", str(pid), "-o", "command="], timeout=5)
+    out = _as_text(out)
     if rc != 0 or not out.strip():
         return ""
     line = out.strip().splitlines()[0]
@@ -553,7 +658,10 @@ def _taken_service_ids() -> set[str]:
     data = cfg()
     taken = set()
     for key in ("apps", "scripts", "stacks"):
-        for entry in data.get(key) or []:
+        entries = data.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
             if isinstance(entry, dict) and entry.get("id"):
                 taken.add(str(entry["id"]))
     return taken
@@ -565,14 +673,16 @@ def adopt_defaults(svc: dict) -> dict:
     Shown by the UI as the pre-filled adopt form, and used verbatim when the
     caller adopts without overriding anything.
     """
-    meta = svc.get("meta") or {}
+    meta = _svc_meta(svc)
     process = _full_process_name(meta.get("pid")) or meta.get("process") or ""
     command_path = _process_command_path(meta.get("pid"))
+    raw_ports = meta.get("ports")
+    if not isinstance(raw_ports, list):
+        raw_ports = [meta["port"]] if meta.get("port") else []
     ports = []
-    for p in meta.get("ports") or ([meta["port"]] if meta.get("port") else []):
-        try:
-            n = int(p)
-        except (TypeError, ValueError):
+    for p in raw_ports:
+        n = _as_int(p)
+        if n is None:
             continue
         if 1 <= n <= 65535 and n not in ports:
             ports.append(n)
@@ -582,7 +692,13 @@ def adopt_defaults(svc: dict) -> dict:
         process or meta.get("process") or "",
         ports[0] if ports else None,
         extras=configured_signatures(),
-    ) or meta.get("signature") or svc.get("signature") or {}
+    )
+    if not isinstance(sig, dict):
+        sig = meta.get("signature")
+    if not isinstance(sig, dict):
+        sig = svc.get("signature")
+    if not isinstance(sig, dict):
+        sig = {}
     recognised = sig.get("confidence") == "high"
     name = sig["name"] if recognised else (process or svc.get("name") or "")
     group = sig.get("category") if recognised else None
@@ -627,9 +743,8 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
     defaults = adopt_defaults(svc)
     ports = []
     for p in (patch.get("ports") or defaults["ports"]):
-        try:
-            p = int(p)
-        except (TypeError, ValueError):
+        p = _as_int(p)
+        if p is None:
             continue
         if 1 <= p <= 65535 and p not in ports:
             ports.append(p)
@@ -666,7 +781,7 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
     # Provenance, so the operator can later tell adopted entries from
     # hand-written ones when editing services.yaml.
     adopted_from = {
-        "process": defaults.get("process") or (svc.get("meta") or {}).get("process"),
+        "process": defaults.get("process") or _svc_meta(svc).get("process"),
         "auto_id": sid,
     }
     if defaults.get("formula"):
@@ -702,11 +817,16 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
 
     def apply(data: dict) -> None:
         nonlocal stored_sig
-        scripts = data.setdefault("scripts", [])
+        scripts = data.get("scripts")
+        if not isinstance(scripts, list):
+            scripts = []
+            data["scripts"] = scripts
         scripts.append(entry)
         # The auto row disappears on its own once the port is claimed, but a
         # stale hide/override for it would silently apply to nothing forever.
-        (data.get("overrides") or {}).pop(sid, None)
+        ov = data.get("overrides")
+        if isinstance(ov, dict):
+            ov.pop(sid, None)
         if learned:
             stored_sig = remember_into(data, learned)
 
@@ -750,10 +870,10 @@ def _signature_from_adopt(
 
 def _parse_ports(raw) -> list[int]:
     ports: list[int] = []
-    for p in raw or []:
-        try:
-            n = int(p)
-        except (TypeError, ValueError):
+    rows = raw if isinstance(raw, (list, tuple, set, frozenset)) else []
+    for p in rows:
+        n = _as_int(p)
+        if n is None:
             continue
         if 1 <= n <= 65535 and n not in ports:
             ports.append(n)
@@ -764,9 +884,10 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
     """Rewrite a services.yaml ``scripts`` entry (adopted or hand-written)."""
     sid = cli_args.require_positional(sid, label="service id")
     patch = patch or {}
+    scripts = cfg().get("scripts")
     if not any(
         isinstance(s, dict) and s.get("id") == sid
-        for s in (cfg().get("scripts") or [])
+        for s in (scripts if isinstance(scripts, list) else [])
     ):
         raise api_error("services.script_not_found", id=sid)
     if "ports" in patch:
@@ -829,7 +950,9 @@ def forget_script(sid: str) -> dict:
     removed: dict = {}
 
     def apply(data: dict) -> None:
-        scripts = data.get("scripts") or []
+        scripts = data.get("scripts")
+        if not isinstance(scripts, list):
+            scripts = []
         keep = []
         for entry in scripts:
             if isinstance(entry, dict) and entry.get("id") == sid:
@@ -837,7 +960,9 @@ def forget_script(sid: str) -> dict:
                 continue
             keep.append(entry)
         data["scripts"] = keep
-        (data.get("overrides") or {}).pop(sid, None)
+        ov = data.get("overrides")
+        if isinstance(ov, dict):
+            ov.pop(sid, None)
 
     config.mutate(apply)
     if not removed:
@@ -848,10 +973,11 @@ def forget_script(sid: str) -> dict:
 
 def list_signatures() -> dict:
     """Operator-defined recognition rules, plus how many builtins exist."""
-    return {
+    cleaned = _jsonable({
         "signatures": [yaml_signature(s) for s in configured_signatures()],
         "builtin_count": builtin_count(),
-    }
+    })
+    return cleaned if isinstance(cleaned, dict) else {"signatures": [], "builtin_count": 0}
 
 
 def upsert_signature(patch: dict | None = None) -> dict:
@@ -890,7 +1016,10 @@ def forget_signature(slug: str) -> dict:
 
 def enrich_service_list_item(s: dict) -> dict:
     """Add management action hints used by Services UI (non-breaking)."""
-    acts = list(s.get("actions") or [])
+    if not isinstance(s, dict):
+        return {"actions": []}
+    raw = s.get("actions")
+    acts = list(raw) if isinstance(raw, list) else []
     kind = s.get("kind") or ""
     if s.get("url") and "open" not in acts:
         acts.append("open")
@@ -906,8 +1035,12 @@ def enrich_service_list_item(s: dict) -> dict:
 def list_manageable(force: bool = False) -> dict:
     st = full_status(force=force)
     groups = []
-    for g in st.get("groups") or []:
-        svcs = [enrich_service_list_item(s) for s in (g.get("services") or [])]
+    raw_groups = st.get("groups") if isinstance(st.get("groups"), list) else []
+    for g in raw_groups:
+        if not isinstance(g, dict):
+            continue
+        rows = g.get("services") if isinstance(g.get("services"), list) else []
+        svcs = [enrich_service_list_item(s) for s in rows if isinstance(s, dict)]
         groups.append({"group": g.get("group"), "services": svcs})
     return {
         **st,

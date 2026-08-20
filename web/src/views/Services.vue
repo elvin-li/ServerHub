@@ -4,13 +4,13 @@
       <h1>{{ t('services.title') }}</h1>
       <span class="meta" v-if="status">
         {{ t('services.summary', {
-          ok: status.counts?.ok ?? 0,
-          warn: status.counts?.warn ?? 0,
-          down: status.counts?.down ?? 0,
-          stopped: status.counts?.stopped ?? 0,
-          ts: status.ts,
+          ok: finiteN(status.counts?.ok, 0),
+          warn: finiteN(status.counts?.warn, 0),
+          down: finiteN(status.counts?.down, 0),
+          stopped: finiteN(status.counts?.stopped, 0),
+          ts: finiteText(status.ts),
         }) }}
-        · {{ status.service_total ?? flat.length }} {{ t('services.total_unit') }}
+        · {{ finiteN(status.service_total, flat.length) }} {{ t('services.total_unit') }}
         <span v-if="!status.engine_up" class="warn-tag">{{ t('services.engine_down') }}</span>
       </span>
     </div>
@@ -20,7 +20,7 @@
       <strong>{{ t('services.problems') }}</strong>
       <span v-for="p in (status.problems || []).slice(0, 8)" :key="p.id" class="prob-chip" @click="openDetail(p)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
         <span class="led" :class="ledOf(p.state)"></span>
-        {{ p.name }}
+        {{ finiteText(p.name) }}
       </span>
       <button v-if="canManage" type="button" class="tiny primary" :disabled="busy || !downIds.length" @click="bulkAction(downIds, 'start')">
         {{ t('services.start_all_down') }}
@@ -32,7 +32,7 @@
 
     <!-- Quick links -->
     <div v-if="(status?.links || []).length" class="quick-links">
-      <a v-for="l in status.links" :key="l.url" class="btn tiny" :href="l.url" target="_blank" rel="noopener">{{ l.name }}</a>
+      <a v-for="l in status.links" :key="finiteText(l.url)" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
     </div>
 
     <!-- Toolbar: one row — refresh, filter, selects, then the compact toggle cluster -->
@@ -45,7 +45,7 @@
       </select>
       <select v-model="groupF" class="cat-select">
         <option value="">{{ t('services.group_all') }}</option>
-        <option v-for="g in groupOptions" :key="g" :value="g">{{ g }}</option>
+        <option v-for="g in groupOptions" :key="g" :value="g">{{ finiteText(g) }}</option>
       </select>
       <select v-model="sortBy" class="cat-select">
         <option value="group">{{ t('services.sort_group') }}</option>
@@ -66,16 +66,16 @@
         {{ t('common.all') }} {{ flat.length }}
       </button>
       <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" @click="stateF = stateF === 'ok' ? '' : 'ok'">
-        {{ t('services.state_ok') }} {{ status?.counts?.ok ?? 0 }}
+        {{ t('services.state_ok') }} {{ finiteN(status?.counts?.ok, 0) }}
       </button>
       <button type="button" class="chip chip-warn" :class="{ active: stateF === 'warn' }" @click="stateF = stateF === 'warn' ? '' : 'warn'">
-        {{ t('services.state_warn') }} {{ status?.counts?.warn ?? 0 }}
+        {{ t('services.state_warn') }} {{ finiteN(status?.counts?.warn, 0) }}
       </button>
       <button type="button" class="chip chip-down" :class="{ active: stateF === 'down' }" @click="stateF = stateF === 'down' ? '' : 'down'">
-        {{ t('services.state_down') }} {{ status?.counts?.down ?? 0 }}
+        {{ t('services.state_down') }} {{ finiteN(status?.counts?.down, 0) }}
       </button>
       <button type="button" class="chip chip-muted" :class="{ active: stateF === 'stopped' }" @click="stateF = stateF === 'stopped' ? '' : 'stopped'">
-        {{ t('services.state_stopped') }} {{ status?.counts?.stopped ?? 0 }}
+        {{ t('services.state_stopped') }} {{ finiteN(status?.counts?.stopped, 0) }}
       </button>
     </div>
 
@@ -114,18 +114,18 @@
               </td>
               <td><span class="led" :class="ledOf(s.state)"></span></td>
               <td>
-                <strong>{{ s.name }}</strong>
-                <span v-if="signatureOf(s)" class="chip chip-sig chip-inline" :title="signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?`">
-                  {{ signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?` }}
+                <strong>{{ finiteText(s.name) }}</strong>
+                <span v-if="signatureOf(s)" class="chip chip-sig chip-inline" :title="signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?`">
+                  {{ signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?` }}
                 </span>
-                <div class="mono sub-id">{{ s.id }}</div>
-                <div class="show-m sub">{{ s.group }} · {{ kindLabel(s.kind) }}</div>
-                <div v-if="s.detail" class="show-m sub">{{ s.detail }}</div>
+                <div class="mono sub-id">{{ finiteText(s.id) }}</div>
+                <div class="show-m sub">{{ finiteText(s.group) }} · {{ kindLabel(s.kind) }}</div>
+                <div v-if="finiteText(s.detail, '')" class="show-m sub">{{ finiteText(s.detail) }}</div>
               </td>
-              <td class="col-hide-m">{{ s.group }}</td>
+              <td class="col-hide-m">{{ finiteText(s.group) }}</td>
               <td class="col-hide-m"><span class="badge kind-badge">{{ kindLabel(s.kind) }}</span></td>
               <td class="mono">{{ portOf(s) }}</td>
-              <td class="detail-cell col-hide-m" :title="s.detail">{{ s.detail }}</td>
+              <td class="detail-cell col-hide-m" :title="finiteText(s.detail)">{{ finiteText(s.detail) }}</td>
               <td class="actions-cell" @click.stop>
                 <ServiceActions :service="s" :busy="busy" variant="table" @act="onAction(s, $event)" @logs="openLogs(s)" @more="openDetail(s)" />
               </td>
@@ -148,18 +148,18 @@
     <!-- Card grid by group -->
     <template v-else>
       <template v-for="g in filteredGroups" :key="g.group">
-        <h2 class="section-title">{{ g.group }} <span class="meta-count">{{ g.services.length }}</span></h2>
+        <h2 class="section-title">{{ finiteText(g.group) }} <span class="meta-count">{{ g.services.length }}</span></h2>
         <div class="grid svc-grid">
           <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">
             <div class="row">
               <span class="led" :class="ledOf(s.state)"></span>
-              <span class="name" :title="s.id">{{ s.name }}</span>
+              <span class="name" :title="finiteText(s.id)">{{ finiteText(s.name) }}</span>
               <span class="badge">{{ kindLabel(s.kind) }}</span>
-              <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?`">
-                {{ signatureOf(s).confidence === 'high' ? signatureOf(s).name : `${signatureOf(s).name}?` }}
+              <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?`">
+                {{ signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?` }}
               </span>
             </div>
-            <div class="detail" :title="s.detail">{{ s.detail }}</div>
+            <div class="detail" :title="finiteText(s.detail)">{{ finiteText(s.detail) }}</div>
             <ServiceActions :service="s" :busy="busy" variant="card" @act="onAction(s, $event)" @logs="openLogs(s)" @more="openDetail(s)" @click.stop />
           </article>
         </div>
@@ -194,10 +194,10 @@
     <div ref="uninstallPanel" v-if="uninstallModal" class="modal-bg" @click.self="uninstallModal = null" role="presentation">
       <div class="modal uninstall-modal" role="dialog" aria-modal="true" aria-labelledby="svc-uninstall-title">
         <div class="drawer-head">
-          <h2 id="svc-uninstall-title" class="drawer-title">{{ t('services.uninstall_title', { name: uninstallModal.name }) }}</h2>
+          <h2 id="svc-uninstall-title" class="drawer-title">{{ t('services.uninstall_title', { name: finiteText(uninstallModal.name) }) }}</h2>
           <button type="button" @click="uninstallModal = null">{{ t('common.close') }}</button>
         </div>
-        <div class="mono sub-id" style="margin-bottom:10px">{{ uninstallModal.plist }}</div>
+        <div class="mono sub-id" style="margin-bottom:10px">{{ finiteText(uninstallModal.plist) }}</div>
         <section class="uninstall-sec">
           <h3 class="danger-text">{{ t('services.uninstall_removes') }}</h3>
           <ul class="plain-list">
@@ -221,7 +221,7 @@
           {{ t('services.uninstall_also_delete_tree') }}
         </label>
         <p v-if="uninstallModal.removeData && uninstallModal.remove_data_path" class="hint">
-          {{ t('services.uninstall_tree_hint', { path: uninstallModal.remove_data_path }) }}
+          {{ t('services.uninstall_tree_hint', { path: finiteText(uninstallModal.remove_data_path) }) }}
         </p>
         <p class="hint">{{ t('services.uninstall_reversible') }}</p>
         <div class="drawer-actions" style="margin-top:12px">
@@ -252,6 +252,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { authState } from '../lib/authState'
+import { finiteN, finiteText } from '../lib/finite'
 import { canLogs, ledOf, portOf, serviceLabels, signatureOf } from '../lib/serviceActions'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -296,10 +297,14 @@ const uninstallModal = ref(null)
 const uninstallPanel = ref(null)
 let timer = null
 const refreshTimers = new Set()
+let pageAlive = true
+let detailGeneration = 0
+let logGeneration = 0
 
 function later(fn, ms) {
   const id = setTimeout(() => {
     refreshTimers.delete(id)
+    if (!pageAlive) return
     fn()
   }, ms)
   refreshTimers.add(id)
@@ -386,35 +391,45 @@ function toggleSelectAll(e) {
 async function refresh(force = false) {
   loading.value = true
   try {
-    status.value = await getServices(force)
+    const next = await getServices(force)
+    if (!pageAlive) return
+    status.value = next
     loadError.value = ''
   } catch (e) {
-    loadError.value = e.message || String(e)
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return false
+    loadError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message || e))
     // Tell the 15s poller the tick failed so lib/poll.js backs off while the
     // server stays unreachable (and the toast above stops firing every 15s).
     return false
   } finally {
-    loading.value = false
-    loaded.value = true
+    if (pageAlive) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 
 async function onAction(svc, action) {
   // restart included: it interrupts a running service, which is the same class of
   // disruption as stop and deserves the same prompt.
-  if (['stop', 'remove', 'kill', 'restart'].includes(action) && !confirm(t('services.confirm_action', { name: svc.name, action: actLabel(action) }))) return
+  if (['stop', 'remove', 'kill', 'restart'].includes(action) && !confirm(t('services.confirm_action', { name: finiteText(svc.name), action: actLabel(action) }))) return
   busy.value = true
-  toast(t('services.running_action', { name: svc.name, action: actLabel(action) }))
+  toast(t('services.running_action', { name: finiteText(svc.name), action: actLabel(action) }))
   try {
     const r = await doAction(svc.id, action)
-    toast(r.ok ? `✅ ${svc.name}` : `❌ ${(r.message || '').slice(0, 90)}`)
+    if (!pageAlive) return
+    toast(r.ok ? `✅ ${finiteText(svc.name)}` : `❌ ${finiteText(r.message, '').slice(0, 90)}`)
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
     later(() => refresh(true), 1000)
-    if (detail.value?.id === svc.id) later(() => openDetail(svc, true), 1200)
+    const id = svc.id
+    later(() => {
+      if (detail.value?.id === id) openDetail(svc, true)
+    }, 1200)
   }
 }
 
@@ -429,25 +444,33 @@ async function bulkAction(ids, action) {
   toast(t('services.bulk_running', { n: ids.length, action: actLabel(action) }))
   try {
     const result = await bulkServiceAction(ids, action)
-    toast(result.ok ? `✅ ${result.ok_count}` : `⚠ ok ${result.ok_count || 0} / fail ${result.fail_count || 0}`)
+    if (!pageAlive) return
+    toast(result.ok ? `✅ ${finiteN(result.ok_count, 0)}` : `⚠ ok ${finiteN(result.ok_count, 0)} / fail ${finiteN(result.fail_count, 0)}`)
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) {
+      busy.value = false
+      selected.value = new Set()
+    }
+    later(() => refresh(true), 1200)
   }
-  selected.value = new Set()
-  later(() => refresh(true), 1200)
 }
 
 async function openDetail(svc, silent = false) {
+  const generation = ++detailGeneration
   if (!silent) detailLog.value = null
   try {
-    detail.value = await getServiceDetail(svc.id)
+    const next = await getServiceDetail(svc.id)
+    if (generation !== detailGeneration || !pageAlive) return
+    detail.value = next
   } catch (e) {
+    if (generation !== detailGeneration || !pageAlive) return
     if (e.status === 404) {
       detail.value = { ...svc, can_logs: canLogs(svc), can_edit: true }
     } else {
-      toast(`❌ ${e.message || e}`)
+      toast('❌ ' + finiteText(e.message || e))
     }
   }
 }
@@ -457,46 +480,51 @@ async function openDetail(svc, silent = false) {
 // refuses the panel's own agents), but hiding the button avoids offering an
 // action that is guaranteed to fail.
 function canUninstall(s) {
-  return Boolean(s && s.kind === 'launchd' && s.id)
+  return Boolean(authState.canManage && s && s.kind === 'launchd' && s.id)
 }
 
 async function openUninstall(svc) {
   busy.value = true
   try {
     const preview = await getServiceUninstallPreview(svc.id)
+    if (!pageAlive) return
     uninstallModal.value = {
       id: svc.id,
-      name: svc.name || svc.id,
+      name: finiteText(svc.name, '') || finiteText(svc.id),
       plist: preview.plist,
       can_remove_data: Boolean(preview.can_remove_data),
       remove_data_path: preview.remove_data_path || '',
       removeData: false,
     }
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   }
-  busy.value = false
+  if (pageAlive) busy.value = false
 }
 
 async function confirmUninstall() {
   const target = uninstallModal.value
   if (!target) return
   busy.value = true
-  toast(t('services.uninstall_running', { name: target.name }))
+  toast(t('services.uninstall_running', { name: finiteText(target.name) }))
   try {
     const r = await uninstallService(target.id, { remove_data: Boolean(target.removeData) })
-    const backup = String(r.backup || '').split('/').pop()
-    toast(t('services.uninstall_done', { name: target.name, backup }))
+    if (!pageAlive) return
+    const backup = String(finiteText(r.backup, '')).split('/').pop()
+    toast(t('services.uninstall_done', { name: finiteText(target.name), backup: finiteText(backup) }))
     uninstallModal.value = null
     closeDrawer()
     await refresh(true)
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   }
-  busy.value = false
+  if (pageAlive) busy.value = false
 }
 
 function closeDrawer() {
+  detailGeneration += 1
   detail.value = null
   detailLog.value = null
 }
@@ -506,13 +534,15 @@ async function adopt(body) {
   busy.value = true
   try {
     const r = await adoptService(detail.value.id, body)
-    toast(`✅ ${t('services.adopt_done', { name: r.entry?.name || r.id })}`)
+    if (!pageAlive) return
+    toast(`✅ ${t('services.adopt_done', { name: finiteText(r.entry?.name, '') || finiteText(r.id) })}`)
     closeDrawer()
     await refresh(true)
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -522,28 +552,32 @@ async function saveScript(body) {
   try {
     const saved = detail.value
     await updateServiceScript(saved.id, body)
+    if (!pageAlive) return
     toast(`✅ ${t('common.save')}`)
     await Promise.all([refresh(true), openDetail(saved, true)])
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function forgetScript() {
   if (!detail.value?.can_forget) return
-  if (!confirm(t('services.confirm_forget', { name: detail.value.name }))) return
+  if (!confirm(t('services.confirm_forget', { name: finiteText(detail.value.name) }))) return
   busy.value = true
   try {
     await forgetServiceScript(detail.value.id)
+    if (!pageAlive) return
     toast(`✅ ${t('services.forgotten')}`)
     closeDrawer()
     await refresh(true)
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -553,6 +587,7 @@ async function saveOverride(body) {
   try {
     const saved = detail.value
     await updateServiceOverride(saved.id, body)
+    if (!pageAlive) return
     toast(`✅ ${t('common.save')}`)
     // Both re-reads observe the same just-written override and neither feeds the
     // other: refresh() rewrites the list, openDetail() rewrites the drawer. Run
@@ -561,34 +596,40 @@ async function saveOverride(body) {
     // the time these resolve.
     await Promise.all([refresh(true), openDetail(saved, true)])
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function hideService() {
   if (!detail.value) return
-  if (!confirm(t('services.confirm_hide', { name: detail.value.name }))) return
+  if (!confirm(t('services.confirm_hide', { name: finiteText(detail.value.name) }))) return
   busy.value = true
   try {
     await setServiceHidden(detail.value.id, true)
+    if (!pageAlive) return
     toast(`✅ ${t('services.hidden')}`)
     closeDrawer()
     await refresh(true)
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (!pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function openLogs(svc) {
+  const generation = ++logGeneration
   try {
     const result = await getServiceLogs(svc.id, 200)
-    logModal.value = { id: svc.id, name: svc.name, source: result.source, log: result.log }
+    if (generation !== logGeneration || !pageAlive) return
+    logModal.value = { id: svc.id, name: finiteText(svc.name), source: result.source, log: result.log }
   } catch (e) {
-    toast(`❌ ${e.message || e}`)
+    if (generation !== logGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message || e))
   }
 }
 
@@ -599,21 +640,29 @@ async function reloadLogModal() {
 
 async function loadDetailLogs() {
   if (!detail.value) return
+  const generation = detailGeneration
+  const id = detail.value.id
   try {
-    const result = await getServiceLogs(detail.value.id, 200)
+    const result = await getServiceLogs(id, 200)
+    if (generation !== detailGeneration || !pageAlive) return
     detailLog.value = result.log || ''
     detailLogSource.value = result.source || ''
   } catch (e) {
-    detailLog.value = String(e.message || e)
+    if (generation !== detailGeneration || !pageAlive) return
+    detailLog.value = finiteText(e.message || e, '')
     detailLogSource.value = 'error'
   }
 }
 
 onMounted(() => {
+  pageAlive = true
   refresh()
   timer = startVisibleInterval(() => refresh(false), 15000)
 })
 onUnmounted(() => {
+  pageAlive = false
+  detailGeneration += 1
+  logGeneration += 1
   if (typeof timer === 'function') timer()
   for (const id of refreshTimers) clearTimeout(id)
   refreshTimers.clear()

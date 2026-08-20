@@ -7,6 +7,7 @@ reach the argv in a form rsync would read as an option.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -171,6 +172,23 @@ class InjectionRejectionTests(unittest.TestCase):
     def test_bad_bwlimit(self):
         self._reject("rsync.bad_params", bwlimit_kbps="fast")
         self._reject("rsync.bad_params", bwlimit_kbps=-5)
+        self._reject("rsync.bad_params", bwlimit_kbps=float("inf"))
+
+    def test_exclude_that_is_not_a_list_is_ignored(self):
+        params = {**self.BASE, "exclude": 1}
+        argv = rsync_svc.build_argv(params, info=RSYNC3)
+        self.assertFalse(any(a.startswith("--exclude=") for a in argv))
+
+    def test_params_that_are_not_a_dict_are_coded_not_500(self):
+        """A YAML list leftover under params used to raise ``list.get``."""
+        for junk in (["/data", "/backup"], "/data", 1):
+            with self.subTest(junk=junk):
+                with self.assertRaises(HTTPException) as ctx:
+                    rsync_svc.validated(junk)
+                self.assertEqual(_code(ctx), "rsync.bad_params")
+        with self.assertRaises(HTTPException) as ctx:
+            rsync_svc.validated(None)
+        self.assertEqual(_code(ctx), "rsync.bad_path")
 
     def test_exclude_rides_in_a_single_token(self):
         """Even a hostile pattern cannot become its own argv element."""
@@ -244,6 +262,17 @@ class DryRunParseTests(unittest.TestCase):
         self.assertEqual(summary["total"], 4)
         self.assertEqual(summary["binary"]["variant"], "rsync3")
 
+    def test_preview_tolerates_non_object_supports(self):
+        info = dict(RSYNC3)
+        info["supports"] = ["itemize"]
+        with mock.patch.object(rsync_svc, "binary_info", lambda force=False: info), \
+             mock.patch.object(rsync_svc.subprocess, "Popen",
+                               lambda *a, **kw: _FakeProc(VERBOSE.splitlines(), rc=0)):
+            summary = rsync_svc.preview(
+                {"direction": "push", "src": "/data", "dest": "/backup"}
+            )
+        self.assertTrue(summary["ok"])
+
     def test_preview_reports_failure(self):
         params = {"direction": "push", "src": "/data", "dest": "/backup"}
         with mock.patch.object(rsync_svc, "binary_info", lambda force=False: RSYNC3), \
@@ -270,6 +299,18 @@ class PreviewStreamingTests(unittest.TestCase):
         # No test may inherit another's in-flight preview registration.
         with rsync_svc._preview_guard:
             rsync_svc._preview_running.clear()
+
+    def test_leftover_inf_timeout_does_not_500_preview(self):
+        with mock.patch.object(rsync_svc, "binary_info", lambda force=False: RSYNC3), \
+             mock.patch.object(rsync_svc, "_run_preview") as run:
+            run.return_value = {
+                "creates": 0, "updates": 0, "deletes": 0, "total": 0,
+                "samples": [], "ok": True, "rc": 0, "message": "",
+            }
+            summary = rsync_svc.preview(self.PARAMS, timeout=float("inf"))
+        self.assertTrue(summary["ok"])
+        self.assertEqual(run.call_args.kwargs["timeout"], rsync_svc.PREVIEW_TIMEOUT)
+        json.dumps(summary, allow_nan=False)
 
     def test_huge_output_is_counted_but_only_samples_survive(self):
         lines = [f">f+++++++++ tree/file-{i}.bin" for i in range(50_000)]
@@ -310,6 +351,32 @@ class PreviewStreamingTests(unittest.TestCase):
         with rsync_svc._preview_guard:
             self.assertEqual(rsync_svc._preview_running, set(),
                              "a failed preview must not leave the job marked busy")
+
+    def test_preview_popen_surrogate_does_not_500(self):
+        """Leftover ``\\ud800`` env UnicodeEncodeError is ValueError; POST preview used to 500."""
+        with mock.patch.object(rsync_svc, "binary_info", lambda force=False: RSYNC3), \
+             mock.patch.object(
+                 rsync_svc.subprocess, "Popen",
+                 side_effect=UnicodeEncodeError(
+                     "utf-8", "\ud800", 0, 1, "surrogates not allowed",
+                 ),
+             ):
+            summary = rsync_svc.preview(self.PARAMS)
+        self.assertFalse(summary["ok"])
+        self.assertNotIn("\ud800", summary["message"])
+        json.dumps(summary, allow_nan=False)
+
+    def test_preview_str_recursion_does_not_500(self):
+        """leftover ``str(e)`` RecursionError used to 500 POST /api/rsync/preview."""
+        class Boom(OSError):
+            def __str__(self):
+                raise RecursionError
+
+        with mock.patch.object(rsync_svc, "binary_info", lambda force=False: RSYNC3), \
+             mock.patch.object(rsync_svc.subprocess, "Popen", side_effect=Boom()):
+            summary = rsync_svc.preview(self.PARAMS)
+        self.assertFalse(summary["ok"])
+        json.dumps(summary, allow_nan=False)
 
     def test_timeout_kills_the_whole_process_group(self):
         import sys as _sys

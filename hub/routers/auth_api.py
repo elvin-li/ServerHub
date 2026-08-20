@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
 from hub import __version__, audit, auth, twofa_svc
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 
 router = APIRouter(tags=["auth"])
 
@@ -87,7 +87,7 @@ def auth_status(request: Request):
     # no reason to learn it, and a signed session already carries the real name.
     suggested_username = ""
     if setup_required:
-        suggested_username = str(auth._auth_cfg().get("username") or "admin")
+        suggested_username = auth.suggested_setup_username()
     return {
         "setup_required": setup_required,
         # Lets the setup form omit the token field entirely when this claim does
@@ -116,7 +116,7 @@ def auth_setup(body: SetupBody, request: Request, response: Response):
             require_token=auth.setup_token_required(request),
         )
     except ValueError as exc:
-        if str(exc) == "bad_username":
+        if exc_detail(exc, cap=64) == "bad_username":
             raise api_error("accounts.bad_username")
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
     if not completed:
@@ -168,7 +168,6 @@ def auth_login(body: LoginBody, request: Request, response: Response):
     # for unknown names so the timing does not say which usernames exist.
     username = (body.username or "").strip()
     if not auth.verify_account_password(username, body.password):
-        auth.record_login_failure(client)
         # The attempted name is kept (it is not a secret and is the only clue
         # to *which* account is under attack); audit.record drops the password.
         audit.record(
@@ -185,7 +184,10 @@ def auth_login(body: LoginBody, request: Request, response: Response):
         # /api/auth/totp/verify accepts a code.  The failure counter is
         # deliberately *not* cleared here: clearing it on every correct
         # password would let an attacker who has the password reset their code
-        # -guessing budget with one login call per attempt.
+        # -guessing budget with one login call per attempt.  Only this
+        # request's reservation is released, so a correct password does not
+        # spend a slot that TOTP guesses still need.
+        auth.release_login_reservation(client)
         return {
             "ok": False,
             "totp_required": True,
@@ -239,7 +241,6 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
     # re-authentication proves the person at the keyboard, and for members it
     # must check their account hash rather than the administrator's.
     if not auth.verify_account_password(current_username, body.current_password):
-        auth.record_login_failure(client)
         audit.record(
             audit.PASSWORD_CHANGE_DENIED,
             username=current_username,
@@ -267,7 +268,7 @@ def auth_change_password(body: ChangePasswordBody, request: Request, response: R
             # administrator pair, exactly as this endpoint always has.
             auth.set_password(body.new_password, username, enable=True)
     except ValueError as exc:
-        if str(exc) == "bad_username":
+        if exc_detail(exc, cap=64) == "bad_username":
             raise api_error("accounts.bad_username")
         raise api_error("auth.password_too_short", min=auth.MIN_PASSWORD_LENGTH)
     session_name = username

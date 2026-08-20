@@ -13,13 +13,14 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub import cli_args
-from hub.config import cfg, override
+from hub.config import cfg, maintenance_env, override
 from hub.errors import api_error
-from hub.docker_cli import docker, docker_json, engine_up, inspect_object, redact_env
-from hub.paths import DATA_DIR, DOCKER
+from hub.docker_cli import _as_text, _jsonable, docker, docker_json, engine_up, inspect_object, redact_env
+from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.host_address import resolve_value
+from hub.secure_io import replace_bytes
 from hub.status import invalidate_status
-from hub.util import iter_capped_lines, ttl_memo
+from hub.util import iter_capped_lines, read_text_capped, run_capped, strftime_now, ttl_memo, utf8_env
 
 # long-running compose / pull jobs (reuse pattern of maintenance)
 _cjobs: dict = {}
@@ -44,6 +45,14 @@ JOB_LOG_TOTAL_CAP = 512 * 1024
 JOB_HISTORY_MAX = 40
 
 
+def _job_epoch() -> int:
+    """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd job ids."""
+    try:
+        return int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _evict_old_jobs() -> None:
     """Drop the oldest finished jobs until the store fits JOB_HISTORY_MAX.
 
@@ -56,7 +65,10 @@ def _evict_old_jobs() -> None:
     """
     if len(_cjobs) <= JOB_HISTORY_MAX:
         return
-    for key in [k for k, v in _cjobs.items() if not v.get("running")]:
+    for key in [
+        k for k, v in _cjobs.items()
+        if not (isinstance(v, dict) and v.get("running"))
+    ]:
         if len(_cjobs) <= JOB_HISTORY_MAX:
             break
         _cjobs.pop(key, None)
@@ -71,14 +83,17 @@ def _register_job(tid: str, *, stack_id: str, action: str) -> dict:
 
     Returns the live job dict (the ``run()`` thread mutates it in place).
     """
+    tid = tid if isinstance(tid, str) else str(tid)
+    stack_id = stack_id if isinstance(stack_id, str) else ""
+    action = action if isinstance(action, str) else str(action or "")
     with _cjobs_lock:
-        if any(j.get("running") for j in _cjobs.values()):
+        if any(isinstance(j, dict) and j.get("running") for j in _cjobs.values()):
             raise api_error("container.job_running")
         _cjobs[tid] = {
             "running": True,
             "rc": None,
             "log": [],
-            "started": time.strftime("%H:%M:%S"),
+            "started": strftime_now("%H:%M:%S"),
             "finished": None,
             "stack_id": stack_id,
             "action": action,
@@ -108,11 +123,22 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
     Returns the exit status, or 124 when the deadline was hit.
     """
     timed_out = threading.Event()
-    with subprocess.Popen(
-        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        # errors="replace": binary junk in CLI output must not kill the read.
-        text=True, errors="replace", env=env, start_new_session=True,
-    ) as p:
+    argv = cli_args.as_argv(cmd)
+    if argv is None:
+        j["log"].append("!! invalid argv")
+        return -1
+    try:
+        p = subprocess.Popen(
+            argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            # errors="replace": binary junk in CLI output must not kill the read.
+            text=True, errors="replace", env=utf8_env(env), start_new_session=True,
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        # Leftover ``\\ud800`` env/cwd UnicodeEncodeError is ValueError, not OSError.
+        j["log"].append(f"!! error: {_as_text(exc)}")
+        return -1
+
+    with p:
         def _reap():
             # Signal the process group: killing only the docker CLI would
             # leave its children holding the pipe open.
@@ -152,8 +178,12 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
         finally:
             watchdog.cancel()
             _reap()
-    return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
+        return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
+
+
 UPDATE_STATUS_PATH = DATA_DIR / "docker-update-status.json"
+#: Leftover multi-MB docker-update-status.json used to OOM GET /api/containers.
+_UPDATE_STATUS_CAP = 256 * 1024
 
 # docker stats --no-stream is ~2s; cache aggressively for snappy UI.
 # Containers page polls every 20s. A 5s list / 15s stats window missed on
@@ -200,18 +230,83 @@ def invalidate_container_lists():
 
 
 def _load_update_status() -> dict:
-    if UPDATE_STATUS_PATH.exists():
-        try:
-            data = json.loads(UPDATE_STATUS_PATH.read_text())
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            pass
-    return {}
+    try:
+        # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/containers.
+        if not UPDATE_STATUS_PATH.exists():
+            return {}
+        data = json.loads(read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP))
+        if not isinstance(data, dict):
+            return {}
+        cleaned = _jsonable(data)
+        return cleaned if isinstance(cleaned, dict) else {}
+    except (OSError, TypeError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested update status is not ValueError.
+        return {}
 
 
 def _save_update_status(data: dict) -> None:
-    UPDATE_STATUS_PATH.parent.mkdir(exist_ok=True)
-    UPDATE_STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    payload = _jsonable(data) if isinstance(data, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        UPDATE_STATUS_PATH.parent.mkdir(exist_ok=True)
+        replace_bytes(
+            UPDATE_STATUS_PATH,
+            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8"),
+        )
+    except (OSError, TypeError, ValueError, OverflowError, RecursionError):
+        # RecursionError: leftover nested update status after _jsonable is not
+        # OSError; a leftover file occupying the parent used to 500 docker check.
+        pass
+
+
+def _field_text(value, fallback: str = "") -> str:
+    """JSON-safe display string for a leftover YAML field.
+
+    ``name: .inf``, ``group: 2026-08-19``, ``!!binary`` and a ``!!set`` each
+    used to leak into GET /api/containers and /api/stacks.
+    """
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return fallback
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", "replace")
+    elif isinstance(value, (dict, list, tuple, set, frozenset)):
+        return fallback
+    else:
+        try:
+            text = str(value)
+        except Exception:
+            return fallback
+    if not text:
+        return fallback
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _optional_text(value) -> str | None:
+    text = _field_text(value, "")
+    return text or None
+
+
+def _str_list(raw) -> list[str]:
+    """Stack ``containers:`` as strings.  ``.inf`` / a scalar leftover must not 500."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for n in raw:
+        if not isinstance(n, str) or not n:
+            continue
+        text = _field_text(n)
+        if text:
+            out.append(text)
+    return out
 
 
 def _parse_k8s_name(name: str) -> dict | None:
@@ -240,8 +335,9 @@ def _parse_k8s_name(name: str) -> dict | None:
 
 def _friendly_container(name: str, ov: dict) -> dict:
     """Compute display_name / subtitle / grouping for a raw container name."""
-    if ov.get("name"):
-        return {"display_name": ov["name"], "subtitle": None, "k8s": None,
+    display = _field_text(ov.get("name"))
+    if display:
+        return {"display_name": display, "subtitle": None, "k8s": None,
                 "system": False, "sandbox": False}
     k = _parse_k8s_name(name)
     if not k:
@@ -274,7 +370,7 @@ def _build_container_list() -> tuple[bool, list]:
     items = []
     if rc != 0:
         return True, items
-    for line in out.splitlines():
+    for line in _as_text(out).splitlines():
         p = line.split("\t")
         if len(p) < 6:
             continue
@@ -284,6 +380,8 @@ def _build_container_list() -> tuple[bool, list]:
         service = p[7] if len(p) > 7 else ""
         size = p[8] if len(p) > 8 else ""
         ov = resolve_value(override(name))
+        if not isinstance(ov, dict):
+            ov = {}
         if ov.get("hide"):
             continue
         if state == "running" and "unhealthy" in status:
@@ -321,8 +419,10 @@ def _build_container_list() -> tuple[bool, list]:
             "project": eff_project,
             "service": service or None,
             "size": size,
-            "url": ov.get("url"),
-            "group": ov.get("group") or (f"Containers · {project}" if project else "Containers · other"),
+            "url": _optional_text(ov.get("url")),
+            "group": _field_text(ov.get("group")) or (
+                f"Containers · {project}" if project else "Containers · other"
+            ),
             "network": None,
             "ip": None,
             "restart_policy": None,
@@ -345,43 +445,81 @@ def _build_container_list() -> tuple[bool, list]:
         if rc2 == 0:
             try:
                 arr = json.loads(jout)
-                if isinstance(arr, dict):
-                    arr = [arr]
-                if not isinstance(arr, list):
-                    arr = []
-                by = {
-                    a.get("Name", "").lstrip("/"): a
-                    for a in arr if isinstance(a, dict)
-                }
-                for it in items:
-                    a = by.get(it["id"])
-                    if not a:
-                        continue
-                    host = a.get("HostConfig") or {}
-                    nets = (a.get("NetworkSettings") or {}).get("Networks") or {}
-                    it["network"] = host.get("NetworkMode") or ",".join(nets.keys()) or "bridge"
+            except (TypeError, ValueError, RecursionError):
+                # RecursionError: leftover deeply-nested inspect JSON is not ValueError.
+                arr = []
+            if isinstance(arr, dict):
+                arr = [arr]
+            if not isinstance(arr, list):
+                arr = []
+            by = {}
+            for a in arr:
+                if not isinstance(a, dict):
+                    continue
+                a = _jsonable(a)
+                if not isinstance(a, dict):
+                    continue
+                raw_name = a.get("Name")
+                if not isinstance(raw_name, str):
+                    continue
+                key = raw_name.lstrip("/")
+                if key:
+                    by[key] = a
+            for it in items:
+                a = by.get(it["id"])
+                if not a:
+                    continue
+                try:
+                    host = a.get("HostConfig") if isinstance(a.get("HostConfig"), dict) else {}
+                    ns = a.get("NetworkSettings") if isinstance(a.get("NetworkSettings"), dict) else {}
+                    nets = ns.get("Networks") if isinstance(ns.get("Networks"), dict) else {}
+                    nmode = host.get("NetworkMode")
+                    it["network"] = (
+                        nmode if isinstance(nmode, str) and nmode
+                        else (",".join(str(k) for k in nets.keys()) or "bridge")
+                    )
                     ips = []
                     for _nname, nd in nets.items():
+                        if not isinstance(nd, dict):
+                            continue
                         ip = nd.get("IPAddress")
-                        if ip:
+                        if isinstance(ip, str) and ip:
                             ips.append(ip)
                     it["ip"] = ", ".join(ips) if ips else None
-                    rp = (host.get("RestartPolicy") or {}).get("Name") or "no"
+                    rp_obj = host.get("RestartPolicy") if isinstance(host.get("RestartPolicy"), dict) else {}
+                    rp = rp_obj.get("Name")
+                    rp = rp if isinstance(rp, str) and rp else "no"
                     it["restart_policy"] = rp
                     it["autostart"] = rp in ("always", "unless-stopped", "on-failure")
                     mounts = []
-                    for m in a.get("Mounts") or []:
+                    for m in a.get("Mounts") if isinstance(a.get("Mounts"), list) else []:
+                        if not isinstance(m, dict):
+                            continue
                         mounts.append({
                             "src": m.get("Source") or m.get("Name") or "",
                             "dst": m.get("Destination") or "",
                             "type": m.get("Type") or "",
                         })
                     it["mounts"] = mounts
-                    it["created"] = (a.get("Created") or "")[:19].replace("T", " ")
-                    img = it["image"]
-                    cfg_img = ((a.get("Config") or {}).get("Image")) or img
+                    created = a.get("Created")
+                    created = created if isinstance(created, str) else (
+                        "" if created is None else str(created)
+                    )
+                    it["created"] = created[:19].replace("T", " ")
+                    img = it["image"] if isinstance(it.get("image"), str) else ""
+                    cfg_obj = a.get("Config") if isinstance(a.get("Config"), dict) else {}
+                    cfg_img = cfg_obj.get("Image")
+                    if not isinstance(cfg_img, str) or not cfg_img:
+                        cfg_img = img
                     it["image"] = cfg_img
-                    st_u = upd.get(cfg_img) or upd.get(img)
+                    st_u = None
+                    if isinstance(upd, dict):
+                        if cfg_img:
+                            st_u = upd.get(cfg_img)
+                        if not isinstance(st_u, dict) and img:
+                            st_u = upd.get(img)
+                    if not isinstance(st_u, dict):
+                        st_u = None
                     if st_u and st_u.get("status") in ("true", "false", True, False):
                         it["update"] = st_u.get("status") in (True, "true", "update")
                     elif st_u and st_u.get("status") == "undef":
@@ -389,13 +527,14 @@ def _build_container_list() -> tuple[bool, list]:
                     else:
                         it["update"] = st_u.get("update") if st_u else None
                     it["shell"] = "/bin/sh"
-            except Exception:
-                pass
+                except Exception:
+                    continue
     return True, items
 
 
 def _fetch_stats(running_names: list[str]) -> dict:
     """docker stats is ~2s; only call for running containers."""
+    running_names = [n for n in running_names if isinstance(n, str) and n]
     if not running_names:
         return {}
     # Named args slightly faster than scanning all when few containers
@@ -407,7 +546,7 @@ def _fetch_stats(running_names: list[str]) -> dict:
     )
     stats = {}
     if rc == 0:
-        for line in sout.splitlines():
+        for line in _as_text(sout).splitlines():
             sp = line.split("\t")
             if len(sp) >= 6:
                 stats[sp[0]] = {
@@ -477,28 +616,42 @@ def batch_action(names: list[str], action: str) -> dict:
             if r.get("ok"):
                 ok_n += 1
         except HTTPException as e:
-            results.append({"id": n, "ok": False, "message": str(e.detail)})
+            results.append({"id": n, "ok": False, "message": _as_text(e.detail)})
         except Exception as e:
-            results.append({"id": n, "ok": False, "message": str(e)})
+            results.append({"id": n, "ok": False, "message": _as_text(e)})
     return {"ok": ok_n == len(names), "done": ok_n, "total": len(names), "results": results}
+
+
+def _container_rows(payload) -> list:
+    """``list_containers()`` rows, or [] when the payload is the wrong shape.
+
+    ``containers: 5`` (or a bare list leftover) used to raise on ``.get`` /
+    ``for c in 5`` and 500 Start All / stack listing.
+    """
+    rows = payload.get("containers") if isinstance(payload, dict) else []
+    return rows if isinstance(rows, list) else []
 
 
 def action_all(action: str) -> dict:
     """Start/stop/pause/unpause all containers (Unraid Start All / Stop All)."""
-    info = list_containers(with_stats=False)
     names = []
-    for c in info.get("containers") or []:
+    for c in _container_rows(list_containers(with_stats=False)):
+        if not isinstance(c, dict):
+            continue
+        ident = c.get("id")
+        if not isinstance(ident, str) or not ident:
+            continue
         rs = c.get("raw_state")
         if action == "start" and rs not in ("running", "paused"):
-            names.append(c["id"])
+            names.append(ident)
         elif action == "stop" and rs in ("running", "paused"):
-            names.append(c["id"])
+            names.append(ident)
         elif action == "pause" and rs == "running":
-            names.append(c["id"])
+            names.append(ident)
         elif action == "unpause" and rs == "paused":
-            names.append(c["id"])
+            names.append(ident)
         elif action == "restart" and rs in ("running", "paused"):
-            names.append(c["id"])
+            names.append(ident)
     if not names:
         return {"ok": True, "done": 0, "total": 0, "message": "nothing to do", "results": []}
     return batch_action(names, action)
@@ -548,9 +701,12 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
     if not engine_up():
         raise api_error("container.engine_down")
     if not images:
-        info = list_containers(with_stats=False)
-        images = sorted({c["image"] for c in info.get("containers") or [] if c.get("image")})
-    tid = f"docker-check-{int(time.time())}"
+        images = sorted({
+            str(c["image"])
+            for c in _container_rows(list_containers(with_stats=False))
+            if isinstance(c, dict) and isinstance(c.get("image"), str) and c.get("image")
+        })
+    tid = f"docker-check-{_job_epoch()}"
     j0 = _register_job(tid, stack_id="_docker_update", action="check")
 
     def run():
@@ -566,14 +722,14 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
                         "status": r["status"],
                         "update": r["update"],
                         "local": r.get("local"),
-                        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "checked_at": strftime_now("%Y-%m-%d %H:%M:%S"),
                     }
                     flag = "update available" if r["update"] else ("up to date" if r["status"] == "false" else "unknown")
                     j["log"].append(f"  {flag}")
                 except Exception as e:
                     j["log"].append(f"  !! {e}")
-                    status[img] = {"status": "undef", "update": None, "error": str(e)}
-            status["_checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    status[img] = {"status": "undef", "update": None, "error": _as_text(e)}
+            status["_checked_at"] = strftime_now("%Y-%m-%d %H:%M:%S")
             _save_update_status(status)
             j["rc"] = 0
             j["log"].append("== check complete ==")
@@ -582,7 +738,7 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
             j["rc"] = -1
         finally:
             j["running"] = False
-            j["finished"] = time.strftime("%H:%M:%S")
+            j["finished"] = strftime_now("%H:%M:%S")
             invalidate_status()
 
     threading.Thread(target=run, daemon=True).start()
@@ -601,15 +757,18 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
     if data is None:
         j["log"].append("inspect returned unusable JSON")
         return False
-    host = data.get("HostConfig") or {}
-    cfg_ = data.get("Config") or {}
+    host = data.get("HostConfig")
+    host = host if isinstance(host, dict) else {}
+    cfg_ = data.get("Config")
+    cfg_ = cfg_ if isinstance(cfg_, dict) else {}
     args = [DOCKER, "run", "-d", "--name", name]
     # restart policy
-    rp = (host.get("RestartPolicy") or {}).get("Name") or ""
+    rp_obj = host.get("RestartPolicy")
+    rp = str((rp_obj.get("Name") or "") if isinstance(rp_obj, dict) else "")
     if rp and rp != "no":
         args += ["--restart", rp]
     # network
-    nmode = host.get("NetworkMode") or "bridge"
+    nmode = str(host.get("NetworkMode") or "bridge")
     if nmode and nmode not in ("default",):
         if nmode == "host":
             args += ["--network", "host"]
@@ -619,46 +778,72 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
     if host.get("Privileged"):
         args.append("--privileged")
     # binds
-    for b in host.get("Binds") or []:
-        args += ["-v", b]
+    binds = host.get("Binds")
+    for b in binds if isinstance(binds, list) else []:
+        if isinstance(b, str) and b:
+            args += ["-v", b]
     # ports (skip if host network)
     if nmode != "host":
         pb = host.get("PortBindings") or {}
+        if not isinstance(pb, dict):
+            pb = {}
         for cport, binds in pb.items():
             if not binds:
                 continue
+            if not isinstance(binds, list):
+                continue
+            cport_s = str(cport or "")
+            if not cport_s:
+                continue
             for b in binds:
-                hp = b.get("HostPort") or ""
-                hip = b.get("HostIp") or ""
+                if not isinstance(b, dict):
+                    continue
+                hp = str(b.get("HostPort") or "")
+                hip = str(b.get("HostIp") or "")
                 left = f"{hip+':' if hip else ''}{hp}" if hp else ""
                 # cport like 4000/tcp
-                cp = cport.split("/")[0]
-                proto = cport.split("/")[1] if "/" in cport else "tcp"
+                cp = cport_s.split("/")[0]
+                proto = cport_s.split("/")[1] if "/" in cport_s else "tcp"
                 if left:
                     args += ["-p", f"{left}:{cp}/{proto}" if proto != "tcp" else f"{left}:{cp}"]
                 else:
-                    args += ["-p", cport]
+                    args += ["-p", cport_s]
     # env (skip PATH noise partially)
-    for e in cfg_.get("Env") or []:
+    env_list = cfg_.get("Env")
+    for e in env_list if isinstance(env_list, list) else []:
+        if not isinstance(e, str):
+            continue
         if e.startswith("PATH="):
             continue
         args += ["-e", e]
+    if not isinstance(image, str) or not image.strip():
+        j["log"].append("image name is unusable")
+        return False
     args.append(image)
     # cmd
     cmd = cfg_.get("Cmd")
-    if cmd:
-        args += list(cmd)
+    if isinstance(cmd, (list, tuple)):
+        args += [str(part) for part in cmd if part is not None]
+    elif isinstance(cmd, str) and cmd:
+        args.append(cmd)
 
     j["log"].append("$ docker stop " + name)
-    subprocess.run([DOCKER, "stop", name], timeout=120, env=env)
+    rc_stop, stop_text = run_capped([DOCKER, "stop", name], timeout=120, env=env, cap=2000)
+    stop_text = _as_text(stop_text)
+    if rc_stop not in (0,):
+        j["log"].append(stop_text or f"stop exit {rc_stop}")
     j["log"].append("$ docker rm " + name)
-    subprocess.run([DOCKER, "rm", name], timeout=60, env=env)
+    rc_rm, rm_text = run_capped([DOCKER, "rm", name], timeout=60, env=env, cap=2000)
+    rm_text = _as_text(rm_text)
+    if rc_rm not in (0,):
+        j["log"].append(rm_text or f"rm exit {rc_rm}")
     j["log"].append("$ " + " ".join(args[:12]) + " …")
-    r = subprocess.run(args, capture_output=True, text=True, timeout=120, env=env)
-    if r.returncode != 0:
-        j["log"].append(r.stderr or r.stdout or f"exit {r.returncode}")
+    rc, text = run_capped(args, timeout=120, env=env, cap=2000)
+    text = _as_text(text)
+    if rc != 0:
+        j["log"].append(text or f"exit {rc}")
         return False
-    j["log"].append((r.stdout or "").strip() or "recreated")
+    j["log"].append((text or "").strip() or "recreated")
     return True
 
 
@@ -671,33 +856,37 @@ def start_update_container_job(name: str) -> dict:
     data = inspect_object(out)
     if data is None:
         raise api_error("container.not_found")
-    image = (data.get("Config") or {}).get("Image") or ""
+    cfg_upd = data.get("Config") if isinstance(data.get("Config"), dict) else {}
+    image = cfg_upd.get("Image")
+    image = image if isinstance(image, str) else ""
     # Prefer compose project update if labeled
-    labels = (data.get("Config") or {}).get("Labels") or {}
+    labels = cfg_upd.get("Labels") if isinstance(cfg_upd.get("Labels"), dict) else {}
     project = labels.get("com.docker.compose.project")
+    project = project if isinstance(project, str) else ""
     workdir = labels.get("com.docker.compose.project.working_dir")
+    workdir = workdir if isinstance(workdir, str) else ""
     compose_files = labels.get("com.docker.compose.project.config_files")
+    compose_files = compose_files if isinstance(compose_files, str) else ""
 
-    tid = f"docker-update-{name}-{int(time.time())}"
+    tid = f"docker-update-{name}-{_job_epoch()}"
     j0 = _register_job(tid, stack_id=project or name, action="update_container")
 
     def run():
         j = j0
         env = dict(os.environ)
-        env.update({
-            k: str(v)
-            for k, v in ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()
-        })
+        env.update(maintenance_env())
         try:
             if workdir and compose_files:
                 cf = compose_files.split(",")[0]
+                svc_name = labels.get("com.docker.compose.service")
+                svc_name = svc_name if isinstance(svc_name, str) else ""
                 cmds = [
-                    [DOCKER, "compose", "-f", cf, "pull", name if labels.get("com.docker.compose.service") else ""],
+                    [DOCKER, "compose", "-f", cf, "pull", name if svc_name else ""],
                     [DOCKER, "compose", "-f", cf, "up", "-d", "--force-recreate",
-                     labels.get("com.docker.compose.service") or name],
+                     svc_name or name],
                 ]
                 # clean empty args
-                cmds = [[a for a in c if a] for c in cmds]
+                cmds = [[a for a in c if isinstance(a, str) and a] for c in cmds]
                 for cmd in cmds:
                     j["log"].append("$ " + " ".join(cmd))
                     rc = _stream_job_command(cmd, j, cwd=workdir, env=env)
@@ -734,24 +923,29 @@ def start_update_container_job(name: str) -> dict:
                     else:
                         j["rc"] = 0
                 else:
-                    j["log"].append(f"$ docker pull {image}")
-                    rc = _stream_job_command([DOCKER, "pull", image], j, env=env)
-                    if rc != 0:
-                        j["rc"] = rc
-                        j["log"].append("!! pull failed")
+                    if not image:
+                        j["log"].append("!! no image name on inspect")
+                        j["rc"] = 1
                     else:
-                        # pull alone does not switch running container; try force recreate
-                        # via stop/rm/create using docker's --force recreate if available
-                        j["log"].append("Image pulled. No compose metadata; recreating via stop→rm→create…")
-                        ok_re = _recreate_simple(name, image, j, env)
-                        j["rc"] = 0 if ok_re else 1
+                        j["log"].append(f"$ docker pull {image}")
+                        rc = _stream_job_command([DOCKER, "pull", image], j, env=env)
+                        if rc != 0:
+                            j["rc"] = rc
+                            j["log"].append("!! pull failed")
+                        else:
+                            # pull alone does not switch running container; try force recreate
+                            # via stop/rm/create using docker's --force recreate if available
+                            j["log"].append("Image pulled. No compose metadata; recreating via stop→rm→create…")
+                            ok_re = _recreate_simple(name, image, j, env)
+                            j["rc"] = 0 if ok_re else 1
             # mark image current
-            st = _load_update_status()
-            st[image] = {
-                "status": "false", "update": False,
-                "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            _save_update_status(st)
+            if image:
+                st = _load_update_status()
+                st[image] = {
+                    "status": "false", "update": False,
+                    "checked_at": strftime_now("%Y-%m-%d %H:%M:%S"),
+                }
+                _save_update_status(st)
             if j.get("rc") is None:
                 j["rc"] = 0
             j["log"].append("== done ==")
@@ -760,7 +954,7 @@ def start_update_container_job(name: str) -> dict:
             j["rc"] = -1
         finally:
             j["running"] = False
-            j["finished"] = time.strftime("%H:%M:%S")
+            j["finished"] = strftime_now("%H:%M:%S")
             invalidate_status()
 
     threading.Thread(target=run, daemon=True).start()
@@ -787,10 +981,11 @@ def exec_in_container(name: str, command: str, shell: str = "/bin/sh") -> dict:
         "exec", "--", name, sh, "-c", command,
         timeout=60,
     )
+    out, err = _as_text(out), _as_text(err)
     return {
         "ok": rc == 0,
         "rc": rc,
-        "output": (out or "") + (("\n" + err) if err else ""),
+        "output": out + (("\n" + err) if err else ""),
     }
 
 
@@ -818,15 +1013,29 @@ def inspect_container(name: str) -> dict:
     if data is None:
         raise api_error("container.not_found")
     # redact env
-    if "Config" in data and "Env" in data["Config"]:
-        data["Config"]["Env"] = redact_env(data["Config"]["Env"])
+    cfg_raw = data.get("Config")
+    if isinstance(cfg_raw, dict) and "Env" in cfg_raw:
+        data["Config"]["Env"] = redact_env(cfg_raw.get("Env"))
     # slim response for UI
-    cfg_ = data.get("Config") or {}
-    host = data.get("HostConfig") or {}
-    state = data.get("State") or {}
+    cfg_ = cfg_raw if isinstance(cfg_raw, dict) else {}
+    host = data.get("HostConfig") if isinstance(data.get("HostConfig"), dict) else {}
+    state = data.get("State") if isinstance(data.get("State"), dict) else {}
+    health = state.get("Health") if isinstance(state.get("Health"), dict) else {}
+    ns = data.get("NetworkSettings") if isinstance(data.get("NetworkSettings"), dict) else {}
+    nets = ns.get("Networks") if isinstance(ns.get("Networks"), dict) else {}
+    mounts = data.get("Mounts") if isinstance(data.get("Mounts"), list) else []
+    labels = cfg_.get("Labels") if isinstance(cfg_.get("Labels"), dict) else {}
+    env = [
+        e for e in (cfg_.get("Env") if isinstance(cfg_.get("Env"), list) else [])
+        if isinstance(e, str)
+    ]
+    ident = data.get("Id")
+    ident = str(ident) if ident is not None else ""
+    raw_name = data.get("Name")
+    raw_name = str(raw_name) if raw_name is not None else ""
     return {
-        "Id": data.get("Id", "")[:12],
-        "Name": data.get("Name", "").lstrip("/"),
+        "Id": ident[:12],
+        "Name": raw_name.lstrip("/"),
         "Image": cfg_.get("Image"),
         "Created": data.get("Created"),
         "State": {
@@ -837,21 +1046,24 @@ def inspect_container(name: str) -> dict:
             "ExitCode": state.get("ExitCode"),
             "StartedAt": state.get("StartedAt"),
             "FinishedAt": state.get("FinishedAt"),
-            "Health": (state.get("Health") or {}).get("Status"),
+            "Health": health.get("Status"),
         },
-        "Env": cfg_.get("Env") or [],
+        "Env": env,
         "Cmd": cfg_.get("Cmd"),
         "Entrypoint": cfg_.get("Entrypoint"),
-        "Labels": cfg_.get("Labels") or {},
-        "Binds": host.get("Binds") or [],
-        "PortBindings": host.get("PortBindings") or {},
+        "Labels": labels,
+        "Binds": [
+            b for b in (host.get("Binds") if isinstance(host.get("Binds"), list) else [])
+            if isinstance(b, str)
+        ],
+        "PortBindings": host.get("PortBindings") if isinstance(host.get("PortBindings"), dict) else {},
         "RestartPolicy": host.get("RestartPolicy"),
         "NetworkMode": host.get("NetworkMode"),
-        "Networks": list((data.get("NetworkSettings") or {}).get("Networks") or {}.keys()),
+        "Networks": list(nets.keys()),
         "Mounts": [
             {"Source": m.get("Source"), "Destination": m.get("Destination"),
              "Type": m.get("Type"), "RW": m.get("RW")}
-            for m in (data.get("Mounts") or [])
+            for m in mounts if isinstance(m, dict)
         ],
         "raw": data,
     }
@@ -862,9 +1074,11 @@ def list_images() -> list:
         ["images", "--format", "{{json .}}"], timeout=15)
     if rc != 0:
         raise api_error("container.list_failed", kind="images")
-    if not isinstance(data, list):
-        data = [data] if data else []
-    return data
+    if isinstance(data, dict):
+        data = [data]
+    elif not isinstance(data, list):
+        data = []
+    return [row for row in data if isinstance(row, dict)]
 
 
 def list_volumes() -> list:
@@ -872,7 +1086,7 @@ def list_volumes() -> list:
     if rc != 0:
         raise api_error("container.list_failed", kind="volumes")
     items = []
-    for line in out.splitlines():
+    for line in _as_text(out).splitlines():
         p = line.split("\t")
         if len(p) >= 2:
             items.append({"Name": p[0], "Driver": p[1], "Mountpoint": p[2] if len(p) > 2 else ""})
@@ -884,7 +1098,7 @@ def list_networks() -> list:
     if rc != 0:
         raise api_error("container.list_failed", kind="networks")
     items = []
-    for line in out.splitlines():
+    for line in _as_text(out).splitlines():
         p = line.split("\t")
         if len(p) >= 4:
             items.append({"Id": p[0][:12], "Name": p[1], "Driver": p[2], "Scope": p[3]})
@@ -946,7 +1160,7 @@ def pull_image(image: str) -> dict:
     if not image or not re_match_image(image):
         raise api_error("container.bad_image_name")
     rc, out, err = docker("pull", image, timeout=600)
-    return {"ok": rc == 0, "message": (out or err or "")[-2000:]}
+    return {"ok": rc == 0, "message": (_as_text(out) or _as_text(err) or "")[-2000:]}
 
 
 def re_match_image(image: str) -> bool:
@@ -971,8 +1185,8 @@ def create_run_container(body: dict) -> dict:
     import re
     if not engine_up():
         raise api_error("container.engine_down")
-    image = (body.get("image") or "").strip()
-    name = (body.get("name") or "").strip()
+    image = str(body.get("image") or "").strip()
+    name = str(body.get("name") or "").strip()
     if not image or not re_match_image(image):
         raise api_error("container.image_required")
     if name and not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", name):
@@ -981,7 +1195,7 @@ def create_run_container(body: dict) -> dict:
     args = ["run", "-d"]
     if name:
         args += ["--name", name]
-    restart = (body.get("restart") or "unless-stopped").strip()
+    restart = str(body.get("restart") or "unless-stopped").strip()
     allowed_restart = {"no", "always", "unless-stopped", "on-failure"}
     if restart not in allowed_restart:
         raise api_error("container.bad_policy", policy=restart)
@@ -989,24 +1203,24 @@ def create_run_container(body: dict) -> dict:
         args += ["--restart", restart]
     if body.get("privileged"):
         args.append("--privileged")
-    network = (body.get("network") or "").strip()
+    network = str(body.get("network") or "").strip()
     if network:
         # Same class of bug as ``docker stop --all``: an option-shaped value
         # in the ``--network`` slot is read as another flag.
         network = cli_args.require_positional(network, label="network name")
         args += ["--network", network]
     # ports: ["8080:80", "443:443"]
-    for p in body.get("ports") or []:
+    for p in body.get("ports") if isinstance(body.get("ports"), list) else []:
         p = str(p).strip()
         if p and re.match(r"^[0-9.:\-/tcpudp]+$", p):
             args += ["-p", p]
     # volumes: ["/host:/container", "vol:/data"]
-    for v in body.get("volumes") or []:
+    for v in body.get("volumes") if isinstance(body.get("volumes"), list) else []:
         v = str(v).strip()
         if v and ":" in v:
             args += ["-v", v]
     # env: ["KEY=val"]
-    for e in body.get("env") or []:
+    for e in body.get("env") if isinstance(body.get("env"), list) else []:
         e = str(e).strip()
         if e and "=" in e:
             args += ["-e", e]
@@ -1023,6 +1237,7 @@ def create_run_container(body: dict) -> dict:
 
     rc, out, err = docker(*args, timeout=180)
     invalidate_status()
+    out, err = _as_text(out), _as_text(err)
     return {
         "ok": rc == 0,
         "message": out.strip() if rc == 0 else (err or out),
@@ -1068,75 +1283,123 @@ def _stack_paths() -> list[dict]:
     stacks = []
     seen = set()
     for s in cfg().get("stacks") or []:
+        if not isinstance(s, dict):
+            continue
         path = s.get("path")
-        if path:
-            p = Path(path)
-            compose = p / (s.get("compose_file") or "docker-compose.yml")
-            if not compose.exists():
+        if isinstance(path, str) and path:
+            try:
+                p = Path(path)
+                compose_name = s.get("compose_file") or "docker-compose.yml"
+                if not isinstance(compose_name, str) or not compose_name:
+                    compose_name = "docker-compose.yml"
+                compose = p / compose_name
+            except (OSError, ValueError, TypeError):
+                continue
+            try:
+                present = compose.exists()
+            except (OSError, ValueError):
+                present = False
+            if not present:
                 for alt in ("compose.yml", "docker-compose.yaml", "compose.yaml"):
-                    if (p / alt).exists():
-                        compose = p / alt
-                        break
+                    try:
+                        if (p / alt).exists():
+                            compose = p / alt
+                            present = True
+                            break
+                    except (OSError, ValueError):
+                        continue
+            sid = s.get("id")
+            if not isinstance(sid, str) or not sid:
+                sid = p.name
             stacks.append({
-                "id": s.get("id") or p.name,
-                "name": s.get("name") or p.name,
-                "path": str(p),
-                "compose_file": compose.name if compose.exists() else None,
-                "compose_path": str(compose) if compose.exists() else None,
-                "containers": s.get("containers") or [],
+                "id": _field_text(sid) or "stack",
+                "name": _field_text(s.get("name")) or _field_text(p.name) or "stack",
+                "path": _field_text(str(p)),
+                "compose_file": _field_text(compose.name) if present else None,
+                "compose_path": _field_text(str(compose)) if present else None,
+                "containers": _str_list(s.get("containers")),
                 "source": "config",
             })
-            seen.add(str(p.resolve()) if p.exists() else str(p))
+            try:
+                seen.add(str(p.resolve()))
+            except (OSError, ValueError, RuntimeError):
+                # Path.resolve() raises RuntimeError on a leftover symlink loop.
+                seen.add(str(p))
         elif s.get("containers"):
+            sid = s.get("id")
+            if not isinstance(sid, str) or not sid:
+                continue
             stacks.append({
-                "id": s.get("id"),
-                "name": s.get("name") or s.get("id"),
+                "id": sid,
+                "name": _field_text(s.get("name")) or sid,
                 "path": None,
                 "compose_file": None,
                 "compose_path": None,
-                "containers": s.get("containers") or [],
+                "containers": _str_list(s.get("containers")),
                 "source": "config",
             })
 
-    services_root = Path.home() / "Services"
-    if services_root.is_dir():
-        for comp in sorted(services_root.glob("*/docker-compose.y*ml")) + sorted(services_root.glob("*/compose.y*ml")):
+    home = user_home()
+    services_root = (home / "Services") if home is not None else None
+    try:
+        scanned = (
+            sorted(services_root.glob("*/docker-compose.y*ml"))
+            + sorted(services_root.glob("*/compose.y*ml"))
+            if services_root is not None and services_root.is_dir()
+            else []
+        )
+    except OSError:
+        scanned = []
+    for comp in scanned:
+        try:
             root = str(comp.parent.resolve())
-            if root in seen:
-                continue
-            seen.add(root)
-            stacks.append({
-                "id": comp.parent.name,
-                "name": comp.parent.name,
-                "path": str(comp.parent),
-                "compose_file": comp.name,
-                "compose_path": str(comp),
-                "containers": [],
-                "source": "scan",
-            })
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root in seen:
+            continue
+        seen.add(root)
+        stacks.append({
+            "id": _field_text(comp.parent.name) or "stack",
+            "name": _field_text(comp.parent.name) or "stack",
+            "path": _field_text(str(comp.parent)),
+            "compose_file": _field_text(comp.name),
+            "compose_path": _field_text(str(comp)),
+            "containers": [],
+            "source": "scan",
+        })
     return stacks
 
 
 def list_stacks() -> list:
     stacks = _stack_paths()
-    info = list_containers(with_stats=False)
     by_project: dict[str, list] = {}
     by_name: dict[str, dict] = {}
-    for c in info.get("containers") or []:
-        by_name[c["id"]] = c
-        if c.get("project"):
-            by_project.setdefault(c["project"], []).append(c["id"])
+    for c in _container_rows(list_containers(with_stats=False)):
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id")
+        if not isinstance(cid, str) or not cid:
+            continue
+        by_name[cid] = c
+        proj = c.get("project")
+        if isinstance(proj, str) and proj:
+            by_project.setdefault(proj, []).append(cid)
     for s in stacks:
+        if not isinstance(s, dict):
+            continue
         found: list[str] = []
+        sid = s.get("id") if isinstance(s.get("id"), str) else None
         if s.get("path"):
             proj = Path(s["path"]).name
-            found = list(by_project.get(proj) or by_project.get(s["id"]) or [])
-        for name in s.get("containers") or []:
-            if name in by_name and name not in found:
-                found.append(name)
+            found = list(by_project.get(proj) or (by_project.get(sid) if sid else None) or [])
+        names = s.get("containers")
+        if isinstance(names, list):
+            for name in names:
+                if isinstance(name, str) and name in by_name and name not in found:
+                    found.append(name)
         # compose project often equals directory name; also match container_name == stack id
-        if s["id"] in by_name and s["id"] not in found:
-            found.append(s["id"])
+        if sid and sid in by_name and sid not in found:
+            found.append(sid)
         # music-assistant style: container name equals stack id even without compose labels
         s["running_containers"] = found
         running_ok = any(by_name.get(n, {}).get("raw_state") == "running" for n in found)
@@ -1153,7 +1416,7 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
     if not stack.get("compose_path"):
         raise api_error("container.no_compose_file")
 
-    tid = f"stack-{stack_id}-{action}-{int(time.time())}"
+    tid = f"stack-{stack_id}-{action}-{_job_epoch()}"
     j0 = _register_job(tid, stack_id=stack_id, action=action)
 
     compose_path = stack["compose_path"]
@@ -1162,7 +1425,7 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
     def run():
         j = j0
         env = dict(os.environ)
-        env.update({k: str(v) for k, v in ((cfg().get("settings") or {}).get("maintenance_env") or {}).items()})
+        env.update(maintenance_env())
         cmds = []
         if action == "pull":
             cmds = [[DOCKER, "compose", "-f", compose_path, "pull"]]
@@ -1192,7 +1455,7 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
             j["rc"] = -1
         finally:
             j["running"] = False
-            j["finished"] = time.strftime("%H:%M:%S")
+            j["finished"] = strftime_now("%H:%M:%S")
             invalidate_status()
 
     threading.Thread(target=run, daemon=True).start()
@@ -1200,18 +1463,25 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
 
 
 def stack_job_log(job_id: str) -> dict:
+    if not isinstance(job_id, str):
+        return {"running": False, "rc": None, "log": "(not started yet)", "job_id": ""}
     j = _cjobs.get(job_id)
-    if not j:
+    if not isinstance(j, dict):
         # also allow latest job for stack
+        j = None
         for k, v in reversed(list(_cjobs.items())):
+            if not isinstance(v, dict):
+                continue
             if v.get("stack_id") == job_id or k == job_id:
                 j = v
                 job_id = k
                 break
-    if not j:
+    if not isinstance(j, dict):
         return {"running": False, "rc": None, "log": "(not started yet)", "job_id": job_id}
-    return {"running": j["running"], "rc": j["rc"], "started": j.get("started"),
-            "finished": j.get("finished"), "log": "\n".join(j["log"]) or "(waiting for output…)",
+    raw_log = j.get("log") if isinstance(j.get("log"), list) else []
+    return {"running": j.get("running"), "rc": j.get("rc"), "started": j.get("started"),
+            "finished": j.get("finished"),
+            "log": "\n".join(str(x) for x in raw_log) or "(waiting for output…)",
             "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action")}
 
 
@@ -1219,12 +1489,16 @@ def latest_stack_jobs() -> list:
     # return recent unique by stack
     by = {}
     for k, v in _cjobs.items():
+        if not isinstance(v, dict):
+            continue
         sid = v.get("stack_id")
-        if sid:
+        if isinstance(sid, str) and sid:
             by[sid] = {**job_public(k, v)}
     return list(by.values())
 
 
 def job_public(jid, j):
+    if not isinstance(j, dict):
+        j = {}
     return {"job_id": jid, "stack_id": j.get("stack_id"), "action": j.get("action"),
             "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished")}

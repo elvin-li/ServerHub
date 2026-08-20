@@ -68,6 +68,16 @@ printf 'pgrep %s\\n' "$*" >> "$SHIM_LOG"
 exit 1
 """
 
+_PS_SHIM = """#!/bin/bash
+printf 'ps %s\\n' "$*" >> "$SHIM_LOG"
+exit 0
+"""
+
+_KILL_SHIM = """#!/bin/bash
+printf 'kill %s\\n' "$*" >> "$SHIM_LOG"
+exit 0
+"""
+
 
 class WatchdogRuns(unittest.TestCase):
     def setUp(self):
@@ -86,6 +96,8 @@ class WatchdogRuns(unittest.TestCase):
             ("curl", _CURL_SHIM),
             ("lsof", _LSOF_SHIM),
             ("pgrep", _PGREP_SHIM),
+            ("ps", _PS_SHIM),
+            ("kill", _KILL_SHIM),
         ):
             shim = self.shims / name
             shim.write_text(body)
@@ -165,6 +177,16 @@ class WatchdogRuns(unittest.TestCase):
     def test_threshold_env_override_is_honoured(self):
         self.run_watchdog(PANEL_PORT, label_port=PANEL_PORT, threshold=1)
         self.assertEqual(len(self.kickstarts()), 1)
+
+    def test_a_non_numeric_threshold_does_not_kickstart_on_the_first_miss(self):
+        self.run_watchdog(PANEL_PORT, label_port=PANEL_PORT, threshold="abc")
+        self.assertEqual(self.kickstarts(), [])
+        self.assertEqual(self.state(PANEL_PORT), "1")
+
+    def test_a_zero_threshold_does_not_kickstart_on_the_first_miss(self):
+        self.run_watchdog(PANEL_PORT, label_port=PANEL_PORT, threshold=0)
+        self.assertEqual(self.kickstarts(), [])
+        self.assertEqual(self.state(PANEL_PORT), "1")
 
     # ── the 2026-08-13 incident, replayed ────────────────────────────────────
 

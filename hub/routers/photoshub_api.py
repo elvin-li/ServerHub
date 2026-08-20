@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from hub import audit, photoshub_svc
 from hub.auth import request_username
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 
 router = APIRouter(tags=["photoshub"])
 
@@ -68,17 +68,21 @@ def get_status():
     except HTTPException:
         raise
     except Exception as e:
-        raise api_error("photoshub.status_failed", detail=str(e)[:200])
+        raise api_error("photoshub.status_failed", detail=exc_detail(e))
 
 
 @router.get("/api/photoshub/pending-delete")
 def pending_delete(limit: int = 60):
     try:
-        return photoshub_svc.pending_delete_assets(limit=max(1, min(limit, 200)))
+        cap = max(1, min(int(limit), 200))
+    except (TypeError, ValueError, OverflowError):
+        cap = 60
+    try:
+        return photoshub_svc.pending_delete_assets(limit=cap)
     except HTTPException:
         raise
     except Exception as e:
-        raise api_error("photoshub.pending_failed", detail=str(e)[:200])
+        raise api_error("photoshub.pending_failed", detail=exc_detail(e))
 
 
 @router.get("/api/photoshub/pending-delete/thumb/{asset_id}")
@@ -95,7 +99,7 @@ def pending_delete_thumb(asset_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise api_error("photoshub.thumb_failed", detail=str(e)[:160])
+        raise api_error("photoshub.thumb_failed", detail=exc_detail(e, 160))
     return Response(
         content=raw,
         media_type=ctype,
@@ -123,7 +127,7 @@ def pending_remove(body: IdsBody, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise api_error("photoshub.remove_failed", detail=str(e)[:200])
+        raise api_error("photoshub.remove_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.pending_remove",
         user=request_username(request) or "unknown",
@@ -143,7 +147,7 @@ def run_action(body: ActionBody, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise api_error("photoshub.action_failed", detail=str(e)[:200])
+        raise api_error("photoshub.action_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.action",
         user=request_username(request) or "unknown",
@@ -159,7 +163,7 @@ def get_config():
     except HTTPException:
         raise
     except Exception as e:
-        raise api_error("photoshub.config_failed", detail=str(e)[:200])
+        raise api_error("photoshub.config_failed", detail=exc_detail(e))
 
 
 @router.patch("/api/photoshub/config")
@@ -170,7 +174,7 @@ def patch_config(body: ConfigPatch, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise api_error("photoshub.config_failed", detail=str(e)[:200])
+        raise api_error("photoshub.config_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.config",
         user=request_username(request) or "unknown",

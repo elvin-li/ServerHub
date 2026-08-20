@@ -24,6 +24,7 @@ is the one that does not depend on the target program's option parser.
 """
 from __future__ import annotations
 
+import os
 import re
 
 from hub.errors import api_error
@@ -36,6 +37,39 @@ _SAFE_HOSTNAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]*\Z")
 
 MAX_POSITIONAL_LEN = 255
 MAX_HOSTNAME_LEN = 253
+
+
+def as_argv(cmd: object) -> list[str] | None:
+    """Return a str argv, or None when a leftover non-str would reach exec.
+
+    YAML ``!!binary`` is a SafeLoader leftover that is ``bytes``.  ``subprocess``
+    accepts bytes in argv, so a leftover ``b'--all'`` is still option injection
+    after every str validator has refused it.  Nested lists, ints, and bools are
+    the same class: they must not be stringified into a positional.
+    """
+    if not isinstance(cmd, (list, tuple)):
+        return None
+    out: list[str] = []
+    for part in cmd:
+        if isinstance(part, (bytes, bytearray)):
+            return None
+        if isinstance(part, str):
+            text = part
+        elif isinstance(part, os.PathLike):
+            text = os.fspath(part)
+            if not isinstance(text, str):
+                return None
+        else:
+            return None
+        if "\x00" in text:
+            return None
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            # Leftover ``\ud800`` used to UnicodeEncodeError ``subprocess.run``.
+            return None
+        out.append(text)
+    return out
 
 
 def _normalise(value: object) -> str | None:

@@ -6,7 +6,7 @@
         {{ t('pages.docker_meta') }} ·
         <template v-if="data">
           {{ t('common.engine') }} {{ data.engine_up ? t('common.running') : t('common.stopped') }} · {{ containers.length }}
-          <span v-if="data.update_checked_at"> · {{ data.update_checked_at }}</span>
+          <span v-if="finiteText(data.update_checked_at, '')"> · {{ finiteText(data.update_checked_at) }}</span>
         </template>
       </span>
     </div>
@@ -53,19 +53,20 @@
     <div v-if="jobLog" class="tile" style="margin-bottom:8px">
       <div class="row">
         <strong style="font-size:12px">{{ t('docker.job_log') }}</strong>
-        <button class="tiny" @click="jobLog=''">{{ t('common.close') }}</button>
+        <button class="tiny" @click="closeJobLog">{{ t('common.close') }}</button>
       </div>
-      <pre class="log" style="max-height:160px;margin-top:6px" role="log" aria-live="polite">{{ jobLog }}</pre>
+      <pre v-if="jobLog" class="log" style="max-height:160px;margin-top:6px" role="log" aria-live="polite">{{ finiteText(jobLog) }}</pre>
     </div>
 
     <LoadFailure v-if="listError" :detail="listError" :retry="refresh" :busy="busy" />
+    <SkeletonLoader v-else-if="!data" :cols="7" :rows="6" />
     <!-- Only claim the engine is down once a reply actually said so. -->
-    <div v-else-if="!data?.engine_up" class="placeholder">{{ t('docker.engine_off') }}</div>
+    <div v-else-if="!data.engine_up" class="placeholder">{{ t('docker.engine_off') }}</div>
 
     <template v-else-if="tab==='containers'">
       <template v-for="grp in displayGroups" :key="grp.name">
         <h2 v-if="groupByProject" class="section-title">
-          {{ grp.name }}
+          {{ finiteText(grp.name) }}
           <span class="badge">{{ grp.items.length }}</span>
         </h2>
         <div class="table-wrap" :style="groupByProject ? 'margin-bottom:10px' : ''">
@@ -92,16 +93,16 @@
                 <td><input type="checkbox" :value="c.id" v-model="selected" /></td>
                 <td><span class="led" :class="ledClass(c)"></span></td>
                 <td style="max-width:260px">
-                  <strong>{{ c.name }}</strong>
+                  <strong>{{ finiteText(c.name) }}</strong>
                   <span v-if="c.sandbox" class="badge" style="background:var(--bar-track);color:var(--sub)">pause</span>
                   <span v-else-if="c.system" class="badge" style="background:#6366f133;color:#818cf8">k8s</span>
                   <div
                     class="mono"
                     style="color:var(--sub);font-size:10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                    :title="c.raw_name || c.id"
-                  >{{ c.subtitle || c.id }}</div>
-                  <span v-if="c.project" class="badge accent">{{ c.project }}</span>
-                  <div v-if="c.network || c.ports" class="show-m sub mono">{{ [c.network, c.ports].filter(Boolean).join(' · ') }}</div>
+                    :title="finiteText(c.raw_name, '') || finiteText(c.id)"
+                  >{{ finiteText(c.subtitle, '') || finiteText(c.id) }}</div>
+                  <span v-if="finiteText(c.project, '')" class="badge accent">{{ finiteText(c.project) }}</span>
+                  <div v-if="finiteText(c.network, '') || finiteText(c.ports, '')" class="show-m sub mono">{{ [finiteText(c.network, ''), finiteText(c.ports, '')].filter(Boolean).join(' · ') }}</div>
                   <div class="show-m sub mono">{{ shortImage(c.image) }}</div>
                   <span v-if="c.update === true" class="show-m badge warn">{{ t('docker.updateable') }}</span>
                   <span v-else-if="c.update === false" class="show-m badge ok">{{ t('docker.latest') }}</span>
@@ -110,23 +111,23 @@
                       class="tiny"
                       :class="c.autostart ? 'primary' : ''"
                       :disabled="busy"
-                      :title="t('docker.current_policy', { p: c.restart_policy || 'no' })"
+                      :title="t('docker.current_policy', { p: finiteText(c.restart_policy, '') || 'no' })"
                       @click="toggleAutostart(c)"
                     >{{ t('docker.autostart') }} {{ c.autostart ? t('common.yes') : t('common.no') }}</button>
                   </div>
                 </td>
                 <td class="col-hide-m">
-                  <div class="mono" :title="c.image">{{ shortImage(c.image) }}</div>
+                  <div class="mono" :title="finiteText(c.image)">{{ shortImage(c.image) }}</div>
                   <span v-if="c.update === true" class="badge warn">{{ t('docker.updateable') }}</span>
                   <span v-else-if="c.update === false" class="badge ok">{{ t('docker.latest') }}</span>
                 </td>
-                <td class="mono col-hide-m">{{ c.network || '—' }}</td>
-                <td v-if="advanced" class="mono col-hide-m">{{ c.ip || '—' }}</td>
-                <td class="mono col-hide-m" style="max-width:120px;overflow:hidden;text-overflow:ellipsis" :title="c.ports">{{ c.ports || '—' }}</td>
+                <td class="mono col-hide-m">{{ finiteText(c.network) }}</td>
+                <td v-if="advanced" class="mono col-hide-m">{{ finiteText(c.ip) }}</td>
+                <td class="mono col-hide-m" style="max-width:120px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(c.ports)">{{ finiteText(c.ports) }}</td>
                 <td class="mono col-hide-m" style="max-width:140px" :title="mountTitle(c)">
                   <template v-if="(c.mounts||[]).length">
                     <div v-for="(m,i) in c.mounts.slice(0,2)" :key="i" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                      {{ shortPath(m.src) }} → {{ m.dst }}
+                      {{ shortPath(m.src) }} → {{ finiteText(m.dst) }}
                     </div>
                     <span v-if="c.mounts.length>2" style="color:var(--sub)">+{{ c.mounts.length-2 }}</span>
                   </template>
@@ -134,27 +135,27 @@
                 </td>
                 <td class="mono col-hide-m">
                   <div>
-                    {{ stats[c.id]?.cpu || '—' }}
+                    {{ finiteText(stats[c.id]?.cpu) }}
                     <span v-if="cpuNum(stats[c.id]?.cpu)!=null" class="mini-bar">
                       <i :style="{ width: Math.min(100, cpuNum(stats[c.id]?.cpu)) + '%' }"></i>
                     </span>
                   </div>
-                  <div style="color:var(--sub)">{{ stats[c.id]?.mem_pct || stats[c.id]?.mem || '' }}</div>
+                  <div style="color:var(--sub)">{{ finiteText(stats[c.id]?.mem_pct, '') || finiteText(stats[c.id]?.mem) }}</div>
                 </td>
-                <td v-if="advanced" class="mono col-hide-m" style="font-size:10px">{{ stats[c.id]?.net || '—' }}</td>
+                <td v-if="advanced" class="mono col-hide-m" style="font-size:10px">{{ finiteText(stats[c.id]?.net) }}</td>
                 <td class="col-hide-m">
                   <button
                     class="tiny"
                     :class="c.autostart ? 'primary' : ''"
                     :disabled="busy"
-                    :title="t('docker.current_policy', { p: c.restart_policy || 'no' })"
+                    :title="t('docker.current_policy', { p: finiteText(c.restart_policy, '') || 'no' })"
                     @click="toggleAutostart(c)"
                   >{{ c.autostart ? t('common.yes') : t('common.no') }}</button>
-                  <div class="mono" style="color:var(--sub)">{{ c.restart_policy }}</div>
+                  <div class="mono" style="color:var(--sub)">{{ finiteText(c.restart_policy) }}</div>
                 </td>
-                <td class="col-hide-m">{{ c.status }}</td>
+                <td class="col-hide-m">{{ finiteText(c.status) }}</td>
                 <td class="ops">
-                  <a v-if="c.url" class="btn tiny primary" :href="c.url" target="_blank">WebUI</a>
+                  <a v-if="c.url" class="btn tiny primary" :href="finiteText(c.url, '')" target="_blank">WebUI</a>
                   <button v-if="c.raw_state==='running'" class="tiny" :disabled="busy" @click="act(c,'restart')">{{ t('dashboard.act_restart') }}</button>
                   <button v-if="c.raw_state==='running'" class="tiny hide-m" :disabled="busy" @click="act(c,'pause')">{{ t('docker.pause') }}</button>
                   <button v-if="c.raw_state==='paused'" class="tiny primary hide-m" :disabled="busy" @click="act(c,'unpause')">{{ t('docker.unpause') }}</button>
@@ -188,13 +189,13 @@
           <tbody>
             <tr v-for="(im,i) in images" :key="i">
               <td class="mono">
-                {{ im.Repository || '—' }}
-                <div class="show-m sub">{{ String(im.ID||'').replace('sha256:','').slice(0,12) }} · {{ im.CreatedSince || im.CreatedAt || '—' }}</div>
+                {{ finiteText(im.Repository) }}
+                <div class="show-m sub">{{ String(finiteText(im.ID, '')).replace('sha256:','').slice(0,12) }} · {{ finiteText(im.CreatedSince, '') || finiteText(im.CreatedAt) }}</div>
               </td>
-              <td>{{ im.Tag || '—' }}</td>
-              <td class="mono col-hide-m">{{ String(im.ID||'').replace('sha256:','').slice(0,12) }}</td>
-              <td>{{ im.Size || '—' }}</td>
-              <td class="col-hide-m">{{ im.CreatedSince || im.CreatedAt || '—' }}</td>
+              <td>{{ finiteText(im.Tag) }}</td>
+              <td class="mono col-hide-m">{{ String(finiteText(im.ID, '')).replace('sha256:','').slice(0,12) }}</td>
+              <td>{{ finiteText(im.Size) }}</td>
+              <td class="col-hide-m">{{ finiteText(im.CreatedSince, '') || finiteText(im.CreatedAt) }}</td>
               <td class="ops">
                 <button class="tiny danger" :disabled="busy" @click="rmi(im)">{{ t('docker.remove') }}</button>
               </td>
@@ -220,11 +221,11 @@
           <tbody>
             <tr v-for="v in volumes" :key="v.Name">
               <td class="mono">
-                {{ v.Name }}
-                <div class="show-m sub">{{ v.Driver }}</div>
+                {{ finiteText(v.Name) }}
+                <div class="show-m sub">{{ finiteText(v.Driver) }}</div>
               </td>
-              <td class="col-hide-m">{{ v.Driver }}</td>
-              <td class="mono" style="font-size:11px">{{ v.Mountpoint }}</td>
+              <td class="col-hide-m">{{ finiteText(v.Driver) }}</td>
+              <td class="mono" style="font-size:11px">{{ finiteText(v.Mountpoint) }}</td>
               <td class="ops">
                 <button class="tiny danger" :disabled="busy" @click="rmVol(v)">{{ t('docker.remove') }}</button>
               </td>
@@ -250,12 +251,12 @@
           <tbody>
             <tr v-for="n in networks" :key="n.Id">
               <td>
-                {{ n.Name }}
-                <div class="show-m sub mono">{{ n.Scope }} · {{ n.Id }}</div>
+                {{ finiteText(n.Name) }}
+                <div class="show-m sub mono">{{ finiteText(n.Scope) }} · {{ finiteText(n.Id) }}</div>
               </td>
-              <td>{{ n.Driver }}</td>
-              <td class="col-hide-m">{{ n.Scope }}</td>
-              <td class="mono col-hide-m">{{ n.Id }}</td>
+              <td>{{ finiteText(n.Driver) }}</td>
+              <td class="col-hide-m">{{ finiteText(n.Scope) }}</td>
+              <td class="mono col-hide-m">{{ finiteText(n.Id) }}</td>
               <td class="ops">
                 <button
                   v-if="!['bridge','host','none'].includes(n.Name)"
@@ -284,29 +285,29 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('docker.engine_info') }}</h2>
           <div class="kv">
-            <div class="k">{{ t('common.name') }}</div><div class="mono">{{ engineInfo.info?.Name }}</div>
-            <div class="k">{{ t('docker.version') }}</div><div class="mono">{{ engineInfo.info?.ServerVersion }}</div>
-            <div class="k">OrbStack</div><div class="mono">{{ engineInfo.orb_version || '—' }}</div>
-            <div class="k">OS</div><div class="mono">{{ engineInfo.info?.OperatingSystem }}</div>
-            <div class="k">Arch</div><div>{{ engineInfo.info?.Architecture }}</div>
-            <div class="k">CPU</div><div>{{ engineInfo.info?.NCPU }}</div>
+            <div class="k">{{ t('common.name') }}</div><div class="mono">{{ finiteText(engineInfo.info?.Name) }}</div>
+            <div class="k">{{ t('docker.version') }}</div><div class="mono">{{ finiteText(engineInfo.info?.ServerVersion) }}</div>
+            <div class="k">OrbStack</div><div class="mono">{{ finiteText(engineInfo.orb_version) }}</div>
+            <div class="k">OS</div><div class="mono">{{ finiteText(engineInfo.info?.OperatingSystem) }}</div>
+            <div class="k">Arch</div><div>{{ finiteText(engineInfo.info?.Architecture) }}</div>
+            <div class="k">CPU</div><div>{{ finiteN(engineInfo.info?.NCPU) }}</div>
             <div class="k">{{ t('docker.mem') }}</div><div>{{ engineMem }} GB</div>
-            <div class="k">Root</div><div class="mono">{{ engineInfo.info?.DockerRootDir }}</div>
-            <div class="k">{{ t('docker.driver') }}</div><div class="mono">{{ engineInfo.info?.Driver }}</div>
-            <div class="k">{{ t('docker.log_driver') }}</div><div class="mono">{{ engineInfo.info?.LoggingDriver }}</div>
-            <div class="k">Cgroup</div><div class="mono">{{ engineInfo.info?.CgroupDriver }}</div>
+            <div class="k">Root</div><div class="mono">{{ finiteText(engineInfo.info?.DockerRootDir) }}</div>
+            <div class="k">{{ t('docker.driver') }}</div><div class="mono">{{ finiteText(engineInfo.info?.Driver) }}</div>
+            <div class="k">{{ t('docker.log_driver') }}</div><div class="mono">{{ finiteText(engineInfo.info?.LoggingDriver) }}</div>
+            <div class="k">Cgroup</div><div class="mono">{{ finiteText(engineInfo.info?.CgroupDriver) }}</div>
           </div>
         </div>
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('docker.resources') }}</h2>
           <div class="kv">
-            <div class="k">{{ t('docker.total_containers') }}</div><div>{{ engineInfo.info?.Containers ?? '—' }}</div>
-            <div class="k">{{ t('common.running') }}</div><div><span class="badge ok">{{ engineInfo.info?.ContainersRunning ?? 0 }}</span></div>
-            <div class="k">{{ t('docker.paused') }}</div><div>{{ engineInfo.info?.ContainersPaused ?? 0 }}</div>
-            <div class="k">{{ t('common.stopped') }}</div><div>{{ engineInfo.info?.ContainersStopped ?? 0 }}</div>
-            <div class="k">{{ t('docker.images') }}</div><div>{{ engineInfo.info?.Images ?? 0 }}</div>
-            <div class="k">docker CLI</div><div class="mono" style="font-size:10px">{{ engineInfo.docker_cli }}</div>
-            <div class="k">orb CLI</div><div class="mono" style="font-size:10px">{{ engineInfo.orb_cli }}</div>
+            <div class="k">{{ t('docker.total_containers') }}</div><div>{{ finiteN(engineInfo.info?.Containers) }}</div>
+            <div class="k">{{ t('common.running') }}</div><div><span class="badge ok">{{ finiteN(engineInfo.info?.ContainersRunning, 0) }}</span></div>
+            <div class="k">{{ t('docker.paused') }}</div><div>{{ finiteN(engineInfo.info?.ContainersPaused, 0) }}</div>
+            <div class="k">{{ t('common.stopped') }}</div><div>{{ finiteN(engineInfo.info?.ContainersStopped, 0) }}</div>
+            <div class="k">{{ t('docker.images') }}</div><div>{{ finiteN(engineInfo.info?.Images, 0) }}</div>
+            <div class="k">docker CLI</div><div class="mono" style="font-size:10px">{{ finiteText(engineInfo.docker_cli) }}</div>
+            <div class="k">orb CLI</div><div class="mono" style="font-size:10px">{{ finiteText(engineInfo.orb_cli) }}</div>
           </div>
           <div class="btns" style="margin-top:12px">
             <button class="tiny" @click="loadEngine">{{ t('common.refresh') }}</button>
@@ -316,17 +317,17 @@
       </div>
       <!-- Reached only after the probe returned, so this states the engine is
            down rather than hedging between "off" and "still loading". -->
-      <div v-else-if="!subError.engine" class="placeholder">{{ engineInfo?.message || t('docker.engine_off') }}</div>
+      <div v-else-if="!subError.engine" class="placeholder">{{ finiteText(engineInfo?.message, '') || t('docker.engine_off') }}</div>
     </template>
 
     <!-- logs drawer -->
     <div v-if="logDrawer" class="drawer-bg" @click.self="closeLogs" role="presentation">
       <div ref="logPanel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="ctr-log-drawer-title" tabindex="-1">
         <div class="row" style="margin-bottom:10px">
-          <span id="ctr-log-drawer-title" class="name">{{ t('docker.logs') }} · {{ logName }}</span>
+          <span id="ctr-log-drawer-title" class="name">{{ t('docker.logs') }} · {{ finiteText(logName) }}</span>
           <button class="tiny" @click="closeLogs">{{ t('common.close') }}</button>
         </div>
-        <pre class="log" ref="logEl">{{ logText }}</pre>
+        <pre class="log" ref="logEl">{{ finiteText(logText) }}</pre>
       </div>
     </div>
 
@@ -334,7 +335,7 @@
     <div ref="execPanel" v-if="execC" class="modal-bg" @click.self="execC=null" role="presentation">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ctr-exec-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="ctr-exec-title" class="name">{{ t('docker.console') }} · {{ execC.name }}</span>
+          <span id="ctr-exec-title" class="name">{{ t('docker.console') }} · {{ finiteText(execC.name) }}</span>
           <button class="tiny" @click="execC=null">{{ t('common.close') }}</button>
         </div>
         <p style="color:var(--sub);font-size:11px;margin-bottom:8px">
@@ -344,7 +345,7 @@
           <input v-model="execCmd" type="text" style="flex:1" :placeholder="t('docker.exec_ph')" :disabled="busy" @keyup.enter="runExec"  :aria-label="t('docker.exec_ph')"/>
           <button class="primary tiny" :disabled="busy" @click="runExec">{{ t('docker.exec_run') }}</button>
         </div>
-        <pre class="log" style="min-height:200px">{{ execOut || t('docker.exec_output_ph') }}</pre>
+        <pre class="log" style="min-height:200px">{{ finiteText(execOut, '') || t('docker.exec_output_ph') }}</pre>
       </div>
     </div>
 
@@ -391,21 +392,21 @@
     <div v-if="inspectData" class="drawer-bg" @click.self="inspectData=null" role="presentation">
       <div ref="inspectPanel" class="drawer" style="overflow:auto" role="dialog" aria-modal="true" aria-labelledby="ctr-inspect-title" tabindex="-1">
         <div class="row" style="margin-bottom:10px">
-          <span id="ctr-inspect-title" class="name">{{ t('common.details') }} · {{ inspectData.Name }}</span>
+          <span id="ctr-inspect-title" class="name">{{ t('common.details') }} · {{ finiteText(inspectData.Name) }}</span>
           <button class="tiny" @click="inspectData=null">{{ t('common.close') }}</button>
         </div>
         <div class="kv">
-          <div class="k">{{ t('docker.image') }}</div><div class="mono">{{ inspectData.Image }}</div>
-          <div class="k">{{ t('common.status') }}</div><div>{{ inspectData.State?.Status }} · {{ inspectData.State?.Health || '—' }}</div>
-          <div class="k">{{ t('docker.network') }}</div><div>{{ (inspectData.Networks||[]).join(', ') }}</div>
-          <div class="k">{{ t('docker.restart_policy') }}</div><div>{{ inspectData.RestartPolicy?.Name }}</div>
+          <div class="k">{{ t('docker.image') }}</div><div class="mono">{{ finiteText(inspectData.Image) }}</div>
+          <div class="k">{{ t('common.status') }}</div><div>{{ finiteText(inspectData.State?.Status) }} · {{ finiteText(inspectData.State?.Health) }}</div>
+          <div class="k">{{ t('docker.network') }}</div><div>{{ (inspectData.Networks||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+          <div class="k">{{ t('docker.restart_policy') }}</div><div>{{ finiteText(inspectData.RestartPolicy?.Name) }}</div>
         </div>
         <h2 class="section-title">{{ t('docker.mounts') }}</h2>
         <div v-for="(m,i) in inspectData.Mounts||[]" :key="i" class="mono" style="margin-bottom:3px">
-          {{ m.Source }} → {{ m.Destination }}
+          {{ finiteText(m.Source) }} → {{ finiteText(m.Destination) }}
         </div>
         <h2 class="section-title">{{ t('docker.env_masked') }}</h2>
-        <pre class="log" style="max-height:180px">{{ (inspectData.Env||[]).join('\n') }}</pre>
+        <pre class="log" style="max-height:180px">{{ (inspectData.Env||[]).map(e => finiteText(e, '')).filter(Boolean).join('\n') }}</pre>
       </div>
     </div>
   </div>
@@ -421,6 +422,7 @@ import {
   removeImage, removeNetwork, removeVolume, runContainer, setRestartPolicy, updateContainer,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -485,9 +487,23 @@ function stopJobPolling() {
   jobTimer = null
 }
 
+function closeJobLog() {
+  stopJobPolling()
+  jobLog.value = ''
+  jobId.value = ''
+}
+
+let pageAlive = true
+
+function stillOnList(generation) {
+  return pageAlive && generation === listGeneration
+}
+
 function scheduleRefresh(delay) {
+  const generation = listGeneration
   const id = setTimeout(() => {
     refreshTimers.delete(id)
+    if (generation !== listGeneration || !pageAlive) return
     void refresh()
   }, delay)
   refreshTimers.add(id)
@@ -496,8 +512,9 @@ function scheduleRefresh(delay) {
 const containers = computed(() => data.value?.containers || [])
 const stats = computed(() => data.value?.stats || {})
 const engineMem = computed(() => {
-  const b = engineInfo.value?.info?.MemTotal
-  return b ? (b / 2 ** 30).toFixed(1) : '—'
+  const n = Number(engineInfo.value?.info?.MemTotal)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return (n / 2 ** 30).toFixed(1)
 })
 
 const systemCount = computed(() => containers.value.filter(c => c.system).length)
@@ -536,17 +553,19 @@ function ledClass(c) {
   return 'err'
 }
 function shortImage(img) {
-  if (!img) return '—'
-  const s = img.split('/').pop()
-  return s.length > 40 ? s.slice(0, 38) + '…' : s
+  const s = String(finiteText(img, ''))
+  if (!s) return '—'
+  const leaf = s.split('/').pop()
+  return leaf.length > 40 ? leaf.slice(0, 38) + '…' : leaf
 }
 function shortPath(p) {
-  if (!p) return ''
-  const parts = p.split('/')
-  return parts.length > 3 ? '…/' + parts.slice(-2).join('/') : p
+  const s = String(finiteText(p, ''))
+  if (!s) return ''
+  const parts = s.split('/')
+  return parts.length > 3 ? '…/' + parts.slice(-2).join('/') : s
 }
 function mountTitle(c) {
-  return (c.mounts || []).map(m => `${m.src} → ${m.dst}`).join('\n')
+  return (c.mounts || []).map(m => `${finiteText(m.src)} → ${finiteText(m.dst)}`).join('\n')
 }
 function cpuNum(s) {
   if (!s) return null
@@ -565,61 +584,74 @@ function toggleAll(items, ev) {
   }
 }
 
+let listGeneration = 0
+
 async function refresh() {
+  const generation = ++listGeneration
   try {
-    data.value = await getContainers(true)
+    const next = await getContainers(true)
+    if (generation !== listGeneration) return
+    data.value = next
     listError.value = ''
   } catch (e) {
+    if (generation !== listGeneration) return false
     // Without this, a failed list read left `data` null and the page rendered
     // "engine is not running" — blaming Docker for what was an API failure.
-    listError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    listError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   }
 }
 
 function batchToast(j) {
-  const text = t('docker.done_count', { done: j.done || 0, total: j.total || 0 })
+  const text = t('docker.done_count', { done: finiteN(j.done, 0), total: finiteN(j.total, 0) })
   toast(j.ok === false ? `⚠ ${text}` : `✅ ${text}`)
 }
 
 async function act(c, action) {
-  if (action === 'stop' && !confirm(t('docker.confirm_stop', { name: c.name }))) return
-  if (action === 'remove' && !confirm(t('docker.confirm_remove', { name: c.name }))) return
+  if (action === 'stop' && !confirm(t('docker.confirm_stop', { name: finiteText(c.name) }))) return
+  if (action === 'remove' && !confirm(t('docker.confirm_remove', { name: finiteText(c.name) }))) return
   // restart and pause also take a running service offline, so they get the same
   // confirmation as stop. Previously only stop/remove were guarded, and the
   // restart/pause buttons sit immediately next to them in the row.
-  if (action === 'restart' && !confirm(t('docker.confirm_restart', { name: c.name }))) return
-  if (action === 'pause' && !confirm(t('docker.confirm_pause', { name: c.name }))) return
+  if (action === 'restart' && !confirm(t('docker.confirm_restart', { name: finiteText(c.name) }))) return
+  if (action === 'pause' && !confirm(t('docker.confirm_pause', { name: finiteText(c.name) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const r = await containerAction(c.id, action)
+    if (!stillOnList(generation)) return
     if (action === 'update' && r.job_id) {
       toast('🚀 ' + t('docker.update_job_started'))
       watchJob(r.job_id)
     } else {
-      toast(r.ok ? `✅ ${c.name}` : `❌ ${r.message}`)
+      toast(r.ok ? `✅ ${finiteText(c.name)}` : `❌ ${finiteText(r.message)}`)
       if (r.ok) scheduleRefresh(800)
     }
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    // The 20s poll's refresh() bumps listGeneration while an action is in flight.
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doUpdate(c) {
-  if (!confirm(t('docker.confirm_update', { name: c.name }))) return
+  if (!confirm(t('docker.confirm_update', { name: finiteText(c.name) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await updateContainer(c.id)
-    toast('🚀 ' + (j.message || t('docker.updating')))
+    if (!stillOnList(generation)) return
+    toast('🚀 ' + (finiteText(j.message, '') || t('docker.updating')))
     if (j.job_id) watchJob(j.job_id)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -630,45 +662,54 @@ async function doAll(action) {
     pause: t('docker.pause_all'),
     unpause: t('docker.unpause_all'),
   }
-  if (!confirm(t('docker.confirm_action', { action: labels[action] || action }))) return
+  if (!confirm(t('docker.confirm_action', { action: finiteText(labels[action], '') || finiteText(action) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await containersAll(action)
+    if (!stillOnList(generation)) return
     batchToast(j)
     scheduleRefresh(1000)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function batchSel(action) {
   if (!selected.value.length) return
-  if (!confirm(t('docker.confirm_batch', { action, n: selected.value.length }))) return
+  if (!confirm(t('docker.confirm_batch', { action: finiteText(action), n: finiteN(selected.value.length, 0) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await batchContainers(action, selected.value)
+    if (!stillOnList(generation)) return
     batchToast(j)
     scheduleRefresh(1000)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function checkUpdates() {
   if (!confirm(t('docker.confirm_check_updates'))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await checkContainerUpdates()
-    toast('🚀 ' + j.message)
+    if (!stillOnList(generation)) return
+    toast('🚀 ' + finiteText(j.message))
     if (j.job_id) watchJob(j.job_id)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
@@ -704,7 +745,7 @@ function watchJob(id) {
       // Say so instead of leaving the log frozen at its last content. The loop
       // still re-arms (a transient failure should recover), but the operator can
       // now see that the job status is not being read.
-      jobLog.value = `${jobLog.value || ''}\n⚠ ${e.message || e}`.trim()
+      jobLog.value = `${jobLog.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }
@@ -718,7 +759,7 @@ function watchJob(id) {
 const LOG_MAX_LINES = 2000
 
 function appendLog(chunk) {
-  let next = logText.value + chunk
+  let next = logText.value + finiteText(chunk, '')
   const lines = next.split('\n')
   if (lines.length > LOG_MAX_LINES) next = lines.slice(-LOG_MAX_LINES).join('\n')
   logText.value = next
@@ -729,15 +770,17 @@ function scrollLogToEnd() {
   // layout on every line, which is what actually janks the drawer.
   if (logScrollQueued) return
   logScrollQueued = true
+  const generation = listGeneration
   requestAnimationFrame(() => {
     logScrollQueued = false
+    if (generation !== listGeneration) return
     if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
   })
 }
 
 function openLogs(c) {
   closeLogs()
-  logName.value = c.name
+  logName.value = finiteText(c.name)
   logText.value = t('docker.log_connecting') + '\n'
   logDrawer.value = true
   es = openContainerLogs(c.id, { tail: 300, follow: true })
@@ -764,56 +807,94 @@ async function runExec() {
   // fires this on Enter and was not, and busy was only set *after* entry -- so
   // holding Enter issued concurrent `docker exec` calls into a live container.
   if (busy.value) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await execContainer(execC.value.id, execCmd.value)
-    execOut.value = j.output || j.message || JSON.stringify(j)
-  } catch (e) { execOut.value = String(e.message) }
-  busy.value = false
+    if (!stillOnList(generation)) return
+    execOut.value = finiteText(j.output, '') || finiteText(j.message, '') || JSON.stringify(j)
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    execOut.value = finiteText(e.message, '')
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function openInspect(c) {
+  const generation = listGeneration
   busy.value = true
-  try { inspectData.value = await inspectContainer(c.id) }
-  catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  try {
+    const next = await inspectContainer(c.id)
+    if (generation !== listGeneration) return
+    inspectData.value = next
+  } catch (e) {
+    if (generation !== listGeneration) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function loadImages() {
+  const generation = listGeneration
   try {
-    images.value = (await getImages()).images || []
+    const next = (await getImages()).images || []
+    if (generation !== listGeneration) return
+    images.value = next
     subError.value.images = ''
   } catch (e) {
-    subError.value.images = e.message || String(e)
-    toast('❌ ' + e.message)
-  } finally { subLoaded.value.images = true }
+    if (generation !== listGeneration) return
+    subError.value.images = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === listGeneration) subLoaded.value.images = true
+  }
 }
 async function loadVolumes() {
+  const generation = listGeneration
   try {
-    volumes.value = (await getVolumes()).volumes || []
+    const next = (await getVolumes()).volumes || []
+    if (generation !== listGeneration) return
+    volumes.value = next
     subError.value.volumes = ''
   } catch (e) {
-    subError.value.volumes = e.message || String(e)
-    toast('❌ ' + e.message)
-  } finally { subLoaded.value.volumes = true }
+    if (generation !== listGeneration) return
+    subError.value.volumes = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === listGeneration) subLoaded.value.volumes = true
+  }
 }
 async function loadNetworks() {
+  const generation = listGeneration
   try {
-    networks.value = (await getNetworks()).networks || []
+    const next = (await getNetworks()).networks || []
+    if (generation !== listGeneration) return
+    networks.value = next
     subError.value.networks = ''
   } catch (e) {
-    subError.value.networks = e.message || String(e)
-    toast('❌ ' + e.message)
-  } finally { subLoaded.value.networks = true }
+    if (generation !== listGeneration) return
+    subError.value.networks = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === listGeneration) subLoaded.value.networks = true
+  }
 }
 async function loadEngine() {
+  const generation = listGeneration
   try {
-    engineInfo.value = await getDockerInfo()
+    const next = await getDockerInfo()
+    if (generation !== listGeneration) return
+    engineInfo.value = next
     subError.value.engine = ''
   } catch (e) {
-    subError.value.engine = e.message || String(e)
-    toast('❌ ' + e.message)
-  } finally { subLoaded.value.engine = true }
+    if (generation !== listGeneration) return
+    subError.value.engine = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === listGeneration) subLoaded.value.engine = true
+  }
 }
 async function doPrune(kind) {
   const tips = {
@@ -824,16 +905,24 @@ async function doPrune(kind) {
     containers: t('docker.confirm_prune_containers'),
   }
   if (!confirm(tips[kind] || t('docker.confirm_prune'))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const r = await prune(kind)
-    toast(r.ok ? '✅ ' + t('docker.done') : '❌ ' + r.message)
+    if (!stillOnList(generation)) return
+    toast(r.ok ? '✅ ' + t('docker.done') : '❌ ' + finiteText(r.message))
     refresh()
     if (tab.value === 'images') loadImages()
     if (tab.value === 'volumes') loadVolumes()
     if (tab.value === 'networks') loadNetworks()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    // refresh() bumps listGeneration, so a generation match would leave
+    // prune stuck in the busy state.
+    if (pageAlive) busy.value = false
+  }
 }
 
 function splitCsv(s) {
@@ -841,6 +930,7 @@ function splitCsv(s) {
 }
 
 async function doRun() {
+  const generation = listGeneration
   busy.value = true
   try {
     const body = {
@@ -855,98 +945,154 @@ async function doRun() {
       privileged: !!runForm.value.privileged,
     }
     const j = await runContainer(body)
-    toast(j.ok ? '✅ ' + t('docker.container_created') : `❌ ${j.message}`)
+    if (!stillOnList(generation)) return
+    toast(j.ok ? '✅ ' + t('docker.container_created') : `❌ ${finiteText(j.message)}`)
     if (j.ok) {
       showRun.value = false
       scheduleRefresh(800)
     }
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function doPull() {
   if (!pullImage.value.trim()) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await pullImageApi(pullImage.value.trim())
-    toast(j.ok ? '✅ ' + t('docker.pull_done') : `❌ ${j.message}`)
-    jobLog.value = j.message || ''
+    if (!stillOnList(generation)) return
+    toast(j.ok ? '✅ ' + t('docker.pull_done') : `❌ ${finiteText(j.message)}`)
+    stopJobPolling()
+    jobLog.value = finiteText(j.message, '')
     loadImages()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function rmi(im) {
-  const ref = (im.Repository && im.Tag && im.Repository !== '<none>')
-    ? `${im.Repository}:${im.Tag}`
-    : (im.ID || '').replace('sha256:', '').slice(0, 12)
-  if (!ref || !confirm(t('docker.confirm_remove_image', { image: ref }))) return
+  const repo = finiteText(im.Repository, '')
+  const tag = finiteText(im.Tag, '')
+  const ref = (repo && tag && repo !== '<none>')
+    ? `${repo}:${tag}`
+    : finiteText(String(im.ID || '').replace('sha256:', '').slice(0, 12), '')
+  if (!ref || !confirm(t('docker.confirm_remove_image', { image: finiteText(ref) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await removeImage(ref, true)
-    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${j.message}`)
+    if (!stillOnList(generation)) return
+    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
     loadImages()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function createVol() {
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await createVolume(newVol.value.trim())
-    toast(j.ok ? '✅ ' + t('docker.volume_created') : `❌ ${j.message}`)
+    if (!stillOnList(generation)) return
+    toast(j.ok ? '✅ ' + t('docker.volume_created') : `❌ ${finiteText(j.message)}`)
     newVol.value = ''
     loadVolumes()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function rmVol(v) {
-  if (!confirm(t('docker.confirm_remove_volume', { name: v.Name }))) return
+  if (!confirm(t('docker.confirm_remove_volume', { name: finiteText(v.Name) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await removeVolume(v.Name, true)
-    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${j.message}`)
+    if (!stillOnList(generation)) return
+    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
     loadVolumes()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function createNet() {
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await createNetwork(newNet.value.trim())
-    toast(j.ok ? '✅ ' + t('docker.network_created') : `❌ ${j.message}`)
+    if (!stillOnList(generation)) return
+    toast(j.ok ? '✅ ' + t('docker.network_created') : `❌ ${finiteText(j.message)}`)
     newNet.value = ''
     loadNetworks()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function rmNet(n) {
-  if (!confirm(t('docker.confirm_remove_network', { name: n.Name }))) return
+  if (!confirm(t('docker.confirm_remove_network', { name: finiteText(n.Name) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await removeNetwork(n.Name)
-    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${j.message}`)
+    if (!stillOnList(generation)) return
+    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
     loadNetworks()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (pageAlive) busy.value = false
+  }
 }
 
 async function toggleAutostart(c) {
   const next = c.autostart ? 'no' : 'unless-stopped'
+  const key = c.autostart ? 'docker.confirm_autostart_off' : 'docker.confirm_autostart_on'
+  if (!confirm(t(key, { name: finiteText(c.name) }))) return
+  const generation = listGeneration
   busy.value = true
   try {
     const j = await setRestartPolicy(c.id, next)
-    toast(j.ok ? `✅ ${t('docker.autostart')} → ${next}` : `❌ ${j.message}`)
+    if (!stillOnList(generation)) return
+    toast(j.ok ? `✅ ${t('docker.autostart')} → ${next}` : `❌ ${finiteText(j.message)}`)
     refresh()
-  } catch (e) { toast('❌ ' + e.message) }
-  busy.value = false
+  } catch (e) {
+    if (!stillOnList(generation)) return
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    // refresh() bumps listGeneration, so a generation match would leave
+    // autostart stuck in the busy state.
+    if (pageAlive) busy.value = false
+  }
 }
 
-onMounted(() => { refresh(); timer = startVisibleInterval(refresh, 20000) })
+onMounted(() => { pageAlive = true; refresh(); timer = startVisibleInterval(refresh, 20000) })
 onUnmounted(() => {
+  pageAlive = false
+  listGeneration += 1
   if (typeof timer === 'function') timer()
   timer = null
   stopJobPolling()

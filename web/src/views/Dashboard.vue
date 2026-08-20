@@ -15,7 +15,7 @@
           {{ t('common.retry') }}
         </button>
       </div>
-      <div class="sub mono" style="margin-top:4px">{{ loadError }}</div>
+      <div class="sub mono" style="margin-top:4px">{{ finiteText(loadError) }}</div>
     </div>
 
     <!-- ===== Member view: only the services assigned to this account. The
@@ -27,9 +27,9 @@
         <div class="host-main">
           <div class="host-name">{{ t('dashboard.member_title') }}</div>
           <div class="host-meta">
-            <span>{{ t('dashboard.services_count', { total: status?.service_total ?? '—', ok: status?.counts?.ok ?? 0 }) }}</span>
+            <span>{{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}</span>
             <span class="dot">·</span>
-            <span>{{ status?.ts || '…' }}</span>
+            <span>{{ finiteText(status?.ts, '…') }}</span>
           </div>
         </div>
         <div class="host-pills">
@@ -37,29 +37,32 @@
         </div>
       </div>
       <template v-for="g in status?.groups || []" :key="g.group">
-        <h2 class="member-group">{{ g.group }}</h2>
+        <h2 class="member-group">{{ finiteText(g.group) }}</h2>
         <div class="dash-grid">
           <div v-for="s in g.services || []" :key="s.id" class="tile span-4 member-svc">
             <div class="row">
               <span class="led" :class="led(s.state)"></span>
-              <span class="name">{{ s.name }}</span>
+              <span class="name">{{ finiteText(s.name) }}</span>
             </div>
-            <div class="sub" style="margin-top:4px">{{ s.detail || s.state }}</div>
+            <div class="sub" style="margin-top:4px">{{ finiteText(s.detail, '') || finiteText(s.state) }}</div>
             <div class="row" style="margin-top:8px;gap:6px">
-              <a v-if="s.url" class="btn tiny primary" :href="s.url" target="_blank" rel="noopener">{{ t('services.open') }}</a>
+              <a v-if="s.url" class="btn tiny primary" :href="finiteText(s.url, '')" target="_blank" rel="noopener">{{ t('services.open') }}</a>
               <router-link class="btn tiny" to="/services">{{ t('services.more') }}</router-link>
             </div>
           </div>
         </div>
       </template>
-      <div v-if="!(status?.groups || []).length && !loadError" class="tile" style="color:var(--sub)">
+      <div v-if="!status && !loadError" class="tile" style="color:var(--sub)">
+        {{ t('common.loading') }}
+      </div>
+      <div v-else-if="!(status?.groups || []).length && !loadError" class="tile" style="color:var(--sub)">
         {{ t('dashboard.member_empty') }}
       </div>
     </template>
 
     <!-- Skeleton loading state. Gated on loadError too: without that, a failed
          first load left this placeholder on screen permanently. -->
-    <template v-else-if="!host && !sensors && !loadError">
+    <template v-else-if="!host && !sensors">
       <div class="host-strip">
         <div class="host-main">
           <div class="skeleton skeleton-title" style="width:140px"></div>
@@ -79,11 +82,22 @@
     </template>
 
     <template v-else>
+    <div
+      v-if="authState.canManage && status?.panel_update?.update_available"
+      class="tile"
+      style="margin-bottom:12px;border-left:3px solid var(--ok)"
+      role="status"
+    >
+      <div class="row">
+        <span class="name">{{ t('dashboard.update_available', { v: finiteText(status.panel_update.latest) }) }}</span>
+        <router-link class="tiny primary" to="/tools?tab=updates">{{ t('dashboard.open_updates') }}</router-link>
+      </div>
+    </div>
     <!-- Host strip — Unraid / Glances header -->
     <div class="host-strip">
       <div class="host-main">
         <div class="host-name">
-          <span>{{ host?.hostname || '—' }}</span>
+          <span>{{ finiteText(host?.hostname) }}</span>
           <!-- UPS / battery chip. The old full-width tile was mostly empty
                space, so the details it carried (name, runtime, threshold,
                policy switch) moved into this chip's tooltip. On AC it stays a
@@ -97,7 +111,7 @@
             data-test="ups-indicator"
           >
             <component :is="upsIcon" :size="13" />
-            <span v-if="ups.battery_percent != null" class="ups-pct">{{ ups.battery_percent }}%</span>
+            <span v-if="finiteN(ups.battery_percent, null) != null" class="ups-pct">{{ withUnit(ups.battery_percent, '%') }}</span>
             <span v-if="upsStateLabel">{{ upsStateLabel }}</span>
           </span>
           <router-link
@@ -124,13 +138,13 @@
           </button>
         </div>
         <div class="host-meta">
-          <span>{{ host?.cpu || 'CPU' }}</span>
+          <span>{{ finiteText(host?.cpu, 'CPU') }}</span>
           <span class="dot">·</span>
           <span>{{ t('dashboard.cores', { n: ncpu }) }}</span>
           <span class="dot">·</span>
-          <span>{{ memTotal }} GB RAM</span>
+          <span>{{ fmtGb(memTotal) }} RAM</span>
           <span class="dot">·</span>
-          <span>{{ host?.lan_ip || host?.host_ip || '—' }}</span>
+          <span>{{ finiteText(host?.lan_ip, '') || finiteText(host?.host_ip) }}</span>
           <span class="dot">·</span>
           <span>{{ t('dashboard.uptime', { t: uptimeText }) }}</span>
         </div>
@@ -142,26 +156,27 @@
         <span class="pill" :class="healthOk ? 'ok' : 'down'">
           {{ healthSummary }}
         </span>
-        <span class="pill">{{ sensors?.ts || status?.ts || '…' }}</span>
+        <span class="pill">{{ finiteText(sensors?.ts, '') || finiteText(status?.ts, '…') }}</span>
        <button class="tiny" @click="refreshAll" :disabled="loading">{{ t('common.refresh') }}</button>
       <span id="remote" class="pwr-group">
          <a class="tiny primary"
            :class="{ disabled: !ss.running }"
-           :href="ss.running ? ss.vnc_url : undefined"
+           :href="ss.running ? finiteText(ss.vnc_url, '') : undefined"
            :title="ss.running ? t('power.connect') : t('power.off')"
+           :aria-label="ss.running ? t('power.connect') : t('power.off')"
          ><Monitor :size="14" /></a>
          <!-- Both toggles require a successful power read. Without that gate a
               failed probe left powerData empty, so !ss.running was true and the
               Enable button appeared even when Screen Sharing was already on. -->
-         <button v-if="powerLoaded && !ss.running" class="tiny primary" :disabled="ssBusy || loading" @click="enableSS" :title="t('power.enable_ss')"><Play :size="13" /></button>
-         <button v-else-if="powerLoaded" class="tiny danger" :disabled="ssBusy" @click="disableSS" :title="t('power.disable_ss')"><Square :size="13" /></button>
-         <button v-else class="tiny" disabled :title="t('power.state_unknown')"><Play :size="13" /></button>
-         <button class="tiny hide-m" :disabled="!ss.vnc_url" @click="copyVnc" :title="t('power.copy')"><Copy :size="13" /></button>
+         <button v-if="powerLoaded && !ss.running" class="tiny primary" :disabled="ssBusy || loading" @click="enableSS" :title="t('power.enable_ss')" :aria-label="t('power.enable_ss')"><Play :size="13" /></button>
+         <button v-else-if="powerLoaded" class="tiny danger" :disabled="ssBusy" @click="disableSS" :title="t('power.disable_ss')" :aria-label="t('power.disable_ss')"><Square :size="13" /></button>
+         <button v-else class="tiny" disabled :title="t('power.state_unknown')" :aria-label="t('power.state_unknown')"><Play :size="13" /></button>
+         <button class="tiny hide-m" :disabled="!ss.vnc_url" @click="copyVnc" :title="t('power.copy')" :aria-label="t('power.copy')"><Copy :size="13" /></button>
       </span>
       <span class="pwr-group">
-          <button class="tiny" @click="doPower('sleep')" :disabled="pwrBusy" title="Sleep"><Moon :size="13" /></button>
-          <button class="tiny" @click="doPower('restart')" :disabled="pwrBusy" title="Restart"><RefreshCw :size="13" /></button>
-          <button class="tiny danger" @click="doPower('shutdown')" :disabled="pwrBusy" title="Shutdown"><Power :size="13" /></button>
+          <button class="tiny" @click="doPower('sleep')" :disabled="pwrBusy" :title="t('power.sleep')" :aria-label="t('power.sleep')"><Moon :size="13" /></button>
+          <button class="tiny" @click="doPower('restart')" :disabled="pwrBusy" :title="t('power.restart')" :aria-label="t('power.restart')"><RefreshCw :size="13" /></button>
+          <button class="tiny danger" @click="doPower('shutdown')" :disabled="pwrBusy" :title="t('power.shutdown')" :aria-label="t('power.shutdown')"><Power :size="13" /></button>
       </span>
       </div>
     </div>
@@ -210,12 +225,13 @@
           :min="0"
           :max="100"
           percent
+          :times="metricTimes"
           :series="cpuChartSeries"
           unit="%"
         />
         <div class="sub" style="margin-top:6px">
           Load {{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}
-          · {{ t('dashboard.load_capacity', { p: loadPct }) }}
+          · {{ t('dashboard.load_capacity', { p: finiteN(loadPct) }) }}
           <span class="badge" style="margin-left:4px">{{ t('dashboard.cores', { n: ncpu }) }}</span>
         </div>
       </div>
@@ -224,20 +240,20 @@
       <div class="tile span-4 res-card">
         <h3>
           {{ t('dashboard.memory') }}
-          <span class="badge" :class="memBadge">{{ t('dashboard.pressure_pct', { p: memUsedPct }) }}</span>
+          <span class="badge" :class="memBadge">{{ t('dashboard.pressure_pct', { p: finiteN(memUsedPct) }) }}</span>
         </h3>
         <div class="res-head">
           <div class="big">{{ memAvailGb }}<small> {{ t('dashboard.gb_available') }}</small></div>
           <div class="res-side">
             <div class="kv-mini">
-              <span>{{ t('dashboard.pressure') }}</span><b>{{ memUsedPct }}%</b>
-              <span>{{ t('dashboard.free_rate') }}</span><b>{{ memFreePct }}%</b>
-              <span>{{ t('dashboard.total') }}</span><b>{{ memTotal }} GB</b>
+              <span>{{ t('dashboard.pressure') }}</span><b>{{ withUnit(memUsedPct, '%') }}</b>
+              <span>{{ t('dashboard.free_rate') }}</span><b>{{ withUnit(memFreePct, '%') }}</b>
+              <span>{{ t('dashboard.total') }}</span><b>{{ fmtGb(memTotal) }}</b>
             </div>
           </div>
         </div>
         <div class="pct-bar thick" :class="memBarClass">
-          <i :style="{ width: memUsedPct + '%' }"></i>
+          <i :style="{ width: barPct(memUsedPct) + '%' }"></i>
         </div>
         <div class="sub" style="margin-top:6px">
           {{ t('dashboard.mem_hint') }}
@@ -265,6 +281,7 @@
           :min="0"
           :max="100"
           percent
+          :times="metricTimes"
           :series="memChartSeries"
           unit="%"
         />
@@ -275,7 +292,7 @@
         <h3>
           {{ t('dashboard.disk_smart') }}
           <span class="disk-badges">
-            <span class="badge" :class="barClass(diskPct) || ''">{{ diskPct }}%</span>
+            <span class="badge" :class="barClass(diskPct) || ''">{{ withUnit(diskPct, '%') }}</span>
             <span class="badge" :class="smartSummaryClass">{{ smartSummary }}</span>
           </span>
         </h3>
@@ -284,26 +301,27 @@
           <div class="sub">{{ t('dashboard.disk_free_short', { free: formatCapacityGb(diskFree) }) }}</div>
         </div>
         <div class="pct-bar thick" :class="barClass(diskPct)">
-          <i :style="{ width: diskPct + '%' }"></i>
+          <i :style="{ width: barPct(diskPct) + '%' }"></i>
         </div>
         <div class="disk-list">
           <div v-for="d in smartDisks" :key="d.id" class="disk-item">
             <div class="disk-primary">
-              <strong :title="d.smart?.model || d.name || d.id">{{ d.name || d.smart?.model || d.id }}</strong>
+              <strong :title="finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id)">{{ finiteText(d.name, '') || finiteText(d.smart?.model, '') || finiteText(d.id) }}</strong>
               <span class="disk-primary-meta">
                 <span v-if="formatDiskSize(d)" class="disk-capacity">{{ formatDiskSize(d) }}</span>
                 <span class="badge" :class="smartBadgeClass(d)">{{ smartHealthLabel(d) }}</span>
               </span>
             </div>
             <div v-if="d.smart" class="disk-facts">
-              <span class="disk-temp">{{ d.smart.temp || '—' }}</span>
-              <span>{{ t('dashboard.wear') }} <b>{{ d.smart.wear || '—' }}</b></span>
-              <span>{{ t('dashboard.written') }} <b>{{ d.smart.written || '—' }}</b></span>
-              <span v-if="d.smart.media_errors != null">{{ t('dashboard.media_errors') }} <b>{{ d.smart.media_errors }}</b></span>
+              <span class="disk-temp">{{ finiteText(d.smart.temp) }}</span>
+              <span>{{ t('dashboard.wear') }} <b>{{ finiteText(d.smart.wear) }}</b></span>
+              <span>{{ t('dashboard.written') }} <b>{{ finiteText(d.smart.written) }}</b></span>
+              <span v-if="finiteN(d.smart.media_errors, null) != null">{{ t('dashboard.media_errors') }} <b>{{ finiteN(d.smart.media_errors) }}</b></span>
             </div>
-            <div v-else class="disk-unavailable" :title="d.error || ''">{{ t('dashboard.smart_unavailable_short') }}</div>
+            <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
           </div>
-          <div v-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
+          <div v-if="!storage" class="disk-empty">{{ t('common.loading') }}</div>
+          <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
         </div>
         <LineChart
           style="margin-top:5px"
@@ -311,6 +329,7 @@
           :min="0"
           :max="100"
           percent
+          :times="metricTimes"
           :series="diskChartSeries"
           unit="%"
         />
@@ -330,7 +349,7 @@
           </div>
           <div class="ns">
             <div class="k">{{ t('dashboard.process') }}</div>
-            <div class="v2">{{ cpu.proc_total ?? '—' }} <small class="sub">run {{ cpu.proc_running ?? '—' }}</small></div>
+            <div class="v2">{{ finiteN(cpu.proc_total) }} <small class="sub">run {{ finiteN(cpu.proc_running) }}</small></div>
           </div>
         </div>
         <h2 class="section-title top-cpu-head">
@@ -351,6 +370,7 @@
               type="button"
               data-test="ollama-api-copy"
               :title="t('common.copy')"
+              :aria-label="t('common.copy')"
               @click="copyOllamaApi"
             ><Copy :size="12" /></button>
           </span>
@@ -373,19 +393,19 @@
             </thead>
             <tbody>
               <tr v-for="p in topProcs" :key="p.pid">
-                <td class="proc" :title="'pid '+p.pid">
-                  <strong>{{ p.name }}</strong>
-                  <div class="show-m sub">{{ p.rss_mb }}M</div>
+                <td class="proc" :title="'pid '+finiteN(p.pid)">
+                  <strong>{{ finiteText(p.name) }}</strong>
+                  <div class="show-m sub">{{ withUnit(p.rss_mb, 'M') }}</div>
                 </td>
                 <td class="num cpu-cell">
-                  <span class="cpu-n">{{ p.cpu }}</span>
-                  <span class="mini-bar"><i :style="{ width: Math.min(100, Number(p.cpu) || 0) + '%' }"></i></span>
+                  <span class="cpu-n">{{ finiteN(p.cpu) }}</span>
+                  <span class="mini-bar"><i :style="{ width: barPct(p.cpu) + '%' }"></i></span>
                 </td>
-                <td class="num">{{ p.mem }}</td>
-                <td class="num col-hide-m">{{ p.rss_mb }}M</td>
+                <td class="num">{{ finiteN(p.mem) }}</td>
+                <td class="num col-hide-m">{{ withUnit(p.rss_mb, 'M') }}</td>
               </tr>
               <tr v-if="!topProcs.length">
-                <td colspan="4" style="color:var(--sub)">{{ t('common.loading') }}</td>
+                <td colspan="4" style="color:var(--sub)">{{ sensors ? t('common.none') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
               </tr>
             </tbody>
           </table>
@@ -414,16 +434,16 @@
             <tr v-for="v in (storage?.volumes || []).slice(0, 8)" :key="v.mount">
               <td class="mono">
                 {{ shortMount(v) }}
-                <div class="show-m sub">{{ v.kind }} · {{ v.used_gb }} / {{ v.avail_gb }} GB</div>
+                <div class="show-m sub">{{ finiteText(v.kind) }} · {{ fmtGb(v.used_gb) }} / {{ fmtGb(v.avail_gb) }}</div>
               </td>
-              <td class="col-hide-m"><span class="badge accent">{{ v.kind }}</span></td>
-              <td class="col-hide-m">{{ v.total_gb }} GB</td>
-              <td class="col-hide-m">{{ v.used_gb }} GB</td>
-              <td class="col-hide-m">{{ v.avail_gb }} GB</td>
+              <td class="col-hide-m"><span class="badge accent">{{ finiteText(v.kind) }}</span></td>
+              <td class="col-hide-m">{{ fmtGb(v.total_gb) }}</td>
+              <td class="col-hide-m">{{ fmtGb(v.used_gb) }}</td>
+              <td class="col-hide-m">{{ fmtGb(v.avail_gb) }}</td>
               <td style="min-width:100px">
-                <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ v.pct }}%</strong>
+                <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
                 <div class="pct-bar" :class="barClass(v.pct)" style="margin-top:3px">
-                  <i :style="{ width: v.pct + '%' }"></i>
+                  <i :style="{ width: barPct(v.pct) + '%' }"></i>
                 </div>
               </td>
             </tr>
@@ -436,7 +456,7 @@
       <div class="tile span-4">
         <h3>
           Docker
-          <span class="badge">{{ containers.length }}</span>
+          <span class="badge">{{ containers ? containers.length : '—' }}</span>
           <span v-if="cstatsStale" class="badge warn" :title="t('dashboard.stats_stale_hint')">
             {{ t('dashboard.stats_stale') }}
           </span>
@@ -448,27 +468,30 @@
             <tr><th></th><th>{{ t('dashboard.col_name') }}</th><th class="col-hide-m">{{ t('dashboard.col_status') }}</th><th>{{ t('dashboard.col_cpu') }}</th><th>{{ t('dashboard.col_mem') }}</th><th></th></tr>
           </thead>
           <tbody>
-            <tr v-for="c in containers.slice(0, 10)" :key="c.id">
+            <tr v-for="c in (containers || []).slice(0, 10)" :key="c.id">
               <td><span class="led" :class="led(c.state)"></span></td>
               <td>
-                <strong>{{ c.name }}</strong>
+                <strong>{{ finiteText(c.name) }}</strong>
                 <div class="mono" style="color:var(--sub);font-size:10px">{{ shortImage(c.image) }}</div>
-                <div v-if="c.status" class="show-m sub">{{ c.status }}</div>
+                <div v-if="c.status" class="show-m sub">{{ finiteText(c.status) }}</div>
               </td>
-              <td class="col-hide-m" style="font-size:11px">{{ c.status }}</td>
+              <td class="col-hide-m" style="font-size:11px">{{ finiteText(c.status) }}</td>
               <td class="mono">
-                {{ cstats[c.id]?.cpu || '—' }}
+                {{ finiteText(cstats[c.id]?.cpu) }}
                 <span v-if="cpuNum(cstats[c.id]?.cpu)!=null" class="mini-bar">
                   <i :style="{ width: Math.min(100, cpuNum(cstats[c.id]?.cpu)) + '%' }"></i>
                 </span>
               </td>
-              <td class="mono">{{ cstats[c.id]?.mem_pct || cstats[c.id]?.mem || '—' }}</td>
+              <td class="mono">{{ finiteText(cstats[c.id]?.mem_pct, '') || finiteText(cstats[c.id]?.mem) }}</td>
               <td>
-                <a v-if="c.url" class="btn tiny primary" :href="c.url" target="_blank">WebUI</a>
+                <a v-if="c.url" class="btn tiny primary" :href="finiteText(c.url, '')" target="_blank">WebUI</a>
               </td>
             </tr>
-            <tr v-if="!containers.length">
+            <tr v-if="containers && !containers.length">
               <td colspan="6" style="color:var(--sub)">{{ t('dashboard.no_containers') }}</td>
+            </tr>
+            <tr v-else-if="!containers">
+              <td colspan="6" style="color:var(--sub)">{{ t('common.loading') }}</td>
             </tr>
           </tbody>
         </table>
@@ -481,16 +504,16 @@
           {{ t('dashboard.attention') }}
           <span class="badge" :class="attention.length ? 'down' : 'ok'">{{ attention.length }}</span>
           <span class="sub" style="font-weight:500;text-transform:none;letter-spacing:0">
-            {{ t('dashboard.services_count', { total: status?.service_total ?? '—', ok: status?.counts?.ok ?? 0 }) }}
+            {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
           </span>
         </h3>
-        <div v-if="!attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
+        <div v-if="status && !attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
         <div v-else class="alert-list">
           <div v-for="s in attention.slice(0, 10)" :key="s.id" class="alert-item">
             <span class="led" :class="led(s.state)"></span>
             <div style="flex:1;min-width:0">
-              <div class="name">{{ s.name }}</div>
-              <div class="detail" style="margin:0">{{ s.group }} · {{ s.detail }}</div>
+              <div class="name">{{ finiteText(s.name) }}</div>
+              <div class="detail" style="margin:0">{{ finiteText(s.group) }} · {{ finiteText(s.detail) }}</div>
             </div>
             <button
               v-for="a in (s.actions || []).filter(x => ['start','restart'].includes(x)).slice(0,1)"
@@ -498,16 +521,17 @@
               class="tiny primary"
               :disabled="busy"
               @click="act(s, a)"
-            >{{ labels[a] || a }}</button>
+            >{{ finiteText(labels[a], '') || finiteText(a) }}</button>
           </div>
         </div>
         <h3 style="margin-top:12px">{{ t('dashboard.recent_alerts') }}</h3>
-        <div v-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
-        <div v-for="(a,i) in alerts.slice(0,5)" :key="i" class="alert-item">
+        <div v-if="!alerts" class="sub">{{ t('common.loading') }}</div>
+        <div v-else-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
+        <div v-for="(a,i) in (alerts || []).slice(0,5)" :key="i" class="alert-item">
           <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')"></span>
           <div style="flex:1">
-            <div class="name">{{ a.name }}</div>
-            <div class="detail" style="margin:0">{{ fmt(a.t) }} · {{ a.message }}</div>
+            <div class="name">{{ finiteText(a.name) }}</div>
+            <div class="detail" style="margin:0">{{ fmt(a.t) }} · {{ finiteText(a.message) }}</div>
           </div>
         </div>
       </div>
@@ -522,15 +546,16 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('dashboard.col_process') }}</th><th>{{ t('dashboard.col_port') }}</th><th class="col-hide-m">{{ t('dashboard.col_addr') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(p,i) in ports.slice(0, 12)" :key="i">
+            <tr v-for="(p,i) in (ports || []).slice(0, 12)" :key="i">
               <td>
-                {{ p.process }}
-                <div v-if="p.address" class="show-m sub mono">{{ p.address }}</div>
+                {{ finiteText(p.process) }}
+                <div v-if="finiteText(p.address, '')" class="show-m sub mono">{{ finiteText(p.address) }}</div>
               </td>
-              <td class="mono">{{ p.port }}</td>
-              <td class="mono col-hide-m" style="font-size:10px">{{ p.address }}</td>
+              <td class="mono">{{ finiteN(p.port) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.address) }}</td>
             </tr>
-            <tr v-if="!ports.length"><td colspan="3" style="color:var(--sub)">—</td></tr>
+            <tr v-if="!ports"><td colspan="3" style="color:var(--sub)">{{ t('common.loading') }}</td></tr>
+            <tr v-else-if="!ports.length"><td colspan="3" style="color:var(--sub)">{{ t('common.none') }}</td></tr>
           </tbody>
         </table>
         </div>
@@ -544,24 +569,24 @@
           <router-link class="btn tiny" to="/bookmarks">{{ t('common.all') }}</router-link>
         </h3>
         <div class="health-grid" v-if="health?.summary">
-          <div class="hg ok"><div class="n">{{ health.summary.ok }}</div><div class="l">{{ t('health.passed') }}</div></div>
-          <div class="hg warn"><div class="n">{{ health.summary.warn }}</div><div class="l">{{ t('health.warnings') }}</div></div>
-          <div class="hg err"><div class="n">{{ health.summary.error }}</div><div class="l">{{ t('health.errors') }}</div></div>
+          <div class="hg ok"><div class="n">{{ finiteN(health.summary.ok) }}</div><div class="l">{{ t('health.passed') }}</div></div>
+          <div class="hg warn"><div class="n">{{ finiteN(health.summary.warn) }}</div><div class="l">{{ t('health.warnings') }}</div></div>
+          <div class="hg err"><div class="n">{{ finiteN(health.summary.error) }}</div><div class="l">{{ t('health.errors') }}</div></div>
         </div>
         <div class="failed-checks" v-if="failedChecks.length">
           <div v-for="c in failedChecks.slice(0, 3)" :key="c.id" class="alert-item">
             <span class="led" :class="c.level === 'error' ? 'err' : 'warn'"></span>
             <div style="flex:1">
-              <div class="name">{{ c.name }}</div>
-              <div class="detail" style="margin:0">{{ errText(c.detail) }}</div>
+              <div class="name">{{ finiteText(c.name) }}</div>
+              <div class="detail" style="margin:0">{{ finiteText(errText(c.detail)) }}</div>
             </div>
           </div>
         </div>
         <div class="sub" style="margin-top:8px" v-if="status?.adaptive">
           {{ t('dashboard.adaptive') }}：
           {{ t('dashboard.adaptive_line', {
-            auto: status.adaptive.auto_labeled || 0,
-            orphan: status.adaptive.orphan_count || 0,
+            auto: finiteN(status.adaptive.auto_labeled, 0),
+            orphan: finiteN(status.adaptive.orphan_count, 0),
             compose: (status.adaptive.compose_projects || []).length,
             nginx: (status.adaptive.nginx_sites || []).length,
           }) }}
@@ -572,13 +597,13 @@
             :key="b.url"
             class="bm-card"
             :class="bmClass(b)"
-            :href="b.url"
+            :href="finiteText(b.url, '')"
             target="_blank"
             rel="noopener"
-            :title="b.url"
+            :title="finiteText(b.url)"
           >
             <span class="led" :class="bmLed(b)"></span>
-            <span class="bm-name">{{ b.name }}</span>
+            <span class="bm-name">{{ finiteText(b.name) }}</span>
             <span class="bm-meta">{{ bmLabel(b) }}</span>
           </a>
         </div>
@@ -607,6 +632,7 @@ import {
 } from '../api/client'
 import { openAssistant } from '../lib/assistant'
 import { copyToClipboard } from '../lib/clipboard'
+import { barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -620,8 +646,8 @@ const status = ref(null)
 const storage = ref(null)
 const host = ref(null)
 const metrics = ref([])
-const alerts = ref([])
-const containers = ref([])
+const alerts = ref(null)
+const containers = ref(null)
 const cstats = ref({})
 // When the CPU/MEM figures in cstats were last actually collected.  The 90s
 // heavy tick deliberately skips `docker stats` (it costs ~2s), so those columns
@@ -636,7 +662,7 @@ const clock = ref(Date.now())
 const cstatsStale = computed(
   () => cstatsAt.value > 0 && clock.value - cstatsAt.value > 180000
 )
-const ports = ref([])
+const ports = ref(null)
 // UPS / battery snapshot; the tile renders only when `present` is true, so a
 // desktop with no UPS never shows an empty card.
 const ups = ref(null)
@@ -682,9 +708,11 @@ let heavyTimer = null
 let actionRefreshTimer = null
 
 function scheduleActionRefresh() {
+  if (!dashAlive) return
   if (actionRefreshTimer) clearTimeout(actionRefreshTimer)
   actionRefreshTimer = setTimeout(() => {
     actionRefreshTimer = null
+    if (!dashAlive) return
     void refresh()
   }, 1000)
 }
@@ -705,15 +733,16 @@ const smartDisks = computed(() => storage.value?.disks || [])
 const topProcs = computed(() => sensors.value?.top_processes || [])
 const engineUp = computed(() => !!status.value?.engine_up)
 const ss = computed(() => powerData.value?.screen_sharing || {})
-const ncpu = computed(() => cpu.value.ncpu || sys.value.ncpu || host.value?.ncpu || 1)
+const ncpu = computed(() => finiteN(cpu.value.ncpu || sys.value.ncpu || host.value?.ncpu, 1))
 
 const load1 = computed(() => cpu.value.load1 ?? sys.value.load1)
 const load5 = computed(() => cpu.value.load5 ?? sys.value.load5)
 const load15 = computed(() => cpu.value.load15 ?? sys.value.load15)
-const loadPct = computed(() => cpu.value.load_pct ?? sys.value.load_pct ?? 0)
+const loadPct = computed(() => finiteN(cpu.value.load_pct ?? sys.value.load_pct, 0))
 const cpuUsed = computed(() => {
   const v = sensors.value?.cpu_used_pct ?? cpu.value.used_pct
-  return v != null ? Number(v) : 0
+  const n = v != null ? Number(v) : 0
+  return Number.isFinite(n) ? n : 0
 })
 const cpuBadge = computed(() => {
   if (cpuUsed.value >= 90) return 'down'
@@ -735,10 +764,11 @@ function smartBadgeClass(d) {
 }
 function smartHealthLabel(d) {
   if (!d?.smart) return t('dashboard.smart_na')
-  return smartIsOk(d) ? t('dashboard.smart_passed') : (d.smart.health || t('dashboard.smart_warning'))
+  return smartIsOk(d) ? t('dashboard.smart_passed') : (finiteText(d.smart.health, '') || t('dashboard.smart_warning'))
 }
 function formatDiskSize(d) {
-  if (d?.size) return d.size
+  const labeled = finiteText(d?.size, '')
+  if (labeled) return labeled
   const gb = Number(d?.size_gb)
   if (!Number.isFinite(gb) || gb <= 0) return ''
   return gb >= 1024 ? `${(gb / 1024).toFixed(gb >= 10240 ? 0 : 1)} TB` : `${Math.round(gb)} GB`
@@ -757,23 +787,23 @@ const smartSummary = computed(() => t('dashboard.smart_summary', {
   total: smartDisks.value.length,
 }))
 const cpuStack = computed(() => [
-  { label: 'user', value: cpu.value.user || 0, color: 'var(--accent)' },
-  { label: 'sys', value: cpu.value.sys || 0, color: 'var(--warn)' },
-  { label: 'idle', value: cpu.value.idle || 0, color: 'var(--bar-track)' },
+  { label: 'user', value: finiteN(cpu.value.user, 0), color: 'var(--accent)' },
+  { label: 'sys', value: finiteN(cpu.value.sys, 0), color: 'var(--warn)' },
+  { label: 'idle', value: finiteN(cpu.value.idle, 0), color: 'var(--bar-track)' },
 ])
-const memTotal = computed(() => mem.value.total_gb ?? sys.value.mem_total_gb ?? host.value?.mem_total_gb ?? '—')
+const memTotal = computed(() => finiteN(mem.value.total_gb ?? sys.value.mem_total_gb ?? host.value?.mem_total_gb))
 // pressure-based (macOS); NOT PhysMem cache-inflated used%
 const memUsedPct = computed(() => {
-  if (mem.value.pressure_used_pct != null) return mem.value.pressure_used_pct
-  if (mem.value.used_pct != null) return mem.value.used_pct
-  if (sys.value.mem_free_pct != null) return 100 - sys.value.mem_free_pct
-  return 0
+  const raw = mem.value.pressure_used_pct ?? mem.value.used_pct
+    ?? (sys.value.mem_free_pct != null ? 100 - sys.value.mem_free_pct : 0)
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : 0
 })
 const memFreePct = computed(() =>
-  mem.value.pressure_free_pct ?? mem.value.free_pct ?? sys.value.mem_free_pct ?? '—'
+  finiteN(mem.value.pressure_free_pct ?? mem.value.free_pct ?? sys.value.mem_free_pct)
 )
 const memAvailGb = computed(() =>
-  mem.value.available_gb ?? mem.value.free_gb ?? '—'
+  finiteN(mem.value.available_gb ?? mem.value.free_gb)
 )
 // Looser thresholds: pressure 12% is fine; red only when truly tight
 const memBadge = computed(() => {
@@ -790,18 +820,18 @@ const memBarClass = computed(() => {
 })
 
 const diskArray = computed(() => storage.value?.array || {})
-const diskUsed = computed(() => diskArray.value.used_gb ?? sensors.value?.disk?.root_used_gb ?? sys.value.disk_used_gb ?? '—')
-const diskTotal = computed(() => diskArray.value.total_gb ?? sensors.value?.disk?.root_total_gb ?? sys.value.disk_total_gb ?? '—')
-const diskFree = computed(() => diskArray.value.free_gb ?? sensors.value?.disk?.root_free_gb ?? sys.value.disk_free_gb ?? '—')
+const diskUsed = computed(() => finiteN(diskArray.value.used_gb, null) ?? finiteN(sensors.value?.disk?.root_used_gb, null) ?? finiteN(sys.value.disk_used_gb))
+const diskTotal = computed(() => finiteN(diskArray.value.total_gb, null) ?? finiteN(sensors.value?.disk?.root_total_gb, null) ?? finiteN(sys.value.disk_total_gb))
+const diskFree = computed(() => finiteN(diskArray.value.free_gb, null) ?? finiteN(sensors.value?.disk?.root_free_gb, null) ?? finiteN(sys.value.disk_free_gb))
 const diskPct = computed(() => {
   const total = Number(diskTotal.value)
   const used = Number(diskUsed.value)
   if (Number.isFinite(total) && total > 0 && Number.isFinite(used)) return Math.round(used / total * 100)
-  return sensors.value?.disk?.root_pct ?? sys.value.disk_pct ?? 0
+  return finiteN(sensors.value?.disk?.root_pct ?? sys.value.disk_pct, 0)
 })
 
 const uptimeText = computed(() =>
-  sensors.value?.uptime?.uptime_text || sys.value.uptime || '—'
+  finiteText(sensors.value?.uptime?.uptime_text, '') || finiteText(sys.value.uptime)
 )
 
 const upsPolicyPhase = computed(() => ups.value?.shutdown_state?.phase || 'idle')
@@ -841,7 +871,7 @@ const ollamaChipVisible = computed(() => {
 })
 const ollamaResidentName = computed(() => {
   const first = (ollama.value?.resident || [])[0]
-  return first?.name || ''
+  return finiteText(first?.name, '')
 })
 const ollamaChipClass = computed(() => {
   if (!ollama.value) return ''
@@ -855,21 +885,23 @@ const ollamaChipLabel = computed(() => {
   return t('dashboard.ollama_down')
 })
 const ollamaApiHost = computed(() => {
-  const raw = ollama.value?.url || 'http://127.0.0.1:11434'
+  const raw = finiteText(ollama.value?.url, '') || 'http://127.0.0.1:11434'
   try {
     return new URL(raw).host
   } catch {
     return '127.0.0.1:11434'
   }
 })
-const ollamaApiTitle = computed(() => ollamaTooltip.value || 'http://127.0.0.1:11434')
+const ollamaApiTitle = computed(() => finiteText(ollamaTooltip.value, '') || 'http://127.0.0.1:11434')
 const ollamaTooltip = computed(() => {
   const o = ollama.value
   if (!o) return ''
   const lines = [t('dashboard.ollama_title')]
-  if (o.url) lines.push(o.url)
-  if (o.version) lines.push(`v${o.version}`)
-  if (ollamaResidentName.value) lines.push(t('dashboard.ollama_resident', { name: ollamaResidentName.value }))
+  const url = finiteText(o.url, '')
+  if (url) lines.push(url)
+  const ver = finiteText(o.version, '')
+  if (ver) lines.push(`v${ver}`)
+  if (ollamaResidentName.value) lines.push(t('dashboard.ollama_resident', { name: finiteText(ollamaResidentName.value) }))
   else if (o.reachable) lines.push(t('dashboard.ollama_none_resident'))
   else lines.push(t('dashboard.ollama_down'))
   return lines.join('\n')
@@ -878,14 +910,14 @@ const ollamaTooltip = computed(() => {
 const upsTooltip = computed(() => {
   const u = ups.value
   if (!u?.present) return ''
-  const lines = [`${t('dashboard.ups_title')} · ${u.name || '—'}`]
+  const lines = [`${t('dashboard.ups_title')} · ${finiteText(u.name)}`]
   lines.push(
     (u.on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac'))
     + (u.charging ? ` · ${t('dashboard.ups_charging')}` : ''),
   )
-  if (u.battery_percent != null) lines.push(`${t('dashboard.ups_battery')} ${u.battery_percent}%`)
-  if (u.time_remaining_min != null) lines.push(t('dashboard.ups_remaining', { m: u.time_remaining_min }))
-  lines.push(t('dashboard.ups_threshold', { pct: u.settings?.low_battery_pct ?? 20 }))
+  if (finiteN(u.battery_percent, null) != null) lines.push(`${t('dashboard.ups_battery')} ${withUnit(u.battery_percent, '%')}`)
+  if (finiteN(u.time_remaining_min, null) != null) lines.push(t('dashboard.ups_remaining', { m: finiteN(u.time_remaining_min) }))
+  lines.push(t('dashboard.ups_threshold', { pct: finiteN(u.settings?.low_battery_pct, 20) }))
   const policy = upsPolicyPhase.value === 'engaged'
     ? t('dashboard.ups_policy_engaged')
     : upsPolicyPhase.value === 'restoring'
@@ -895,12 +927,17 @@ const upsTooltip = computed(() => {
   return lines.join('\n')
 })
 
-const healthOk = computed(() => health.value?.healthy !== false && !(health.value?.summary?.error > 0))
+const healthOk = computed(() => {
+  // Missing health is unknown, not OK: a failed or still-pending probe used
+  // to paint the host-strip pill green.
+  if (!health.value) return false
+  return health.value.healthy !== false && !(health.value.summary?.error > 0)
+})
 const healthSummary = computed(() => {
   if (!health.value) return '…'
   if (health.value.healthy) return '✅ ' + t('common.healthy')
-  const e = health.value.summary?.error || 0
-  const w = health.value.summary?.warn || 0
+  const e = finiteN(health.value.summary?.error, 0)
+  const w = finiteN(health.value.summary?.warn, 0)
   return e ? `❌ ${e}` : `⚠️ ${w}`
 })
 const failedChecks = computed(() => (health.value?.checks || []).filter(c => !c.ok))
@@ -935,10 +972,18 @@ function bmLed(b) {
 }
 function bmLabel(b) {
   const h = bmHealth(b)
-  if (h === 'ok') return b.ms != null ? b.ms + ' ms' : t('dashboard.bm_up')
+  if (h === 'ok') {
+    const ms = Number(b.ms)
+    return Number.isFinite(ms) ? ms + ' ms' : t('dashboard.bm_up')
+  }
   if (h === 'stopped') return t('dashboard.bm_stopped')
   return t('dashboard.bm_down')
 }
+
+// Shared x-axis for the three resource charts. Index-based x used to
+// squeeze omitted rollup windows together so a 30d hole looked like a
+// 90s gap; LineChart plots these as (t - tMin) / (tMax - tMin).
+const metricTimes = computed(() => (metrics.value || []).map(p => p.t ?? null))
 
 // The `*_max` peak series only exist on aggregated points (5m/1h tiers and
 // decimated raw): averaging a whole window would hide short spikes, so the
@@ -1005,7 +1050,11 @@ function setMetricRange(r) {
   metricRange.value = r
   try { localStorage.setItem(METRIC_RANGE_KEY, r) } catch {}
   metricsSwitching.value = true
-  loadMetrics().finally(() => { metricsSwitching.value = false })
+  loadMetrics().finally(() => {
+    // loadMetrics() bumps metricsGeneration, so a generation match would
+    // leave the range chips stuck on "Loading" after an overlapping poll.
+    if (dashAlive) metricsSwitching.value = false
+  })
 }
 
 // "History accumulating" hint: the rollup tiers only contain data from the
@@ -1027,9 +1076,12 @@ const historyHint = computed(() => {
 })
 async function loadPower() {
   try {
-    powerData.value = await getPower()
+    const next = await getPower()
+    if (!dashAlive) return
+    powerData.value = next
     powerLoaded.value = true
   } catch {
+    if (!dashAlive) return
     // Do NOT clear powerData. ss.running is derived from it, so on failure the
     // old value is a better answer than {} -- with {} the pill rendered "Screen
     // Sharing off" and offered an Enable button whatever the real state was, so a
@@ -1046,45 +1098,55 @@ async function doPower(action) {
   pwrBusy.value = true
   try {
     const r = await powerAction(action, true)
-    toast(r.ok ? `✅ ${r.message}` : `❌ ${r.message}`)
+    if (!dashAlive) return
+    toast(r.ok ? `✅ ${finiteText(r.message)}` : `❌ ${finiteText(r.message)}`)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!dashAlive) return
+    toast('❌ ' + finiteText(e.message))
   }
-  pwrBusy.value = false
+  if (dashAlive) pwrBusy.value = false
 }
 async function enableSS() {
+  if (!confirm(t('power.confirm_enable_ss'))) return
   ssBusy.value = true
   try {
     const r = await setSystemSharing('screen_sharing', true)
-    toast(r.ok ? `✅ ${r.message}` : `⚠️ ${r.message}`)
+    if (!dashAlive) return
+    toast(r.ok ? `✅ ${finiteText(r.message)}` : `⚠️ ${finiteText(r.message)}`)
     await loadPower()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!dashAlive) return
+    toast('❌ ' + finiteText(e.message))
   }
-  ssBusy.value = false
+  if (dashAlive) ssBusy.value = false
 }
 async function disableSS() {
   if (!confirm(t('power.confirm_disable_ss'))) return
   ssBusy.value = true
   try {
     const r = await setSystemSharing('screen_sharing', false)
-    toast(r.ok ? `✅ ${r.message}` : `⚠️ ${r.message}`)
+    if (!dashAlive) return
+    toast(r.ok ? `✅ ${finiteText(r.message)}` : `⚠️ ${finiteText(r.message)}`)
     await loadPower()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!dashAlive) return
+    toast('❌ ' + finiteText(e.message))
   }
-  ssBusy.value = false
+  if (dashAlive) ssBusy.value = false
 }
 async function copyVnc() {
   const text = ss.value?.vnc_url
   if (!text) return
   // The write was never awaited, so a rejected copy still toasted success and
   // the URL the user needed was neither on the clipboard nor on screen.
-  toast(await copyToClipboard(text) ? '✅ ' + t('power.copied') : '❌ ' + text)
+  const ok = await copyToClipboard(text)
+  if (!dashAlive) return
+  toast(ok ? '✅ ' + t('power.copied') : '❌ ' + text)
 }
 async function copyOllamaApi() {
   const text = ollama.value?.url || 'http://127.0.0.1:11434'
   const ok = await copyToClipboard(text)
+  if (!dashAlive) return
   toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 function barClass(pct) {
@@ -1093,16 +1155,18 @@ function barClass(pct) {
   return ''
 }
 function shortMount(v) {
-  if (v.mount === '/') return t('dashboard.mount_system')
-  if (v.mount === '/System/Volumes/Data') return 'Data'
-  if (v.mount.startsWith('/Volumes/')) return v.mount.slice(9)
+  const mount = finiteText(v.mount, '')
+  if (mount === '/') return t('dashboard.mount_system')
+  if (mount === '/System/Volumes/Data') return 'Data'
+  if (mount.startsWith('/Volumes/')) return mount.slice(9)
   if (v.kind === 'orbstack') return t('dashboard.mount_orbstack')
-  return v.mount
+  return mount || '—'
 }
 function shortImage(img) {
-  if (!img) return ''
-  const s = String(img).split('/').pop()
-  return s.length > 36 ? s.slice(0, 34) + '…' : s
+  const s = String(finiteText(img, ''))
+  if (!s) return ''
+  const leaf = s.split('/').pop()
+  return leaf.length > 36 ? leaf.slice(0, 34) + '…' : leaf
 }
 function led(state) {
   if (state === 'ok') return 'on'
@@ -1111,11 +1175,13 @@ function led(state) {
   return 'err'
 }
 function fmt(ts) {
-  return ts ? new Date(ts * 1000).toLocaleString() : ''
+  return fmtTs(ts, '')
 }
 function fmtN(v) {
-  if (v == null || Number.isNaN(v)) return '—'
-  return typeof v === 'number' ? (Math.abs(v) >= 10 ? Math.round(v * 10) / 10 : Number(v.toFixed(2))) : v
+  if (v == null || v === '') return '—'
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n)) return '—'
+  return Math.abs(n) >= 10 ? Math.round(n * 10) / 10 : Number(n.toFixed(2))
 }
 function cpuNum(s) {
   if (!s) return null
@@ -1123,38 +1189,71 @@ function cpuNum(s) {
   return Number.isFinite(n) ? n : null
 }
 function formatBps(bps) {
-  if (bps == null) return '—'
-  if (bps < 1024) return `${bps} B/s`
-  if (bps < 1024 ** 2) return `${(bps / 1024).toFixed(1)} KB/s`
-  if (bps < 1024 ** 3) return `${(bps / 1024 ** 2).toFixed(1)} MB/s`
-  return `${(bps / 1024 ** 3).toFixed(2)} GB/s`
+  const n = Number(bps)
+  if (!Number.isFinite(n) || n < 0) return '—'
+  if (n < 1024) return `${n} B/s`
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB/s`
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB/s`
+  return `${(n / 1024 ** 3).toFixed(2)} GB/s`
 }
 
 // Both return `false` on failure so the 12s tick below can report it to
 // lib/poll.js, whose backoff then slows a dead server's polling down.
+let dashAlive = false
+let heavyGeneration = 0
+let sensorsGeneration = 0
 async function refresh() {
   try {
-    status.value = await getStatus()
+    const next = await getStatus()
+    if (!dashAlive) return
+    status.value = next
     loadError.value = ''
   } catch (e) {
-    loadError.value = e.message || String(e)
+    if (!dashAlive) return false
+    loadError.value = finiteText(e.message || String(e), '')
     return false
   }
 }
 async function loadSensors(force = false, { light = false } = {}) {
+  const generation = ++sensorsGeneration
   try {
     // Prefer cache; force only on manual refresh.  The 20s tick uses
     // light=true so a sitting dashboard does not spawn ``top``.
-    sensors.value = await getSensors(force, { light })
-    loadError.value = ''
+    const next = await getSensors(force, { light })
+    if (!dashAlive || generation !== sensorsGeneration) return
+    if (light && sensors.value) {
+      // Light payloads send empty top_processes / network. Replacing the
+      // whole ref made the Top CPU table flip to "Loading" and RX/TX to
+      // "—" until the 90s heavy tick. Keep the last full extras.
+      const prev = sensors.value
+      const net = next.network && Object.keys(next.network).length ? next.network : prev.network
+      sensors.value = {
+        ...prev,
+        ...next,
+        top_processes: (next.top_processes && next.top_processes.length)
+          ? next.top_processes
+          : prev.top_processes,
+        network: net,
+        memory: { ...(prev.memory || {}), ...(next.memory || {}) },
+      }
+    } else {
+      sensors.value = next
+    }
+    // Do not clear a banner another loader raised: a sensors tick used to
+    // hide a failed host/status read and then Attention said "all healthy".
   } catch (e) {
-    loadError.value = e.message || String(e)
+    if (!dashAlive || generation !== sensorsGeneration) return false
+    loadError.value = finiteText(e.message || String(e), '')
     return false
   }
 }
+let metricsGeneration = 0
 async function loadMetrics() {
+  const generation = ++metricsGeneration
+  const wanted = metricRange.value
   try {
-    const m = await getMetricsRange(metricRange.value)
+    const m = await getMetricsRange(wanted)
+    if (generation !== metricsGeneration || !dashAlive) return
     metrics.value = m.points || []
     metricsMeta.value = m.since != null && m.until != null
       ? { since: m.since, until: m.until }
@@ -1167,6 +1266,8 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   // host read is the canonical liveness probe — it already drives the failure
   // banner — so it alone reports the tick failed and lets the 90s heavy poll
   // back off through lib/poll.js while the server is unreachable.
+  const generation = ++heavyGeneration
+  const stillHere = () => dashAlive && generation === heavyGeneration
   let hostOk = true
   // Same contract as the skeleton (`!host && !sensors`): a 90s poll must
   // not disable Refresh or look like a first-paint reload.
@@ -1175,30 +1276,33 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   // measured 1.1–3.4s and, when awaited next to docker stats, the cheap
   // list call queued behind it and put the 3s wait back on first paint.
   void getContainers(withDockerStats).then(c => {
+    if (!stillHere()) return
     containers.value = c.containers || []
     if (c.stats && Object.keys(c.stats).length) {
       cstats.value = c.stats
       cstatsAt.value = Date.now()
     }
   }).catch(() => {})
-  void getHealthChecks().then(h => { health.value = h }).catch(() => {})
+  void getHealthChecks().then(h => { if (stillHere()) health.value = h }).catch(() => {})
   void loadSensors(forceSensors)
-  void getBookmarks().then(b => { bookmarks.value = b.bookmarks || [] }).catch(() => {})
+  void getBookmarks().then(b => { if (stillHere()) bookmarks.value = b.bookmarks || [] }).catch(() => {})
   await Promise.all([
     loadMetrics(),
-    getStorage(true).then(s => { storage.value = s }).catch(() => {}),
+    getStorage(true).then(s => { if (stillHere()) storage.value = s }).catch(() => {}),
     // host drives the skeleton gate, so its failure has to be visible rather
     // than leaving the page on placeholders.
-    getHost().then(h => { host.value = h }).catch(e => {
-      loadError.value = e.message || String(e)
+    getHost().then(h => { if (stillHere()) host.value = h }).catch(e => {
+      if (!stillHere()) return
+      loadError.value = finiteText(e.message || String(e), '')
       hostOk = false
     }),
-    getAlerts(12).then(a => { alerts.value = a.alerts || [] }).catch(() => {}),
-    getListeningPorts(40).then(p => { ports.value = p.ports || [] }).catch(() => {}),
-    getUps().then(u => { ups.value = u }).catch(() => {}),
-    getOllamaStatus().then(o => { ollama.value = o }).catch(() => {}),
+    getAlerts(12).then(a => { if (stillHere()) alerts.value = a.alerts || [] }).catch(() => { if (stillHere() && !alerts.value) alerts.value = [] }),
+    getListeningPorts(40).then(p => { if (stillHere()) ports.value = p.ports || [] }).catch(() => { if (stillHere() && !ports.value) ports.value = [] }),
+    getUps().then(u => { if (stillHere()) ups.value = u }).catch(() => {}),
+    getOllamaStatus().then(o => { if (stillHere()) ollama.value = o }).catch(() => {}),
     loadPower(),
   ])
+  if (!stillHere()) return
   loading.value = false
   if (!hostOk) return false
 }
@@ -1213,19 +1317,22 @@ async function refreshAll() {
 // fetch: heavy loaders 401 for members and would re-raise the banner forever.
 function retryLoad() {
   if (isMemberView.value) return refresh()
-  return refreshHeavy(true)
+  return refreshAll()
 }
 async function act(svc, action) {
   if (busy.value) return
+  if (action === 'restart' && !confirm(t('services.confirm_restart', { name: finiteText(svc.name) }))) return
   busy.value = true
   try {
     const r = await doAction(svc.id, action)
-    toast(r.ok ? `✅ ${svc.name}` : `❌ ${(r.message || '').slice(0, 80)}`)
+    if (!dashAlive) return
+    toast(r.ok ? `✅ ${finiteText(svc.name)}` : `❌ ${finiteText(r.message, '').slice(0, 80)}`)
     if (r.ok) scheduleActionRefresh()
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (!dashAlive) return
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    busy.value = false
+    if (dashAlive) busy.value = false
   }
 }
 
@@ -1238,45 +1345,70 @@ function stopDashTimers() {
   heavyTimer = null
 }
 
+async function tickMemberLight() {
+  const ok = await refresh()
+  if (!dashAlive) return ok
+  clock.value = Date.now()
+  return ok
+}
+
+async function tickAdminLight() {
+  const results = await Promise.all([
+    refresh(),
+    loadSensors(false, { light: !highMode.value }),
+  ])
+  if (!dashAlive) return
+  clock.value = Date.now()
+  if (results.includes(false)) return false
+}
+
 function startDashTimers() {
+  if (!dashAlive) return
   stopDashTimers()
   const lightMs = highMode.value ? 12000 : 20000
   if (isMemberView.value) {
-    timer = startVisibleInterval(async () => {
-      const ok = await refresh()
-      clock.value = Date.now()
-      return ok
-    }, lightMs)
+    timer = startVisibleInterval(tickMemberLight, lightMs)
     return
   }
   // Low: light sensors, no docker stats on the 90s tick.
   // High: full sensors every 12s and docker stats every 60s.
-  timer = startVisibleInterval(async () => {
-    const results = await Promise.all([
-      refresh(),
-      loadSensors(false, { light: !highMode.value }),
-    ])
-    clock.value = Date.now()
-    if (results.includes(false)) return false
-  }, lightMs)
+  timer = startVisibleInterval(tickAdminLight, lightMs)
   heavyTimer = startVisibleInterval(
     () => refreshHeavy(false, highMode.value),
     highMode.value ? 60000 : 90000,
   )
 }
 
+function onPtrRefresh() {
+  if (isMemberView.value) void refresh()
+  else void refreshAll()
+}
+
 onMounted(() => {
+  dashAlive = true
+  window.addEventListener('ptr-refresh', onPtrRefresh)
   void (async () => {
     await refresh()
+    if (!dashAlive) return
     if (!isMemberView.value) {
       // Low: names/state only. High: docker stats fill CPU/MEM.
       void refreshHeavy(false, highMode.value)
     }
+    if (!dashAlive) return
     startDashTimers()
   })()
 })
-watch(highMode, () => startDashTimers())
+watch(highMode, (_mode, _prev, onCleanup) => {
+  if (!dashAlive) return
+  startDashTimers()
+  onCleanup(stopDashTimers)
+})
 onUnmounted(() => {
+  dashAlive = false
+  heavyGeneration += 1
+  metricsGeneration += 1
+  sensorsGeneration += 1
+  window.removeEventListener('ptr-refresh', onPtrRefresh)
   stopDashTimers()
   if (actionRefreshTimer) clearTimeout(actionRefreshTimer)
   actionRefreshTimer = null

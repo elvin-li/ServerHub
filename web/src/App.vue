@@ -43,15 +43,15 @@
         </button>
         <div class="top-status-m" v-if="counts">
           <span class="pill" :class="engineClass">{{ engineUp ? t('common.on') : t('common.off') }}</span>
-          <span class="pill down" v-if="counts.down"><b>{{ counts.down }}</b></span>
-          <span class="pill warn" v-if="counts.warn"><b>{{ counts.warn }}</b></span>
+          <span class="pill down" v-if="finiteN(counts.down, 0)"><b>{{ finiteN(counts.down) }}</b></span>
+          <span class="pill warn" v-if="finiteN(counts.warn, 0)"><b>{{ finiteN(counts.warn) }}</b></span>
         </div>
         <nav
           id="app-nav"
           ref="navPanel"
           class="top-nav"
           :class="{ open: menuOpen }"
-          aria-label="Main navigation"
+          :aria-label="t('common.main_nav')"
           :inert="navInert"
           :aria-hidden="navInert"
         >
@@ -70,7 +70,7 @@
             <label class="nav-tool">
               <span class="nav-tool-label">{{ t('appearance.language') }}</span>
               <select :value="locale" @change="onLocale($event)" :title="t('appearance.language')">
-                <option v-for="l in locales" :key="l.id" :value="l.id">{{ l.native }}</option>
+                <option v-for="l in locales" :key="l.id" :value="l.id">{{ finiteText(l.native) }}</option>
               </select>
             </label>
             <label class="nav-tool">
@@ -84,16 +84,21 @@
         </nav>
         <div class="top-status" v-if="counts">
           <span class="pill" :class="engineClass">{{ t('top.orbstack') }} {{ engineUp ? t('common.on') : t('common.off') }}</span>
-          <span class="pill ok"><b>{{ counts.ok }}</b></span>
-          <span class="pill warn" v-if="counts.warn"><b>{{ counts.warn }}</b></span>
-          <span class="pill" v-if="counts.stopped" style="opacity:.75"><b>{{ counts.stopped }}</b></span>
-          <span class="pill down" v-if="counts.down"><b>{{ counts.down }}</b></span>
-          <span class="pill" v-if="status?.system">{{ status.system.load1 ?? '' }}</span>
-          <router-link v-if="counts.down || counts.warn" class="pill down" to="/services">!</router-link>
+          <span class="pill ok"><b>{{ finiteN(counts.ok) }}</b></span>
+          <span class="pill warn" v-if="finiteN(counts.warn, 0)"><b>{{ finiteN(counts.warn) }}</b></span>
+          <span class="pill" v-if="finiteN(counts.stopped, 0)" style="opacity:.75"><b>{{ finiteN(counts.stopped) }}</b></span>
+          <span class="pill down" v-if="finiteN(counts.down, 0)"><b>{{ finiteN(counts.down) }}</b></span>
+          <span class="pill" v-if="status?.system">{{ fmtLoad(status.system.load1) }}</span>
+          <router-link v-if="counts.down || counts.warn" class="pill down" to="/services" :aria-label="t('common.issues')">!</router-link>
+          <router-link
+            v-if="authState.canManage && status?.panel_update?.update_available"
+            class="pill warn"
+            to="/tools?tab=updates"
+          >{{ t('dashboard.open_updates') }}</router-link>
         </div>
       </div>
       <!-- Secondary nav: related pages merged under one top tab -->
-      <div class="subchrome" v-if="activeChildren.length" role="navigation" aria-label="Section navigation">
+      <div class="subchrome" v-if="activeChildren.length" role="navigation" :aria-label="t('common.section_nav')">
         <div class="subchrome-inner">
           <router-link
             v-for="c in activeChildren"
@@ -119,12 +124,14 @@
         </transition>
       </router-view>
     </main>
+    <!-- Always-on live region, text gated with v-if: interpolating {{ toast }}
+         when the timer clears it to '' announced a blank update. -->
     <div
       class="toast"
       :class="{ show: !!toast }"
       :role="toastIsError ? 'alert' : 'status'"
       :aria-live="toastIsError ? 'assertive' : 'polite'"
-    >{{ toast }}</div>
+    ><span v-if="toast">{{ finiteText(toast) }}</span></div>
     <!-- Pull-to-refresh indicator (mobile) -->
     <div class="ptr-indicator" :class="{ visible: ptrVisible, refreshing: ptrRefreshing }"></div>
     <!-- Back to top (mobile) -->
@@ -161,8 +168,8 @@
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
           >
-            <span>{{ item.type === 'ai' ? t('assistant.ask_cmd', { q: item.query }) : (item.title || t(item.labelKey)) }}</span>
-            <kbd>{{ item.type === 'ai' ? t('assistant.short') : item.to }}</kbd>
+            <span>{{ item.type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(item.query) }) : (finiteText(item.title, '') || t(item.labelKey)) }}</span>
+            <kbd>{{ item.type === 'ai' ? t('assistant.short') : finiteText(item.to) }}</kbd>
           </li>
           <li v-if="!cmdFlat.length" class="cmd-empty">{{ t('common.cmd_empty') }}</li>
         </ul>
@@ -190,7 +197,7 @@ import {
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot, Camera,
   Settings, ScrollText, ShieldCheck, CircleUser, Sparkles, BookOpen,
 } from '@lucide/vue'
-import { authState } from './lib/authState'
+import { authState, clearAuthState } from './lib/authState'
 import { startVisibleInterval } from './lib/poll'
 import { clearAdminPassword } from './lib/adminPassword'
 import { APP_ERROR_EVENT } from './lib/appError'
@@ -202,6 +209,7 @@ import { ASSISTANT_EVENT, matchCatalog } from './lib/assistant'
 import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
+import { finiteN, finiteText } from './lib/finite'
 
 const route = useRoute()
 const router = useRouter()
@@ -225,6 +233,10 @@ function closeMenu() {
   menuOpen.value = false
 }
 
+function fmtLoad(v) {
+  return finiteN(v, '')
+}
+
 function syncNarrow() {
   isNarrow.value = Boolean(narrowMq?.matches)
 }
@@ -246,9 +258,22 @@ const assistAction = ref('')
 const assistCatalog = ref([])
 const canAssist = computed(() => authState.canManage)
 let toastTimer = null
+let ptrTimer = null
 let poll = null
 let ptrStartY = 0
 let ptrActive = false
+let loadGeneration = 0
+
+function stillOnShell(generation) {
+  return generation === loadGeneration
+}
+
+function invalidateShellLoads() {
+  loadGeneration += 1
+  ptrRefreshing.value = false
+  ptrVisible.value = false
+  clearTimeout(ptrTimer)
+}
 
 function showToast(msg) {
   toast.value = msg
@@ -399,7 +424,9 @@ function isChildActive(c) {
 
 async function onLocale(ev) {
   const id = ev.target.value
+  const generation = loadGeneration
   if (await setLocale(id)) {
+    if (!stillOnShell(generation)) return
     putSettings({ ui: { locale: id } }).catch(() => {})
   }
 }
@@ -411,9 +438,15 @@ function onTheme(ev) {
 }
 
 async function logout() {
+  stopPoll()
+  invalidateShellLoads()
+  const generation = loadGeneration
   try { await logoutAuth() } catch {}
+  // Session loss or a later sign-in bumps generation; do not wipe that session.
+  if (!stillOnShell(generation)) return
   // A cached macOS administrator password belongs to the signed-in session.
   clearAdminPassword()
+  clearAuthState()
   status.value = null
   router.replace('/login')
 }
@@ -423,6 +456,8 @@ async function logout() {
 // user signs back in, silently swallowing every later session expiry.
 function onAuthLost() {
   if (route.meta.authPage) return
+  invalidateShellLoads()
+  clearAuthState()
   status.value = null
   stopPoll()
   showToast(t('err.session_expired'))
@@ -443,7 +478,12 @@ async function refresh() {
   // `false` opts the sidebar poll into lib/poll.js's failure backoff: with the
   // panel down, the badge refresh slows from every 15s toward 90s instead of
   // hammering a host that is not answering.
-  try { status.value = await getStatus() } catch { return false }
+  const generation = loadGeneration
+  try {
+    const next = await getStatus()
+    if (!stillOnShell(generation)) return
+    status.value = next
+  } catch { return false }
 }
 
 function probePhotoHub() {
@@ -454,9 +494,13 @@ function probePhotoHub() {
     photoHubOk.value = false
     return
   }
+  const generation = loadGeneration
   getPhotosHubStatus()
-    .then((j) => { photoHubOk.value = Boolean(j?.photoshub_ok) })
-    .catch(() => { photoHubOk.value = false })
+    .then((j) => {
+      if (!stillOnShell(generation)) return
+      photoHubOk.value = Boolean(j?.photoshub_ok)
+    })
+    .catch(() => { /* keep last answer: a 502 is not "not installed" */ })
 }
 
 // The sidebar poll is torn down on session loss and restarted once the user is
@@ -498,6 +542,7 @@ watch(
   () => route.meta.authPage === true,
   (onAuthPage) => {
     if (onAuthPage) {
+      invalidateShellLoads()
       stopPoll()
     } else {
       refresh()
@@ -521,8 +566,8 @@ onMounted(() => {
     probePhotoHub()
     startPoll()
   }
-  window.addEventListener('online', () => { offline.value = false })
-  window.addEventListener('offline', () => { offline.value = true })
+  window.addEventListener('online', onOnline)
+  window.addEventListener('offline', onOffline)
   // Pull-to-refresh (mobile only)
   if ('ontouchstart' in window) {
     document.addEventListener('touchstart', ptrTouchStart, { passive: true })
@@ -532,7 +577,7 @@ onMounted(() => {
   // Back-to-top visibility
   window.addEventListener('scroll', onScroll, { passive: true })
   // SW update notification
-  window.addEventListener('sw-update-ready', () => { swUpdate.value = true })
+  window.addEventListener('sw-update-ready', onSwUpdateReady)
   // Cmd+K command palette
   window.addEventListener('keydown', onCmdKey)
   // Session died server-side: redirect instead of leaving pages frozen on stale
@@ -544,8 +589,10 @@ onMounted(() => {
   loadAssistCatalog()
 })
 onUnmounted(() => {
+  invalidateShellLoads()
   stopPoll()
   clearTimeout(toastTimer)
+  clearTimeout(ptrTimer)
   if (narrowMq) {
     narrowMq.removeEventListener('change', syncNarrow)
     narrowMq = null
@@ -553,6 +600,9 @@ onUnmounted(() => {
   document.removeEventListener('touchstart', ptrTouchStart)
   document.removeEventListener('touchmove', ptrTouchMove)
   document.removeEventListener('touchend', ptrTouchEnd)
+  window.removeEventListener('online', onOnline)
+  window.removeEventListener('offline', onOffline)
+  window.removeEventListener('sw-update-ready', onSwUpdateReady)
   window.removeEventListener('scroll', onScroll)
   window.removeEventListener('keydown', onCmdKey)
   window.removeEventListener(AUTH_LOST_EVENT, onAuthLost)
@@ -560,6 +610,15 @@ onUnmounted(() => {
   window.removeEventListener(ASSISTANT_EVENT, onAssistEvent)
 })
 
+function onOnline() {
+  offline.value = false
+}
+function onOffline() {
+  offline.value = true
+}
+function onSwUpdateReady() {
+  swUpdate.value = true
+}
 function onScroll() {
   showTop.value = window.scrollY > 400
 }
@@ -596,11 +655,15 @@ async function ptrTouchEnd() {
   if (!ptrActive) return
   ptrActive = false
   if (ptrVisible.value && !ptrRefreshing.value) {
+    const generation = loadGeneration
     ptrRefreshing.value = true
     await refresh()
+    if (!stillOnShell(generation)) return
     // Dispatch custom event so page-level polls can also refresh
     window.dispatchEvent(new CustomEvent('ptr-refresh'))
-    setTimeout(() => {
+    clearTimeout(ptrTimer)
+    ptrTimer = setTimeout(() => {
+      if (!stillOnShell(generation)) return
       ptrRefreshing.value = false
       ptrVisible.value = false
     }, 600)
@@ -628,7 +691,13 @@ function onCmdKey(e) {
     cmdOpen.value = !cmdOpen.value
     cmdQuery.value = ''
     cmdIdx.value = 0
-    if (cmdOpen.value) nextTick(() => cmdInput.value?.focus())
+    if (cmdOpen.value) {
+      const generation = loadGeneration
+      nextTick(() => {
+        if (!stillOnShell(generation) || !cmdOpen.value) return
+        cmdInput.value?.focus()
+      })
+    }
   }
 }
 const cmdResults = computed(() => {
@@ -668,9 +737,16 @@ function loadAssistCatalog() {
     assistCatalog.value = []
     return
   }
+  const generation = loadGeneration
   getAssistantCatalog(locale.value)
-    .then((body) => { assistCatalog.value = body.panels || [] })
-    .catch(() => { assistCatalog.value = [] })
+    .then((body) => {
+      if (!stillOnShell(generation) || !authState.canManage) return
+      assistCatalog.value = body.panels || []
+    })
+    .catch(() => {
+      if (!stillOnShell(generation)) return
+      assistCatalog.value = []
+    })
 }
 function onAssistGo(path) {
   if (path) router.push(path)

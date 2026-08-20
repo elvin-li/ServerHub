@@ -52,10 +52,14 @@ import time
 from contextlib import contextmanager
 
 from hub.paths import DATA_DIR
+from hub.secure_io import replace_bytes
+from hub.util import read_text_capped
 
 log = logging.getLogger("serverhub.ups_policy")
 
 STATE_FILE = DATA_DIR / "ups-policy-state.json"
+#: Leftover multi-MB state used to OOM GET /api/ups.
+_STATE_CAP = 256 * 1024
 _LOCK_PATH = STATE_FILE.with_name(STATE_FILE.name + ".lock")
 
 PHASE_IDLE = "idle"
@@ -89,7 +93,7 @@ def _file_lock():
     would *both* engage and *both* spawn a stop sequence.  The decision has to
     be atomic across processes, not just across threads.  Same shape as
     ``twofa_svc._file_lock``: a separate ``.lock`` file, because the state
-    itself is swapped in by ``os.replace`` and a lock on the old inode would
+    itself is swapped in by ``replace_bytes`` and a lock on the old inode would
     silently stop excluding anybody.  Re-entrant per thread so the sweep can
     hold it across ``_engage``/``_mutate`` without a second flock.
     """
@@ -125,21 +129,46 @@ def _ups_status() -> dict:
     return ups_svc.ups_status()
 
 
+def _as_text(value) -> str:
+    """Exception/subprocess text that cannot RecursionError leftover ``str(e)``."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     """(rc, stdout, stderr); must report, never raise (worker-thread caller)."""
-    import subprocess
+    from hub.util import run_capped
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        return 124, "", f"timeout after {timeout}s"
+        rc, text = run_capped(argv, timeout=timeout, cap=4000)
+        return rc, text, ""
     except Exception as e:  # noqa: BLE001 — a policy step must record, not raise
-        return -1, "", str(e)
+        return -1, "", _as_text(e)
 
 
 def _engine_up() -> bool:
     from hub.docker_cli import engine_up
     return engine_up()
+
+
+def _now() -> int:
+    """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd UPS restore."""
+    try:
+        return int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _list_stacks() -> list[dict]:
@@ -148,12 +177,72 @@ def _list_stacks() -> list[dict]:
     return containers_svc.list_stacks()
 
 
+def _jsonable(value, depth: int = 0):
+    """Drop leftovers so Starlette's allow_nan=False encoder cannot 500.
+
+    A leftover ``engaged_at: 1e400`` in the state file used to 500 GET /api/ups.
+    ``json.dumps`` without ``allow_nan=False`` used to rewrite Infinity back
+    onto disk from ``_save_state``.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[k] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/ups.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _as_text(value)
+    except Exception:
+        return None
+
+
 def _service_states() -> dict[str, str]:
     """service id -> state ("ok"/"warn"/"down"/...), from the shared status."""
     from hub.status import full_status
     out: dict[str, str] = {}
-    for g in full_status(force=False).get("groups") or []:
-        for s in g.get("services") or []:
+    try:
+        groups = full_status(force=False).get("groups") or []
+    except Exception:
+        groups = []
+    if not isinstance(groups, list):
+        groups = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        services = g.get("services") or []
+        if not isinstance(services, list):
+            continue
+        for s in services:
+            if not isinstance(s, dict) or s.get("id") is None:
+                continue
             out[str(s.get("id"))] = str(s.get("state") or "unknown")
     return out
 
@@ -180,7 +269,7 @@ def _spawn(target) -> bool:
     # Persist which process owns the worker so a sibling sharing data/ sees it
     # and holds off.  Cleared in finally; a crash leaves it for _worker_busy's
     # liveness probe to reap.
-    _mutate(lambda s: s.update(worker_owner={"pid": os.getpid(), "ts": int(time.time())}))
+    _mutate(lambda s: s.update(worker_owner={"pid": os.getpid(), "ts": _now()}))
 
     def run():
         try:
@@ -204,13 +293,14 @@ def _spawn(target) -> bool:
 # ── persisted state ───────────────────────────────────────────────────────────
 
 def _load_state() -> dict:
-    if STATE_FILE.exists():
-        try:
-            data = json.loads(STATE_FILE.read_text())
-            if isinstance(data, dict):
-                return data
-        except (OSError, ValueError):
-            pass
+    try:
+        if not STATE_FILE.exists():
+            return {}
+        data = json.loads(read_text_capped(STATE_FILE, _STATE_CAP))
+        if isinstance(data, dict):
+            return data
+    except (OSError, ValueError, TypeError, RecursionError):
+        pass
     return {}
 
 
@@ -218,17 +308,17 @@ def _save_state(st: dict) -> None:
     """Atomic publish, same tmp+replace shape as alerts._save_state: a crash
     mid-write must never leave a truncated file that reads as "idle" while
     stacks are actually stopped."""
-    STATE_FILE.parent.mkdir(exist_ok=True)
-    payload = json.dumps(st, ensure_ascii=False, indent=2)
-    tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(payload)
-        os.replace(tmp, STATE_FILE)
-    except OSError:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        STATE_FILE.parent.mkdir(exist_ok=True)
+        payload = json.dumps(
+            _jsonable(st), ensure_ascii=False, indent=2, allow_nan=False, default=str,
+        )
+        # O_EXCL|O_NOFOLLOW tmp: write_text followed a planted `{name}.{pid}.tmp`
+        # symlink and then os.replace'd that link onto the live state file.
+        replace_bytes(STATE_FILE, payload.encode("utf-8"))
+    except (OSError, ValueError, TypeError, OverflowError, UnicodeError, RecursionError):
+        # RecursionError: leftover nested UPS state after _jsonable is not ValueError.
+        pass
 
 
 def _mutate(fn) -> dict:
@@ -243,13 +333,23 @@ def _mutate(fn) -> dict:
 def public_state() -> dict:
     """What the UI renders: current phase plus the last completed cycle."""
     st = _load_state()
-    return {
-        "phase": st.get("phase") or PHASE_IDLE,
+    phase = st.get("phase")
+    if not isinstance(phase, str) or not phase:
+        phase = PHASE_IDLE
+    steps = st.get("steps")
+    if not isinstance(steps, list):
+        steps = []
+    reason = st.get("reason")
+    if not isinstance(reason, str):
+        reason = ""
+    last = st.get("last")
+    return _jsonable({
+        "phase": phase,
         "engaged_at": st.get("engaged_at"),
-        "reason": st.get("reason") or "",
-        "steps": st.get("steps") or [],
-        "last": st.get("last"),
-    }
+        "reason": reason,
+        "steps": [s for s in steps if isinstance(s, dict)],
+        "last": last if isinstance(last, dict) else None,
+    })
 
 
 # ── policy / plan ─────────────────────────────────────────────────────────────
@@ -275,12 +375,18 @@ def _condition(status: dict, policy: dict) -> tuple[bool, str]:
     checks: list[tuple[bool, str]] = []
     if pct_floor is not None:
         pct = status.get("battery_percent")
-        hit = pct is not None and float(pct) <= float(pct_floor)
-        checks.append((hit, f"battery {pct}% ≤ {int(pct_floor)}%" if hit else ""))
+        try:
+            hit = pct is not None and float(pct) <= float(pct_floor)
+        except (TypeError, ValueError, OverflowError):
+            hit = False
+        checks.append((hit, f"battery {pct}% ≤ {pct_floor}%" if hit else ""))
     if min_floor is not None:
         remain = status.get("time_remaining_min")
-        hit = remain is not None and float(remain) <= float(min_floor)
-        checks.append((hit, f"≈{remain} min left ≤ {int(min_floor)} min" if hit else ""))
+        try:
+            hit = remain is not None and float(remain) <= float(min_floor)
+        except (TypeError, ValueError, OverflowError):
+            hit = False
+        checks.append((hit, f"≈{remain} min left ≤ {min_floor} min" if hit else ""))
     if not checks:
         # Enabled but no condition configured: never fires.  The settings API
         # refuses to save this shape, but a hand-edited services.yaml can
@@ -307,6 +413,7 @@ def build_plan(policy: dict | None = None) -> list[dict]:
         stacks = _list_stacks()
     except Exception:
         stacks = []
+    stacks = [s for s in stacks if isinstance(s, dict)]
     by_id = {str(s.get("id")): s for s in stacks}
     wanted = policy.get("stacks")
     if isinstance(wanted, list):
@@ -329,7 +436,8 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     # Separate namespace: steps are addressed by (kind, id), so a service id
     # that happens to match a stack id is a different step, not a duplicate.
     seen_svc: set[str] = set()
-    script_ids = [str(x) for x in (policy.get("stop_scripts") or [])]
+    raw_scripts = policy.get("stop_scripts")
+    script_ids = [str(x) for x in (raw_scripts if isinstance(raw_scripts, list) else [])]
     script_ids = [sid for sid in script_ids if not (sid in seen_svc or seen_svc.add(sid))]
     if script_ids:
         try:
@@ -362,9 +470,13 @@ def _catalog() -> dict:
         stacks = _list_stacks()
     except Exception:
         stacks = []
+    stacks = [s for s in stacks if isinstance(s, dict)]
     from hub.config import cfg
     scripts = []
-    for s in cfg().get("scripts") or []:
+    raw_scripts = cfg().get("scripts")
+    if not isinstance(raw_scripts, list):
+        raw_scripts = []
+    for s in raw_scripts:
         if isinstance(s, dict) and s.get("id"):
             scripts.append({
                 "id": str(s["id"]),
@@ -396,7 +508,7 @@ def drill() -> dict:
     except Exception:
         status = {"present": False}
     would, reason = (_condition(status, policy) if status.get("present") else (False, ""))
-    return {
+    return _jsonable({
         "enabled": bool(policy.get("enabled")),
         "would_trigger_now": bool(policy.get("enabled")) and would,
         "reason": reason,
@@ -408,7 +520,7 @@ def drill() -> dict:
         "catalog": _catalog(),
         "settings": policy,
         "state": public_state(),
-    }
+    })
 
 
 # ── sweep (called from hub.alerts.check_once) ────────────────────────────────
@@ -476,7 +588,11 @@ def _worker_busy(st: dict) -> bool:
         return False
     # A claim older than a day is treated as stale even if the pid now happens
     # to be alive (pid reuse across a reboot), so it can never wedge forever.
-    if int(time.time()) - int(owner.get("ts") or 0) > 86400:
+    try:
+        claimed = int(owner.get("ts") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if _now() - claimed > 86400:
         return False
     try:
         os.kill(owner["pid"], 0)
@@ -533,7 +649,7 @@ def _engage(now: int, reason: str, policy: dict) -> dict:
 
 def _step_ref(st: dict, kind: str, sid: str) -> dict | None:
     for step in st.get("steps") or []:
-        if step.get("kind") == kind and step.get("id") == sid:
+        if isinstance(step, dict) and step.get("kind") == kind and step.get("id") == sid:
             return step
     return None
 
@@ -559,7 +675,7 @@ def _run_stop_sequence() -> None:
     from hub.paths import DOCKER
 
     st = _load_state()
-    steps = list(st.get("steps") or [])
+    steps = [s for s in (st.get("steps") or []) if isinstance(s, dict)]
     stack_steps = [s for s in steps if s.get("kind") == "stack"]
     engine = _engine_up() if any(s.get("running") for s in stack_steps) else True
 
@@ -602,7 +718,7 @@ def _run_stop_sequence() -> None:
             try:
                 rc, out, err = _svc_action(sid, "stop")
             except Exception as e:  # unknown target etc. — record, keep going
-                rc, out, err = -1, "", str(e)
+                rc, out, err = -1, "", _as_text(e)
             detail = "" if rc == 0 else (err or out or f"exit {rc}").strip()[:200]
             _record_step(kind, sid, done=True, stop_ok=rc == 0, detail=detail)
         try:
@@ -629,8 +745,8 @@ def _run_restore_sequence() -> None:
     from hub.status import invalidate_status
 
     st = _load_state()
-    steps = list(st.get("steps") or [])
-    now = int(time.time())
+    steps = [s for s in (st.get("steps") or []) if isinstance(s, dict)]
+    now = _now()
     failures: list[str] = []
     started: list[str] = []
 
@@ -652,7 +768,7 @@ def _run_restore_sequence() -> None:
             try:
                 rc, out, err = _svc_action(sid, "start")
             except Exception as e:
-                rc, out, err = -1, "", str(e)
+                rc, out, err = -1, "", _as_text(e)
         detail = "" if rc == 0 else (err or out or f"exit {rc}").strip()[:200]
         _record_step(kind, sid, start_ok=rc == 0, start_detail=detail)
         (started if rc == 0 else failures).append(sid)

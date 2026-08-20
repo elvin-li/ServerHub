@@ -61,6 +61,10 @@ export function startVisibleInterval(fn, ms) {
     const gen = generation
     const loop = () => {
       id = setTimeout(async () => {
+        // stop() may run after this timer has already fired and been queued.
+        // clearTimeout cannot cancel that callback; skip fn() so a disposed
+        // poller does not hit the host one extra time.
+        if (gen !== generation) return
         await tick()
         if (gen !== generation) return // stopped while this tick was in flight
         loop()

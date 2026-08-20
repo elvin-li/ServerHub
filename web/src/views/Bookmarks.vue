@@ -8,10 +8,10 @@
       <button class="primary" @click="refresh(true)" :disabled="loading">{{ t('bookmarks.force') }}</button>
       <span class="meta" v-if="data">
         {{ t('bookmarks.summary', {
-          up: data.up,
-          stopped: data.stopped ?? 0,
-          down: data.down,
-          at: data.checked_at || '—',
+          up: finiteN(data.up),
+          stopped: finiteN(data.stopped, 0),
+          down: finiteN(data.down),
+          at: finiteText(data.checked_at),
         }) }}
       </span>
     </div>
@@ -19,29 +19,29 @@
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="8" />
     <!-- Empty state: the grid is a bare v-for, so with no bookmarks the page
          showed only the static hint below and read as broken rather than empty. -->
-    <div v-else-if="!(data?.bookmarks || []).length" class="placeholder">{{ t('common.none') }}</div>
+    <div v-else-if="!loadError && !(data?.bookmarks || []).length" class="placeholder">{{ t('common.none') }}</div>
     <div v-else class="bm-page-grid">
       <a
-        v-for="b in data?.bookmarks || []"
-        :key="b.url"
+        v-for="(b, i) in data?.bookmarks || []"
+        :key="b.id || b.url || i"
         class="bm-page-card"
         :class="cardClass(b)"
-        :href="b.url"
+        :href="finiteText(b.url, '')"
         target="_blank"
         rel="noopener"
       >
         <div class="row">
           <span class="led" :class="ledClass(b)"></span>
-          <span class="bm-title">{{ b.name }}</span>
+          <span class="bm-title">{{ finiteText(b.name) }}</span>
           <span class="badge" :class="badgeClass(b)">
             {{ badgeText(b) }}
           </span>
         </div>
-        <div class="bm-url mono">{{ b.url }}</div>
+        <div class="bm-url mono">{{ finiteText(b.url) }}</div>
         <div class="bm-foot">
-          <span v-if="b.ms != null">{{ b.ms }} ms</span>
+          <span v-if="finiteMs(b.ms) != null">{{ finiteMs(b.ms) }} ms</span>
           <span v-if="b.backend" class="backend">{{ backendHint(b) }}</span>
-          <span v-if="b.error" class="err">{{ b.error }}</span>
+          <span v-if="finiteText(b.error, '')" class="err">{{ finiteText(b.error) }}</span>
         </div>
       </a>
     </div>
@@ -50,9 +50,10 @@
 </template>
 
 <script setup>
-import { inject, onMounted, ref } from 'vue'
+import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { getBookmarks } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -64,6 +65,8 @@ const loading = ref(false)
 // empty grid is the normal state for a second or more on first paint.
 const loaded = ref(false)
 const loadError = ref('')
+let pageAlive = true
+let loadGeneration = 0
 
 function healthOf(b) {
   if (b?.health) return b.health
@@ -89,34 +92,52 @@ function badgeClass(b) {
 }
 function badgeText(b) {
   const h = healthOf(b)
-  if (h === 'ok') return b.status || t('dashboard.bm_up')
+  if (h === 'ok') return finiteText(b.status, '') || t('dashboard.bm_up')
   if (h === 'stopped') return t('dashboard.bm_stopped')
   return t('dashboard.bm_down')
 }
 function backendHint(b) {
   const bk = b.backend
   if (!bk) return ''
-  const name = bk.name || bk.id || ''
-  const st = bk.status || bk.state || ''
-  return `${bk.kind || 'svc'}: ${name}${st ? ' · ' + st : ''}`
+  const name = finiteText(bk.name, '') || finiteText(bk.id, '')
+  const st = finiteText(bk.status, '') || finiteText(bk.state, '')
+  return `${finiteText(bk.kind, '') || 'svc'}: ${name}${st ? ' · ' + st : ''}`
+}
+function finiteMs(ms) {
+  const n = Number(ms)
+  return Number.isFinite(n) && n >= 0 ? n : null
 }
 
 async function refresh(force = false) {
+  const generation = ++loadGeneration
   loading.value = true
   try {
     // Shared client, not a raw fetch: it checks r.ok, so an expired session
     // fires AUTH_LOST_EVENT instead of writing the 401 body into `data`.
-    data.value = await getBookmarks(force)
+    const next = await getBookmarks(force)
+    if (generation !== loadGeneration || !pageAlive) return
+    data.value = next
     loadError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    toast('❌ ' + finiteText(e.message))
+  } finally {
+    if (generation === loadGeneration && pageAlive) {
+      loading.value = false
+      loaded.value = true
+    }
   }
-  loading.value = false
-  loaded.value = true
 }
 
-onMounted(() => refresh(false))
+onMounted(() => {
+  pageAlive = true
+  void refresh(false)
+})
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+})
 </script>
 
 <style scoped>

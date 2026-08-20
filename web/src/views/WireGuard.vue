@@ -2,7 +2,7 @@
   <div>
     <div class="page-title">
       <h1>{{ t('pages.wireguard') }}</h1>
-      <span class="meta">{{ t('pages.wireguard_meta') }} · {{ data?.ts || '…' }}</span>
+      <span class="meta">{{ t('pages.wireguard_meta') }} · {{ finiteText(data?.ts, '…') }}</span>
     </div>
 
     <!-- Running status card -->
@@ -10,23 +10,23 @@
       <span class="wg-status-led"></span>
       <span class="wg-status-text">{{ data.running ? t('wg.tunnel_running') : t('wg.tunnel_stopped') }}</span>
       <span v-if="data.running" class="wg-status-meta">
-        {{ data.interface }} · {{ t('wg.listen_port') }} {{ data.listen_port }}
+        {{ finiteText(data.interface) }} · {{ t('wg.listen_port') }} {{ finiteN(data.listen_port) }}
         <template v-if="data.wstunnel?.running || data.wstunnel?.enabled">
-          · {{ t('wg.wstunnel_short') }} {{ data.wstunnel.port || data.wstunnel.listen }}
+          · {{ t('wg.wstunnel_short') }} {{ finiteText(data.wstunnel.port, '') || finiteText(data.wstunnel.listen) }}
         </template>
-        · {{ data.active_count }}/{{ data.peer_count }} {{ t('wg.peers_online') }}
+        · {{ finiteN(data.active_count) }}/{{ finiteN(data.peer_count) }} {{ t('wg.peers_online') }}
       </span>
     </div>
 
     <div class="toolbar">
       <button
-        v-if="!data?.running"
+        v-if="data && !data.running"
         class="primary wg-start"
         @click="control('up')"
         :disabled="busy"
       >&#9654; {{ t('wg.start') }}</button>
       <button
-        v-else
+        v-else-if="data?.running"
         class="danger wg-stop"
         @click="control('down')"
         :disabled="busy"
@@ -40,8 +40,10 @@
       <button class="primary subtle" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
     </div>
 
+    <LoadFailure v-if="loadError && !data" :detail="loadError" :retry="load" :busy="loading" />
+    <SkeletonLoader v-else-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="52" />
     <!-- Not installed: nothing else on this page can work, so say only that. -->
-    <div v-if="data && !data.installed" class="tile" style="border-left:3px solid var(--down)">
+    <div v-else-if="data && !data.installed" class="tile" style="border-left:3px solid var(--down)">
       <h3>{{ t('wg.not_installed_title') }}</h3>
       <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
         {{ t('wg.not_installed_hint') }}
@@ -49,7 +51,7 @@
       <pre class="mono" style="margin-top:8px;font-size:11px">brew install wireguard-tools wireguard-go</pre>
     </div>
 
-    <template v-else>
+    <template v-else-if="data">
       <!-- Readiness: a running tunnel that carries no traffic is the normal
            failure on macOS, so blocking gaps are stated before the status tiles. -->
       <div
@@ -69,10 +71,10 @@
               <td>
                 <strong>{{ checkLabel(c.id) }}</strong>
                 <div class="show-m sub">{{ checkFix(c.id) }}</div>
-                <div v-if="c.detail" class="show-m sub mono">{{ c.detail }}</div>
+                <div v-if="finiteText(c.detail, '')" class="show-m sub mono">{{ finiteText(c.detail) }}</div>
               </td>
               <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
-              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
+              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ finiteText(c.detail) }}</td>
               <td style="text-align:right">
                 <button
                   v-if="c.id === 'forwarding'"
@@ -124,10 +126,10 @@
               <td>
                 <strong>{{ checkLabel(c.id) }}</strong>
                 <div class="show-m sub">{{ checkFix(c.id) }}</div>
-                <div v-if="c.detail" class="show-m sub mono">{{ c.detail }}</div>
+                <div v-if="finiteText(c.detail, '')" class="show-m sub mono">{{ finiteText(c.detail) }}</div>
               </td>
               <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
-              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ c.detail }}</td>
+              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ finiteText(c.detail) }}</td>
               <td style="text-align:right">
                 <button
                   v-if="c.id === 'boot'"
@@ -171,40 +173,40 @@
       >
         <h3>{{ t('wg.foreign_peers_title') }}</h3>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
-          {{ t('wg.foreign_peers_hint', { n: readiness.peer_origin.foreign, total: readiness.peer_origin.total }) }}
+          {{ t('wg.foreign_peers_hint', { n: finiteN(readiness.peer_origin.foreign), total: finiteN(readiness.peer_origin.total) }) }}
         </p>
       </div>
 
       <div class="dash-grid" style="margin-bottom:12px" v-if="data">
         <div class="tile span-3">
           <h3>{{ t('wg.listen_port') }}</h3>
-          <div class="v">{{ data.listen_port || '—' }}</div>
-          <div class="sub">{{ data.interface }}</div>
+          <div class="v">{{ finiteN(data.listen_port) }}</div>
+          <div class="sub">{{ finiteText(data.interface) }}</div>
         </div>
         <div class="tile span-3">
           <h3>{{ t('wg.subnet') }}</h3>
-          <div class="v" style="font-size:15px">{{ data.address || data.subnet }}</div>
-          <div class="sub">MTU {{ data.mtu }}</div>
+          <div class="v" style="font-size:15px">{{ finiteText(data.address, '') || finiteText(data.subnet) }}</div>
+          <div class="sub">MTU {{ finiteN(data.mtu) }}</div>
         </div>
         <div class="tile span-3">
           <h3>{{ t('wg.active_peers') }}</h3>
-          <div class="v">{{ data.active_count }}/{{ data.peer_count }}</div>
-          <div class="sub" v-if="data.stale_count">{{ t('wg.stale', { n: data.stale_count }) }}</div>
+          <div class="v">{{ finiteN(data.active_count) }}/{{ finiteN(data.peer_count) }}</div>
+          <div class="sub" v-if="data.stale_count">{{ t('wg.stale', { n: finiteN(data.stale_count, 0) }) }}</div>
         </div>
         <div class="tile span-3">
           <h3>{{ t('wg.keepalive_missing') }}</h3>
           <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn)' : 'var(--ok)' }">
-            {{ data.keepalive_missing }}
+            {{ finiteN(data.keepalive_missing) }}
           </div>
         </div>
       </div>
 
       <div class="tile" style="margin-bottom:12px" v-if="data">
         <h3>{{ t('wg.server_key') }}</h3>
-        <div class="mono" style="font-size:11px;word-break:break-all">{{ data.public_key || '—' }}</div>
+        <div class="mono" style="font-size:11px;word-break:break-all">{{ finiteText(data.public_key) }}</div>
         <div class="sub" style="margin-top:6px">
           {{ t('wg.endpoint') }}:
-          <code>{{ data.endpoint || t('wg.endpoint_unset') }}</code>
+          <code>{{ finiteText(data.endpoint, '') || t('wg.endpoint_unset') }}</code>
           <button class="tiny" style="margin-left:8px" @click="settingsOpen = true">{{ t('common.edit') }}</button>
         </div>
       </div>
@@ -228,21 +230,21 @@
           {{ t('wg.wstunnel_hint') }}
         </p>
         <div style="font-size:12px;line-height:1.6">
-          <div>{{ t('wg.wstunnel_listen') }} <code>{{ data.wstunnel.listen || '—' }}</code></div>
-          <div>{{ t('wg.wstunnel_public') }} <code>{{ data.wstunnel.public || '—' }}</code></div>
-          <div>{{ t('wg.wstunnel_restrict') }} <code>{{ data.wstunnel.restrict_to || '—' }}</code></div>
+          <div>{{ t('wg.wstunnel_listen') }} <code>{{ finiteText(data.wstunnel.listen) }}</code></div>
+          <div>{{ t('wg.wstunnel_public') }} <code>{{ finiteText(data.wstunnel.public) }}</code></div>
+          <div>{{ t('wg.wstunnel_restrict') }} <code>{{ finiteText(data.wstunnel.restrict_to) }}</code></div>
           <div
             v-if="!data.wstunnel.aligned && data.wstunnel.desired_restrict_to"
             class="sub"
           >
             {{ t('wg.wstunnel_desired') }}
-            <code>{{ data.wstunnel.desired_listen }} → {{ data.wstunnel.desired_restrict_to }}</code>
+            <code>{{ finiteText(data.wstunnel.desired_listen) }} → {{ finiteText(data.wstunnel.desired_restrict_to) }}</code>
           </div>
           <div
             v-if="data.wstunnel.client_command"
             class="mono"
             style="margin:8px 0 0;font-size:11px;word-break:break-all"
-          >{{ data.wstunnel.client_command }}</div>
+          >{{ finiteText(data.wstunnel.client_command) }}</div>
         </div>
         <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
           <button
@@ -272,7 +274,7 @@
       </div>
 
       <!-- Peers -->
-      <h2 class="section-title">{{ t('wg.peers') }} ({{ data?.peer_count || 0 }})</h2>
+      <h2 class="section-title">{{ t('wg.peers') }} ({{ finiteN(data?.peer_count, 0) }})</h2>
       <div class="table-wrap">
         <table class="dense fit-m">
           <thead>
@@ -291,24 +293,24 @@
             <tr v-for="p in data?.peers || []" :key="p.pubkey">
               <td><span class="led" :class="p.active ? 'on' : (p.stale ? 'warn' : 'off')"></span></td>
               <td>
-                <strong>{{ p.name || t('wg.unnamed') }}</strong>
+                <strong>{{ finiteText(p.name, '') || t('wg.unnamed') }}</strong>
                 <span v-if="p.psk" class="badge ok" style="margin-left:4px">PSK</span>
                 <span v-if="!p.reissuable" class="badge" style="margin-left:4px" :title="t('wg.no_stored_key')">
                   {{ t('wg.key_not_stored') }}
                 </span>
-                <div class="mono" style="font-size:9px;color:var(--sub)" :title="p.pubkey">
-                  {{ p.pubkey.slice(0, 16) }}…
+                <div class="mono" style="font-size:9px;color:var(--sub)" :title="finiteText(p.pubkey)">
+                  {{ finiteText(p.pubkey, '').slice(0, 16) }}{{ finiteText(p.pubkey, '') ? '…' : '' }}
                 </div>
-                <div v-if="p.endpoint" class="show-m sub mono">{{ p.endpoint }}</div>
-                <div class="show-m sub mono">↑{{ p.tx_human }} ↓{{ p.rx_human }}</div>
+                <div v-if="p.endpoint" class="show-m sub mono">{{ finiteText(p.endpoint) }}</div>
+                <div class="show-m sub mono">↑{{ finiteText(p.tx_human) }} ↓{{ finiteText(p.rx_human) }}</div>
                 <div class="show-m sub">
                   <span v-if="p.active">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
                   <span v-else-if="p.stale">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
                   <span v-else-if="p.last_handshake">{{ relativeAge(p.handshake_age) }}</span>
                 </div>
               </td>
-              <td class="mono">{{ p.allowed_ips }}</td>
-              <td class="mono col-hide-m" style="font-size:10px">{{ p.endpoint || '—' }}</td>
+              <td class="mono">{{ finiteText(p.allowed_ips) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.endpoint) }}</td>
               <td class="col-hide-m" style="font-size:11px">
                 <span v-if="p.active" class="badge ok">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
                 <span v-else-if="p.stale" class="badge warn">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
@@ -317,10 +319,10 @@
               </td>
               <td class="col-hide-m">
                 <span class="badge" :class="p.keepalive && p.keepalive !== 'off' && p.keepalive !== '0' ? 'ok' : 'warn'">
-                  {{ p.keepalive || 'off' }}
+                  {{ finiteText(p.keepalive, 'off') }}
                 </span>
               </td>
-              <td class="mono col-hide-m" style="font-size:10px">↑{{ p.tx_human }} ↓{{ p.rx_human }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">↑{{ finiteText(p.tx_human) }} ↓{{ finiteText(p.rx_human) }}</td>
               <td class="actions">
                 <button class="tiny primary" @click="showPeer(p)" :disabled="busy || !p.reissuable">
                   {{ t('wg.config') }}
@@ -418,15 +420,15 @@
       </div>
 
       <div v-if="pingResult" class="tile" style="margin-top:12px">
-        <h3>{{ t('wg.ping_result', { ok: pingResult.reachable, total: pingResult.total }) }}</h3>
+        <h3>{{ t('wg.ping_result', { ok: finiteN(pingResult.reachable), total: finiteN(pingResult.total) }) }}</h3>
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
             <tr v-for="r in pingResult.results" :key="r.pubkey">
               <td style="width:28px"><span class="led" :class="r.reachable ? 'on' : 'err'"></span></td>
-              <td>{{ r.name || t('wg.unnamed') }}</td>
-              <td class="mono">{{ r.ip }}</td>
-              <td class="mono">{{ r.latency_ms != null ? r.latency_ms + ' ms' : '—' }}</td>
+              <td>{{ finiteText(r.name, '') || t('wg.unnamed') }}</td>
+              <td class="mono">{{ finiteText(r.ip) }}</td>
+              <td class="mono">{{ withUnit(r.latency_ms, ' ms') }}</td>
             </tr>
           </tbody>
         </table>
@@ -435,9 +437,9 @@
     </template>
 
     <!-- Peer config dialog: formats + QR -->
-    <div v-if="peerDialog" class="modal-bg" @click.self="peerDialog = null">
-      <div class="modal" role="dialog" aria-labelledby="wg-peer-title" ref="peerPanel" tabindex="-1">
-        <h3 id="wg-peer-title">{{ t('wg.config_for', { name: peerDialog.name }) }}</h3>
+    <div v-if="peerDialog" class="modal-bg" @click.self="peerDialog = null" role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wg-peer-title" ref="peerPanel" tabindex="-1">
+        <h3 id="wg-peer-title">{{ t('wg.config_for', { name: finiteText(peerDialog.name) }) }}</h3>
         <div class="tabs" style="margin:8px 0">
           <button
             v-for="f in formats"
@@ -453,7 +455,7 @@
         <p v-else-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn);line-height:1.5;margin:0 0 8px">
           {{ t('wg.endpoint_missing_warn') }}
         </p>
-        <pre class="mono" style="max-height:180px;overflow:auto;font-size:11px">{{ peerContent }}</pre>
+        <pre class="mono" style="max-height:180px;overflow:auto;font-size:11px">{{ finiteText(peerContent) }}</pre>
         <!-- The QR must never be the thing that gets clipped: give it its own
              bounded, centred box with a white quiet zone so a phone camera can
              actually resolve it against a dark theme. -->
@@ -463,20 +465,20 @@
         </p>
         <div class="modal-actions">
           <button @click="copyPeer">{{ t('common.copy') }}</button>
-          <a class="btn" :href="downloadUrl" :download="peerFilename">{{ t('common.download') }}</a>
+          <a class="btn" :href="finiteText(downloadUrl, '')" :download="finiteText(peerFilename, '')">{{ t('common.download') }}</a>
           <button class="primary" @click="peerDialog = null">{{ t('common.close') }}</button>
         </div>
       </div>
     </div>
 
     <!-- Raw server config -->
-    <div v-if="confDialog" class="modal-bg" @click.self="confDialog = null">
-      <div class="modal" role="dialog" aria-labelledby="wg-conf-title" ref="confPanel" tabindex="-1">
+    <div v-if="confDialog" class="modal-bg" @click.self="confDialog = null" role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wg-conf-title" ref="confPanel" tabindex="-1">
         <h3 id="wg-conf-title">{{ t('wg.view_conf') }}</h3>
         <p style="font-size:11px;color:var(--sub);margin:4px 0 8px">
           {{ confDialog.redacted ? t('wg.conf_redacted') : t('wg.conf_revealed') }}
         </p>
-        <pre class="mono" style="max-height:340px;overflow:auto;font-size:11px">{{ confDialog.conf }}</pre>
+        <pre class="mono" style="max-height:340px;overflow:auto;font-size:11px">{{ finiteText(confDialog.conf) }}</pre>
         <div class="modal-actions">
           <button v-if="confDialog.redacted" class="danger" @click="openConf(true)">{{ t('wg.reveal_key') }}</button>
           <button class="primary" @click="confDialog = null">{{ t('common.close') }}</button>
@@ -485,8 +487,8 @@
     </div>
 
     <!-- Settings -->
-    <div v-if="settingsOpen" class="modal-bg" @click.self="settingsOpen = false">
-      <div class="modal" role="dialog" aria-labelledby="wg-settings-title" ref="settingsPanel" tabindex="-1">
+    <div v-if="settingsOpen" class="modal-bg" @click.self="settingsOpen = false" role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wg-settings-title" ref="settingsPanel" tabindex="-1">
         <h3 id="wg-settings-title">{{ t('wg.settings') }}</h3>
         <!-- The fields below fall back to literal defaults, so saving without a
              successful read would overwrite the live port/MTU. Say so and offer
@@ -498,7 +500,7 @@
           style="margin-bottom:10px;border-left:3px solid var(--down)"
         >
           <div>{{ t('wg.settings_load_failed') }}</div>
-          <div v-if="settingsError" class="sub mono" style="margin-top:4px">{{ settingsError }}</div>
+          <div v-if="settingsError" class="sub mono" style="margin-top:4px">{{ finiteText(settingsError) }}</div>
           <button class="tiny" style="margin-top:6px" :disabled="busy" @click="loadSettings">
             {{ t('common.retry') }}
           </button>
@@ -527,7 +529,7 @@
           </label>
           <label>
             {{ t('wg.wan_interface') }}
-            <input v-model="cfgForm.wan_interface" type="text" :placeholder="readiness?.wan_interface || 'en0'" />
+            <input v-model="cfgForm.wan_interface" type="text" :placeholder="finiteText(readiness?.wan_interface, '') || 'en0'" />
           </label>
         </div>
         <div class="form-row">
@@ -587,7 +589,10 @@ import {
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
+import { finiteN, finiteText, withUnit } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
+import LoadFailure from '../components/LoadFailure.vue'
+import SkeletonLoader from '../components/SkeletonLoader.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -596,6 +601,8 @@ const data = ref(null)
 const readiness = ref(null)
 const nextIp = ref('')
 const loading = ref(false)
+const loaded = ref(false)
+const loadError = ref('')
 const busy = ref(false)
 const pingResult = ref(null)
 
@@ -672,9 +679,9 @@ const FORMAT_LABELS = {
   wst: 'wg.fmt_wst',
 }
 
-const checkLabel = (id) => (CHECK_LABELS[id] ? t(CHECK_LABELS[id]) : id)
+const checkLabel = (id) => (CHECK_LABELS[id] ? t(CHECK_LABELS[id]) : finiteText(id))
 const checkFix = (id) => (CHECK_FIXES[id] ? t(CHECK_FIXES[id]) : '')
-const formatLabel = (fmt) => (FORMAT_LABELS[fmt] ? t(FORMAT_LABELS[fmt]) : fmt)
+const formatLabel = (fmt) => (FORMAT_LABELS[fmt] ? t(FORMAT_LABELS[fmt]) : finiteText(fmt))
 
 const form = ref({ name: '', ip: '', mode: 'split', psk: false, keep_key: true })
 const batch = ref({ count: 3, prefix: 'peer' })
@@ -706,16 +713,17 @@ const warningChecks = computed(
   ),
 )
 const downloadUrl = computed(
-  () => (peerDialog.value ? wireguardPeerDownloadUrl(peerDialog.value.pubkey, peerFormat.value) : '#'),
+  () => (peerDialog.value ? wireguardPeerDownloadUrl(finiteText(peerDialog.value.pubkey, ''), peerFormat.value) : '#'),
 )
 const peerFilename = computed(() => {
-  const safe = String(peerDialog.value?.name || 'peer').replace(/[^A-Za-z0-9_-]/g, '-')
+  const safe = finiteText(peerDialog.value?.name, 'peer').replace(/[^A-Za-z0-9_-]/g, '-')
   const ext = { wg: '.conf', clash: '-clash.yaml', clashfull: '-clash-full.yaml', sr: '-shadowrocket.txt', wst: '-wstunnel.conf' }
-  return safe + (ext[peerFormat.value] || '.conf')
+  return finiteText(safe, 'peer') + (ext[peerFormat.value] || '.conf')
 })
 
 function relativeAge(seconds) {
-  const s = Number(seconds || 0)
+  const s = Number(seconds)
+  if (!Number.isFinite(s) || s < 0) return '—'
   if (s < 60) return t('wg.age_seconds', { n: s })
   if (s < 3600) return t('wg.age_minutes', { n: Math.floor(s / 60) })
   if (s < 86400) return t('wg.age_hours', { n: Math.floor(s / 3600) })
@@ -767,6 +775,7 @@ async function load() {
     if (generation !== loadGeneration) return
     data.value = status
     readiness.value = ready
+    loadError.value = ''
     if (status.installed) {
       // Clear it on failure rather than leaving a stale suggestion: the address
       // field uses this as its placeholder, and an IP that was free minutes ago
@@ -777,34 +786,49 @@ async function load() {
     }
   } catch (e) {
     if (generation !== loadGeneration) return
-    toast('❌ ' + e.message)
+    loadError.value = e.message || String(e)
+    toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     // A superseded request (generation moved on) stays neutral: the newer
     // request will report its own outcome.
     return false
   } finally {
-    if (generation === loadGeneration) loading.value = false
+    if (generation === loadGeneration) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 
 async function withBusy(fn, okKey) {
   if (busy.value) return null
+  const generation = loadGeneration
   busy.value = true
   try {
     const result = await fn()
+    if (generation !== loadGeneration || !pageAlive) return null
     if (okKey) toast('✅ ' + t(okKey))
     await load()
     return result
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return null
+    toast('❌ ' + finiteText(e.message))
     return null
   } finally {
-    busy.value = false
+    // load() bumps loadGeneration, so a generation match would leave every
+    // successful action stuck in the busy state.
+    if (pageAlive) busy.value = false
   }
 }
 
 const sync = () => withBusy(syncWireguard, 'wg.synced')
-const ping = () => withBusy(async () => { pingResult.value = await pingWireguardPeers() })
+const ping = () => withBusy(async () => {
+  const generation = loadGeneration
+  const result = await pingWireguardPeers()
+  if (generation !== loadGeneration || !pageAlive) return result
+  pingResult.value = result
+  return result
+})
 
 function control(action) {
   const key = { up: 'wg.confirm_up', down: 'wg.confirm_down', restart: 'wg.confirm_restart' }[action]
@@ -812,17 +836,32 @@ function control(action) {
   return withBusy(() => controlWireguardInterface(action), 'wg.interface_done')
 }
 
-const fixForwarding = () => withBusy(() => setWireguardForwarding(true), 'wg.forwarding_enabled')
-const fixNat = () => withBusy(() => remediateWireguard('nat', true), 'wg.nat_installed')
+const fixForwarding = () => {
+  if (!confirm(t('wg.confirm_forwarding'))) return
+  return withBusy(() => setWireguardForwarding(true), 'wg.forwarding_enabled')
+}
+const fixNat = () => {
+  if (!confirm(t('wg.confirm_nat'))) return
+  return withBusy(() => remediateWireguard('nat', true), 'wg.nat_installed')
+}
 // Boot persistence. The service and the endpoint for this both existed; nothing on
 // the page called them, so an operator whose LaunchDaemon was missing (or was some
 // other build's) had no way to install the one the panel manages.
-const fixDaemon = () => withBusy(() => remediateWireguard('daemon', true), 'wg.boot_installed')
-const fixWstunnel = () => withBusy(() => remediateWireguard('wstunnel', true), 'wg.wstunnel_applied')
-const stabilizeWstunnel = () => withBusy(
-  () => remediateWireguard('wstunnel_stabilize', true),
-  'wg.wstunnel_stabilized',
-)
+const fixDaemon = () => {
+  if (!confirm(t('wg.confirm_daemon'))) return
+  return withBusy(() => remediateWireguard('daemon', true), 'wg.boot_installed')
+}
+const fixWstunnel = () => {
+  if (!confirm(t('wg.confirm_wstunnel_apply'))) return
+  return withBusy(() => remediateWireguard('wstunnel', true), 'wg.wstunnel_applied')
+}
+const stabilizeWstunnel = () => {
+  if (!confirm(t('wg.confirm_wstunnel_stabilize'))) return
+  return withBusy(
+    () => remediateWireguard('wstunnel_stabilize', true),
+    'wg.wstunnel_stabilized',
+  )
+}
 const removeWstunnel = () => {
   if (!confirm(t('wg.wstunnel_remove_confirm'))) return
   return withBusy(() => remediateWireguard('wstunnel', false), 'wg.wstunnel_removed')
@@ -832,6 +871,7 @@ async function copyWstunnelCommand() {
   const command = data.value?.wstunnel?.client_command
   if (!command) return
   const ok = await copyToClipboard(command)
+  if (!pageAlive) return
   toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
@@ -840,7 +880,7 @@ async function createPeer() {
     () => addWireguardPeer({ ...form.value, ip: form.value.ip || '' }),
     'wg.peer_created',
   )
-  if (!created) return
+  if (!created || !pageAlive) return
   form.value = { name: '', ip: '', mode: form.value.mode, psk: false, keep_key: form.value.keep_key }
   // Show the config immediately: with keep_key off this is the only time the
   // private key is ever available.
@@ -850,7 +890,7 @@ async function createPeer() {
     endpoint_configured: created.endpoint_configured,
   }
   peerFormat.value = 'wg'
-  peerContent.value = created.client_conf
+  peerContent.value = finiteText(created.client_conf, '')
   renderQr(created.client_conf, 'wg')
 }
 
@@ -859,16 +899,16 @@ async function createBatch() {
     () => batchAddWireguardPeers({ ...batch.value, mode: form.value.mode, keep_key: true }),
     null,
   )
-  if (result) toast('✅ ' + t('wg.batch_created', { n: result.created }))
+  if (result && pageAlive) toast('✅ ' + t('wg.batch_created', { n: finiteN(result.created) }))
 }
 
 async function doImport() {
   const result = await withBusy(() => importWireguardPeer({ ...imp.value }), 'wg.peer_imported')
-  if (result) imp.value = { pubkey: '', ip: '', name: '' }
+  if (result && pageAlive) imp.value = { pubkey: '', ip: '', name: '' }
 }
 
 function removePeer(peer) {
-  if (!confirm(t('wg.confirm_delete', { name: peer.name || peer.pubkey.slice(0, 16) }))) return
+  if (!confirm(t('wg.confirm_delete', { name: finiteText(peer.name, '') || String(finiteText(peer.pubkey, '')).slice(0, 16) }))) return
   return withBusy(() => deleteWireguardPeer(peer.pubkey), 'wg.peer_deleted')
 }
 
@@ -879,44 +919,55 @@ function togglePsk(peer) {
 }
 
 async function showPeer(peer) {
+  const generation = loadGeneration
   try {
     const result = await getWireguardPeerConfig(peer.pubkey, 'wg')
+    if (generation !== loadGeneration || !pageAlive) return
     peerDialog.value = {
       pubkey: peer.pubkey,
       name: result.name,
       endpoint_configured: Boolean(data.value?.endpoint),
     }
     peerFormat.value = 'wg'
-    peerContent.value = result.content
-    renderQr(result.content, 'wg')
+    peerContent.value = finiteText(result.content, '')
+    renderQr(peerContent.value, 'wg')
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
 async function selectFormat(fmt) {
   if (!peerDialog.value) return
+  const generation = loadGeneration
   peerFormat.value = fmt
   try {
     const result = await getWireguardPeerConfig(peerDialog.value.pubkey, fmt)
-    peerContent.value = result.content
-    renderQr(result.content, fmt)
+    if (generation !== loadGeneration || !pageAlive) return
+    peerContent.value = finiteText(result.content, '')
+    renderQr(peerContent.value, fmt)
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
 async function copyPeer() {
   const ok = await copyToClipboard(peerContent.value)
+  if (!pageAlive) return
   toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
 async function openConf(reveal = false) {
   if (reveal && !confirm(t('wg.confirm_reveal'))) return
+  const generation = loadGeneration
   try {
-    confDialog.value = await getWireguardConf(reveal)
+    const next = await getWireguardConf(reveal)
+    if (generation !== loadGeneration || !pageAlive) return
+    confDialog.value = next
   } catch (e) {
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
   }
 }
 
@@ -936,7 +987,7 @@ async function saveSettings() {
     if (value !== '' && value != null) patch[key] = value
   }
   const result = await withBusy(() => putWireguardSettings(patch), 'wg.settings_saved')
-  if (result) settingsOpen.value = false
+  if (result && pageAlive) settingsOpen.value = false
 }
 
 // Whether cfgForm reflects the server's real settings. Save is blocked until it
@@ -950,29 +1001,36 @@ const settingsLoaded = ref(false)
 const settingsError = ref('')
 
 async function loadSettings() {
+  const generation = loadGeneration
   try {
     const current = await getWireguardSettings()
+    if (generation !== loadGeneration || !pageAlive) return
     cfgForm.value = { ...cfgForm.value, ...current.settings }
     settingsLoaded.value = true
     settingsError.value = ''
   } catch (e) {
+    if (generation !== loadGeneration || !pageAlive) return
     settingsLoaded.value = false
-    settingsError.value = e.message || String(e)
+    settingsError.value = finiteText(e.message || String(e), '')
   }
 }
 
+let pageAlive = true
 onMounted(async () => {
+  pageAlive = true
   // Independent reads: load() fills the status/readiness/peers view, loadSettings()
   // only seeds cfgForm. Awaiting them in sequence made the page wait for two
   // round trips of privileged shell-outs before anything rendered, for no
   // ordering reason. Both swallow their own errors, so neither can reject here.
   await Promise.all([load(), loadSettings()])
+  if (!pageAlive) return
   // Peer handshake ages only matter at ~minute resolution; 20s keeps the table
   // live without hammering `wg show` (which is a privileged call per poll).
   poll = startVisibleInterval(load, 20000)
 })
 
 onUnmounted(() => {
+  pageAlive = false
   if (typeof poll === 'function') poll()
   poll = null
   loadGeneration += 1

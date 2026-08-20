@@ -123,6 +123,32 @@ class FiveMinuteAggregation(RollupBase):
 
         self.assertEqual((b["t"], b["n"], b["cpu_used_pct"]), (T0 + 300, 1, 40.0))
 
+    def test_query_range_inf_window_does_not_500(self):
+        self.write_raw([{"t": T0, "cpu_used_pct": 10.0}])
+        out = rollup.query_range(float("inf"), T0 + 60)
+        self.assertEqual(out["points"], [])
+        json.dumps(out, allow_nan=False)
+
+    def test_infinity_watermark_does_not_500_rollup(self):
+        self.write_raw([{"t": T0, "cpu_used_pct": 10.0}])
+        self.state.write_text(json.dumps({"w5": float("inf"), "w1h": float("nan")}))
+        done = rollup.maybe_rollup(now=T0 + 600 + 5)
+        self.assertGreaterEqual(done["w5"], 0)
+
+    def test_inf_nan_and_string_t_do_not_500(self):
+        self.raw.write_text(
+            json.dumps({"t": float("inf"), "cpu_used_pct": 1}) + "\n"
+            + '{"t": NaN, "cpu_used_pct": 2}\n'
+            + json.dumps({"t": str(T0), "cpu_used_pct": float("inf")}) + "\n"
+            + json.dumps({"t": T0 + 90, "cpu_used_pct": 10.0}) + "\n"
+        )
+        self.assertEqual(rollup._first_row_ts(self.raw), T0)
+        done = rollup.maybe_rollup(now=T0 + 600 + 5)
+        self.assertGreaterEqual(done["w5"], 1)
+        rows = self.rows_5m()
+        self.assertTrue(rows)
+        self.assertNotIn(rows[0].get("cpu_used_pct"), (float("inf"), float("nan")))
+
     def test_the_open_window_is_never_aggregated(self):
         self.write_raw([
             {"t": T0, "cpu_used_pct": 10.0},
@@ -345,6 +371,22 @@ class Trim(RollupBase):
         self.assertFalse(rollup._maybe_trim_locked("5m", self.f5, now))
         self.assertEqual(len(self.rows_5m()), 2)
 
+    def test_trim_survives_binary_junk(self):
+        """A torn UTF-8 byte used to raise past the OSError guard and skip trim."""
+        now = float(T0)
+        retain = rollup._RETAIN["5m"]
+        slack = rollup._TRIM_SLACK["5m"]
+        old = {"t": int(now - retain - slack - 600), "n": 1, "cpu_used_pct": 1.0}
+        recent = {"t": int(now - 300), "n": 1, "cpu_used_pct": 2.0}
+        self.f5.write_bytes(
+            json.dumps(old).encode() + b"\n"
+            + b"\xff\xfe torn\n"
+            + json.dumps(recent).encode() + b"\n"
+        )
+        rollup._last_trim["5m"] = 0.0
+        self.assertTrue(rollup._maybe_trim_locked("5m", self.f5, now))
+        self.assertEqual([r["t"] for r in self.rows_5m()], [recent["t"]])
+
 
 class RangeParsing(unittest.TestCase):
     def test_units_and_clamps(self):
@@ -356,7 +398,7 @@ class RangeParsing(unittest.TestCase):
         self.assertEqual(rollup.parse_range("99y"), rollup.RETAIN_1H)
 
     def test_rejects_garbage(self):
-        for bad in ("", "h", "12", "0h", "-3d", "1x", "1.5h", "abc"):
+        for bad in ("", "h", "12", "0h", "-3d", "1x", "1.5h", "abc", 48):
             with self.assertRaises(ValueError, msg=bad):
                 rollup.parse_range(bad)
 

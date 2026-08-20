@@ -32,6 +32,17 @@ class CatalogYamlInjectionTests(unittest.TestCase):
         )
         self.assertEqual(out, "user=admin port=5432")
 
+    def test_python_yaml_tag_in_value_is_refused(self):
+        """Newline injection was closed; a one-line !!python tag was not."""
+        from fastapi import HTTPException
+
+        from hub import catalog
+        with self.assertRaises(HTTPException):
+            catalog.render_template(
+                "- USER={{USER}}",
+                {"USER": "!!python/object/apply:os.system ['id']"},
+            )
+
 
 class ExportRedactionTests(unittest.TestCase):
     """Finding #3 — services.yaml export leaked plaintext secrets."""

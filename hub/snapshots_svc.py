@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from hub.macos_admin import run_admin, run_admin_sequence
-from hub.util import cached_snapshot, fan_out, sh
+from hub.util import cached_snapshot, fan_out, sh, strftime_now
 
 TMUTIL = "/usr/bin/tmutil"
 DISKUTIL = "/usr/sbin/diskutil"
@@ -38,6 +38,76 @@ _SYSTEM_SNAPSHOT_PREFIXES = ("com.apple.os.update-", "com.apple.installer")
 _CACHE_TTL = 20.0
 
 
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/snapshots."""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
+
+    ``tmutil`` / ``run_admin`` leftover ``\\ud800`` / ``Infinity`` still 500'd
+    POST /api/snapshots/delete after the plist walk already scrubbed SnapshotName.
+    """
+    if depth > 16:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _as_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_as_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/snapshots.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _as_text(value)
+    except Exception:
+        return None
+
+
+def _admin_result(result) -> dict:
+    cleaned = _jsonable(result) if isinstance(result, dict) else {}
+    return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
+
+
 def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
     """Run *argv* and parse its stdout as a plist, or None when unusable.
 
@@ -46,6 +116,7 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
     byte zero.
     """
     rc, out, _ = sh(argv, timeout=timeout)
+    out = _as_text(out)
     if rc != 0 or not out:
         return None
     start = out.find("<?xml")
@@ -53,14 +124,36 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
         return None
     try:
         parsed = plistlib.loads(out[start:].encode())
-    except (plistlib.InvalidFileException, ValueError):
+    except Exception:
+        # Same ExpatError leftover as raid_svc._plist: a torn tmutil plist
+        # used to 500 /api/snapshots instead of rendering an empty page.
         return None
     return parsed if isinstance(parsed, dict) else None
 
 
 def _snapshot_date(name: str) -> str:
-    m = _SNAP_DATE.search(name or "")
+    m = _SNAP_DATE.search(_as_text(name))
     return m.group(1) if m else ""
+
+
+def _xid(raw):
+    """JSON-safe SnapshotXID.
+
+    ``inf`` / ``nan`` used to 500 GET /api/snapshots under Starlette's
+    ``allow_nan=False`` encoder; ``bytes`` used to TypeError ``json.dumps``.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, (bytes, bytearray, list, dict, tuple, set)):
+        return None
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(raw, (int, str)):
+        return raw
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _human_date(token: str) -> str:
@@ -91,8 +184,8 @@ def snapshot_mounts() -> list[str]:
                 continue
         except OSError:
             continue
-        path = str(entry)
-        if path in seen:
+        path = _as_text(entry)
+        if not path or path in seen:
             continue
         seen.add(path)
         mounts.append(path)
@@ -107,19 +200,21 @@ def list_snapshots(mount: str = "/") -> list[dict]:
     purgeable flag).  Its output is unprivileged, unlike much of ``tmutil``.
     """
     data = _plist([DISKUTIL, "apfs", "listSnapshots", "-plist", mount])
-    raw = (data or {}).get("Snapshots") or []
+    raw = (data or {}).get("Snapshots") if isinstance(data, dict) else []
+    if not isinstance(raw, list):
+        raw = []
     items: list[dict] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get("SnapshotName") or "")
+        name = _as_text(entry.get("SnapshotName") or "")
         token = _snapshot_date(name)
         system = name.startswith(_SYSTEM_SNAPSHOT_PREFIXES)
         items.append({
-            "mount": mount,
+            "mount": _as_text(mount),
             "name": name,
-            "uuid": str(entry.get("SnapshotUUID") or ""),
-            "xid": entry.get("SnapshotXID"),
+            "uuid": _as_text(entry.get("SnapshotUUID") or ""),
+            "xid": _xid(entry.get("SnapshotXID")),
             "date_token": token,
             "date": _human_date(token),
             "purgeable": bool(entry.get("Purgeable")),
@@ -143,7 +238,7 @@ def _tm_status() -> dict | None:
 
 def _tm_latest_backup() -> str:
     rc, latest, _ = sh([TMUTIL, "latestbackup"], timeout=12)
-    return latest.strip() if rc == 0 else ""
+    return _as_text(latest).strip() if rc == 0 else ""
 
 
 def time_machine_overview() -> dict:
@@ -164,33 +259,57 @@ def time_machine_overview() -> dict:
     dest = dest or {}
     status = status or {}
     destinations = []
-    for entry in dest.get("Destinations") or []:
+    raw_dest = dest.get("Destinations")
+    if not isinstance(raw_dest, list):
+        raw_dest = []
+    for entry in raw_dest:
         if not isinstance(entry, dict):
             continue
         mount_point = str(entry.get("MountPoint") or "")
+        mounted = False
+        if mount_point and "\x00" not in mount_point:
+            try:
+                mounted = Path(mount_point).is_dir()
+            except (OSError, ValueError):
+                mounted = False
         destinations.append({
-            "id": str(entry.get("ID") or ""),
-            "name": str(entry.get("Name") or ""),
-            "kind": str(entry.get("Kind") or ""),
-            "mount": mount_point,
-            "url": str(entry.get("URL") or ""),
+            "id": _as_text(entry.get("ID") or ""),
+            "name": _as_text(entry.get("Name") or ""),
+            "kind": _as_text(entry.get("Kind") or ""),
+            "mount": _as_text(mount_point),
+            "url": _as_text(entry.get("URL") or ""),
             "last_used": bool(entry.get("LastDestination")),
-            "mounted": bool(mount_point) and Path(mount_point).is_dir(),
+            "mounted": mounted,
         })
 
     running = bool(status.get("Running"))
     progress = status.get("Progress") if isinstance(status.get("Progress"), dict) else {}
     percent = progress.get("Percent") if isinstance(progress, dict) else None
-    try:
-        percent_val = round(float(percent) * 100, 1) if percent is not None else None
-    except (TypeError, ValueError):
-        percent_val = None
+    percent_val = None
+    if percent is not None:
+        try:
+            raw_pct = float(percent)
+        except (TypeError, ValueError, OverflowError):
+            raw_pct = None
+        if raw_pct is not None and raw_pct == raw_pct and raw_pct not in (
+            float("inf"), float("-inf"),
+        ):
+            # Leftover finite ``1e308`` is not inf, then ``* 100`` overflows
+            # to inf and 500'd GET /api/snapshots under allow_nan=False.
+            try:
+                scaled = round(raw_pct * 100, 1)
+            except OverflowError:
+                scaled = None
+            if scaled is not None and scaled == scaled and scaled not in (
+                float("inf"), float("-inf"),
+            ):
+                percent_val = scaled
 
     return {
         "configured": bool(destinations),
         "destinations": destinations,
         "running": running,
-        "phase": str(status.get("BackupPhase") or ""),
+        "phase": _as_text(status.get("BackupPhase") or ""),
         "percent": percent_val,
         "latest_backup": latest_path,
         "latest_backup_date": _human_date(_snapshot_date(latest_path)),
@@ -238,7 +357,7 @@ def overview(force: bool = False) -> dict:
         })
 
     data = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "volumes": volumes,
         "total": total,
         "time_machine": time_machine,
@@ -261,14 +380,14 @@ def create_snapshot() -> dict:
     """
     rc, out, err = sh([TMUTIL, "localsnapshot"], timeout=120)
     invalidate()
-    message = (out or err or "").strip()
+    message = (_as_text(out) or _as_text(err)).strip()
     if rc != 0:
-        return {"ok": False, "error": "failed", "message": message[-400:]}
-    return {
+        return _admin_result({"ok": False, "error": "failed", "message": message[-400:]})
+    return _admin_result({
         "ok": True,
         "message": message[-400:],
         "date_token": _snapshot_date(message),
-    }
+    })
 
 
 def delete_snapshot(mount: str, date_token: str) -> dict:
@@ -280,7 +399,7 @@ def delete_snapshot(mount: str, date_token: str) -> dict:
         timeout=180,
     )
     invalidate()
-    return result
+    return _admin_result(result)
 
 
 def delete_all_snapshots(mount: str) -> dict:
@@ -299,9 +418,10 @@ def delete_all_snapshots(mount: str) -> dict:
     commands = [[TMUTIL, "deletelocalsnapshots", token] for token in tokens]
     result = run_admin_sequence(commands, timeout=600)
     invalidate()
-    if result.get("ok"):
+    if isinstance(result, dict) and result.get("ok"):
+        result = dict(result)
         result["deleted"] = len(tokens)
-    return result
+    return _admin_result(result)
 
 
 def thin_snapshots(mount: str, urgency: int = 1) -> dict:
@@ -319,7 +439,7 @@ def thin_snapshots(mount: str, urgency: int = 1) -> dict:
         timeout=300,
     )
     invalidate()
-    return result
+    return _admin_result(result)
 
 
 _TM_ACTIONS = {
@@ -337,4 +457,4 @@ def time_machine_action(action: str) -> dict:
         return {"ok": False, "error": "bad_action"}
     result = run_admin(argv, timeout=180)
     invalidate()
-    return result
+    return _admin_result(result)

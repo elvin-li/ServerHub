@@ -40,10 +40,15 @@ def api_health(request: Request):
     unauthenticated watchdog probe (``{ok, ts}`` only). This authenticated
     handler may attach cached counts when a snapshot already exists.
     """
+    try:
+        ts = int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        # Leftover ``time.time() = inf`` OverflowError'd GET /api/health.
+        ts = 0
     body = {
         "ok": True,
         "version": __version__,
-        "ts": int(time.time()),
+        "ts": ts,
     }
     st = cached_status()
     if st is not None:
@@ -69,10 +74,17 @@ def _local_client_action_allowed(target: str, action: str) -> bool:
     """Only execute actions the native menu received for this service."""
     if action not in _LOCAL_CLIENT_ACTIONS:
         return False
-    for group in full_status().get("groups") or []:
-        for service in group.get("services") or []:
+    groups = full_status().get("groups")
+    for group in groups if isinstance(groups, list) else []:
+        if not isinstance(group, dict):
+            continue
+        rows = group.get("services")
+        for service in rows if isinstance(rows, list) else []:
+            if not isinstance(service, dict):
+                continue
             if service.get("id") == target:
-                return action in set(service.get("actions") or [])
+                acts = service.get("actions")
+                return action in set(acts if isinstance(acts, list) else [])
     return False
 
 
@@ -84,8 +96,18 @@ def api_action(a: Action, request: Request):
     rc, out, err = actions.run_action(a.target, a.action)
     invalidate_status()
     ok = rc == 0
+    raw = out if ok else (err or out or f"exit {rc}")
+    if isinstance(raw, (bytes, bytearray)):
+        message = raw.decode("utf-8", "replace")
+    elif isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        message = ""
+    else:
+        message = "" if raw is None else str(raw)
+    # Leftover ``\\ud800`` / bytes / inf from a VM/action helper used to
+    # 500 the menubar's POST /api/action under Starlette's UTF-8 encoder.
+    message = message.encode("utf-8", "replace").decode("utf-8")
     return JSONResponse(
-        {"ok": ok, "message": out if ok else (err or out or f"exit {rc}")},
+        {"ok": bool(ok), "message": message},
         status_code=200 if ok else 500,
     )
 
@@ -95,12 +117,12 @@ def api_maintenance():
     return [
         {
             "id": t["id"],
-            "name": t["name"],
+            "name": t.get("name") or t["id"],
             "desc": t.get("desc", ""),
             "confirm": bool(t.get("confirm")),
             **jobs.job_state(t["id"]),
         }
-        for t in (cfg().get("maintenance") or [])
+        for t in jobs.maintenance_tasks().values()
     ]
 
 
@@ -115,13 +137,4 @@ def api_maintenance_run(tid: str):
 
 @router.get("/api/maintenance/{tid}/log")
 def api_maintenance_log(tid: str):
-    j = jobs.get_job(tid)
-    if not j:
-        return {"running": False, "rc": None, "log": "(not run yet)"}
-    return {
-        "running": j["running"],
-        "rc": j["rc"],
-        "started": j["started"],
-        "finished": j["finished"],
-        "log": "\n".join(j["log"]) or "(waiting for output…)",
-    }
+    return jobs.job_log(tid)

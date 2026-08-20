@@ -310,6 +310,26 @@ class ManagementTests(_AppSandbox):
         events = [r["event"] for r in self.audit_records()]
         self.assertIn(audit.TWOFA_RECOVERY_REGENERATED, events)
 
+    def test_regenerate_when_stripped_mid_request_is_not_500(self):
+        secret, _ = self.enable_twofa()
+        pending = self.login().json()["pending"]
+        self.client.post(
+            "/api/auth/totp/verify",
+            json={"pending": pending, "code": self.current_code(secret)},
+        )
+        with (
+            mock.patch.object(twofa_svc, "verify_second_factor", return_value="totp"),
+            mock.patch.object(
+                twofa_svc, "regenerate_recovery",
+                side_effect=twofa_svc.NotEnabled("admin"),
+            ),
+        ):
+            response = self.client.post(
+                "/api/auth/totp/recovery", json={"code": "123456"}
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"]["code"], "auth.totp_not_enabled")
+
     def test_admin_can_force_disable_another_account(self):
         def add_member(data):
             data["settings"]["auth"]["accounts"] = [

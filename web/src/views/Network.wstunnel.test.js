@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 const api = vi.hoisted(() => ({
@@ -59,6 +59,34 @@ async function mountNetwork(wstunnel) {
   await flushPromises()
   return wrapper
 }
+
+describe('Network leave-guards', () => {
+  beforeEach(() => {
+    for (const fn of Object.values(api)) {
+      if (typeof fn?.mockReset === 'function') fn.mockReset()
+    }
+    vi.stubGlobal('confirm', vi.fn(() => true))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('drops busy when Refresh bumps loadGeneration during a profile switch', async () => {
+    let resolveProfile
+    api.switchNetworkProfile.mockImplementation(() => new Promise((resolve) => { resolveProfile = resolve }))
+    const wrapper = await mountNetwork({ enabled: false, configured: false, running: false })
+    const prefer = wrapper.findAll('button').find((b) => b.text() === 'network.prefer_ethernet')
+    await prefer.trigger('click')
+    expect(prefer.attributes('disabled')).toBeDefined()
+    await wrapper.findAll('button').find((b) => b.text() === 'common.refresh').trigger('click')
+    await flushPromises()
+    resolveProfile({ ok: true, message: 'switched' })
+    await flushPromises()
+    expect(wrapper.findAll('button').find((b) => b.text() === 'network.prefer_ethernet').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+})
 
 describe('Network wstunnel tile', () => {
   beforeEach(() => {

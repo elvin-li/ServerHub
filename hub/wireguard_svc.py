@@ -36,13 +36,14 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 from hub import wireguard_export, wireguard_wstunnel
-from hub.config import cfg, update_settings
+from hub.config import cfg, settings_section, update_settings
 from hub.macos_admin import (
     run_admin,
     run_admin_sequence,
@@ -50,8 +51,8 @@ from hub.macos_admin import (
     sudo_refused,
 )
 from hub.paths import DATA_DIR, pinned_or
-from hub.secure_io import replace_secret_text, write_secret_text
-from hub.util import fan_out, sh
+from hub.secure_io import drop_leftover_nonfile, replace_secret_text
+from hub.util import fan_out, read_text_capped, sh, strftime_now, utf8_env
 
 WG = pinned_or("wg", "/opt/homebrew/bin/wg")
 WG_QUICK = "/opt/homebrew/bin/wg-quick"
@@ -66,8 +67,12 @@ WIREGUARD_GO = "/opt/homebrew/bin/wireguard-go"
 #: sudoers rules, which pin this exact argv.
 def _modern_bash() -> str:
     for candidate in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash"):
-        if Path(candidate).exists():
-            return candidate
+        try:
+            if Path(candidate).exists():
+                return candidate
+        except (OSError, ValueError, TypeError):
+            # Dying-mount ``exists`` EIO used to 500 import of this module.
+            continue
     return "/bin/bash"
 
 
@@ -88,6 +93,12 @@ _UTUN_RE = re.compile(r"^utun\d{1,3}$")
 _NAME_SOCKET_SKEW = 2
 
 REGISTRY_PATH = DATA_DIR / "wireguard-peers.json"
+
+#: Leftover multi-MB junk in these small files used to OOM GET /api/wireguard.
+_CONF_CAP = 256 * 1024
+_KEY_CAP = 256
+_NAME_CAP = 64
+_REGISTRY_CAP = 256 * 1024
 
 #: Serialises read-modify-write of the server config *across processes*.
 _LOCK_PATH = DATA_DIR / "wireguard.lock"
@@ -144,6 +155,80 @@ _WG_QUICK_ONLY = {
 ACTIVE_WINDOW = 180
 #: Handshook once, but not recently — connected earlier and went away.
 STALE_WINDOW = 900
+
+def _as_text(value) -> str:
+    """``wg`` leftovers used to leak ``bytes``/None/``\\ud800`` into JSON."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _path_exists(path) -> bool:
+    """``Path.exists()`` raises EIO/ESTALE; leftover dying mounts 500'd GET /api/wireguard."""
+    try:
+        return Path(path).exists()
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _path_is_dir(path) -> bool:
+    """``Path.is_dir()`` re-raises EIO/ESTALE; that used to 500 GET /api/wireguard."""
+    try:
+        return Path(path).is_dir()
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _now() -> int:
+    """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd GET /api/wireguard."""
+    try:
+        return int(time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _conf_int(raw, fallback) -> int:
+    """Parse a conf field that operators sometimes write as ``51820/udp``."""
+    try:
+        return int(_as_text(raw if raw not in (None, "") else fallback).strip())
+    except (TypeError, ValueError, OverflowError):
+        try:
+            return int(fallback)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+
+def _nonfinite(value) -> bool:
+    return isinstance(value, float) and (
+        value != value or value in (float("inf"), float("-inf"))
+    )
+
+
+def _usable_network(value):
+    """An IP network that still has room for the server address (network + 1).
+
+    ``255.255.255.255/32`` parses, then ``network_address + 1`` raises
+    AddressValueError and 500'd next-ip / peer-create / conf writes.
+    """
+    try:
+        network = ipaddress.ip_network(str(value), strict=False)
+        network.network_address + 1
+        return network
+    except (TypeError, ValueError, OverflowError):
+        return None
+
 
 DEFAULTS = {
     "interface": "wg0",
@@ -229,7 +314,7 @@ class WireGuardError(ValueError):
 
 def settings() -> dict:
     """Effective WireGuard settings, defaults filled in."""
-    stored = (cfg().get("settings") or {}).get("wireguard") or {}
+    stored = settings_section("wireguard")
     merged = dict(DEFAULTS)
     for key, value in stored.items():
         if key not in merged:
@@ -237,32 +322,51 @@ def settings() -> dict:
         # False is a real stored value for wstunnel_enabled; only skip blanks.
         if value in (None, ""):
             continue
+        # YAML `.inf` used to OverflowError on listen_port/mtu, or leak into
+        # the JSON body (endpoint/dns) and 500 under allow_nan=False.
+        if _nonfinite(value):
+            continue
+        # YAML leftover ``endpoint: 2026-08-19`` / ``!!binary`` / ``!!set``
+        # used to leak into GET /api/wireguard and GET /api/wireguard/settings
+        # under Starlette's encoder (this payload never went through _jsonable).
+        expected = DEFAULTS[key]
+        if isinstance(expected, bool):
+            if not isinstance(value, bool):
+                continue
+        elif isinstance(expected, str):
+            if isinstance(value, (bytes, bytearray)):
+                value = value.decode("utf-8", "replace")
+            elif not isinstance(value, str):
+                continue
         merged[key] = value
     iface = str(merged["interface"])
     if not _IFACE_RE.match(iface):
         merged["interface"] = DEFAULTS["interface"]
-    try:
-        ipaddress.ip_network(str(merged["subnet"]), strict=False)
-    except ValueError:
+    if _usable_network(merged["subnet"]) is None:
         merged["subnet"] = DEFAULTS["subnet"]
     try:
         merged["listen_port"] = int(merged["listen_port"])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         merged["listen_port"] = DEFAULTS["listen_port"]
     try:
         merged["mtu"] = int(merged["mtu"])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         merged["mtu"] = DEFAULTS["mtu"]
     try:
         merged["keepalive"] = int(merged["keepalive"])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         merged["keepalive"] = DEFAULTS["keepalive"]
+    for key, value in merged.items():
+        if isinstance(value, str):
+            merged[key] = _as_text(value)
     return merged
 
 
 def save_settings(patch: dict) -> dict:
     """Persist a subset of the WireGuard settings after validating each field."""
-    current = dict((cfg().get("settings") or {}).get("wireguard") or {})
+    raw = cfg().get("settings")
+    stored = raw.get("wireguard") if isinstance(raw, dict) else None
+    current = dict(stored) if isinstance(stored, dict) else {}
     for key, value in (patch or {}).items():
         if key not in DEFAULTS:
             continue
@@ -273,14 +377,12 @@ def save_settings(patch: dict) -> dict:
             if not _IFACE_RE.match(str(value)):
                 raise WireGuardError("wg.bad_interface", interface=str(value)[:20])
         elif key == "subnet":
-            try:
-                ipaddress.ip_network(str(value), strict=False)
-            except ValueError:
+            if _usable_network(value) is None:
                 raise WireGuardError("wg.bad_subnet", subnet=str(value)[:40])
         elif key in ("listen_port", "mtu", "keepalive"):
             try:
                 number = int(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 raise WireGuardError("wg.bad_number", field=key)
             if key == "listen_port" and not (1 <= number <= 65535):
                 raise WireGuardError("wg.bad_number", field=key)
@@ -328,7 +430,7 @@ def save_settings(patch: dict) -> dict:
 def conf_dir() -> Path:
     for candidate in _CONF_DIRS:
         path = Path(candidate)
-        if path.is_dir():
+        if _path_is_dir(path):
             return path
     return Path(_CONF_DIRS[0])
 
@@ -353,10 +455,10 @@ def _binary_version(binary: str) -> str:
     are degraded, and caching a success does the same in reverse. Two spawns is not
     worth that, so the duplication is left in place and only the two probes overlap.
     """
-    if not Path(binary).exists():
+    if not _path_exists(binary):
         return ""
     rc, out, err = sh([binary, "--version"], timeout=8)
-    text = (out or err or "").strip().splitlines()
+    text = (_as_text(out) or _as_text(err)).strip().splitlines()
     return text[0][:120] if text and rc == 0 else ""
 
 
@@ -370,11 +472,11 @@ def installation() -> dict:
     # "wireguard-tools is not installed" and refused every operation, which is a
     # wildly misleading answer on a host where it is plainly installed.  The
     # version strings stay best-effort and are only used for display.
-    present = Path(WG).exists() and Path(WG_QUICK).exists()
+    present = _path_exists(WG) and _path_exists(WG_QUICK)
     return {
-        "wg": WG if Path(WG).exists() else "",
-        "wg_quick": WG_QUICK if Path(WG_QUICK).exists() else "",
-        "wireguard_go": WIREGUARD_GO if Path(WIREGUARD_GO).exists() else "",
+        "wg": WG if _path_exists(WG) else "",
+        "wg_quick": WG_QUICK if _path_exists(WG_QUICK) else "",
+        "wireguard_go": WIREGUARD_GO if _path_exists(WIREGUARD_GO) else "",
         "tools_version": tools,
         "userspace_version": userspace,
         "installed": present,
@@ -383,7 +485,7 @@ def installation() -> dict:
         "probe_failed": present and not tools,
         "conf_dir": str(conf_dir()),
         "conf_path": str(conf_path()),
-        "conf_exists": conf_path().exists(),
+        "conf_exists": _path_exists(conf_path()),
     }
 
 
@@ -394,20 +496,47 @@ def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
 
     :func:`hub.util.sh` has no stdin channel, and widening its signature for the
     single caller that needs one would change a helper used across the codebase.
+    ``capture_output=True`` used to keep the whole pipe in RAM; ``wg pubkey``
+    is tiny, but a wedged child on the peer-create request still could not.
     """
+    payload = data.encode("utf-8") if isinstance(data, str) else (data or b"")
     try:
-        proc = subprocess.run(
-            argv, input=data, capture_output=True, text=True, timeout=timeout
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            try:
+                proc = subprocess.run(
+                    argv,
+                    input=payload,
+                    stdout=out,
+                    stderr=err,
+                    timeout=timeout,
+                    check=False,
+                    env=utf8_env(),
+                )
+            except (subprocess.TimeoutExpired, OSError, ValueError, TypeError):
+                # Leftover ``\\ud800`` argv UnicodeEncodeError is ValueError, not OSError.
+                return ""
+            captured = getattr(proc, "stdout", None)
+            if isinstance(captured, (bytes, bytearray)):
+                text = bytes(captured).decode("utf-8", "replace")
+            elif isinstance(captured, str):
+                text = captured
+            else:
+                # Live path: stdout is the TemporaryFile.  str(file) used to
+                # become the "public key".
+                try:
+                    out.seek(0)
+                    text = out.read(4096).decode("utf-8", "replace")
+                except OSError:
+                    return ""
+            return text.strip() if proc.returncode == 0 else ""
+    except OSError:
         return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def generate_keypair() -> tuple[str, str]:
     """A fresh (private, public) Curve25519 pair from ``wg genkey`` / ``wg pubkey``."""
     rc, private, _ = sh([WG, "genkey"], timeout=8)
-    private = private.strip()
+    private = _as_text(private).strip()
     if rc != 0 or not _KEY_RE.match(private):
         raise WireGuardError("wg.keygen_failed")
     public = _run_with_input([WG, "pubkey"], private + "\n")
@@ -418,7 +547,7 @@ def generate_keypair() -> tuple[str, str]:
 
 def generate_psk() -> str:
     rc, psk, _ = sh([WG, "genpsk"], timeout=8)
-    psk = psk.strip()
+    psk = _as_text(psk).strip()
     if rc != 0 or not _KEY_RE.match(psk):
         raise WireGuardError("wg.keygen_failed")
     return psk
@@ -439,8 +568,8 @@ def read_conf(interface: str | None = None) -> dict:
     """Parse the server config, or an empty skeleton when absent."""
     path = conf_path(interface)
     try:
-        text = path.read_text()
-    except OSError:
+        text = read_text_capped(path, _CONF_CAP)
+    except (OSError, UnicodeDecodeError):
         return {"interface": {}, "peers": []}
     return wireguard_export.parse_conf(text)
 
@@ -472,7 +601,7 @@ def render_conf(server: dict, peers: list[dict]) -> str:
     cfg_ = settings()
     lines = [
         "# Managed by ServerHub. Peer blocks are regenerated on every change.",
-        f"# Last written: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Last written: {strftime_now('%Y-%m-%d %H:%M:%S')}",
         "",
         "[Interface]",
         f"PrivateKey = {server['private_key']}",
@@ -492,7 +621,7 @@ def render_conf(server: dict, peers: list[dict]) -> str:
         if peer.get("preshared_key"):
             lines.append(f"PresharedKey = {peer['preshared_key']}")
         lines.append(f"AllowedIPs = {peer['ip']}")
-        keepalive = int(peer.get("keepalive") or cfg_["keepalive"] or 0)
+        keepalive = _conf_int(peer.get("keepalive"), cfg_["keepalive"] or 0)
         if keepalive:
             lines.append(f"PersistentKeepalive = {keepalive}")
     return "\n".join(lines) + "\n"
@@ -503,7 +632,9 @@ def server_identity() -> dict:
     parsed = read_conf()
     iface = parsed["interface"]
     cfg_ = settings()
-    network = ipaddress.ip_network(cfg_["subnet"], strict=False)
+    network = _usable_network(cfg_["subnet"]) or ipaddress.ip_network(
+        DEFAULTS["subnet"], strict=False
+    )
     default_address = f"{network.network_address + 1}/{network.prefixlen}"
 
     private = str(iface.get("PrivateKey") or "").strip()
@@ -511,8 +642,8 @@ def server_identity() -> dict:
         directory = conf_dir()
         key_file = directory / "privatekey"
         try:
-            candidate = key_file.read_text().strip()
-        except OSError:
+            candidate = read_text_capped(key_file, _KEY_CAP).strip()
+        except (OSError, UnicodeDecodeError):
             candidate = ""
         private = candidate if _KEY_RE.match(candidate) else ""
     if not private:
@@ -522,7 +653,7 @@ def server_identity() -> dict:
         "private_key": private,
         "public_key": public_from_private(private),
         "address": str(iface.get("Address") or default_address).strip(),
-        "listen_port": int(str(iface.get("ListenPort") or cfg_["listen_port"]).strip() or cfg_["listen_port"]),
+        "listen_port": _conf_int(iface.get("ListenPort"), cfg_["listen_port"]),
     }
 
 
@@ -530,16 +661,44 @@ def server_identity() -> dict:
 
 def _load_registry() -> dict:
     try:
-        data = json.loads(REGISTRY_PATH.read_text())
-    except (OSError, ValueError):
+        data = json.loads(read_text_capped(REGISTRY_PATH, _REGISTRY_CAP))
+    except (OSError, ValueError, RecursionError):
         return {"peers": {}}
     if not isinstance(data, dict) or not isinstance(data.get("peers"), dict):
         return {"peers": {}}
-    return data
+    peers = {k: v for k, v in data["peers"].items() if isinstance(v, dict)}
+    out = dict(data)
+    out["peers"] = peers
+    return out
 
 
 def _save_registry(data: dict) -> None:
-    replace_secret_text(REGISTRY_PATH, json.dumps(data, indent=2, ensure_ascii=False))
+    def _clean(value, depth: int = 0):
+        if depth > 16:
+            return None
+        if isinstance(value, float) and (
+            value != value or value in (float("inf"), float("-inf"))
+        ):
+            return None
+        if isinstance(value, str):
+            return _as_text(value)
+        if isinstance(value, dict):
+            return {_as_text(k): _clean(v, depth + 1) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_clean(v, depth + 1) for v in value]
+        return value
+
+    drop_leftover_nonfile(REGISTRY_PATH)
+    try:
+        replace_secret_text(
+            REGISTRY_PATH,
+            json.dumps(_clean(data), indent=2, ensure_ascii=False, allow_nan=False, default=str),
+        )
+    except (OSError, TypeError, ValueError, RecursionError):
+        # Leftover directory occupying wireguard-peers.json must not 500
+        # peer create/import. RecursionError: leftover nested peers after
+        # _clean is not OSError.
+        pass
 
 
 def _registry_peers() -> dict:
@@ -563,12 +722,12 @@ def peer_records() -> list[dict]:
             continue
         meta = registry.get(public) or {}
         records.append({
-            "public_key": public,
-            "ip": str(peer.get("AllowedIPs") or "").strip(),
-            "preshared_key": str(peer.get("PresharedKey") or "").strip(),
-            "keepalive": str(peer.get("PersistentKeepalive") or "").strip(),
-            "name": str(meta.get("name") or ""),
-            "mode": str(meta.get("mode") or ""),
+            "public_key": _as_text(public),
+            "ip": _as_text(peer.get("AllowedIPs") or "").strip(),
+            "preshared_key": _as_text(peer.get("PresharedKey") or "").strip(),
+            "keepalive": _as_text(peer.get("PersistentKeepalive") or "").strip(),
+            "name": _as_text(meta.get("name") or ""),
+            "mode": _as_text(meta.get("mode") or ""),
             "created": meta.get("created") or 0,
             # Whether this peer's config/QR can be produced again.
             "reissuable": bool(meta.get("private_key")),
@@ -612,7 +771,7 @@ def _recorded_device(name_file: Path) -> str:
     which tunnels are live.
     """
     try:
-        recorded = name_file.read_text(errors="replace").strip()
+        recorded = read_text_capped(name_file, _NAME_CAP, errors="replace").strip()
     except OSError:
         recorded = ""
     if _UTUN_RE.match(recorded) or _IFACE_RE.match(recorded):
@@ -659,7 +818,7 @@ def real_interface(interface: str | None = None) -> str:
         return iface
 
     name_file = WG_RUN_DIR / f"{iface}.name"
-    if name_file.exists():
+    if _path_exists(name_file):
         return _recorded_device(name_file)
 
     try:
@@ -709,7 +868,7 @@ def _tool_error(stderr: str, fallback: str) -> str:
 
 def _dump_value(field: str) -> str:
     """A dump field, with ``wg``'s placeholder for "no value" turned into empty."""
-    text = str(field or "").strip()
+    text = _as_text(field).strip()
     return "" if text in ("(none)", "off") else text
 
 
@@ -722,7 +881,7 @@ def _dump_rows(text: str, device: str = "") -> list[list[str]]:
     ips, latest handshake, rx bytes, tx bytes, persistent keepalive).
     """
     rows = []
-    for line in (text or "").splitlines():
+    for line in _as_text(text).splitlines():
         if not line.strip():
             continue
         fields = line.split("\t")
@@ -749,7 +908,7 @@ def _dump_all() -> tuple[dict[str, list[list[str]]], str]:
         del out  # carries key material; never reported
         return {}, _tool_error(err, "could not read interface state")
     grouped: dict[str, list[list[str]]] = {}
-    for line in out.splitlines():
+    for line in _as_text(out).splitlines():
         if not line.strip():
             continue
         fields = line.split("\t")
@@ -823,7 +982,7 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
         # responses -- start the interface, or fix the sudoers rule -- and the old
         # code reported the kernel's "No such file or directory" for both.
         rc, out, _ = sh([WG, "show", "interfaces"], timeout=8)
-        if rc == 0 and not out.strip():
+        if rc == 0 and not _as_text(out).strip():
             return "", [], "not running"
         return "", [], first_error or error or "interface not found"
     device = _identify(grouped)
@@ -839,7 +998,14 @@ def _dump(interface: str) -> tuple[bool, list[list[str]], str]:
 
 
 def _human_bytes(value: int) -> str:
-    size = float(value)
+    # A leftover 400-digit ``rx``/``tx`` is a valid int; ``float()`` OverflowError'd
+    # GET /api/wireguard.  YAML ``.inf`` is already dropped by ``_conf_int``.
+    try:
+        size = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return "0.0B"
+    if size != size or size in (float("inf"), float("-inf")) or size < 0:
+        return "0.0B"
     for unit in ("B", "K", "M", "G", "T"):
         if size < 1024 or unit == "T":
             return f"{size:.1f}{unit}"
@@ -879,22 +1045,22 @@ def status(force: bool = False) -> dict:
         # rejected every (8-field) peer row.
         head = rows[0]
         if len(head) >= _DUMP_INTERFACE_FIELDS:
-            server_public = head[1].strip()
+            server_public = _as_text(head[1]).strip()
             try:
-                listen_port = int(head[2])
-            except ValueError:
+                listen_port = int(_as_text(head[2]).strip() or 0)
+            except (TypeError, ValueError, OverflowError):
                 listen_port = 0
         for row in rows[1:]:
             if len(row) < _DUMP_PEER_FIELDS:
                 continue
-            public = row[0].strip()
+            public = _as_text(row[0]).strip()
             try:
-                handshake = int(row[4])
-            except ValueError:
+                handshake = int(_as_text(row[4]).strip() or 0)
+            except (TypeError, ValueError, OverflowError):
                 handshake = 0
             try:
-                rx, tx = int(row[5]), int(row[6])
-            except ValueError:
+                rx, tx = int(_as_text(row[5]).strip() or 0), int(_as_text(row[6]).strip() or 0)
+            except (TypeError, ValueError, OverflowError):
                 rx, tx = 0, 0
             live[public] = {
                 # `wg` writes the literal "(none)" for a field it has no value
@@ -906,16 +1072,16 @@ def status(force: bool = False) -> dict:
                 "last_handshake": handshake,
                 "rx": rx,
                 "tx": tx,
-                "keepalive": row[7].strip(),
-                "preshared": row[1].strip() not in ("", "(none)"),
+                "keepalive": _as_text(row[7]).strip(),
+                "preshared": _as_text(row[1]).strip() not in ("", "(none)"),
             }
 
-    now = int(time.time())
+    now = _now()
     peers = []
     active = stale = keepalive_missing = 0
     for record in records:
         stats = live.get(record["public_key"]) or {}
-        handshake = int(stats.get("last_handshake") or 0)
+        handshake = _conf_int(stats.get("last_handshake"), 0)
         age = (now - handshake) if handshake else 0
         is_active = bool(handshake) and age <= ACTIVE_WINDOW
         is_stale = bool(handshake) and ACTIVE_WINDOW < age <= STALE_WINDOW
@@ -924,28 +1090,30 @@ def status(force: bool = False) -> dict:
         keepalive = stats.get("keepalive") or record["keepalive"] or "off"
         if str(keepalive) in ("", "0", "off"):
             keepalive_missing += 1
+        rx = _conf_int(stats.get("rx"), 0)
+        tx = _conf_int(stats.get("tx"), 0)
         peers.append({
-            "pubkey": record["public_key"],
-            "name": record["name"],
-            "mode": record["mode"],
-            "allowed_ips": stats.get("allowed_ips") or record["ip"],
-            "endpoint": stats.get("endpoint") or "",
+            "pubkey": _as_text(record["public_key"]),
+            "name": _as_text(record["name"]),
+            "mode": _as_text(record["mode"]),
+            "allowed_ips": _as_text(stats.get("allowed_ips") or record["ip"]),
+            "endpoint": _as_text(stats.get("endpoint") or ""),
             "last_handshake": handshake,
             "handshake_age": age,
             "active": is_active,
             "stale": is_stale,
-            "keepalive": str(keepalive),
+            "keepalive": _as_text(keepalive),
             "psk": bool(stats.get("preshared") or record["preshared_key"]),
-            "rx": int(stats.get("rx") or 0),
-            "tx": int(stats.get("tx") or 0),
-            "rx_human": _human_bytes(int(stats.get("rx") or 0)),
-            "tx_human": _human_bytes(int(stats.get("tx") or 0)),
+            "rx": rx,
+            "tx": tx,
+            "rx_human": _human_bytes(rx),
+            "tx_human": _human_bytes(tx),
             "reissuable": record["reissuable"],
             "known": record["known"],
         })
 
     parsed = read_conf()
-    address = str(parsed["interface"].get("Address") or "").strip()
+    address = _as_text(parsed["interface"].get("Address") or "").strip()
     # Only derive the key from the config when the running interface did not report
     # one.  `public_key` below is `server_public or conf_public`, so on a healthy
     # tunnel this value was computed and then discarded -- and computing it runs
@@ -960,19 +1128,21 @@ def status(force: bool = False) -> dict:
             conf_public = ""
 
     return {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "installed": install["installed"],
         "install": install,
-        "interface": interface,
+        "interface": _as_text(interface),
         "running": up,
-        "state_error": error,
-        "listen_port": listen_port or int(parsed["interface"].get("ListenPort") or cfg_["listen_port"]),
-        "public_key": server_public or conf_public,
+        "state_error": _as_text(error),
+        "listen_port": listen_port or _conf_int(
+            parsed["interface"].get("ListenPort"), cfg_["listen_port"],
+        ),
+        "public_key": _as_text(server_public or conf_public),
         "address": address,
-        "subnet": cfg_["subnet"],
-        "mtu": int(parsed["interface"].get("MTU") or cfg_["mtu"]),
-        "dns": str(parsed["interface"].get("DNS") or cfg_["dns"]),
-        "endpoint": cfg_["endpoint"],
+        "subnet": _as_text(cfg_["subnet"]),
+        "mtu": _conf_int(parsed["interface"].get("MTU"), cfg_["mtu"]),
+        "dns": _as_text(parsed["interface"].get("DNS") or cfg_["dns"]),
+        "endpoint": _as_text(cfg_["endpoint"]),
         "wstunnel": wstunnel_status(),
         "peers": peers,
         "peer_count": len(peers),
@@ -1012,7 +1182,9 @@ def allocate_ip(taken: set[str]) -> str:
     which is what forced batch creation to rewrite the config once per peer.
     """
     cfg_ = settings()
-    network = ipaddress.ip_network(cfg_["subnet"], strict=False)
+    network = _usable_network(cfg_["subnet"])
+    if network is None:
+        raise WireGuardError("wg.bad_subnet", subnet=cfg_["subnet"])
     server = str(network.network_address + 1)
     for host in network.hosts():
         candidate = str(host)
@@ -1060,10 +1232,15 @@ def _write_conf(peers: list[dict]) -> Path:
     server = server_identity()
     body = render_conf(server, peers)
     path = conf_path()
-    if path.exists():
+    if _path_exists(path):
         try:
             backup = path.with_suffix(".conf.bak")
-            replace_secret_text(backup, path.read_text())
+            # errors=replace: a torn/binary conf used to raise UnicodeDecodeError
+            # (a ValueError, not OSError) and 500 the save.  Still take a
+            # backup of whatever is on disk.
+            replace_secret_text(
+                backup, read_text_capped(path, _CONF_CAP, errors="replace")
+            )
         except OSError:
             # A missing backup must not block a legitimate change.
             pass
@@ -1227,7 +1404,7 @@ def _mint_peer(
         "name": label,
         "ip": address,
         "mode": mode,
-        "created": int(time.time()),
+        "created": _now(),
         # Retaining the private key is what makes re-issue possible; opting out
         # keeps only the public half, so the config handed back is the single copy.
         **({"private_key": private} if keep_key else {}),
@@ -1261,7 +1438,7 @@ def batch_add(
     """Create several peers in one pass, numbering them from the prefix."""
     try:
         total = int(count)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise WireGuardError("wg.bad_count")
     if not 1 <= total <= 50:
         raise WireGuardError("wg.bad_count")
@@ -1392,7 +1569,7 @@ def import_peer(*, pubkey: str, ip: str, name: str = "", psk: str = "") -> dict:
             "name": label,
             "ip": address,
             "mode": "imported",
-            "created": int(time.time()),
+            "created": _now(),
             **({"preshared_key": preshared} if preshared else {}),
         }
         _save_registry(registry)
@@ -1469,7 +1646,7 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
     meta = _registry_peers().get(public)
     if not meta:
         raise WireGuardError("wg.peer_unknown", pubkey=public[:16])
-    private = str(meta.get("private_key") or "")
+    private = _as_text(meta.get("private_key") or "")
     if not private:
         raise WireGuardError("wg.peer_not_reissuable", pubkey=public[:16])
 
@@ -1489,7 +1666,7 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
         obfuscated=(fmt or "").lower() == "wst",
     )
     cfg_ = settings()
-    name = str(meta.get("name") or "peer")
+    name = _as_text(meta.get("name") or "peer") or "peer"
     rendered = wireguard_export.render(
         fmt, conf, name, lan_cidr=cfg_["lan_cidr"], wg_cidr=cfg_["subnet"]
     )
@@ -1511,8 +1688,8 @@ def export_all(fmt: str = "wg") -> dict:
             items.append(peer_conf(record["public_key"], fmt))
         except WireGuardError:
             skipped.append({
-                "pubkey": record["public_key"],
-                "name": record["name"],
+                "pubkey": _as_text(record["public_key"]),
+                "name": _as_text(record["name"]),
                 "reason": "not_reissuable",
             })
     return {"ok": True, "format": (fmt or "wg").lower(), "items": items, "skipped": skipped}
@@ -1538,11 +1715,13 @@ def apply_live() -> dict:
         return {"ok": True, "applied": False, "reason": "not_running"}
 
     try:
-        stripped = strip_conf(conf_path().read_text())
-    except OSError:
+        stripped = strip_conf(read_text_capped(conf_path(), _CONF_CAP))
+    except (OSError, UnicodeDecodeError):
         return {"ok": False, "error": "conf_unreadable"}
     staged = DATA_DIR / f"{interface}.sync.conf"
-    write_secret_text(staged, stripped)
+    # Reused every sync; O_TRUNC mid-write left a torn private-key file
+    # that ``wg syncconf`` then applied.
+    replace_secret_text(staged, stripped)
 
     rc, _, err = sh(["/usr/bin/sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30)
     if rc == 0:
@@ -1550,7 +1729,11 @@ def apply_live() -> dict:
     result = run_admin([WG, "syncconf", device, str(staged)], timeout=120)
     if result.get("ok"):
         return {"ok": True, "applied": True, "device": device}
-    return {"ok": False, "error": result.get("error") or "sync_failed", "detail": err[:200]}
+    return {
+        "ok": False,
+        "error": result.get("error") or "sync_failed",
+        "detail": _as_text(err)[:200],
+    }
 
 
 def runtime_state(interface: str | None = None) -> dict:
@@ -1572,9 +1755,9 @@ def runtime_state(interface: str | None = None) -> dict:
     """
     iface = interface or settings()["interface"]
     name_file = WG_RUN_DIR / f"{iface}.name"
-    recorded = name_file.exists()
+    recorded = _path_exists(name_file)
     device = real_interface(iface)
-    live = bool(device) and (WG_RUN_DIR / f"{device}.sock").exists()
+    live = bool(device) and _path_exists(WG_RUN_DIR / f"{device}.sock")
     return {
         "interface": iface,
         "name_file": str(name_file),
@@ -1602,7 +1785,7 @@ def interface_action(action: str) -> dict:
     if verb not in ("up", "down", "restart"):
         raise WireGuardError("wg.bad_action", action=verb[:20])
     path = str(conf_path())
-    if not Path(path).exists():
+    if not _path_exists(path):
         raise WireGuardError("wg.no_conf", path=path)
 
     if verb == "restart":
@@ -1639,7 +1822,7 @@ def interface_action(action: str) -> dict:
             continue
         if sudo_refused(err):
             return run_admin_sequence(commands, timeout=_WG_QUICK_TIMEOUT + 60)
-        combined = ((err or "") + "\n" + (out or "")).strip()
+        combined = (_as_text(err) + "\n" + _as_text(out)).strip()
         # A zombie claim can appear between the check above and this call (or the
         # record can name a device that has since gone).  One repair attempt,
         # only when nothing is serving the interface.
@@ -1651,7 +1834,7 @@ def interface_action(action: str) -> dict:
             rc, out, err = sh(["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
             if rc == 0:
                 continue
-            combined = ((err or "") + "\n" + (out or "")).strip()
+            combined = (_as_text(err) + "\n" + _as_text(out)).strip()
         return {
             "ok": False,
             "error": "failed",
@@ -1680,8 +1863,8 @@ def _wg_quick_reason(output: str) -> str:
 def view_conf(reveal: bool = False) -> dict:
     """The server config as text, private key redacted unless explicitly revealed."""
     try:
-        text = conf_path().read_text()
-    except OSError:
+        text = read_text_capped(conf_path(), _CONF_CAP)
+    except (OSError, UnicodeDecodeError):
         raise WireGuardError("wg.no_conf", path=str(conf_path()))
     if reveal:
         return {"ok": True, "conf": text, "redacted": False}
@@ -1703,7 +1886,7 @@ def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None]:
         )
     except Exception:
         return False, None
-    match = re.search(r"time=([\d.]+)\s*ms", out or "")
+    match = re.search(r"time=([\d.]+)\s*ms", _as_text(out))
     return rc == 0, float(match.group(1)) if match else None
 
 
@@ -1714,7 +1897,10 @@ def ping_peers(timeout_ms: int = 800) -> dict:
     only proves the peer's WireGuard is alive, not that traffic crosses the tunnel
     (a missing route or NAT rule breaks the second without touching the first).
     """
-    deadline = max(200, min(int(timeout_ms or 800), 5000))
+    try:
+        deadline = max(200, min(int(timeout_ms or 800), 5000))
+    except (TypeError, ValueError, OverflowError):
+        deadline = 800
     targets = []
     for record in peer_records():
         host = record["ip"].split("/")[0].split(",")[0].strip()

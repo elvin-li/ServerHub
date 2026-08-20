@@ -7,7 +7,7 @@
 
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
-      <span class="badge" :class="view?.configured ? 'ok' : ''">
+      <span v-if="loaded" class="badge" :class="view?.configured ? 'ok' : ''">
         {{ view?.configured ? t('pool.state_configured', { n: (view?.members || []).length }) : t('pool.state_unconfigured') }}
       </span>
       <span class="badge accent">{{ t('pool.badge_no_raid') }}</span>
@@ -40,7 +40,7 @@
       <h3 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h3>
       <p class="note">{{ t('pool.missing_body') }}</p>
       <p class="mono" style="font-size:11px;margin:6px 0 0">
-        <span v-for="m in view.missing_members" :key="m" style="margin-right:10px">{{ m }}</span>
+        <span v-for="m in view.missing_members" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
       </p>
     </div>
 
@@ -66,30 +66,30 @@
       <div class="tile span-3">
         <h3>{{ t('pool.sum_total') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ shownSummary.total_gb ?? '—' }} <span class="unit">GB</span>
+          {{ finiteN(shownSummary.total_gb) }} <span class="unit">GB</span>
         </div>
-        <div class="sub">{{ t('pool.sum_members', { n: shownSummary.member_count ?? 0 }) }}</div>
+        <div class="sub">{{ t('pool.sum_members', { n: finiteN(shownSummary.member_count, 0) }) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('pool.sum_used') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ shownSummary.used_gb ?? '—' }} <span class="unit">GB</span>
+          {{ finiteN(shownSummary.used_gb) }} <span class="unit">GB</span>
         </div>
-        <div class="sub">{{ t('common.free') }} {{ shownSummary.avail_gb ?? '—' }} GB</div>
+        <div class="sub">{{ t('common.free') }} {{ fmtGb(shownSummary.avail_gb) }}</div>
         <div class="pct-bar" :class="barClass(shownSummary.pct)" style="margin-top:6px">
-          <i :style="{ width: (shownSummary.pct || 0) + '%' }"></i>
+          <i :style="{ width: barPct(shownSummary.pct) + '%' }"></i>
         </div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('pool.sum_largest') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ shownSummary.largest_single_file_gb ?? '—' }} <span class="unit">GB</span>
+          {{ finiteN(shownSummary.largest_single_file_gb) }} <span class="unit">GB</span>
         </div>
         <div class="sub">{{ t('pool.sum_largest_hint') }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('pool.sum_next_write') }}</h3>
-        <div class="v mono" style="font-size:13px">{{ shownTarget || '—' }}</div>
+        <div class="v mono" style="font-size:13px">{{ finiteText(shownTarget) }}</div>
         <div class="sub">{{ t('pool.sum_next_write_hint') }}</div>
       </div>
     </div>
@@ -113,26 +113,26 @@
         <tbody>
           <tr v-for="m in selectedMembers" :key="m.mount">
             <td class="mono">
-              <strong>{{ m.mount }}</strong>
-              <div class="show-m sub">{{ m.disk_id || '—' }} · {{ m.filesystem || '—' }}</div>
-              <div class="show-m sub">{{ m.used_gb }} / {{ m.avail_gb }} GB</div>
+              <strong>{{ finiteText(m.mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(m.disk_id) }} · {{ finiteText(m.filesystem) }}</div>
+              <div class="show-m sub">{{ fmtGb(m.used_gb) }} / {{ fmtGb(m.avail_gb) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ m.disk_id || '—' }}</td>
-            <td class="mono col-hide-m">{{ m.filesystem || '—' }}</td>
-            <td class="col-hide-m">{{ m.total_gb }} GB</td>
-            <td class="col-hide-m">{{ m.used_gb }} GB</td>
-            <td class="col-hide-m">{{ m.avail_gb }} GB</td>
+            <td class="mono col-hide-m">{{ finiteText(m.disk_id) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(m.filesystem) }}</td>
+            <td class="col-hide-m">{{ fmtGb(m.total_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(m.used_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(m.avail_gb) }}</td>
             <td style="min-width:100px">
-              {{ m.pct }}%
+              {{ withUnit(m.pct, '%') }}
               <div class="pct-bar" :class="barClass(m.pct)" style="margin-top:3px">
-                <i :style="{ width: m.pct + '%' }"></i>
+                <i :style="{ width: barPct(m.pct) + '%' }"></i>
               </div>
             </td>
             <td class="ops">
               <button
                 class="tiny"
                 :disabled="busy"
-                :aria-label="t('pool.remove_aria', { mount: m.mount })"
+                :aria-label="t('pool.remove_aria', { mount: finiteText(m.mount) })"
                 @click="removeMember(m.mount)"
               >{{ t('pool.remove') }}</button>
             </td>
@@ -162,19 +162,19 @@
         <tbody>
           <tr v-for="c in availableCandidates" :key="c.mount">
             <td class="mono">
-              <strong>{{ c.mount }}</strong>
-              <div class="show-m sub">{{ c.disk_id || '—' }} · {{ c.filesystem || '—' }}</div>
-              <div class="show-m sub">{{ c.total_gb }} GB</div>
+              <strong>{{ finiteText(c.mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(c.disk_id) }} · {{ finiteText(c.filesystem) }}</div>
+              <div class="show-m sub">{{ fmtGb(c.total_gb) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ c.disk_id || '—' }}</td>
-            <td class="mono col-hide-m">{{ c.filesystem || '—' }}</td>
-            <td class="col-hide-m">{{ c.total_gb }} GB</td>
-            <td>{{ c.avail_gb }} GB</td>
+            <td class="mono col-hide-m">{{ finiteText(c.disk_id) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(c.filesystem) }}</td>
+            <td class="col-hide-m">{{ fmtGb(c.total_gb) }}</td>
+            <td>{{ fmtGb(c.avail_gb) }}</td>
             <td class="ops">
               <button
                 class="tiny primary"
                 :disabled="busy"
-                :aria-label="t('pool.add_aria', { mount: c.mount })"
+                :aria-label="t('pool.add_aria', { mount: finiteText(c.mount) })"
                 @click="addMember(c.mount)"
               >{{ t('pool.add') }}</button>
             </td>
@@ -205,12 +205,12 @@
         <tbody>
           <tr v-for="r in shownFaults" :key="r.mount">
             <td class="mono">
-              <strong>{{ r.mount }}</strong>
-              <div class="show-m sub">{{ r.disk_id || '—' }}</div>
+              <strong>{{ finiteText(r.mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(r.disk_id) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ r.disk_id || '—' }}</td>
-            <td style="color:var(--warn)">{{ r.at_risk_gb }} GB</td>
-            <td style="color:var(--ok)">{{ r.survives_gb }} GB</td>
+            <td class="mono col-hide-m">{{ finiteText(r.disk_id) }}</td>
+            <td style="color:var(--warn)">{{ fmtGb(r.at_risk_gb) }}</td>
+            <td style="color:var(--ok)">{{ fmtGb(r.survives_gb) }}</td>
             <td class="col-hide-m">
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
@@ -252,7 +252,7 @@
       style="margin:8px 0 12px;font-size:11px;white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:4px;max-height:120px;overflow:auto"
       role="status"
       aria-live="polite"
-    >{{ lastMsg }}</pre>
+    >{{ finiteText(lastMsg) }}</pre>
     </template>
 
     <!-- Clearing is metadata-only.  The wording has to make that unmistakable,
@@ -275,9 +275,10 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } from '../api/client'
 import { injectI18n } from '../i18n'
+import { barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -299,6 +300,9 @@ const selected = ref([])
 const poolName = ref('pool')
 const policy = ref('most-free')
 const minFreeGb = ref(0)
+
+let pageAlive = true
+let loadGeneration = 0
 
 const policies = computed(() => view.value?.policies || ['most-free', 'least-used-pct', 'round-robin'])
 
@@ -349,16 +353,22 @@ function syncFromView(data) {
 }
 
 async function refresh() {
+  const generation = ++loadGeneration
   loading.value = true
   try {
-    syncFromView(await getStoragePool(true))
+    const data = await getStoragePool(true)
+    if (generation !== loadGeneration || !pageAlive) return
+    syncFromView(data)
     loadError.value = ''
   } catch (e) {
-    loadError.value = e.message || String(e)
-    toast('❌ ' + e.message)
+    if (generation !== loadGeneration || !pageAlive) return
+    loadError.value = finiteText(e.message || String(e), '')
+    toast('❌ ' + finiteText(e.message))
   } finally {
-    loading.value = false
-    loaded.value = true
+    if (generation === loadGeneration) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 
@@ -372,57 +382,79 @@ function removeMember(mount) {
 
 // A stale preview describing a different member set is worse than none: the
 // summary would contradict the table right above it.
-watch(selected, () => { preview.value = null })
+watch(selected, () => {
+  if (!pageAlive) return
+  preview.value = null
+})
 
 async function doPreview() {
+  const generation = loadGeneration
   busy.value = true
   try {
-    preview.value = await planStoragePool(selected.value, policy.value)
+    const planned = await planStoragePool(selected.value, policy.value)
+    if (generation !== loadGeneration || !pageAlive) return
+    preview.value = planned
     lastMsg.value = t('pool.msg_preview', { n: selected.value.length })
   } catch (e) {
-    toast('❌ ' + e.message)
-    lastMsg.value = e.message
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+    lastMsg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doSave() {
+  const generation = loadGeneration
   busy.value = true
   try {
-    syncFromView(await saveStoragePool({
+    const data = await saveStoragePool({
       mounts: selected.value,
       policy: policy.value,
       name: poolName.value.trim() || 'pool',
       min_free_gb: Number(minFreeGb.value) || 0,
-    }))
+    })
+    if (generation !== loadGeneration || !pageAlive) return
+    syncFromView(data)
     lastMsg.value = t('pool.msg_saved')
     toast('✅ ' + t('pool.msg_saved'))
   } catch (e) {
-    toast('❌ ' + e.message)
-    lastMsg.value = e.message
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+    lastMsg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
 async function doClear() {
+  const generation = loadGeneration
   busy.value = true
   try {
-    syncFromView(await clearStoragePool())
+    const data = await clearStoragePool()
+    if (generation !== loadGeneration || !pageAlive) return
+    syncFromView(data)
     clearOpen.value = false
     lastMsg.value = t('pool.msg_cleared')
     toast('✅ ' + t('pool.msg_cleared'))
   } catch (e) {
-    toast('❌ ' + e.message)
-    lastMsg.value = e.message
+    if (generation !== loadGeneration || !pageAlive) return
+    toast('❌ ' + finiteText(e.message))
+    lastMsg.value = finiteText(e.message, '')
   } finally {
-    busy.value = false
+    if (pageAlive) busy.value = false
   }
 }
 
-// Action-driven page: no polling, so there is no interval to leak on unmount.
-onMounted(refresh)
+onMounted(() => {
+  pageAlive = true
+  refresh()
+})
+
+onUnmounted(() => {
+  pageAlive = false
+  loadGeneration += 1
+})
 
 useDismissable(clearOpen, () => { clearOpen.value = false }, clearPanel)
 </script>

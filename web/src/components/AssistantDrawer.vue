@@ -44,11 +44,11 @@
           {{ t('assistant.ollama_link') }}
         </router-link>
       </div>
-      <div ref="logEl" class="assist-log" aria-live="polite">
+      <div ref="logEl" class="assist-log" :aria-live="turns.length ? 'polite' : undefined">
         <p v-if="!turns.length" class="assist-empty">{{ t('assistant.empty') }}</p>
         <article v-for="(turn, i) in turns" :key="i" class="assist-turn" :class="turn.role">
           <div class="assist-who">{{ turn.role === 'user' ? t('assistant.you') : t('assistant.bot') }}</div>
-          <pre class="assist-text">{{ turn.content }}</pre>
+          <pre class="assist-text">{{ finiteText(turn.content) }}</pre>
           <div v-if="turn.panels?.length" class="assist-panels">
             <button
               v-for="p in turn.panels"
@@ -56,9 +56,9 @@
               class="tiny"
               type="button"
               @click="go(p.path)"
-            >{{ p.title }} <span class="mono">{{ p.path }}</span></button>
+            >{{ finiteText(p.title) }} <span class="mono">{{ finiteText(p.path) }}</span></button>
           </div>
-          <div v-if="turn.meta" class="assist-meta">{{ turn.meta }}</div>
+          <div v-if="turn.meta" class="assist-meta">{{ finiteText(turn.meta) }}</div>
         </article>
       </div>
       <form class="assist-form" @submit.prevent="send('auto')">
@@ -86,6 +86,7 @@ import { nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { askAssistant } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -104,15 +105,20 @@ const draft = ref('')
 const busy = ref(false)
 const turns = ref([])
 let abortCtrl = null
+let sendGeneration = 0
 
 useDismissable(() => props.open, () => emit('close'), panel)
 
 watch(() => props.open, async (isOpen) => {
   if (!isOpen) {
+    sendGeneration += 1
     abortCtrl?.abort()
+    busy.value = false
     return
   }
+  const generation = sendGeneration
   await nextTick()
+  if (generation !== sendGeneration || !props.open) return
   inputEl.value?.focus()
   if (props.seedAction === 'brief' || props.seedAction === 'page') {
     const action = props.seedAction
@@ -131,17 +137,17 @@ function formatBrief(snap) {
   const c = snap?.counts || {}
   const lines = [
     t('assistant.brief_overview', {
-      load: snap.load ?? '—',
-      cpu: snap.cpu_load_pct ?? '—',
-      mem: snap.mem_used_pct ?? '—',
-      disk: snap.disk_root_pct ?? '—',
-      diskAmt: snap.disk_root ?? '—',
-      up: snap.uptime ?? '—',
+      load: finiteN(snap.load),
+      cpu: finiteN(snap.cpu_load_pct),
+      mem: finiteN(snap.mem_used_pct),
+      disk: finiteN(snap.disk_root_pct),
+      diskAmt: finiteText(snap.disk_root),
+      up: finiteText(snap.uptime),
     }),
     t('assistant.brief_services', {
-      ok: c.ok ?? 0,
-      warn: c.warn ?? 0,
-      down: c.down ?? 0,
+      ok: finiteN(c.ok, 0),
+      warn: finiteN(c.warn, 0),
+      down: finiteN(c.down, 0),
       engine: snap.engine_up ? t('common.on') : t('common.off'),
     }),
   ]
@@ -149,7 +155,7 @@ function formatBrief(snap) {
   if (problems.length) {
     lines.push(t('assistant.brief_problems'))
     for (const p of problems.slice(0, 6)) {
-      lines.push(`- ${p.name} · ${p.state} · ${p.detail || '—'}`)
+      lines.push(`- ${finiteText(p.name)} · ${finiteText(p.state)} · ${finiteText(p.detail)}`)
     }
   } else {
     lines.push(t('assistant.brief_clear'))
@@ -162,15 +168,15 @@ function displayText(out, query) {
     if (!query) return t('assistant.find_browse')
     return (out.panels && out.panels.length)
       ? t('assistant.find_result')
-      : t('assistant.find_none', { q: query || '' })
+      : t('assistant.find_none', { q: finiteText(query, '') })
   }
-  if (out.kind === 'page') return out.text || ''
+  if (out.kind === 'page') return finiteText(out.text, '')
   if (!out.used_llm && out.snapshot) return formatBrief(out.snapshot)
-  return out.text || ''
+  return finiteText(out.text, '')
 }
 
 function go(path) {
-  emit('go', path)
+  emit('go', finiteText(path, '') || '/')
   emit('close')
 }
 
@@ -185,22 +191,37 @@ function historyPayload() {
 async function send(action, preset = '') {
   const query = (preset || draft.value).trim()
   if (action === 'ask' && !query) return
+  sendGeneration += 1
+  const generation = sendGeneration
+  let userTurn = null
   if (query) {
-    turns.value.push({ role: 'user', content: query })
+    userTurn = { role: 'user', content: query }
+    turns.value.push(userTurn)
   } else if (action === 'brief') {
-    turns.value.push({ role: 'user', content: t('assistant.brief') })
+    userTurn = { role: 'user', content: t('assistant.brief') }
+    turns.value.push(userTurn)
   } else if (action === 'page') {
-    turns.value.push({ role: 'user', content: t('assistant.page') })
+    userTurn = { role: 'user', content: t('assistant.page') }
+    turns.value.push(userTurn)
   } else if (action === 'find') {
-    turns.value.push({ role: 'user', content: t('assistant.find') })
+    userTurn = { role: 'user', content: t('assistant.find') }
+    turns.value.push(userTurn)
   }
   draft.value = ''
   const pending = { role: 'assistant', content: t('assistant.thinking'), pending: true, panels: [] }
   turns.value.push(pending)
+  const dropStale = () => {
+    turns.value = turns.value.filter((row) => row !== pending && row !== userTurn)
+  }
   busy.value = true
   abortCtrl?.abort()
   abortCtrl = new AbortController()
   await nextTick()
+  if (generation !== sendGeneration || !props.open) {
+    dropStale()
+    if (generation === sendGeneration) busy.value = false
+    return
+  }
   logEl.value?.scrollTo?.(0, logEl.value.scrollHeight)
   try {
     const out = await askAssistant(query, {
@@ -210,25 +231,38 @@ async function send(action, preset = '') {
       path: route.path || '/',
       signal: abortCtrl.signal,
     })
+    if (generation !== sendGeneration || !props.open) {
+      dropStale()
+      return
+    }
     pending.pending = false
-    pending.content = displayText(out, query) || t('assistant.empty_reply')
+    pending.content = finiteText(displayText(out, query), '') || t('assistant.empty_reply')
     pending.panels = out.panels || []
     if (out.used_llm && out.model) {
-      pending.meta = t('assistant.via_model', { model: out.model })
+      pending.meta = t('assistant.via_model', { model: finiteText(out.model) })
     } else if (out.kind === 'brief' || out.kind === 'answer') {
       pending.meta = t('assistant.via_template')
     }
   } catch (err) {
+    if (generation !== sendGeneration || !props.open) {
+      dropStale()
+      return
+    }
     pending.pending = false
     pending.content = err.code === 'cancelled'
       ? t('assistant.cancelled')
-      : (err.message || String(err))
+      : finiteText(err.message || String(err))
   } finally {
-    busy.value = false
-    abortCtrl = null
-    await nextTick()
-    logEl.value?.scrollTo?.(0, logEl.value.scrollHeight)
-    inputEl.value?.focus()
+    if (generation === sendGeneration) {
+      busy.value = false
+      abortCtrl = null
+    }
+    if (props.open && generation === sendGeneration) {
+      await nextTick()
+      if (generation !== sendGeneration || !props.open) return
+      logEl.value?.scrollTo?.(0, logEl.value.scrollHeight)
+      inputEl.value?.focus()
+    }
   }
 }
 

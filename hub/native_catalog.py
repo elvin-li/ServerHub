@@ -15,7 +15,6 @@ import logging
 import os
 import shlex
 import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -26,8 +25,12 @@ from hub.errors import CODES, api_error
 from hub.host_address import host_ip
 from hub.launchd_cache import invalidate_launchd
 from hub.launchd_cache import running_labels as launchd_running_labels
+# One definition, in hub.paths: it tries `which brew` before the two standard
+# prefixes. The app store is the worst place to disagree about where brew is --
+# every install and uninstall goes through it.
+from hub.paths import BREW, user_home
 from hub.proc_cache import invalidate_processes, process_matches
-from hub.util import LazyPool, cached_snapshot, fan_out, sh
+from hub.util import LazyPool, cached_snapshot, fan_out, run_capped, sh
 
 _pool = LazyPool(3, "hub-native")
 
@@ -35,11 +38,14 @@ _pool = LazyPool(3, "hub-native")
 def shutdown_executor() -> None:
     _pool.shutdown()
 
-SERVICES_ROOT = Path.home() / "Services"
-# One definition, in hub.paths: it tries `which brew` before the two standard
-# prefixes. The app store is the worst place to disagree about where brew is --
-# every install and uninstall goes through it.
-from hub.paths import BREW  # noqa: E402
+
+def _default_services_root() -> Path:
+    """Services tree under ``~/Services``.  ``Path.home()`` leftover must not 500 import."""
+    home = user_home()
+    return (home / "Services") if home is not None else Path("/var/empty/serverhub-services")
+
+
+SERVICES_ROOT = _default_services_root()
 
 #: Install outcomes go to the panel's own log (~/Library/Logs/serverhub.err.log).
 #: An install that fails in a browser leaves no trace anywhere else: the response
@@ -64,6 +70,14 @@ CODES.setdefault(
     "catalog.entry_incomplete",
     (500, "catalog entry {app} does not list the packages it installs"),
 )
+CODES.setdefault(
+    "catalog.plist_write_failed",
+    (409, "could not write LaunchAgent {label}: {detail}"),
+)
+CODES.setdefault(
+    "catalog.path_blocked",
+    (409, "could not create {path}: {detail}"),
+)
 
 
 def _brew_env() -> dict:
@@ -79,6 +93,79 @@ def _brew_env() -> dict:
     return env
 
 
+def _as_text(value) -> str:
+    """Subprocess leftovers (bytes/None/int/``\\ud800``) must not 500 native listing/install."""
+    if isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", "replace")
+    elif isinstance(value, str):
+        text = value
+    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    elif value is None:
+        return ""
+    else:
+        try:
+            text = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _is_symlink(path: Path) -> bool:
+    try:
+        return path.is_symlink()
+    except OSError:
+        return False
+
+
+def _ensure_dir(path: Path) -> None:
+    """mkdir, or a coded 409 when a leftover file / symlink loop occupies *path*."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        if _is_dir(path):
+            return
+        raise OSError("not a directory")
+    except OSError as exc:
+        # leftover ``str(exc)`` RecursionError used to 500 native FileBrowser / HA install.
+        raise api_error(
+            "catalog.path_blocked", path=_as_text(path), detail=_as_text(exc)
+        )
+
+
+def _resolved(path: Path) -> str:
+    """``Path.resolve`` raises RuntimeError on a leftover symlink loop."""
+    try:
+        return str(path.resolve())
+    except (OSError, RuntimeError):
+        return str(path)
+
+
 def _which(name: str) -> str | None:
     """Resolve a brew-installed CLI from known prefixes before PATH.
 
@@ -90,10 +177,13 @@ def _which(name: str) -> str | None:
         return None
     for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
         p = Path(prefix) / name
-        if p.is_file():
+        if _is_file(p):
             return str(p)
-    found = shutil.which(name)
-    if found and Path(found).is_absolute() and Path(found).is_file():
+    try:
+        found = shutil.which(name)
+    except (OSError, ValueError):
+        found = None
+    if found and Path(found).is_absolute() and _is_file(Path(found)):
         return found
     return None
 
@@ -131,9 +221,9 @@ def redis_port_already_served() -> bool:
 
 def _app_exists(name: str) -> bool:
     # Support names with spaces e.g. "Plex Media Server"
-    return Path(f"/Applications/{name}.app").exists() or Path(
-        f"/Applications/{name}"
-    ).exists()
+    return _exists(Path(f"/Applications/{name}.app")) or _exists(
+        Path(f"/Applications/{name}")
+    )
 
 
 def _brew_list_installed() -> set[str]:
@@ -147,7 +237,7 @@ def _brew_list_installed() -> set[str]:
     Each half returns the empty set on a non-zero exit, exactly as the serial
     version did, so a missing cask listing still leaves the formulae usable.
     """
-    if not Path(BREW).is_file():
+    if not _is_file(Path(BREW)):
         return set()
 
     def listing(flag: str) -> set[str]:
@@ -167,7 +257,7 @@ def _screen_sharing_on() -> bool:
         ["/bin/launchctl", "print", "system/com.apple.screensharing"],
         timeout=5,
     )
-    if rc == 0 and "state = running" in (out or ""):
+    if rc == 0 and "state = running" in _as_text(out):
         return True
     # older
     rc2, out2, _ = sh(
@@ -637,8 +727,13 @@ def _check_one(spec: str, brew_installed: set[str] | None = None) -> bool:
     if spec.startswith("bin:"):
         return bool(_which(spec.split(":", 1)[1]))
     if spec.startswith("path:"):
-        p = spec.split(":", 1)[1].replace("~", str(Path.home()))
-        return Path(p).exists()
+        raw = spec.split(":", 1)[1]
+        if "~" in raw:
+            home = user_home()
+            if home is None:
+                return False
+            raw = raw.replace("~", str(home))
+        return _exists(Path(raw))
     if spec.startswith("brew:"):
         pkg = spec.split(":", 1)[1]
         inst = brew_installed if brew_installed is not None else _brew_list_installed()
@@ -709,9 +804,12 @@ def list_native_apps(force: bool = False) -> list[dict]:
 
     service_states: dict[str, str] = {}
     for s in service_rows:
+        if not isinstance(s, dict):
+            continue
         name = s.get("name") or ""
-        if name:
-            service_states[name] = (s.get("status") or "").lower()
+        if not name:
+            continue
+        service_states[str(name)] = str(s.get("status") or "").lower()
 
     # Install and liveness probes are independent per app, and each can shell out
     # (`launchctl print`, `brew list`, a `ps` scan).  Resolve them concurrently, then
@@ -755,7 +853,7 @@ def list_native_apps(force: bool = False) -> list[dict]:
     for app, (installed, running) in zip(NATIVE_APPS, probed):
         pkg = app.get("package")
         label = app.get("launchd_label")
-        url = _resolve_url(app.get("url_hint") or "", host, app.get("ports") or [])
+        url = _resolve_url(app.get("url_hint") or "", host, _port_list(app.get("ports")))
         items.append({
             "id": app["id"],
             "name": app["name"],
@@ -764,7 +862,7 @@ def list_native_apps(force: bool = False) -> list[dict]:
             "tags": list(app.get("tags") or []),
             "featured": bool(app.get("featured")),
             "notes": app.get("notes") or "",
-            "ports": list(app.get("ports") or []),
+            "ports": _port_list(app.get("ports")),
             "kind": "native",
             "method": app.get("method"),
             "package": pkg,
@@ -837,14 +935,39 @@ def _launchd_or_process_running(
                 ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
                 timeout=5,
             )
-            if rc == 0 and "state = running" in (out or ""):
+            if rc == 0 and "state = running" in _as_text(out):
                 return True
     return _process_running(process_substr)
 
 
+def _port_list(raw) -> list:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, (int, str)) and str(raw).strip():
+        items = [raw]
+    else:
+        return []
+    out = []
+    for p in items:
+        if p is None or p == "" or isinstance(p, bool):
+            continue
+        if isinstance(p, float) and (p != p or p in (float("inf"), float("-inf"))):
+            continue
+        if isinstance(p, (int, str)):
+            out.append(p)
+        elif isinstance(p, (bytes, bytearray)):
+            text = p.decode("utf-8", "replace").strip()
+            if text:
+                out.append(text)
+    return out
+
+
 def _resolve_url(hint: str, host: str, ports: list) -> str:
     """Fill {{HOST}} / build http URL from first web port when hint empty."""
-    host = host or "localhost"
+    host = host if isinstance(host, str) and host else "localhost"
+    if not isinstance(hint, str):
+        # A mapping leftover used to raise on hint.replace and 500 the store.
+        hint = ""
     if hint:
         return (
             hint.replace("{{HOST}}", host)
@@ -876,25 +999,23 @@ def _resolve_url(hint: str, host: str, ports: list) -> str:
 
 def _run(cmd: list[str], timeout: int = 600, shell: bool = False) -> dict:
     try:
-        p = subprocess.run(
-            cmd if not shell else cmd[0] if len(cmd) == 1 else " ".join(cmd),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=_brew_env(),
-            shell=shell,
+        argv: list[str] = list(cmd)
+        if shell:
+            argv = ["/bin/sh", "-c", cmd[0] if len(cmd) == 1 else " ".join(cmd)]
+        rc, msg = run_capped(
+            argv, timeout=timeout, env=_brew_env(), cap=4000,
         )
-        msg = ((p.stdout or "") + (p.stderr or "")).strip()
-        return {"ok": p.returncode == 0, "message": msg or f"exit {p.returncode}", "rc": p.returncode}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "message": "command timed out", "rc": -1}
+        msg = _as_text(msg)
+        if rc == -1 and not msg.strip():
+            msg = "command timed out"
+        return {"ok": rc == 0, "message": (msg or f"exit {rc}").strip(), "rc": rc}
     except Exception as e:
-        return {"ok": False, "message": str(e), "rc": -1}
+        return {"ok": False, "message": _as_text(e), "rc": -1}
 
 
 def _needs_admin_retry(msg: str) -> bool:
     """True when brew failed because sudo needs an interactive/admin session."""
-    low = (msg or "").lower()
+    low = _as_text(msg).lower()
     if "user canceled" in low or "用户取消" in low:  # cjk-input: matches macOS's own zh-locale cancel message
         return False
     return (
@@ -997,7 +1118,7 @@ def _host_for_url() -> str:
 
 
 def _app_url(app: dict) -> str:
-    return _resolve_url(app.get("url_hint") or "", _host_for_url(), app.get("ports") or [])
+    return _resolve_url(app.get("url_hint") or "", _host_for_url(), _port_list(app.get("ports")))
 
 
 def _write_launchagent(label: str, program_args: list[str], *,
@@ -1010,7 +1131,6 @@ def _write_launchagent(label: str, program_args: list[str], *,
     import plistlib
     from hub.paths import AGENTS_DIR
     pl_path = Path(AGENTS_DIR) / f"{label}.plist"
-    pl_path.parent.mkdir(parents=True, exist_ok=True)
     pl: dict[str, Any] = {
         "Label": label,
         "ProgramArguments": program_args,
@@ -1026,7 +1146,16 @@ def _write_launchagent(label: str, program_args: list[str], *,
     if env:
         pl["EnvironmentVariables"] = env
     from hub import secure_io
-    secure_io.replace_bytes(pl_path, plistlib.dumps(pl))
+    try:
+        pl_path.parent.mkdir(parents=True, exist_ok=True)
+        secure_io.replace_bytes(pl_path, plistlib.dumps(pl))
+    except OSError as exc:
+        # A leftover directory named <label>.plist used to IsADirectoryError
+        # and 500 native FileBrowser / Home Assistant install. leftover
+        # ``str(exc)`` RecursionError did the same on the write.
+        raise api_error(
+            "catalog.plist_write_failed", label=label, detail=_as_text(exc)
+        )
     return pl_path
 
 
@@ -1052,7 +1181,7 @@ def _launchctl_load(label: str, plist: Path) -> dict:
     from hub.paths import UID
     dom = f"gui/{UID}"
     target = f"{dom}/{label}"
-    if not plist.exists():
+    if not _exists(plist):
         return {"ok": False, "message": f"plist not found: {plist}"}
 
     # If already loaded, prefer kickstart -k (restart in place)
@@ -1091,16 +1220,18 @@ def _launchctl_unload(label: str) -> dict:
     target = f"{dom}/{label}"
     # prefer bootout; also try legacy unload
     rc, out, err = sh(["/bin/launchctl", "bootout", target], timeout=10)
+    out, err = _as_text(out), _as_text(err)
     if rc != 0:
-        pl = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
-        if pl.exists():
+        home = user_home()
+        pl = (home / "Library/LaunchAgents" / f"{label}.plist") if home is not None else None
+        if pl is not None and _exists(pl):
             sh(["/bin/launchctl", "unload", str(pl)], timeout=10)
     # Same reason as the load path: the confirmation below must not read a snapshot
     # taken before the bootout.
     _forget_host_state()
     ok = not _launchctl_is_loaded(label)
     return {
-        "ok": ok or rc in (0, 3, 5) or "No such" in ((err or "") + (out or "")),
+        "ok": ok or rc in (0, 3, 5) or "No such" in (err + out),
         "message": out or err or f"exit {rc}",
     }
 
@@ -1128,7 +1259,7 @@ def _pick_python() -> str:
         "/usr/bin/python3",
         shutil.which("python3") or "",
     ):
-        if c and Path(c).is_file() and Path(c).is_absolute():
+        if c and _is_file(Path(c)) and Path(c).is_absolute():
             return c
     return ""
 
@@ -1147,9 +1278,10 @@ def _enable_screen_sharing() -> dict:
     ]
     logs = []
     for cmd in cmds:
-        if not Path(cmd[0] if cmd[0] != "sudo" else cmd[2] if len(cmd) > 2 else "").exists() and cmd[0] != "sudo":
-            # kickstart path
-            pass
+        binary = cmd[2] if cmd[0] == "/usr/bin/sudo" and len(cmd) > 2 else cmd[0]
+        # Path.exists() re-raises EIO/ESTALE; that used to 500 Screen Sharing.
+        if binary and not _exists(Path(binary)):
+            continue
         r = _run(cmd, timeout=30)
         logs.append(f"$ {' '.join(cmd)}\n{r['message']}")
         if r["ok"] or _screen_sharing_on():
@@ -1238,7 +1370,7 @@ def _log_outcome(verb: str, app_id: str, app: dict, result: dict) -> None:
         app_id,
         app.get("method"),
         result.get("ok"),
-        (result.get("message") or "").replace("\n", " | ")[:600],
+        _as_text(result.get("message")).replace("\n", " | ")[:600],
     )
 
 
@@ -1246,7 +1378,7 @@ def install_native(app_id: str, variables: dict | None = None) -> dict:
     app = next((a for a in NATIVE_APPS if a["id"] == app_id), None)
     if not app:
         raise api_error("catalog.unknown_app", app=app_id)
-    if not Path(BREW).is_file() and app.get("method", "").startswith("brew"):
+    if not _is_file(Path(BREW)) and app.get("method", "").startswith("brew"):
         # Name the path actually checked. BREW is resolved at import (`which brew`
         # first, then the two standard prefixes), so quoting a fixed
         # /opt/homebrew path sent operators to look in the wrong place.
@@ -1402,28 +1534,33 @@ def _install_native(app: dict, app_id: str) -> dict:
 
 def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
     dest = SERVICES_ROOT / "filebrowser"
-    dest.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(dest)
     bin_path = dest / "filebrowser-bin"
     db_path = dest / "filebrowser.db"
     media = SERVICES_ROOT / "media"
-    media.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(media)
 
-    if not bin_path.exists():
+    if not _exists(bin_path):
         r = _run([BREW, "install", "filebrowser"], timeout=600)
         logs.append(r["message"])
         brew_bin = _which("filebrowser")
-        if not brew_bin and Path("/opt/homebrew/bin/filebrowser").is_file():
+        if not brew_bin and _is_file(Path("/opt/homebrew/bin/filebrowser")):
             brew_bin = "/opt/homebrew/bin/filebrowser"
         if brew_bin:
             try:
-                if bin_path.exists() or bin_path.is_symlink():
+                if _exists(bin_path) or _is_symlink(bin_path):
                     bin_path.unlink()
                 bin_path.symlink_to(brew_bin)
                 logs.append(f"linked {bin_path} → {brew_bin}")
             except OSError:
-                shutil.copy2(brew_bin, bin_path)
-                bin_path.chmod(0o755)
-                logs.append(f"copied {brew_bin} → {bin_path}")
+                # Dying-mount copy2 EIO used to 500 FileBrowser install after
+                # symlink_to / is_symlink already failed the same way.
+                try:
+                    shutil.copy2(brew_bin, bin_path)
+                    bin_path.chmod(0o755)
+                    logs.append(f"copied {brew_bin} → {bin_path}")
+                except OSError as exc:
+                    logs.append(f"could not place {brew_bin}: {exc}")
         elif not _brew_install_ok(r["message"], r["rc"]):
             return {
                 "ok": False,
@@ -1433,7 +1570,7 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
                 "notes": app.get("notes") or "",
             }
 
-    if not bin_path.exists():
+    if not _exists(bin_path):
         return {
             "ok": False,
             "message": "filebrowser binary not found.\n" + "\n".join(logs)[-800:],
@@ -1443,12 +1580,20 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
 
     # LaunchAgent (on-demand friendly: RunAtLoad true so start works; user can stop)
     label = "local.filebrowser"
-    log_dir = Path.home() / "Library/Logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    home = user_home()
+    if home is None:
+        return {
+            "ok": False,
+            "message": "home directory is unavailable",
+            "kind": "native",
+            "stack_id": app_id,
+        }
+    log_dir = home / "Library/Logs"
+    _ensure_dir(log_dir)
     plist = _write_launchagent(
         label,
         [
-            str(bin_path.resolve()),
+            _resolved(bin_path),
             "-d", str(db_path),
             "-r", str(media),
             "-a", "127.0.0.1",
@@ -1466,7 +1611,7 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
     logs.append(lr["message"])
     url = _app_url(app) or f"http://{_host_for_url()}:8125"
     return {
-        "ok": bin_path.exists(),
+        "ok": _exists(bin_path),
         "message": "FileBrowser is ready\n" + "\n".join(logs)[-1800:],
         "path": str(dest),
         "kind": "native",
@@ -1483,19 +1628,27 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
     hass = venv / "bin" / "hass"
     config = ha_dir / "config"
     label = "com.homeassistant.core"
-    log_out = Path.home() / "Library/Logs" / "homeassistant.log"
-    log_err = Path.home() / "Library/Logs" / "homeassistant.error.log"
+    home = user_home()
+    if home is None:
+        return {
+            "ok": False,
+            "message": "home directory is unavailable",
+            "kind": "native",
+            "stack_id": app_id,
+        }
+    log_out = home / "Library/Logs" / "homeassistant.log"
+    log_err = home / "Library/Logs" / "homeassistant.error.log"
 
-    ha_dir.mkdir(parents=True, exist_ok=True)
-    config.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(ha_dir)
+    _ensure_dir(config)
 
-    if hass.is_file():
+    if _is_file(hass):
         logs.append(f"{hass} already exists")
     else:
         py = _pick_python()
         logs.append(f"using Python: {py or '(none)'}")
         # ensure brew python if missing
-        if not py or not Path(py).is_file():
+        if not py or not _is_file(Path(py)):
             r0 = _run([BREW, "install", "python@3.14"], timeout=900)
             logs.append(r0["message"][-500:])
             py = _pick_python()
@@ -1509,7 +1662,7 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
             }
         r1 = _run([py, "-m", "venv", str(venv)], timeout=120)
         logs.append(r1["message"] or f"venv rc={r1['rc']}")
-        if not (venv / "bin" / "pip").exists():
+        if not _exists(venv / "bin" / "pip"):
             return {
                 "ok": False,
                 "message": "Failed to create venv\n" + "\n".join(logs)[-1500:],
@@ -1530,7 +1683,7 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
                     "kind": "native",
                     "stack_id": app_id,
                 }
-        if not hass.is_file():
+        if not _is_file(hass):
             return {
                 "ok": False,
                 "message": "hass executable not found after install\n" + "\n".join(logs)[-1500:],
@@ -1541,12 +1694,12 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
     # write/update LaunchAgent matching known-good layout
     env = {
         "PATH": f"{venv / 'bin'}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(Path.home()),
+        "HOME": str(home),
         "DYLD_LIBRARY_PATH": "/opt/homebrew/lib",
     }
     plist = _write_launchagent(
         label,
-        [str(hass.resolve()), "--config", str(config.resolve())],
+        [_resolved(hass), "--config", _resolved(config)],
         working_dir=str(ha_dir),
         stdout=str(log_out),
         stderr=str(log_err),
@@ -1580,12 +1733,13 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
                 f'launchctl kickstart -k "gui/$(id -u)/{label}"\n'
             )
         upd.chmod(0o755)
-    except FileExistsError:
+    except OSError:
+        # Leftover file or directory named like the script; keep the operator's copy.
         pass
 
     url = _app_url(app) or f"http://{_host_for_url()}:8123"
     return {
-        "ok": hass.is_file(),
+        "ok": _is_file(hass),
         "message": "Home Assistant Core is ready\n" + "\n".join(logs)[-2000:],
         "path": str(ha_dir),
         "kind": "native",
@@ -1701,7 +1855,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
     if method == "script" and app.get("script_id") == "filebrowser":
         _launchctl_unload("local.filebrowser")
         dest = SERVICES_ROOT / "filebrowser"
-        if not dest.exists():
+        if not _exists(dest):
             return {"ok": True, "message": "~/Services/filebrowser not found", "kind": "native", "stack_id": app_id}
         if remove_data:
             try:
@@ -1713,7 +1867,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
                     "stack_id": app_id,
                 }
             except Exception as e:
-                return {"ok": False, "message": str(e), "kind": "native", "stack_id": app_id}
+                return {"ok": False, "message": _as_text(e), "kind": "native", "stack_id": app_id}
         return {
             "ok": True,
             "message": 'FileBrowser stopped. ~/Services/filebrowser was kept (check "Also delete data" to remove it).',
@@ -1726,16 +1880,17 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
         _launchctl_unload(label)
         logs.append(f"stopped {label}")
         ha_dir = SERVICES_ROOT / "homeassistant"
-        if remove_data and ha_dir.exists():
+        if remove_data and _exists(ha_dir):
             try:
                 # keep config backup safety: only remove if remove_data
                 shutil.rmtree(ha_dir)
                 logs.append(f"removed {ha_dir}")
             except Exception as e:
-                return {"ok": False, "message": str(e), "kind": "native", "stack_id": app_id}
+                return {"ok": False, "message": _as_text(e), "kind": "native", "stack_id": app_id}
             # leave plist so reinstall can rewrite; or remove
-            pl = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
-            if pl.exists():
+            home = user_home()
+            pl = (home / "Library/LaunchAgents" / f"{label}.plist") if home is not None else None
+            if pl is not None and _exists(pl):
                 try:
                     pl.unlink()
                 except OSError:

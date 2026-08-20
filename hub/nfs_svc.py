@@ -20,13 +20,12 @@ from __future__ import annotations
 
 import re
 import shlex
-import time
 from pathlib import Path
 
 from hub.macos_admin import run_admin_sequence
 from hub.paths import DATA_DIR
-from hub.secure_io import write_secret_text
-from hub.util import cached_snapshot, sh
+from hub.secure_io import replace_secret_text
+from hub.util import cached_snapshot, read_text_capped, sh, strftime_now
 
 NFSD = "/sbin/nfsd"
 SHOWMOUNT = "/usr/bin/showmount"
@@ -37,6 +36,8 @@ CHOWN = "/usr/sbin/chown"
 
 EXPORTS_PATH = Path("/etc/exports")
 _STAGE_PATH = DATA_DIR / "exports.staged"
+#: Leftover multi-MB ``/etc/exports`` used to OOM GET /api/nfs.
+_EXPORTS_CAP = 256 * 1024
 
 #: Host specifications accepted in a client list: bare IPv4, IPv4/prefix,
 #: hostname, or the literal ``everyone``.  Anything outside this set is refused
@@ -65,6 +66,25 @@ class NfsConfigError(ValueError):
         self.params = params
 
 
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/nfs."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 # ── parsing ──────────────────────────────────────────────────────────────────
 
 def _parse_line(line: str) -> dict | None:
@@ -75,7 +95,7 @@ def _parse_line(line: str) -> dict | None:
     try:
         tokens = shlex.split(stripped)
     except ValueError:
-        return {"raw": stripped, "path": "", "clients": [], "unparsed": True}
+        return {"raw": _as_text(stripped), "path": "", "clients": [], "unparsed": True}
     if not tokens:
         return None
 
@@ -113,24 +133,32 @@ def _parse_line(line: str) -> dict | None:
         mask = clients.pop(0)
 
     return {
-        "raw": stripped,
-        "path": paths[0] if paths else "",
-        "extra_paths": paths[1:],
-        "clients": clients,
-        "network": network,
-        "mask": mask,
+        "raw": _as_text(stripped),
+        "path": _as_text(paths[0] if paths else ""),
+        "extra_paths": [_as_text(p) for p in paths[1:]],
+        "clients": [_as_text(c) for c in clients],
+        "network": _as_text(network),
+        "mask": _as_text(mask),
         "readonly": readonly,
         "alldirs": alldirs,
-        "maproot": maproot,
-        "mapall": mapall,
+        "maproot": _as_text(maproot),
+        "mapall": _as_text(mapall),
         "unparsed": False,
     }
+
+
+def _exports_exists() -> bool:
+    """``/etc/exports`` presence.  EIO/ESTALE is "unreadable", not a 500."""
+    try:
+        return EXPORTS_PATH.exists()
+    except OSError:
+        return False
 
 
 def read_exports() -> list[dict]:
     """Current ``/etc/exports`` entries.  Missing file means "nothing exported"."""
     try:
-        text = EXPORTS_PATH.read_text(errors="replace")
+        text = read_text_capped(EXPORTS_PATH, _EXPORTS_CAP, errors="replace")
     except FileNotFoundError:
         return []
     except OSError:
@@ -148,29 +176,43 @@ def read_exports() -> list[dict]:
 def _validate_entry(entry: dict) -> dict:
     """Normalize one caller-supplied export, raising NfsConfigError on refusal."""
     path = str(entry.get("path") or "").strip()
-    if not path or not path.startswith("/"):
+    # Control characters before Path(): a NUL never reaches the later check,
+    # and Path("…\0…") raises ValueError instead of NfsConfigError.
+    if (
+        not path
+        or not path.startswith("/")
+        or any(ord(c) < 0x20 or ord(c) == 0x7F for c in path)
+        or '"' in path
+    ):
         raise NfsConfigError("nfs.bad_path")
-    resolved = Path(path)
-    if not resolved.is_dir():
+    try:
+        resolved = Path(path)
+    except ValueError:
+        raise NfsConfigError("nfs.bad_path")
+    try:
+        is_dir = resolved.is_dir()
+    except OSError:
+        # is_dir() raises ESTALE/EIO on a dying mount; pathlib only swallows
+        # ENOENT/ELOOP. resolve() is the later catch — this used to 500 first.
+        raise NfsConfigError("nfs.bad_path")
+    if not is_dir:
         raise NfsConfigError("nfs.path_missing", path=path)
-    real = str(resolved.resolve())
+    try:
+        real = str(resolved.resolve())
+    except (OSError, RuntimeError, ValueError):
+        # resolve() raises RuntimeError on a symlink loop; OSError on a
+        # vanished mount. Neither is a 500.
+        raise NfsConfigError("nfs.bad_path")
     if real in _PROTECTED_ROOTS or any(
         real == p or (p != "/" and real.startswith(p + "/")) for p in _PROTECTED_ROOTS if p != "/"
     ):
         raise NfsConfigError("nfs.protected_path", path=real)
-    # exports(5) is whitespace-delimited, and render_line only quotes a path
-    # containing a literal space.  A tab (or \r, \v, \f) therefore split one
-    # validated path into several fields, so the directory actually exported was
-    # never the directory that was checked above, and the trailing fields became
-    # export *options*: a name like "pub\t-mapall=root" installs an
-    # identity-mapping option the request never asked for.  Reject every control
-    # character rather than just the newline.
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in path) or '"' in path:
-        raise NfsConfigError("nfs.bad_path")
 
     clients_raw = entry.get("clients") or []
     if isinstance(clients_raw, str):
         clients_raw = [c for c in re.split(r"[\s,]+", clients_raw) if c]
+    elif not isinstance(clients_raw, list):
+        clients_raw = []
     clients: list[str] = []
     everyone = False
     for client in clients_raw:
@@ -241,7 +283,7 @@ def render_exports(entries: list[dict]) -> str:
     """Full ``/etc/exports`` body for *entries* (already validated)."""
     header = [
         "# Managed by ServerHub. Edits made here are replaced on the next save.",
-        f"# Last written: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Last written: {strftime_now('%Y-%m-%d %H:%M:%S')}",
         "",
     ]
     lines = [render_line(e) for e in entries]
@@ -252,7 +294,7 @@ def render_exports(entries: list[dict]) -> str:
 
 def _nfsd_status() -> dict:
     rc, out, err = sh([NFSD, "status"], timeout=8)
-    text = (out or err or "").strip()
+    text = _as_text(out or err).strip()
     lowered = text.lower()
     enabled = "is enabled" in lowered or "is running" in lowered
     running = "is running" in lowered
@@ -269,7 +311,7 @@ def _active_exports() -> list[dict]:
     if rc != 0:
         return []
     rows = []
-    for line in out.splitlines()[1:]:
+    for line in _as_text(out).splitlines()[1:]:
         parts = line.split()
         if not parts:
             continue
@@ -280,7 +322,7 @@ def _active_exports() -> list[dict]:
 def check_exports() -> dict:
     """Validate the live ``/etc/exports`` without changing anything."""
     rc, out, err = sh([NFSD, "checkexports"], timeout=10)
-    text = (out or err or "").strip()
+    text = _as_text(out or err).strip()
     return {"ok": rc == 0, "detail": text[:600]}
 
 
@@ -289,14 +331,14 @@ def overview(force: bool = False) -> dict:
     entries = read_exports()
     status = _nfsd_status()
     data = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "server": status,
         "exports_path": str(EXPORTS_PATH),
-        "exports_exists": EXPORTS_PATH.exists(),
+        "exports_exists": _exports_exists(),
         "entries": entries,
         "count": len(entries),
         "active": _active_exports() if status["running"] else [],
-        "check": check_exports() if EXPORTS_PATH.exists() else {"ok": True, "detail": ""},
+        "check": check_exports() if _exports_exists() else {"ok": True, "detail": ""},
     }
     return data
 
@@ -322,7 +364,13 @@ def save_exports(entries: list[dict]) -> dict:
         seen.add(entry["path"])
 
     body = render_exports(validated)
-    write_secret_text(_STAGE_PATH, body)
+    # Reused stage file: O_TRUNC mid-write left an empty table that the
+    # admin copy then installed over /etc/exports.
+    try:
+        replace_secret_text(_STAGE_PATH, body)
+    except OSError as exc:
+        # ENOSPC / EIO on the stage file used to 500 POST /api/nfs/exports.
+        return {"ok": False, "error": "failed", "message": _as_text(exc)[:200]}
 
     result = run_admin_sequence(
         [
@@ -366,4 +414,4 @@ def server_action(action: str) -> dict:
 def statistics() -> dict:
     """Server-side NFS counters, useful when a client reports slow mounts."""
     rc, out, _ = sh([NFSSTAT, "-s"], timeout=6)
-    return {"ok": rc == 0, "text": (out or "")[:4000]}
+    return {"ok": rc == 0, "text": _as_text(out)[:4000]}

@@ -24,17 +24,44 @@ from typing import Any
 
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd
-from hub.paths import AGENTS_DIR, DATA_DIR, UID
-from hub.util import sh
+from hub.paths import AGENTS_DIR, DATA_DIR, UID, user_home
+from hub.util import read_bytes_capped, sh, strftime_now
+
+
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as bytes/None; leftover ``str(exc)`` RecursionError must not 500 uninstall."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+def _default_services_root() -> Path:
+    """Services tree under ``~/Services``.  ``Path.home()`` leftover must not 500 import."""
+    home = user_home()
+    return (home / "Services") if home is not None else Path("/var/empty/serverhub-services")
+
 
 #: Program trees may be deleted only when they sit strictly inside this root.
 #: The live Kiro-Go agent (and other self-hosted LaunchAgents) keep their
 #: binary and config under ~/Services/<name>; nothing outside that tree is
 #: ever removed by this path.
-SERVICES_ROOT = Path.home() / "Services"
+SERVICES_ROOT = _default_services_root()
 
 #: Backups live in private mutable state so a removed plist is recoverable.
 BACKUP_DIR = DATA_DIR / "uninstalled-agents"
+#: Leftover multi-MB LaunchAgent plist used to OOM uninstall preview.
+_PLIST_CAP = 256 * 1024
 
 #: Labels the panel must never bootout.  Removing the panel or menu bar kills the
 #: request in flight and leaves no supervised process to restore it; removing the
@@ -68,6 +95,22 @@ PROTECTED_LABELS = frozenset({
 _LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
+def _safe_resolve(path) -> Path | None:
+    """``Path.resolve()`` raises RuntimeError on a symlink loop, not OSError."""
+    try:
+        return Path(path).expanduser().resolve()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return None
+
+
+def _tree_present(path: Path) -> bool:
+    """``Path.exists()`` re-raises EIO/ESTALE; that used to 500 uninstall preview."""
+    try:
+        return path.exists()
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def _forget_override(label: str) -> None:
     """Drop the services.yaml override so the row does not stay as a ghost."""
     try:
@@ -81,22 +124,33 @@ def _tree_under_services(path: Path | None) -> Path | None:
     """Return *path* if it is a directory strictly inside ~/Services."""
     if path is None:
         return None
-    try:
-        resolved = path.expanduser().resolve()
-        root = Path(SERVICES_ROOT).expanduser().resolve()
-    except OSError:
+    resolved = _safe_resolve(path)
+    root = _safe_resolve(SERVICES_ROOT)
+    if resolved is None or root is None:
         return None
     if resolved == root or root not in resolved.parents:
         return None
     return resolved
 
 
+def _program_parent(program: str) -> str:
+    if not program:
+        return ""
+    try:
+        return str(Path(program).parent)
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
 def _removable_tree(program: str, workdir: str) -> Path | None:
     """Working directory, or the program's parent, when either is under Services."""
-    for raw in (workdir, str(Path(program).parent) if program else ""):
+    for raw in (workdir, _program_parent(program)):
         if not raw:
             continue
-        tree = _tree_under_services(Path(raw))
+        try:
+            tree = _tree_under_services(Path(raw))
+        except (OSError, ValueError, TypeError):
+            continue
         if tree is not None:
             return tree
     return None
@@ -105,10 +159,14 @@ def _removable_tree(program: str, workdir: str) -> Path | None:
 def _agent_paths(path: Path) -> tuple[str, str, str]:
     """``(label, program, workdir)`` from one plist, tolerating a broken file."""
     try:
-        data = plistlib.loads(path.read_bytes())
+        data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
     except Exception:
         return path.stem, "", ""
+    if not isinstance(data, dict):
+        return path.stem, "", ""
     args = data.get("ProgramArguments") or []
+    if not isinstance(args, list):
+        args = []
     program = str(args[0]) if args else str(data.get("Program") or "")
     return (
         str(data.get("Label") or path.stem),
@@ -129,21 +187,27 @@ def _other_agents_in(tree: Path, label: str) -> list[str]:
     ``remove_data`` is only offered when nothing else lives there.
     """
     agents = Path(AGENTS_DIR)
-    if not agents.is_dir():
+    try:
+        if not agents.is_dir():
+            return []
+    except OSError:
         return []
     users: list[str] = []
-    for path in sorted(agents.glob("*.plist")):
+    try:
+        paths = sorted(agents.glob("*.plist"))
+    except OSError:
+        return []
+    for path in paths:
         if path.stem.lower() == label.lower():
             continue
         other, program, workdir = _agent_paths(path)
         if other.lower() == label.lower():
             continue
-        for raw in (workdir, str(Path(program).parent) if program else ""):
+        for raw in (workdir, _program_parent(program)):
             if not raw:
                 continue
-            try:
-                resolved = Path(raw).expanduser().resolve()
-            except OSError:
+            resolved = _safe_resolve(raw)
+            if resolved is None:
                 continue
             if resolved == tree or tree in resolved.parents:
                 users.append(other)
@@ -161,18 +225,25 @@ def _plist_path(label: str) -> Path:
     from the filename.  Matching only ``<label>.plist`` made uninstall report
     "unknown" for a job the services page had just shown.
     """
-    agents = Path(AGENTS_DIR).resolve()
-    candidate = (agents / f"{label}.plist").resolve()
-    if candidate.parent != agents:
+    agents = _safe_resolve(AGENTS_DIR)
+    if agents is None:
         raise api_error("services.uninstall_not_supported", id=label)
-    if candidate.is_file():
+    raw_candidate = agents / f"{label}.plist"
+    candidate = _safe_resolve(raw_candidate)
+    if candidate is not None and candidate.parent != agents:
+        raise api_error("services.uninstall_not_supported", id=label)
+    try:
+        named = candidate is not None and candidate.is_file()
+    except OSError:
+        named = False
+    if named:
         declared, _, _ = _agent_paths(candidate)
         if declared == label or declared.lower() == label.lower():
             return candidate
     try:
         for path in sorted(agents.glob("*.plist")):
-            resolved = path.resolve()
-            if resolved.parent != agents:
+            resolved = _safe_resolve(path)
+            if resolved is None or resolved.parent != agents:
                 continue
             declared, _, _ = _agent_paths(resolved)
             if declared == label or declared.lower() == label.lower():
@@ -181,9 +252,13 @@ def _plist_path(label: str) -> Path:
         pass
     # A leftover ``<label>.plist`` whose Label is some other job must not
     # be archived under this name.
-    if candidate.is_file():
+    try:
+        leftover = candidate is not None and candidate.is_file()
+    except OSError:
+        leftover = False
+    if leftover:
         raise api_error("services.uninstall_unknown", id=label)
-    return candidate
+    return candidate if candidate is not None else raw_candidate
 
 
 def preview(label: str) -> dict[str, Any]:
@@ -200,24 +275,19 @@ def preview(label: str) -> dict[str, Any]:
         raise api_error("services.uninstall_protected", id=label)
 
     path = _plist_path(label)
-    if not path.is_file():
+    try:
+        present = path.is_file()
+    except OSError as exc:
+        # leftover ``str(exc)`` RecursionError used to 500 GET uninstall preview.
+        raise api_error("services.uninstall_failed", id=label, error=_as_text(exc))
+    if not present:
         # Distinct from "not supported": the caller named a plausible agent that
         # simply is not installed here, which the UI reports differently.
         raise api_error("services.uninstall_unknown", id=label)
 
-    program = ""
-    workdir = ""
-    try:
-        with path.open("rb") as fh:
-            data = plistlib.load(fh)
-        args = data.get("ProgramArguments") or []
-        program = str(args[0]) if args else str(data.get("Program") or "")
-        workdir = str(data.get("WorkingDirectory") or "")
-    except Exception:
-        # An unreadable plist can still be booted out and archived; the preview
-        # simply has less to show.
-        program = ""
-        workdir = ""
+    # An unreadable or leftover multi-MB plist can still be booted out;
+    # the preview simply has less to show.
+    _, program, workdir = _agent_paths(path)
 
     tree = _removable_tree(program, workdir)
     shared_with = _other_agents_in(tree, label) if tree is not None else []
@@ -232,7 +302,7 @@ def preview(label: str) -> dict[str, Any]:
         "program": program,
         "workdir": workdir,
         "can_remove_data": bool(
-            tree is not None and tree.exists() and not shared_with
+            tree is not None and _tree_present(tree) and not shared_with
         ),
         "remove_data_path": str(tree) if tree is not None else "",
         #: Why ``can_remove_data`` is false despite a tree being present.
@@ -250,25 +320,33 @@ def uninstall(label: str, *, remove_data: bool = False) -> dict[str, Any]:
     info = preview(label)
     path = Path(info["plist"])
 
+    # Create the backup dir *before* bootout.  mkdir after unload used to
+    # 500 on a read-only data dir while the agent was already gone.
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            BACKUP_DIR.chmod(0o700)
+        except OSError:
+            pass
+    except OSError as exc:
+        # leftover ``str(exc)`` RecursionError used to 500 POST uninstall mkdir.
+        raise api_error("services.uninstall_failed", id=label, error=_as_text(exc))
+
     # bootout is best-effort: an agent that is already unloaded returns non-zero
     # but the uninstall should still complete and archive the plist.
     rc, out, err = sh(["/bin/launchctl", "bootout", f"gui/{UID}/{label}"], timeout=20)
+    out, err = _as_text(out), _as_text(err)
     # The services page refetches right after an uninstall and reads the shared
     # listing (hub/launchd_cache.py); without this it would still show the agent.
     invalidate_launchd()
     booted_out = rc == 0
 
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        BACKUP_DIR.chmod(0o700)
-    except OSError:
-        pass
-
-    backup = BACKUP_DIR / f"{label}.{time.strftime('%Y%m%d-%H%M%S')}.plist"
+    backup = BACKUP_DIR / f"{label}.{strftime_now('%Y%m%d-%H%M%S', '0')}.plist"
     try:
         shutil.move(str(path), str(backup))
     except OSError as exc:
-        raise api_error("services.uninstall_failed", id=label, error=str(exc))
+        # leftover ``str(exc)`` RecursionError used to 500 POST uninstall archive.
+        raise api_error("services.uninstall_failed", id=label, error=_as_text(exc))
     try:
         backup.chmod(0o600)
     except OSError:
@@ -280,12 +358,18 @@ def uninstall(label: str, *, remove_data: bool = False) -> dict[str, Any]:
     # would take the sibling agents' programs with it.
     if remove_data and info.get("can_remove_data"):
         tree = _tree_under_services(Path(info.get("remove_data_path") or ""))
-        if tree is not None and tree.is_dir():
+        try:
+            can_delete = tree is not None and tree.is_dir()
+        except OSError:
+            can_delete = False
+        if can_delete:
             try:
                 shutil.rmtree(tree)
                 removed_tree = str(tree)
-            except OSError as exc:
-                raise api_error("services.uninstall_failed", id=label, error=str(exc))
+            except OSError:
+                # Plist is already archived.  Failing the whole uninstall here
+                # reported 500 while the agent was already gone.
+                removed_tree = ""
 
     _forget_override(label)
 

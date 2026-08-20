@@ -20,7 +20,7 @@
           <input v-model="cron" type="text" placeholder="30 3 * * *" :aria-label="t('sched.cron')"
                  style="flex:1;min-width:120px" @input="preset = 'custom'" />
         </div>
-        <div class="meta" style="margin-top:4px;font-size:11px;color:var(--sub)">{{ cronText }}</div>
+        <div class="meta" style="margin-top:4px;font-size:11px;color:var(--sub)">{{ finiteText(cronText) }}</div>
       </div>
       <template v-if="type === 'command' || type === 'rsync'">
         <div class="k">{{ t('sched.timeout_s') }}</div>
@@ -77,18 +77,18 @@
         </button>
       </div>
       <div v-if="previewError" class="meta" role="status" aria-live="polite" style="color:var(--err,#c33);font-size:12px;margin-bottom:8px">
-        {{ previewError }}
+        {{ finiteText(previewError) }}
       </div>
       <div v-else-if="preview" role="status" aria-live="polite"
            style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px;font-size:12px">
         <div style="margin-bottom:6px">
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: preview.creates }) }}</span>
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: preview.updates }) }}</span>
-          <span class="badge" :class="preview.deletes ? 'warn' : ''">{{ t('sched.preview_deletes', { n: preview.deletes }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(preview.creates) }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(preview.updates) }) }}</span>
+          <span class="badge" :class="preview.deletes ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(preview.deletes) }) }}</span>
         </div>
         <div v-if="!preview.total" class="meta">{{ t('sched.preview_empty') }}</div>
         <div v-else style="max-height:140px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre">
-          <div v-for="(line, i) in preview.samples" :key="i">{{ line }}</div>
+          <div v-for="(line, i) in (Array.isArray(preview.samples) ? preview.samples : [])" :key="i">{{ finiteText(line) }}</div>
         </div>
       </div>
     </template>
@@ -98,7 +98,7 @@
       <div class="kv" style="margin-bottom:8px">
         <div class="k">{{ t('sched.stack') }}</div>
         <select v-model="stackId" :aria-label="t('sched.stack')">
-          <option v-for="s in stacks" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
+          <option v-for="s in stacks" :key="s.id" :value="s.id">{{ finiteText(s.name, '') || finiteText(s.id) }}</option>
         </select>
         <div class="k">{{ t('sched.stack_retain') }}</div>
         <input v-model.number="retain" type="number" min="1" max="365" :aria-label="t('sched.stack_retain')" />
@@ -119,9 +119,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getStacks, rsyncPreview } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 
 const props = defineProps({
   job: { type: Object, default: null },
@@ -147,7 +148,7 @@ const command = ref(p.command || '')
 const direction = ref(p.direction || 'push')
 const src = ref(p.src || '')
 const dest = ref(p.dest || '')
-const excludeText = ref((p.exclude || []).join('\n'))
+const excludeText = ref((p.exclude || []).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
 const del = ref(Boolean(p.delete))
 const compress = ref(Boolean(p.compress))
 const bwlimit = ref(p.bwlimit_kbps || null)
@@ -159,6 +160,9 @@ const stacks = ref([])
 const previewing = ref(false)
 const preview = ref(null)
 const previewError = ref('')
+let pageAlive = true
+let previewGeneration = 0
+let stacksGeneration = 0
 
 const PRESETS = {
   hourly: '0 * * * *',
@@ -181,7 +185,7 @@ const cronText = computed(() => {
   if (fields.every((f) => f === '*')) return t('sched.cron_every_minute')
   const step = min.match(/^\*\/(\d+)$/)
   if (step && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
-    return t('sched.cron_every_n_minutes', { n: step[1] })
+    return t('sched.cron_every_n_minutes', { n: finiteN(step[1]) })
   }
   if (num(min) !== null && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
     return t('sched.cron_hourly_at', { m: String(num(min)).padStart(2, '0') })
@@ -226,15 +230,21 @@ function buildParams() {
 }
 
 async function doPreview() {
+  const generation = ++previewGeneration
   previewing.value = true
   previewError.value = ''
   preview.value = null
   try {
-    preview.value = await rsyncPreview(rsyncParams())
+    const next = await rsyncPreview(rsyncParams())
+    if (generation !== previewGeneration || !pageAlive) return
+    preview.value = next
   } catch (e) {
-    previewError.value = e.message || String(e)
+    if (generation !== previewGeneration || !pageAlive) return
+    previewError.value = finiteText(e.message || String(e), '')
   } finally {
-    previewing.value = false
+    // getStacks() used to share this counter; a generation match after that
+    // increment left Preview stuck. pageAlive still clears while mounted.
+    if (pageAlive) previewing.value = false
   }
 }
 
@@ -250,14 +260,23 @@ function save() {
 }
 
 onMounted(async () => {
+  pageAlive = true
   if (!props.allowedTypes.includes('stack_backup')) return
+  const generation = ++stacksGeneration
   try {
     const d = await getStacks()
+    if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = Array.isArray(d?.stacks) ? d.stacks : []
     if (!stackId.value && stacks.value.length) stackId.value = stacks.value[0].id
   } catch {
+    if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = []
   }
+})
+onUnmounted(() => {
+  pageAlive = false
+  previewGeneration += 1
+  stacksGeneration += 1
 })
 </script>
 

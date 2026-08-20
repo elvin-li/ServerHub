@@ -65,6 +65,14 @@ describe('startVisibleInterval', () => {
     expect(fn).toHaveBeenCalledTimes(1)
   })
 
+  it('does not invoke fn when disposed before the first tick', async () => {
+    const fn = vi.fn()
+    const dispose = startVisibleInterval(fn, MS)
+    dispose()
+    await vi.advanceTimersByTimeAsync(MS * 5)
+    expect(fn).not.toHaveBeenCalled()
+  })
+
   it('never schedules a tick while the tab starts hidden', async () => {
     setHidden(true)
     const fn = vi.fn()

@@ -1,16 +1,19 @@
 """Hot-path pools, coded errors, and auth cache headers added in the opt pass."""
 from __future__ import annotations
 
+import json
 import unittest
+from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from hub.errors import CODES
+from hub.errors import CODES, api_error, exc_detail
 from hub.power_svc import power_action
-from hub.util import LazyPool
-from hub import jobs, metrics, sensors_svc, status
+from hub.util import LazyPool, strftime_now
+from hub import jobs, metrics, sensors_svc, status, util as hub_util
 
 
 class TestLazyPool(unittest.TestCase):
@@ -22,6 +25,23 @@ class TestLazyPool(unittest.TestCase):
             pool.shutdown()
             second = pool._executor()
             self.assertIsNot(second, first)
+        finally:
+            pool.shutdown()
+
+    def test_submit_after_executor_shutdown_runs_inline(self):
+        """``ThreadPoolExecutor.submit`` RuntimeError used to 500 GET /api/status."""
+        pool = LazyPool(1, "test-lazy-inline")
+        try:
+            pool._executor().shutdown(wait=True)
+            self.assertEqual(pool.submit(lambda: 7).result(), 7)
+        finally:
+            pool.shutdown()
+
+    def test_map_after_executor_shutdown_runs_inline(self):
+        pool = LazyPool(1, "test-lazy-map")
+        try:
+            pool._executor().shutdown(wait=True)
+            self.assertEqual(list(pool.map(lambda x: x + 1, [1, 2])), [2, 3])
         finally:
             pool.shutdown()
 
@@ -67,6 +87,29 @@ class TestStatusFanoutIsolation(unittest.TestCase):
         self.assertEqual(info["compose_projects"], [{"id": "x"}])
         self.assertEqual(info["nginx_sites"], [])
 
+    def test_junk_rows_and_unhashable_state_do_not_500_status(self):
+        """Grouping skipped non-dicts; problems/.get and counts[state] still 500'd."""
+        with (
+            patch.object(status, "discover_launchd", return_value=[
+                "not-a-row",
+                {"id": "ok-svc", "name": "ok", "state": "ok", "group": "Core"},
+                {"id": "weird", "name": "weird", "state": ["down"], "group": "Core"},
+            ]),
+            patch.object(status, "discover_containers", return_value=([], True)),
+            patch.object(status, "discover_vms", return_value=[]),
+            patch.object(status, "collect_system", return_value={"load1": 0.1}),
+            patch.object(status, "collect_scripts", return_value=[]),
+            patch.object(status, "collect_apps", return_value=[]),
+            patch.object(status, "cfg", return_value={"settings": {"adaptive": False}}),
+        ):
+            data = status._build_status()
+        self.assertEqual(data["system"]["load1"], 0.1)
+        ids = [s["id"] for g in data["groups"] for s in g["services"]]
+        self.assertIn("ok-svc", ids)
+        self.assertIn("weird", ids)
+        self.assertTrue(all(isinstance(p, dict) for p in data["problems"]))
+        self.assertIn("unknown", data["counts"])
+
 
 class TestMetricsSampleReadsSensorsOnce(unittest.TestCase):
     def test_sample_reuses_a_warm_full_snapshot(self):
@@ -108,6 +151,27 @@ class TestMetricsSampleReadsSensorsOnce(unittest.TestCase):
             sample = metrics._sample()
         self.assertEqual(sample["cpu_used_pct"], 8.0)
         self.assertIsNone(sample["net_rx_bps"])
+
+    def test_huge_cpu_used_pct_does_not_500_sample(self):
+        """``float(10**400)`` OverflowError is not ValueError."""
+        warm = {
+            "cpu_used_pct": 10 ** 400,
+            "network": {},
+            "memory": {},
+        }
+        with (
+            patch("hub.sensors_svc.peek_sensors", return_value=warm),
+            patch("hub.sensors_svc.collect_light", side_effect=AssertionError("light")),
+            patch("hub.sensors_svc.collect_sensors", side_effect=AssertionError("full")),
+            patch("hub.metrics.os.getloadavg", return_value=(0.5, 0.4, 0.3)),
+            patch("hub.metrics.shutil.disk_usage", return_value=type(
+                "DU", (), {"used": 50 * 2**30, "total": 100 * 2**30}
+            )()),
+            patch("hub.metrics._ncpu", return_value=8),
+        ):
+            sample = metrics._sample()
+        json.dumps(sample, allow_nan=False)
+        self.assertNotEqual(sample["cpu_used_pct"], 10 ** 400)
 
 
 class TestSensorsStayOffTheIdlePath(unittest.TestCase):
@@ -199,6 +263,35 @@ class TestCodedErrors(unittest.TestCase):
             power_action("sleep", confirm=False)
         self.assertEqual(raised.exception.detail["code"], "power.confirm_required")
 
+    def test_leftover_inf_delay_does_not_sleep_forever(self):
+        """The response used to clamp inf *after* ``time.sleep(delay_sec)``."""
+        from hub import power_svc as pwr
+
+        slept = []
+
+        class _InlineThread:
+            def __init__(self, target=None, **kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with (
+            patch.object(pwr.threading, "Thread", _InlineThread),
+            patch.object(pwr, "_do_power"),
+            patch.object(pwr.time, "sleep", side_effect=lambda s: slept.append(s)),
+        ):
+            out = pwr.power_action("sleep", confirm=True, delay_sec=float("inf"))
+        self.assertEqual(out["scheduled_in_sec"], 2.0)
+        self.assertEqual(slept, [2.0])
+        json.dumps(out, allow_nan=False)
+
+    def test_leftover_inf_clock_strftime_is_empty_not_500(self):
+        """``time.strftime`` OverflowError on leftover inf clock used to 500 GET /api/status."""
+        with patch.object(hub_util.time, "strftime", side_effect=OverflowError):
+            self.assertEqual(strftime_now("%H:%M:%S"), "")
+            self.assertEqual(strftime_now("%Y-%m-%d %H:%M:%S"), "")
+
     def test_cli_invalid_value_is_coded(self):
         from hub import cli_args
 
@@ -239,6 +332,23 @@ class TestCodedErrors(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             get_metrics(range_="forever")
         self.assertEqual(raised.exception.detail["code"], "metrics.bad_range")
+
+    def test_local_client_action_skips_junk_status_rows(self):
+        from hub.routers import api as api_router
+
+        with patch.object(api_router, "full_status", return_value={
+            "groups": [
+                "nope",
+                {"services": "not-a-list"},
+                {"services": [
+                    "x",
+                    {"id": "web", "actions": "start"},
+                    {"id": "db", "actions": ["start", "stop"]},
+                ]},
+            ]
+        }):
+            self.assertTrue(api_router._local_client_action_allowed("db", "start"))
+            self.assertFalse(api_router._local_client_action_allowed("web", "start"))
 
     def test_services_wifi_autostart_and_actions_are_coded(self):
         from hub import actions, autostart_svc
@@ -361,6 +471,14 @@ class TestCodedErrors(unittest.TestCase):
             with self.assertRaises(HTTPException) as raised:
                 nginx_svc.test_config()
         self.assertEqual(raised.exception.detail["code"], "nginx.conf_missing")
+
+        with (
+            patch.object(nginx_svc, "NGINX_CONF", RealPath(__file__)),
+            patch.object(nginx_svc, "NGINX_BIN", "/no/such/nginx-binary"),
+        ):
+            result = nginx_svc.test_config()
+        self.assertFalse(result["ok"])
+        self.assertIn("not found", result["message"])
 
         with patch.object(autostart_svc.Path, "home", return_value=RealPath("/tmp/opt50h-no-home")):
             with self.assertRaises(HTTPException) as raised:
@@ -543,6 +661,20 @@ class TestCodedErrors(unittest.TestCase):
         post = notify_channels._post("ftp://example.invalid", {"x": 1})
         self.assertEqual(post.get("code"), "notify.bad_url")
 
+    def test_container_recreate_does_not_capture_unbounded_output(self):
+        from hub import containers_svc
+        src = Path(containers_svc.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def _recreate_simple"): src.index("\ndef start_update_container_job")]
+        self.assertIn("run_capped", body)
+        self.assertNotIn("capture_output=True", body)
+
+    def test_compose_cmd_does_not_capture_unbounded_output(self):
+        from hub import apps_manage_svc
+        src = Path(apps_manage_svc.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def _compose_cmd"): src.index("\ndef _container_log")]
+        self.assertIn("run_capped", body)
+        self.assertNotIn("capture_output=True", body)
+
     def test_compose_cmd_refusals_carry_a_translatable_code(self):
         from hub import apps_manage_svc
 
@@ -715,6 +847,34 @@ class TestDashboardCollectorIsolation(unittest.TestCase):
         self.assertEqual(snap["interfaces"], [])
         self.assertTrue(snap["orbstack"])
 
+    def test_host_snapshot_huge_memsize_does_not_500(self):
+        """``int('9'*400) / 2**30`` OverflowError'd GET /api/system/host."""
+        from hub.routers import system_extra
+
+        def fake_sh(argv, **kwargs):
+            last = argv[-1] if argv else ""
+            if last == "hw.memsize":
+                return 0, "9" * 400, ""
+            if last == "hw.ncpu":
+                return 0, "8", ""
+            if argv and argv[0].endswith("hostname"):
+                return 0, "nas.local", ""
+            return 0, "ok", ""
+
+        with (
+            patch.object(system_extra, "is_high", return_value=False),
+            patch.object(system_extra, "sh", fake_sh),
+            patch.object(system_extra, "default_interface", return_value="en0"),
+            patch.object(system_extra, "_iface_addresses", return_value=[]),
+            patch.object(system_extra, "host_ip", return_value="10.0.0.2"),
+            patch.object(system_extra, "peek_engine", return_value=False),
+        ):
+            snap = system_extra._host_snapshot(True)
+        json.dumps(snap, allow_nan=False)
+        self.assertEqual(snap["hostname"], "nas.local")
+        self.assertEqual(snap["ncpu"], 8)
+        self.assertIsNone(snap["mem_total_gb"])
+
 
 class TestStatusCarriesRamTotal(unittest.TestCase):
     def test_collect_system_reads_hw_memsize(self):
@@ -767,6 +927,208 @@ class TestStatusCarriesRamTotal(unittest.TestCase):
         src = Path(__file__).resolve().parents[1].joinpath("hub", "app_factory.py").read_text()
         self.assertIn("def _warm_hotpath", src)
         self.assertIn("hotpath-warmer", src)
+
+
+class TestComposeReadRace(unittest.TestCase):
+    def test_vanished_compose_is_coded_not_500(self):
+        import tempfile
+
+        from hub import compose_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            compose = Path(tmp) / "docker-compose.yml"
+            compose.write_text("services: {}\n", encoding="utf-8")
+            stack = {
+                "id": "x", "name": "x", "path": tmp, "compose_path": str(compose),
+            }
+            compose.unlink()
+            with patch.object(compose_svc, "_find_stack", return_value=stack):
+                with self.assertRaises(HTTPException) as ctx:
+                    compose_svc.get_compose("x")
+            self.assertEqual(ctx.exception.detail["code"], "container.no_compose_file")
+
+    def test_read_text_filenotfounderror_is_coded(self):
+        import tempfile
+
+        from hub import compose_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            compose = Path(tmp) / "docker-compose.yml"
+            compose.write_text("services: {}\n", encoding="utf-8")
+            stack = {
+                "id": "x", "name": "x", "path": tmp, "compose_path": str(compose),
+            }
+
+            def racing(*a, **k):
+                raise FileNotFoundError()
+
+            with (
+                patch.object(compose_svc, "_find_stack", return_value=stack),
+                patch.object(compose_svc, "read_text_capped", racing),
+            ):
+                with self.assertRaises(HTTPException) as ctx:
+                    compose_svc.get_compose("x")
+            self.assertEqual(ctx.exception.detail["code"], "container.no_compose_file")
+
+
+class TestAutostartCorruptPlist(unittest.TestCase):
+    def test_a_non_dict_plist_is_not_overwritten(self):
+        import tempfile
+
+        from hub import autostart_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp)
+            path = agents / "local.demo.plist"
+            path.write_bytes(b"[]")
+            written = []
+            with (
+                patch.object(autostart_svc, "AGENTS_DIR", agents),
+                patch.object(autostart_svc, "_write_plist", lambda p, d: written.append(d)),
+                patch.object(autostart_svc, "sh", lambda *a, **k: (0, "", "")),
+                patch.object(autostart_svc, "invalidate_launchd", lambda: None),
+            ):
+                with self.assertRaises(HTTPException) as ctx:
+                    autostart_svc.set_launchd_autostart("local.demo", True)
+            self.assertEqual(ctx.exception.detail["code"], "autostart.bad_plist")
+            self.assertEqual(written, [])
+
+    def test_a_missing_label_is_not_overwritten(self):
+        import tempfile
+
+        from hub import autostart_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp)
+            path = agents / "local.demo.plist"
+            path.write_bytes(b"{}")
+            written = []
+            with (
+                patch.object(autostart_svc, "AGENTS_DIR", agents),
+                patch.object(autostart_svc, "_write_plist", lambda p, d: written.append(d)),
+                patch.object(autostart_svc, "sh", lambda *a, **k: (0, "", "")),
+                patch.object(autostart_svc, "invalidate_launchd", lambda: None),
+            ):
+                with self.assertRaises(HTTPException) as ctx:
+                    autostart_svc.set_launchd_autostart("local.demo", False)
+            self.assertEqual(ctx.exception.detail["code"], "autostart.bad_plist")
+            self.assertEqual(written, [])
+
+
+class TestDockerNetworkInspectTypes(unittest.TestCase):
+    def test_a_dict_inspect_payload_does_not_500(self):
+        from hub import network_svc
+
+        def fake_docker(*args, **kwargs):
+            if args[:2] == ("network", "ls"):
+                return 0, "abc123\tbridge\tbridge\tlocal\n", ""
+            return 0, '{"Name": "bridge", "IPAM": {"Config": [{"Subnet": "172.17.0.0/16"}]}}', ""
+
+        with (
+            patch.object(network_svc, "engine_up", return_value=True),
+            patch.object(network_svc, "docker", fake_docker),
+        ):
+            rows = network_svc.docker_networks_detail()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["subnet"], "172.17.0.0/16")
+
+    def test_a_string_inspect_payload_does_not_500(self):
+        from hub import network_svc
+
+        def fake_docker(*args, **kwargs):
+            if args[:2] == ("network", "ls"):
+                return 0, "abc123\tbridge\tbridge\tlocal\n", ""
+            return 0, '"not-an-object"', ""
+
+        with (
+            patch.object(network_svc, "engine_up", return_value=True),
+            patch.object(network_svc, "docker", fake_docker),
+        ):
+            rows = network_svc.docker_networks_detail()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["subnet"], "")
+
+
+class TestCodedErrorParamsDoNot500(unittest.TestCase):
+    def test_leftover_inf_param_does_not_500_the_error_body(self):
+        """Starlette allow_nan=False: leftover Infinity used to 500 a coded 409."""
+        exc = api_error("catalog.no_free_port", port=float("inf"))
+        self.assertEqual(exc.status_code, 409)
+        json.dumps(exc.detail, allow_nan=False)
+        self.assertIsNone(exc.detail["params"]["port"])
+
+    def test_leftover_bytes_and_date_params_do_not_500(self):
+        exc = api_error("compose.unknown_stack", stack=b"web")
+        json.dumps(exc.detail, allow_nan=False)
+        self.assertEqual(exc.detail["params"]["stack"], "web")
+        exc = api_error("catalog.no_free_port", port=date(2026, 1, 2))
+        json.dumps(exc.detail, allow_nan=False)
+        self.assertEqual(exc.detail["params"]["port"], "2026-01-02")
+
+    def test_isoformat_inf_param_does_not_500(self):
+        """A leftover ``isoformat()`` returning inf used to 500 a coded error body."""
+        class _Stamp:
+            def isoformat(self):
+                return float("inf")
+
+        exc = api_error("compose.unknown_stack", stack=_Stamp())
+        json.dumps(exc.detail, allow_nan=False)
+        json.dumps(exc.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertIsNone(exc.detail["params"]["stack"])
+
+    def test_leftover_surrogate_param_does_not_500_the_error_body(self):
+        """Params were cleaned; the formatted message still 500'd UTF-8 encode."""
+        exc = api_error("compose.unknown_stack", stack="\ud800web")
+        json.dumps(exc.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertNotIn("\ud800", exc.detail["message"])
+        self.assertNotIn("\ud800", exc.detail["params"]["stack"])
+        exc = api_error("catalog.no_free_port", **{"\ud800": 8080, "port": 8080})
+        json.dumps(exc.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertNotIn("\ud800", json.dumps(exc.detail, ensure_ascii=False))
+
+    def test_recursing_format_param_does_not_500(self):
+        """``str.format`` RecursionError is not ValueError; leftover recursive
+        ``__format__`` used to 500 every coded error body."""
+        class Recursing:
+            def __format__(self, spec):
+                raise RecursionError("nested")
+            def __str__(self):
+                raise RecursionError("nested")
+
+        exc = api_error("compose.unknown_stack", stack=Recursing())
+        json.dumps(exc.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertEqual(exc.detail["message"], "unknown stack: {stack}")
+        self.assertIsNone(exc.detail["params"]["stack"])
+
+    def test_exc_detail_recursion_and_surrogate_do_not_500(self):
+        """str(e) RecursionError / leftover ``\\ud800`` used to 500 GET /api/photoshub."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        self.assertEqual(exc_detail(Recursing()), "error")
+        text = exc_detail(ValueError("ok\ud800"))
+        text.encode("utf-8")
+        self.assertNotIn("\ud800", text)
+        from hub.routers import photoshub_api, ollama_api
+        with patch.object(photoshub_api.photoshub_svc, "status", side_effect=Recursing()):
+            with self.assertRaises(HTTPException) as ctx:
+                photoshub_api.get_status()
+        json.dumps(ctx.exception.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        with patch.object(ollama_api.ollama_svc, "status", side_effect=Recursing()):
+            with self.assertRaises(HTTPException) as ctx:
+                ollama_api.get_status()
+        json.dumps(ctx.exception.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+    def test_pending_delete_infinite_limit_does_not_500(self):
+        from hub.routers import photoshub_api
+        with patch.object(
+            photoshub_api.photoshub_svc, "pending_delete_assets",
+            return_value={"assets": [], "count": 0},
+        ) as pending:
+            out = photoshub_api.pending_delete(limit=float("inf"))
+        self.assertEqual(out["count"], 0)
+        pending.assert_called_once_with(limit=60)
 
 
 if __name__ == "__main__":

@@ -87,6 +87,25 @@ class LaunchdDiscoveryTests(unittest.TestCase):
         self.assertEqual(item["state"], "down")
         self.assertEqual(item["detail"], "Loaded but not running")
 
+    def test_keepalive_nonzero_exit_is_crash_looping(self):
+        item = self._discover(
+            ["/opt/homebrew/bin/cloudflared", "tunnel", "run"],
+            ("-", "255"),
+            KeepAlive=True,
+        )
+        self.assertEqual(item["state"], "down")
+        self.assertEqual(item["detail"], "Crash-looping · last exit 255")
+        self.assertIn("start", item["actions"])
+
+    def test_oneshot_nonzero_exit_is_exited(self):
+        item = self._discover(
+            ["/usr/bin/true"],
+            ("-", "1"),
+            KeepAlive=False,
+        )
+        self.assertEqual(item["state"], "down")
+        self.assertEqual(item["detail"], "Exited · last exit 1")
+
     def test_interval_job_last_exit_nonzero_is_ok(self):
         item = self._discover(
             ["/bin/zsh", "/tmp/nightly.sh"],
@@ -180,6 +199,39 @@ class LaunchdDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(item["state"], "ok")
         self.assertIn("pid 4242", item["detail"])
+
+    def test_huge_plist_does_not_oom_discover(self):
+        """``open(rb)`` of leftover multi-MB LaunchAgent used to OOM GET /api/status."""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "huge.plist").write_bytes(b"x" * (2 * 1024 * 1024))
+            (Path(tmp) / "com.example.service.plist").write_bytes(plistlib.dumps({
+                "Label": "com.example.service",
+                "ProgramArguments": ["/usr/bin/true"],
+                "RunAtLoad": True,
+            }))
+            with (
+                patch.object(launchd, "AGENTS_DIR", tmp),
+                patch.object(launchd, "launchctl_table", return_value={}),
+                patch.object(launchd, "override", return_value={}),
+                patch.object(launchd, "friendly_name", return_value="Example"),
+                patch.object(launchd, "guess_group", return_value="Native"),
+                patch.object(launchd, "ports_from_plist", return_value=[]),
+                patch.object(launchd, "ports_for_pid", return_value=[]),
+                patch.object(launchd, "configured_signatures", return_value=[]),
+                patch.object(launchd, "url_from_plist", return_value=None),
+                patch.object(launchd, "resolve_template", side_effect=lambda value: value),
+                patch.object(launchd, "enrich_service", side_effect=lambda item, **_: item),
+                patch.object(launchd, "port_open", lambda port, **kw: True),
+                patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
+                patch.object(launchd, "_http_alive", lambda port: True),
+            ):
+                items = launchd.discover_launchd()
+        json.dumps(items, allow_nan=False)
+        ids = {item["id"] for item in items}
+        self.assertIn("com.example.service", ids)
+        self.assertIn("huge", ids)
 
     def test_plist_label_wins_over_filename(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -450,6 +502,12 @@ class HttpAliveTests(unittest.TestCase):
         with _CloseTCP() as srv:
             with patch.object(launchd, "_tls_alive", lambda port: False):
                 self.assertFalse(launchd._http_alive(srv.port))
+
+    def test_infinite_port_is_dead_not_raised(self):
+        """YAML leftover ``port: .inf`` used to OverflowError this fan_out probe."""
+        self.assertFalse(launchd._http_alive(float("inf")))
+        self.assertFalse(launchd._http_alive(float("nan")))
+        self.assertFalse(launchd._http_alive({}))
 
 
 if __name__ == "__main__":

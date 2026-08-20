@@ -38,6 +38,7 @@ from typing import Any
 
 from hub.config import cfg, update_settings
 from hub.errors import api_error
+from hub.util import strftime_now
 
 #: Volume kinds that may join a pool.  System volumes are never eligible: the
 #: boot disk cannot be a pool member without making the pool undetachable.
@@ -63,16 +64,94 @@ def _pool_config() -> dict:
     candidate disks and let the operator decide, not invent a pool.
     """
     raw = (cfg().get("settings") or {}).get("storage_pool") or {}
-    members = [str(m) for m in (raw.get("members") or []) if str(m).strip()]
-    policy = str(raw.get("policy") or DEFAULT_POLICY)
+    if not isinstance(raw, dict):
+        raw = {}
+    members_raw = raw.get("members")
+    members = []
+    if isinstance(members_raw, list):
+        for m in members_raw:
+            text = _text(m).strip()
+            if text:
+                members.append(text)
+    policy = _text(raw.get("policy")) or DEFAULT_POLICY
     if policy not in PLACEMENT_POLICIES:
         policy = DEFAULT_POLICY
+    try:
+        min_free = float(raw.get("min_free_gb") or 0)
+    except (TypeError, ValueError, OverflowError):
+        min_free = 0.0
+    if min_free != min_free or min_free in (float("inf"), float("-inf")):
+        min_free = 0.0
     return {
-        "name": str(raw.get("name") or "pool"),
+        "name": _text(raw.get("name")) or "pool",
         "members": members,
         "policy": policy,
-        "min_free_gb": float(raw.get("min_free_gb") or 0),
+        "min_free_gb": min_free,
     }
+
+
+def _text(raw) -> str:
+    """Volume string field as a JSON-safe string.
+
+    ``list_volumes`` leftover ``mount: inf`` / ``disk_id: bytes`` used to 500
+    GET /api/storage/pool under Starlette's ``allow_nan=False`` encoder.
+    A leftover ``\\ud800`` YAML name / mount still 500'd the UTF-8 encode.
+    """
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else ""
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", "replace")
+    elif isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return ""
+    elif raw in (None, False, True, "") or isinstance(raw, (dict, set, frozenset)):
+        return ""
+    elif not isinstance(raw, str):
+        iso = getattr(raw, "isoformat", None)
+        if callable(iso):
+            try:
+                stamped = iso()
+            except Exception:
+                return ""
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to TypeError ``.encode`` on GET /api/storage/pool.
+            if stamped is raw:
+                return ""
+            return _text(stamped)
+        return ""
+    return raw.encode("utf-8", "replace").decode("utf-8")
+
+
+def _finite_float(raw) -> float:
+    if isinstance(raw, bool) or raw in (None, ""):
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if value != value or value in (float("inf"), float("-inf")):
+        return 0.0
+    return value
+
+
+def _finite_int(raw) -> int:
+    if isinstance(raw, bool) or raw in (None, ""):
+        return 0
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _json_gb(raw) -> float:
+    """Finite GB total. Two leftover ``1e308`` members summed to inf and
+    ``int(round(inf/inf*100))`` OverflowError'd GET /api/storage/pool."""
+    try:
+        value = round(float(raw), 1)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if value != value or value in (float("inf"), float("-inf")):
+        return 0.0
+    return value
 
 
 def _candidates() -> list[dict]:
@@ -80,22 +159,26 @@ def _candidates() -> list[dict]:
     from hub import storage_svc
 
     out: list[dict] = []
-    for vol in storage_svc.list_volumes():
+    volumes = storage_svc.list_volumes()
+    for vol in volumes if isinstance(volumes, list) else []:
+        if not isinstance(vol, dict):
+            continue
         if vol.get("kind") not in POOLABLE_KINDS:
             continue
-        mount = vol.get("mount") or ""
+        mount = _text(vol.get("mount"))
         if not mount:
             continue
+        disk_id = _text(vol.get("disk_id")) or None
         out.append(
             {
                 "mount": mount,
-                "device": vol.get("device") or "",
-                "disk_id": vol.get("disk_id"),
-                "filesystem": vol.get("filesystem") or "",
-                "total_gb": float(vol.get("total_gb") or 0),
-                "used_gb": float(vol.get("used_gb") or 0),
-                "avail_gb": float(vol.get("avail_gb") or 0),
-                "pct": int(vol.get("pct") or 0),
+                "device": _text(vol.get("device")),
+                "disk_id": disk_id,
+                "filesystem": _text(vol.get("filesystem")),
+                "total_gb": _finite_float(vol.get("total_gb")),
+                "used_gb": _finite_float(vol.get("used_gb")),
+                "avail_gb": _finite_float(vol.get("avail_gb")),
+                "pct": _finite_int(vol.get("pct")),
             }
         )
     out.sort(key=lambda v: v["mount"])
@@ -127,16 +210,22 @@ def _summarise(members: list[dict]) -> dict:
     space — not by the sum.  Reporting only the sum is how a JBOD union
     surprises people, so both numbers are returned.
     """
-    total = sum(m["total_gb"] for m in members)
-    used = sum(m["used_gb"] for m in members)
-    avail = sum(m["avail_gb"] for m in members)
-    largest_single_write = max((m["avail_gb"] for m in members), default=0.0)
+    total = _json_gb(sum(m["total_gb"] for m in members))
+    used = _json_gb(sum(m["used_gb"] for m in members))
+    avail = _json_gb(sum(m["avail_gb"] for m in members))
+    largest_single_write = _json_gb(
+        max((m["avail_gb"] for m in members), default=0.0)
+    )
+    try:
+        pct = int(round(used / total * 100)) if total else 0
+    except (OverflowError, ValueError, ZeroDivisionError, TypeError):
+        pct = 0
     return {
-        "total_gb": round(total, 1),
-        "used_gb": round(used, 1),
-        "avail_gb": round(avail, 1),
-        "pct": int(round(used / total * 100)) if total else 0,
-        "largest_single_file_gb": round(largest_single_write, 1),
+        "total_gb": total,
+        "used_gb": used,
+        "avail_gb": avail,
+        "pct": pct,
+        "largest_single_file_gb": largest_single_write,
         "member_count": len(members),
     }
 
@@ -147,15 +236,15 @@ def _fault_model(members: list[dict]) -> list[dict]:
     The point of the whole design: this table would read "all data lost" for
     every row under RAID0 or an APFS volume group.
     """
-    total = sum(m["total_gb"] for m in members)
+    total = _json_gb(sum(m["total_gb"] for m in members))
     rows = []
     for m in members:
         rows.append(
             {
                 "mount": m["mount"],
                 "disk_id": m["disk_id"],
-                "at_risk_gb": round(m["used_gb"], 1),
-                "survives_gb": round(total - m["total_gb"], 1),
+                "at_risk_gb": _json_gb(m["used_gb"]),
+                "survives_gb": _json_gb(total - m["total_gb"]),
                 # Spelled out rather than implied: independence is the feature.
                 "other_members_affected": False,
             }
@@ -221,7 +310,7 @@ def _build() -> dict:
         # Restated on every response so the UI never has to assume it.
         "raid": False,
         "parity": False,
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": strftime_now("%H:%M:%S"),
     }
 
 
@@ -322,7 +411,9 @@ def save_pool(mounts: list[str], policy: str = DEFAULT_POLICY, name: str = "",
     clean_name = str(name or "").strip() or "pool"
     try:
         floor = max(0.0, float(min_free_gb or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        floor = 0.0
+    if floor != floor or floor in (float("inf"), float("-inf")):
         floor = 0.0
 
     update_settings({

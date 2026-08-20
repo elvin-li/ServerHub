@@ -350,5 +350,51 @@ class HashGroupTests(unittest.TestCase):
         self.assertIsNone(digests[1])
 
 
+class TreeVanishedDirTests(unittest.TestCase):
+    def test_scandir_filenotfound_is_not_permission_denied(self):
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            target = root / "live"
+            target.mkdir()
+            with (
+                patch.object(
+                    usage_svc, "scan_roots",
+                    return_value=[{"id": "t", "name": "t", "path": str(root)}],
+                ),
+                patch.object(usage_svc, "_is_never_walk", return_value=False),
+                patch.object(usage_svc.files_svc, "is_protected", return_value=False),
+                patch.object(usage_svc.os, "scandir", side_effect=FileNotFoundError),
+            ):
+                with self.assertRaises(HTTPException) as ctx:
+                    usage_svc.tree(str(target), "t")
+            self.assertEqual(ctx.exception.detail["code"], "files.not_found")
+
+    def test_scandir_permissionerror_stays_permission_denied(self):
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            target = root / "live"
+            target.mkdir()
+            with (
+                patch.object(
+                    usage_svc, "scan_roots",
+                    return_value=[{"id": "t", "name": "t", "path": str(root)}],
+                ),
+                patch.object(usage_svc, "_is_never_walk", return_value=False),
+                patch.object(usage_svc.files_svc, "is_protected", return_value=False),
+                patch.object(usage_svc.os, "scandir", side_effect=PermissionError),
+            ):
+                with self.assertRaises(HTTPException) as ctx:
+                    usage_svc.tree(str(target), "t")
+            self.assertEqual(ctx.exception.detail["code"], "files.permission_denied")
+
+
 if __name__ == "__main__":
     unittest.main()

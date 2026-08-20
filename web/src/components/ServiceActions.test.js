@@ -65,6 +65,7 @@ describe('table and card render identical offers', () => {
 describe('busy state', () => {
   it('disables control buttons but never logs or details', () => {
     const w = mountVariant('table', { busy: true })
+    expect(w.get('.act-row').attributes('aria-busy')).toBe('true')
     for (const b of w.findAll('button')) {
       const isControl = b.text().startsWith('services.act_')
       expect(b.attributes('disabled') !== undefined, b.text()).toBe(isControl)

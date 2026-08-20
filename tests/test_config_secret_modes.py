@@ -128,6 +128,23 @@ class BootstrapModeTests(_ConfigSandbox):
         config._bootstrap()
         self.assertIn("keep: true", self.yaml.read_text(encoding="utf-8"))
 
+    def test_huge_example_does_not_oom_bootstrap(self):
+        """``Path.read_text()`` of leftover multi-MB example used to OOM first boot."""
+        example = self.root / "services.yaml.example"
+        example.write_bytes(b"x" * (2 * 1024 * 1024))
+        config._bootstrap()
+        self.assertTrue(self.yaml.is_file())
+        self.assertLess(self.yaml.stat().st_size, 64 * 1024)
+        self.assertIn("settings:", self.yaml.read_text(encoding="utf-8"))
+
+    def test_binary_example_does_not_500_bootstrap(self):
+        """UnicodeDecodeError is not OSError; leftover latin-1 example used to 500 cfg()."""
+        example = self.root / "services.yaml.example"
+        example.write_bytes(b"\xff\xfe settings: {}\n")
+        config._bootstrap()
+        self.assertTrue(self.yaml.is_file())
+        self.assertIn("settings:", self.yaml.read_text(encoding="utf-8"))
+
     def test_bootstrap_survives_a_read_only_directory(self):
         # A packaged install can have an unwritable install dir; _bootstrap must
         # not raise there, because cfg() is responsible for surfacing that.
@@ -366,6 +383,10 @@ class WiringTests(unittest.TestCase):
         self.assertIn("secure_io.create_secret_text(YAML_PATH", src)
         self.assertIn("secure_io.replace_secret_text(YAML_PATH", src)
         self.assertIn("secure_io.copy_secret_file(YAML_PATH", src)
+        src_io = (BASE / "hub" / "secure_io.py").read_text(encoding="utf-8")
+        body = src_io[src_io.index("def copy_secret_file"): src_io.index("\ndef append_text")]
+        self.assertIn("read_bytes_capped", body)
+        self.assertNotIn(".read_bytes()", body)
 
     def test_bootstrap_does_not_use_the_truncating_helper(self):
         """Creating the config must not be able to overwrite one.

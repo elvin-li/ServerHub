@@ -4,6 +4,7 @@ from __future__ import annotations
 import platform
 
 from hub.config import cfg, update_settings
+from hub.errors import api_error
 from hub.host_address import configured_host, host_ip as effective_host_ip
 from hub.util import LazyPool, sh, ttl_memo
 
@@ -12,6 +13,25 @@ _pool = LazyPool(7, "hub-identity")
 
 def shutdown_executor() -> None:
     _pool.shutdown()
+
+
+def _as_text(value) -> str:
+    """JSON-encodable scutil/sysctl field.  Leftover ``\\ud800`` used to 500 GET /api/identity."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
 
 
 @ttl_memo(300.0)
@@ -28,7 +48,9 @@ def platform_string() -> str:
     Process-static in practice: the OS version and the interpreter do not change under
     a running panel.
     """
-    return platform.platform()
+    # Leftover ``\\ud800`` in ``uname`` used to 500 GET /api/diagnostics
+    # (``_diag_host`` / Tools About) under Starlette's UTF-8 encoder.
+    return _as_text(platform.platform())
 
 
 def get_identity() -> dict:
@@ -58,18 +80,21 @@ def get_identity() -> dict:
     tz = _result(f_tz, "") or ""
     platform_name = _result(f_platform, "") or ""
     host_ip = _result(f_ip, "") or ""
-    s = cfg().get("settings") or {}
+    raw = cfg().get("settings")
+    s = raw if isinstance(raw, dict) else {}
+    # Fallbacks (platform.node / machine, configured_host) used to skip
+    # `_as_text`; leftover ``\ud800`` there 500'd GET /api/identity.
     return {
-        "hostname": hostname if rc == 0 else platform.node(),
-        "computer_name": comp if rc2 == 0 else "",
-        "local_hostname": local if rc3 == 0 else "",
-        "model": model if rc4 == 0 else platform.machine(),
-        "platform": platform_name,
-        "arch": platform.machine(),
-        "host_ip": host_ip,
-        "host_ip_config": configured_host(),
-        "comment": s.get("server_comment") or s.get("description") or "",
-        "timezone": tz,
+        "hostname": _as_text(hostname if rc == 0 else platform.node()),
+        "computer_name": _as_text(comp) if rc2 == 0 else "",
+        "local_hostname": _as_text(local) if rc3 == 0 else "",
+        "model": _as_text(model if rc4 == 0 else platform.machine()),
+        "platform": _as_text(platform_name),
+        "arch": _as_text(platform.machine()),
+        "host_ip": _as_text(host_ip),
+        "host_ip_config": _as_text(configured_host()),
+        "comment": _as_text(s.get("server_comment") or s.get("description") or ""),
+        "timezone": _as_text(tz),
     }
 
 
@@ -92,11 +117,13 @@ def time_zone() -> str:
     symlink case. Only one of them runs on a given host.
     """
     rc, out, _ = sh(["/bin/ls", "-l", "/etc/localtime"], timeout=3)
-    if rc == 0 and "zoneinfo/" in out:
-        return out.split("zoneinfo/")[-1].strip()
+    text = _as_text(out)
+    if rc == 0 and "zoneinfo/" in text:
+        return text.split("zoneinfo/")[-1].strip()
     rc, out, _ = sh(["/usr/bin/readlink", "/etc/localtime"], timeout=3)
-    if "zoneinfo/" in (out or ""):
-        return out.split("zoneinfo/")[-1].strip()
+    text = _as_text(out)
+    if "zoneinfo/" in text:
+        return text.split("zoneinfo/")[-1].strip()
     return ""
 
 
@@ -107,16 +134,38 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
     if comment is not None:
         patch["server_comment"] = comment
     if host_ip is not None:
-        patch["host_ip"] = host_ip.strip()
+        patch["host_ip"] = str(host_ip).strip()
     if patch:
         update_settings(patch)
         msgs.append("Panel settings updated")
     if computer_name:
+        name = str(computer_name).strip()
+        if (
+            not name
+            or len(name) > 63
+            or name.startswith("-")
+            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in name)
+        ):
+            raise api_error("identity.bad_name")
         # Try without sudo first
-        rc, out, err = sh(["/usr/sbin/scutil", "--set", "ComputerName", computer_name], timeout=5)
+        rc, out, err = sh(["/usr/sbin/scutil", "--set", "ComputerName", name], timeout=5)
         if rc != 0:
-            msgs.append(f"Setting ComputerName needs administrator privileges: {err or out}")
+            # Leftover ``\ud800`` in scutil stderr used to 500 PUT /api/identity.
+            msgs.append(
+                "Setting ComputerName needs administrator privileges: "
+                + _as_text(err or out)
+            )
         else:
             msgs.append("ComputerName set")
-            sh(["/usr/sbin/scutil", "--set", "LocalHostName", computer_name.replace(" ", "-")[:63]], timeout=5)
-    return {"ok": True, "message": "; ".join(msgs) or "No changes", "identity": get_identity()}
+            sh(["/usr/sbin/scutil", "--set", "LocalHostName", name.replace(" ", "-")[:63]], timeout=5)
+    try:
+        identity = get_identity()
+    except Exception:
+        identity = {}
+    if not isinstance(identity, dict):
+        identity = {}
+    return {
+        "ok": True,
+        "message": _as_text("; ".join(msgs) or "No changes"),
+        "identity": identity,
+    }

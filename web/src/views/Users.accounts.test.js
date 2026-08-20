@@ -33,10 +33,10 @@ const ACCOUNTS = [
   { username: 'mom', role: 'member', resources: ['jellyfin'], twofa_enabled: false },
 ]
 
-function mountUsers() {
+function mountUsers(toast = vi.fn()) {
   return mount(Users, {
     global: {
-      provide: { toast: vi.fn() },
+      provide: { toast },
       stubs: { SkeletonLoader: true, LoadFailure: true },
     },
   })
@@ -127,6 +127,30 @@ describe('panel accounts section', () => {
     wrapper.unmount()
   })
 
+  it('shows an empty state after a successful accounts fetch, not loading', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.listPanelAccounts.mockResolvedValue({ accounts: [] })
+    const wrapper = mountUsers()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('common.none')
+    expect(wrapper.text()).not.toContain('common.loading')
+    wrapper.unmount()
+  })
+
+  it('does not throw when a member row omits resources', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.listPanelAccounts.mockResolvedValue({
+      accounts: [{ username: 'kid', role: 'member', twofa_enabled: false }],
+    })
+    const wrapper = mountUsers()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('kid')
+    expect(wrapper.text()).toContain('accounts.no_resources')
+    wrapper.unmount()
+  })
+
   it('asks before deleting and then revokes the account', async () => {
     applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
     api.deletePanelAccount.mockResolvedValue({ ok: true })
@@ -142,5 +166,26 @@ describe('panel accounts section', () => {
     expect(api.deletePanelAccount).toHaveBeenCalledWith('mom')
     confirmSpy.mockRestore()
     wrapper.unmount()
+  })
+
+  it('does not toast an account create that returns after leave', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    let resolveCreate
+    api.createPanelAccount.mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve }))
+    const toast = vi.fn()
+    const wrapper = mountUsers(toast)
+    await flushPromises()
+
+    await wrapper.find('.accounts-head button').trigger('click')
+    const form = wrapper.find('form.accounts-create')
+    await form.find('input[maxlength="64"]').setValue('kid')
+    await form.find('input[type="password"]').setValue('kid-passphrase-77')
+    await form.trigger('submit')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+    resolveCreate({ ok: true, account: {} })
+    await flushPromises()
+
+    expect(toast).not.toHaveBeenCalled()
   })
 })

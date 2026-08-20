@@ -232,6 +232,29 @@ class StripConfTests(unittest.TestCase):
         self.assertNotIn("# alpha", wireguard_svc.strip_conf(SERVER_CONF))
 
 
+class WriteConfBackupTests(TempConfCase):
+    def test_torn_conf_backup_does_not_500(self):
+        """A binary leftover used to raise UnicodeDecodeError past except OSError."""
+        self.conf.write_bytes(b"\x00\xff\xfe{" + b"\x80" * 16)
+        with (
+            patch.object(
+                wireguard_svc, "server_identity",
+                return_value={
+                    "private_key": "A" * 44, "public_key": "B" * 44,
+                    "address": "10.10.0.1/24", "listen_port": 51820,
+                },
+            ),
+            patch.object(
+                wireguard_svc, "render_conf",
+                return_value="[Interface]\nPrivateKey = A\nListenPort = 51820\n",
+            ),
+        ):
+            path = wireguard_svc._write_conf([])
+        self.assertEqual(path, self.conf)
+        self.assertTrue(self.conf.with_suffix(".conf.bak").is_file())
+        self.assertIn("PrivateKey", self.conf.read_text())
+
+
 class AddressAllocationTests(TempConfCase):
     def test_used_addresses_includes_the_server_itself(self):
         used = wireguard_svc.used_addresses()
@@ -479,6 +502,43 @@ class SettingsValidationTests(unittest.TestCase):
         stored = saved.call_args[0][0]["wireguard"]
         self.assertEqual(stored["endpoint"], "vpn.example.com:51820")
         self.assertEqual(stored["subnet"], "10.20.0.0/24")
+
+    def test_non_object_stored_wireguard_does_not_500(self):
+        with (
+            patch("hub.wireguard_svc.cfg", return_value={"settings": {"wireguard": ["oops"]}}),
+            patch("hub.wireguard_svc.update_settings") as saved,
+        ):
+            wireguard_svc.save_settings({"endpoint": "vpn.example.com"})
+        stored = saved.call_args[0][0]["wireguard"]
+        self.assertEqual(stored["endpoint"], "vpn.example.com")
+
+    def test_pubkey_oserror_is_empty_not_500(self):
+        with patch.object(
+            wireguard_svc.subprocess, "run", side_effect=PermissionError("denied"),
+        ):
+            self.assertEqual(wireguard_svc._run_with_input(["wg", "pubkey"], "x\n"), "")
+
+    def test_pubkey_does_not_capture_unbounded_output(self):
+        import inspect
+        src = inspect.getsource(wireguard_svc._run_with_input)
+        impl = src.split('"""', 2)[-1]
+        self.assertNotIn("capture_output=True", impl)
+        self.assertIn("TemporaryFile", impl)
+
+    def test_pubkey_reads_the_temp_file_when_proc_stdout_is_the_file(self):
+        class _Proc:
+            returncode = 0
+            stdout = object()  # live subprocess.run points this at the temp file
+
+        def fake_run(argv, **kwargs):
+            kwargs["stdout"].write(b"public-key-from-file\n")
+            return _Proc()
+
+        with patch.object(wireguard_svc.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(
+                wireguard_svc._run_with_input(["wg", "pubkey"], "x\n"),
+                "public-key-from-file",
+            )
 
 
 class PeerKeyRouteShapeTests(unittest.TestCase):

@@ -14,11 +14,42 @@ atomic replace-an-existing-file case that O_EXCL alone cannot express.
 """
 from __future__ import annotations
 
+import errno
 import os
+import stat
 from pathlib import Path
+
+from hub.util import read_bytes_capped
 
 SECRET_MODE = 0o600
 SECRET_DIR_MODE = 0o700
+#: Leftover multi-MB source used to OOM ``copy_secret_file`` (settings backup).
+SECRET_COPY_CAP = 1024 * 1024
+
+
+def drop_leftover_nonfile(path: Path | str) -> None:
+    """Unlink a leftover directory/socket occupying a file the panel writes.
+
+    ``os.replace`` onto a leftover directory is ``IsADirectoryError`` and used
+    to 500 the request that persisted credentials, peer registry, PhotosHub
+    config, or alert state.
+    """
+    p = Path(path)
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.S_ISREG(st.st_mode):
+        return
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(p)
+        else:
+            os.unlink(p)
+    except OSError:
+        pass
 
 
 def _ensure_private_parents(path: Path) -> None:
@@ -53,11 +84,17 @@ def write_secret_text(path: Path | str, content: str, *, encoding: str = "utf-8"
     """
     p = Path(path)
     _ensure_private_parents(p)
-    if p.exists():
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if stat.S_ISLNK(st.st_mode):
+            raise OSError(errno.ELOOP, "refusing to follow symlink", str(p))
         # Tighten first: truncating a 0644 file and then writing would expose
         # the new content for the duration of the write.
         os.chmod(p, SECRET_MODE)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_MODE)
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, SECRET_MODE)
     # fdopen takes ownership of fd, so its context manager closes it on both the
     # success and the exception path.
     with os.fdopen(fd, "w", encoding=encoding) as fh:
@@ -83,7 +120,7 @@ def create_secret_text(path: Path | str, content: str, *, encoding: str = "utf-8
     p = Path(path)
     _ensure_private_parents(p)
     try:
-        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, SECRET_MODE)
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, SECRET_MODE)
     except FileExistsError:
         return False
     with os.fdopen(fd, "w", encoding=encoding) as fh:
@@ -106,7 +143,11 @@ def replace_secret_text(
     # save secrets concurrently (config save + credentials apply).
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     try:
-        write_secret_text(tmp, content, encoding=encoding)
+        # O_EXCL so a pre-created guessable tmp cannot be truncated and
+        # filled with the secret, then os.replace'd onto the live file.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, SECRET_MODE)
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(content)
         os.replace(tmp, p)
         os.chmod(p, SECRET_MODE)
     except Exception:
@@ -129,7 +170,7 @@ def replace_bytes(path: Path | str, data: bytes, *, mode: int = 0o644) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
@@ -145,7 +186,9 @@ def replace_bytes(path: Path | str, data: bytes, *, mode: int = 0o644) -> Path:
     return p
 
 
-def copy_secret_file(src: Path | str, dst: Path | str) -> Path:
+def copy_secret_file(
+    src: Path | str, dst: Path | str, *, max_bytes: int = SECRET_COPY_CAP
+) -> Path:
     """Copy ``src`` to ``dst`` without ever publishing the copy.
 
     ``shutil.copy2`` is wrong for secrets in two distinct ways.  It creates the
@@ -157,17 +200,43 @@ def copy_secret_file(src: Path | str, dst: Path | str) -> Path:
     first byte regardless of what the source was.
 
     Bytes rather than text so this stays usable for non-UTF-8 payloads.
+    Unbounded reads of leftover multi-MB services.yaml used to OOM
+    PUT /api/settings during the pre-save backup.
     """
     s, d = Path(src), Path(dst)
-    data = s.read_bytes()
+    data = read_bytes_capped(s, max_bytes)
     _ensure_private_parents(d)
-    if d.exists():
+    try:
+        st = os.lstat(d)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if stat.S_ISLNK(st.st_mode):
+            raise OSError(errno.ELOOP, "refusing to follow symlink", str(d))
         os.chmod(d, SECRET_MODE)
-    fd = os.open(d, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_MODE)
+    fd = os.open(d, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, SECRET_MODE)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
     os.chmod(d, SECRET_MODE)
     return d
+
+
+def append_text(
+    path: Path | str, content: str, *, encoding: str = "utf-8", mode: int = 0o644
+) -> Path:
+    """Append *content* to *path* without following a last-component symlink.
+
+    ``open(path, "a")`` follows a replacement symlink and writes wherever it
+    points.  Audit, metrics and alerts journals live under a writable data
+    directory; a planted symlink would redirect the next line onto another
+    file the panel user can write.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "a", encoding=encoding) as fh:
+        fh.write(content)
+    return p
 
 
 def make_secret_dir(path: Path | str) -> Path:

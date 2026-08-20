@@ -12,6 +12,7 @@ cannot silently start reporting a stopped service as healthy.
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -109,6 +110,19 @@ class LaunchctlFanoutTests(unittest.TestCase):
         mosquitto = next(c for c in checks if c["id"] == "brew_mosquitto")
         self.assertTrue(mosquitto["ok"])
 
+    def test_junk_brew_rows_do_not_drop_the_rest(self):
+        """A non-dict leftover used to raise inside the loop and skip grafana."""
+        checks, _ = self._run([
+            "oops",
+            None,
+            {"name": "grafana", "status": "started"},
+            {"name": "mosquitto", "status": 1},
+        ])
+        by_id = {c["id"]: c for c in checks}
+        self.assertIn("brew_grafana", by_id)
+        self.assertTrue(by_id["brew_grafana"]["ok"])
+        self.assertIn("brew_mosquitto", by_id)
+
 
 class KeepAliveWatchTests(unittest.TestCase):
     def test_disabled_plist_is_not_unsupervised(self):
@@ -172,6 +186,45 @@ class FanOutIsolationTests(unittest.TestCase):
         self.assertIn("disk_root", ids)
         self.assertIn("la_local.keep", ids)
         self.assertGreater(len(checks), 1)
+
+    def test_huge_plist_does_not_oom_checks(self):
+        """``open(rb)`` of leftover multi-MB LaunchAgent used to OOM GET /api/health/checks."""
+        import json
+        import plistlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "huge.plist").write_bytes(b"x" * (2 * 1024 * 1024))
+            (Path(tmp) / "keep.plist").write_bytes(plistlib.dumps({
+                "Label": "local.keep",
+                "KeepAlive": True,
+            }))
+            with (
+                patch.object(health_svc, "AGENTS_DIR", Path(tmp)),
+                patch.object(health_svc, "sh", return_value=(1, "", "")),
+                patch.object(launchd_cache, "sh", return_value=(0, LAUNCHCTL_LIST, "")),
+                patch.object(health_svc, "brew_services_list", return_value=[]),
+            ):
+                result = health_svc.run_checks(force=True)
+        checks = result.get("checks") if isinstance(result, dict) else result
+        json.dumps(result if isinstance(result, dict) else checks, allow_nan=False)
+        ids = [c["id"] for c in checks]
+        self.assertIn("disk_root", ids)
+        self.assertIn("la_local.keep", ids)
+        self.assertNotIn("la_huge", ids)
+
+    def test_immich_recursing_exc_still_emits_a_row(self):
+        """leftover ``{e}`` RecursionError used to drop the Immich health row."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with patch("hub.immich_svc.run_checks", side_effect=Recursing()):
+            rows = health_svc._immich_checks()
+        json.dumps(rows, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertEqual(rows[0]["id"], "immich")
+        self.assertIn("check failed", rows[0]["detail"])
+        self.assertNotIn("\ud800", rows[0]["detail"])
 
 
 if __name__ == "__main__":

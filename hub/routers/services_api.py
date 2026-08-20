@@ -3,12 +3,34 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from hub import actions, auth, services_manage_svc, services_uninstall_svc
 from hub.errors import api_error
 from hub.status import invalidate_status, member_service_summary
+
+
+def _as_text(value) -> str:
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used
+    to 500 POST /api/services/bulk-action under Starlette's UTF-8 encode.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
 
 router = APIRouter(tags=["services"])
 
@@ -203,13 +225,30 @@ def services_bulk(body: BulkActionBody):
     for sid in body.ids or []:
         try:
             rc, out, err = actions.run_action(sid, body.action)
+            if rc == 0:
+                msg = out
+            else:
+                msg = err or out or f"exit {rc}"
             results.append({
-                "id": sid,
+                "id": _as_text(sid),
                 "ok": rc == 0,
-                "message": (out if rc == 0 else (err or out or f"exit {rc}"))[:300],
+                "message": _as_text(msg)[:300],
+            })
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, dict) else {}
+            msg = detail.get("message") if isinstance(detail, dict) else e.detail
+            results.append({
+                "id": _as_text(sid),
+                "ok": False,
+                "message": _as_text(msg)[:300],
+                "code": detail.get("code") if isinstance(detail, dict) else None,
             })
         except Exception as e:
-            results.append({"id": sid, "ok": False, "message": str(e)[:300]})
+            results.append({
+                "id": _as_text(sid),
+                "ok": False,
+                "message": _as_text(e)[:300],
+            })
     invalidate_status()
     ok_n = sum(1 for r in results if r["ok"])
     return {

@@ -244,6 +244,18 @@ class BackendIndexTests(unittest.TestCase):
         self.assertIn("alpha", idx, "an unavailable UTM still hid the Orb machines")
         self.assertEqual(idx["alpha"]["state"], "stopped")
 
+    def test_overrides_that_are_not_a_map_do_not_500_the_index(self):
+        fake_vms = mock.Mock()
+        fake_vms.list_utm_vms = lambda: []
+        fake_vms.list_orb_machines = lambda: []
+        with (
+            _fake_vms_module(fake_vms),
+            mock.patch("hub.discovery.containers.discover_containers", lambda: ([], None)),
+            mock.patch("hub.bookmarks_svc.cfg", return_value={"overrides": ["not-a-map"]}),
+        ):
+            idx = bookmarks_svc._backend_index()
+        self.assertIsInstance(idx, dict)
+
     def test_a_name_collision_is_still_won_by_the_last_writer(self):
         """`put()` overwrites, so the winner is decided by the sequence.
 
@@ -259,6 +271,17 @@ class BackendIndexTests(unittest.TestCase):
             idx["shared"]["kind"], "container",
             "the VM entry won, so the merge order changed",
         )
+
+
+class ComposeResultTests(unittest.TestCase):
+    def test_list_backend_does_not_500(self):
+        row = bookmarks_svc._compose_result(
+            {"name": "x", "url": "http://h"},
+            {"ok": True, "status": 200, "ms": 1},
+            ["not", "a", "mapping"],
+        )
+        self.assertEqual(row["health"], "ok")
+        self.assertIsNone(row["backend"])
 
 
 class RootDiskUnionTests(unittest.TestCase):

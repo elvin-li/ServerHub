@@ -146,12 +146,22 @@ describe('LineChart geometry', () => {
     // Two points are needed for a polyline; one would render an invisible stub
     // and an area fill anchored to nothing.
     const w = chart({ series: [{ name: 'cpu', values: [42] }], unit: '%' })
-    expect(lines(w)).toEqual([''])
+    expect(lines(w)).toEqual([])
   })
 
-  it('skips gaps without breaking the line', () => {
+  it('breaks the line at gaps so a missing sample is not a slope', () => {
+    // The rollup leaves holes as null. Connecting across them drew a straight
+    // line through a sleep / outage as if load had been continuous.
+    const w = chart({ series: [{ name: 'cpu', values: [10, 20, null, 40, 50] }], unit: '%' })
+    const segs = lines(w)
+    expect(segs).toHaveLength(2)
+    expect(pairs(segs[0])).toHaveLength(2)
+    expect(pairs(segs[1])).toHaveLength(2)
+  })
+
+  it('does not join two lone samples across a hole', () => {
     const w = chart({ series: [{ name: 'cpu', values: [10, null, 30] }], unit: '%' })
-    expect(pairs(lines(w)[0])).toHaveLength(2)
+    expect(lines(w)).toEqual([])
   })
 
   it('discards NaN the same way it discards null', () => {
@@ -163,6 +173,31 @@ describe('LineChart geometry', () => {
   it('drops a series whose every sample is missing', () => {
     const w = chart({ series: [{ name: 'cpu', values: [null, null] }], unit: '%' })
     expect(lines(w)).toEqual([])
+  })
+
+  it('plots x by sample time so an omitted window stays a gap', () => {
+    // Three samples: t=0, t=10, t=100. Index-based x would put the middle
+    // point at 50% of the plot; time-based x puts it at 10%.
+    const w = chart({
+      series: [{ name: 'cpu', values: [0, 50, 100] }],
+      times: [0, 10, 100],
+      unit: '%',
+    })
+    const xs = pairs(lines(w)[0]).map(([x]) => x)
+    expect(xs[0]).toBe(2)
+    expect(xs.at(-1)).toBe(398)
+    expect(xs[1]).toBeCloseTo(2 + (10 / 100) * 396, 6)
+    expect(xs[1] - xs[0]).toBeLessThan((xs[2] - xs[1]) / 2)
+  })
+
+  it('falls back to even spacing when times are missing or degenerate', () => {
+    const w = chart({
+      series: [{ name: 'cpu', values: [0, 50, 100] }],
+      times: [42, 42, 42],
+      unit: '%',
+    })
+    const xs = pairs(lines(w)[0]).map(([x]) => x)
+    expect(xs[1] - xs[0]).toBeCloseTo(xs[2] - xs[1], 6)
   })
 })
 

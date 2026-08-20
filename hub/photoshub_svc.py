@@ -10,6 +10,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,17 +18,30 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from hub import secure_io
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 from hub.http_guard import (
     RedirectRefused as _ImmichRedirect,
+    _ip_from_host,
+    local_connect_peer,
     local_http_origin,
     no_redirect_opener,
+    pinned_no_redirect_opener,
 )
 from hub.jobs import run_watchdog
-from hub.util import tail_file_lines
+from hub.paths import user_home
+from hub.util import read_text_capped, tail_file_lines
 
-HUB = Path.home() / "PhotosHub"
+
+def _default_hub() -> Path:
+    """PhotosHub tree under ``~/PhotosHub``.  ``Path.home()`` leftover must not 500 import."""
+    home = user_home()
+    return (home / "PhotosHub") if home is not None else Path("/var/empty/serverhub-photoshub")
+
+
+HUB = _default_hub()
 CFG_PATH = HUB / "config" / "config.json"
+#: Leftover multi-MB config.json used to OOM GET /api/photoshub.
+_JSON_CAP = 256 * 1024
 STATE = HUB / "state"
 BIN_PHOTOCTL = HUB / "bin" / "photoctl"
 SCRIPTS = HUB / "scripts"
@@ -74,15 +88,111 @@ _CFG_LOCK = threading.Lock()
 
 def installed() -> bool:
     """True when the operator's PhotosHub tree is actually on this Mac."""
-    return HUB.is_dir() and BIN_PHOTOCTL.is_file()
+    try:
+        return HUB.is_dir() and BIN_PHOTOCTL.is_file()
+    except OSError:
+        return False
+
+
+def _utf8_text(value: Any) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _as_text(value: Any) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif not isinstance(value, str):
+        return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value: Any, depth: int = 0) -> Any:
+    """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
+
+    Inf in status JSON was already dropped; leftover inf *keys* in config.json,
+    YAML timestamps, ``!!binary`` bytes, and tuple-inf still leaked into
+    GET /api/photoshub and PATCH /api/photoshub/config. A leftover ``\\ud800``
+    in a person name still 500'd the same encoder.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            pass
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
+def _iso_now() -> Any:
+    """ISO wall-clock stamp, or None when leftover inf clock would 500 JSON.
+
+    ``datetime.now().astimezone().isoformat()`` OverflowError'd GET
+    /api/photoshub and POST /api/photoshub/action on leftover inf. A leftover
+    ``isoformat()`` that returns inf skipped the float sanitizer unless we
+    walk it through ``_jsonable``.
+    """
+    try:
+        n = float(time.time())
+        if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
+            return None
+        stamp = datetime.fromtimestamp(n, timezone.utc).astimezone().isoformat(
+            timespec="seconds",
+        )
+    except (OverflowError, OSError, ValueError, TypeError):
+        return None
+    return _jsonable(stamp)
 
 
 def _load_json(path: Path, default: Any = None) -> Any:
-    if not path.exists():
-        return default
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        if not path.exists():
+            return default
+        return _jsonable(json.loads(read_text_capped(path, _JSON_CAP, encoding="utf-8")))
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested status JSON is not ValueError.
         return default
 
 
@@ -99,11 +209,12 @@ def _cfg() -> dict:
 
 def _cfg_strict() -> dict:
     """Parse config.json for a write.  A broken file must not be overwritten."""
-    if not CFG_PATH.exists():
-        return {}
     try:
-        data = json.loads(CFG_PATH.read_text(encoding="utf-8"))
-    except Exception:
+        if not CFG_PATH.exists():
+            return {}
+        data = _jsonable(json.loads(read_text_capped(CFG_PATH, _JSON_CAP, encoding="utf-8")))
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: leftover deeply-nested config.json is not ValueError.
         raise api_error("photoshub.bad_config")
     if not isinstance(data, dict):
         raise api_error("photoshub.bad_config")
@@ -111,10 +222,19 @@ def _cfg_strict() -> dict:
 
 
 def _write_cfg(cfg: dict) -> None:
-    secure_io.replace_secret_text(
-        CFG_PATH,
-        json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
-    )
+    payload = _jsonable(cfg) if isinstance(cfg, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    secure_io.drop_leftover_nonfile(CFG_PATH)
+    try:
+        secure_io.replace_secret_text(
+            CFG_PATH,
+            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+        )
+    except (OSError, TypeError, ValueError, OverflowError, RecursionError):
+        # Leftover directory occupying config.json must not 500 PhotosHub saves.
+        # RecursionError: leftover nested config after _jsonable is not OSError.
+        pass
 
 
 def _safe_name(raw: Any) -> str:
@@ -156,20 +276,25 @@ def _safe_link(raw: Any) -> str:
 
 
 def _abs_path(raw: Any) -> str:
-    text = str(raw or "").strip()
+    text = _as_text(raw).strip()
     return text if text.startswith("/") else ""
 
 
+def _as_obj(value: Any) -> dict:
+    """Nested config/status JSON the UI indexes with ``.get``."""
+    return value if isinstance(value, dict) else {}
+
+
 def _people_public(cfg: dict) -> dict:
-    people = cfg.get("people") or {}
+    people = _as_obj(cfg.get("people"))
     out = {}
     for key in _PERSON_KEYS:
-        item = people.get(key) if isinstance(people, dict) else None
+        item = people.get(key)
         if not isinstance(item, dict):
             item = {}
         out[key] = {
-            "name": str(item.get("name") or "").strip()[:40],
-            "birthday": str(item.get("birthday") or "").strip()[:10],
+            "name": _as_text(item.get("name")).strip()[:40],
+            "birthday": _as_text(item.get("birthday")).strip()[:10],
         }
     return out
 
@@ -181,24 +306,31 @@ def _inventory_public(raw: Any) -> dict:
     missing = raw.get("missing_elsewhere", raw.get("missing", raw.get("服务器图库没有")))  # cjk-input: key written by the operator's inventory script
     try:
         n = int(missing or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         n = 0
     return {"missing_elsewhere": max(0, n)}
 
 
 def _albums_public(cfg: dict) -> dict:
-    immich = cfg.get("immich") or {}
+    immich = _as_obj(cfg.get("immich"))
+
+    def _title(raw, default: str = "") -> str:
+        return raw.strip() if isinstance(raw, str) and raw.strip() else default
+
     return {
-        "pending_delete": immich.get("album_pending_delete") or "Pending Delete",
-        "yuanbao": str(immich.get("album_yuanbao") or ""),
-        "erbao": str(immich.get("album_erbao") or ""),
+        "pending_delete": _title(immich.get("album_pending_delete"), "Pending Delete"),
+        "yuanbao": _title(immich.get("album_yuanbao")),
+        "erbao": _title(immich.get("album_erbao")),
     }
 
 
 def _handbook_name() -> str:
     for name in ("handbook.md", "手册.md"):  # cjk-input: the handbook's real filename on disk
-        if (HUB / name).is_file():
-            return name
+        try:
+            if (HUB / name).is_file():
+                return name
+        except OSError:
+            continue
     return ""
 
 
@@ -211,14 +343,20 @@ def _log_relpath(path: Path) -> str:
 
 def _immich_key() -> str:
     p = HUB / "config" / "immich_api_key"
-    if p.exists():
-        return p.read_text(encoding="utf-8").strip()
-    return ""
+    try:
+        # Cap the read: leftover multi-MB junk used to OOM GET /api/photoshub.
+        # strict: ``errors=replace`` turned a torn key into a truthy string and
+        # GET /api/photoshub claimed Immich was configured.  UnicodeDecodeError
+        # is already the missing-key path below.
+        with p.open(encoding="utf-8") as fh:
+            return fh.read(4096).strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
 
 
 def _public_href(raw: Any) -> str:
     """Operator-facing link: http(s) only, never javascript: or file:."""
-    text = str(raw or "").strip()
+    text = _as_text(raw).strip()
     parts = urlsplit(text)
     if parts.scheme in ("http", "https") and parts.hostname:
         return text
@@ -233,11 +371,26 @@ def _immich_base() -> str:
     config must still not make the panel fetch the public internet or
     cloud metadata.  Decision is from the literal hostname, never DNS.
     """
-    raw = str(((_cfg().get("immich") or {}).get("base_url") or "http://127.0.0.1:2283")).strip()
+    raw = str((_as_obj(_cfg().get("immich")).get("base_url") or "http://127.0.0.1:2283")).strip()
     origin = local_http_origin(raw)
     if not origin:
         raise api_error("photoshub.bad_immich_url")
     return origin
+
+
+def _immich_open(req, timeout):
+    """Open *req* pinned to the first local IP the origin resolved to.
+
+    Tests patch this instead of the urllib opener so a hostname URL never
+    triggers a second ``getaddrinfo`` inside the transport.
+    """
+    host = (urlsplit(_immich_base()).hostname or "").strip("[]")
+    peer = local_connect_peer(host) if host else None
+    if not peer:
+        raise api_error("photoshub.bad_immich_url")
+    dest_ip = peer if _ip_from_host(peer) is not None else None
+    opener = pinned_no_redirect_opener(dest_ip) if dest_ip else _IMMICH_OPENER
+    return opener.open(req, timeout=timeout)
 
 
 def _safe_id(value: Any) -> str:
@@ -251,7 +404,15 @@ def _immich_api(method: str, path: str, body: Any = None) -> Any:
     key = _immich_key()
     if not key:
         raise api_error("photoshub.key_missing")
-    data = None if body is None else json.dumps(body).encode()
+    # Leftover inf in an Immich body used to send Infinity and 500 under
+    # ``allow_nan=False``. RecursionError after ``_jsonable`` is not ValueError;
+    # leftover nested Immich writes used to 500 PATCH/DELETE.
+    data = None
+    if body is not None:
+        try:
+            data = json.dumps(_jsonable(body), allow_nan=False).encode()
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            raise api_error("photoshub.immich_response", detail="not JSON")
     req = urllib.request.Request(
         _immich_base() + path,
         data=data,
@@ -263,7 +424,7 @@ def _immich_api(method: str, path: str, body: Any = None) -> Any:
         },
     )
     try:
-        with _IMMICH_OPENER.open(req, timeout=30) as resp:
+        with _immich_open(req, 30) as resp:
             raw = resp.read(_API_MAX + 1)
     except _ImmichRedirect:
         raise api_error("photoshub.bad_immich_url")
@@ -273,9 +434,11 @@ def _immich_api(method: str, path: str, body: Any = None) -> Any:
         raise api_error("photoshub.immich_response", detail="payload too large")
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # RecursionError is leftover deeply-nested Immich JSON — not ValueError
+        # (JSONDecodeError).  `_jsonable` depth-caps *after* the parse.
         raise api_error("photoshub.immich_response", detail="not JSON")
-    return parsed
+    return _jsonable(parsed)
 
 
 def asset_thumbnail(asset_id: str) -> tuple[bytes, str]:
@@ -296,13 +459,13 @@ def asset_thumbnail(asset_id: str) -> tuple[bytes, str]:
         headers={"x-api-key": key, "Accept": "image/*"},
     )
     try:
-        with _IMMICH_OPENER.open(req, timeout=15) as resp:
+        with _immich_open(req, 15) as resp:
             ctype = str(resp.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0].strip()
             raw = resp.read(_THUMB_MAX + 1)
     except _ImmichRedirect:
         raise api_error("photoshub.bad_immich_url")
     except Exception as e:
-        raise api_error("photoshub.thumb_failed", detail=str(e)[:160])
+        raise api_error("photoshub.thumb_failed", detail=exc_detail(e, 160))
     if len(raw) > _THUMB_MAX or not raw:
         raise api_error("photoshub.thumb_failed", detail="empty or too large")
     if ctype.lower() not in _THUMB_TYPES:
@@ -319,11 +482,11 @@ def status() -> dict:
     backup = _load_json_obj(STATE / "backup_status.json")
     external = _load_json_obj(STATE / "external_backup_status.json")
     inventory = _load_json_obj(STATE / "inventory_report.json")
-    gates = cfg.get("gates") or {}
+    gates = _as_obj(cfg.get("gates"))
     gate_ready = bool(originals.get("gate_ready"))
-    immich = cfg.get("immich") or {}
+    immich = _as_obj(cfg.get("immich"))
     snap = {
-        "ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "ts": _iso_now(),
         "photoshub_ok": installed(),
         "originals": originals,
         "bridge": bridge,
@@ -336,36 +499,38 @@ def status() -> dict:
             "originals_ready": gate_ready,
             "allow_delete_channel": bool(gates.get("allow_delete_channel")) and gate_ready,
             "allow_cleanup": bool(gates.get("allow_cleanup")) and gate_ready,
-            "force_fallback": bool((cfg.get("bridge") or {}).get("force_fallback", True)),
+            "force_fallback": bool(_as_obj(cfg.get("bridge")).get("force_fallback", True)),
         },
         "links": {
             "immich": _public_href(immich.get("public_url")),
-            "panel": _public_href((cfg.get("panel") or {}).get("url")),
+            "panel": _public_href(_as_obj(cfg.get("panel")).get("url")),
             "handbook": _handbook_name(),
         },
         "albums": _albums_public(cfg),
         "people": _people_public(cfg),
     }
-    return snap
+    return _jsonable(snap)
 
 
 def public_config() -> dict:
     """Operator-facing settings.  Never includes the Immich API key."""
     cfg = _cfg()
-    immich = cfg.get("immich") if isinstance(cfg.get("immich"), dict) else {}
-    gates = cfg.get("gates") if isinstance(cfg.get("gates"), dict) else {}
-    bridge = cfg.get("bridge") if isinstance(cfg.get("bridge"), dict) else {}
-    panel = cfg.get("panel") if isinstance(cfg.get("panel"), dict) else {}
+    immich = _as_obj(cfg.get("immich"))
+    gates = _as_obj(cfg.get("gates"))
+    bridge = _as_obj(cfg.get("bridge"))
+    panel = _as_obj(cfg.get("panel"))
     try:
         min_pct = float(gates.get("min_local_original_pct") or 99)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         min_pct = 99.0
-    return {
+    if min_pct != min_pct or min_pct in (float("inf"), float("-inf")):
+        min_pct = 99.0
+    return _jsonable({
         "photoshub_ok": installed(),
         "people": _people_public(cfg),
         "albums": _albums_public(cfg),
         "immich": {
-            "base_url": str(immich.get("base_url") or "").strip(),
+            "base_url": _as_text(immich.get("base_url")).strip(),
             "public_url": _public_href(immich.get("public_url")),
             "has_api_key": bool(_immich_key()),
         },
@@ -377,7 +542,7 @@ def public_config() -> dict:
         },
         "bridge": {
             "force_fallback": bool(bridge.get("force_fallback", True)),
-            "note": str(bridge.get("note") or "")[:240],
+            "note": _as_text(bridge.get("note"))[:240],
         },
         "paths": {
             "photos_library": _abs_path(cfg.get("photos_library")),
@@ -386,7 +551,7 @@ def public_config() -> dict:
             "backup_dir": _abs_path(cfg.get("backup_dir")),
             "media_location": _abs_path(immich.get("media_location")),
         },
-    }
+    })
 
 
 def _apply_config_patch(cfg: dict, patch: dict) -> None:
@@ -477,13 +642,13 @@ def _delete_gated() -> bool:
     """True when the pending-delete channel is frozen (or originals are not ready)."""
     cfg = _cfg()
     originals = _load_json_obj(STATE / "originals_status.json")
-    gates = cfg.get("gates") or {}
+    gates = _as_obj(cfg.get("gates"))
     ready = bool(originals.get("gate_ready"))
     return not (bool(gates.get("allow_delete_channel")) and ready)
 
 
 def _pending_album_name() -> str:
-    return (_cfg().get("immich") or {}).get("album_pending_delete") or "Pending Delete"
+    return _albums_public(_cfg())["pending_delete"]
 
 
 def _pending_album_id(name: str) -> str | None:
@@ -521,6 +686,8 @@ def pending_delete_assets(limit: int = 60) -> dict:
         assets = []
     out = []
     for a in assets[:limit]:
+        if not isinstance(a, dict):
+            continue
         asset_id = a.get("id")
         if not _IMMICH_ID.fullmatch(str(asset_id or "")):
             continue
@@ -534,13 +701,13 @@ def pending_delete_assets(limit: int = 60) -> dict:
                 "thumbHash": a.get("thumbhash") or a.get("thumbHash"),
             }
         )
-    return {
+    return _jsonable({
         "album": name,
         "album_id": album_id,
         "count": len(assets),
         "assets": out,
         "gated": _delete_gated(),
-    }
+    })
 
 
 def remove_from_pending(ids: list[str]) -> dict:
@@ -564,22 +731,29 @@ def run_action(action: str, timeout: int = 600) -> dict:
         raise api_error("photoshub.not_installed")
 
     env = os.environ.copy()
-    env["PATH"] = f"{HUB / 'bin'}:{Path.home() / '.local/bin'}:/opt/homebrew/bin:" + env.get("PATH", "")
+    home = user_home()
+    extra = str(home / ".local/bin") if home is not None else ""
+    prefix = f"{HUB / 'bin'}:" + (f"{extra}:" if extra else "")
+    env["PATH"] = prefix + "/opt/homebrew/bin:" + env.get("PATH", "")
 
     if action == "configure-people":
         script = SCRIPTS / "configure_person_albums.py"
-        if not script.is_file():
+        try:
+            present = script.is_file()
+        except OSError:
+            present = False
+        if not present:
             raise api_error("photoshub.script_missing")
         cmd = ["/usr/bin/python3", str(script)]
     else:
         args = ALLOWED_ACTIONS[action]
         cmd = [str(BIN_PHOTOCTL), *args]
 
-    started = datetime.now().astimezone().isoformat(timespec="seconds")
+    started = _iso_now()
     log: list[str] = []
     rc = run_watchdog(cmd, timeout=timeout, log=log, env=env, cwd=str(HUB))
     output = "\n".join(log)
-    return {
+    return _jsonable({
         "ok": rc == 0,
         "action": action,
         "exit_code": rc,
@@ -587,7 +761,7 @@ def run_action(action: str, timeout: int = 600) -> dict:
         "stdout": output[-4000:],
         "stderr": "" if rc == 0 else output[-2000:],
         "status_after": status(),
-    }
+    })
 
 
 def recent_logs(name: str = "bridge", lines: int = 40) -> dict:
@@ -596,18 +770,25 @@ def recent_logs(name: str = "bridge", lines: int = 40) -> dict:
     if not installed():
         return {"name": name, "path": None, "lines": []}
     log_dir = HUB / "logs"
-    mapping = {
-        "bridge": sorted(log_dir.glob("bridge-*.log")),
-        "delete": [log_dir / "delete_review.log"],
-        "cleanup": [log_dir / "cleanup.log"],
-        "external": sorted(log_dir.glob("external-backup-*.log")),
-        "backup": sorted(log_dir.glob("backup-*.log")),
-        "errors": [log_dir / "errors.log"],
-    }
-    files = mapping.get(name) or []
+    try:
+        mapping = {
+            "bridge": sorted(log_dir.glob("bridge-*.log")),
+            "delete": [log_dir / "delete_review.log"],
+            "cleanup": [log_dir / "cleanup.log"],
+            "external": sorted(log_dir.glob("external-backup-*.log")),
+            "backup": sorted(log_dir.glob("backup-*.log")),
+            "errors": [log_dir / "errors.log"],
+        }
+        files = mapping.get(name) or []
+    except OSError:
+        return {"name": name, "path": None, "lines": []}
     path = None
     for p in reversed(files):
-        if p.exists():
+        try:
+            present = p.exists()
+        except OSError:
+            continue
+        if present:
             path = p
             break
     if not path:
@@ -616,5 +797,5 @@ def recent_logs(name: str = "bridge", lines: int = 40) -> dict:
     try:
         content = tail_file_lines(path, lines)
     except Exception as e:
-        return {"name": name, "path": rel, "lines": [str(e)]}
+        return {"name": name, "path": rel, "lines": [exc_detail(e, 200)]}
     return {"name": name, "path": rel, "lines": content}

@@ -10,26 +10,111 @@ from hub.config import override
 from hub.docker_cli import engine_up
 from hub.launchd_cache import running_labels as launchd_running_labels
 from hub.nginx_svc import overview as nginx_overview, test_config as nginx_test
-from hub.paths import AGENTS_DIR, SMARTCTL
-from hub.util import fan_out, port_open, sh
+from hub.paths import AGENTS_DIR, SMARTCTL, user_home
+from hub.errors import exc_detail
+from hub.util import fan_out, port_open, read_bytes_capped, sh, strftime_now
 from hub.brew_cache import brew_services_list
 from pathlib import Path
 
 _cache = {"t": 0.0, "v": None}
 _TTL = 45.0
+#: Leftover multi-MB LaunchAgent plist used to OOM GET /api/health/checks.
+_PLIST_CAP = 256 * 1024
 #: One lock, not per-key: there is a single snapshot, so a reader arriving mid-collection
 #: should wait for that result rather than starting a second seven-way fan-out.
 _refresh_lock = threading.Lock()
 
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _as_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _jsonable(value, depth: int = 0):
+    """Drop leftover inf/bytes/``\\ud800`` so Starlette cannot 500 GET /api/health/checks."""
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, (bytes, bytearray)):
+                k = k.decode("utf-8", "replace")
+            elif not isinstance(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            # isoformat() is usually a str; a leftover that returns inf
+            # used to skip the float sanitizer and 500 GET /api/health/checks.
+            return _jsonable(iso(), depth + 1)
+        except Exception:
+            return None
+    try:
+        return _utf8_text(value)
+    except Exception:
+        return None
+
+
 def _check(id_: str, name: str, level: str, ok: bool, detail: str, fix: str = "") -> dict:
+    try:
+        ok_b = bool(ok)
+    except Exception:
+        ok_b = False
     return {
-        "id": id_,
-        "name": name,
-        "level": level if not ok else "ok",  # ok | warn | error
-        "ok": ok,
-        "detail": detail,
-        "fix": fix,
+        "id": _as_text(id_),
+        "name": _as_text(name),
+        "level": _as_text(level if not ok_b else "ok") or "ok",
+        "ok": ok_b,
+        "detail": _as_text(detail),
+        "fix": _as_text(fix),
     }
 
 
@@ -44,7 +129,7 @@ def _probe_port(port) -> bool | None:
 def _panel_port() -> int:
     try:
         n = int(os.environ.get("SERVERHUB_PORT", "8086"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 8086
     return n if 1 <= n <= 65535 else 8086
 
@@ -96,7 +181,7 @@ def _nginx_pair() -> list[dict]:
         return pair
     except Exception as e:
         return [_check(
-            "nginx", "System Nginx", "error", False, str(e),
+            "nginx", "System Nginx", "error", False, exc_detail(e, 160),
             "Check LaunchAgent local.system-nginx",
         )]
 
@@ -148,7 +233,7 @@ def _stale_runtime_checks() -> list:
     except Exception as e:
         return [_check(
             "stale_runtime", "LaunchAgents on missing interpreter",
-            "warn", False, str(e)[:160],
+            "warn", False, exc_detail(e, 160),
             "Check LaunchAgents after a Homebrew Python upgrade",
         )]
 
@@ -181,9 +266,10 @@ def _brew_snapshot() -> list:
     just this one; the page then renders without the brew rows.
     """
     try:
-        return brew_services_list() or []
+        rows = brew_services_list() or []
     except Exception:
         return []
+    return rows if isinstance(rows, list) else []
 
 
 def _smart_checks() -> list[dict]:
@@ -221,7 +307,8 @@ def _immich_checks() -> list[dict]:
         return list(immich_svc.run_checks().get("checks") or [])
     except Exception as e:
         return [_check(
-            "immich", "Immich hybrid stack check", "warn", False, f"check failed: {e}"[:160],
+            "immich", "Immich hybrid stack check", "warn", False,
+            "check failed: " + exc_detail(e, 140),
             "See hub/immich_svc.py",
         )]
 
@@ -241,7 +328,7 @@ def _ollama_checks() -> list[dict]:
     except Exception as e:
         return [_check(
             "ollama_api", "Ollama local LLM check", "warn", False,
-            f"check failed: {e}"[:160], "See hub/ollama_svc.py",
+            "check failed: " + exc_detail(e, 140), "See hub/ollama_svc.py",
         )]
 
 
@@ -275,7 +362,7 @@ def _time_machine_checks() -> list[dict]:
     except Exception as e:
         return [_check(
             "tm_share_smb", "Time Machine share check", "warn", False,
-            f"check failed: {e}"[:160], "See hub/shares_svc.py",
+            "check failed: " + exc_detail(e, 140), "See hub/shares_svc.py",
         )]
 
 
@@ -354,7 +441,7 @@ def _wireguard_checks() -> list[dict]:
     except Exception as e:
         return [_check(
             "wg_check", "WireGuard check", "warn", False,
-            f"check failed: {e}"[:160], "See hub/wireguard_net_svc.py",
+            "check failed: " + exc_detail(e, 140), "See hub/wireguard_net_svc.py",
         )]
 
 
@@ -375,7 +462,7 @@ def _worker_checks() -> list[dict]:
         registered = worker_health.snapshot()
         if not registered:
             return []
-        dead = worker_health.problems()
+        dead = worker_health.problems(rows=registered)
         return [_check(
             "workers", "Panel background workers",
             "error", not dead,
@@ -386,6 +473,39 @@ def _worker_checks() -> list[dict]:
         )]
     except Exception:
         return []
+
+
+def _serve_cached(hit: dict) -> dict:
+    """JSON-safe snapshot, keeping the cached object when it is already clean.
+
+    Leftover inf / ``\\ud800`` planted in the cache used to 500 GET
+    ``/api/health/checks`` on a TTL hit (``_collect_checks`` sanitizes, the
+    hit path used to return the live dict).  Mutate in place when dirty so
+    single-flight waiters still share one snapshot object.
+    """
+    cleaned = _jsonable(hit)
+    if not isinstance(cleaned, dict):
+        return {
+            "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
+            "summary": {"ok": 0, "warn": 0, "error": 0, "total": 0},
+            "checks": [],
+            "healthy": False,
+        }
+    try:
+        dirty = cleaned != hit
+    except Exception:
+        dirty = True
+    if dirty:
+        hit.clear()
+        hit.update(cleaned)
+    return hit
+
+
+def _fresh_snapshot() -> dict | None:
+    hit = _cache["v"]
+    if not isinstance(hit, dict) or time.time() - _cache["t"] >= _TTL:
+        return None
+    return _serve_cached(hit)
 
 
 def run_checks(force: bool = False) -> dict:
@@ -402,29 +522,51 @@ def run_checks(force: bool = False) -> dict:
     Same double-checked shape as brew_cache and docker_cli, rather than `ttl_memo`,
     because `_cache` is inspected directly by tests that predate this.
     """
-    if not force and _cache["v"] and time.time() - _cache["t"] < _TTL:
-        return _cache["v"]
+    if not force:
+        hit = _fresh_snapshot()
+        if hit is not None:
+            return hit
     with _refresh_lock:
         # Re-check under the lock: another reader may have finished the same
         # collection while this one waited, which is what makes this single-flight.
-        if not force and _cache["v"] and time.time() - _cache["t"] < _TTL:
-            return _cache["v"]
+        if not force:
+            hit = _fresh_snapshot()
+            if hit is not None:
+                return hit
         return _collect_checks()
 
 
 def _collect_checks() -> dict:
     checks = []
 
-    # Disk space root
-    du = shutil.disk_usage("/")
-    pct = du.used / du.total * 100
-    checks.append(_check(
-        "disk_root", "System disk space",
-        "error" if pct >= 95 else "warn",
-        pct < 90,
-        f"used {pct:.0f}% ({du.used//2**30}/{du.total//2**30} GB)",
-        "Clean up large files / Docker images, or expand storage" if pct >= 90 else "",
-    ))
+    # Disk space root.  ``du.total == 0`` used to ZeroDivisionError and 500
+    # ``/api/health/checks``; treating it as 0% used would have shown a green
+    # row, so fail closed instead.  Only OSError was caught, so a RuntimeError
+    # from a broken mount still emptied the page.
+    disk_row = None
+    try:
+        du = shutil.disk_usage("/")
+        total = getattr(du, "total", 0) or 0
+        used = getattr(du, "used", 0) or 0
+        if total:
+            pct = used / total * 100
+            disk_row = _check(
+                "disk_root", "System disk space",
+                "error" if pct >= 95 else "warn",
+                pct < 90,
+                f"used {pct:.0f}% ({used//2**30}/{total//2**30} GB)",
+                "Clean up large files / Docker images, or expand storage" if pct >= 90 else "",
+            )
+    except Exception:
+        disk_row = None
+    if disk_row is None:
+        disk_row = _check(
+            "disk_root", "System disk space",
+            "warn", False,
+            "unable to read system disk usage",
+            "Check that / is mounted and readable",
+        )
+    checks.append(disk_row)
 
     # Every remaining probe in one wave.
     #
@@ -464,6 +606,12 @@ def _collect_checks() -> dict:
         max_workers=11,
     )
 
+    def _as_checks(rows):
+        return rows if isinstance(rows, list) else []
+
+    if not isinstance(running_labels, (set, frozenset, list, tuple)):
+        running_labels = frozenset()
+
     # OrbStack / docker
     checks.append(_check(
         "orbstack", "OrbStack / Docker engine",
@@ -473,22 +621,25 @@ def _collect_checks() -> dict:
     ))
 
     # nginx system
-    checks.extend(nginx_checks)
+    checks.extend(_as_checks(nginx_checks))
 
     # key ports
-    checks.extend(port_checks)
+    checks.extend(_as_checks(port_checks))
 
     # brew critical
-    if brew_states:
+    if isinstance(brew_states, list):
         try:
             for s in brew_states:
+                if not isinstance(s, dict):
+                    continue
                 n = s.get("name") or ""
                 # postgresql@18 is a *separate* cluster (:5433) holding the
                 # Immich database; @17 (:5432) holds TeslaMate.  Checking only
                 # @17 reports "database fine" while Immich's DB is down.
                 if n not in ("postgresql@17", "postgresql@18", "mosquitto", "grafana"):
                     continue
-                st = (s.get("status") or "").lower()
+                raw_st = s.get("status") or ""
+                st = raw_st.lower() if isinstance(raw_st, str) else str(raw_st).lower()
                 ok = st in ("started", "running")
                 if not ok and st in ("none", ""):
                     # brew reports "none" when a formula is running under a
@@ -510,7 +661,7 @@ def _collect_checks() -> dict:
     # Homebrew python upgrades delete Cellar paths while KeepAlive PIDs
     # keep listening; TCP still answers so the services table looks green.
     # Joins the same fan-out as `_running_labels` so both share one listing.
-    checks.extend(stale_checks)
+    checks.extend(_as_checks(stale_checks))
 
     # LaunchAgents with KeepAlive that are not running.
     # running_labels was built once at the top of this function.
@@ -519,12 +670,13 @@ def _collect_checks() -> dict:
     import glob, plistlib
     try:
         agent_paths = glob.glob(str(Path(AGENTS_DIR) / "*.plist"))
-    except OSError:
+    except (OSError, TypeError, ValueError):
+        # A None/NUL AGENTS_DIR used to TypeError after the fan-out and
+        # empty GET /api/health/checks.
         agent_paths = []
     for path in agent_paths:
         try:
-            with open(path, "rb") as f:
-                pl = plistlib.load(f)
+            pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
             if not isinstance(pl, dict):
                 continue
             label = str(pl.get("Label") or Path(path).stem)
@@ -546,46 +698,66 @@ def _collect_checks() -> dict:
             continue
 
     # SMART quick (cached style) — probed in the wave above.
-    checks.extend(smart)
+    checks.extend(_as_checks(smart))
 
     # Time Machine / backup dir writable
-    bdir = Path.home() / "Services" / "backups"
     try:
+        home = user_home()
+        if home is None:
+            raise RuntimeError("no home")
+        bdir = home / "Services" / "backups"
         bdir.mkdir(parents=True, exist_ok=True)
         ok = os.access(bdir, os.W_OK)
+        backup_detail = str(bdir)
     except Exception:
+        # Path.home() raises RuntimeError when HOME cannot be resolved —
+        # that used to sit outside this try and 500 /api/health/checks.
         ok = False
+        backup_detail = "~/Services/backups"
     checks.append(_check(
         "backup_dir", "Backup directory writable",
         "warn", ok,
-        str(bdir),
+        backup_detail,
         "Check ~/Services/backups permissions" if not ok else "",
     ))
 
     # Immich hybrid stack — probed in the wave above.
-    checks.extend(immich)
+    checks.extend(_as_checks(immich))
 
     # WireGuard tunnel + boot daemon — probed in the wave above.
-    checks.extend(wg)
+    checks.extend(_as_checks(wg))
 
     # Ollama local LLM daemon — probed in the wave above; empty on hosts
     # without ollama.
-    checks.extend(ollama)
+    checks.extend(_as_checks(ollama))
 
     # Time Machine share prerequisites — probed in the wave above.
-    checks.extend(tm)
+    checks.extend(_as_checks(tm))
 
     # Worker-thread liveness — in-memory, deliberately outside the fan-out.
-    checks.extend(_worker_checks())
+    checks.extend(_as_checks(_worker_checks()))
 
-    errors = sum(1 for c in checks if not c["ok"] and c["level"] == "error")
-    warns = sum(1 for c in checks if not c["ok"] and c["level"] == "warn")
-    oks = sum(1 for c in checks if c["ok"])
-    v = {
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+    errors = sum(
+        1 for c in checks
+        if isinstance(c, dict) and not c.get("ok") and c.get("level") == "error"
+    )
+    warns = sum(
+        1 for c in checks
+        if isinstance(c, dict) and not c.get("ok") and c.get("level") == "warn"
+    )
+    oks = sum(1 for c in checks if isinstance(c, dict) and c.get("ok"))
+    v = _jsonable({
+        "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "summary": {"ok": oks, "warn": warns, "error": errors, "total": len(checks)},
         "checks": checks,
         "healthy": errors == 0,
-    }
+    })
+    if not isinstance(v, dict):
+        v = {
+            "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
+            "summary": {"ok": 0, "warn": 0, "error": 0, "total": 0},
+            "checks": [],
+            "healthy": False,
+        }
     _cache.update(t=time.time(), v=v)
     return v

@@ -97,6 +97,60 @@ class AuditReadEndpointTests(unittest.TestCase):
         names = [e["username"] for e in body["entries"]]
         self.assertEqual(names, ["good"])
 
+    def test_leftover_inf_field_does_not_500(self):
+        """Starlette allow_nan=False: leftover Infinity used to 500 GET /api/audit/auth."""
+        with AuditSink() as sink:
+            with sink.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "ts": "2026-07-27T20:00:00+0800",
+                    "event": audit.LOGIN_OK,
+                    "username": "admin",
+                    "n": float("inf"),
+                }) + "\n")
+            body = audit_api.auth_audit(limit=50)
+            leftover = audit.recent(float("inf"))
+
+        self.assertEqual(body["entries"][0]["username"], "admin")
+        self.assertIsNone(body["entries"][0]["n"])
+        json.dumps(body, allow_nan=False)
+        self.assertEqual(len(leftover), 1)
+
+    def test_leftover_surrogate_field_does_not_500(self):
+        """JSON ``username: "\\ud800"`` used to 500 GET /api/audit/auth."""
+        with AuditSink() as sink:
+            with sink.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "ts": "2026-07-27T20:00:00+0800",
+                    "event": audit.LOGIN_OK,
+                    "username": "adm\ud800in",
+                    "\ud800": "x",
+                }) + "\n")
+            body = audit_api.auth_audit(limit=50)
+            written = audit.record(audit.LOGIN_OK, username="\ud800")
+
+        json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        json.dumps(written, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertEqual(len(body["entries"]), 1)
+        self.assertNotIn("\ud800", body["entries"][0]["username"])
+        self.assertNotIn("\ud800", body["entries"][0])
+        self.assertNotIn("\ud800", written["username"])
+
+    def test_deeply_nested_audit_line_does_not_500(self):
+        """``json.loads`` RecursionError is not ValueError; GET /api/audit/auth used to 500."""
+        with AuditSink() as sink:
+            with sink.path.open("a", encoding="utf-8") as fh:
+                fh.write('{"k":' * 12000 + "1" + "}" * 12000 + "\n")
+                fh.write(json.dumps({
+                    "ts": "2026-07-27T20:00:00+0800",
+                    "event": audit.LOGIN_OK,
+                    "username": "admin",
+                }) + "\n")
+            body = audit_api.auth_audit(limit=50)
+
+        self.assertEqual(len(body["entries"]), 1)
+        self.assertEqual(body["entries"][0]["username"], "admin")
+        json.dumps(body, allow_nan=False)
+
 
 class AuditReadRedactionTests(unittest.TestCase):
     """No secret may reach the client through this endpoint."""

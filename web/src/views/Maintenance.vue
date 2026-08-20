@@ -13,7 +13,7 @@
          state stayed on screen with nothing marking it. Shown here it is visible
          in both states. -->
     <div v-if="loadError && tasks.length" class="placeholder" role="alert" style="margin-bottom:10px">
-      {{ loadError }}
+      {{ finiteText(loadError) }}
     </div>
     <div class="table-wrap">
       <table class="dense fit-m">
@@ -28,25 +28,25 @@
         <tbody>
           <tr v-for="task in filtered" :key="task.id">
             <td>
-              <strong>{{ task.name }}</strong>
-              <div class="mono" style="color:var(--sub)">{{ task.id }}</div>
-              <div v-if="task.desc" class="show-m sub">{{ task.desc }}</div>
+              <strong>{{ finiteText(task.name) }}</strong>
+              <div class="mono" style="color:var(--sub)">{{ finiteText(task.id) }}</div>
+              <div v-if="finiteText(task.desc, '')" class="show-m sub">{{ finiteText(task.desc) }}</div>
             </td>
-            <td class="col-hide-m" style="max-width:360px">{{ task.desc }}</td>
+            <td class="col-hide-m" style="max-width:360px">{{ finiteText(task.desc) }}</td>
             <td>
               <span v-if="task.running" class="badge warn">{{ t('maintenance.running') }}</span>
-              <span v-else-if="task.rc === 0" class="badge ok">✅ {{ task.finished }}</span>
-              <span v-else-if="task.rc != null" class="badge down">❌ {{ task.rc }}</span>
+              <span v-else-if="task.rc === 0" class="badge ok">✅ {{ finiteText(task.finished) }}</span>
+              <span v-else-if="task.rc != null" class="badge down">❌ {{ finiteN(task.rc) }}</span>
               <span v-else class="badge">{{ t('maintenance.ready') }}</span>
             </td>
             <td class="ops">
-              <button class="tiny primary" :disabled="starting || task.running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
+              <button class="tiny primary" :disabled="task.running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
               <button class="tiny" @click="openLog(task)">{{ t('maintenance.log') }}</button>
             </td>
           </tr>
           <tr v-if="!filtered.length">
             <td colspan="4" style="color:var(--sub)">
-              {{ tasks.length ? t('common.none') : (loadError || t('common.loading')) }}
+              {{ tasks.length ? t('common.none') : (finiteText(loadError, '') || (loaded ? t('common.none') : t('common.loading'))) }}
             </td>
           </tr>
         </tbody>
@@ -56,10 +56,10 @@
     <div ref="logPanel" v-if="logOpen" class="modal-bg" @click.self="closeLog" role="presentation">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="maint-log-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="maint-log-title" class="name">📋 {{ logTitle }}</span>
+          <span id="maint-log-title" class="name">📋 {{ finiteText(logTitle) }}</span>
           <button class="tiny" @click="closeLog">{{ t('common.close') }}</button>
         </div>
-        <pre>{{ logText }}</pre>
+        <pre>{{ finiteText(logText) }}</pre>
       </div>
     </div>
   </div>
@@ -69,6 +69,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
+import { finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 
@@ -77,6 +78,10 @@ const { t } = injectI18n()
 const tasks = ref([])
 const q = ref('')
 const loadError = ref('')
+// Same trap as Users accounts: `loadError || "loading"` treats a successful
+// empty list as still pending, so the table kept saying "loading" after the
+// first read came back with nothing.
+const loaded = ref(false)
 const logOpen = ref(false)
 const logPanel = ref(null)
 const logTitle = ref('')
@@ -97,15 +102,22 @@ const filtered = computed(() => {
   )
 })
 
+let listGeneration = 0
+
 async function refresh() {
+  const generation = ++listGeneration
   try {
     const list = await getMaintenance()
+    if (generation !== listGeneration || !pageAlive) return false
     tasks.value = Array.isArray(list) ? list : (list?.tasks || [])
     loadError.value = ''
     return true
   } catch (e) {
+    if (generation !== listGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
     return false
+  } finally {
+    if (generation === listGeneration && pageAlive) loaded.value = true
   }
 }
 
@@ -117,16 +129,19 @@ async function run(task) {
   // task.confirm, which defaults to false in the API (hub/routers/api.py) and is
   // absent from the documented example task, so the destructive entries shipped
   // unguarded.
-  if (!confirm(t('maintenance.confirm_run', { name: task.name }))) return
+  if (!confirm(t('maintenance.confirm_run', { name: finiteText(task.name) }))) return
+  const generation = listGeneration
   task.running = true
   try {
     await runMaintenance(task.id)
-    toast('🚀 ' + t('maintenance.started', { name: task.name }))
+    if (generation !== listGeneration || !pageAlive) return
+    toast('🚀 ' + t('maintenance.started', { name: finiteText(task.name) }))
     openLog(task)
     await refresh()
   } catch (e) {
+    if (generation !== listGeneration || !pageAlive) return
     task.running = false
-    toast('❌ ' + (e.message || e))
+    toast('❌ ' + finiteText(e.message || e))
   }
 }
 
@@ -138,23 +153,23 @@ function stopLogPolling() {
 
 async function pollLog(generation) {
   const id = curId.value
-  if (!id || generation !== pollGeneration) return
+  if (!id || generation !== pollGeneration || !pageAlive) return
   try {
     const j = await getMaintenanceLog(id)
-    if (generation !== pollGeneration || curId.value !== id) return
-    logText.value = j.log + (j.running ? '\n⏳…' : (j.rc == null ? '' : '\n' + t('maintenance.log_end', { rc: j.rc })))
+    if (generation !== pollGeneration || curId.value !== id || !pageAlive) return
+    logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : (j.rc == null ? '' : '\n' + t('maintenance.log_end', { rc: finiteN(j.rc) })))
     if (!j.running) {
       stopLogPolling()
       void refresh()
       return
     }
   } catch (e) {
-    if (generation !== pollGeneration) return
+    if (generation !== pollGeneration || !pageAlive) return
     // Say so instead of leaving the modal on maintenance.log_loading forever.
     // The loop still re-arms so a transient failure recovers on its own.
-    logText.value = `${logText.value === t('maintenance.log_loading') ? '' : logText.value || ''}\n⚠ ${e.message || e}`.trim()
+    logText.value = `${logText.value === t('maintenance.log_loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
   }
-  if (generation === pollGeneration && curId.value === id) {
+  if (generation === pollGeneration && curId.value === id && pageAlive) {
     pollTimer = setTimeout(() => { void pollLog(generation) }, 1500)
   }
 }
@@ -162,7 +177,7 @@ async function pollLog(generation) {
 function openLog(task) {
   stopLogPolling()
   curId.value = task.id
-  logTitle.value = task.name
+  logTitle.value = finiteText(task.name)
   logOpen.value = true
   logText.value = t('maintenance.log_loading')
   const generation = pollGeneration
@@ -174,11 +189,15 @@ function closeLog() {
   stopLogPolling()
 }
 
+let pageAlive = true
 onMounted(() => {
+  pageAlive = true
   void refresh()
   listTimer = startVisibleInterval(refresh, 15000)
 })
 onUnmounted(() => {
+  pageAlive = false
+  listGeneration += 1
   if (typeof listTimer === 'function') listTimer()
   listTimer = null
   stopLogPolling()
