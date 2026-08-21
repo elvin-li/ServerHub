@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.host_address import host_ip as resolved_host_ip
+from hub.group_rules import configured_group_rules, resolve_group
 from hub.paths import user_home
 from hub.service_signatures import configured_signatures, identify, unescape_proc_name
 from hub.util import port_open, read_text_capped, sh
@@ -83,7 +84,9 @@ def ports_from_plist(pl: dict) -> list[int]:
     raw_args = pl.get("ProgramArguments")
     if not isinstance(raw_args, list):
         raw_args = []
-    args = [str(a) for a in raw_args]
+    # leftover RecursionError on ``str(argv-item)`` / leftover ``\\ud800``
+    # used to 500 GET /api/status (adaptive port scan of LaunchAgents).
+    args = [_utf8_text(a) for a in raw_args]
     for i, a in enumerate(args):
         if a in _PORT_FLAGS and i + 1 < len(args):
             try:
@@ -105,13 +108,14 @@ def ports_from_plist(pl: dict) -> list[int]:
     if not isinstance(env, dict):
         env = {}
     for k, v in env.items():
-        if _ENV_PORT_KEYS.match(str(k)):
+        key, val = _utf8_text(k), _utf8_text(v)
+        if _ENV_PORT_KEYS.match(key):
             try:
-                ports.append(int(str(v).strip()))
+                ports.append(int(val.strip()))
             except (ValueError, OverflowError, TypeError):
                 pass
-        if _URL_ENV_KEYS.match(str(k)):
-            m = re.search(r":(\d{2,5})(?:/|$)", str(v))
+        if _URL_ENV_KEYS.match(key):
+            m = re.search(r":(\d{2,5})(?:/|$)", val)
             if m:
                 ports.append(int(m.group(1)))
     # Sockets in plist (rare)
@@ -140,8 +144,9 @@ def url_from_plist(pl: dict) -> str | None:
     if not isinstance(env, dict):
         env = {}
     for k, v in env.items():
-        if _URL_ENV_KEYS.match(str(k)) and str(v).startswith("http"):
-            return _utf8_text(str(v).strip())
+        val = _utf8_text(v)
+        if _URL_ENV_KEYS.match(_utf8_text(k)) and val.startswith("http"):
+            return val.strip()
     return None
 
 
@@ -159,11 +164,16 @@ _lsof_lock = threading.Lock()
 # Single-flight: the status refresh fans out across a thread pool, so several
 # callers hit a cold cache at once.  Collapse them into one subprocess.
 _lsof_refresh_lock = threading.Lock()
+#: Bumped on every invalidate so an in-flight refresh cannot republish a
+#: pre-action snapshot on top of a start/stop that finished while it ran.
+_lsof_generation = 0
 
 
 def invalidate_lsof_snapshot() -> None:
     """Drop the listener snapshot so the next read reflects current reality."""
+    global _lsof_generation
     with _lsof_lock:
+        _lsof_generation += 1
         _lsof_cache["t"] = 0.0
         _lsof_cache["v"] = None
 
@@ -208,12 +218,14 @@ def lsof_listen_snapshot() -> list[dict[str, Any]]:
     with _lsof_lock:
         if _lsof_cache["v"] is not None and now - _lsof_cache["t"] < _LSOF_TTL:
             return _lsof_cache["v"]
+        gen = _lsof_generation
     with _lsof_refresh_lock:
         # Another thread may have refreshed while we waited for the lock.
         now = time.time()
         with _lsof_lock:
             if _lsof_cache["v"] is not None and now - _lsof_cache["t"] < _LSOF_TTL:
                 return _lsof_cache["v"]
+            gen = _lsof_generation
         try:
             rc, out, _ = sh(
                 ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
@@ -223,6 +235,11 @@ def lsof_listen_snapshot() -> list[dict[str, Any]]:
         except Exception:
             rows = []
         with _lsof_lock:
+            if gen != _lsof_generation:
+                # invalidate() landed while we shelled out; do not revive the
+                # pre-action snapshot or the next ports_for_pid would miss a
+                # real refresh after a start/stop.
+                return rows
             _lsof_cache["t"] = time.time()
             _lsof_cache["v"] = rows
         return rows
@@ -489,12 +506,16 @@ def guess_group(label: str, pl: dict, interval: bool) -> str:
     if interval:
         return "Scheduled Tasks"
     if not isinstance(label, str):
-        label = str(label or "")
+        # leftover RecursionError on ``str(label)`` used to 500 GET /api/status.
+        label = _utf8_text(label)
     if not isinstance(pl, dict):
         pl = {}
     low = label.lower()
     raw_args = pl.get("ProgramArguments")
-    path = " ".join(str(a) for a in raw_args).lower() if isinstance(raw_args, list) else ""
+    path = (
+        " ".join(_utf8_text(a) for a in raw_args).lower()
+        if isinstance(raw_args, list) else ""
+    )
     if "nginx" in low or "nginx" in path:
         return "Gateway"
     if "homeassistant" in low or "home-assistant" in path:
@@ -618,6 +639,7 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
 
     hip = host_ip()
     extras = configured_signatures()
+    rules = configured_group_rules()
     items = []
     # Speed: port already LISTEN from lsof → treat as ok; skip extra TCP + HTTP
     # probes.  guess_http_url is one round trip now, but at ~40 ports on a busy
@@ -671,7 +693,16 @@ def discover_orphan_listeners(known_ports: set[int], known_names: set[str]) -> l
             "url": url,
             "port": primary,
             "ports": ports,
-            "group": "Auto-discovered",
+            "group": resolve_group(
+                {
+                    "id": f"auto.port.{primary}",
+                    "port": primary,
+                    "ports": ports,
+                    "meta": {"process": _utf8_text(info["proc"])},
+                },
+                fallback="Auto-discovered",
+                rules=rules,
+            ),
             "actions": ["adopt"],
             "auto": True,
             "signature": sig if isinstance(sig, dict) else None,

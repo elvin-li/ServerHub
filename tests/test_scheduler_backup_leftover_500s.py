@@ -990,6 +990,29 @@ class BackupRunCappedLeftoverTests(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["message"], "Recursing")
 
+    def test_pg_env_recursing_keys_do_not_500(self):
+        """leftover ``str(env-item)`` RecursionError used to 500 POST /api/backups."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with mock.patch.object(backups, "cfg", return_value={
+            "settings": {
+                "maintenance_env": {
+                    Recursing(): Recursing(),
+                    "PATH": "/pg/bin",
+                    "bad\ud800": "x\ud800",
+                },
+            },
+        }), mock.patch.object(backups, "_pg_password", return_value=""):
+            env = backups._pg_env({
+                "id": "tm", "password_env": Recursing(),
+            })
+        overlay = {k: v for k, v in env.items() if k in ("PATH", "Recursing") or "bad" in k}
+        json.dumps(overlay, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertEqual(env["PATH"], "/pg/bin")
+        self.assertNotIn("\ud800", "".join(overlay.keys()) + "".join(overlay.values()))
+
     def test_stack_mounts_none_and_bytes_do_not_500(self):
         """Leftover None from ``run_capped`` used to AttributeError ``.strip``."""
         with mock.patch.object(backups, "run_capped", return_value=(1, None)):

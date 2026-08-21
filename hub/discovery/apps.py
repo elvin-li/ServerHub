@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hub import cli_args
 from hub.config import cfg
+from hub.group_rules import configured_group_rules, resolve_yaml_entry_group
 from hub.host_address import resolve_value
 from hub.util import fan_out, port_open, sh
 
@@ -58,13 +59,15 @@ def collect_apps(engine_up):
         plan["result"] = result
 
     items = []
+    rules = configured_group_rules()
     for plan in plans:
         a = plan["app"]
         if plan["kind"] == "engine":
             items.append({"id": a["id"], "kind": "app-engine", "name": a.get("name", "OrbStack"),
                           "state": "ok" if engine_up else "down",
                           "detail": "OrbStack engine running" if engine_up else "OrbStack engine not running",
-                          "url": a.get("url"), "group": a.get("group", "Apps"),
+                          "url": a.get("url"),
+                          "group": resolve_yaml_entry_group(a, fallback="Apps", rules=rules),
                           "actions": ["stop"] if engine_up else ["start"]})
             continue
         running, p = plan["result"]
@@ -72,7 +75,7 @@ def collect_apps(engine_up):
         detail = (f"Running · :{a['port']}" if p else "Running") if running else "Stopped"
         items.append({"id": a["id"], "kind": "app", "name": a.get("name", a["id"]),
                       "state": state, "detail": detail, "url": a.get("url"),
-                      "group": a.get("group", "Apps"),
+                      "group": resolve_yaml_entry_group(a, fallback="Apps", rules=rules),
                       "actions": ["restart", "stop"] if running else ["start"]})
     return items
 
@@ -119,6 +122,7 @@ def collect_scripts():
             reachable.setdefault(index, set()).add(port)
 
     items = []
+    rules = configured_group_rules()
     for index, s in enumerate(scripts):
         ports = _ports(s)
         live = reachable.get(index, set())
@@ -145,7 +149,8 @@ def collect_scripts():
             continue
         items.append({"id": sid, "kind": "script", "name": s.get("name", sid),
                       "state": state, "detail": detail, "url": s.get("url"),
-                      "group": s.get("group", "Custom"), "links": s.get("links"),
+                      "group": resolve_yaml_entry_group(s, fallback="Custom", rules=rules),
+                      "links": s.get("links"),
                       "ports": list(ports),
                       "actions": acts,
                       "adopted": bool(s.get("adopted_from"))})

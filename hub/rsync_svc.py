@@ -23,7 +23,6 @@ import re
 import signal
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 from hub import secure_io

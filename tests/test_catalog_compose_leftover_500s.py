@@ -731,6 +731,34 @@ class NativeCatalogLeftoverTests(unittest.TestCase):
         self.assertIn("ok", out)
         _starlette(out)
 
+    def test_filebrowser_copy2_recursing_exc_does_not_500(self):
+        """leftover ``{exc}`` RecursionError used to 500 FileBrowser install."""
+        class Recursing(OSError):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(home, ignore_errors=True))
+        brew_bin = home / "filebrowser"
+        brew_bin.write_text("x")
+        logs: list[str] = []
+        with (
+            mock.patch.object(native_catalog, "SERVICES_ROOT", home / "Services"),
+            mock.patch.object(native_catalog, "_which", return_value=str(brew_bin)),
+            mock.patch.object(
+                native_catalog, "_run",
+                return_value={"ok": True, "message": "ok", "rc": 0},
+            ),
+            mock.patch.object(Path, "symlink_to", side_effect=OSError(errno.EIO, "I/O error")),
+            mock.patch("shutil.copy2", side_effect=Recursing()),
+        ):
+            out = native_catalog._install_filebrowser(
+                {"notes": ""}, "native-filebrowser", logs,
+            )
+        self.assertTrue(any("could not place" in line for line in logs), logs)
+        self.assertTrue(any("Recursing" in line for line in logs), logs)
+        _starlette({"logs": logs, **out})
+
 
 class CatalogInstallLeftoverTests(unittest.TestCase):
     def test_leftover_bytes_compose_up_does_not_500_install(self):
@@ -771,6 +799,31 @@ class CatalogInstallLeftoverTests(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["notes"], "")
         _starlette(out)
+
+    def test_recursing_install_exc_does_not_500(self):
+        """leftover ``str(e)`` RecursionError used to 500 POST /api/catalog/install."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(home, ignore_errors=True))
+        (home / "Services").mkdir()
+        src = home / "ok.yml"
+        src.write_text("---\nname: Ok\ndesc: d\n---\nservices:\n  x:\n    image: a:1\n")
+        with (
+            mock.patch.object(catalog, "SERVICES_ROOT", home / "Services"),
+            mock.patch.object(catalog, "template_file", return_value=src),
+            mock.patch.object(catalog, "DOCKER", "/usr/bin/true"),
+            mock.patch.object(catalog, "run_capped", side_effect=Recursing()),
+            mock.patch.object(catalog, "_check_ports_free"),
+            mock.patch.object(catalog, "_register_stack"),
+        ):
+            out = catalog.install_template("ok", {})
+        self.assertFalse(out["ok"])
+        _starlette(out)
+        self.assertIsInstance(out["message"], str)
+        self.assertNotIn("\ud800", out["message"])
 
     def test_leftover_bytes_compose_down_does_not_500_uninstall(self):
         """``run_capped`` leftover bytes used to TypeError POST uninstall."""
@@ -1100,6 +1153,48 @@ class CatalogRemoteJsonableLeftoverTests(unittest.TestCase):
         self.assertEqual(out["blob"], "tpl")
         self.assertEqual(out["tags"], ["remote"])
         self.assertIsNone(out["n"])
+
+
+class HostLanguagesLeftoverTests(unittest.TestCase):
+    def test_recursing_language_tag_does_not_500(self):
+        """leftover ``str(tag)`` RecursionError used to 500 GET /api/catalog."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        prefs = tmp / "GlobalPreferences.plist"
+        prefs.write_bytes(b"x")
+        catalog._lang_cache = None
+        self.addCleanup(lambda: setattr(catalog, "_lang_cache", None))
+        with (
+            mock.patch.object(catalog, "_GLOBAL_PREFS", prefs),
+            mock.patch.object(
+                catalog.plistlib, "loads",
+                return_value={"AppleLanguages": [Recursing(), "en"]},
+            ),
+        ):
+            langs = catalog.host_languages()
+        self.assertEqual(langs, ("en",))
+
+    def test_recursing_install_vars_do_not_500_suggest_url(self):
+        """leftover ``str(var)`` RecursionError used to 500 POST /api/catalog/install."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        url = catalog._suggest_url(
+            {"url_template": "http://{{HOST_IP}}:{{HOST_PORT}}/{{X}}"},
+            {
+                "HOST_IP": Recursing(),
+                "HOST_PORT": Recursing(),
+                Recursing(): Recursing(),
+                "X": Recursing(),
+            },
+        )
+        _starlette({"url": url})
+        self.assertTrue(url is None or isinstance(url, str))
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@
       </select>
       <select v-model="groupF" class="cat-select">
         <option value="">{{ t('services.group_all') }}</option>
-        <option v-for="g in groupOptions" :key="g" :value="g">{{ finiteText(g) }}</option>
+        <option v-for="g in groupOptions" :key="g" :value="g">{{ displayGroup(g) }}</option>
       </select>
       <select v-model="sortBy" class="cat-select">
         <option value="group">{{ t('services.sort_group') }}</option>
@@ -119,10 +119,10 @@
                   {{ signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?` }}
                 </span>
                 <div class="mono sub-id">{{ finiteText(s.id) }}</div>
-                <div class="show-m sub">{{ finiteText(s.group) }} · {{ kindLabel(s.kind) }}</div>
+                <div class="show-m sub">{{ displayGroup(s.group) }} · {{ kindLabel(s.kind) }}</div>
                 <div v-if="finiteText(s.detail, '')" class="show-m sub">{{ finiteText(s.detail) }}</div>
               </td>
-              <td class="col-hide-m">{{ finiteText(s.group) }}</td>
+              <td class="col-hide-m">{{ displayGroup(s.group) }}</td>
               <td class="col-hide-m"><span class="badge kind-badge">{{ kindLabel(s.kind) }}</span></td>
               <td class="mono">{{ portOf(s) }}</td>
               <td class="detail-cell col-hide-m" :title="finiteText(s.detail)">{{ finiteText(s.detail) }}</td>
@@ -148,7 +148,7 @@
     <!-- Card grid by group -->
     <template v-else>
       <template v-for="g in filteredGroups" :key="g.group">
-        <h2 class="section-title">{{ finiteText(g.group) }} <span class="meta-count">{{ g.services.length }}</span></h2>
+        <h2 class="section-title">{{ displayGroup(g.group) }} <span class="meta-count">{{ g.services.length }}</span></h2>
         <div class="grid svc-grid">
           <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">
             <div class="row">
@@ -251,6 +251,7 @@ import {
   updateServiceScript,
 } from '../api/client'
 import { injectI18n } from '../i18n'
+import { groupI18nKey } from '../i18n/groupLabels'
 import { authState } from '../lib/authState'
 import { finiteN, finiteText } from '../lib/finite'
 import { canLogs, ledOf, portOf, serviceLabels, signatureOf } from '../lib/serviceActions'
@@ -264,6 +265,11 @@ import ServiceLogsModal from '../components/ServiceLogsModal.vue'
 const toast = inject('toast')
 const { t } = injectI18n()
 const { actLabel, kindLabel } = serviceLabels(t)
+
+function displayGroup(name) {
+  const key = groupI18nKey(name)
+  return key ? t(key) : finiteText(name)
+}
 
 // Members get a read-only page: mutating controls (bulk actions, hide,
 // override editing) are admin-only and the backend refuses them anyway.
@@ -345,6 +351,7 @@ const filtered = computed(() => {
       (s.name || '').toLowerCase().includes(qq)
       || (s.id || '').toLowerCase().includes(qq)
       || (s.group || '').toLowerCase().includes(qq)
+      || displayGroup(s.group).toLowerCase().includes(qq)
       || (s.kind || '').toLowerCase().includes(qq)
       || (s.detail || '').toLowerCase().includes(qq)
       || String(s.port || '').includes(qq)

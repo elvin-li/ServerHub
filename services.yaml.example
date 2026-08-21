@@ -244,3 +244,32 @@ scripts: []
 #       http: true
 #       brew: my-api
 service_signatures: []
+
+# Grouping rules for the Services page.  When this key is omitted, ServerHub
+# uses built-in seeds (not written to this file until you save in Settings).
+# A present list is the full ruleset; `[]` disables the seeds.  Matchers on
+# one rule are OR; the first matching rule wins.  `overrides.<id>.group` and
+# a non-blank `group` on apps[] / scripts[] always beat rules.
+#
+#   group_rules:
+#     - id: scheduled-tasks
+#       group: 定时任务          # calendar / StartInterval launchd jobs
+#       launchd_interval: true
+#     - id: smart-home
+#       group: 智能家居
+#       compose_project: [xiaomihub, music-assistant]
+#       image: [xiaomihub, miot, homeassistant, home-assistant, esphome, music-assistant]
+#       launchd_prefix: [com.homeassistant, local.esphome]
+#       auto_port_owner: [xiaomihub, miot, homeassistant, esphome, music-assistant]
+#     - id: gravity
+#       group: Gravity 量化
+#       launchd_prefix: [com.gravity.]
+#       id_prefix: [gravity]
+#     - id: gateway
+#       group: 网关
+#       launchd_prefix: [local.system-nginx, local.cloudflared, com.elvin.wstunnel, com.user.remote-desktop]
+#     - id: teslamate
+#       group: 容器 · teslamate
+#       compose_project: [teslamate]
+#
+# Other optional matchers: service_id, launchd, launchd_re, ports.

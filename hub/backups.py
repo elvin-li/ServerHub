@@ -446,10 +446,14 @@ def _pg_env(target: dict) -> dict:
     settings = cfg().get("settings")
     raw = settings.get("maintenance_env") if isinstance(settings, dict) else {}
     if isinstance(raw, dict):
-        env.update({str(k): str(v) for k, v in raw.items()})
+        # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
+        # used to UnicodeEncodeError Popen on POST /api/backups.
+        env.update({
+            _as_text(k): _as_text(v) for k, v in raw.items() if _as_text(k)
+        })
     password = _pg_password(target["id"])
     if not password and target["password_env"]:
-        password = str(env.get(target["password_env"]) or "")
+        password = _as_text(env.get(target["password_env"]) or "")
     if password:
         env["PGPASSWORD"] = password
     return env

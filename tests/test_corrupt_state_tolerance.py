@@ -221,11 +221,13 @@ class StateReaderTolerance(_Corpses):
             "stacks": ["x", {"id": "immich"}],
             "scripts": [1, {"id": "backup"}],
             "groups_order": ["a", "b"],
+            "group_rules": ["oops", {"id": "smart-home", "group": "Home"}],
         })
         self.assertEqual(data["apps"], [{"id": "jellyfin"}])
         self.assertEqual(data["stacks"], [{"id": "immich"}])
         self.assertEqual(data["scripts"], [{"id": "backup"}])
         self.assertEqual(data["groups_order"], ["a", "b"])
+        self.assertEqual(data["group_rules"], [{"id": "smart-home", "group": "Home"}])
 
     def test_settings_section_rejects_a_non_mapping(self):
         from hub import config as cfgmod

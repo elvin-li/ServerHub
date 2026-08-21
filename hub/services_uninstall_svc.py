@@ -18,7 +18,6 @@ from __future__ import annotations
 import plistlib
 import re
 import shutil
-import time
 from pathlib import Path
 from typing import Any
 

@@ -434,6 +434,28 @@ class AdaptiveLeftoverTests(unittest.TestCase):
         self.assertIsInstance(item["meta"], dict)
         self.assertEqual(item["meta"]["detected_ports"], [8086])
 
+    def test_recursing_program_arguments_do_not_500(self):
+        """leftover ``str(argv-item)`` RecursionError used to 500 GET /api/status."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        pl = {
+            "ProgramArguments": [Recursing(), "--port", Recursing(), "-p", "8123"],
+            "EnvironmentVariables": {Recursing(): Recursing(), "PORT": Recursing()},
+        }
+        ports = adaptive.ports_from_plist(pl)
+        url = adaptive.url_from_plist({
+            "EnvironmentVariables": {Recursing(): Recursing(), "PUBLIC_URL": Recursing()},
+        })
+        group = adaptive.guess_group(Recursing(), pl, False)
+        json.dumps(
+            {"ports": ports, "url": url, "group": group},
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+        self.assertEqual(ports, [8123])
+        self.assertIsInstance(group, str)
+
 
 class HealthLeftoverTests(unittest.TestCase):
     def setUp(self):

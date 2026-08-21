@@ -5,7 +5,6 @@ import os
 import signal
 import subprocess
 import threading
-import time
 
 from hub import cli_args
 from hub.config import cfg, maintenance_env

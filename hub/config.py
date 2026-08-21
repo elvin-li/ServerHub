@@ -116,6 +116,7 @@ _MAP_KEYS = ("settings", "overrides")
 _LIST_KEYS = (
     "apps", "stacks", "quick_links", "log_sources",
     "maintenance", "scripts", "groups_order", "schedules",
+    "group_rules",
 )
 
 
@@ -281,9 +282,34 @@ def settings_section(name: str) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _env_text(value) -> str:
+    """subprocess env keys/values. Leftover ``str()`` RecursionError / ``\\ud800``
+    used to 500 POST backups and maintenance jobs (Popen UTF-8 argv/env)."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 def maintenance_env() -> dict:
     """Extra env for backups / scheduled jobs / container updates."""
-    return {str(k): str(v) for k, v in settings_section("maintenance_env").items()}
+    out = {}
+    for k, v in settings_section("maintenance_env").items():
+        key = _env_text(k)
+        if key:
+            out[key] = _env_text(v)
+    return out
 
 
 def override(sid):

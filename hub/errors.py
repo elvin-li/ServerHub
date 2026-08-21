@@ -396,6 +396,8 @@ CODES: dict[str, tuple[int, str]] = {
     "services.script_not_found": (404, "no managed script named {id}"),
     "services.signature_invalid": (400, "recognition rule needs a slug of letters, digits and hyphens"),
     "services.signature_not_found": (404, "no recognition rule named {slug}"),
+    "services.group_rule_invalid": (400, "grouping rule needs a target group and a slug of letters, digits and hyphens"),
+    "services.group_rule_not_found": (404, "no grouping rule named {id}"),
     "services.not_found": (404, "service not found: {id}"),
     "services.no_logs": (404, "no logs for {id}"),
     "services.bad_port": (400, "port must be an integer"),
@@ -522,10 +524,9 @@ def _jsonable_param(value, depth: int = 0):
     try:
         text = str(value)
     except RecursionError:
-        try:
-            return type(value).__name__
-        except Exception:
-            return None
+        # Type name used to leak into params as ``"Recursing"`` and look like a
+        # real stack id; drop the value instead.
+        return None
     except Exception:
         return None
     try:

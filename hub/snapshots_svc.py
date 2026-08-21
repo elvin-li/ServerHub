@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import plistlib
 import re
-import time
 from pathlib import Path
 
 from hub.macos_admin import run_admin, run_admin_sequence

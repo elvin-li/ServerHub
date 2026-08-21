@@ -458,6 +458,30 @@ class ContainerLogsSseLeftoverTests(unittest.TestCase):
             body = asyncio.run(collect())
         self.assertIn("line truncated", body)
 
+    def test_popen_recursing_exc_does_not_500_sse(self):
+        """leftover ``{e}`` RecursionError used to 500 GET /api/containers/.../logs."""
+        from hub.routers import containers as containers_router
+
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        async def fake_exec(*_a, **_k):
+            raise Recursing()
+
+        async def collect():
+            resp = await containers_router.logs_sse("web")
+            chunks = []
+            async for part in resp.body_iterator:
+                chunks.append(part if isinstance(part, str) else part.decode())
+            return "".join(chunks)
+
+        with mock.patch.object(containers_router.asyncio, "create_subprocess_exec", fake_exec):
+            body = asyncio.run(collect())
+        self.assertIn("could not start log stream", body)
+        self.assertIn("Recursing", body)
+        json.dumps(body, ensure_ascii=False).encode("utf-8")
+
 
 class ContainerUpdateStatusDumpsLeftoverTests(unittest.TestCase):
     def test_save_update_status_dumps_recursion_does_not_500(self):
@@ -506,6 +530,45 @@ class ContainerJobEpochLeftoverTests(unittest.TestCase):
         self.assertIsNone(job["finished"])
         containers_svc._cjobs.clear()
 
+    def test_job_log_recursing_exc_does_not_500(self):
+        """leftover ``{e}`` RecursionError used to 500 GET docker job log."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        containers_svc._cjobs.clear()
+        with (
+            mock.patch.object(containers_svc, "engine_up", return_value=True),
+            mock.patch.object(
+                containers_svc, "check_image_update", side_effect=Recursing(),
+            ),
+            mock.patch.object(containers_svc, "_save_update_status"),
+            mock.patch.object(containers_svc, "invalidate_status"),
+        ):
+            out = containers_svc.start_check_updates_job(["nginx:latest"])
+            jid = out["job_id"]
+            got = None
+            for _ in range(80):
+                got = containers_svc.stack_job_log(jid)
+                if got and not got.get("running"):
+                    break
+                __import__("time").sleep(0.02)
+        self.assertIsNotNone(got)
+        json.dumps(got, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertIn("Recursing", got["log"])
+        containers_svc._cjobs.clear()
+
+    def test_job_log_surrogate_line_does_not_500(self):
+        """``str(x)`` of leftover ``\\ud800`` in the job log used to UTF-8 500."""
+        containers_svc._cjobs.clear()
+        job = containers_svc._register_job("job-ud800", stack_id="web", action="up")
+        job["log"].append("ok\ud800")
+        job["running"] = False
+        got = containers_svc.stack_job_log("job-ud800")
+        json.dumps(got, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertNotIn("\ud800", got["log"])
+        containers_svc._cjobs.clear()
+
 
 class StreamJobCommandPopenLeftoverTests(unittest.TestCase):
     def test_popen_oserror_is_logged_not_500(self):
@@ -534,6 +597,34 @@ class StreamJobCommandPopenLeftoverTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertTrue(any("ok" in line for line in job["log"]))
+
+
+class CreateRunContainerLeftoverTests(unittest.TestCase):
+    def test_recursing_env_item_does_not_500(self):
+        """leftover ``str(env-item)`` RecursionError used to 500 POST /api/containers/run."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with (
+            mock.patch.object(containers_svc, "engine_up", return_value=True),
+            mock.patch.object(
+                containers_svc, "docker", return_value=(0, "abc123", ""),
+            ) as docker,
+            mock.patch.object(containers_svc, "invalidate_status"),
+        ):
+            out = containers_svc.create_run_container({
+                "image": "nginx:latest",
+                "env": [Recursing(), "FOO=bar"],
+                "ports": [Recursing(), "8080:80"],
+                "volumes": [Recursing(), "/data:/data"],
+                "command": [Recursing(), "sleep", "1"],
+            })
+        json.dumps(out, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.assertTrue(out["ok"])
+        argv = docker.call_args[0]
+        self.assertIn("FOO=bar", argv)
+        self.assertIn("8080:80", argv)
 
 
 if __name__ == "__main__":

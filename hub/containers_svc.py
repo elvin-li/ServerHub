@@ -727,14 +727,14 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
                     flag = "update available" if r["update"] else ("up to date" if r["status"] == "false" else "unknown")
                     j["log"].append(f"  {flag}")
                 except Exception as e:
-                    j["log"].append(f"  !! {e}")
+                    j["log"].append(f"  !! {_as_text(e)}")
                     status[img] = {"status": "undef", "update": None, "error": _as_text(e)}
             status["_checked_at"] = strftime_now("%Y-%m-%d %H:%M:%S")
             _save_update_status(status)
             j["rc"] = 0
             j["log"].append("== check complete ==")
         except Exception as e:
-            j["log"].append(f"!! {e}")
+            j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
             j["running"] = False
@@ -950,7 +950,7 @@ def start_update_container_job(name: str) -> dict:
                 j["rc"] = 0
             j["log"].append("== done ==")
         except Exception as e:
-            j["log"].append(f"!! {e}")
+            j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
             j["running"] = False
@@ -1185,8 +1185,10 @@ def create_run_container(body: dict) -> dict:
     import re
     if not engine_up():
         raise api_error("container.engine_down")
-    image = str(body.get("image") or "").strip()
-    name = str(body.get("name") or "").strip()
+    # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
+    # used to 500 POST /api/containers/run.
+    image = _as_text(body.get("image") or "").strip()
+    name = _as_text(body.get("name") or "").strip()
     if not image or not re_match_image(image):
         raise api_error("container.image_required")
     if name and not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", name):
@@ -1195,7 +1197,7 @@ def create_run_container(body: dict) -> dict:
     args = ["run", "-d"]
     if name:
         args += ["--name", name]
-    restart = str(body.get("restart") or "unless-stopped").strip()
+    restart = _as_text(body.get("restart") or "unless-stopped").strip()
     allowed_restart = {"no", "always", "unless-stopped", "on-failure"}
     if restart not in allowed_restart:
         raise api_error("container.bad_policy", policy=restart)
@@ -1203,7 +1205,7 @@ def create_run_container(body: dict) -> dict:
         args += ["--restart", restart]
     if body.get("privileged"):
         args.append("--privileged")
-    network = str(body.get("network") or "").strip()
+    network = _as_text(body.get("network") or "").strip()
     if network:
         # Same class of bug as ``docker stop --all``: an option-shaped value
         # in the ``--network`` slot is read as another flag.
@@ -1211,17 +1213,17 @@ def create_run_container(body: dict) -> dict:
         args += ["--network", network]
     # ports: ["8080:80", "443:443"]
     for p in body.get("ports") if isinstance(body.get("ports"), list) else []:
-        p = str(p).strip()
+        p = _as_text(p).strip()
         if p and re.match(r"^[0-9.:\-/tcpudp]+$", p):
             args += ["-p", p]
     # volumes: ["/host:/container", "vol:/data"]
     for v in body.get("volumes") if isinstance(body.get("volumes"), list) else []:
-        v = str(v).strip()
+        v = _as_text(v).strip()
         if v and ":" in v:
             args += ["-v", v]
     # env: ["KEY=val"]
     for e in body.get("env") if isinstance(body.get("env"), list) else []:
-        e = str(e).strip()
+        e = _as_text(e).strip()
         if e and "=" in e:
             args += ["-e", e]
     # extra args carefully not allowed for safety
@@ -1231,9 +1233,9 @@ def create_run_container(body: dict) -> dict:
     cmd = body.get("command")
     if isinstance(cmd, str) and cmd.strip():
         # simple shell form — split
-        args += cmd.strip().split()
+        args += _as_text(cmd).strip().split()
     elif isinstance(cmd, list):
-        args += [str(x) for x in cmd]
+        args += [_as_text(x) for x in cmd if _as_text(x)]
 
     rc, out, err = docker(*args, timeout=180)
     invalidate_status()
@@ -1451,7 +1453,7 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
                 j["rc"] = 0
                 j["log"].append("== done ==")
         except Exception as e:
-            j["log"].append(f"!! {e}")
+            j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
             j["running"] = False
@@ -1481,7 +1483,7 @@ def stack_job_log(job_id: str) -> dict:
     raw_log = j.get("log") if isinstance(j.get("log"), list) else []
     return {"running": j.get("running"), "rc": j.get("rc"), "started": j.get("started"),
             "finished": j.get("finished"),
-            "log": "\n".join(str(x) for x in raw_log) or "(waiting for output…)",
+            "log": "\n".join(_as_text(x) for x in raw_log) or "(waiting for output…)",
             "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action")}
 
 

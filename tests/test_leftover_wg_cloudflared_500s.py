@@ -1091,6 +1091,42 @@ class CloudflaredTunnelListExcDetailTests(unittest.TestCase):
             self.assertEqual(cloudflared_svc._as_text(Recursing()), "Recursing")
         json.dumps({"error": cloudflared_svc._as_text(Recursing())}, ensure_ascii=False).encode("utf-8")
 
+    def test_recursing_login_popen_does_not_500(self):
+        """leftover ``{e}`` RecursionError used to 500 POST /api/cloudflared/login."""
+        class Recursing(OSError):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with (
+            mock.patch.object(cloudflared_svc, "_logged_in", return_value=False),
+            mock.patch.object(cloudflared_svc, "_ensure_dirs"),
+            mock.patch.object(cloudflared_svc, "_bin", return_value="/opt/homebrew/bin/cloudflared"),
+            mock.patch.object(cloudflared_svc, "_terminate_login_process", return_value=True),
+            mock.patch.object(cloudflared_svc.subprocess, "Popen", side_effect=Recursing()),
+        ):
+            out = cloudflared_svc.login_start()
+        _starlette(out)
+        self.assertFalse(out["ok"])
+        self.assertIn("Recursing", out["message"])
+
+    def test_recursing_log_tail_does_not_500(self):
+        """leftover ``{e}`` RecursionError used to 500 GET /api/cloudflared/logs."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with (
+            mock.patch.object(Path, "is_file", return_value=True),
+            mock.patch.object(
+                cloudflared_svc, "tail_file_lines", side_effect=Recursing(),
+            ),
+        ):
+            out = cloudflared_svc.logs(40)
+        _starlette(out)
+        self.assertTrue(out["ok"])
+        self.assertIn("read error", out["log"])
+        self.assertIn("Recursing", out["log"])
+
 
 class WireGuardAsTextRecursionLeftoverTests(unittest.TestCase):
     def test_wireguard_as_text_recursing_does_not_500(self):

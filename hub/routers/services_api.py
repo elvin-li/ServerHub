@@ -1,7 +1,7 @@
 """Services page management APIs."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -113,6 +113,29 @@ def services_forget_signature(request: Request, slug: str):
     if _member_username(request):
         raise api_error("auth.admin_required")
     return services_manage_svc.forget_signature(slug)
+
+
+@router.get("/api/services/group-rules")
+def services_list_group_rules(request: Request):
+    """Services-page grouping rules (yaml list, or code seeds if unset)."""
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.list_group_rules()
+
+
+@router.put("/api/services/group-rules")
+def services_save_group_rules(request: Request, body: dict[str, Any] | None = None):
+    """Upsert one rule, or replace the list when ``rules`` is present."""
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.save_group_rules(body if isinstance(body, dict) else {})
+
+
+@router.delete("/api/services/group-rules/{rule_id}")
+def services_delete_group_rule(request: Request, rule_id: str):
+    if _member_username(request):
+        raise api_error("auth.admin_required")
+    return services_manage_svc.delete_group_rule(rule_id)
 
 
 @router.get("/api/services")

@@ -5,6 +5,7 @@ import threading
 import time
 
 from hub.config import override
+from hub.group_rules import configured_group_rules, resolve_group
 from hub.host_address import resolve_value
 from hub.paths import DOCKER
 from hub.service_signatures import configured_signatures, identify, image_basename
@@ -117,6 +118,7 @@ def _refresh():
         _timeouts = 0
     items, engine_up = [], rc == 0
     extras = configured_signatures() if rc == 0 else []
+    rules = configured_group_rules() if rc == 0 else []
     if rc == 0:
         for line in out.splitlines():
             # maxsplit=4: the last field is a Docker *label*, which is an
@@ -161,11 +163,20 @@ def _refresh():
             group = ov.get("group")
             if not group:
                 if project:
-                    group = f"Containers · {project}"
+                    fallback = f"Containers · {project}"
                 elif sig:
-                    group = sig["category"]
+                    fallback = sig["category"]
                 else:
-                    group = "Containers · other"
+                    fallback = "Containers · other"
+                group = resolve_group(
+                    {
+                        "id": name,
+                        "compose_project": project,
+                        "image": image,
+                    },
+                    fallback=fallback,
+                    rules=rules,
+                )
             item = {
                 "id": name,
                 "kind": "container",

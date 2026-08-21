@@ -312,7 +312,16 @@ def _list_orb_machines_uncached() -> list[dict]:
                 for m in data:
                     if not isinstance(m, dict):
                         continue
-                    name = _as_text(m.get("name") or m.get("Name") or m.get("id") or "")
+                    # orbctl JSON names must be strings. Coercing ``name: 1``
+                    # used to invent a machine called "1" on GET /api/vms.
+                    raw_name = m.get("name")
+                    if raw_name is None:
+                        raw_name = m.get("Name")
+                    if raw_name is None:
+                        raw_name = m.get("id")
+                    if not isinstance(raw_name, str):
+                        continue
+                    name = _as_text(raw_name).strip()
                     if not name:
                         continue
                     raw_status = m.get("state") or m.get("status") or m.get("Status") or ""

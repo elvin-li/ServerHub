@@ -13,6 +13,28 @@ from hub import containers_svc as svc
 from hub.errors import api_error
 from hub.paths import DOCKER
 
+
+def _as_text(value) -> str:
+    """Drop leftover RecursionError / ``\\ud800`` so SSE log start cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 router = APIRouter(tags=["containers"])
 
 
@@ -230,7 +252,7 @@ async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: boo
                 stderr=asyncio.subprocess.STDOUT,
             )
         except Exception as e:
-            yield f"data: !! could not start log stream: {e}\n\n"
+            yield f"data: !! could not start log stream: {_as_text(e)}\n\n"
             return
         try:
             assert proc.stdout

@@ -8,7 +8,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from hub import __version__, actions, auth, jobs
-from hub.config import cfg
 from hub.errors import api_error
 from hub.status import cached_status, filter_status_for_resources, full_status, invalidate_status
 

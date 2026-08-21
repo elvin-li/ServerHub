@@ -1560,7 +1560,9 @@ def _install_filebrowser(app: dict, app_id: str, logs: list[str]) -> dict:
                     bin_path.chmod(0o755)
                     logs.append(f"copied {brew_bin} → {bin_path}")
                 except OSError as exc:
-                    logs.append(f"could not place {brew_bin}: {exc}")
+                    logs.append(
+                        f"could not place {_as_text(brew_bin)}: {_as_text(exc)}"
+                    )
         elif not _brew_install_ok(r["message"], r["rc"]):
             return {
                 "ok": False,

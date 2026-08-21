@@ -359,6 +359,11 @@ export const upsertServiceSignature = (body) =>
   json('/api/services/signatures', jsonBody('PUT', body))
 export const forgetServiceSignature = (slug) =>
   json(`/api/services/signatures/${encodeURIComponent(slug)}`, { method: 'DELETE' })
+export const getGroupRules = () => json('/api/services/group-rules')
+export const saveGroupRules = (body) =>
+  json('/api/services/group-rules', jsonBody('PUT', body))
+export const deleteGroupRule = (id) =>
+  json(`/api/services/group-rules/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
 // Network configuration and diagnostics
 export const getSystemNetwork = (force = false) =>

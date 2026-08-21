@@ -27,7 +27,7 @@ class AppsManagedLeftoverTests(unittest.TestCase):
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
         huge = tmp / "com.example.app.plist"
         huge.write_bytes(b"x" * (2 * 1024 * 1024))
-        listing = mock.Mock(pid_for=lambda _l: None, loaded=set())
+        listing = mock.Mock(pid_for=lambda _l: None, loaded=set(), jobs={})
         with (
             mock.patch("hub.paths.AGENTS_DIR", tmp),
             mock.patch.object(apps_manage_svc, "_catalog_launchd_labels", return_value=set()),
@@ -88,7 +88,7 @@ class AppsManagedLeftoverTests(unittest.TestCase):
         with mock.patch.object(apps_manage_svc, "docker", side_effect=Recursing()):
             text = reader("web")
         _starlette({"log": text})
-        self.assertEqual(text, "")
+        self.assertEqual(text, "Recursing")
 
     def test_overflow_strftime_does_not_500_inventory(self):
         """Leftover inf clock OverflowError'd GET /api/apps/managed ``ts``."""
@@ -177,7 +177,8 @@ class LauncherLeftoverTests(unittest.TestCase):
 class NativeLogsHomeLeftoverTests(unittest.TestCase):
     def test_native_logs_home_runtimeerror_does_not_500(self):
         """``Path.home()`` RuntimeError used to 500 GET /api/apps/.../logs."""
-        from hub import native_catalog  # noqa: F401 — import before Path.home is patched
+        from hub import native_catalog  # import before Path.home is patched
+        assert native_catalog is not None
 
         with (
             mock.patch.object(Path, "home", side_effect=RuntimeError("HOME")),
@@ -205,6 +206,48 @@ class NativeLogsHomeLeftoverTests(unittest.TestCase):
         self.assertTrue(got["ok"])
         self.assertIn("invalid path", got["log"])
         _starlette(got)
+
+    def test_native_logs_recursing_exc_does_not_500(self):
+        """leftover ``{e}`` RecursionError used to 500 GET /api/apps/.../logs."""
+        class Recursing(Exception):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with (
+            mock.patch.object(apps_manage_svc, "_exists", return_value=True),
+            mock.patch.object(
+                apps_manage_svc, "tail_file_lines", side_effect=Recursing(),
+            ),
+            mock.patch.object(apps_manage_svc, "sh", return_value=(1, "", "")),
+        ):
+            got = apps_manage_svc._native_logs("native-nginx")
+        _starlette(got)
+        self.assertTrue(got["ok"])
+        self.assertIn("Recursing", got["log"])
+
+    def test_launchd_logs_recursing_exc_does_not_500(self):
+        class Recursing(OSError):
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plist = Path(tmp) / "com.ok.plist"
+            plist.write_bytes(b"")
+            with (
+                mock.patch("hub.paths.AGENTS_DIR", Path(tmp)),
+                mock.patch.object(apps_manage_svc, "_is_file", return_value=True),
+                mock.patch.object(
+                    apps_manage_svc, "_plist_dict",
+                    return_value={"StandardOutPath": str(Path(tmp) / "ok.log")},
+                ),
+                mock.patch.object(
+                    apps_manage_svc, "tail_file_lines", side_effect=Recursing(),
+                ),
+            ):
+                got = apps_manage_svc._launchd_logs("com.ok")
+        _starlette(got)
+        self.assertTrue(got["ok"])
+        self.assertIn("Recursing", got["log"])
 
 
 class PanelActionPopenLeftoverTests(unittest.TestCase):

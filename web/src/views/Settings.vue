@@ -1035,6 +1035,7 @@
       </div>
     </div>
     <ServiceSignatures />
+    <GroupRules />
     </div>
 
     <!-- Diagnostics -->
@@ -1095,6 +1096,7 @@ import { injectTheme } from '../theme'
 import LoadFailure from '../components/LoadFailure.vue'
 import NotifyChannels from '../components/NotifyChannels.vue'
 import ServiceSignatures from '../components/ServiceSignatures.vue'
+import GroupRules from '../components/GroupRules.vue'
 
 const toast = inject('toast')
 const { t, locale, locales, setLocale } = injectI18n()

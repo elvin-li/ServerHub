@@ -71,7 +71,9 @@ def _as_text(value) -> str:
     if value is None:
         return ""
     try:
-        return _utf8_text(str(value))
+        # RecursionError on leftover ``str(e)`` is handled inside ``_utf8_text``.
+        # Calling ``str(value)`` here used to skip that and return "".
+        return _utf8_text(value)
     except Exception:
         return ""
 
@@ -940,7 +942,7 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
                     f"===== {logp} =====\n" + "\n".join(tail_file_lines(logp, lines))
                 )
             except Exception as e:
-                chunks.append(f"{logp}: {e}")
+                chunks.append(f"{logp}: {_as_text(e)}")
     # launchctl print for brew services
     if pkg:
         rc, out, err = sh(
@@ -1019,11 +1021,12 @@ def _launchd_apps() -> list[dict]:
             args = data.get("ProgramArguments") or []
             if not isinstance(args, list):
                 args = []
-            program = str(args[0]) if args else str(data.get("Program") or "")
-            workdir = str(data.get("WorkingDirectory") or "")
-            label = str(data.get("Label") or label)
+            # leftover RecursionError on ``str(Label)`` / argv used to 500 GET /api/apps.
+            program = _as_text(args[0] if args else data.get("Program"))
+            workdir = _as_text(data.get("WorkingDirectory"))
+            label = _as_text(data.get("Label") or label) or path.stem
             if program and not workdir:
-                workdir = str(Path(program).parent)
+                workdir = _as_text(Path(program).parent)
         # launchctl prints "-" in the pid column for a loaded-but-idle agent,
         # so the raw column is truthy for a job that is not running at all.
         # pid_for() tests it for digits; loaded says whether launchd knows the
@@ -1117,7 +1120,7 @@ def _launchd_logs(label: str, lines: int = 120) -> dict:
                 f"===== {p} =====\n" + "\n".join(tail_file_lines(p, lines))
             )
         except OSError as exc:
-            chunks.append(f"{p}: {exc}")
+            chunks.append(f"{p}: {_as_text(exc)}")
     if not chunks:
         chunks.append("No StandardOutPath / StandardErrorPath on this agent.")
     return {"ok": True, "log": "\n\n".join(chunks), "source": "launchd"}

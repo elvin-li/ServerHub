@@ -1033,10 +1033,10 @@ def login_start() -> dict:
             start_new_session=True,
             stdin=subprocess.DEVNULL,
         )
-    except (OSError, ValueError, TypeError) as e:
+    except (OSError, ValueError, TypeError, RecursionError) as e:
         return {
             "ok": False,
-            "message": f"Could not start cloudflared login: {e}",
+            "message": "Could not start cloudflared login: " + (_as_text(e) or "error"),
             "logged_in": False,
         }
     _login_proc = proc
@@ -1286,7 +1286,9 @@ def logs(lines: int = 120) -> dict:
             tail = "\n".join(tail_file_lines(p, lines))
             chunks.append(f"===== {p} =====\n{tail}")
         except Exception as e:
-            chunks.append(f"===== {p} =====\n(read error: {e})")
+            chunks.append(
+                f"===== {p} =====\n(read error: {_as_text(e) or 'error'})"
+            )
     if not chunks:
         return {"ok": True, "log": "No logs yet (the tunnel writes to ~/Services/cloudflared/tunnel.log once started)"}
     return {"ok": True, "log": "\n\n".join(chunks), "source": "cloudflared"}

@@ -652,5 +652,28 @@ class DiagnosticsBundleDumpLeftoverTests(unittest.TestCase):
         _starlette({"k": system_settings_svc._utf8_text(Recursing())})
 
 
+class MaintenanceEnvLeftoverTests(unittest.TestCase):
+    def test_recursing_and_surrogate_env_do_not_500(self):
+        """leftover ``str(env-item)`` RecursionError / ``\\ud800`` used to 500 jobs."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with mock.patch.object(config, "cfg", return_value={
+            "settings": {
+                "maintenance_env": {
+                    Recursing(): Recursing(),
+                    "PATH": "/bin",
+                    "bad\ud800": "x\ud800",
+                },
+            },
+        }):
+            env = config.maintenance_env()
+        _starlette(env)
+        self.assertEqual(env["PATH"], "/bin")
+        blob = "".join(env.keys()) + "".join(env.values())
+        self.assertNotIn("\ud800", blob)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -572,5 +572,38 @@ class NetworkAsTextRecursionLeftoverTests(unittest.TestCase):
         self.assertNotIn("\ud800", data["ips"][0]["local_route"]["reason"])
 
 
+class WireGuardDaemonArgvLeftoverTests(unittest.TestCase):
+    def test_recursing_program_argument_does_not_500(self):
+        """leftover ``str(argv-item)`` RecursionError used to 500 GET /api/wireguard."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with mock.patch.object(
+            net.plistlib, "loads",
+            return_value={
+                "KeepAlive": True,
+                "RunAtLoad": True,
+                "ProgramArguments": [Recursing(), "sleep", "infinity"],
+            },
+        ):
+            defects = net._daemon_defects("<plist/>")
+        _starlette({"defects": defects})
+        self.assertIsInstance(defects, list)
+
+    def test_surrogate_program_argument_does_not_500(self):
+        with mock.patch.object(
+            net.plistlib, "loads",
+            return_value={
+                "KeepAlive": True,
+                "RunAtLoad": True,
+                "ProgramArguments": ["bash", "-c", "sleep 30\ud800"],
+            },
+        ):
+            defects = net._daemon_defects("<plist/>")
+        _starlette({"defects": defects})
+        self.assertTrue(all("\ud800" not in d for d in defects))
+
+
 if __name__ == "__main__":
     unittest.main()

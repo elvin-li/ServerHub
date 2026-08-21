@@ -371,7 +371,9 @@ def _daemon_defects(text: str) -> list[str]:
         return ["unreadable"]
 
     argv = payload.get("ProgramArguments")
-    command = " ".join(str(a) for a in (argv if isinstance(argv, list) else []))
+    command = " ".join(
+        _as_text(a) for a in (argv if isinstance(argv, list) else [])
+    )
     keep_alive = bool(payload.get("KeepAlive"))
     defects: list[str] = []
 

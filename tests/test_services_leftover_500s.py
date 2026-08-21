@@ -141,6 +141,28 @@ class ServiceDetailLeftoverTests(unittest.TestCase):
         self.assertIsInstance(detail["launchctl"], str)
         self.assertIsInstance(detail["program"], str)
 
+    def test_recursing_program_arguments_do_not_500_detail(self):
+        """leftover ``str(argv-item)`` RecursionError used to 500 GET /api/services/{id}."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        pl = {
+            "Label": Recursing(),
+            "ProgramArguments": [Recursing(), "/bin/true"],
+        }
+        svc = {"id": "job", "name": "job", "kind": "launchd", "state": "ok", "actions": ["detail"]}
+        with (
+            patch.object(sms, "find_service", return_value=svc),
+            patch.object(sms, "override", return_value={}),
+            patch.object(sms, "_load_plist", return_value=pl),
+            patch.object(sms, "_plist_path", return_value=Path("/tmp/job.plist")),
+            patch.object(sms, "sh", return_value=(0, "state = running\n", "")),
+        ):
+            detail = sms.service_detail("job")
+        _starlette(detail)
+        self.assertIsInstance(detail["program"], str)
+
     def test_docker_inspect_infinity_does_not_500_json(self):
         insp = {
             "Created": float("inf"),
@@ -421,6 +443,37 @@ class AutostartLeftoverTests(unittest.TestCase):
             labels = {i["label"] for i in items}
             self.assertIn("com.ok", labels)
             _json(items)
+
+    def test_recursing_program_arguments_do_not_500_launchd_items(self):
+        """leftover ``str(argv-item)`` RecursionError used to 500 GET /api/apps/autostart."""
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp)
+            (agents / "ok.plist").write_bytes(plistlib.dumps({
+                "Label": "com.ok",
+                "ProgramArguments": ["/bin/true"],
+            }))
+            with (
+                patch.object(autostart_svc, "AGENTS_DIR", agents),
+                patch.object(
+                    autostart_svc, "_resolve_script_agent",
+                    return_value=(agents / "nope.plist", "none"),
+                ),
+                patch.object(
+                    autostart_svc, "_read_plist",
+                    return_value={
+                        "Label": "com.ok",
+                        "ProgramArguments": [Recursing(), "/bin/true"],
+                    },
+                ),
+            ):
+                items = autostart_svc._launchd_items(frozenset())
+            _starlette(items)
+            self.assertTrue(items)
+            self.assertIsInstance(items[0]["program"], str)
 
     def test_brew_inf_label_does_not_500_json(self):
         with (

@@ -39,20 +39,19 @@ class InvalidationOnStoreActionsTests(unittest.TestCase):
         # reach `brew services stop syncthing` and `brew uninstall`: an earlier
         # version of this file spawned subprocesses against the host's Homebrew
         # and took 16s to run.  A test that can uninstall software is not a test.
-        for name, kwargs in (
-            ("sh", {"return_value": (0, "", "")}),
-            ("invalidate_brew_services", {}),
-            ("_brew_list_installed", {"return_value": set()}),
+        # Literal seal names (not a loop variable) so HostMutationTests can see
+        # them in the AST.
+        for patcher in (
+            mock.patch.object(native_catalog, "sh", return_value=(0, "", "")),
+            mock.patch.object(native_catalog, "invalidate_brew_services"),
+            mock.patch.object(native_catalog, "_brew_list_installed", return_value=set()),
+            mock.patch.object(
+                native_catalog, "_run",
+                return_value={"ok": True, "message": "", "rc": 0},
+            ),
         ):
-            patcher = mock.patch.object(native_catalog, name, **kwargs)
             patcher.start()
             self.addCleanup(patcher.stop)
-        run_patcher = mock.patch.object(
-            native_catalog, "_run",
-            return_value={"ok": True, "message": "", "rc": 0},
-        )
-        run_patcher.start()
-        self.addCleanup(run_patcher.stop)
 
         brew = tempfile.NamedTemporaryFile(prefix="brew-", delete=False)
         brew.close()

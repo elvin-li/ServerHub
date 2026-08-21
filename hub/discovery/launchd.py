@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hub.adaptive import (
     _classify_head,
+    _utf8_text,
     enrich_service,
     friendly_name,
     guess_group,
@@ -16,6 +17,7 @@ from hub.adaptive import (
     url_from_plist,
 )
 from hub.config import override
+from hub.group_rules import configured_group_rules, resolve_group
 from hub.host_address import resolve_template
 from hub.launchd_cache import listing as launchd_listing
 from hub.paths import AGENTS_DIR
@@ -212,6 +214,7 @@ def discover_launchd():
     # override lookups stay on this thread -- they are local and cheap, and
     # ports_for_pid already answers from a shared lsof snapshot.
     extras = configured_signatures()
+    rules = configured_group_rules()
     contexts = []
     seen_labels: set[str] = set()
     for path in sorted(glob.glob(f"{AGENTS_DIR}/*.plist")):
@@ -225,7 +228,8 @@ def discover_launchd():
         # launchd registers the job under Label, which can differ from the
         # filename.  Using the stem made a renamed plist look "Not loaded"
         # and sent kickstart at the wrong id.
-        label = str(pl.get("Label") or stem)
+        # leftover RecursionError on ``str(Label)`` used to 500 GET /api/status.
+        label = _utf8_text(pl.get("Label") or stem)
         if label in seen_labels:
             continue
         seen_labels.add(label)
@@ -262,7 +266,17 @@ def discover_launchd():
 
         url = resolve_template(ov.get("url") or url_from_plist(pl))
         name = ov.get("name") or friendly_name(label)
-        group = ov.get("group") or guess_group(label, pl, interval)
+        group = ov.get("group") or resolve_group(
+            {
+                "id": label,
+                "launchd": label,
+                "port": port,
+                "ports": detected,
+            },
+            fallback=guess_group(label, pl, interval),
+            launchd_interval=interval,
+            rules=rules,
+        )
         # Signature library: a recognised binary gets its real name, and a
         # generic "Native Services" group yields to the signature category.
         # Overrides and more specific groups (Gateway, Homebrew, …) win.

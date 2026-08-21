@@ -128,7 +128,7 @@ class HealthCheckRowTests(_Registry):
         unit test must not do.
         """
         source = (BASE / "hub" / "health_svc.py").read_text()
-        self.assertIn("checks.extend(_worker_checks())", source)
+        self.assertIn("checks.extend(_as_checks(_worker_checks()))", source)
 
 
 class LoopInstrumentationTests(_Registry):

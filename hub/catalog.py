@@ -340,7 +340,8 @@ def host_languages() -> tuple[str, ...]:
         raw = []
     seen: list[str] = []
     for tag in raw:
-        key = _normalise_lang(str(tag))
+        # leftover RecursionError on ``str(tag)`` used to 500 GET /api/catalog.
+        key = _normalise_lang(_plain_str(tag))
         if key in _LANG_CODES and key not in seen:
             seen.append(key)
     value = tuple(seen) or ("en",)
@@ -787,12 +788,13 @@ def _suggest_url(meta: dict, values: dict) -> str | None:
     tpl = meta.get("url_template")
     if not isinstance(tpl, str) or not tpl:
         return None
-    host = str(values.get("HOST_IP") or "").strip() or host_ip()
-    port = str(values.get("HOST_PORT") or values.get("WEB_PORT") or "")
+    host = _plain_str(values.get("HOST_IP")).strip() or host_ip()
+    port = _plain_str(values.get("HOST_PORT") or values.get("WEB_PORT"))
     out = tpl.replace("{{HOST_IP}}", host).replace("{{HOST_PORT}}", port)
-    out = out.replace("{{WEB_PORT}}", str(values.get("WEB_PORT") or port))
+    out = out.replace("{{WEB_PORT}}", _plain_str(values.get("WEB_PORT") or port))
     for k, v in values.items():
-        out = out.replace("{{" + str(k) + "}}", str(v))
+        # leftover RecursionError on ``str(var)`` used to 500 POST install.
+        out = out.replace("{{" + _plain_str(k) + "}}", _plain_str(v))
     cleaned = _plain_str(out)
     return cleaned or None
 
@@ -965,12 +967,16 @@ def _rollback_install(
     try:
         _unregister_stack(template_id, dest_dir)
     except Exception as e:  # never let cleanup mask the original failure
-        notes.append(f"stack registration left behind: {e}")
+        notes.append(
+            "stack registration left behind: " + (_plain_str(e) or "error")
+        )
     if created_dir:
         try:
             shutil.rmtree(dest_dir)
         except OSError as e:
-            notes.append(f"could not remove {dest_dir}: {e}")
+            notes.append(
+                f"could not remove {dest_dir}: " + (_plain_str(e) or "error")
+            )
     else:
         notes.append(
             f"kept pre-existing {dest_dir} (may contain your data); "
@@ -1162,10 +1168,9 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         # README with notes
         notes = _plain_str(meta.get("notes"))
         url = _suggest_url(meta, values)
-        desc = meta.get("desc")
-        desc = desc if isinstance(desc, str) else str(desc or "")
+        desc = _plain_str(meta.get("desc"))
         readme = [
-            f"# {meta.get('name') or template_id}",
+            f"# {_plain_str(meta.get('name') or template_id)}",
             "",
             desc,
             "",
@@ -1175,14 +1180,16 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         if notes:
             readme += ["## Notes", notes, ""]
         secret_names = {
-            str(v.get("name"))
+            _plain_str(v.get("name"))
             for v in (meta.get("vars") or [])
             if isinstance(v, dict) and v.get("secret")
         }
         redacted = {
             _plain_str(k): (
                 "***"
-                if k in secret_names or any(x in str(k).upper() for x in ("PASSWORD", "TOKEN", "SECRET"))
+                if k in secret_names or any(
+                    x in _plain_str(k).upper() for x in ("PASSWORD", "TOKEN", "SECRET")
+                )
                 else _plain_str(v)
             )
             for k, v in values.items()
@@ -1251,10 +1258,11 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         raise
     except _InstallFailed as e:
         detail = _rollback_install(template_id, dest_dir, created_dir)
+        msg = _plain_str(e) or "install failed"
         return {
             "ok": False,
             "path": None,
-            "message": f"{e}\n\n{detail}",
+            "message": msg + ("\n\n" + detail if detail else ""),
             "variables": values,
             "url": None,
             "notes": _plain_str(meta.get("notes")),
@@ -1262,10 +1270,11 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         }
     except Exception as e:
         detail = _rollback_install(template_id, dest_dir, created_dir)
+        msg = _plain_str(e) or "install failed"
         return {
             "ok": False,
             "path": None,
-            "message": f"{e}\n\n{detail}",
+            "message": msg + ("\n\n" + detail if detail else ""),
             "variables": values,
             "url": None,
             "notes": _plain_str(meta.get("notes")),

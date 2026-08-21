@@ -392,7 +392,7 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
             "plist": str(path),
             "detail": f"RunAtLoad={run_at} KeepAlive={bool(keep)} loaded={loaded}",
             "program": (
-                " ".join(str(a) for a in pl["ProgramArguments"])[:100]
+                " ".join(_as_text(a) for a in pl["ProgramArguments"])[:100]
                 if isinstance(pl.get("ProgramArguments"), list) else ""
             ),
             # No "disable" for the panel and its login launcher: offering the button

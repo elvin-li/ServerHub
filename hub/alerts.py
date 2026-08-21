@@ -75,6 +75,10 @@ def _save_state(st: dict):
     secure_io.drop_leftover_nonfile(STATE_FILE)
     try:
         secure_io.replace_bytes(STATE_FILE, payload.encode("utf-8"))
+    except FileExistsError:
+        # Planted tmp symlink must surface — swallowing it used to look like a
+        # quiet no-op while alert state never landed on disk.
+        raise
     except OSError:
         # Leftover directory occupying alert_state.json must not 500
         # POST /api/alerts/check.

@@ -1673,5 +1673,18 @@ class OriginGuard(_NoRealConfig):
         self.assertEqual(snap.get("error"), "error")
 
 
+class PlistLabelDiscoveryLeftoverTests(unittest.TestCase):
+    def test_circular_plist_repr_does_not_500(self):
+        """leftover nested LaunchAgent ``repr(pl)`` RecursionError used to 500 GET /api/ollama."""
+        circular = {}
+        circular["k"] = circular
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "local.ollama.plist"
+            path.write_bytes(b"x")
+            with mock.patch.object(ollama_svc.plistlib, "loads", return_value=circular):
+                got = ollama_svc._plist_label_if_ollama(path)
+        self.assertIsNone(got)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

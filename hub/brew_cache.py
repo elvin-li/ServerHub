@@ -200,10 +200,9 @@ def _write_disk(items: list[dict]) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         # Atomic: a crash mid-write used to leave a half JSON that _read_disk
         # treated as "no cache", forcing every brew page to wait on a live list.
-        replace_bytes(
-            _DISK,
-            json.dumps(items, separators=(",", ":"), allow_nan=False).encode("utf-8"),
-        )
+        replace_bytes(_DISK, json.dumps(
+            items, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8"))
     except (OSError, TypeError, ValueError, RecursionError):
         # RecursionError: leftover circular brew cache after parse is not
         # ValueError; GET /api/brew/services used to 500 the disk write.

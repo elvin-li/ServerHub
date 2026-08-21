@@ -9,6 +9,7 @@ from pathlib import Path
 from hub import cli_args, config
 from hub.config import cfg, override, set_override
 from hub.errors import api_error
+from hub.group_rules import match_group
 from hub.host_address import host_ip, normalize_local_url, resolve_value
 from hub.paths import AGENTS_DIR, DOCKER, UID, user_home
 from hub.service_signatures import (
@@ -110,7 +111,8 @@ def _plist_label(path: Path) -> str:
     """The job launchd registered, not the filename stem."""
     pl = _plist_dict(path)
     if pl and pl.get("Label"):
-        return str(pl["Label"])
+        # leftover RecursionError on ``str(Label)`` used to 500 GET /api/services.
+        return _as_text(pl["Label"]) or path.stem
     return path.stem
 
 
@@ -285,7 +287,8 @@ def service_detail(sid: str) -> dict:
         pp = _plist_path(sid)
         detail["plist"] = str(pp) if pp else None
         argv = pl.get("ProgramArguments")
-        argv = [str(a) for a in argv] if isinstance(argv, list) else []
+        # leftover RecursionError on ``str(argv-item)`` used to 500 GET detail.
+        argv = [_as_text(a) for a in argv] if isinstance(argv, list) else []
         detail["program"] = pl.get("Program") or (" ".join(argv) if argv else None)
         detail["working_dir"] = pl.get("WorkingDirectory")
         detail["run_at_load"] = bool(pl.get("RunAtLoad"))
@@ -702,6 +705,16 @@ def adopt_defaults(svc: dict) -> dict:
     recognised = sig.get("confidence") == "high"
     name = sig["name"] if recognised else (process or svc.get("name") or "")
     group = sig.get("category") if recognised else None
+    matched = match_group({
+        "id": svc.get("id"),
+        "image": svc.get("image") or meta.get("image") or "",
+        "compose_project": svc.get("compose_project") or meta.get("compose_project") or "",
+        "port": ports[0] if ports else None,
+        "ports": ports,
+        "meta": {"process": process or meta.get("process") or ""},
+    })
+    if matched:
+        group = matched
     control = infer_control(sig, command_path)
     return {
         "id": suggest_id(
@@ -1012,6 +1025,50 @@ def forget_signature(slug: str) -> dict:
         raise api_error("services.signature_not_found", slug=parsed["slug"])
     invalidate_status()
     return {"ok": True, "slug": parsed["slug"], "removed": removed}
+
+
+def list_group_rules() -> dict:
+    """Effective grouping rules plus whether they came from yaml or seeds."""
+    from hub import group_rules
+
+    cleaned = _jsonable(group_rules.list_rules())
+    if not isinstance(cleaned, dict):
+        return {"rules": [], "source": "seed"}
+    rules = cleaned.get("rules")
+    cleaned["rules"] = rules if isinstance(rules, list) else []
+    source = cleaned.get("source")
+    cleaned["source"] = source if source in ("yaml", "seed") else "seed"
+    return cleaned
+
+
+def _bust_group_rule_views() -> None:
+    invalidate_status()
+    try:
+        from hub.discovery.containers import invalidate_containers
+
+        invalidate_containers()
+    except Exception:
+        pass
+
+
+def save_group_rules(payload: dict | None = None) -> dict:
+    """Upsert one grouping rule, or replace the whole list."""
+    from hub import group_rules
+
+    result = group_rules.save_rules(payload if isinstance(payload, dict) else {})
+    _bust_group_rule_views()
+    cleaned = _jsonable(result)
+    return cleaned if isinstance(cleaned, dict) else {"ok": True}
+
+
+def delete_group_rule(rule_id: str) -> dict:
+    """Drop one grouping rule. Materialises seeds into yaml when needed."""
+    from hub import group_rules
+
+    result = group_rules.delete_rule(rule_id)
+    _bust_group_rule_views()
+    cleaned = _jsonable(result)
+    return cleaned if isinstance(cleaned, dict) else {"ok": True}
 
 
 def enrich_service_list_item(s: dict) -> dict:

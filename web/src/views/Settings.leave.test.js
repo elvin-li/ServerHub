@@ -82,6 +82,7 @@ async function mountSettings() {
         RouterLink: { template: '<a><slot /></a>' },
         NotifyChannels: true,
         ServiceSignatures: true,
+        GroupRules: true,
         LoadFailure: true,
       },
     },

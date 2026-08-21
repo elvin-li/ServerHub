@@ -419,7 +419,13 @@ def _plist_label_if_ollama(path: Path) -> str | None:
         return None
     if not isinstance(pl, dict):
         return None
-    if "ollama" not in repr(pl).lower():
+    try:
+        haystack = repr(pl)
+    except RecursionError:
+        # leftover nested LaunchAgent: ``repr`` RecursionError is not
+        # InvalidFileException; GET /api/ollama used to 500 discovery.
+        return None
+    if "ollama" not in haystack.lower():
         return None
     return _as_text(pl.get("Label")) or path.stem
 

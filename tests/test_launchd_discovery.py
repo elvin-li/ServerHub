@@ -263,6 +263,49 @@ class LaunchdDiscoveryTests(unittest.TestCase):
         self.assertEqual(items[0]["id"], "com.real.job")
         self.assertIn("pid 9", items[0]["detail"])
 
+    def test_recursing_label_does_not_500_discover(self):
+        """leftover ``str(Label)`` RecursionError used to 500 GET /api/status."""
+        import json
+
+        class Recursing:
+            def __str__(self):
+                raise RecursionError("nested")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "x.plist").write_bytes(plistlib.dumps({
+                "Label": "x",
+                "ProgramArguments": ["/usr/bin/true"],
+                "RunAtLoad": True,
+            }))
+            with (
+                patch.object(launchd, "AGENTS_DIR", tmp),
+                patch.object(launchd, "launchctl_table", return_value={}),
+                patch.object(launchd, "override", return_value={}),
+                patch.object(launchd, "friendly_name", return_value="Example"),
+                patch.object(launchd, "guess_group", return_value="Native"),
+                patch.object(launchd, "ports_from_plist", return_value=[]),
+                patch.object(launchd, "ports_for_pid", return_value=[]),
+                patch.object(launchd, "configured_signatures", return_value=[]),
+                patch.object(launchd, "url_from_plist", return_value=None),
+                patch.object(launchd, "resolve_template", side_effect=lambda value: value),
+                patch.object(launchd, "enrich_service", side_effect=lambda item, **_: item),
+                patch.object(launchd, "port_open", lambda port, **kw: True),
+                patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
+                patch.object(launchd, "_http_alive", lambda port: True),
+                patch.object(
+                    launchd.plistlib, "loads",
+                    return_value={
+                        "Label": Recursing(),
+                        "ProgramArguments": ["/usr/bin/true"],
+                        "RunAtLoad": True,
+                    },
+                ),
+            ):
+                items = launchd.discover_launchd()
+        json.dumps(items, allow_nan=False).encode("utf-8")
+        self.assertEqual(len(items), 1)
+        self.assertIsInstance(items[0]["id"], str)
+
     def test_single_http_miss_does_not_warn(self):
         item = self._discover(
             ["/usr/bin/python3", "/tmp/dashboard.py"],

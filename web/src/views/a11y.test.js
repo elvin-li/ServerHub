@@ -605,10 +605,12 @@ describe('operations polling and submission guards', () => {
   it('invalidates in-flight NotifyChannels and ServiceSignatures loads on leave', () => {
     const notify = readFileSync(resolve(SRC, 'components/NotifyChannels.vue'), 'utf8')
     const sigs = readFileSync(resolve(SRC, 'components/ServiceSignatures.vue'), 'utf8')
+    const grules = readFileSync(resolve(SRC, 'components/GroupRules.vue'), 'utf8')
     const form = readFileSync(resolve(SRC, 'components/ScheduleJobForm.vue'), 'utf8')
     for (const [name, src] of [
       ['NotifyChannels.vue', notify],
       ['ServiceSignatures.vue', sigs],
+      ['GroupRules.vue', grules],
     ]) {
       expect(src, name).toContain('let loadGeneration = 0')
       expect(src, name).toMatch(/onUnmounted\(\(\) => \{[\s\S]*loadGeneration \+= 1/)
@@ -901,6 +903,7 @@ describe('operations polling and submission guards', () => {
   it('discards NotifyChannels and ServiceSignatures writes that finish after leave', () => {
     const notify = readFileSync(resolve(SRC, 'components/NotifyChannels.vue'), 'utf8')
     const sigs = readFileSync(resolve(SRC, 'components/ServiceSignatures.vue'), 'utf8')
+    const grules = readFileSync(resolve(SRC, 'components/GroupRules.vue'), 'utf8')
     const assist = readFileSync(resolve(SRC, 'components/AssistantDrawer.vue'), 'utf8')
     expect(notify).toMatch(/async function save\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(notify).toMatch(/async function testChannel\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
@@ -908,6 +911,8 @@ describe('operations polling and submission guards', () => {
     expect(notify).toMatch(/async function removeChannel\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(sigs).toMatch(/async function save\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(sigs).toMatch(/async function removeRow\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(grules).toMatch(/async function save\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    expect(grules).toMatch(/async function removeRow\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(assist).toMatch(/const out = await askAssistant\([\s\S]*if \(generation !== sendGeneration \|\| !props\.open\) \{/)
   })
 
@@ -2575,6 +2580,20 @@ describe('leftover Infinity interpolations', () => {
     expect(sigs).toMatch(/\(row\.ports \|\| \[\]\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
   })
 
+  it('GroupRules leftover ids and matcher lists go through finite helpers', () => {
+    const grules = readFileSync(resolve(SRC, 'components/GroupRules.vue'), 'utf8')
+    expect(grules).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(grules).not.toMatch(/\{\{\s*row\.group\s*\}\}/)
+    expect(grules).toMatch(/finiteText\(row\.group\)/)
+    expect(grules).not.toMatch(/\{\{\s*row\.id\s*\}\}/)
+    expect(grules).toMatch(/finiteText\(row\.id\)/)
+    expect(grules).not.toMatch(/toast\(`❌ \$\{e\.message \|\| e\}`\)/)
+    expect(grules).not.toMatch(/toast\(`❌ \$\{err\.message \|\| err\}`\)/)
+    expect(grules).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
+    expect(grules).toMatch(/toast\('❌ ' \+ finiteText\(err\.message \|\| err\)\)/)
+    expect(grules).toMatch(/function fmtList\([\s\S]*finiteText/)
+  })
+
   it('StackBar leftover segment values go through Number.isFinite', () => {
     const bar = readFileSync(resolve(SRC, 'components/StackBar.vue'), 'utf8')
     expect(bar).toMatch(/Number\.isFinite\(Number\(s\.value\)\)/)
@@ -2684,6 +2703,7 @@ describe('leftover Infinity interpolations', () => {
       'views/PhotosHub.vue', 'views/Pool.vue', 'views/Services.vue',
       'components/ServiceDetailDrawer.vue', 'components/NotifyChannels.vue',
       'components/ServiceSignatures.vue', 'components/ServiceLogsModal.vue',
+      'components/GroupRules.vue',
       'components/AssistantDrawer.vue', 'components/LineChart.vue',
       'components/VncConsole.vue',
     ]
@@ -2713,6 +2733,7 @@ describe('leftover Infinity interpolations', () => {
       'views/PhotosHub.vue', 'views/Pool.vue', 'views/Services.vue',
       'components/ServiceDetailDrawer.vue', 'components/NotifyChannels.vue',
       'components/ServiceSignatures.vue', 'components/ServiceLogsModal.vue',
+      'components/GroupRules.vue',
       'components/AssistantDrawer.vue', 'components/ScheduleJobForm.vue',
       'components/StackBar.vue', 'components/LineChart.vue',
       'components/VncConsole.vue', 'App.vue',
@@ -2784,7 +2805,7 @@ describe('leftover Infinity interpolations', () => {
   })
 
   it('leftover i18n identifier params go through finiteText', () => {
-    // t('foo', { name: leftover.username }) interpolates leftover Infinity
+    // i18n calls that pass leftover.username interpolate leftover Infinity
     // into translated strings. finiteText must run on leftover identifier
     // params the way Compose wraps created-stack ids.
     const BARE = /\b(?:name|id|username|path|label)\s*:\s*(?:authState|acct|svc|task|it|c|uninstallModal|target|detail\.value|j|item|dev|twofaResetUser|portEdit|cfSelectedTunnel|createForm\.value)\.(?:username|name|id|path|label|remove_data_path|value)\b/
