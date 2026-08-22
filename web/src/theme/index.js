@@ -27,6 +27,16 @@ const THEMES = [
     swatches: ['#2496ed', '#0d2137', '#f0f7fc'],
   },
   {
+    id: 'macos',
+    labelKey: 'theme.macos',
+    swatches: ['#007AFF', '#F5F5F7', '#FFFFFF'],
+  },
+  {
+    id: 'macos-dark',
+    labelKey: 'theme.macos_dark',
+    swatches: ['#0A84FF', '#1C1C1E', '#2C2C2E'],
+  },
+  {
     id: 'nord',
     labelKey: 'theme.nord',
     swatches: ['#88c0d0', '#2e3440', '#3b4252'],
@@ -65,7 +75,8 @@ const density = ref(read(DENSITY_KEY, 'compact'))
 
 const THEME_COLORS = {
   unraid: '#f5f0e8', 'unraid-dark': '#1c1b1b', omv: '#f5f5f5',
-  docker: '#f0f6fc', nord: '#2e3440', glass: '#1a1a2e', mono: '#ffffff',
+  docker: '#f0f6fc', macos: '#F5F5F7', 'macos-dark': '#1C1C1E',
+  nord: '#2e3440', glass: '#1a1a2e', mono: '#ffffff',
 }
 
 // Which palettes are light. `mono` belongs here: its CSS is #fafafa on #111 with
@@ -74,7 +85,7 @@ const THEME_COLORS = {
 // treating dark as the fallback) keeps a new light palette from inheriting the
 // wrong color-scheme by omission. Must stay in sync with the pre-paint
 // bootstrap in index.html, which theme.test.js asserts.
-const LIGHT_THEMES = ['unraid', 'omv', 'docker', 'mono']
+const LIGHT_THEMES = ['unraid', 'omv', 'docker', 'macos', 'mono']
 
 function applyTheme(id) {
   const valid = THEMES.some(t => t.id === id) ? id : 'system'

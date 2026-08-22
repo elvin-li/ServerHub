@@ -112,8 +112,8 @@ describe('theme', () => {
   describe('color-scheme classification', () => {
     // Each case is checked against the palette in styles.css: a theme whose
     // --bg is near-white is light, and native controls must match it.
-    const LIGHT = ['unraid', 'omv', 'docker', 'mono']
-    const DARK = ['unraid-dark', 'nord', 'glass']
+    const LIGHT = ['unraid', 'omv', 'docker', 'macos', 'mono']
+    const DARK = ['unraid-dark', 'nord', 'glass', 'macos-dark']
 
     for (const id of LIGHT) {
       it(`marks ${id} as a light theme`, () => {
@@ -194,10 +194,12 @@ describe('theme', () => {
         'unraid',
         'omv',
         'docker',
+        'macos',
         'mono',
         'unraid-dark',
         'nord',
         'glass',
+        'macos-dark',
       ])
       const ids = api.themes.map((t) => t.id).filter((id) => id !== 'system')
       expect(ids.filter((id) => !classified.has(id))).toEqual([])

@@ -230,6 +230,8 @@ export default {
     unraid_dark: 'Unraid Dark',
     omv: 'OMV Green',
     docker: 'Docker Blue',
+    macos: 'macOS',
+    macos_dark: 'macOS Dark',
     nord: 'Nord',
     glass: 'Glass',
     mono: 'High-contrast Mono',

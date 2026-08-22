@@ -36,7 +36,7 @@ class NotifyPatch(BaseModel):
 
 class UiPatch(BaseModel):
     locale: Optional[str] = None  # zh-CN | en | ja
-    theme: Optional[str] = None  # system | unraid | unraid-dark | omv | docker | nord | glass | mono
+    theme: Optional[str] = None  # system | unraid | unraid-dark | omv | docker | macos | macos-dark | nord | glass | mono
     density: Optional[str] = None  # compact | comfortable | cozy
 
 
@@ -109,7 +109,8 @@ class SettingsPatch(BaseModel):
 
 _ALLOWED_LOCALES = {"zh-CN", "en", "ja"}
 _ALLOWED_THEMES = {
-    "system", "unraid", "unraid-dark", "omv", "docker", "nord", "glass", "mono",
+    "system", "unraid", "unraid-dark", "omv", "docker", "macos", "macos-dark",
+    "nord", "glass", "mono",
 }
 _ALLOWED_DENSITY = {"compact", "comfortable", "cozy"}
 

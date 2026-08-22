@@ -231,6 +231,8 @@ export default {
     unraid_dark: 'Unraid 暗色',
     omv: 'OMV 绿',
     docker: 'Docker 蓝',
+    macos: 'macOS',
+    macos_dark: 'macOS 暗色',
     nord: 'Nord',
     glass: '玻璃拟态',
     mono: '高对比 mono',

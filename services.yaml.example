@@ -35,7 +35,7 @@ settings:
     # See docs/authentication.md.
 
   ui:
-    # system | unraid | unraid-dark | omv | docker | nord | glass | mono
+    # system | unraid | unraid-dark | omv | docker | macos | macos-dark | nord | glass | mono
     theme: system
     # locale: en | zh-CN | ja ; density: compact | comfortable | cozy
 

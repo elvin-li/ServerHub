@@ -2332,6 +2332,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 [data-theme="nord"] .chip-docker,
 [data-theme="glass"] .chip-docker,
 [data-theme="unraid-dark"] .chip-docker,
+[data-theme="macos-dark"] .chip-docker,
 [data-theme="system"] .chip-docker,
 [data-theme="mono"] .chip-docker {
   color: #7ec8ff;
