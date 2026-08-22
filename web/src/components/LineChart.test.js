@@ -371,14 +371,35 @@ describe('LineChart x-axis time labels', () => {
       unit: '%',
     })
     const labels = xLabels(w)
-    expect(labels.length).toBeGreaterThanOrEqual(3)
-    expect(labels.length).toBeLessThanOrEqual(5)
+    expect(labels).toHaveLength(5)
     expect(labels[0].attributes('style')).toContain('0%')
     expect(labels.at(-1).attributes('style')).toContain('100%')
     expect(labels[0].classes()).toContain('first')
     expect(labels.at(-1).classes()).toContain('last')
+    expect(w.find('.x-axis').classes()).not.toContain('two-line')
     for (const n of labels) {
       expect(n.text()).toMatch(/^\d{2}:\d{2}$/)
+    }
+  })
+
+  it('thins long month/day time labels on a 48h span', () => {
+    const lo = 1_700_000_000
+    const hi = lo + 48 * 3600
+    const w = chart({
+      series: [{ name: 'cpu', values: [0, 50, 100] }],
+      times: [lo, lo + 24 * 3600, hi],
+      unit: '%',
+    })
+    const labels = xLabels(w)
+    expect(labels).toHaveLength(3)
+    expect(labels[0].attributes('style')).toContain('0%')
+    expect(labels[1].attributes('style')).toContain('50%')
+    expect(labels.at(-1).attributes('style')).toContain('100%')
+    expect(labels[0].classes()).toContain('first')
+    expect(labels.at(-1).classes()).toContain('last')
+    expect(w.find('.x-axis').classes()).toContain('two-line')
+    for (const n of labels) {
+      expect(n.text()).toMatch(/^\d{1,2}\/\d{1,2}\s+\d{2}:\d{2}$/)
     }
   })
 
@@ -389,8 +410,7 @@ describe('LineChart x-axis time labels', () => {
       unit: '%',
     })
     const texts = xLabels(w).map((n) => n.text())
-    expect(texts.length).toBeGreaterThanOrEqual(3)
-    expect(texts.length).toBeLessThanOrEqual(5)
+    expect(texts).toHaveLength(5)
     for (const text of texts) {
       expect(text).toMatch(/^\d{1,2}\/\d{1,2}$/)
     }

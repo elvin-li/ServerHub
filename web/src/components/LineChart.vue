@@ -86,7 +86,7 @@
            labels sit under the plot, first/last on the time extent ends. -->
       <div v-if="xTicks.length" class="x-axis-row">
         <div v-if="!quiet" class="x-spacer"></div>
-        <div class="x-axis">
+        <div class="x-axis" :class="{ 'two-line': xAxisTwoLine }">
           <span
             v-for="(g, i) in xTicks"
             :key="'xl'+i"
@@ -291,11 +291,19 @@ function formatTimeTick(epochSec, spanSec) {
   const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
   const md = `${d.getMonth() + 1}/${d.getDate()}`
   if (spanSec <= 36 * 3600) return hm
-  if (spanSec <= 10 * 86400) return `${md} ${hm}`
+  // Two lines keep date+time ~half as wide as `M/D HH:MM` in a narrow plot.
+  if (spanSec <= 10 * 86400) return `${md}\n${hm}`
   return md
 }
 
-const X_TICK_COUNT = 5
+// Dense HH:MM ticks fit a narrow plot; `M/D HH:MM` (~36h–10d) needs fewer.
+const X_TICK_COUNT_SHORT = 5
+const X_TICK_COUNT_LONG = 3
+
+function xTickCount(spanSec) {
+  if (spanSec > 36 * 3600 && spanSec <= 10 * 86400) return X_TICK_COUNT_LONG
+  return X_TICK_COUNT_SHORT
+}
 
 const xTicks = computed(() => {
   if (props.quiet) return []
@@ -303,7 +311,7 @@ const xTicks = computed(() => {
   if (!ext) return []
   const span = ext.hi - ext.lo
   if (!(span > 0)) return []
-  const n = X_TICK_COUNT
+  const n = xTickCount(span)
   const out = []
   for (let i = 0; i < n; i++) {
     const frac = i / (n - 1)
@@ -315,6 +323,10 @@ const xTicks = computed(() => {
   }
   return out
 })
+
+const xAxisTwoLine = computed(() =>
+  xTicks.value.some((g) => g.label.includes('\n'))
+)
 
 function xOf(i, n) {
   const plotW = W - PAD.l - PAD.r
@@ -618,22 +630,24 @@ function formatLegend(v) {
   min-width: 0;
   height: 16px;
 }
+.x-axis.two-line { height: 26px; }
 .x-lbl {
   position: absolute;
   top: 0;
   transform: translateX(-50%);
   font-size: 10px;
-  line-height: 1;
+  line-height: 1.15;
   color: var(--sub);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
-  white-space: nowrap;
+  white-space: pre;
+  text-align: center;
   user-select: none;
   opacity: .8;
 }
-.x-lbl.first { transform: none; }
-.x-lbl.last { transform: translateX(-100%); }
+.x-lbl.first { transform: none; text-align: left; }
+.x-lbl.last { transform: translateX(-100%); text-align: right; }
 
 .lc-svg {
   position: absolute;

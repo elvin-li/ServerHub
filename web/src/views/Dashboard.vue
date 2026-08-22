@@ -301,7 +301,7 @@
         </h3>
         <!-- chart-first keeps non-mac stacked order (chart then stats); mac
              surface CSS still places stats left / chart right. -->
-        <div class="am-monitor chart-first">
+        <div class="am-monitor am-mem chart-first">
           <div class="am-monitor-stats">
             <div class="res-head">
               <div class="big">{{ memAvailGb }}<small> {{ t('dashboard.gb_available') }}</small></div>
@@ -357,7 +357,7 @@
             <span class="badge" :class="smartSummaryClass">{{ smartSummary }}</span>
           </span>
         </h3>
-        <div class="am-monitor">
+        <div class="am-monitor am-disk">
           <div class="am-monitor-stats">
             <div class="res-head disk-head">
               <div class="big">{{ formatCapacityGb(diskUsed) }}<small> / {{ formatCapacityGb(diskTotal) }}</small></div>
@@ -1665,6 +1665,20 @@ onUnmounted(() => {
 .am-cpu .am-monitor-stats { gap: 2px; }
 .am-cpu .am-monitor-stats > .cpu-head { margin-bottom: 6px; }
 .am-cpu :deep(.lc-legend) { display: none; }
+.am-mem :deep(.lc-legend) { display: none; }
+.am-disk .am-monitor-chart { position: relative; }
+.am-disk :deep(.lc-legend) {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  margin-top: 0;
+  z-index: 2;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+}
+.am-disk :deep(.leg-unit) { display: none; }
 .am-row {
   display: flex;
   align-items: baseline;
