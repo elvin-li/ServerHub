@@ -446,6 +446,15 @@ function formatLegend(v) {
   padding-bottom: 4px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
+.lc.quiet .lc-title {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+:global([data-theme="macos"] .lc-title),
+:global([data-theme="macos-dark"] .lc-title) {
+  border-bottom: none;
+  padding-bottom: 0;
+}
 
 .lc-plot {
   display: flex;
@@ -464,9 +473,17 @@ function formatLegend(v) {
   border-radius: var(--radius);
   padding: 4px;
 }
-:global([data-theme="macos"]) .lc.quiet .lc-plot,
-:global([data-theme="macos-dark"]) .lc.quiet .lc-plot {
-  background: var(--card);
+:global([data-theme="macos"] .lc-plot),
+:global([data-theme="macos-dark"] .lc-plot) {
+  border: none;
+  background: transparent;
+}
+:global([data-theme="macos"] .lc.quiet .lc-plot),
+:global([data-theme="macos-dark"] .lc.quiet .lc-plot) {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }

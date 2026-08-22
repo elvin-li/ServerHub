@@ -886,6 +886,14 @@ button.primary.loading::after { color: #fff; }
      three-column health/alerts table still sideways-scroll on a 390px phone. */
   table.dense.fit-m { min-width: 0; }
   table.dense.fit-m td { overflow-wrap: anywhere; }
+  /* Headers (esp. CJK like 内存) must not wrap character-by-character when
+     fit-m drops the 560px floor and numeric columns get squeezed. */
+  table.dense.fit-m th,
+  table.dense.fit-m td.num {
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
+  }
   .show-m {
     display: block;
     margin-top: 3px;
@@ -996,6 +1004,16 @@ table.dense th {
   letter-spacing: .4px;
   position: sticky; top: 0; z-index: 1;
   border-bottom: 2px solid var(--line);
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+table.dense .num {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+table.dense th.num {
+  min-width: 3.5em;
 }
 table.dense tbody tr:nth-child(even) { background: var(--table-alt); }
 table.dense tbody tr:hover { background: var(--table-hover); box-shadow: inset 3px 0 0 var(--accent); }
@@ -2073,7 +2091,7 @@ img[loading="lazy"][complete] {
   font-weight: 600;
   font-size: 11px;
   letter-spacing: 0.02em;
-  box-shadow: inset 0 -1px 0 var(--line);
+  white-space: nowrap;
 }
 [data-theme="macos"] table.dense tbody tr:nth-child(odd),
 [data-theme="macos-dark"] table.dense tbody tr:nth-child(odd) {
