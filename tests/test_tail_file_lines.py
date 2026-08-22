@@ -266,7 +266,7 @@ class CallSiteContractTests(unittest.TestCase):
 
     def test_terminal_audit_rotation_is_capped_and_atomic(self):
         source = Path(terminal_svc.__file__).read_text()
-        body = source[source.index("def _audit"): source.index("\ndef _clip")]
+        body = source[source.index("def _audit"): source.index("\ndef _reap_group")]
         self.assertIn("tail_file_lines", body)
         self.assertIn("replace_secret_text", body)
         self.assertNotIn("write_secret_text(", body)

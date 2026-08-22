@@ -325,12 +325,6 @@ def _audit(entry: dict[str, Any]) -> None:
         pass
 
 
-def _clip(text: str) -> tuple[str, bool]:
-    if len(text) <= MAX_OUTPUT:
-        return text, False
-    return text[:MAX_OUTPUT], True
-
-
 def _reap_group(proc: subprocess.Popen) -> None:
     for sig, grace in ((signal.SIGTERM, 2), (signal.SIGKILL, 2)):
         if proc.poll() is not None:
@@ -377,7 +371,7 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
 
     ``subprocess.run(capture_output=True)`` buffered the whole pipe until
     exit.  ``yes`` / ``find /`` / ``cat`` of a huge file could RSS-bomb the
-    panel for up to :data:`MAX_TIMEOUT` seconds before ``_clip`` ran.
+    panel for up to :data:`MAX_TIMEOUT` seconds before ``_drain_capped`` ran.
     """
     started = time.time()
     timeout = _clamp_timeout(timeout)

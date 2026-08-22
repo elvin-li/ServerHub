@@ -56,26 +56,6 @@ def host_ip() -> str:
     return resolved_host_ip()
 
 
-def _tcp_port(raw) -> int | None:
-    """A TCP port, or None.
-
-    Bool is a subclass of int (``int(True) == 1``) so leftover YAML ``true``
-    used to become listen port 1. ``int(inf)`` OverflowError is not
-    ValueError; leftover bytes ``int(b"80")`` is 80.
-    """
-    if isinstance(raw, bool) or raw is None:
-        return None
-    if isinstance(raw, (bytes, bytearray)):
-        return None
-    try:
-        n = int(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if 1 <= n <= 65535:
-        return n
-    return None
-
-
 def ports_from_plist(pl: dict) -> list[int]:
     """Extract listen ports from LaunchAgent plist structure."""
     if not isinstance(pl, dict):

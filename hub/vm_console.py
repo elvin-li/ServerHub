@@ -321,11 +321,6 @@ def release_session(session_id: str) -> None:
         _sessions.pop(session_id, None)
 
 
-def active_sessions() -> int:
-    with _lock:
-        return len(_sessions)
-
-
 async def bridge(websocket, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> tuple[str, int, int]:
     """Pump bytes both ways until either side ends.
 

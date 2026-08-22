@@ -527,10 +527,9 @@ def apply_restore_path(hint: str, path: str) -> str:
 def scan_backups() -> list:
     """Every backup artefact found, newest first and not truncated.
 
-    Split out from :func:`list_backups` so a caller can report how many exist
-    without walking the trees twice.  The page needs both numbers: it renders a
-    capped list, and silently dropping the rest is how an operator comes to
-    believe backups older than the cap were deleted.
+    The page needs both the rows and how many exist: it renders a capped list,
+    and silently dropping the rest is how an operator comes to believe backups
+    older than the cap were deleted.
     """
     items = []
     home = user_home()
@@ -579,11 +578,6 @@ def scan_backups() -> list:
                 pass
     items.sort(key=lambda x: x["mtime"], reverse=True)
     return items
-
-
-def list_backups(limit: int = 40) -> list:
-    """The newest *limit* backups.  Kept for callers that only want the rows."""
-    return scan_backups()[:limit]
 
 
 def _pg18_dump() -> Path | None:

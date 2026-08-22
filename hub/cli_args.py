@@ -124,9 +124,3 @@ def is_safe_hostname(value: object, *, max_len: int = MAX_HOSTNAME_LEN) -> bool:
     if text is None or not text or len(text) > max_len:
         return False
     return bool(_SAFE_HOSTNAME.match(text))
-
-
-def require_hostname(value: object, *, label: str = "host") -> str:
-    if not is_safe_hostname(value):
-        raise api_error("cli.invalid_value", label=label)
-    return _normalise(value)  # type: ignore[return-value]

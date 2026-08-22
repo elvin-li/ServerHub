@@ -922,12 +922,6 @@ export const powerAction = (action, confirm = true) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, confirm }),
   })
-export const setWol = (enabled) =>
-  json('/api/system/power/wol', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
-  })
 export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
   const q = new URLSearchParams({
     tail: String(tail),
