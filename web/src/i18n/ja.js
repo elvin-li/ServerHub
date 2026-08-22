@@ -625,6 +625,8 @@ export default {
     cpu_user: 'ユーザー',
     cpu_idle: 'アイドル',
     cpu_load: 'CPU 負荷',
+    cpu_temp: '温度',
+    load_avg: 'ロード',
     memory: 'メモリ',
     disk_smart: 'ディスクと SMART',
     smart: 'SSD SMART',

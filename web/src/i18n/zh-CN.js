@@ -626,6 +626,8 @@ export default {
     cpu_user: '用户',
     cpu_idle: '空闲',
     cpu_load: 'CPU 负载',
+    cpu_temp: '温度',
+    load_avg: '负载',
     memory: '内存',
     disk_smart: '磁盘与 SMART',
     smart: 'SSD SMART',

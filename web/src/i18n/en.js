@@ -625,6 +625,8 @@ export default {
     cpu_user: 'User',
     cpu_idle: 'Idle',
     cpu_load: 'CPU Load',
+    cpu_temp: 'Temp',
+    load_avg: 'Load',
     memory: 'Memory',
     disk_smart: 'Disks & SMART',
     smart: 'SSD SMART',

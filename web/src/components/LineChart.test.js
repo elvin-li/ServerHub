@@ -276,6 +276,24 @@ describe('LineChart stacked quiet (Activity Monitor CPU LOAD)', () => {
     expect(w.findAll('polygon').length).toBeGreaterThan(0)
   })
 
+  it('shows the percent y-axis and grid when stacked without quiet', () => {
+    const w = chart({
+      series: [
+        { name: 'sys', values: [10, 20], color: '#FF453A' },
+        { name: 'user', values: [30, 40], color: '#5AC8FA' },
+      ],
+      percent: true,
+      stacked: true,
+      fill: true,
+      title: 'CPU Load',
+    })
+    expect(w.find('.lc').classes()).not.toContain('quiet')
+    expect(w.find('.lc-title').text()).toBe('CPU Load')
+    expect(tickLabels(w)).toEqual(['0', '25', '50', '75', '100'])
+    expect(w.find('.grid').exists()).toBe(true)
+    expect(w.findAll('polygon').length).toBeGreaterThan(0)
+  })
+
   it('stacks series so the top edge is the sum', () => {
     const w = chart({
       series: [

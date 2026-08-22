@@ -206,7 +206,7 @@
           {{ metricsSwitching ? t('common.loading') : historyHint }}
         </div>
         <!-- Activity Monitor–style breakdown under macOS themes. -->
-        <div v-if="isMacSurface" class="am-monitor">
+        <div v-if="isMacSurface" class="am-monitor am-cpu">
           <div class="am-monitor-stats">
             <div class="res-head cpu-head">
               <div class="big">{{ cpuUsed }}<small>%</small></div>
@@ -223,16 +223,27 @@
               <span>{{ t('dashboard.cpu_idle') }}</span>
               <b>{{ fmtN(cpu.idle) }}%</b>
             </div>
+            <div v-if="cpuTempC != null" class="am-row">
+              <span>{{ t('dashboard.cpu_temp') }}</span>
+              <b>{{ fmtN(cpuTempC) }}°C</b>
+            </div>
+            <div class="am-row">
+              <span>{{ t('dashboard.thermal_status') }}</span>
+              <b :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</b>
+            </div>
+            <div class="am-row">
+              <span>{{ t('dashboard.load_avg') }}</span>
+              <b>{{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}</b>
+            </div>
           </div>
           <div class="am-monitor-chart">
             <LineChart
-              :height="88"
+              :height="112"
               fill
               :min="0"
               :max="100"
               percent
               stacked
-              quiet
               :title="t('dashboard.cpu_load')"
               :times="metricTimes"
               :series="cpuAppleChartSeries"
@@ -266,11 +277,13 @@
             unit="%"
           />
         </template>
-        <div class="sub" style="margin-top:6px">
-          Load {{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}
-          · {{ t('dashboard.load_capacity', { p: finiteN(loadPct) }) }}
+        <div class="sub cpu-loadline">
+          <template v-if="!isMacSurface">
+            Load {{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}
+            ·
+          </template>
+          {{ t('dashboard.load_capacity', { p: finiteN(loadPct) }) }}
           <span class="badge" style="margin-left:4px">{{ t('dashboard.cores', { n: ncpu }) }}</span>
-          <span v-if="isMacSurface && thermal.pressure === 'warning'" class="badge warn" style="margin-left:4px">{{ thermalStatus }}</span>
         </div>
       </div>
 
@@ -823,6 +836,7 @@ const thermalStatus = computed(() =>
     ? t('dashboard.thermal_warning')
     : (thermal.value.pressure === 'normal' ? t('dashboard.thermal_normal') : t('dashboard.thermal_unknown'))
 )
+const cpuTempC = computed(() => finiteN(thermal.value.cpu_temp_c, null))
 function smartIsOk(d) {
   const h = String(d?.smart?.health || '').toUpperCase()
   return !!d?.smart && (h.includes('PASSED') || h === 'OK')
@@ -1605,8 +1619,8 @@ onUnmounted(() => {
   grid-area: stats;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 4px;
   min-width: 0;
 }
 .am-monitor-chart {
@@ -1626,20 +1640,33 @@ onUnmounted(() => {
   min-height: 0;
   height: 100%;
 }
+/* Stretch only the CPU monitor so Memory/Disk cards keep their natural height. */
+.am-surface.res-card:has(.am-cpu) {
+  display: flex;
+  flex-direction: column;
+}
+.am-cpu {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 .am-surface .am-monitor,
 .am-surface .am-monitor.chart-first {
   grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.4fr);
   grid-template-areas: "stats chart";
-  gap: 12px 16px;
-  margin: 4px 0 2px;
+  gap: 8px 12px;
+  margin: 0;
 }
 .am-monitor .cpu-head { margin-bottom: 2px; }
+.am-cpu .am-monitor-stats { gap: 2px; }
+.am-cpu .am-monitor-stats > .cpu-head { margin-bottom: 6px; }
+.am-cpu :deep(.lc-legend) { display: none; }
 .am-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  padding: 1px 0;
+  gap: 8px;
+  padding: 0;
+  line-height: 1.35;
   font-size: 12px;
   white-space: nowrap;
 }
@@ -1728,6 +1755,7 @@ onUnmounted(() => {
 .am-surface .disk-primary-meta { white-space: nowrap; }
 .am-surface .disk-primary strong { font-size: 12px; font-weight: 500; }
 .res-card > h3 { margin-bottom: 8px; }
+.cpu-loadline { margin-top: 4px; }
 .tile .mem-footnote {
   margin-top: 6px;
   white-space: nowrap;
