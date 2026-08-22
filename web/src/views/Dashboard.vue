@@ -1624,8 +1624,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
+  align-items: stretch;
   gap: 4px;
   min-width: 0;
+  width: 100%;
 }
 .am-monitor-chart {
   grid-area: chart;
@@ -1661,8 +1663,14 @@ onUnmounted(() => {
   gap: 8px 12px;
   margin: 0;
 }
+.am-surface .am-monitor.am-cpu {
+  grid-template-columns: minmax(min-content, 0.9fr) minmax(0, 1.4fr);
+}
 .am-monitor .cpu-head { margin-bottom: 2px; }
-.am-cpu .am-monitor-stats { gap: 2px; }
+.am-cpu .am-monitor-stats {
+  gap: 2px;
+  min-width: min-content;
+}
 .am-cpu .am-monitor-stats > .cpu-head { margin-bottom: 6px; }
 .am-cpu :deep(.lc-legend) { display: none; }
 .am-mem :deep(.lc-legend) { display: none; }
@@ -1684,13 +1692,22 @@ onUnmounted(() => {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 0;
   line-height: 1.35;
   font-size: 12px;
   white-space: nowrap;
 }
-.am-row span { color: var(--txt); font-weight: 500; }
+.am-row span {
+  color: var(--txt);
+  font-weight: 500;
+  flex: 1 1 auto;
+}
 .am-row b {
+  flex: 0 0 auto;
+  margin-left: auto;
+  text-align: right;
   font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
   color: var(--txt);
@@ -1787,7 +1804,8 @@ onUnmounted(() => {
   .am-monitor,
   .am-monitor.chart-first,
   .am-surface .am-monitor,
-  .am-surface .am-monitor.chart-first {
+  .am-surface .am-monitor.chart-first,
+  .am-surface .am-monitor.am-cpu {
     grid-template-columns: 1fr;
     grid-template-areas:
       "stats"
