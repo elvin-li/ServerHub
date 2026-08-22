@@ -325,6 +325,23 @@ describe('theme', () => {
       expect(css).not.toMatch(/\.topchrome-inner[^{]*\{[^}]*background:\s*var\(--accent\)/)
     })
 
+    it('does not leave a phone-drawer left accent on desktop tabs', () => {
+      expect(css).toMatch(
+        /@media \(min-width: 641px\) \{[\s\S]*?\.top-nav a \{[\s\S]*?border-left:\s*none/,
+      )
+      expect(css).toMatch(
+        /\[data-theme="macos"\] \.top-nav a,[\s\S]*?border-left:\s*none/,
+      )
+    })
+
+    it('does not paint an accent focus ring on the page chrome', () => {
+      // A :focus-visible ring on #app/.layout/.main is a full-height accent
+      // stroke; the fixed header covers the top so only the left edge shows.
+      expect(css).toMatch(/#app:focus-visible[\s\S]*?outline:\s*none/)
+      expect(css).toMatch(/\.layout:focus-visible[\s\S]*?outline:\s*none/)
+      expect(css).toMatch(/\.main:focus-visible[\s\S]*?outline:\s*none/)
+    })
+
     it('renders macos tabs as a segmented well, not underline-only pills', () => {
       expect(css).toMatch(/html\[data-theme="macos"\] \.tabs[\s\S]*?background:\s*#e8e8ed/)
       expect(css).toMatch(/html\[data-theme="macos"\] \.tabs button\.active[\s\S]*?background:\s*#fff/)

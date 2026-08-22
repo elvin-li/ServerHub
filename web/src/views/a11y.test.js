@@ -421,6 +421,17 @@ describe('appearance controls', () => {
   })
 })
 
+describe('macos switch controls', () => {
+  it('uses a capsule switch for autostart and sharing, not a green checkbox', () => {
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(apps).toContain('<MacSwitch')
+    expect(apps).not.toMatch(/class="auto-toggle"[\s\S]{0,280}type="checkbox"/)
+    expect(shares).toContain('<MacSwitch')
+    expect(shares).not.toMatch(/class="mac-switch"/)
+  })
+})
+
 describe('focus visibility', () => {
   const css = readFileSync(resolve(SRC, 'styles.css'), 'utf8')
 

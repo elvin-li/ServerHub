@@ -801,11 +801,15 @@ button.primary.loading::after { color: #fff; }
     padding-top: env(safe-area-inset-top);
     padding-left: max(12px, env(safe-area-inset-left));
     padding-right: max(12px, env(safe-area-inset-right));
-    transform: translateX(-100%);
+    /* Extra 16px hides a subpixel peek of the closed drawer (the 3px accent
+       border-left on the active item read as a full-height system-blue strip
+       once the header no longer covered it). Shadow only while open so a
+       closed drawer cannot paint at x=0. */
+    transform: translateX(calc(-100% - 16px));
     transition: transform .28s cubic-bezier(.4,0,.2,1);
     z-index: 38;
     overflow-y: auto;
-    box-shadow: 4px 0 16px rgba(0,0,0,.3);
+    box-shadow: none;
     flex-wrap: nowrap;
     overscroll-behavior: contain;
   }
@@ -818,7 +822,10 @@ button.primary.loading::after { color: #fff; }
     background: var(--header);
     border-bottom: 1px solid rgba(255,255,255,.08);
   }
-  .top-nav.open { transform: translateX(0); }
+  .top-nav.open {
+    transform: translateX(0);
+    box-shadow: 4px 0 16px rgba(0,0,0,.3);
+  }
   .top-nav a {
     display: flex; align-items: center; gap: 7px;
     /* 16px sides (not 24px) so the narrow drawer still fits the widest label on
@@ -957,6 +964,16 @@ button.primary.loading::after { color: #fff; }
   .kv { grid-template-columns: minmax(0, 90px) minmax(0, 1fr); }
   .kv > * { min-width: 0; overflow-wrap: anywhere; }
   .tile .sub, .tile .mono { overflow-wrap: anywhere; word-break: break-word; }
+}
+
+/* Desktop/tablet: the phone drawer’s 3px left accent must not paint on inline
+   header tabs. Same specificity as the 640px rule, later in the file, gated on
+   the complementary min-width so a leaked drawer border cannot become a
+   full-height strip under the fixed header. */
+@media (min-width: 641px) {
+  .top-nav a {
+    border-left: none;
+  }
 }
 
 
@@ -1240,6 +1257,16 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 /* Accessibility: keyboard focus ring */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input:focus-visible, select:focus-visible { outline: none; }
+/* Page chrome is not a control. A UA / :focus-visible ring on these boxes is a
+   full-height accent stroke; the fixed header covers the top so only the left
+   edge reads as a system-blue strip. */
+html:focus, html:focus-visible,
+body:focus, body:focus-visible,
+#app:focus, #app:focus-visible,
+.layout:focus, .layout:focus-visible,
+.main:focus, .main:focus-visible {
+  outline: none;
+}
 
 /* status LED — Unraid style with glow */
 .led {
@@ -1797,7 +1824,9 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .top-nav a,
 [data-theme="macos-dark"] .subchrome-inner a {
   position: relative;
+  isolation: isolate;
   border-bottom-color: transparent;
+  border-left: none;
 }
 [data-theme="macos"] .top-nav a.active,
 [data-theme="macos"] .subchrome-inner a.active,
@@ -1813,13 +1842,15 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .subchrome-inner a.active::after {
   content: "";
   position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 0;
+  inset: auto 10px 0 10px;
+  top: auto;
+  width: auto;
   height: 2px;
+  max-height: 2px;
   background: var(--accent);
   border-radius: 1px;
   pointer-events: none;
+  transform: none;
 }
 [data-theme="macos"] .subchrome,
 [data-theme="macos-dark"] .subchrome {
@@ -1904,6 +1935,15 @@ img[loading="lazy"][complete] {
   [data-theme="macos"] .top-nav a.active::after,
   [data-theme="macos-dark"] .top-nav a.active::after {
     content: none;
+  }
+  /* Restore the drawer’s 3px leading mark; the desktop rule above zeroes it. */
+  [data-theme="macos"] .top-nav a,
+  [data-theme="macos-dark"] .top-nav a {
+    border-left: 3px solid transparent;
+  }
+  [data-theme="macos"] .top-nav a.active,
+  [data-theme="macos-dark"] .top-nav a.active {
+    border-left-color: var(--accent);
   }
 }
 

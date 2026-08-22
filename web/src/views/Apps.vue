@@ -194,15 +194,15 @@
                 <div v-if="finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
                 <div class="show-m sub-line mono">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend, '') }}</div>
                 <div class="show-m" @click.stop>
-                  <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="finiteText(it.autostart_detail, '')">
-                    <input
-                      type="checkbox"
-                      :checked="!!it.autostart"
-                      :disabled="busy || it.kind === 'vm'"
-                      @change="toggleManagedAutostart(it, $event.target.checked)"
-                    />
-                    <span>{{ it.autostart ? t('apps.auto_on') : t('apps.auto_off') }}</span>
-                  </label>
+                  <MacSwitch
+                    v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
+                    :checked="!!it.autostart"
+                    :disabled="busy || it.kind === 'vm'"
+                    :aria-label="t('apps.col_autostart')"
+                    :title="finiteText(it.autostart_detail, '')"
+                    @click.stop
+                    @change="toggleManagedAutostart(it, $event)"
+                  />
                 </div>
               </td>
               <td class="col-hide-m">
@@ -215,15 +215,15 @@
               </td>
               <td class="mono ports-cell col-hide-m">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="col-hide-m" @click.stop>
-                <label v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id" class="auto-toggle" :title="finiteText(it.autostart_detail, '')">
-                  <input
-                    type="checkbox"
-                    :checked="!!it.autostart"
-                    :disabled="busy || it.kind === 'vm'"
-                    @change="toggleManagedAutostart(it, $event.target.checked)"
-                  />
-                  <span>{{ it.autostart ? t('apps.auto_on') : t('apps.auto_off') }}</span>
-                </label>
+                <MacSwitch
+                  v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
+                  :checked="!!it.autostart"
+                  :disabled="busy || it.kind === 'vm'"
+                  :aria-label="t('apps.col_autostart')"
+                  :title="finiteText(it.autostart_detail, '')"
+                  @click.stop
+                  @change="toggleManagedAutostart(it, $event)"
+                />
                 <span v-else class="sub-line">—</span>
               </td>
               <td class="mono path-cell col-hide-m" :title="finiteText(it.path, '') || finiteText(it.package, '')">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend) }}</td>
@@ -300,15 +300,12 @@
                   <span v-if="finiteText(it.policy, '')" class="sub-line mono"> {{ finiteText(it.policy) }}</span>
                 </td>
                 <td>
-                  <label class="auto-toggle">
-                    <input
-                      type="checkbox"
-                      :checked="!!it.autostart"
-                      :disabled="busy"
-                      @change="setAutostartItem(it, $event.target.checked)"
-                    />
-                    <span>{{ it.autostart ? t('apps.auto_on') : t('apps.auto_off') }}</span>
-                  </label>
+                  <MacSwitch
+                    :checked="!!it.autostart"
+                    :disabled="busy"
+                    :aria-label="t('apps.col_autostart')"
+                    @change="setAutostartItem(it, $event)"
+                  />
                 </td>
                 <td class="mono path-cell col-hide-m" :title="finiteText(it.detail, '') || finiteText(it.plist)">{{ finiteText(it.detail, '') || finiteText(it.plist) }}</td>
                 <td class="actions-cell">
@@ -500,15 +497,15 @@
 
         <section class="drawer-sec" v-if="detail.kind !== 'vm'">
           <h3>{{ t('apps.col_autostart') }}</h3>
-          <label class="auto-toggle">
-            <input
-              type="checkbox"
+          <div class="auto-toggle">
+            <MacSwitch
               :checked="!!detail.autostart"
               :disabled="busy"
-              @change="toggleManagedAutostart({ id: detail.id, kind: detail.kind, autostart_id: detail.autostart_id, source_id: detail.source_id }, $event.target.checked)"
+              :aria-label="t('apps.col_autostart')"
+              @change="toggleManagedAutostart({ id: detail.id, kind: detail.kind, autostart_id: detail.autostart_id, source_id: detail.source_id }, $event)"
             />
-            <span>{{ detail.autostart ? t('apps.auto_on') : t('apps.auto_off') }} · {{ t('apps.autostart_help') }}</span>
-          </label>
+            <span>{{ t('apps.autostart_help') }}</span>
+          </div>
         </section>
 
         <section class="drawer-sec" v-if="detail.path || detail.compose_file || detail.package || detail.plist_hint">
@@ -799,6 +796,7 @@ import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
+import MacSwitch from '../components/MacSwitch.vue'
 import { startVisibleInterval } from '../lib/poll'
 
 const toast = inject('toast')
@@ -2668,18 +2666,10 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .auto-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
   color: var(--txt);
-  cursor: pointer;
   user-select: none;
-  white-space: nowrap;
-}
-
-.auto-toggle input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--ok);
 }
 
 .auto-group .section-title {

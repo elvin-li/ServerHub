@@ -143,15 +143,13 @@
               </div>
               <div class="service-action">
                 <span class="badge" :class="stateClass(service.enabled)">{{ stateText(service.enabled) }}</span>
-                <button
+                <MacSwitch
                   v-if="typeof service.enabled === 'boolean'"
-                  class="mac-switch"
-                  role="switch"
-                  :aria-label="t('shares.toggle_service', { name: t(`shares.service_${finiteText(service.id, '')}`) })"
-                  :aria-checked="service.enabled ? 'true' : 'false'"
+                  :checked="service.enabled"
                   :disabled="busy"
-                  @click="toggleService(service)"
-                ><span></span></button>
+                  :aria-label="t('shares.toggle_service', { name: t(`shares.service_${finiteText(service.id, '')}`) })"
+                  @change="toggleService(service)"
+                />
               </div>
             </article>
             <p v-if="!coreServices.length" class="inline-empty">{{ t('shares.no_core_services') }}</p>
@@ -320,6 +318,7 @@ import { finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import LoadFailure from '../components/LoadFailure.vue'
+import MacSwitch from '../components/MacSwitch.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -625,24 +624,42 @@ onUnmounted(() => {
 .section-bar .hint,.card-heading .hint { margin:2px 0 0; }
 .share-list { padding:0; overflow:hidden; }
 .share-row { display:grid; grid-template-columns:auto minmax(180px,1fr) auto auto; align-items:center; gap:10px; min-height:56px; padding:6px 10px; }
+.share-row, .service-row, .file-service-row { position: relative; }
 .share-row + .share-row,.service-row + .service-row,.file-service-row + .file-service-row { border-top:1px solid var(--line); }
-:global([data-theme="macos"]) .share-row:nth-child(odd),
-:global([data-theme="macos"]) .service-row:nth-child(odd),
-:global([data-theme="macos"]) .file-service-row:nth-child(odd),
-:global([data-theme="macos-dark"]) .share-row:nth-child(odd),
-:global([data-theme="macos-dark"]) .service-row:nth-child(odd),
-:global([data-theme="macos-dark"]) .file-service-row:nth-child(odd) {
+:global([data-theme="macos"]) .share-row,
+:global([data-theme="macos"]) .service-row,
+:global([data-theme="macos"]) .file-service-row,
+:global([data-theme="macos-dark"]) .share-row,
+:global([data-theme="macos-dark"]) .service-row,
+:global([data-theme="macos-dark"]) .file-service-row {
   background: var(--card);
 }
-:global([data-theme="macos"]) .share-row:nth-child(even),
-:global([data-theme="macos"]) .service-row:nth-child(even),
-:global([data-theme="macos"]) .file-service-row:nth-child(even) {
-  background: #F5F5F7;
+:global([data-theme="macos"]) .share-row + .share-row,
+:global([data-theme="macos"]) .service-row + .service-row,
+:global([data-theme="macos"]) .file-service-row + .file-service-row,
+:global([data-theme="macos-dark"]) .share-row + .share-row,
+:global([data-theme="macos-dark"]) .service-row + .service-row,
+:global([data-theme="macos-dark"]) .file-service-row + .file-service-row {
+  border-top: none;
 }
-:global([data-theme="macos-dark"]) .share-row:nth-child(even),
-:global([data-theme="macos-dark"]) .service-row:nth-child(even),
-:global([data-theme="macos-dark"]) .file-service-row:nth-child(even) {
-  background: #232325;
+:global([data-theme="macos"]) .share-row + .share-row::after,
+:global([data-theme="macos"]) .service-row + .service-row::after,
+:global([data-theme="macos"]) .file-service-row + .file-service-row::after,
+:global([data-theme="macos-dark"]) .share-row + .share-row::after,
+:global([data-theme="macos-dark"]) .service-row + .service-row::after,
+:global([data-theme="macos-dark"]) .file-service-row + .file-service-row::after {
+  content: "";
+  position: absolute;
+  left: 52px;
+  right: 16px;
+  top: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--line) 80%, transparent);
+  pointer-events: none;
+}
+:global([data-theme="macos"]) .service-row + .service-row::after,
+:global([data-theme="macos-dark"]) .service-row + .service-row::after {
+  right: 58px;
 }
 .folder-icon { width:34px; height:34px; border-radius:var(--radius); background:var(--accent); }
 .share-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
@@ -688,13 +705,6 @@ onUnmounted(() => {
   background: #3a3a3c;
   color: #f5f5f7;
 }
-:global([data-theme="macos"]) .mac-switch[aria-checked="true"],
-:global([data-theme="macos-dark"]) .mac-switch[aria-checked="true"] {
-  background: #34c759;
-}
-:global([data-theme="macos-dark"]) .mac-switch[aria-checked="true"] {
-  background: #30d158;
-}
 :global([data-theme="macos"]) .share-badges .badge.accent,
 :global([data-theme="macos-dark"]) .share-badges .badge.accent {
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
@@ -714,11 +724,59 @@ onUnmounted(() => {
 .service-copy strong,.managed-service strong,.file-service-row strong { font-size:12px; }
 .service-copy span,.managed-service span { color:var(--sub); font-size:10.5px; line-height:1.35; }
 .service-action { display:flex; align-items:center; gap:8px; }
-.mac-switch { position:relative; width:38px; height:22px; min-width:38px; padding:0; border:0; border-radius:var(--radius-pill); background:#999; }
-.mac-switch span { position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.28); transition:transform .16s ease; }
-.mac-switch[aria-checked="true"] { background:var(--ok); }
-.mac-switch[aria-checked="true"] span { transform:translateX(16px); }
 .managed-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); }
+:global([data-theme="macos"]) .managed-grid,
+:global([data-theme="macos-dark"]) .managed-grid {
+  gap: 0;
+  background: transparent;
+}
+:global([data-theme="macos"]) .managed-service,
+:global([data-theme="macos-dark"]) .managed-service {
+  position: relative;
+}
+:global([data-theme="macos"]) .managed-service:nth-child(odd)::before,
+:global([data-theme="macos-dark"]) .managed-service:nth-child(odd)::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  right: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--line) 70%, transparent);
+  pointer-events: none;
+}
+:global([data-theme="macos"]) .managed-service:nth-child(n + 3)::after,
+:global([data-theme="macos-dark"]) .managed-service:nth-child(n + 3)::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--line) 80%, transparent);
+  pointer-events: none;
+}
+:global([data-theme="macos"]) .card-heading,
+:global([data-theme="macos-dark"]) .card-heading {
+  position: relative;
+  border-bottom: none;
+}
+:global([data-theme="macos"]) .card-heading::after,
+:global([data-theme="macos-dark"]) .card-heading::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--line) 80%, transparent);
+  pointer-events: none;
+}
+:global([data-theme="macos"]) .managed-note,
+:global([data-theme="macos-dark"]) .managed-note {
+  border-top: none;
+  box-shadow: inset 12px 0 0 var(--card), inset -12px 0 0 var(--card), inset 0 1px 0 color-mix(in srgb, var(--line) 80%, transparent);
+}
 .managed-service { display:flex; align-items:flex-start; gap:8px; min-height:64px; padding:8px; background:var(--card); }
 .managed-service > div:last-child { display:flex; flex-direction:column; gap:3px; min-width:0; }
 .managed-note { display:flex; align-items:center; gap:6px; margin:0; padding:9px 12px; border-top:1px solid var(--line); color:var(--sub); font-size:10.5px; }
@@ -775,6 +833,21 @@ button:disabled { opacity:.48; cursor:not-allowed; }
   .share-badges,.share-actions { grid-column:2; justify-content:flex-start; }
   .share-actions button { min-height:36px; }
   .managed-grid { grid-template-columns:1fr; }
+  :global([data-theme="macos"]) .managed-service:nth-child(odd)::before,
+  :global([data-theme="macos-dark"]) .managed-service:nth-child(odd)::before {
+    content: none;
+  }
+  :global([data-theme="macos"]) .managed-service + .managed-service::after,
+  :global([data-theme="macos-dark"]) .managed-service + .managed-service::after {
+    content: "";
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    top: 0;
+    height: 1px;
+    background: color-mix(in srgb, var(--line) 80%, transparent);
+    pointer-events: none;
+  }
   .service-row { grid-template-columns:auto minmax(0,1fr); }
   .service-action { grid-column:2; justify-content:space-between; }
   .file-service-row { grid-template-columns:auto minmax(0,1fr) auto; }
@@ -783,5 +856,5 @@ button:disabled { opacity:.48; cursor:not-allowed; }
   .share-sheet-backdrop { padding:0; }
   .share-sheet { width:100%; max-height:94vh; border-radius:var(--radius) var(--radius) 0 0; }
 }
-@media (prefers-reduced-motion:reduce) { .mac-switch span,.spinning { transition:none; animation:none; } }
+@media (prefers-reduced-motion:reduce) { .spinning { transition:none; animation:none; } }
 </style>
