@@ -238,12 +238,14 @@
           </div>
           <div class="am-monitor-chart">
             <LineChart
+              class="am-chart"
               :height="112"
               fill
               :min="0"
               :max="100"
               percent
               stacked
+              :areaOpacity="0.28"
               :title="t('dashboard.cpu_load')"
               :times="metricTimes"
               :series="cpuAppleChartSeries"

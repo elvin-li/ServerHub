@@ -122,7 +122,7 @@ const props = defineProps({
   quiet: { type: Boolean, default: false },
   /** Optional centered chart title (e.g. "CPU LOAD"). */
   title: { type: String, default: '' },
-  /** Area fill opacity when stacked (outline stays opaque). */
+  /** Area fill opacity (outline stays opaque). Defaults: stacked 0.72, else 0.1. */
   areaOpacity: { type: Number, default: null },
   /** Stretch the plot to the parent column; `height` is the minimum. */
   fill: { type: Boolean, default: false },

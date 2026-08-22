@@ -321,4 +321,40 @@ describe('LineChart stacked quiet (Activity Monitor CPU LOAD)', () => {
     expect(w.find('.lc').classes()).toContain('fill')
     expect(w.find('.lc-plot').attributes('style')).toContain('min-height: 88px')
   })
+
+  it('paints stacked bands at areaOpacity and keeps strokes opaque', () => {
+    const w = chart({
+      series: [
+        { name: 'sys', values: [20, 20], color: '#FF453A' },
+        { name: 'user', values: [30, 30], color: '#5AC8FA' },
+      ],
+      percent: true,
+      stacked: true,
+      fill: true,
+      areaOpacity: 0.28,
+    })
+    const polys = w.findAll('polygon')
+    expect(polys).toHaveLength(2)
+    for (const p of polys) {
+      expect(Number(p.attributes('opacity'))).toBeCloseTo(0.28)
+    }
+    const strokes = w.findAll('polyline').filter((n) => n.attributes('fill') === 'none')
+    expect(strokes).toHaveLength(2)
+    for (const s of strokes) {
+      expect(s.attributes('opacity')).toBeUndefined()
+      expect(s.attributes('stroke-width')).toBe('1.25')
+    }
+  })
+
+  it('keeps non-stacked fill at the soft default', () => {
+    const w = chart({
+      series: [{ name: 'mem', values: [10, 20], color: '#32D74B' }],
+      fill: true,
+    })
+    const areas = w.findAll('polyline').filter((n) => n.attributes('fill') !== 'none')
+    expect(areas.length).toBeGreaterThan(0)
+    for (const a of areas) {
+      expect(Number(a.attributes('opacity'))).toBeCloseTo(0.1)
+    }
+  })
 })
