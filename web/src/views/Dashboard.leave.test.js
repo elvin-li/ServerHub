@@ -104,6 +104,17 @@ afterEach(() => {
 })
 
 describe('Dashboard leave-guards', () => {
+  it('loads light sensors on the low-mode heavy tick', async () => {
+    await mountDash()
+    expect(api.getSensors).toHaveBeenCalledWith(false, { light: true })
+  })
+
+  it('loads full sensors on the high-mode heavy tick', async () => {
+    api.getStatus.mockResolvedValue({ resource_mode: 'high', groups: [] })
+    await mountDash()
+    expect(api.getSensors).toHaveBeenCalledWith(false, { light: false })
+  })
+
   it('does not toast a service start that returns after leave', async () => {
     let resolveAct
     api.doAction.mockImplementation(() => new Promise((resolve) => { resolveAct = resolve }))

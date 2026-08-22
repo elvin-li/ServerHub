@@ -512,6 +512,128 @@ def utf8_env(env=None) -> dict[str, str]:
     return out
 
 
+#: Tumbling window for :class:`SpawnCounts`.  Peek and record both reset when
+#: the window elapses so a sitting dashboard does not accumulate forever.
+_SPAWN_WINDOW_S = 60
+_SPAWN_KEY_CAP = 64
+_SPAWN_SUBCOMMAND = frozenset({"docker", "brew", "launchctl"})
+_SPAWN_TOKEN_MAX = 64
+
+
+def _spawn_tokens(cmd, *, shell: bool = False) -> list[str]:
+    """Executable + args as str tokens.  Never returns leftover non-str argv."""
+    if shell and isinstance(cmd, str):
+        parts = cmd.split()
+        return parts[:2] if parts else []
+    if not isinstance(cmd, (list, tuple)):
+        return []
+    out: list[str] = []
+    for part in cmd:
+        if not isinstance(part, str):
+            return []
+        out.append(part)
+        if len(out) >= 8:
+            break
+    return out
+
+
+def spawn_key(cmd, *, shell: bool = False) -> str:
+    """Counter key: basename, or '{basename} {first_subcommand}' for a few CLIs.
+
+    First subcommand only for docker/brew/launchctl — never the rest of argv
+    (tokens, paths).  Unknown / empty subcommand → basename only.
+    """
+    tokens = _spawn_tokens(cmd, shell=shell)
+    if not tokens:
+        return ""
+    base = os.path.basename(tokens[0])
+    if not base or len(base) > _SPAWN_TOKEN_MAX:
+        return ""
+    if base not in _SPAWN_SUBCOMMAND:
+        return base
+    for tok in tokens[1:]:
+        if not tok or tok.startswith("-"):
+            continue
+        if len(tok) > _SPAWN_TOKEN_MAX:
+            return base
+        return f"{base} {tok}"
+    return base
+
+
+class SpawnCounts:
+    """Process-local subprocess spawn counters (``sh`` / ``run_capped``)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._started = 0.0
+        self._total = 0
+        self._overflow = 0
+        self._by_key: dict[str, int] = {}
+        self.reset()
+
+    def reset(self) -> None:
+        """Drop the window.  Tests call this in setUp/tearDown."""
+        with self._lock:
+            self._reset_unlocked()
+
+    def _reset_unlocked(self) -> None:
+        self._started = time.monotonic()
+        self._total = 0
+        self._overflow = 0
+        self._by_key = {}
+
+    def _tumble_unlocked(self) -> None:
+        try:
+            age = time.monotonic() - self._started
+        except (TypeError, OverflowError):
+            self._reset_unlocked()
+            return
+        if age != age or age in (float("inf"), float("-inf")) or age >= _SPAWN_WINDOW_S:
+            self._reset_unlocked()
+
+    def record(self, cmd, *, shell: bool = False) -> None:
+        try:
+            key = spawn_key(cmd, shell=shell)
+        except Exception:
+            return
+        if not key:
+            return
+        with self._lock:
+            self._tumble_unlocked()
+            self._total += 1
+            n = self._by_key.get(key)
+            if n is not None:
+                self._by_key[key] = n + 1
+            elif len(self._by_key) < _SPAWN_KEY_CAP:
+                self._by_key[key] = 1
+            else:
+                self._overflow += 1
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            self._tumble_unlocked()
+            try:
+                age = time.monotonic() - self._started
+            except (TypeError, OverflowError):
+                age = 0.0
+            if age != age or age in (float("inf"), float("-inf")) or age < 0:
+                age = 0.0
+            try:
+                age_s = round(age, 3)
+            except (TypeError, OverflowError):
+                age_s = 0.0
+            return {
+                "window_s": _SPAWN_WINDOW_S,
+                "age_s": age_s,
+                "total": self._total,
+                "overflow": self._overflow,
+                "by_key": dict(self._by_key),
+            }
+
+
+spawn_counts = SpawnCounts()
+
+
 def run_capped(cmd, timeout=10, env=None, cwd=None, cap=2048):
     """Run *cmd* and keep at most *cap* trailing bytes of combined output.
 
@@ -523,6 +645,10 @@ def run_capped(cmd, timeout=10, env=None, cwd=None, cap=2048):
     argv = as_argv(cmd)
     if argv is None:
         return -1, "invalid argv"
+    try:
+        spawn_counts.record(argv)
+    except Exception:
+        pass
     with tempfile.TemporaryFile() as out:
         try:
             p = subprocess.run(
@@ -631,6 +757,10 @@ def sh(cmd, timeout=10, shell=False, env=None):
         if argv is None:
             return -1, "", "invalid argv"
         cmd = argv
+    try:
+        spawn_counts.record(cmd, shell=shell)
+    except Exception:
+        pass
     try:
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             try:

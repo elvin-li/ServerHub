@@ -643,6 +643,7 @@ const { t, errText } = injectI18n()
 const isMemberView = computed(() => authState.authenticated && authState.role === 'member')
 
 const status = ref(null)
+const highMode = computed(() => status.value?.resource_mode === 'high')
 const storage = ref(null)
 const host = ref(null)
 const metrics = ref([])
@@ -1224,7 +1225,8 @@ async function loadSensors(force = false, { light = false } = {}) {
     if (light && sensors.value) {
       // Light payloads send empty top_processes / network. Replacing the
       // whole ref made the Top CPU table flip to "Loading" and RX/TX to
-      // "—" until the 90s heavy tick. Keep the last full extras.
+      // "—" until a full collect. Keep the last full extras across light
+      // ticks (low-mode 20s + 90s); Refresh / high mode still replace.
       const prev = sensors.value
       const net = next.network && Object.keys(next.network).length ? next.network : prev.network
       sensors.value = {
@@ -1284,7 +1286,7 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     }
   }).catch(() => {})
   void getHealthChecks().then(h => { if (stillHere()) health.value = h }).catch(() => {})
-  void loadSensors(forceSensors)
+  void loadSensors(forceSensors, { light: !highMode.value && !forceSensors })
   void getBookmarks().then(b => { if (stillHere()) bookmarks.value = b.bookmarks || [] }).catch(() => {})
   await Promise.all([
     loadMetrics(),
@@ -1336,8 +1338,6 @@ async function act(svc, action) {
   }
 }
 
-const highMode = computed(() => status.value?.resource_mode === 'high')
-
 function stopDashTimers() {
   if (typeof timer === 'function') timer()
   if (typeof heavyTimer === 'function') heavyTimer()
@@ -1370,7 +1370,8 @@ function startDashTimers() {
     timer = startVisibleInterval(tickMemberLight, lightMs)
     return
   }
-  // Low: light sensors, no docker stats on the 90s tick.
+  // Low: light sensors (no top) on the 20s tick and the 90s heavy tick;
+  // no docker stats on the 90s tick. Manual Refresh still force-loads full.
   // High: full sensors every 12s and docker stats every 60s.
   timer = startVisibleInterval(tickAdminLight, lightMs)
   heavyTimer = startVisibleInterval(

@@ -135,7 +135,10 @@ class SensorsTypingTests(unittest.TestCase):
                 return 0, "The system has 12.5% free percentage", ""
             return 1, "", ""
 
-        with mock.patch.object(sensors_svc, "sh", side_effect=fake_sh):
+        with (
+            mock.patch("hub.macos_sysctl.sysctlbyname_int", return_value=None),
+            mock.patch.object(sensors_svc, "sh", side_effect=fake_sh),
+        ):
             hw = sensors_svc._static_hw()
             mem = sensors_svc._memory_base()
         self.assertEqual(hw["ncpu"], 8)

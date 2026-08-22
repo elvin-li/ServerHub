@@ -185,7 +185,10 @@ class SensorsPsNetUptimeTests(unittest.TestCase):
                 return 0, "16384", ""
             return 1, "", ""
 
-        with mock.patch.object(sensors_svc, "sh", side_effect=fake_sh):
+        with (
+            mock.patch("hub.macos_sysctl.sysctlbyname_int", return_value=None),
+            mock.patch.object(sensors_svc, "sh", side_effect=fake_sh),
+        ):
             hw = sensors_svc._static_hw()
         self.assertEqual(hw["ncpu"], 8)
         self.assertIsNone(hw["mem_total_gb"])
@@ -309,6 +312,7 @@ class SystemCollectLeftoverTests(unittest.TestCase):
             else mock.patch.object(system.shutil, "disk_usage", return_value=du)
         )
         with (
+            mock.patch("hub.macos_sysctl.sysctlbyname_int", return_value=None),
             mock.patch.object(system, "sh", side_effect=fake_sh),
             mock.patch.object(system, "_smart_cache", {"t": 9e9, "v": None}),
             load_patch,

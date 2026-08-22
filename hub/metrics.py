@@ -43,8 +43,15 @@ def _ncpu() -> int:
             n = 0
         if n > 0:
             return n
-    rc, ncpu_s, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=2)
-    n = int(ncpu_s) if rc == 0 and ncpu_s.isdigit() else 1
+    from hub import macos_sysctl
+
+    n = macos_sysctl.sysctl_int("hw.ncpu", timeout=2, sh=sh)
+    try:
+        n = int(n) if n is not None else 1
+    except (TypeError, ValueError, OverflowError):
+        n = 1
+    if n <= 0:
+        n = 1
     _ncpu_cache.update(t=now, n=n)
     return n
 

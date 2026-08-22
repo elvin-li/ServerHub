@@ -59,6 +59,20 @@ def api_health(request: Request):
     return body
 
 
+@router.get("/api/debug/spawns")
+def debug_spawns(request: Request):
+    """Admin peek at process-local ``sh`` / ``run_capped`` spawn counters.
+
+    Public ``GET /api/health`` stays ``{ok, ts}``.  Keys are executable
+    basename, or basename + first subcommand for docker/brew/launchctl —
+    never argv.
+    """
+    if not auth.is_admin(auth.request_username(request)):
+        raise api_error("auth.admin_required")
+    from hub.util import spawn_counts
+    return spawn_counts.snapshot()
+
+
 @router.get("/api/status")
 def api_status(request: Request, force: bool = False):
     return _visible_status(request, force=force)

@@ -92,9 +92,11 @@ def _configure_logging() -> None:
 def _warm_hotpath() -> None:
     """Fill the request-path caches so the first dashboard/apps paint is a hit.
 
-    Measured cold on this host: brew services list 1.2s, sensors 1.6s,
-    utmctl list 0.3s, host engine_up 0.3s.  Each is already TTL-cached; none
-    of that helps the first visitor after a LaunchAgent restart.
+    Measured cold on this host: brew services list 1.2s, full sensors 1.6s
+    (almost all ``top``), utmctl list 0.3s, host engine_up 0.3s.  Warm sensors
+    via ``collect_light`` (no ``top``); high mode and Refresh still full-collect.
+    Each read is already TTL-cached; none of that helps the first visitor
+    after a LaunchAgent restart.
     """
     try:
         from hub.brew_cache import brew_services
@@ -102,8 +104,8 @@ def _warm_hotpath() -> None:
     except Exception:
         pass
     try:
-        from hub.sensors_svc import collect_sensors
-        collect_sensors()
+        from hub.sensors_svc import collect_light
+        collect_light()
     except Exception:
         pass
     try:

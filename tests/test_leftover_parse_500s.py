@@ -265,9 +265,10 @@ class SystemSnapshotTypingTests(unittest.TestCase):
             return 1, "", ""
 
         cache_t = 0.0 if smart_out is not None else 9e9
-        with mock.patch.object(system, "sh", side_effect=fake_sh):
-            with mock.patch.object(system, "_smart_cache", {"t": cache_t, "v": None}):
-                return system.collect_system()
+        with mock.patch("hub.macos_sysctl.sysctlbyname_int", return_value=None):
+            with mock.patch.object(system, "sh", side_effect=fake_sh):
+                with mock.patch.object(system, "_smart_cache", {"t": cache_t, "v": None}):
+                    return system.collect_system()
 
     def test_int_sysctl_payloads_do_not_500(self):
         snap = self._collect(8, 32 * 2**30, mem_out="The system has 50% free percentage")

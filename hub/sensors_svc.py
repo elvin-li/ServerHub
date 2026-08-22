@@ -348,13 +348,13 @@ def _static_hw() -> dict:
             "mem_total_gb": _static["mem_gb"],
             "page_size": _static["page_size"],
         }
-    rc, ncpu, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=2)
-    rc2, memsize, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=2)
-    rc3, pgsz, _ = sh(["/usr/sbin/sysctl", "-n", "hw.pagesize"], timeout=2)
-    ncpu_i = _sysctl_int(ncpu) if rc == 0 else None
-    mem_n = _sysctl_int(memsize) if rc2 == 0 else None
+    from hub import macos_sysctl
+
+    ncpu_i = macos_sysctl.sysctl_int("hw.ncpu", timeout=2, sh=sh)
+    mem_n = macos_sysctl.sysctl_int("hw.memsize", timeout=2, sh=sh)
+    pgsz = macos_sysctl.sysctl_int("hw.pagesize", timeout=2, sh=sh)
     mem_gb = _bytes_to_gb(mem_n) if mem_n is not None else None
-    page_n = _sysctl_int(pgsz) if rc3 == 0 else None
+    page_n = pgsz
     page_size = page_n if page_n else 16384
     _static.update(t=now, ncpu=ncpu_i, mem_gb=mem_gb, page_size=page_size)
     return {"ncpu": ncpu_i, "mem_total_gb": mem_gb, "page_size": page_size}

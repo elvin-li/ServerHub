@@ -18,6 +18,7 @@ class PublicLivenessTests(unittest.TestCase):
         body = r.json()
         self.assertIs(body.get("ok"), True)
         self.assertIsInstance(body.get("ts"), int)
+        self.assertEqual(set(body), {"ok", "ts"})
 
     def test_liveness_infinite_clock_does_not_500(self):
         """int(time.time()) OverflowError on leftover inf used to 500 the watchdog probe."""

@@ -892,9 +892,10 @@ class TestStatusCarriesRamTotal(unittest.TestCase):
                 return 0, "The system has 50% free percentage", ""
             return 1, "", ""
 
-        with patch.object(system, "sh", side_effect=fake_sh):
-            with patch.object(system, "_smart_cache", {"t": 9e9, "v": None}):
-                snap = system.collect_system()
+        with patch("hub.macos_sysctl.sysctlbyname_int", return_value=None):
+            with patch.object(system, "sh", side_effect=fake_sh):
+                with patch.object(system, "_smart_cache", {"t": 9e9, "v": None}):
+                    snap = system.collect_system()
         self.assertEqual(snap["mem_total_gb"], 32.0)
         self.assertEqual(snap["ncpu"], 8)
 
@@ -913,9 +914,10 @@ class TestStatusCarriesRamTotal(unittest.TestCase):
                 return 0, "sec = not-a-number,", ""
             return 1, "", ""
 
-        with patch.object(system, "sh", side_effect=fake_sh):
-            with patch.object(system, "_smart_cache", {"t": 9e9, "v": None}):
-                snap = system.collect_system()
+        with patch("hub.macos_sysctl.sysctlbyname_int", return_value=None):
+            with patch.object(system, "sh", side_effect=fake_sh):
+                with patch.object(system, "_smart_cache", {"t": 9e9, "v": None}):
+                    snap = system.collect_system()
         self.assertEqual(snap["ncpu"], 8)
         self.assertEqual(snap["mem_total_gb"], 16.0)
         self.assertEqual(snap["uptime_hours"], 0.0)
@@ -927,6 +929,21 @@ class TestStatusCarriesRamTotal(unittest.TestCase):
         src = Path(__file__).resolve().parents[1].joinpath("hub", "app_factory.py").read_text()
         self.assertIn("def _warm_hotpath", src)
         self.assertIn("hotpath-warmer", src)
+
+    def test_warm_hotpath_uses_light_sensors(self):
+        from hub.app_factory import _warm_hotpath
+
+        with (
+            patch("hub.brew_cache.brew_services"),
+            patch("hub.sensors_svc.collect_light") as light,
+            patch("hub.sensors_svc.collect_sensors", side_effect=AssertionError("full")),
+            patch("hub.routers.system_extra._host_snapshot"),
+            patch("hub.vms_svc.list_all_vms"),
+            patch("hub.status.full_status"),
+            patch("hub.apps_manage_svc.inventory"),
+        ):
+            _warm_hotpath()
+        light.assert_called_once()
 
 
 class TestComposeReadRace(unittest.TestCase):

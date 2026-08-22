@@ -176,12 +176,14 @@ def collect_system():
     # Running them in sequence made the whole status refresh wait for their sum.
     smart_due = time.time() - _smart_cache["t"] > 600
     def _ncpu_and_memsize():
-        # One worker, two cheap sysctls: the pool is already full with boot /
-        # memory_pressure / (sometimes) smartctl, and hw.memsize is what lets
-        # the dashboard print RAM total from /api/status before sensors land.
-        rc_n, ncpu, _ = sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=2)
-        rc_m, memsize, _ = sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=2)
-        return rc_n, ncpu, rc_m, memsize
+        # One worker, two cheap integer sysctls: ctypes first, shell fallback.
+        # The pool is already full with boot / memory_pressure / (sometimes)
+        # smartctl, and hw.memsize is what lets the dashboard print RAM total
+        # from /api/status before sensors land.  kern.boottime stays on sh().
+        from hub import macos_sysctl
+        ncpu = macos_sysctl.sysctl_int("hw.ncpu", timeout=2, sh=sh)
+        memsize = macos_sysctl.sysctl_int("hw.memsize", timeout=2, sh=sh)
+        return ncpu, memsize
 
     f_boot = _pool.submit(sh, ["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
     f_mem = _pool.submit(sh, ["/usr/bin/memory_pressure", "-Q"], timeout=4)
@@ -219,9 +221,11 @@ def collect_system():
     rc, out, _ = _result(f_mem, (1, "", ""))
     mem_free = _mem_free_pct(out)
 
-    rc_n, ncpu, rc_m, memsize = _result(f_hw, (1, "", 1, ""))
-    ncpu_i = _sysctl_int(ncpu) if rc_n == 0 else None
-    mem_n = _sysctl_int(memsize) if rc_m == 0 else None
+    ncpu_i, mem_n = _result(f_hw, (None, None))
+    if ncpu_i is not None:
+        ncpu_i = _sysctl_int(ncpu_i)
+    if mem_n is not None:
+        mem_n = _sysctl_int(mem_n)
     mem_total_gb = _bytes_to_gb(mem_n, 1) if mem_n is not None else None
 
     smart = _smart_cache["v"]
