@@ -231,9 +231,11 @@
 }
 
 /* macOS light — System Settings neutrals, San Francisco stack, system blue.
-   Radius scale (Apple-like, not bubbly): controls/chips 6px (--radius-sm),
-   buttons/icon wells 8px (--radius), cards/tiles 10px (--radius-lg),
-   sheets/modals 12px (--radius-modal). Density is tighter than classic themes:
+   Radius scale (Sequoia / System Settings, not bubbly floating cards):
+   controls/chips 6px (--radius-sm), buttons/icon wells 8px (--radius),
+   cards/tiles/table wraps 12px (--radius-lg), sheets/modals 14px (--radius-modal),
+   outer shell 12px (--radius-shell; Finder list / System Settings window, not 16–20).
+   Density is tighter than classic themes:
    denser list rows and tiles while body stays ~13px and primary controls ~28–32px. */
 [data-theme="macos"] {
   --bg: #F5F5F7;
@@ -254,8 +256,9 @@
   --btn-border: #d2d2d7;
   --radius-sm: 6px;
   --radius: 8px;
-  --radius-lg: 10px;
-  --radius-modal: 12px;
+  --radius-lg: 12px;
+  --radius-modal: 14px;
+  --radius-shell: 12px;
   --table-head: #ffffff;
   --table-row: #fff;
   --table-alt: #F5F5F7;
@@ -299,8 +302,9 @@
   --btn-border: #48484a;
   --radius-sm: 6px;
   --radius: 8px;
-  --radius-lg: 10px;
-  --radius-modal: 12px;
+  --radius-lg: 12px;
+  --radius-modal: 14px;
+  --radius-shell: 12px;
   --table-head: #2c2c2e;
   --table-row: #2c2c2e;
   --table-alt: #232325;
@@ -1959,6 +1963,16 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .hint {
   margin-top: 2px;
   font-size: 11px;
+}
+/* Sequoia list-window corners on the painted shell. Both-axis overflow:clip
+   would make #app/.layout a containing block for position:fixed .topchrome
+   (CSS Overflow 3) and unstick the toolbar as html scrolls — so clip is
+   omitted; border-radius still rounds the chrome fill. */
+[data-theme="macos"] #app,
+[data-theme="macos-dark"] #app,
+[data-theme="macos"] .layout,
+[data-theme="macos-dark"] .layout {
+  border-radius: var(--radius-shell);
 }
 [data-theme="macos"] .layout,
 [data-theme="macos-dark"] .layout {

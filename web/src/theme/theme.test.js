@@ -335,5 +335,28 @@ describe('theme', () => {
         /\[data-theme="macos"\] table\.dense tbody tr\.selected[\s\S]*?background:\s*var\(--accent\)/,
       )
     })
+
+    it('uses the Sequoia radius scale including a 12px outer shell', () => {
+      for (const id of ['macos', 'macos-dark']) {
+        const block = palette(id)
+        expect(block).toMatch(/--radius-sm:\s*6px/)
+        expect(block).toMatch(/--radius:\s*8px/)
+        expect(block).toMatch(/--radius-lg:\s*12px/)
+        expect(block).toMatch(/--radius-modal:\s*14px/)
+        expect(block).toMatch(/--radius-shell:\s*12px/)
+      }
+      expect(css).toMatch(
+        /\[data-theme="macos"\] #app[\s\S]*?border-radius:\s*var\(--radius-shell\)/,
+      )
+      expect(css).toMatch(
+        /\[data-theme="macos-dark"\] #app[\s\S]*?border-radius:\s*var\(--radius-shell\)/,
+      )
+      expect(css).toMatch(
+        /\[data-theme="macos"\] \.layout[\s\S]*?border-radius:\s*var\(--radius-shell\)/,
+      )
+      expect(css).toMatch(
+        /\[data-theme="macos-dark"\] \.layout[\s\S]*?border-radius:\s*var\(--radius-shell\)/,
+      )
+    })
   })
 })
