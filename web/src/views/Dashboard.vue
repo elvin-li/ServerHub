@@ -182,29 +182,31 @@
     </div>
 
     <div class="dash-grid">
+      <div class="span-12 monitor-toolbar">
+        <span class="range-btns">
+          <button
+            v-for="r in METRIC_RANGES"
+            :key="r"
+            class="tiny"
+            :class="metricRange===r?'primary':''"
+            @click="setMetricRange(r)"
+          >{{ r }}</button>
+        </span>
+        <!-- Aggregate tiers only start filling from the day this feature is
+             enabled; charts render whatever exists and this line says why the
+             window looks short instead of leaving it blank. -->
+        <div v-if="metricsSwitching || historyHint" class="sub monitor-toolbar-hint">
+          {{ metricsSwitching ? t('common.loading') : historyHint }}
+        </div>
+      </div>
       <!-- ===== CPU + Load ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
         <h3>
           {{ t('dashboard.cpu') }}
           <span class="tile-tools">
             <span class="badge" :class="cpuBadge">{{ cpuUsed }}%</span>
-            <span class="range-btns">
-              <button
-                v-for="r in METRIC_RANGES"
-                :key="r"
-                class="tiny"
-                :class="metricRange===r?'primary':''"
-                @click="setMetricRange(r)"
-              >{{ r }}</button>
-            </span>
           </span>
         </h3>
-        <!-- Aggregate tiers only start filling from the day this feature is
-             enabled; charts render whatever exists and this line says why the
-             window looks short instead of leaving it blank. -->
-        <div v-if="metricsSwitching || historyHint" class="sub" style="margin:-2px 0 4px">
-          {{ metricsSwitching ? t('common.loading') : historyHint }}
-        </div>
         <!-- Activity Monitor–style breakdown under macOS themes. -->
         <div v-if="isMacSurface" class="am-monitor am-cpu">
           <div class="am-monitor-stats">
@@ -332,7 +334,7 @@
           <div class="am-monitor-chart">
             <LineChart
               class="am-chart"
-              :height="isMacSurface ? 88 : 72"
+              :height="isMacSurface ? 112 : 72"
               :fill="isMacSurface"
               :min="0"
               :max="100"
@@ -388,7 +390,7 @@
           <div class="am-monitor-chart">
             <LineChart
               class="am-chart"
-              :height="isMacSurface ? 88 : 52"
+              :height="isMacSurface ? 112 : 52"
               :fill="isMacSurface"
               :min="0"
               :max="100"
@@ -1642,15 +1644,16 @@ onUnmounted(() => {
   min-height: 0;
   height: 100%;
 }
-/* Stretch only the CPU monitor so Memory/Disk cards keep their natural height. */
-.am-surface.res-card:has(.am-cpu) {
+/* Equal mac monitor cards: shared header + stats/chart grid stretch together. */
+.am-surface.res-card {
   display: flex;
   flex-direction: column;
 }
-.am-cpu {
+.am-surface .am-monitor {
   flex: 1 1 auto;
   min-height: 0;
 }
+.am-surface .am-monitor-chart { min-height: 112px; }
 .am-surface .am-monitor,
 .am-surface .am-monitor.chart-first {
   grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.4fr);
@@ -1922,6 +1925,18 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 }
 .chart-intro b { color: var(--txt); font-family: ui-monospace, Menlo, monospace; }
 .tile-tools { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.monitor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+.monitor-toolbar-hint {
+  margin: 0;
+  flex: 1 1 160px;
+  min-width: 0;
+}
 .range-btns { display: inline-flex; gap: 3px; }
 .pwr-group { display: inline-flex; align-items: center; gap: 3px; margin-left: 4px; }
 .pwr-group .tiny { font-size: 12px; padding: 2px 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }

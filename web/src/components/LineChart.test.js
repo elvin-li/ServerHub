@@ -319,7 +319,7 @@ describe('LineChart stacked quiet (Activity Monitor CPU LOAD)', () => {
       fill: true,
     })
     expect(w.find('.lc').classes()).toContain('fill')
-    expect(w.find('.lc-plot').attributes('style')).toContain('min-height: 88px')
+    expect(w.find('.plot-row').attributes('style')).toContain('min-height: 88px')
   })
 
   it('paints stacked bands at areaOpacity and keeps strokes opaque', () => {
@@ -356,5 +356,69 @@ describe('LineChart stacked quiet (Activity Monitor CPU LOAD)', () => {
     for (const a of areas) {
       expect(Number(a.attributes('opacity'))).toBeCloseTo(0.1)
     }
+  })
+})
+
+function xLabels(w) {
+  return w.findAll('.x-lbl')
+}
+
+describe('LineChart x-axis time labels', () => {
+  it('renders HTML time labels when times span a real interval', () => {
+    const w = chart({
+      series: [{ name: 'cpu', values: [0, 50, 100] }],
+      times: [1_700_000_000, 1_700_001_800, 1_700_003_600],
+      unit: '%',
+    })
+    const labels = xLabels(w)
+    expect(labels.length).toBeGreaterThanOrEqual(3)
+    expect(labels.length).toBeLessThanOrEqual(5)
+    expect(labels[0].attributes('style')).toContain('0%')
+    expect(labels.at(-1).attributes('style')).toContain('100%')
+    expect(labels[0].classes()).toContain('first')
+    expect(labels.at(-1).classes()).toContain('last')
+    for (const n of labels) {
+      expect(n.text()).toMatch(/^\d{2}:\d{2}$/)
+    }
+  })
+
+  it('uses month/day labels for a multi-month span', () => {
+    const w = chart({
+      series: [{ name: 'cpu', values: [0, 50, 100] }],
+      times: [1_700_000_000, 1_715_000_000, 1_731_600_000],
+      unit: '%',
+    })
+    const texts = xLabels(w).map((n) => n.text())
+    expect(texts.length).toBeGreaterThanOrEqual(3)
+    expect(texts.length).toBeLessThanOrEqual(5)
+    for (const text of texts) {
+      expect(text).toMatch(/^\d{1,2}\/\d{1,2}$/)
+    }
+  })
+
+  it('hides the x-axis when times are missing', () => {
+    const w = chart({ series: [{ name: 'cpu', values: [0, 50, 100] }], unit: '%' })
+    expect(xLabels(w)).toHaveLength(0)
+    expect(w.find('.x-axis').exists()).toBe(false)
+  })
+
+  it('hides the x-axis when times are degenerate', () => {
+    const w = chart({
+      series: [{ name: 'cpu', values: [0, 50, 100] }],
+      times: [42, 42, 42],
+      unit: '%',
+    })
+    expect(xLabels(w)).toHaveLength(0)
+  })
+
+  it('hides the x-axis in quiet mode even when times exist', () => {
+    const w = chart({
+      series: [{ name: 'cpu', values: [0, 50, 100] }],
+      times: [1_700_000_000, 1_700_003_600],
+      quiet: true,
+      unit: '%',
+    })
+    expect(xLabels(w)).toHaveLength(0)
+    expect(w.findAll('.y-lbl')).toHaveLength(0)
   })
 })

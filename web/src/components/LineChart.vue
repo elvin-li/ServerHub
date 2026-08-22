@@ -1,84 +1,100 @@
 <template>
   <div class="lc" :class="{ quiet: quiet, stacked: stacked, fill: fill }">
     <div v-if="title" class="lc-title">{{ finiteText(title) }}</div>
-    <div class="lc-plot" :style="plotStyle">
-      <!-- HTML Y labels — never stretched -->
-      <div v-if="!quiet" class="y-axis">
-        <span
-          v-for="(g, i) in ticks"
-          :key="'yl'+i"
-          class="y-lbl"
-          :style="{ top: g.pct + '%' }"
-        >{{ finiteText(g.label) }}</span>
-      </div>
+    <div class="lc-plot">
+      <div class="plot-row" :style="plotStyle">
+        <!-- HTML Y labels — never stretched -->
+        <div v-if="!quiet" class="y-axis">
+          <span
+            v-for="(g, i) in ticks"
+            :key="'yl'+i"
+            class="y-lbl"
+            :style="{ top: g.pct + '%' }"
+          >{{ finiteText(g.label) }}</span>
+        </div>
 
-      <div class="plot-body">
-        <!-- SVG only for geometry; stretch OK, no text inside -->
-        <svg
-          class="lc-svg"
-          :viewBox="`0 0 ${W} ${H}`"
-          preserveAspectRatio="none"
-        >
-          <g v-if="!quiet" class="grid">
+        <div class="plot-body">
+          <!-- SVG only for geometry; stretch OK, no text inside -->
+          <svg
+            class="lc-svg"
+            :viewBox="`0 0 ${W} ${H}`"
+            preserveAspectRatio="none"
+          >
+            <g v-if="!quiet" class="grid">
+              <line
+                v-for="(g, i) in ticks"
+                :key="'g'+i"
+                :x1="0" :x2="W"
+                :y1="g.y" :y2="g.y"
+                stroke="currentColor"
+                :stroke-opacity="g.value === 0 ? 0.16 : 0.08"
+                vector-effect="non-scaling-stroke"
+              />
+            </g>
+
+            <g v-for="(s, si) in drawn" :key="'s'+si">
+              <polygon
+                v-for="(area, ai) in s.polys"
+                :key="'p'+ai"
+                :points="area"
+                :fill="s.color"
+                :opacity="s.fillOpacity"
+                stroke="none"
+              />
+              <polyline
+                v-for="(area, ai) in s.areas"
+                :key="'a'+ai"
+                :points="area"
+                :fill="s.color"
+                :opacity="s.fillOpacity"
+                stroke="none"
+              />
+              <polyline
+                v-for="(line, li) in s.lines"
+                :key="'l'+li"
+                :points="line"
+                fill="none"
+                :stroke="s.color"
+                :stroke-width="stacked ? 1.25 : 2"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+                vector-effect="non-scaling-stroke"
+              />
+            </g>
+
             <line
-              v-for="(g, i) in ticks"
-              :key="'g'+i"
+              v-if="refY != null"
               :x1="0" :x2="W"
-              :y1="g.y" :y2="g.y"
-              stroke="currentColor"
-              :stroke-opacity="g.value === 0 ? 0.16 : 0.08"
+              :y1="refY" :y2="refY"
+              stroke="var(--warn)"
+              stroke-dasharray="4 3"
+              stroke-opacity="0.7"
+              stroke-width="1"
               vector-effect="non-scaling-stroke"
             />
-          </g>
+          </svg>
 
-          <g v-for="(s, si) in drawn" :key="'s'+si">
-            <polygon
-              v-for="(area, ai) in s.polys"
-              :key="'p'+ai"
-              :points="area"
-              :fill="s.color"
-              :opacity="s.fillOpacity"
-              stroke="none"
-            />
-            <polyline
-              v-for="(area, ai) in s.areas"
-              :key="'a'+ai"
-              :points="area"
-              :fill="s.color"
-              :opacity="s.fillOpacity"
-              stroke="none"
-            />
-            <polyline
-              v-for="(line, li) in s.lines"
-              :key="'l'+li"
-              :points="line"
-              fill="none"
-              :stroke="s.color"
-              :stroke-width="stacked ? 1.25 : 2"
-              stroke-linejoin="round"
-              stroke-linecap="round"
-              vector-effect="non-scaling-stroke"
-            />
-          </g>
-
-          <line
+          <!-- reference label in HTML -->
+          <span
             v-if="refY != null"
-            :x1="0" :x2="W"
-            :y1="refY" :y2="refY"
-            stroke="var(--warn)"
-            stroke-dasharray="4 3"
-            stroke-opacity="0.7"
-            stroke-width="1"
-            vector-effect="non-scaling-stroke"
-          />
-        </svg>
-
-        <!-- reference label in HTML -->
-        <span
-          v-if="refY != null"
-          class="ref-tag"
-          :style="{ top: refPct + '%' }"
-        >{{ finiteText(refLabel) }}</span>
+            class="ref-tag"
+            :style="{ top: refPct + '%' }"
+          >{{ finiteText(refLabel) }}</span>
+        </div>
+      </div>
+      <!-- HTML X labels — never stretched. Spacer matches the Y column so
+           labels sit under the plot, first/last on the time extent ends. -->
+      <div v-if="xTicks.length" class="x-axis-row">
+        <div v-if="!quiet" class="x-spacer"></div>
+        <div class="x-axis">
+          <span
+            v-for="(g, i) in xTicks"
+            :key="'xl'+i"
+            class="x-lbl"
+            :class="{ first: i === 0, last: i === xTicks.length - 1 }"
+            :style="{ left: g.pct + '%' }"
+          >{{ finiteText(g.label) }}</span>
+        </div>
       </div>
     </div>
 
@@ -255,14 +271,49 @@ const timeExtent = computed(() => {
   if (!Array.isArray(ts) || !ts.length) return null
   let lo = Infinity
   let hi = -Infinity
-  for (const t of ts) {
-    if (typeof t === 'number' && Number.isFinite(t)) {
-      if (t < lo) lo = t
-      if (t > hi) hi = t
+  for (const epoch of ts) {
+    if (typeof epoch === 'number' && Number.isFinite(epoch)) {
+      if (epoch < lo) lo = epoch
+      if (epoch > hi) hi = epoch
     }
   }
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null
   return { lo, hi }
+})
+
+function pad2(n) {
+  return String(n).padStart(2, '0')
+}
+
+function formatTimeTick(epochSec, spanSec) {
+  const d = new Date(epochSec * 1000)
+  if (!Number.isFinite(d.getTime())) return ''
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  const md = `${d.getMonth() + 1}/${d.getDate()}`
+  if (spanSec <= 36 * 3600) return hm
+  if (spanSec <= 10 * 86400) return `${md} ${hm}`
+  return md
+}
+
+const X_TICK_COUNT = 5
+
+const xTicks = computed(() => {
+  if (props.quiet) return []
+  const ext = timeExtent.value
+  if (!ext) return []
+  const span = ext.hi - ext.lo
+  if (!(span > 0)) return []
+  const n = X_TICK_COUNT
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const frac = i / (n - 1)
+    const epoch = ext.lo + span * frac
+    out.push({
+      pct: frac * 100,
+      label: formatTimeTick(epoch, span),
+    })
+  }
+  return out
 })
 
 function xOf(i, n) {
@@ -448,7 +499,13 @@ function formatLegend(v) {
   height: 100%;
   min-height: 0;
 }
-.lc.fill .lc-plot { flex: 1 1 auto; }
+.lc.fill .lc-plot {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.lc.fill .plot-row { flex: 1 1 auto; min-height: 0; }
 
 .lc-title {
   text-align: center;
@@ -473,6 +530,7 @@ function formatLegend(v) {
 
 .lc-plot {
   display: flex;
+  flex-direction: column;
   width: 100%;
   gap: 0;
   min-height: 60px;
@@ -480,6 +538,13 @@ function formatLegend(v) {
   border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   padding: 4px 4px 4px 0;
+}
+.plot-row {
+  display: flex;
+  width: 100%;
+  gap: 0;
+  min-height: 0;
+  min-width: 0;
 }
 
 .lc.quiet .lc-plot {
@@ -530,9 +595,45 @@ function formatLegend(v) {
   position: relative;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   border-left: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
+
+.x-axis-row {
+  display: flex;
+  width: 100%;
+  flex: none;
+  min-width: 0;
+  margin-top: 2px;
+}
+.x-spacer {
+  width: 34px;
+  flex: none;
+  margin-right: 4px;
+}
+.x-axis {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 16px;
+}
+.x-lbl {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--sub);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  white-space: nowrap;
+  user-select: none;
+  opacity: .8;
+}
+.x-lbl.first { transform: none; }
+.x-lbl.last { transform: translateX(-100%); }
 
 .lc-svg {
   position: absolute;
