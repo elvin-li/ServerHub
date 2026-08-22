@@ -278,8 +278,9 @@ describe('theme', () => {
   describe('macos chrome solidity', () => {
     // Sticky macos chrome used to be rgba(--header) + desktop backdrop-filter
     // blur. Content frosted through the nav, and rubber-band at scrollTop 0
-    // flashed the UA's default white html. These contracts keep the toolbar
-    // opaque and the canvas painted so that strip cannot return.
+    // flashed the UA's default white html. overflow-x: clip on html+body also
+    // created a second scrollport so sticky never latched. These contracts
+    // keep the toolbar opaque, fixed, and the canvas painted.
     const css = readFileSync(join(HERE, '..', 'styles.css'), 'utf8')
 
     function palette(id) {
@@ -311,6 +312,22 @@ describe('theme', () => {
 
     it('puts safe-area padding on the header that owns the fill', () => {
       expect(css).toMatch(/\.topchrome \{[\s\S]*?padding-top:\s*env\(safe-area-inset-top/)
+    })
+
+    it('pins topchrome so the toolbar cannot scroll away with the page', () => {
+      expect(css).toMatch(/\.topchrome \{[\s\S]*?position:\s*fixed/)
+      expect(css).toMatch(/\.topchrome \{[\s\S]*?top:\s*0/)
+      expect(css).toMatch(/\.layout \{[\s\S]*?padding-top:\s*var\(--topchrome-h/)
+    })
+
+    it('does not paint the header fill with accent (no full-width blue bar)', () => {
+      expect(css).not.toMatch(/\.topchrome[^{]*\{[^}]*background:\s*var\(--accent\)/)
+      expect(css).not.toMatch(/\.topchrome-inner[^{]*\{[^}]*background:\s*var\(--accent\)/)
+    })
+
+    it('renders macos tabs as a segmented well, not underline-only pills', () => {
+      expect(css).toMatch(/html\[data-theme="macos"\] \.tabs[\s\S]*?background:\s*#e8e8ed/)
+      expect(css).toMatch(/html\[data-theme="macos"\] \.tabs button\.active[\s\S]*?background:\s*#fff/)
     })
 
     it('selects table rows with solid accent and white text', () => {

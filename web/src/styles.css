@@ -250,7 +250,7 @@
   --down: #ff3b30;
   --accent: #007aff;
   --accent-hover: #0066d6;
-  --btn: #f2f2f7;
+  --btn: #ffffff;
   --btn-border: #d2d2d7;
   --radius-sm: 6px;
   --radius: 8px;
@@ -395,11 +395,25 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
+  /* Paint the canvas on html too: iOS rubber-band / overscroll at scrollTop 0
+     reveals html, and the UA default is white. */
+  background: var(--bg);
+}
+html {
   height: 100%;
   overflow-x: clip;
-  /* Paint the canvas on html too: iOS rubber-band / overscroll at scrollTop 0
-     reveals html, and the UA default is white. A translucent sticky header
-     then flashed a white strip under the status bar. */
+  overflow-y: auto;
+}
+body {
+  /* Do not clip-x here: overflow-x: clip + visible-y computes to auto and
+     makes body a second scrollport. Sticky then latches to body (which does
+     not scroll) while html does, so the toolbar rides away and mid-page can
+     flash unpainted white. */
+  min-height: 100%;
+  overflow: visible;
+}
+#app {
+  min-height: 100%;
   background: var(--bg);
 }
 /* color-scheme: native form controls & scrollbars follow theme */
@@ -473,17 +487,33 @@ button.loading::after, .btn.loading::after {
 button.primary.loading::after { color: #fff; }
 
 /* ===== Unraid top chrome ===== */
-.layout { display: flex; flex-direction: column; min-height: 100vh; }
+.layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--bg);
+  --topchrome-primary: 46px;
+  --topchrome-sub: 0px;
+  /* Fixed header is out of flow; this padding is the in-flow spacer.
+     --topchrome-h is measured from .topchrome (includes safe-area + subchrome). */
+  padding-top: var(--topchrome-h, calc(env(safe-area-inset-top, 0px) + var(--topchrome-primary) + var(--topchrome-sub)));
+}
+.layout:has(.subchrome) { --topchrome-sub: 34px; }
 .topchrome {
   background: var(--header);
   color: var(--header-txt);
-  position: sticky; top: 0; z-index: 40;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
   box-shadow: 0 2px 8px rgba(0,0,0,.3);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   /* Safe-area inset on the same box that owns the header fill, so
      viewport-fit=cover + black-translucent status bar is painted, not a
-     gap of unstyled html white above the toolbar. */
+     gap of unstyled html white above the toolbar. Do not also pad
+     .topchrome-inner — that double-counts and leaves a strip. */
   padding-top: env(safe-area-inset-top, 0px);
 }
 .topchrome-inner {
@@ -598,6 +628,7 @@ button.primary.loading::after { color: #fff; }
 .subchrome {
   border-top: 1px solid rgba(255,255,255,.08);
   background: color-mix(in srgb, var(--header) 92%, #000);
+  margin: 0;
 }
 .subchrome-inner {
   max-width: 1600px; margin: 0 auto;
@@ -1112,7 +1143,7 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
   font-size: 12px;
   font-weight: 600;
   position: sticky;
-  top: 0;
+  top: var(--topchrome-h, 46px);
   z-index: 39;
 }
 
@@ -1739,17 +1770,38 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .pill b {
   color: inherit;
 }
+[data-theme="macos"] .top-nav a,
+[data-theme="macos"] .subchrome-inner a,
+[data-theme="macos-dark"] .top-nav a,
+[data-theme="macos-dark"] .subchrome-inner a {
+  position: relative;
+  border-bottom-color: transparent;
+}
 [data-theme="macos"] .top-nav a.active,
 [data-theme="macos"] .subchrome-inner a.active,
 [data-theme="macos-dark"] .top-nav a.active,
 [data-theme="macos-dark"] .subchrome-inner a.active {
   color: var(--accent);
   background: transparent;
-  border-bottom-color: var(--accent);
+  border-bottom-color: transparent;
+}
+[data-theme="macos"] .top-nav a.active::after,
+[data-theme="macos"] .subchrome-inner a.active::after,
+[data-theme="macos-dark"] .top-nav a.active::after,
+[data-theme="macos-dark"] .subchrome-inner a.active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
 }
 [data-theme="macos"] .subchrome,
 [data-theme="macos-dark"] .subchrome {
-  border-top-color: var(--line);
+  border-top: none;
   background: var(--header);
 }
 [data-theme="macos"] .brand .logo {
@@ -1826,6 +1878,10 @@ img[loading="lazy"][complete] {
   [data-theme="macos"] .top-controls,
   [data-theme="macos-dark"] .top-controls {
     border-top-color: var(--line);
+  }
+  [data-theme="macos"] .top-nav a.active::after,
+  [data-theme="macos-dark"] .top-nav a.active::after {
+    content: none;
   }
 }
 
@@ -1904,6 +1960,14 @@ img[loading="lazy"][complete] {
   margin-top: 2px;
   font-size: 11px;
 }
+[data-theme="macos"] .layout,
+[data-theme="macos-dark"] .layout {
+  --topchrome-primary: 40px;
+}
+[data-theme="macos"] .layout:has(.subchrome),
+[data-theme="macos-dark"] .layout:has(.subchrome) {
+  --topchrome-sub: 30px;
+}
 [data-theme="macos"] .topchrome,
 [data-theme="macos-dark"] .topchrome {
   min-height: 40px;
@@ -1911,6 +1975,7 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .topchrome-inner,
 [data-theme="macos-dark"] .topchrome-inner {
   min-height: 40px;
+  background: var(--header);
 }
 [data-theme="macos"] .top-nav a,
 [data-theme="macos-dark"] .top-nav a {
@@ -1951,13 +2016,21 @@ img[loading="lazy"][complete] {
   border-color: var(--accent);
   color: #fff;
 }
-[data-theme="macos"] button:not(.primary):not(.danger):not(.tiny):not(.mac-switch),
+[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
 [data-theme="macos"] .btn:not(.primary):not(.danger),
-[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.tiny):not(.mac-switch),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
 [data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
-  background: var(--btn);
-  border-color: var(--btn-border);
+  /* White (elevated) fill on gray canvas — gray-on-gray --btn looked inert. */
+  background: #fff;
+  border: 1px solid var(--btn-border);
   color: var(--txt);
+  box-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.06);
+}
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+[data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
+  background: #3a3a3c;
+  border-color: #48484a;
+  box-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.35);
 }
 [data-theme="macos"] input:not([type="checkbox"]):not([type="radio"]),
 [data-theme="macos"] select,
@@ -2110,6 +2183,148 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .brand .logo {
   border-radius: var(--radius-sm);
   background: var(--logo-grad);
+}
+
+/* Segmented wells — Network/Settings .tabs, Tools chips, Dashboard ranges. */
+html[data-theme="macos"] .tabs,
+html[data-theme="macos-dark"] .tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 12px;
+  padding: 3px;
+  border: none;
+  border-bottom: none;
+  background: #e8e8ed;
+  border-radius: 9px;
+  max-width: 100%;
+}
+html[data-theme="macos-dark"] .tabs {
+  background: #3a3a3c;
+}
+html[data-theme="macos"] .tabs button,
+html[data-theme="macos"] .tabs button:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .tabs button,
+html[data-theme="macos-dark"] .tabs button:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  background: transparent;
+  border: 0;
+  border-bottom: none;
+  border-radius: 6px;
+  color: var(--txt);
+  margin-bottom: 0;
+  padding: 5px 12px;
+  box-shadow: none;
+  min-height: 26px;
+  font-weight: 500;
+}
+html[data-theme="macos"] .tabs button:hover,
+html[data-theme="macos-dark"] .tabs button:hover {
+  color: var(--txt);
+  background: color-mix(in srgb, var(--txt) 6%, transparent);
+  filter: none;
+}
+html[data-theme="macos"] .tabs button.active,
+html[data-theme="macos"] .tabs button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .tabs button.active,
+html[data-theme="macos-dark"] .tabs button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  background: #fff;
+  color: var(--txt);
+  border: 0;
+  border-bottom: none;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+html[data-theme="macos-dark"] .tabs button.active,
+html[data-theme="macos-dark"] .tabs button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  background: #636366;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.4);
+}
+html[data-theme="macos"] .tools-tabs,
+html[data-theme="macos-dark"] .tools-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  background: #e8e8ed;
+  border-radius: 9px;
+  max-width: 100%;
+}
+html[data-theme="macos-dark"] .tools-tabs {
+  background: #3a3a3c;
+}
+html[data-theme="macos"] .tools-tab,
+html[data-theme="macos-dark"] .tools-tab {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 6px;
+  color: var(--txt);
+}
+html[data-theme="macos"] .tools-tab:hover,
+html[data-theme="macos-dark"] .tools-tab:hover {
+  background: color-mix(in srgb, var(--txt) 6%, transparent);
+  border: 0;
+  filter: none;
+}
+html[data-theme="macos"] .tools-tab.active,
+html[data-theme="macos-dark"] .tools-tab.active {
+  background: #fff;
+  color: var(--txt);
+  border: 0;
+  font-weight: 600;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+}
+html[data-theme="macos-dark"] .tools-tab.active {
+  background: #636366;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.4);
+}
+html[data-theme="macos"] .range-btns,
+html[data-theme="macos-dark"] .range-btns {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: #e8e8ed;
+  border-radius: 8px;
+}
+html[data-theme="macos-dark"] .range-btns {
+  background: #3a3a3c;
+}
+html[data-theme="macos"] .range-btns button,
+html[data-theme="macos"] .range-btns .btn,
+html[data-theme="macos-dark"] .range-btns button,
+html[data-theme="macos-dark"] .range-btns .btn {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+html[data-theme="macos"] .range-btns button.primary,
+html[data-theme="macos"] .range-btns .btn.primary,
+html[data-theme="macos-dark"] .range-btns button.primary,
+html[data-theme="macos-dark"] .range-btns .btn.primary {
+  background: #fff;
+  color: var(--txt);
+  border-color: transparent;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12);
+}
+html[data-theme="macos-dark"] .range-btns button.primary,
+html[data-theme="macos-dark"] .range-btns .btn.primary {
+  background: #636366;
+  color: var(--header-txt);
+}
+@media (max-width: 640px) {
+  html[data-theme="macos"] .tabs,
+  html[data-theme="macos-dark"] .tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    width: 100%;
+    max-width: 100%;
+  }
+  html[data-theme="macos"] .tabs button,
+  html[data-theme="macos-dark"] .tabs button {
+    flex-shrink: 0;
+  }
 }
 
 /* Accessibility: reduced motion */

@@ -1,7 +1,7 @@
 <template>
   <router-view v-if="route.meta.authPage" />
   <div v-else class="layout">
-    <header class="topchrome">
+    <header ref="topchromeEl" class="topchrome">
       <div class="topchrome-inner">
         <button
           class="hamburger"
@@ -221,6 +221,7 @@ const status = ref(null)
 const photoHubOk = ref(false)
 const menuOpen = ref(false)
 const navPanel = ref(null)
+const topchromeEl = ref(null)
 const isNarrow = ref(false)
 const offline = ref(!navigator.onLine)
 let narrowMq = null
@@ -243,6 +244,23 @@ function syncNarrow() {
 
 useDismissable(menuOpen, closeMenu, navPanel)
 watch(() => route.path, closeMenu)
+
+// Fixed header is out of flow; measure it (primary + optional subchrome, wrap,
+// density) so .layout's padding-top matches. Skip 0-height (jsdom).
+watch(topchromeEl, (el, _was, onCleanup) => {
+  if (!el || typeof ResizeObserver !== 'function') return
+  const apply = () => {
+    const h = Math.ceil(el.getBoundingClientRect().height)
+    if (h > 0) document.documentElement.style.setProperty('--topchrome-h', `${h}px`)
+  }
+  const ro = new ResizeObserver(apply)
+  ro.observe(el)
+  apply()
+  onCleanup(() => {
+    ro.disconnect()
+    document.documentElement.style.removeProperty('--topchrome-h')
+  })
+}, { flush: 'post' })
 const ptrVisible = ref(false)
 const ptrRefreshing = ref(false)
 const showTop = ref(false)
