@@ -1,8 +1,9 @@
 <template>
-  <div class="lc">
+  <div class="lc" :class="{ quiet: quiet, stacked: stacked }">
+    <div v-if="title" class="lc-title">{{ finiteText(title) }}</div>
     <div class="lc-plot" :style="{ height: height + 'px' }">
       <!-- HTML Y labels — never stretched -->
-      <div class="y-axis">
+      <div v-if="!quiet" class="y-axis">
         <span
           v-for="(g, i) in ticks"
           :key="'yl'+i"
@@ -18,7 +19,7 @@
           :viewBox="`0 0 ${W} ${H}`"
           preserveAspectRatio="none"
         >
-          <g class="grid">
+          <g v-if="!quiet" class="grid">
             <line
               v-for="(g, i) in ticks"
               :key="'g'+i"
@@ -31,12 +32,20 @@
           </g>
 
           <g v-for="(s, si) in drawn" :key="'s'+si">
+            <polygon
+              v-for="(area, ai) in s.polys"
+              :key="'p'+ai"
+              :points="area"
+              :fill="s.color"
+              :opacity="s.fillOpacity"
+              stroke="none"
+            />
             <polyline
               v-for="(area, ai) in s.areas"
               :key="'a'+ai"
               :points="area"
               :fill="s.color"
-              opacity="0.1"
+              :opacity="s.fillOpacity"
               stroke="none"
             />
             <polyline
@@ -45,7 +54,7 @@
               :points="line"
               fill="none"
               :stroke="s.color"
-              stroke-width="2"
+              :stroke-width="stacked ? 1.25 : 2"
               stroke-linejoin="round"
               stroke-linecap="round"
               vector-effect="non-scaling-stroke"
@@ -73,7 +82,7 @@
       </div>
     </div>
 
-    <div class="lc-legend" v-if="legend.length">
+    <div class="lc-legend" v-if="legend.length && !quiet">
       <span v-for="(s, i) in legend" :key="i" class="leg">
         <i :style="{ background: s.color }"></i>
         <span class="leg-name">{{ finiteText(s.name) }}</span>
@@ -107,6 +116,14 @@ const props = defineProps({
   unit: { type: String, default: '' },
   decimals: { type: Number, default: 1 },
   percent: { type: Boolean, default: false },
+  /** Stack series bottom→top (Activity Monitor CPU LOAD style). */
+  stacked: { type: Boolean, default: false },
+  /** Hide grid / soften chrome for Apple-quiet plots. */
+  quiet: { type: Boolean, default: false },
+  /** Optional centered chart title (e.g. "CPU LOAD"). */
+  title: { type: String, default: '' },
+  /** Area fill opacity when stacked (outline stays opaque). */
+  areaOpacity: { type: Number, default: null },
 })
 
 // Plot coordinate space (lines only — text is HTML)
@@ -163,8 +180,26 @@ function niceBounds(dataMin, dataMax, tickCount = 4) {
 
 const scale = computed(() => {
   const all = []
-  for (const s of cleaned.value) {
-    for (const v of s.values) if (v != null) all.push(v)
+  if (props.stacked) {
+    // Stacked totals drive the y-scale.
+    const seriesList = cleaned.value
+    const n = Math.max(0, ...seriesList.map(s => s.values.length))
+    for (let i = 0; i < n; i++) {
+      let sum = 0
+      let any = false
+      for (const s of seriesList) {
+        const v = s.values[i]
+        if (v != null && Number.isFinite(v)) {
+          sum += Math.max(0, v)
+          any = true
+        }
+      }
+      if (any) all.push(sum)
+    }
+  } else {
+    for (const s of cleaned.value) {
+      for (const v of s.values) if (v != null) all.push(v)
+    }
   }
   if (props.reference != null) all.push(props.reference)
 
@@ -266,32 +301,84 @@ const ticks = computed(() => {
   return out
 })
 
+const fillOpacity = computed(() => {
+  if (props.areaOpacity != null) return props.areaOpacity
+  return props.stacked ? 0.72 : 0.1
+})
+
 const drawn = computed(() => {
-  return cleaned.value.map(s => {
-    const vals = s.values
-    const n = vals.length
-    const lines = []
-    const areas = []
-    let pts = []
-    const flush = () => {
-      if (pts.length >= 2) {
-        const line = pts.join(' ')
-        lines.push(line)
-        areas.push(`${pts[0].split(',')[0]},${H - PAD.b} ${line} ${pts[pts.length - 1].split(',')[0]},${H - PAD.b}`)
+  const seriesList = cleaned.value
+  if (!seriesList.length) return []
+  const fill = fillOpacity.value
+
+  if (!props.stacked) {
+    return seriesList.map(s => {
+      const vals = s.values
+      const n = vals.length
+      const lines = []
+      const areas = []
+      let pts = []
+      const flush = () => {
+        if (pts.length >= 2) {
+          const line = pts.join(' ')
+          lines.push(line)
+          areas.push(`${pts[0].split(',')[0]},${H - PAD.b} ${line} ${pts[pts.length - 1].split(',')[0]},${H - PAD.b}`)
+        }
+        pts = []
       }
-      pts = []
-    }
+      for (let i = 0; i < n; i++) {
+        if (vals[i] == null) {
+          flush()
+          continue
+        }
+        const vv = Math.min(scale.value.hi, Math.max(scale.value.lo, vals[i]))
+        pts.push(`${xOf(i, n)},${yOf(vv)}`)
+      }
+      flush()
+      return { lines, areas, polys: [], color: s.color || 'var(--accent)', fillOpacity: fill }
+    })
+  }
+
+  // Stacked: bottom→top cumulative bands (Activity Monitor CPU LOAD).
+  const n = Math.max(...seriesList.map(s => s.values.length), 0)
+  const base = new Array(n).fill(0)
+  const out = []
+  for (const s of seriesList) {
+    const topLine = []
+    const polyPts = []
     for (let i = 0; i < n; i++) {
-      if (vals[i] == null) {
-        flush()
+      const raw = s.values[i]
+      const x = xOf(i, n)
+      if (raw == null || !Number.isFinite(raw)) {
+        // Gap: close any open poly later by splitting — keep continuous for demo simplicity.
         continue
       }
-      const vv = Math.min(scale.value.hi, Math.max(scale.value.lo, vals[i]))
-      pts.push(`${xOf(i, n)},${yOf(vv)}`)
+      const lo = base[i]
+      const hi = lo + Math.max(0, raw)
+      base[i] = hi
+      const yTop = yOf(Math.min(scale.value.hi, Math.max(scale.value.lo, hi)))
+      const yBot = yOf(Math.min(scale.value.hi, Math.max(scale.value.lo, lo)))
+      topLine.push(`${x},${yTop}`)
+      polyPts.push({ x, yTop, yBot })
     }
-    flush()
-    return { lines, areas, color: s.color || 'var(--accent)' }
-  })
+    // Build closed polygon: top L→R then bottom R→L
+    const polys = []
+    const lines = []
+    if (polyPts.length >= 2) {
+      const top = polyPts.map(p => `${p.x},${p.yTop}`).join(' ')
+      const bot = [...polyPts].reverse().map(p => `${p.x},${p.yBot}`).join(' ')
+      polys.push(`${top} ${bot}`)
+      lines.push(top)
+    }
+    out.push({
+      lines,
+      areas: [],
+      polys,
+      color: s.color || 'var(--accent)',
+      fillOpacity: fill,
+    })
+  }
+  return out
 })
 
 const refY = computed(() =>
@@ -348,6 +435,18 @@ function formatLegend(v) {
 <style scoped>
 .lc { width: 100%; }
 
+.lc-title {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sub);
+  margin: 0 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
 .lc-plot {
   display: flex;
   width: 100%;
@@ -358,6 +457,13 @@ function formatLegend(v) {
   border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   padding: 4px 4px 4px 0;
 }
+
+.lc.quiet .lc-plot {
+  background: var(--card);
+  border-color: color-mix(in srgb, var(--line) 55%, transparent);
+  padding: 2px;
+}
+.lc.quiet .plot-body { border-left: none; }
 
 /* Y labels in real HTML — fixed aspect, no SVG stretch */
 .y-axis {

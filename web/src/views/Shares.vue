@@ -602,7 +602,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.sharing-page { max-width:1180px; margin:0 auto; padding-bottom:36px; }
+.sharing-page { max-width:1180px; margin:0 auto; padding-bottom:28px; }
 .sharing-toolbar button,.sharing-toolbar .btn,.host-links .btn,.share-actions button,.file-service-row .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
 .authorization-note { display:inline-flex; align-items:center; gap:6px; margin-left:auto; color:var(--sub); font-size:11px; }
 .page-placeholder { padding:28px; color:var(--sub); text-align:center; }
@@ -620,11 +620,11 @@ onUnmounted(() => {
 .host-stats strong { font-size:18px; }
 .host-links { justify-content:flex-end; }
 .section-bar,.card-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-.section-bar { margin:17px 0 8px; }
+.section-bar { margin:12px 0 6px; }
 .section-bar .section-title,.card-heading .section-title { margin:0; }
-.section-bar .hint,.card-heading .hint { margin:3px 0 0; }
+.section-bar .hint,.card-heading .hint { margin:2px 0 0; }
 .share-list { padding:0; overflow:hidden; }
-.share-row { display:grid; grid-template-columns:auto minmax(180px,1fr) auto auto; align-items:center; gap:12px; min-height:72px; padding:10px 12px; }
+.share-row { display:grid; grid-template-columns:auto minmax(180px,1fr) auto auto; align-items:center; gap:10px; min-height:56px; padding:6px 10px; }
 .share-row + .share-row,.service-row + .service-row,.file-service-row + .file-service-row { border-top:1px solid var(--line); }
 .folder-icon { width:34px; height:34px; border-radius:var(--radius); background:var(--accent); }
 .share-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
@@ -643,13 +643,55 @@ onUnmounted(() => {
 .empty-state > div { display:flex; flex-direction:column; gap:3px; }
 .empty-state strong { color:var(--txt); font-size:13px; }
 .empty-state span { font-size:11px; }
-.sharing-grid { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr); gap:10px; margin-top:18px; }
+.sharing-grid { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr); gap:8px; margin-top:12px; }
 .service-card,.managed-card { padding:0; overflow:hidden; }
-.card-heading { min-height:62px; padding:10px 12px; border-bottom:1px solid var(--line); }
+.card-heading { min-height:48px; padding:8px 10px; border-bottom:1px solid var(--line); }
 .service-list { display:flex; flex-direction:column; }
-.service-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; min-height:66px; padding:8px 12px; }
+.service-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; min-height:52px; padding:5px 10px; }
 .service-icon { width:31px; height:31px; border-radius:var(--radius); background:#777; }
 .service-screen_sharing { background:#2397a8; }.service-remote_login { background:#635bba; }.service-remote_apple_events { background:#9f4db5; }.service-content_caching { background:#d27d00; }.service-remote_management { background:#287ed1; }.service-media_sharing { background:#d93669; }.service-printer_sharing { background:#349ac2; }.service-internet_sharing { background:#2b9e52; }.service-bluetooth_sharing { background:#287ed1; }.service-file { background:#287ed1; }
+/* macOS themes: System Settings–style gray icon wells, single accent elsewhere. */
+:global([data-theme="macos"]) .host-icon,
+:global([data-theme="macos"]) .folder-icon,
+:global([data-theme="macos-dark"]) .host-icon,
+:global([data-theme="macos-dark"]) .folder-icon {
+  background: var(--accent);
+  color: #fff;
+}
+:global([data-theme="macos"]) .service-icon,
+:global([data-theme="macos"]) .service-icon[class*="service-"],
+:global([data-theme="macos-dark"]) .service-icon,
+:global([data-theme="macos-dark"]) .service-icon[class*="service-"] {
+  background: #e5e5ea;
+  color: #1d1d1f;
+}
+:global([data-theme="macos-dark"]) .service-icon,
+:global([data-theme="macos-dark"]) .service-icon[class*="service-"] {
+  background: #3a3a3c;
+  color: #f5f5f7;
+}
+:global([data-theme="macos"]) .mac-switch[aria-checked="true"],
+:global([data-theme="macos-dark"]) .mac-switch[aria-checked="true"] {
+  background: #34c759;
+}
+:global([data-theme="macos-dark"]) .mac-switch[aria-checked="true"] {
+  background: #30d158;
+}
+:global([data-theme="macos"]) .share-badges .badge.accent,
+:global([data-theme="macos-dark"]) .share-badges .badge.accent {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+}
+:global([data-theme="macos"]) .service-action .badge.ok,
+:global([data-theme="macos"]) .file-service-row .badge.ok,
+:global([data-theme="macos-dark"]) .service-action .badge.ok,
+:global([data-theme="macos-dark"]) .file-service-row .badge.ok {
+  background: color-mix(in srgb, var(--ok) 14%, var(--card));
+  color: color-mix(in srgb, var(--ok) 72%, var(--txt));
+  border: 1px solid color-mix(in srgb, var(--ok) 22%, var(--line));
+  font-weight: 500;
+}
 .service-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
 .service-copy strong,.managed-service strong,.file-service-row strong { font-size:12px; }
 .service-copy span,.managed-service span { color:var(--sub); font-size:10.5px; line-height:1.35; }
@@ -659,12 +701,12 @@ onUnmounted(() => {
 .mac-switch[aria-checked="true"] { background:var(--ok); }
 .mac-switch[aria-checked="true"] span { transform:translateX(16px); }
 .managed-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); }
-.managed-service { display:flex; align-items:flex-start; gap:9px; min-height:79px; padding:10px; background:var(--card); }
+.managed-service { display:flex; align-items:flex-start; gap:8px; min-height:64px; padding:8px; background:var(--card); }
 .managed-service > div:last-child { display:flex; flex-direction:column; gap:3px; min-width:0; }
 .managed-note { display:flex; align-items:center; gap:6px; margin:0; padding:9px 12px; border-top:1px solid var(--line); color:var(--sub); font-size:10.5px; }
 .inline-empty { margin:0; padding:18px 12px; color:var(--sub); font-size:11px; }
 .file-service-list { padding:0; overflow:hidden; }
-.file-service-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:10px; min-height:56px; padding:8px 12px; }
+.file-service-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:8px; min-height:48px; padding:6px 10px; }
 .share-sheet-backdrop { position:fixed; inset:0; z-index:1000; display:flex; align-items:flex-end; justify-content:center; padding:20px; background:rgba(0,0,0,.38); backdrop-filter:blur(8px); }
 .share-sheet { width:min(560px,100%); max-height:90vh; overflow:auto; border:1px solid var(--line); border-radius:var(--radius); color:var(--txt); background:var(--card); box-shadow:0 20px 70px rgba(0,0,0,.32); }
 .share-sheet header { position:sticky; top:0; z-index:1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; min-height:52px; padding:0 12px; border-bottom:1px solid var(--line); background:var(--card); }

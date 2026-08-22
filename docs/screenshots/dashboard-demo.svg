@@ -1,100 +1,97 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
   <title id="title">ServerHub system overview with fictional demo data</title>
-  <desc id="desc">A sanitized ServerHub dashboard mockup showing fictional processor, memory, storage, and service status data.</desc>
+  <desc id="desc">A sanitized ServerHub dashboard mockup in the macOS theme showing fictional processor, memory, network, and Top CPU data.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#f7f7f5"/>
-      <stop offset="1" stop-color="#efeee9"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="8" stdDeviation="18" flood-color="#392817" flood-opacity=".10"/>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000" flood-opacity=".06"/>
     </filter>
   </defs>
-  <rect width="1440" height="900" fill="url(#bg)"/>
-  <rect x="0" y="0" width="236" height="900" fill="#20211f"/>
-  <circle cx="42" cy="48" r="18" fill="#ff8c2f"/>
-  <path d="M34 48h16M42 40v16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
-  <text x="70" y="56" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="25" font-weight="700">ServerHub</text>
-  <rect x="20" y="98" width="196" height="46" rx="10" fill="#343531"/>
-  <rect x="20" y="98" width="4" height="46" rx="2" fill="#ff8c2f"/>
-  <text x="48" y="128" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" font-weight="600">Overview</text>
-  <g fill="#b8b9b4" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16">
-    <text x="48" y="185">Applications</text><text x="48" y="237">Services</text>
-    <text x="48" y="289">Storage</text><text x="48" y="341">Network</text>
-    <text x="48" y="393">Logs</text><text x="48" y="445">Settings</text>
+  <rect width="1440" height="900" fill="#F5F5F7"/>
+  <!-- top chrome -->
+  <rect x="0" y="0" width="1440" height="44" fill="#F6F6F7" opacity=".92"/>
+  <rect x="0" y="43" width="1440" height="1" fill="#E5E5EA"/>
+  <rect x="16" y="11" width="22" height="22" rx="6" fill="#007AFF"/>
+  <text x="48" y="28" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="14" font-weight="700">ServerHub</text>
+  <g fill="#6e6e73" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="12.5">
+    <text x="180" y="28" fill="#007AFF" font-weight="600">Overview</text>
+    <text x="270" y="28">Apps</text>
+    <text x="330" y="28">Services</text>
+    <text x="410" y="28">Shares</text>
+    <text x="480" y="28">Storage</text>
   </g>
-  <rect x="20" y="808" width="196" height="58" rx="12" fill="#2b2c29"/>
-  <circle cx="47" cy="837" r="7" fill="#55c47a"/>
-  <text x="65" y="833" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="13" font-weight="600">Demo workspace</text>
-  <text x="65" y="851" fill="#a9aaa5" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="11">Fictional sample data</text>
+  <rect x="1260" y="10" width="164" height="24" rx="6" fill="#FFF1E6" stroke="#FF9F0A" stroke-width="1"/>
+  <text x="1274" y="26" fill="#C93400" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11" font-weight="600">DEMO  -  FICTIONAL</text>
 
-  <text x="280" y="70" fill="#242522" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="31" font-weight="750">System overview</text>
-  <text x="280" y="99" fill="#777872" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15">A clear view of compute, storage, and running services</text>
-  <rect x="1190" y="42" width="202" height="42" rx="21" fill="#fff1e6" stroke="#ff8c2f" stroke-width="1.5"/>
-  <circle cx="1217" cy="63" r="6" fill="#ff8c2f"/>
-  <text x="1233" y="68" fill="#a94f0c" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="13" font-weight="700">DEMO DATA · FICTIONAL</text>
+  <!-- host strip -->
+  <rect x="20" y="58" width="1400" height="40" rx="10" fill="#fff" filter="url(#shadow)" stroke="#E5E5EA"/>
+  <text x="36" y="83" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="13" font-weight="600">demo-mac.local</text>
+  <text x="180" y="83" fill="#6e6e73" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="12">8 cores  -  32 GB  -  load 1.4</text>
+  <rect x="1280" y="68" width="54" height="20" rx="6" fill="rgba(52,199,89,.14)"/>
+  <text x="1292" y="82" fill="#248a3d" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11" font-weight="600">OK 9</text>
 
+  <!-- resource tiles -->
   <g filter="url(#shadow)">
-    <rect x="280" y="132" width="336" height="205" rx="18" fill="#fff"/>
-    <rect x="640" y="132" width="336" height="205" rx="18" fill="#fff"/>
-    <rect x="1000" y="132" width="392" height="205" rx="18" fill="#fff"/>
+    <rect x="20" y="110" width="460" height="168" rx="10" fill="#fff" stroke="#E5E5EA"/>
+    <rect x="490" y="110" width="460" height="168" rx="10" fill="#fff" stroke="#E5E5EA"/>
+    <rect x="960" y="110" width="460" height="168" rx="10" fill="#fff" stroke="#E5E5EA"/>
   </g>
-  <rect x="280" y="132" width="5" height="205" rx="3" fill="#ff8c2f"/>
-  <rect x="640" y="132" width="5" height="205" rx="3" fill="#58a6ff"/>
-  <rect x="1000" y="132" width="5" height="205" rx="3" fill="#55c47a"/>
-  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-    <text x="310" y="171" fill="#686963" font-size="14" font-weight="650">PROCESSOR</text>
-    <text x="310" y="219" fill="#242522" font-size="34" font-weight="760">28%</text>
-    <text x="396" y="218" fill="#777872" font-size="15">utilization</text>
-    <text x="310" y="260" fill="#3c3d39" font-size="16" font-weight="600">Illustrative 12-core CPU</text>
-    <text x="310" y="287" fill="#777872" font-size="14">Load averages  ·  2.1  /  1.8  /  1.5</text>
-    <rect x="310" y="305" width="274" height="8" rx="4" fill="#eeeae5"/>
-    <rect x="310" y="305" width="77" height="8" rx="4" fill="#ff8c2f"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif">
+    <text x="36" y="136" fill="#6e6e73" font-size="11" font-weight="600">CPU</text>
+    <text x="36" y="172" fill="#1d1d1f" font-size="28" font-weight="700">18%</text>
+    <rect x="36" y="190" width="420" height="6" rx="3" fill="#E5E5EA"/>
+    <rect x="36" y="190" width="76" height="6" rx="3" fill="#007AFF"/>
+    <text x="36" y="222" fill="#6e6e73" font-size="12">Load 1.4 / 1.1 / 0.9  -  8 cores</text>
 
-    <text x="670" y="171" fill="#686963" font-size="14" font-weight="650">MEMORY</text>
-    <text x="670" y="219" fill="#242522" font-size="34" font-weight="760">37.6 GB</text>
-    <text x="670" y="248" fill="#777872" font-size="15">of 64 GB available</text>
-    <text x="670" y="287" fill="#3c3d39" font-size="15" font-weight="600">41% in active use</text>
-    <rect x="670" y="305" width="274" height="8" rx="4" fill="#e6edf5"/>
-    <rect x="670" y="305" width="112" height="8" rx="4" fill="#58a6ff"/>
+    <text x="506" y="136" fill="#6e6e73" font-size="11" font-weight="600">MEMORY</text>
+    <text x="506" y="172" fill="#1d1d1f" font-size="28" font-weight="700">12.4 GB</text>
+    <text x="506" y="198" fill="#6e6e73" font-size="12">of 32 GB  -  pressure 41%</text>
+    <rect x="506" y="214" width="420" height="6" rx="3" fill="#E5E5EA"/>
+    <rect x="506" y="214" width="172" height="6" rx="3" fill="#007AFF"/>
 
-    <text x="1030" y="171" fill="#686963" font-size="14" font-weight="650">SERVICE HEALTH</text>
-    <text x="1030" y="219" fill="#242522" font-size="34" font-weight="760">All operational</text>
-    <circle cx="1040" cy="263" r="7" fill="#55c47a"/>
-    <text x="1058" y="269" fill="#3c3d39" font-size="16" font-weight="600">9 services responding</text>
-    <text x="1030" y="304" fill="#777872" font-size="14">Last sample refreshed moments ago</text>
+    <text x="976" y="136" fill="#6e6e73" font-size="11" font-weight="600">DISK</text>
+    <text x="976" y="172" fill="#1d1d1f" font-size="28" font-weight="700">48%</text>
+    <text x="976" y="198" fill="#6e6e73" font-size="12">Macintosh HD  -  SMART OK</text>
+    <rect x="976" y="214" width="420" height="6" rx="3" fill="#E5E5EA"/>
+    <rect x="976" y="214" width="202" height="6" rx="3" fill="#007AFF"/>
   </g>
 
+  <!-- net + top cpu -->
   <g filter="url(#shadow)">
-    <rect x="280" y="365" width="716" height="475" rx="18" fill="#fff"/>
-    <rect x="1020" y="365" width="372" height="475" rx="18" fill="#fff"/>
+    <rect x="20" y="292" width="700" height="280" rx="10" fill="#fff" stroke="#E5E5EA"/>
+    <rect x="740" y="292" width="680" height="280" rx="10" fill="#fff" stroke="#E5E5EA"/>
   </g>
-  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-    <text x="312" y="410" fill="#242522" font-size="20" font-weight="720">Resource activity</text>
-    <text x="312" y="435" fill="#777872" font-size="13">Processor and memory utilization · sample timeline</text>
-    <line x1="312" y1="489" x2="964" y2="489" stroke="#ecebe7"/>
-    <line x1="312" y1="563" x2="964" y2="563" stroke="#ecebe7"/>
-    <line x1="312" y1="637" x2="964" y2="637" stroke="#ecebe7"/>
-    <line x1="312" y1="711" x2="964" y2="711" stroke="#ecebe7"/>
-    <path d="M312 678 C350 632 388 661 426 604 S501 569 540 603 S615 650 654 578 S728 521 768 560 S843 639 884 567 S932 517 964 538" fill="none" stroke="#ff8c2f" stroke-width="4" stroke-linecap="round"/>
-    <path d="M312 627 C360 599 397 612 438 591 S515 604 556 570 S633 542 674 559 S751 583 792 551 S869 529 910 548 S947 554 964 547" fill="none" stroke="#58a6ff" stroke-width="4" stroke-linecap="round"/>
-    <circle cx="324" cy="785" r="6" fill="#ff8c2f"/><text x="339" y="790" fill="#565752" font-size="13">Processor</text>
-    <circle cx="427" cy="785" r="6" fill="#58a6ff"/><text x="442" y="790" fill="#565752" font-size="13">Memory</text>
+  <g font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif">
+    <text x="36" y="320" fill="#1d1d1f" font-size="13" font-weight="700">Network  -  Processes</text>
+    <rect x="36" y="340" width="208" height="64" rx="8" fill="#F5F5F7"/>
+    <rect x="256" y="340" width="208" height="64" rx="8" fill="#F5F5F7"/>
+    <rect x="476" y="340" width="208" height="64" rx="8" fill="#F5F5F7"/>
+    <text x="48" y="362" fill="#6e6e73" font-size="11">↓ RX</text>
+    <text x="48" y="386" fill="#1d1d1f" font-size="16" font-weight="700">1.2 MB/s</text>
+    <text x="268" y="362" fill="#6e6e73" font-size="11">↑ TX</text>
+    <text x="268" y="386" fill="#1d1d1f" font-size="16" font-weight="700">340 KB/s</text>
+    <text x="488" y="362" fill="#6e6e73" font-size="11">Processes</text>
+    <text x="488" y="386" fill="#1d1d1f" font-size="16" font-weight="700">512 <tspan fill="#6e6e73" font-size="12" font-weight="500">run 8</tspan></text>
 
-    <text x="1052" y="410" fill="#242522" font-size="20" font-weight="720">Storage</text>
-    <text x="1052" y="435" fill="#777872" font-size="13">Fictional volume labels and values</text>
-    <text x="1052" y="490" fill="#3c3d39" font-size="15" font-weight="650">Primary volume</text>
-    <text x="1334" y="490" fill="#777872" font-size="13" text-anchor="end">46% used</text>
-    <rect x="1052" y="507" width="308" height="10" rx="5" fill="#eeeae5"/>
-    <rect x="1052" y="507" width="142" height="10" rx="5" fill="#ff8c2f"/>
-    <text x="1052" y="559" fill="#3c3d39" font-size="15" font-weight="650">Archive volume</text>
-    <text x="1334" y="559" fill="#777872" font-size="13" text-anchor="end">63% used</text>
-    <rect x="1052" y="576" width="308" height="10" rx="5" fill="#eeeae5"/>
-    <rect x="1052" y="576" width="194" height="10" rx="5" fill="#58a6ff"/>
-    <line x1="1052" y1="626" x2="1360" y2="626" stroke="#ecebe7"/>
-    <text x="1052" y="670" fill="#686963" font-size="13" font-weight="650">RECENT CHECKS</text>
-    <circle cx="1061" cy="706" r="6" fill="#55c47a"/><text x="1078" y="711" fill="#3c3d39" font-size="14">Storage health normal</text>
-    <circle cx="1061" cy="749" r="6" fill="#55c47a"/><text x="1078" y="754" fill="#3c3d39" font-size="14">Backup policy active</text>
-    <circle cx="1061" cy="792" r="6" fill="#55c47a"/><text x="1078" y="797" fill="#3c3d39" font-size="14">No pending alerts</text>
+    <text x="36" y="440" fill="#1d1d1f" font-size="13" font-weight="700">TOP CPU</text>
+    <text x="36" y="470" fill="#6e6e73" font-size="11">WindowServer</text>
+    <text x="280" y="470" fill="#1d1d1f" font-size="12" font-family="ui-monospace,Menlo,monospace">12.4%</text>
+    <text x="36" y="496" fill="#6e6e73" font-size="11">kernel_task</text>
+    <text x="280" y="496" fill="#1d1d1f" font-size="12" font-family="ui-monospace,Menlo,monospace">8.1%</text>
+    <text x="36" y="522" fill="#6e6e73" font-size="11">Docker</text>
+    <text x="280" y="522" fill="#1d1d1f" font-size="12" font-family="ui-monospace,Menlo,monospace">6.2%</text>
+
+    <text x="756" y="320" fill="#1d1d1f" font-size="13" font-weight="700">Services</text>
+    <text x="756" y="356" fill="#1d1d1f" font-size="13">Home Assistant</text>
+    <rect x="1280" y="340" width="52" height="20" rx="6" fill="rgba(52,199,89,.14)"/>
+    <text x="1292" y="354" fill="#248a3d" font-size="11" font-weight="600">OK</text>
+    <text x="756" y="396" fill="#1d1d1f" font-size="13">Nginx</text>
+    <rect x="1280" y="380" width="52" height="20" rx="6" fill="rgba(52,199,89,.14)"/>
+    <text x="1292" y="394" fill="#248a3d" font-size="11" font-weight="600">OK</text>
+    <text x="756" y="436" fill="#1d1d1f" font-size="13">Ollama</text>
+    <rect x="1280" y="420" width="52" height="20" rx="6" fill="rgba(52,199,89,.14)"/>
+    <text x="1292" y="434" fill="#248a3d" font-size="11" font-weight="600">OK</text>
+    <text x="756" y="476" fill="#6e6e73" font-size="12">Fictional sample services  -  no real hosts</text>
   </g>
+
+  <text x="20" y="880" fill="#98989d" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">ServerHub  -  macOS theme preview  -  entirely fictional demo data</text>
 </svg>

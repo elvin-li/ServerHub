@@ -30,6 +30,14 @@ vi.mock('../api/client', () => ({
   setSystemSharing: vi.fn(),
 }))
 vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
+vi.mock('../theme', () => ({
+  injectTheme: () => ({
+    theme: { value: 'unraid' },
+    resolveThemeId: (id) => id,
+    themes: [],
+    setTheme: vi.fn(),
+  }),
+}))
 vi.mock('../i18n', () => ({
   injectI18n: () => ({
     t: (key, params = {}) => Object.entries(params).reduce(

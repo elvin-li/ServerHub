@@ -230,18 +230,21 @@
   --header-active-bg: rgba(255,255,255,.08);
 }
 
-/* macOS light — system gray, San Francisco stack, system blue. Cards stay
-   opaque; header translucency is applied only on desktop chrome below. */
+/* macOS light — System Settings neutrals, San Francisco stack, system blue.
+   Radius scale (Apple-like, not bubbly): controls/chips 6px (--radius-sm),
+   buttons/icon wells 8px (--radius), cards/tiles 10px (--radius-lg),
+   sheets/modals 12px (--radius-modal). Density is tighter than classic themes:
+   denser list rows and tiles while body stays ~13px and primary controls ~28–32px. */
 [data-theme="macos"] {
   --bg: #F5F5F7;
-  --header: rgba(246, 246, 247, 0.78);
+  --header: rgba(246, 246, 247, 0.82);
   --header-txt: #1d1d1f;
   --header-muted: #6e6e73;
   --nav-hover: rgba(0, 0, 0, 0.05);
   --card: #ffffff;
   --txt: #1d1d1f;
   --sub: #6e6e73;
-  --line: #d2d2d7;
+  --line: #e5e5ea;
   --ok: #34c759;
   --warn: #ff9f0a;
   --down: #ff3b30;
@@ -249,31 +252,44 @@
   --accent-hover: #0066d6;
   --btn: #f2f2f7;
   --btn-border: #d2d2d7;
-  --radius: 10px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 10px;
+  --radius-modal: 12px;
   --table-head: #f5f5f7;
   --table-row: #fff;
   --table-alt: #fafafa;
   --table-hover: #f0f6ff;
   --bar-track: #e5e5ea;
   --chip: #e8f1fc;
-  --logo-grad: linear-gradient(135deg, #007aff, #0055d4);
+  --logo-grad: #007aff;
   --header-active-bg: rgba(0, 122, 255, 0.10);
   --glass-blur: 0px;
-  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
+  --card-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04);
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  /* Density overrides — denser than default compact without shrinking type. */
+  --pad-page: 10px 12px 28px;
+  --pad-tile: 8px 10px;
+  --table-pad: 5px 8px;
+  --nav-pad: 8px 10px;
+  --font-size: 13px;
+  --section-gap: 12px;
+  --row-pad-y: 6px;
+  --control-h: 28px;
 }
 
-/* macOS dark — grouped gray surfaces, system blue for dark. */
+/* macOS dark — grouped gray surfaces, system blue for dark. Same radius /
+   density tokens as light so switching appearance does not reflow layout. */
 [data-theme="macos-dark"] {
   --bg: #1c1c1e;
-  --header: rgba(28, 28, 30, 0.78);
+  --header: rgba(28, 28, 30, 0.82);
   --header-txt: #f5f5f7;
   --header-muted: #98989d;
   --nav-hover: rgba(255, 255, 255, 0.08);
   --card: #2c2c2e;
   --txt: #f5f5f7;
   --sub: #98989d;
-  --line: #3a3a3c;
+  --line: #38383a;
   --ok: #30d158;
   --warn: #ffd60a;
   --down: #ff453a;
@@ -281,18 +297,29 @@
   --accent-hover: #409cff;
   --btn: #3a3a3c;
   --btn-border: #48484a;
-  --radius: 10px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 10px;
+  --radius-modal: 12px;
   --table-head: #2c2c2e;
   --table-row: #2c2c2e;
   --table-alt: #232325;
   --table-hover: #3a3a3c;
   --bar-track: #3a3a3c;
-  --chip: rgba(10, 132, 255, 0.22);
-  --logo-grad: linear-gradient(135deg, #0a84ff, #64d2ff);
+  --chip: rgba(10, 132, 255, 0.18);
+  --logo-grad: #0a84ff;
   --header-active-bg: rgba(10, 132, 255, 0.16);
   --glass-blur: 0px;
-  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --pad-page: 10px 12px 28px;
+  --pad-tile: 8px 10px;
+  --table-pad: 5px 8px;
+  --nav-pad: 8px 10px;
+  --font-size: 13px;
+  --section-gap: 12px;
+  --row-pad-y: 6px;
+  --control-h: 28px;
 }
 
 /* ===== Structural tokens =====
@@ -1761,16 +1788,19 @@ img[loading="lazy"][complete] {
 
 [data-theme="macos"] .badge,
 [data-theme="macos-dark"] .badge {
-  border-radius: 6px;
-  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  font-weight: 500;
 }
 [data-theme="macos"] .modal,
 [data-theme="macos-dark"] .modal {
-  border-radius: 12px;
+  border-radius: var(--radius-modal);
 }
 [data-theme="macos"] .page-title,
 [data-theme="macos-dark"] .page-title {
   border-bottom-width: 1px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
 }
 [data-theme="macos"] table.dense tbody tr:hover,
 [data-theme="macos-dark"] table.dense tbody tr:hover {
@@ -1780,13 +1810,216 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .pct-bar,
 [data-theme="macos-dark"] .bar,
 [data-theme="macos-dark"] .pct-bar {
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 [data-theme="macos"] .bar i,
 [data-theme="macos"] .pct-bar > i,
 [data-theme="macos-dark"] .bar i,
 [data-theme="macos-dark"] .pct-bar > i {
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
+}
+
+/* Quieter surfaces + denser rhythm under macOS themes only. */
+[data-theme="macos"] .card,
+[data-theme="macos"] .tile,
+[data-theme="macos-dark"] .card,
+[data-theme="macos-dark"] .tile {
+  border-color: var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  padding: var(--pad-tile);
+}
+[data-theme="macos"] .dash-grid,
+[data-theme="macos"] .grid,
+[data-theme="macos"] .sys,
+[data-theme="macos-dark"] .dash-grid,
+[data-theme="macos-dark"] .grid,
+[data-theme="macos-dark"] .sys {
+  gap: 8px;
+}
+[data-theme="macos"] .section-title,
+[data-theme="macos-dark"] .section-title {
+  margin: 10px 0 6px;
+  font-size: 13px;
+}
+[data-theme="macos"] .hint,
+[data-theme="macos-dark"] .hint {
+  margin-top: 2px;
+  font-size: 11px;
+}
+[data-theme="macos"] .topchrome,
+[data-theme="macos-dark"] .topchrome {
+  min-height: 40px;
+}
+[data-theme="macos"] .topchrome-inner,
+[data-theme="macos-dark"] .topchrome-inner {
+  min-height: 40px;
+}
+[data-theme="macos"] .top-nav a,
+[data-theme="macos-dark"] .top-nav a {
+  padding: var(--nav-pad);
+  font-size: 12.5px;
+}
+[data-theme="macos"] .subchrome-inner,
+[data-theme="macos-dark"] .subchrome-inner {
+  min-height: 30px;
+}
+[data-theme="macos"] .subchrome-inner a,
+[data-theme="macos-dark"] .subchrome-inner a {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+[data-theme="macos"] button:not(.tiny):not(.mac-switch),
+[data-theme="macos"] .btn:not(.tiny),
+[data-theme="macos-dark"] button:not(.tiny):not(.mac-switch),
+[data-theme="macos-dark"] .btn:not(.tiny) {
+  min-height: var(--control-h);
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+[data-theme="macos"] button.tiny,
+[data-theme="macos"] .btn.tiny,
+[data-theme="macos-dark"] button.tiny,
+[data-theme="macos-dark"] .btn.tiny {
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+[data-theme="macos"] button.primary,
+[data-theme="macos"] .btn.primary,
+[data-theme="macos-dark"] button.primary,
+[data-theme="macos-dark"] .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+[data-theme="macos"] button:not(.primary):not(.danger):not(.tiny):not(.mac-switch),
+[data-theme="macos"] .btn:not(.primary):not(.danger),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.tiny):not(.mac-switch),
+[data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
+  background: var(--btn);
+  border-color: var(--btn-border);
+  color: var(--txt);
+}
+[data-theme="macos"] input:not([type="checkbox"]):not([type="radio"]),
+[data-theme="macos"] select,
+[data-theme="macos"] textarea,
+[data-theme="macos-dark"] input:not([type="checkbox"]):not([type="radio"]),
+[data-theme="macos-dark"] select,
+[data-theme="macos-dark"] textarea {
+  min-height: var(--control-h);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+[data-theme="macos"] table.dense th,
+[data-theme="macos"] table.dense td,
+[data-theme="macos-dark"] table.dense th,
+[data-theme="macos-dark"] table.dense td {
+  padding: var(--table-pad);
+  border: none;
+  border-bottom: none;
+}
+[data-theme="macos"] table.dense th,
+[data-theme="macos-dark"] table.dense th {
+  background: transparent;
+  color: var(--sub);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+[data-theme="macos"] table.dense tbody tr:nth-child(odd),
+[data-theme="macos-dark"] table.dense tbody tr:nth-child(odd) {
+  background: var(--card);
+}
+[data-theme="macos"] table.dense tbody tr:nth-child(even) {
+  background: #F5F5F7;
+}
+[data-theme="macos-dark"] table.dense tbody tr:nth-child(even) {
+  background: #232325;
+}
+[data-theme="macos"] table.dense tbody tr:hover,
+[data-theme="macos-dark"] table.dense tbody tr:hover {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent) 6%, var(--card));
+}
+[data-theme="macos"] .table-wrap,
+[data-theme="macos-dark"] .table-wrap {
+  border: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 45%, transparent);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+[data-theme="macos"] .badge.ok,
+[data-theme="macos-dark"] .badge.ok {
+  background: color-mix(in srgb, var(--ok) 12%, var(--card));
+  color: color-mix(in srgb, var(--ok) 68%, var(--txt));
+  border: 1px solid color-mix(in srgb, var(--ok) 18%, var(--line));
+}
+[data-theme="macos"] .badge.warn,
+[data-theme="macos-dark"] .badge.warn {
+  background: color-mix(in srgb, var(--warn) 10%, var(--card));
+  color: color-mix(in srgb, var(--warn) 62%, var(--txt));
+  border: 1px solid color-mix(in srgb, var(--warn) 20%, var(--line));
+}
+[data-theme="macos"] .badge.accent,
+[data-theme="macos-dark"] .badge.accent {
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+}
+[data-theme="macos"] .badge.down,
+[data-theme="macos-dark"] .badge.down {
+  background: color-mix(in srgb, var(--down) 10%, var(--card));
+  color: color-mix(in srgb, var(--down) 70%, var(--txt));
+  border: 1px solid color-mix(in srgb, var(--down) 18%, var(--line));
+}
+[data-theme="macos"] .chip,
+[data-theme="macos-dark"] .chip {
+  background: var(--btn);
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+}
+[data-theme="macos"] .chip.active,
+[data-theme="macos-dark"] .chip.active {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+[data-theme="macos"] .chip-ok.active,
+[data-theme="macos-dark"] .chip-ok.active {
+  background: color-mix(in srgb, var(--ok) 12%, var(--card));
+  color: color-mix(in srgb, var(--ok) 70%, var(--txt));
+  border-color: color-mix(in srgb, var(--ok) 28%, var(--line));
+}
+[data-theme="macos"] .chip-warn.active,
+[data-theme="macos-dark"] .chip-warn.active {
+  background: color-mix(in srgb, var(--warn) 12%, var(--card));
+  color: color-mix(in srgb, var(--warn) 65%, var(--txt));
+  border-color: color-mix(in srgb, var(--warn) 28%, var(--line));
+}
+[data-theme="macos"] .chip-down.active,
+[data-theme="macos-dark"] .chip-down.active {
+  background: color-mix(in srgb, var(--down) 12%, var(--card));
+  color: color-mix(in srgb, var(--down) 70%, var(--txt));
+  border-color: color-mix(in srgb, var(--down) 28%, var(--line));
+}
+[data-theme="macos"] .chip-sig,
+[data-theme="macos-dark"] .chip-sig {
+  background: var(--btn);
+  color: var(--sub);
+  border-color: var(--line);
+}
+[data-theme="macos"] .toast,
+[data-theme="macos-dark"] .toast {
+  border-radius: var(--radius-lg);
+}
+[data-theme="macos"] .brand .logo,
+[data-theme="macos-dark"] .brand .logo {
+  border-radius: var(--radius-sm);
+  background: var(--logo-grad);
 }
 
 /* Accessibility: reduced motion */

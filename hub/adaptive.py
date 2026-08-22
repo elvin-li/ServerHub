@@ -67,7 +67,17 @@ def ports_from_plist(pl: dict) -> list[int]:
     # leftover RecursionError on ``str(argv-item)`` / leftover ``\\ud800``
     # used to 500 GET /api/status (adaptive port scan of LaunchAgents).
     args = [_utf8_text(a) for a in raw_args]
+    skip_next = False
     for i, a in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        # cloudflared --edge 198.41.192.7:7844 pins the Cloudflare *edge*,
+        # not a local listen port. Treating it as one made the zaoxue
+        # tunnel sit yellow: process up, localhost:7844 closed.
+        if a == "--edge":
+            skip_next = True
+            continue
         if a in _PORT_FLAGS and i + 1 < len(args):
             try:
                 ports.append(int(args[i + 1]))

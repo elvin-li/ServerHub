@@ -30,6 +30,14 @@ const clipboard = vi.hoisted(() => ({
 vi.mock('../api/client', () => api)
 vi.mock('../lib/clipboard', () => clipboard)
 vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
+vi.mock('../theme', () => ({
+  injectTheme: () => ({
+    theme: { value: 'macos' },
+    resolveThemeId: () => 'macos',
+    themes: [],
+    setTheme: vi.fn(),
+  }),
+}))
 vi.mock('../i18n', () => ({
   injectI18n: () => ({
     t: (key, params = {}) => Object.entries(params).reduce(
@@ -104,15 +112,26 @@ afterEach(() => {
 })
 
 describe('Dashboard leave-guards', () => {
-  it('loads light sensors on the low-mode heavy tick', async () => {
+  it('loads full sensors on the low-mode heavy tick', async () => {
+    // Light-only heavy ticks left network / top_processes empty on first paint.
     await mountDash()
-    expect(api.getSensors).toHaveBeenCalledWith(false, { light: true })
+    expect(api.getSensors).toHaveBeenCalledWith(false, { light: false })
   })
 
   it('loads full sensors on the high-mode heavy tick', async () => {
     api.getStatus.mockResolvedValue({ resource_mode: 'high', groups: [] })
     await mountDash()
     expect(api.getSensors).toHaveBeenCalledWith(false, { light: false })
+  })
+
+  it('keeps the 20s admin tick on light sensors in low mode', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { dirname, join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const here = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(here, 'Dashboard.vue'), 'utf8')
+    expect(src).toContain("loadSensors(false, { light: !highMode.value })")
+    expect(src).toContain('void loadSensors(forceSensors, { light: false })')
   })
 
   it('does not toast a service start that returns after leave', async () => {

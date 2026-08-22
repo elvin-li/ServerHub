@@ -208,31 +208,65 @@
         <div class="res-head cpu-head">
           <div class="big">{{ cpuUsed }}<small>%</small></div>
         </div>
-        <div class="cpu-facts">
-          <div><span>user</span><b>{{ fmtN(cpu.user) }}%</b></div>
-          <div><span>sys</span><b>{{ fmtN(cpu.sys) }}%</b></div>
-          <div><span>idle</span><b>{{ fmtN(cpu.idle) }}%</b></div>
-          <div><span>{{ t('dashboard.thermal_status') }}</span><b :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</b></div>
+        <!-- Activity Monitor–style breakdown under macOS themes. -->
+        <div v-if="isMacSurface" class="apple-cpu">
+          <div class="apple-cpu-stats">
+            <div class="apple-cpu-row">
+              <span>{{ t('dashboard.cpu_system') }}</span>
+              <b class="sys">{{ fmtN(cpu.sys) }}%</b>
+            </div>
+            <div class="apple-cpu-row">
+              <span>{{ t('dashboard.cpu_user') }}</span>
+              <b class="user">{{ fmtN(cpu.user) }}%</b>
+            </div>
+            <div class="apple-cpu-row idle">
+              <span>{{ t('dashboard.cpu_idle') }}</span>
+              <b>{{ fmtN(cpu.idle) }}%</b>
+            </div>
+          </div>
+          <div class="apple-cpu-chart">
+            <LineChart
+              :height="88"
+              :min="0"
+              :max="100"
+              percent
+              stacked
+              quiet
+              :title="t('dashboard.cpu_load')"
+              :times="metricTimes"
+              :series="cpuAppleChartSeries"
+              unit="%"
+            />
+          </div>
         </div>
-        <StackBar
-          :segments="cpuStack"
-          :total="100"
-          unit="%"
-        />
-        <LineChart
-          style="margin-top:8px"
-          :height="80"
-          :min="0"
-          :max="100"
-          percent
-          :times="metricTimes"
-          :series="cpuChartSeries"
-          unit="%"
-        />
+        <template v-else>
+          <div class="cpu-facts">
+            <div><span>user</span><b>{{ fmtN(cpu.user) }}%</b></div>
+            <div><span>sys</span><b>{{ fmtN(cpu.sys) }}%</b></div>
+            <div><span>idle</span><b>{{ fmtN(cpu.idle) }}%</b></div>
+            <div><span>{{ t('dashboard.thermal_status') }}</span><b :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</b></div>
+          </div>
+          <StackBar
+            :segments="cpuStack"
+            :total="100"
+            unit="%"
+          />
+          <LineChart
+            style="margin-top:8px"
+            :height="80"
+            :min="0"
+            :max="100"
+            percent
+            :times="metricTimes"
+            :series="cpuChartSeries"
+            unit="%"
+          />
+        </template>
         <div class="sub" style="margin-top:6px">
           Load {{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}
           · {{ t('dashboard.load_capacity', { p: finiteN(loadPct) }) }}
           <span class="badge" style="margin-left:4px">{{ t('dashboard.cores', { n: ncpu }) }}</span>
+          <span v-if="isMacSurface && thermal.pressure === 'warning'" class="badge warn" style="margin-left:4px">{{ thermalStatus }}</span>
         </div>
       </div>
 
@@ -392,7 +426,11 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="p in topProcs" :key="p.pid">
+              <tr
+                v-for="p in topProcs"
+                :key="p.pid"
+                :class="{ dim: finiteN(p.cpu, 0) < 0.5 }"
+              >
                 <td class="proc" :title="'pid '+finiteN(p.pid)">
                   <strong>{{ finiteText(p.name) }}</strong>
                   <div class="show-m sub">{{ withUnit(p.rss_mb, 'M') }}</div>
@@ -634,9 +672,15 @@ import { openAssistant } from '../lib/assistant'
 import { copyToClipboard } from '../lib/clipboard'
 import { barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { injectI18n } from '../i18n'
+import { injectTheme } from '../theme'
 
 const toast = inject('toast')
 const { t, errText } = injectI18n()
+const { theme, resolveThemeId } = injectTheme()
+const isMacSurface = computed(() => {
+  const id = theme.value === 'system' ? resolveThemeId('system') : theme.value
+  return id === 'macos' || id === 'macos-dark'
+})
 
 // Member sessions render the reduced services-only dashboard; the router
 // guard refreshed authState before this component was allowed to mount.
@@ -792,6 +836,9 @@ const cpuStack = computed(() => [
   { label: 'sys', value: finiteN(cpu.value.sys, 0), color: 'var(--warn)' },
   { label: 'idle', value: finiteN(cpu.value.idle, 0), color: 'var(--bar-track)' },
 ])
+/** Activity Monitor red (system) + cyan (user). */
+const CPU_APPLE_SYS = '#FF453A'
+const CPU_APPLE_USER = '#5AC8FA'
 const memTotal = computed(() => finiteN(mem.value.total_gb ?? sys.value.mem_total_gb ?? host.value?.mem_total_gb))
 // pressure-based (macOS); NOT PhysMem cache-inflated used%
 const memUsedPct = computed(() => {
@@ -1013,6 +1060,29 @@ const cpuChartSeries = computed(() => [
     width: 1.5,
   },
 ])
+
+// History only stores total cpu_used_pct; split by the live user/sys mix so
+// the Activity Monitor stack still reads as system (bottom) + user (top).
+const cpuAppleChartSeries = computed(() => {
+  const u = finiteN(cpu.value.user, 0)
+  const s = finiteN(cpu.value.sys, 0)
+  const busy = u + s
+  const sysR = busy > 0 ? s / busy : 0.35
+  const userR = busy > 0 ? u / busy : 0.65
+  const pts = metrics.value || []
+  return [
+    {
+      name: t('dashboard.cpu_system'),
+      color: CPU_APPLE_SYS,
+      values: pts.map(p => (p.cpu_used_pct != null ? p.cpu_used_pct * sysR : null)),
+    },
+    {
+      name: t('dashboard.cpu_user'),
+      color: CPU_APPLE_USER,
+      values: pts.map(p => (p.cpu_used_pct != null ? p.cpu_used_pct * userR : null)),
+    },
+  ]
+})
 
 const memChartSeries = computed(() => [
   {
@@ -1286,7 +1356,10 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     }
   }).catch(() => {})
   void getHealthChecks().then(h => { if (stillHere()) health.value = h }).catch(() => {})
-  void loadSensors(forceSensors, { light: !highMode.value && !forceSensors })
+  // Heavy tick always full-collects: low-mode light payloads omit network /
+  // top_processes / proc counts, so first paint and idle 90s ticks showed "—".
+  // The 20s admin tick stays light and merges last full extras.
+  void loadSensors(forceSensors, { light: false })
   void getBookmarks().then(b => { if (stillHere()) bookmarks.value = b.bookmarks || [] }).catch(() => {})
   await Promise.all([
     loadMetrics(),
@@ -1370,8 +1443,8 @@ function startDashTimers() {
     timer = startVisibleInterval(tickMemberLight, lightMs)
     return
   }
-  // Low: light sensors (no top) on the 20s tick and the 90s heavy tick;
-  // no docker stats on the 90s tick. Manual Refresh still force-loads full.
+  // Low: light sensors (no top) on the 20s tick; full sensors on the 90s
+  // heavy tick so RX/TX / Top CPU stay seeded. No docker stats on 90s.
   // High: full sensors every 12s and docker stats every 60s.
   timer = startVisibleInterval(tickAdminLight, lightMs)
   heavyTimer = startVisibleInterval(
@@ -1419,6 +1492,99 @@ onUnmounted(() => {
 <style scoped>
 .dash { }
 .dash-grid { gap: 10px; }
+:global([data-theme="macos"]) .dash-grid,
+:global([data-theme="macos-dark"]) .dash-grid { gap: 8px; }
+:global([data-theme="macos"]) .host-strip,
+:global([data-theme="macos-dark"]) .host-strip {
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+}
+:global([data-theme="macos"]) .net-stats,
+:global([data-theme="macos-dark"]) .net-stats { gap: 6px; }
+:global([data-theme="macos"]) .ns,
+:global([data-theme="macos-dark"]) .ns {
+  padding: 6px 8px;
+  border: none;
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 40%, transparent);
+}
+:global([data-theme="macos"]) .cpu-facts > div,
+:global([data-theme="macos-dark"]) .cpu-facts > div,
+:global([data-theme="macos"]) .mb,
+:global([data-theme="macos-dark"]) .mb,
+:global([data-theme="macos"]) .disk-item,
+:global([data-theme="macos-dark"]) .disk-item {
+  border: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 35%, transparent);
+}
+:global([data-theme="macos"]) table.top-cpu,
+:global([data-theme="macos-dark"]) table.top-cpu {
+  border: none;
+}
+:global([data-theme="macos"]) table.top-cpu th,
+:global([data-theme="macos"]) table.top-cpu td,
+:global([data-theme="macos-dark"]) table.top-cpu th,
+:global([data-theme="macos-dark"]) table.top-cpu td {
+  border: none !important;
+  border-bottom: none !important;
+}
+:global([data-theme="macos"]) table.top-cpu tbody tr:nth-child(odd),
+:global([data-theme="macos-dark"]) table.top-cpu tbody tr:nth-child(odd) {
+  background: var(--card);
+}
+:global([data-theme="macos"]) table.top-cpu tbody tr:nth-child(even) {
+  background: #F5F5F7;
+}
+:global([data-theme="macos-dark"]) table.top-cpu tbody tr:nth-child(even) {
+  background: #232325;
+}
+:global([data-theme="macos"]) table.top-cpu tbody tr.dim td,
+:global([data-theme="macos-dark"]) table.top-cpu tbody tr.dim td {
+  color: var(--sub);
+  opacity: 0.72;
+}
+:global([data-theme="macos"]) .cpu-facts,
+:global([data-theme="macos-dark"]) .cpu-facts { gap: 4px; margin-bottom: 6px; }
+:global([data-theme="macos"]) .top-cpu-head,
+:global([data-theme="macos-dark"]) .top-cpu-head { margin-top: 6px; }
+.apple-cpu {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.4fr);
+  gap: 10px;
+  align-items: stretch;
+  margin: 4px 0 2px;
+}
+.apple-cpu-stats {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+.apple-cpu-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  font-size: 12px;
+}
+.apple-cpu-row:last-child { border-bottom: none; }
+.apple-cpu-row span { color: var(--txt); font-weight: 500; }
+.apple-cpu-row b {
+  font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--txt);
+}
+.apple-cpu-row b.sys { color: #FF453A; }
+.apple-cpu-row b.user { color: #5AC8FA; }
+.apple-cpu-row.idle span,
+.apple-cpu-row.idle b { color: var(--sub); }
+.apple-cpu-chart { min-width: 0; }
+@media (max-width: 640px) {
+  .apple-cpu { grid-template-columns: 1fr; }
+}
 .member-group { font-size: 14px; margin: 14px 0 8px; color: var(--sub); }
 .member-svc .name { font-weight: 600; }
 .member-svc .row { display: flex; align-items: center; gap: 8px; }

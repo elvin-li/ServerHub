@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">ServerHub shares with fictional demo data</title>
+  <desc id="desc">A sanitized ServerHub Shares page in the macOS theme with gray icon wells and system blue accents.</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000" flood-opacity=".06"/>
+    </filter>
+  </defs>
+  <rect width="1440" height="900" fill="#F5F5F7"/>
+  <rect x="0" y="0" width="1440" height="44" fill="#F6F6F7" opacity=".92"/>
+  <rect x="0" y="43" width="1440" height="1" fill="#E5E5EA"/>
+  <rect x="16" y="11" width="22" height="22" rx="6" fill="#007AFF"/>
+  <text x="48" y="28" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="14" font-weight="700">ServerHub</text>
+  <g fill="#6e6e73" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="12.5">
+    <text x="180" y="28">Overview</text>
+    <text x="270" y="28">Apps</text>
+    <text x="330" y="28">Services</text>
+    <text x="410" y="28" fill="#007AFF" font-weight="600">Shares</text>
+    <text x="480" y="28">Storage</text>
+  </g>
+  <rect x="1260" y="10" width="164" height="24" rx="6" fill="#FFF1E6" stroke="#FF9F0A" stroke-width="1"/>
+  <text x="1274" y="26" fill="#C93400" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11" font-weight="600">DEMO  -  FICTIONAL</text>
+
+  <text x="24" y="78" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="22" font-weight="700">Shares</text>
+  <text x="24" y="100" fill="#6e6e73" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="12">SMB folders and macOS sharing services  -  sample data</text>
+  <rect x="1288" y="70" width="128" height="28" rx="8" fill="#007AFF"/>
+  <text x="1310" y="88" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="12" font-weight="600">+ Add folder</text>
+
+  <!-- shared folders -->
+  <text x="24" y="138" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="13" font-weight="700">Shared folders</text>
+  <rect x="20" y="150" width="1400" height="72" rx="10" fill="#fff" stroke="#E5E5EA" filter="url(#shadow)"/>
+  <rect x="36" y="168" width="34" height="34" rx="8" fill="#007AFF"/>
+  <path d="M44 180h18v12H44z" fill="#fff" opacity=".95"/>
+  <text x="84" y="178" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="13" font-weight="600">Public</text>
+  <text x="84" y="198" fill="#6e6e73" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">/Users/demo/Public  -  smb://demo-mac.local/Public</text>
+  <rect x="1180" y="174" width="70" height="22" rx="6" fill="rgba(255,159,10,.12)" stroke="rgba(255,159,10,.28)"/>
+  <text x="1192" y="189" fill="#B25000" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">Guest</text>
+  <rect x="1260" y="174" width="56" height="22" rx="6" fill="#F2F2F7" stroke="#D2D2D7"/>
+  <text x="1274" y="189" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">Edit</text>
+  <rect x="1326" y="174" width="72" height="22" rx="6" fill="#F2F2F7" stroke="#D2D2D7"/>
+  <text x="1340" y="189" fill="#FF3B30" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">Remove</text>
+
+  <!-- core + managed -->
+  <text x="24" y="260" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="13" font-weight="700">Core sharing services</text>
+  <text x="760" y="260" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="13" font-weight="700">Other system shares</text>
+
+  <rect x="20" y="272" width="700" height="280" rx="10" fill="#fff" stroke="#E5E5EA" filter="url(#shadow)"/>
+  <rect x="740" y="272" width="680" height="280" rx="10" fill="#fff" stroke="#E5E5EA" filter="url(#shadow)"/>
+
+  <!-- gray wells (not rainbow) -->
+  <g font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif">
+    <rect x="36" y="290" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="80" y="304" fill="#1d1d1f" font-size="12" font-weight="600">Screen Sharing</text>
+    <text x="80" y="320" fill="#6e6e73" font-size="10.5">Remote desktop (VNC)</text>
+    <rect x="600" y="296" width="52" height="20" rx="6" fill="rgba(52,199,89,.14)"/>
+    <text x="610" y="310" fill="#248a3d" font-size="11">Running</text>
+    <rect x="662" y="296" width="38" height="22" rx="11" fill="#34C759"/>
+    <circle cx="682" cy="307" r="9" fill="#fff"/>
+
+    <rect x="36" y="350" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="80" y="364" fill="#1d1d1f" font-size="12" font-weight="600">Remote Login</text>
+    <text x="80" y="380" fill="#6e6e73" font-size="10.5">SSH access</text>
+    <rect x="600" y="356" width="52" height="20" rx="6" fill="rgba(52,199,89,.14)"/>
+    <text x="610" y="370" fill="#248a3d" font-size="11">Running</text>
+    <rect x="662" y="356" width="38" height="22" rx="11" fill="#34C759"/>
+    <circle cx="682" cy="367" r="9" fill="#fff"/>
+
+    <rect x="36" y="410" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="80" y="424" fill="#1d1d1f" font-size="12" font-weight="600">Remote Apple Events</text>
+    <text x="80" y="440" fill="#6e6e73" font-size="10.5">AppleScript over the network</text>
+    <rect x="600" y="416" width="40" height="20" rx="6" fill="#F2F2F7" stroke="#D2D2D7"/>
+    <text x="610" y="430" fill="#6e6e73" font-size="11">Off</text>
+    <rect x="662" y="416" width="38" height="22" rx="11" fill="#999"/>
+    <circle cx="674" cy="427" r="9" fill="#fff"/>
+
+    <rect x="36" y="470" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="80" y="484" fill="#1d1d1f" font-size="12" font-weight="600">Content Caching</text>
+    <text x="80" y="500" fill="#6e6e73" font-size="10.5">Local software updates cache</text>
+    <rect x="600" y="476" width="40" height="20" rx="6" fill="#F2F2F7" stroke="#D2D2D7"/>
+    <text x="610" y="490" fill="#6e6e73" font-size="11">Off</text>
+    <rect x="662" y="476" width="38" height="22" rx="11" fill="#999"/>
+    <circle cx="674" cy="487" r="9" fill="#fff"/>
+
+    <!-- managed grid gray wells -->
+    <rect x="760" y="292" width="310" height="70" fill="#fff"/>
+    <rect x="776" y="306" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="820" y="320" fill="#1d1d1f" font-size="12" font-weight="600">Remote Management</text>
+    <text x="820" y="336" fill="#6e6e73" font-size="10.5">Open in System Settings</text>
+
+    <rect x="1070" y="292" width="320" height="70" fill="#fff"/>
+    <rect x="1086" y="306" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="1130" y="320" fill="#1d1d1f" font-size="12" font-weight="600">Media Sharing</text>
+    <text x="1130" y="336" fill="#6e6e73" font-size="10.5">Open in System Settings</text>
+
+    <rect x="760" y="372" width="310" height="70" fill="#fff"/>
+    <rect x="776" y="386" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="820" y="400" fill="#1d1d1f" font-size="12" font-weight="600">Printer Sharing</text>
+    <text x="820" y="416" fill="#6e6e73" font-size="10.5">Open in System Settings</text>
+
+    <rect x="1070" y="372" width="320" height="70" fill="#fff"/>
+    <rect x="1086" y="386" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="1130" y="400" fill="#1d1d1f" font-size="12" font-weight="600">Internet Sharing</text>
+    <text x="1130" y="416" fill="#6e6e73" font-size="10.5">Open in System Settings</text>
+
+    <rect x="760" y="452" width="310" height="70" fill="#fff"/>
+    <rect x="776" y="466" width="31" height="31" rx="8" fill="#E5E5EA"/>
+    <text x="820" y="480" fill="#1d1d1f" font-size="12" font-weight="600">Bluetooth Sharing</text>
+    <text x="820" y="496" fill="#6e6e73" font-size="10.5">Open in System Settings</text>
+  </g>
+
+  <text x="24" y="590" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="13" font-weight="700">File services</text>
+  <rect x="20" y="602" width="1400" height="100" rx="10" fill="#fff" stroke="#E5E5EA" filter="url(#shadow)"/>
+  <rect x="36" y="622" width="31" height="31" rx="8" fill="#E5E5EA"/>
+  <text x="80" y="636" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="12" font-weight="600">FileBrowser</text>
+  <text x="80" y="652" fill="#6e6e73" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="10.5">Web file manager  -  sample</text>
+  <rect x="1280" y="626" width="52" height="20" rx="6" fill="rgba(52,199,89,.14)"/>
+  <text x="1290" y="640" fill="#248a3d" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">Running</text>
+  <rect x="1344" y="624" width="56" height="24" rx="8" fill="#F2F2F7" stroke="#D2D2D7"/>
+  <text x="1358" y="640" fill="#1d1d1f" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">Open</text>
+
+  <text x="20" y="880" fill="#98989d" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif" font-size="11">ServerHub  -  macOS Shares preview  -  entirely fictional demo data</text>
+</svg>

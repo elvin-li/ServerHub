@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 import { createApp } from 'vue'
 
-import { provideTheme } from './index.js'
+import { provideTheme, resolveThemeId } from './index.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INDEX_HTML = join(HERE, '..', '..', 'index.html')
@@ -34,6 +34,17 @@ function installThemeColorMeta() {
   return meta
 }
 
+function stubPrefersDark(dark) {
+  vi.stubGlobal('matchMedia', (query) => ({
+    matches: query.includes('prefers-color-scheme: dark') ? dark : false,
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+  }))
+}
+
 describe('theme', () => {
   let api
   let meta
@@ -45,6 +56,7 @@ describe('theme', () => {
     root().removeAttribute('data-density')
     document.head.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.remove())
     meta = installThemeColorMeta()
+    stubPrefersDark(false)
     // Go through the real provider main.js uses, rather than calling
     // injectTheme() with no active component (which warns and falls back).
     api = provideTheme(createApp({}))
@@ -52,6 +64,7 @@ describe('theme', () => {
 
   afterEach(() => {
     localStorage.clear()
+    vi.unstubAllGlobals()
   })
 
   describe('setTheme', () => {
@@ -70,18 +83,16 @@ describe('theme', () => {
       api.setTheme('not-a-theme')
       // An unrecognised id must not reach the DOM: [data-theme="not-a-theme"]
       // matches no CSS block, so the page would render unstyled.
-      expect(root().getAttribute('data-theme')).toBe('system')
       expect(api.theme.value).toBe('system')
       expect(localStorage.getItem('serverhub.theme')).toBe('system')
+      expect(root().getAttribute('data-theme')).toBe('macos')
     })
 
-    it('leaves color-mode unset for system so the OS preference wins', () => {
-      api.setTheme('nord')
-      expect(root().getAttribute('data-color-mode')).toBe('dark')
-
+    it('resolves system to the macOS pair for the OS appearance', () => {
       api.setTheme('system')
-      // Pinning a mode here would defeat the prefers-color-scheme media query.
-      expect(root().hasAttribute('data-color-mode')).toBe(false)
+      expect(api.theme.value).toBe('system')
+      expect(root().getAttribute('data-theme')).toBe('macos')
+      expect(root().getAttribute('data-color-mode')).toBe('light')
     })
 
     it('updates the browser chrome color for themes that define one', () => {
@@ -89,10 +100,9 @@ describe('theme', () => {
       expect(meta.getAttribute('content')).toBe('#2e3440')
     })
 
-    it('leaves the chrome color alone for system, which has no fixed color', () => {
-      meta.setAttribute('content', '#abcdef')
+    it('updates chrome color for the resolved system twin', () => {
       api.setTheme('system')
-      expect(meta.getAttribute('content')).toBe('#abcdef')
+      expect(meta.getAttribute('content')).toBe('#F5F5F7')
     })
 
     it('still applies the theme when localStorage refuses to write', () => {
@@ -106,6 +116,63 @@ describe('theme', () => {
       expect(() => api.setTheme('glass')).not.toThrow()
       expect(root().getAttribute('data-theme')).toBe('glass')
       spy.mockRestore()
+    })
+  })
+
+  describe('follow system', () => {
+    it('maps system + macos family to macos-dark when OS is dark', () => {
+      stubPrefersDark(true)
+      api = provideTheme(createApp({}))
+      api.setTheme('system')
+      expect(root().getAttribute('data-theme')).toBe('macos-dark')
+      expect(root().getAttribute('data-color-mode')).toBe('dark')
+      expect(localStorage.getItem('serverhub.theme')).toBe('system')
+    })
+
+    it('remembers the unraid family when picking a twin, then follows OS', () => {
+      api.setTheme('unraid-dark')
+      expect(localStorage.getItem('serverhub.themeFamily')).toBe('unraid')
+      stubPrefersDark(false)
+      api.setTheme('system')
+      expect(root().getAttribute('data-theme')).toBe('unraid')
+      stubPrefersDark(true)
+      // Re-apply so paint reads the new matchMedia stub.
+      api.setTheme('system')
+      expect(root().getAttribute('data-theme')).toBe('unraid-dark')
+    })
+
+    it('exports resolveThemeId for the bootstrap/tests', () => {
+      expect(resolveThemeId('system', 'macos', false)).toBe('macos')
+      expect(resolveThemeId('system', 'macos', true)).toBe('macos-dark')
+      expect(resolveThemeId('system', 'unraid', true)).toBe('unraid-dark')
+      expect(resolveThemeId('nord', 'macos', true)).toBe('nord')
+    })
+
+    it('re-paints when prefers-color-scheme changes while following system', () => {
+      localStorage.setItem('serverhub.themeFamily', 'macos')
+      let listener = null
+      vi.stubGlobal('matchMedia', (query) => ({
+        matches: false,
+        media: query,
+        addEventListener: (_ev, fn) => { listener = fn },
+        removeEventListener: vi.fn(),
+        addListener: (fn) => { listener = fn },
+        removeListener: vi.fn(),
+      }))
+      api = provideTheme(createApp({}))
+      api.setTheme('system')
+      expect(root().getAttribute('data-theme')).toBe('macos')
+      expect(listener).toBeTypeOf('function')
+      vi.stubGlobal('matchMedia', (query) => ({
+        matches: query.includes('dark'),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }))
+      listener()
+      expect(root().getAttribute('data-theme')).toBe('macos-dark')
     })
   })
 
@@ -146,6 +213,8 @@ describe('theme', () => {
 
       expect(listOf('dark').sort()).toEqual([...DARK].sort())
       expect(listOf('light').sort()).toEqual([...LIGHT].sort())
+      expect(html).toContain("serverhub.themeFamily")
+      expect(html).toContain("prefers-color-scheme: dark")
     })
   })
 

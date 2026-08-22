@@ -257,3 +257,40 @@ describe('LineChart reference line', () => {
     expect(w.find('.ref-tag').text()).toBe('4.5')
   })
 })
+
+describe('LineChart stacked quiet (Activity Monitor CPU LOAD)', () => {
+  it('hides the y-axis and grid when quiet', () => {
+    const w = chart({
+      series: [
+        { name: 'sys', values: [10, 20], color: '#FF453A' },
+        { name: 'user', values: [30, 40], color: '#5AC8FA' },
+      ],
+      percent: true,
+      stacked: true,
+      quiet: true,
+      title: 'CPU Load',
+    })
+    expect(w.find('.lc-title').text()).toBe('CPU Load')
+    expect(w.findAll('.y-lbl')).toHaveLength(0)
+    expect(w.find('.lc').classes()).toContain('quiet')
+    expect(w.findAll('polygon').length).toBeGreaterThan(0)
+  })
+
+  it('stacks series so the top edge is the sum', () => {
+    const w = chart({
+      series: [
+        { name: 'sys', values: [20, 20], color: '#FF453A' },
+        { name: 'user', values: [30, 30], color: '#5AC8FA' },
+      ],
+      percent: true,
+      stacked: true,
+      quiet: true,
+    })
+    const polys = w.findAll('polygon')
+    expect(polys).toHaveLength(2)
+    // Top of user band at 50% → y = 4 + 92 * 0.5 = 50
+    const userPts = pairs(polys[1].attributes('points'))
+    const tops = userPts.slice(0, 2).map(([, y]) => y)
+    expect(tops[0]).toBeCloseTo(Y_TOP + PLOT_H * 0.5, 5)
+  })
+})

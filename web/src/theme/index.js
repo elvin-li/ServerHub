@@ -4,7 +4,7 @@ const THEMES = [
   {
     id: 'system',
     labelKey: 'theme.system',
-    swatches: ['#ff8c2f', '#1c1b1b', '#f2f2f2'],
+    swatches: ['#007AFF', '#F5F5F7', '#1C1C1E'],
   },
   {
     id: 'unraid',
@@ -60,7 +60,18 @@ const DENSITIES = [
 ]
 
 const THEME_KEY = 'serverhub.theme'
+const THEME_FAMILY_KEY = 'serverhub.themeFamily'
 const DENSITY_KEY = 'serverhub.density'
+
+/** Light id → dark twin for “Follow system”. Default family is macOS. */
+const THEME_PAIRS = {
+  macos: 'macos-dark',
+  unraid: 'unraid-dark',
+}
+
+const THEME_PAIR_LIGHT = Object.fromEntries(
+  Object.entries(THEME_PAIRS).map(([light, dark]) => [dark, light]),
+)
 
 function read(key, fallback) {
   try {
@@ -70,7 +81,14 @@ function read(key, fallback) {
   }
 }
 
+function write(key, value) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {}
+}
+
 const theme = ref(read(THEME_KEY, 'system'))
+const themeFamily = ref(read(THEME_FAMILY_KEY, 'macos'))
 const density = ref(read(DENSITY_KEY, 'compact'))
 
 const THEME_COLORS = {
@@ -87,39 +105,116 @@ const THEME_COLORS = {
 // bootstrap in index.html, which theme.test.js asserts.
 const LIGHT_THEMES = ['unraid', 'omv', 'docker', 'macos', 'mono']
 
-function applyTheme(id) {
+let schemeMql = null
+let schemeListener = null
+
+function prefersDark() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false
+  }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches
+}
+
+function normalizeFamily(id) {
+  if (THEME_PAIRS[id]) return id
+  if (THEME_PAIR_LIGHT[id]) return THEME_PAIR_LIGHT[id]
+  return 'macos'
+}
+
+function rememberFamily(id) {
+  if (id === 'system') return
+  const family = normalizeFamily(id)
+  if (THEME_PAIRS[family]) {
+    themeFamily.value = family
+    write(THEME_FAMILY_KEY, family)
+  }
+}
+
+/** Resolve picker id → concrete data-theme (system → macos / macos-dark). */
+export function resolveThemeId(id, family = themeFamily.value, dark = prefersDark()) {
   const valid = THEMES.some(t => t.id === id) ? id : 'system'
-  theme.value = valid
-  try {
-    localStorage.setItem(THEME_KEY, valid)
-  } catch {}
-  if (typeof document === 'undefined') return
+  if (valid !== 'system') return valid
+  const light = THEME_PAIRS[family] ? family : 'macos'
+  const twin = THEME_PAIRS[light]
+  return dark ? twin : light
+}
+
+function stopSchemeListener() {
+  if (schemeMql && schemeListener) {
+    if (typeof schemeMql.removeEventListener === 'function') {
+      schemeMql.removeEventListener('change', schemeListener)
+    } else if (typeof schemeMql.removeListener === 'function') {
+      schemeMql.removeListener(schemeListener)
+    }
+  }
+  schemeMql = null
+  schemeListener = null
+}
+
+function startSchemeListener() {
+  stopSchemeListener()
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+  schemeMql = window.matchMedia('(prefers-color-scheme: dark)')
+  schemeListener = () => {
+    if (theme.value === 'system') paintTheme('system')
+  }
+  if (typeof schemeMql.addEventListener === 'function') {
+    schemeMql.addEventListener('change', schemeListener)
+  } else if (typeof schemeMql.addListener === 'function') {
+    schemeMql.addListener(schemeListener)
+  }
+}
+
+function paintTheme(id) {
+  const valid = THEMES.some(t => t.id === id) ? id : 'system'
+  const applied = resolveThemeId(valid)
+  if (typeof document === 'undefined') return applied
   const root = document.documentElement
-  root.setAttribute('data-theme', valid)
-  // system theme: also set color-scheme for form controls
+  root.setAttribute('data-theme', applied)
   if (valid === 'system') {
-    root.removeAttribute('data-color-mode')
-  } else if (LIGHT_THEMES.includes(valid)) {
+    // Follow OS: pin color-mode to the resolved twin so form controls match
+    // the concrete macos / macos-dark (or unraid) palette we just applied.
+    root.setAttribute(
+      'data-color-mode',
+      LIGHT_THEMES.includes(applied) ? 'light' : 'dark',
+    )
+  } else if (LIGHT_THEMES.includes(applied)) {
     root.setAttribute('data-color-mode', 'light')
   } else {
     root.setAttribute('data-color-mode', 'dark')
   }
-  // Update browser chrome / status bar color
   const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta && THEME_COLORS[valid]) meta.setAttribute('content', THEME_COLORS[valid])
+  if (meta && THEME_COLORS[applied]) meta.setAttribute('content', THEME_COLORS[applied])
+  return applied
+}
+
+function applyTheme(id) {
+  const valid = THEMES.some(t => t.id === id) ? id : 'system'
+  theme.value = valid
+  write(THEME_KEY, valid)
+  rememberFamily(valid)
+  paintTheme(valid)
+  if (valid === 'system') startSchemeListener()
+  else stopSchemeListener()
 }
 
 function applyDensity(id) {
   const valid = DENSITIES.some(d => d.id === id) ? id : 'compact'
   density.value = valid
-  try {
-    localStorage.setItem(DENSITY_KEY, valid)
-  } catch {}
+  write(DENSITY_KEY, valid)
   if (typeof document === 'undefined') return
   document.documentElement.setAttribute('data-density', valid)
 }
 
 function initTheme() {
+  const storedFamily = read(THEME_FAMILY_KEY, '')
+  if (THEME_PAIRS[storedFamily]) {
+    themeFamily.value = storedFamily
+  } else if (theme.value !== 'system') {
+    rememberFamily(theme.value)
+  } else {
+    themeFamily.value = 'macos'
+  }
   applyTheme(theme.value)
   applyDensity(density.value)
 }
@@ -127,11 +222,13 @@ function initTheme() {
 function useTheme() {
   return {
     theme,
+    themeFamily,
     density,
     themes: THEMES,
     densities: DENSITIES,
     setTheme: applyTheme,
     setDensity: applyDensity,
+    resolveThemeId,
   }
 }
 

@@ -33,6 +33,14 @@ vi.mock('../api/client', () => ({
 }))
 // No real pollers: they would keep firing loadMetrics after the test ends.
 vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
+vi.mock('../theme', () => ({
+  injectTheme: () => ({
+    theme: { value: 'unraid' },
+    resolveThemeId: (id) => id,
+    themes: [],
+    setTheme: vi.fn(),
+  }),
+}))
 vi.mock('../i18n', () => ({
   injectI18n: () => ({
     t: (key, params = {}) => Object.entries(params).reduce(

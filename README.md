@@ -8,9 +8,13 @@ A home-server management panel for macOS — modelled on **Unraid**'s informatio
 
 > The images below use entirely fictional demo data. They contain no real accounts, usernames, IP addresses, hostnames, tokens or service configuration.
 
-### System overview
+### System overview (macOS theme)
 
-![ServerHub system overview (fictional demo data)](docs/screenshots/dashboard-demo.png)
+![ServerHub system overview in the macOS theme (fictional demo data)](docs/screenshots/dashboard-demo.png)
+
+### Shares (macOS theme)
+
+![ServerHub Shares page with gray icon wells and system blue accents (fictional demo data)](docs/screenshots/shares-demo.png)
 
 ### Apps and processes
 

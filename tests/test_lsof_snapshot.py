@@ -248,6 +248,19 @@ class TestOrphanScanBehaviourUnchanged(LsofSnapshotTestCase):
 
 
 class TestPlistPortExtraction(unittest.TestCase):
+    def test_cloudflared_edge_flags_are_not_listen_ports(self):
+        ports = adaptive.ports_from_plist({
+            "ProgramArguments": [
+                "/opt/homebrew/bin/cloudflared", "tunnel",
+                "--config", "/tmp/zaoxue.yml",
+                "--edge", "198.41.192.7:7844",
+                "--edge", "198.41.192.27:7844",
+                "--protocol", "http2",
+                "run",
+            ],
+        })
+        self.assertEqual(ports, [])
+
     def test_non_dict_env_and_sockets_do_not_500(self):
         ports = adaptive.ports_from_plist({
             "ProgramArguments": ["/bin/svc", "--port", "8123"],

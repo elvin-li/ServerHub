@@ -19,14 +19,24 @@
     <script>
       try {
         var t = localStorage.getItem('serverhub.theme') || 'system';
+        var family = localStorage.getItem('serverhub.themeFamily') || 'macos';
         var d = localStorage.getItem('serverhub.density') || 'compact';
         var l = localStorage.getItem('serverhub.locale') || '';
-        document.documentElement.setAttribute('data-theme', t);
+        // Follow system → concrete macos/macos-dark (or unraid pair) before paint.
+        var pairs = { macos: 'macos-dark', unraid: 'unraid-dark' };
+        var applied = t;
+        if (t === 'system') {
+          var lightFamily = pairs[family] ? family : 'macos';
+          applied = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+            ? pairs[lightFamily]
+            : lightFamily;
+        }
+        document.documentElement.setAttribute('data-theme', applied);
         document.documentElement.setAttribute('data-density', d);
         if (l) document.documentElement.setAttribute('lang', l === 'zh-CN' ? 'zh-CN' : l);
         // Set color-scheme early to avoid flash of wrong form-control style
-        var dark = ['unraid-dark','nord','glass','macos-dark'].indexOf(t) >= 0;
-        var light = ['unraid','omv','docker','macos','mono'].indexOf(t) >= 0;
+        var dark = ['unraid-dark','nord','glass','macos-dark'].indexOf(applied) >= 0;
+        var light = ['unraid','omv','docker','macos','mono'].indexOf(applied) >= 0;
         if (dark) document.documentElement.setAttribute('data-color-mode', 'dark');
         else if (light) document.documentElement.setAttribute('data-color-mode', 'light');
         // Dynamic theme-color for browser chrome / status bar
@@ -36,7 +46,7 @@
           'nord': '#2e3440', 'glass': '#1a1a2e', 'mono': '#ffffff'
         };
         var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta && tc[t]) meta.setAttribute('content', tc[t]);
+        if (meta && tc[applied]) meta.setAttribute('content', tc[applied]);
       } catch (e) {}
     </script>
   </head>

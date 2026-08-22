@@ -22,6 +22,14 @@ const polls = vi.hoisted(() => ({ callbacks: [] }))
 vi.mock('../i18n', () => ({
   injectI18n: () => ({ t: (k) => k, locale: { value: 'en' }, setLocale: vi.fn() }),
 }))
+vi.mock('../theme', () => ({
+  injectTheme: () => ({
+    theme: { value: 'unraid' },
+    resolveThemeId: (id) => id,
+    themes: [],
+    setTheme: vi.fn(),
+  }),
+}))
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   useRoute: () => ({ path: '/', query: {}, params: {}, name: 'home' }),

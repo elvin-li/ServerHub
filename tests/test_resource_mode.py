@@ -62,6 +62,24 @@ class ResourceModePathTests(unittest.TestCase):
             out = sensors(force=False, light=True)
         self.assertTrue(out.get("light"))
 
+    def test_full_sensors_api_keeps_top_and_net_in_low_mode(self):
+        """Dashboard heavy tick must not use collect_light or RX/TX stay empty."""
+        full = {
+            "light": False,
+            "network": {"rx_bps": 1200, "tx_bps": 800},
+            "top_processes": [{"pid": 1, "name": "kernel_task", "cpu": 1.0}],
+            "cpu": {"proc_total": 400, "proc_running": 2},
+        }
+        with (
+            patch("hub.resource_mode.is_high", return_value=False),
+            patch.object(sensors_svc, "collect_light", side_effect=AssertionError("light")),
+            patch.object(sensors_svc, "collect_sensors", return_value=full),
+        ):
+            out = sensors(force=False, light=False)
+        self.assertEqual(out["network"]["rx_bps"], 1200)
+        self.assertEqual(len(out["top_processes"]), 1)
+        self.assertEqual(out["cpu"]["proc_total"], 400)
+
     def test_metrics_uses_full_sensors_in_high_mode(self):
         with (
             patch("hub.sensors_svc.peek_sensors", return_value=None),
