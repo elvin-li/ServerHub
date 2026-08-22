@@ -1946,7 +1946,7 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .card,
 [data-theme="macos-dark"] .tile {
   background: var(--card);
-  border-color: var(--line);
+  border-color: var(--btn-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow);
   padding: var(--pad-tile);

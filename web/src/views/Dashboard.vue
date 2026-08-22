@@ -183,7 +183,7 @@
 
     <div class="dash-grid">
       <!-- ===== CPU + Load ===== -->
-      <div class="tile span-4 res-card">
+      <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
         <h3>
           {{ t('dashboard.cpu') }}
           <span class="tile-tools">
@@ -206,27 +206,28 @@
           {{ metricsSwitching ? t('common.loading') : historyHint }}
         </div>
         <!-- Activity Monitor–style breakdown under macOS themes. -->
-        <div v-if="isMacSurface" class="apple-cpu">
-          <div class="apple-cpu-stats">
+        <div v-if="isMacSurface" class="am-monitor">
+          <div class="am-monitor-stats">
             <div class="res-head cpu-head">
               <div class="big">{{ cpuUsed }}<small>%</small></div>
             </div>
-            <div class="apple-cpu-row">
+            <div class="am-row">
               <span>{{ t('dashboard.cpu_system') }}</span>
               <b class="sys">{{ fmtN(cpu.sys) }}%</b>
             </div>
-            <div class="apple-cpu-row">
+            <div class="am-row">
               <span>{{ t('dashboard.cpu_user') }}</span>
               <b class="user">{{ fmtN(cpu.user) }}%</b>
             </div>
-            <div class="apple-cpu-row idle">
+            <div class="am-row idle">
               <span>{{ t('dashboard.cpu_idle') }}</span>
               <b>{{ fmtN(cpu.idle) }}%</b>
             </div>
           </div>
-          <div class="apple-cpu-chart">
+          <div class="am-monitor-chart">
             <LineChart
               :height="88"
+              fill
               :min="0"
               :max="100"
               percent
@@ -274,24 +275,17 @@
       </div>
 
       <!-- ===== Memory ===== -->
-      <div class="tile span-4 res-card" :class="{ 'am-panel': isMacSurface }">
+      <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
         <h3>
           {{ t('dashboard.memory') }}
-          <span class="badge" :class="memBadge">{{ t('dashboard.pressure_pct', { p: finiteN(memUsedPct) }) }}</span>
+          <span class="tile-tools">
+            <span class="badge" :class="memBadge">{{ t('dashboard.pressure_pct', { p: finiteN(memUsedPct) }) }}</span>
+          </span>
         </h3>
-        <div class="am-split">
-          <!-- AM Memory: pressure chart | stats (left→right). -->
-          <LineChart
-            class="am-chart"
-            :height="72"
-            :min="0"
-            :max="100"
-            percent
-            :times="metricTimes"
-            :series="memChartSeries"
-            unit="%"
-          />
-          <div class="am-stats">
+        <!-- chart-first keeps non-mac stacked order (chart then stats); mac
+             surface CSS still places stats left / chart right. -->
+        <div class="am-monitor chart-first">
+          <div class="am-monitor-stats">
             <div class="res-head">
               <div class="big">{{ memAvailGb }}<small> {{ t('dashboard.gb_available') }}</small></div>
               <div class="res-side">
@@ -320,56 +314,76 @@
               </div>
             </div>
           </div>
+          <div class="am-monitor-chart">
+            <LineChart
+              class="am-chart"
+              :height="isMacSurface ? 88 : 72"
+              :fill="isMacSurface"
+              :min="0"
+              :max="100"
+              percent
+              :times="metricTimes"
+              :series="memChartSeries"
+              unit="%"
+            />
+          </div>
         </div>
         <div class="sub mem-footnote" :title="memFootnote">{{ memFootnote }}</div>
       </div>
 
       <!-- ===== Disk + SMART ===== -->
-      <div class="tile span-4 res-card">
+      <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
         <h3>
           {{ t('dashboard.disk_smart') }}
-          <span class="disk-badges">
+          <span class="tile-tools">
             <span class="badge" :class="barClass(diskPct) || ''">{{ withUnit(diskPct, '%') }}</span>
             <span class="badge" :class="smartSummaryClass">{{ smartSummary }}</span>
           </span>
         </h3>
-        <div class="res-head disk-head">
-          <div class="big">{{ formatCapacityGb(diskUsed) }}<small> / {{ formatCapacityGb(diskTotal) }}</small></div>
-          <div class="sub">{{ t('dashboard.disk_free_short', { free: formatCapacityGb(diskFree) }) }}</div>
-        </div>
-        <div class="pct-bar thick" :class="barClass(diskPct)">
-          <i :style="{ width: barPct(diskPct) + '%' }"></i>
-        </div>
-        <div class="disk-list">
-          <div v-for="d in smartDisks" :key="d.id" class="disk-item">
-            <div class="disk-primary">
-              <strong :title="finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id)">{{ finiteText(d.name, '') || finiteText(d.smart?.model, '') || finiteText(d.id) }}</strong>
-              <span class="disk-primary-meta">
-                <span v-if="formatDiskSize(d)" class="disk-capacity">{{ formatDiskSize(d) }}</span>
-                <span class="badge" :class="smartBadgeClass(d)">{{ smartHealthLabel(d) }}</span>
-              </span>
+        <div class="am-monitor">
+          <div class="am-monitor-stats">
+            <div class="res-head disk-head">
+              <div class="big">{{ formatCapacityGb(diskUsed) }}<small> / {{ formatCapacityGb(diskTotal) }}</small></div>
+              <div class="sub">{{ t('dashboard.disk_free_short', { free: formatCapacityGb(diskFree) }) }}</div>
             </div>
-            <div v-if="d.smart" class="disk-facts">
-              <span class="disk-temp">{{ finiteText(d.smart.temp) }}</span>
-              <span>{{ t('dashboard.wear') }} <b>{{ finiteText(d.smart.wear) }}</b></span>
-              <span>{{ t('dashboard.written') }} <b>{{ finiteText(d.smart.written) }}</b></span>
-              <span v-if="finiteN(d.smart.media_errors, null) != null">{{ t('dashboard.media_errors') }} <b>{{ finiteN(d.smart.media_errors) }}</b></span>
+            <div class="pct-bar thick" :class="barClass(diskPct)">
+              <i :style="{ width: barPct(diskPct) + '%' }"></i>
             </div>
-            <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
+            <div class="disk-list">
+              <div v-for="d in smartDisks" :key="d.id" class="disk-item">
+                <div class="disk-primary">
+                  <strong :title="finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id)">{{ finiteText(d.name, '') || finiteText(d.smart?.model, '') || finiteText(d.id) }}</strong>
+                  <span class="disk-primary-meta">
+                    <span v-if="formatDiskSize(d)" class="disk-capacity">{{ formatDiskSize(d) }}</span>
+                    <span class="badge" :class="smartBadgeClass(d)">{{ smartHealthLabel(d) }}</span>
+                  </span>
+                </div>
+                <div v-if="d.smart" class="disk-facts">
+                  <span class="disk-temp">{{ finiteText(d.smart.temp) }}</span>
+                  <span>{{ t('dashboard.wear') }} <b>{{ finiteText(d.smart.wear) }}</b></span>
+                  <span>{{ t('dashboard.written') }} <b>{{ finiteText(d.smart.written) }}</b></span>
+                  <span v-if="finiteN(d.smart.media_errors, null) != null">{{ t('dashboard.media_errors') }} <b>{{ finiteN(d.smart.media_errors) }}</b></span>
+                </div>
+                <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
+              </div>
+              <div v-if="!storage" class="disk-empty">{{ t('common.loading') }}</div>
+              <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
+            </div>
           </div>
-          <div v-if="!storage" class="disk-empty">{{ t('common.loading') }}</div>
-          <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
+          <div class="am-monitor-chart">
+            <LineChart
+              class="am-chart"
+              :height="isMacSurface ? 88 : 52"
+              :fill="isMacSurface"
+              :min="0"
+              :max="100"
+              percent
+              :times="metricTimes"
+              :series="diskChartSeries"
+              unit="%"
+            />
+          </div>
         </div>
-        <LineChart
-          class="am-chart"
-          :height="52"
-          :min="0"
-          :max="100"
-          percent
-          :times="metricTimes"
-          :series="diskChartSeries"
-          unit="%"
-        />
       </div>
 
       <!-- ===== Network + processes ===== -->
@@ -1540,13 +1554,7 @@ onUnmounted(() => {
 :global([data-theme="macos"] .disk-item),
 :global([data-theme="macos-dark"] .disk-item) {
   border-radius: 0;
-  padding: 6px 8px;
-}
-:global([data-theme="macos"] .disk-item:nth-child(even)) {
-  background: #F5F5F7;
-}
-:global([data-theme="macos-dark"] .disk-item:nth-child(even)) {
-  background: #232325;
+  padding: 4px 0;
 }
 :global([data-theme="macos"]) table.top-cpu,
 :global([data-theme="macos-dark"]) table.top-cpu {
@@ -1578,22 +1586,55 @@ onUnmounted(() => {
 :global([data-theme="macos-dark"]) .cpu-facts { gap: 4px; margin-bottom: 6px; }
 :global([data-theme="macos"]) .top-cpu-head,
 :global([data-theme="macos-dark"]) .top-cpu-head { margin-top: 6px; }
-.apple-cpu {
+/* Shared monitor family: stats column left, chart column right on mac. */
+.am-monitor {
   display: grid;
-  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.4fr);
-  gap: 12px 16px;
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    "stats"
+    "chart";
+  gap: 8px;
   align-items: stretch;
-  margin: 4px 0 2px;
 }
-.apple-cpu-stats {
+.am-monitor.chart-first {
+  grid-template-areas:
+    "chart"
+    "stats";
+}
+.am-monitor-stats {
+  grid-area: stats;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 6px;
   min-width: 0;
 }
-.apple-cpu .cpu-head { margin-bottom: 2px; }
-.apple-cpu-row {
+.am-monitor-chart {
+  grid-area: chart;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+.am-surface .am-monitor-chart > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+.am-surface .am-monitor,
+.am-surface .am-monitor.chart-first {
+  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.4fr);
+  grid-template-areas: "stats chart";
+  gap: 12px 16px;
+  margin: 4px 0 2px;
+}
+.am-monitor .cpu-head { margin-bottom: 2px; }
+.am-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1602,53 +1643,52 @@ onUnmounted(() => {
   font-size: 12px;
   white-space: nowrap;
 }
-.apple-cpu-row span { color: var(--txt); font-weight: 500; }
-.apple-cpu-row b {
+.am-row span { color: var(--txt); font-weight: 500; }
+.am-row b {
   font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
   color: var(--txt);
 }
-.apple-cpu-row b.sys { color: #FF453A; }
-.apple-cpu-row b.user { color: #5AC8FA; }
-.apple-cpu-row.idle span,
-.apple-cpu-row.idle b { color: var(--sub); }
-.apple-cpu-chart {
-  min-width: 0;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  box-shadow: none;
-}
-:global([data-theme="macos"] .apple-cpu-chart .lc-plot),
-:global([data-theme="macos-dark"] .apple-cpu-chart .lc-plot) {
+.am-row b.sys { color: #FF453A; }
+.am-row b.user { color: #5AC8FA; }
+.am-row.idle span,
+.am-row.idle b { color: var(--sub); }
+:global([data-theme="macos"] .am-monitor-chart .lc-plot),
+:global([data-theme="macos-dark"] .am-monitor-chart .lc-plot) {
   background: transparent;
   border: none;
   padding: 0;
 }
 .am-chart { margin-top: 6px; }
-.am-panel .am-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(132px, 0.95fr);
-  gap: 8px 14px;
-  align-items: stretch;
-}
-.am-panel .am-stats { min-width: 0; }
-.am-panel .am-split .am-chart { margin-top: 0; min-width: 0; }
-.am-panel .res-head {
+.am-monitor-chart .am-chart { margin-top: 0; min-width: 0; width: 100%; }
+.am-surface .res-head {
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
   margin-bottom: 6px;
 }
-.am-panel .res-side { width: 100%; }
-.am-panel .kv-mini { width: 100%; }
-.am-panel .mem-break {
+.am-surface .res-side { width: 100%; }
+.am-surface .kv-mini {
+  width: 100%;
+  grid-template-columns: 1fr auto;
+  gap: 6px 10px;
+}
+.am-surface .kv-mini span {
+  color: var(--txt);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.am-surface .kv-mini b {
+  font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.am-surface .mem-break {
   grid-template-columns: 1fr;
   gap: 2px;
-  margin-top: 6px;
 }
-.am-panel .mb {
+.am-surface .mb {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
@@ -1658,7 +1698,7 @@ onUnmounted(() => {
   background: transparent;
   border-radius: 0;
 }
-.am-panel .mb .k {
+.am-surface .mb .k {
   font-size: 12px;
   text-transform: none;
   letter-spacing: 0;
@@ -1666,12 +1706,28 @@ onUnmounted(() => {
   font-weight: 500;
   white-space: nowrap;
 }
-.am-panel .mb .v {
+.am-surface .mb .v {
   margin-top: 0;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
+.am-monitor-stats > .res-head,
+.am-monitor-stats > .cpu-head { margin-bottom: 0; }
+.am-monitor-stats > .pct-bar { margin-top: 0; }
+.am-monitor-stats > .disk-list,
+.am-monitor-stats > .mem-break { margin-top: 0; }
+.am-surface .disk-list { gap: 2px; }
+.am-surface .disk-item {
+  padding: 4px 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.am-surface .disk-primary,
+.am-surface .disk-primary-meta { white-space: nowrap; }
+.am-surface .disk-primary strong { font-size: 12px; font-weight: 500; }
+.res-card > h3 { margin-bottom: 8px; }
 .tile .mem-footnote {
   margin-top: 6px;
   white-space: nowrap;
@@ -1681,8 +1737,15 @@ onUnmounted(() => {
   word-break: keep-all;
 }
 @media (max-width: 640px) {
-  .apple-cpu,
-  .am-panel .am-split { grid-template-columns: 1fr; }
+  .am-monitor,
+  .am-monitor.chart-first,
+  .am-surface .am-monitor,
+  .am-surface .am-monitor.chart-first {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "stats"
+      "chart";
+  }
 }
 .member-group { font-size: 14px; margin: 14px 0 8px; color: var(--sub); }
 .member-svc .name { font-weight: 600; }
@@ -1765,7 +1828,6 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .mb .v { font-size: 13px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
 
 .temp-warn { color: var(--warn) !important; }
-.disk-badges { display: inline-flex; align-items: center; gap: 4px; }
 .disk-head { align-items: end; }
 .disk-head .sub { margin: 0; white-space: nowrap; }
 .disk-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }

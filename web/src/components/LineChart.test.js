@@ -293,4 +293,14 @@ describe('LineChart stacked quiet (Activity Monitor CPU LOAD)', () => {
     const tops = userPts.slice(0, 2).map(([, y]) => y)
     expect(tops[0]).toBeCloseTo(Y_TOP + PLOT_H * 0.5, 5)
   })
+
+  it('uses height as a minimum when fill is set', () => {
+    const w = chart({
+      series: [{ name: 'cpu', values: [10, 20] }],
+      height: 88,
+      fill: true,
+    })
+    expect(w.find('.lc').classes()).toContain('fill')
+    expect(w.find('.lc-plot').attributes('style')).toContain('min-height: 88px')
+  })
 })

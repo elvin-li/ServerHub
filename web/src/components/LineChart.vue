@@ -1,7 +1,7 @@
 <template>
-  <div class="lc" :class="{ quiet: quiet, stacked: stacked }">
+  <div class="lc" :class="{ quiet: quiet, stacked: stacked, fill: fill }">
     <div v-if="title" class="lc-title">{{ finiteText(title) }}</div>
-    <div class="lc-plot" :style="{ height: height + 'px' }">
+    <div class="lc-plot" :style="plotStyle">
       <!-- HTML Y labels — never stretched -->
       <div v-if="!quiet" class="y-axis">
         <span
@@ -124,7 +124,15 @@ const props = defineProps({
   title: { type: String, default: '' },
   /** Area fill opacity when stacked (outline stays opaque). */
   areaOpacity: { type: Number, default: null },
+  /** Stretch the plot to the parent column; `height` is the minimum. */
+  fill: { type: Boolean, default: false },
 })
+
+const plotStyle = computed(() => (
+  props.fill
+    ? { minHeight: `${props.height}px`, flex: '1 1 auto' }
+    : { height: `${props.height}px` }
+))
 
 // Plot coordinate space (lines only — text is HTML)
 const W = 400
@@ -434,6 +442,13 @@ function formatLegend(v) {
 
 <style scoped>
 .lc { width: 100%; }
+.lc.fill {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.lc.fill .lc-plot { flex: 1 1 auto; }
 
 .lc-title {
   text-align: center;
