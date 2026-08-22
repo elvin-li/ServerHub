@@ -274,4 +274,49 @@ describe('theme', () => {
       expect(ids.filter((id) => !classified.has(id))).toEqual([])
     })
   })
+
+  describe('macos chrome solidity', () => {
+    // Sticky macos chrome used to be rgba(--header) + desktop backdrop-filter
+    // blur. Content frosted through the nav, and rubber-band at scrollTop 0
+    // flashed the UA's default white html. These contracts keep the toolbar
+    // opaque and the canvas painted so that strip cannot return.
+    const css = readFileSync(join(HERE, '..', 'styles.css'), 'utf8')
+
+    function palette(id) {
+      const m = css.match(new RegExp(`\\[data-theme="${id}"\\] \\{([^}]+)\\}`))
+      if (!m) throw new Error(`styles.css is missing the ${id} palette`)
+      return m[1]
+    }
+
+    function headerToken(id) {
+      const m = palette(id).match(/--header:\s*([^;]+);/)
+      if (!m) throw new Error(`styles.css is missing --header in ${id}`)
+      return m[1].trim()
+    }
+
+    it('keeps macos --header an opaque hex so sticky chrome cannot frost content', () => {
+      expect(headerToken('macos')).toMatch(/^#[0-9A-Fa-f]{6}$/)
+      expect(headerToken('macos-dark')).toMatch(/^#[0-9A-Fa-f]{6}$/)
+    })
+
+    it('does not apply a desktop blur to macos topchrome', () => {
+      expect(css).toMatch(/\[data-theme="macos"\] \.topchrome[\s\S]*?backdrop-filter:\s*none/)
+      expect(css).toMatch(/\[data-theme="macos-dark"\] \.topchrome[\s\S]*?backdrop-filter:\s*none/)
+      expect(css).not.toMatch(/saturate\(180%\)\s*blur\(20px\)/)
+    })
+
+    it('paints html and body with --bg so overscroll is not UA white', () => {
+      expect(css).toMatch(/html, body \{[\s\S]*?background:\s*var\(--bg\)/)
+    })
+
+    it('puts safe-area padding on the header that owns the fill', () => {
+      expect(css).toMatch(/\.topchrome \{[\s\S]*?padding-top:\s*env\(safe-area-inset-top/)
+    })
+
+    it('selects table rows with solid accent and white text', () => {
+      expect(css).toMatch(
+        /\[data-theme="macos"\] table\.dense tbody tr\.selected[\s\S]*?background:\s*var\(--accent\)/,
+      )
+    })
+  })
 })

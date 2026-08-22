@@ -587,6 +587,24 @@ onUnmounted(() => {
 .files-table tr.dir { cursor: pointer; }
 .files-table tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .files-table tr.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+:global([data-theme="macos"]) .files-table tr.selected,
+:global([data-theme="macos"]) .files-table tr.selected td,
+:global([data-theme="macos"]) .files-table tr.selected:hover,
+:global([data-theme="macos"]) .files-table tr.selected:hover td,
+:global([data-theme="macos-dark"]) .files-table tr.selected,
+:global([data-theme="macos-dark"]) .files-table tr.selected td,
+:global([data-theme="macos-dark"]) .files-table tr.selected:hover,
+:global([data-theme="macos-dark"]) .files-table tr.selected:hover td {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
+:global([data-theme="macos"]) .files-table tr.selected .sub,
+:global([data-theme="macos"]) .files-table tr.selected .name-text,
+:global([data-theme="macos-dark"]) .files-table tr.selected .sub,
+:global([data-theme="macos-dark"]) .files-table tr.selected .name-text {
+  color: #fff;
+}
 
 /* Uniform row height across all columns */
 .files-table th,

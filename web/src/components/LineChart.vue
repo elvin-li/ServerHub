@@ -460,8 +460,15 @@ function formatLegend(v) {
 
 .lc.quiet .lc-plot {
   background: var(--card);
-  border-color: color-mix(in srgb, var(--line) 55%, transparent);
-  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px;
+}
+:global([data-theme="macos"]) .lc.quiet .lc-plot,
+:global([data-theme="macos-dark"]) .lc.quiet .lc-plot {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .lc.quiet .plot-body { border-left: none; }
 

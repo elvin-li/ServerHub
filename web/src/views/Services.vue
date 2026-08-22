@@ -735,6 +735,24 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .svc-table tr { cursor: pointer; transition: background .1s; }
 .svc-table tr:hover { background: var(--table-hover); }
 .svc-table tr.selected { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+:global([data-theme="macos"]) .svc-table tr.selected,
+:global([data-theme="macos"]) .svc-table tr.selected td,
+:global([data-theme="macos"]) .svc-table tr.selected:hover,
+:global([data-theme="macos"]) .svc-table tr.selected:hover td,
+:global([data-theme="macos-dark"]) .svc-table tr.selected,
+:global([data-theme="macos-dark"]) .svc-table tr.selected td,
+:global([data-theme="macos-dark"]) .svc-table tr.selected:hover,
+:global([data-theme="macos-dark"]) .svc-table tr.selected:hover td {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
+:global([data-theme="macos"]) .svc-table tr.selected .sub-id,
+:global([data-theme="macos"]) .svc-table tr.selected .detail-cell,
+:global([data-theme="macos-dark"]) .svc-table tr.selected .sub-id,
+:global([data-theme="macos-dark"]) .svc-table tr.selected .detail-cell {
+  color: #fff;
+}
 .svc-table tr.bad { box-shadow: inset 3px 0 0 var(--down); }
 .col-check { width: 32px; }
 .sub-id { font-size: 10px; color: var(--sub); margin-top: 2px; }

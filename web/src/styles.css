@@ -237,10 +237,10 @@
    denser list rows and tiles while body stays ~13px and primary controls ~28–32px. */
 [data-theme="macos"] {
   --bg: #F5F5F7;
-  --header: rgba(246, 246, 247, 0.82);
+  --header: #F5F5F7;
   --header-txt: #1d1d1f;
   --header-muted: #6e6e73;
-  --nav-hover: rgba(0, 0, 0, 0.05);
+  --nav-hover: #e8e8ed;
   --card: #ffffff;
   --txt: #1d1d1f;
   --sub: #6e6e73;
@@ -256,14 +256,14 @@
   --radius: 8px;
   --radius-lg: 10px;
   --radius-modal: 12px;
-  --table-head: #f5f5f7;
+  --table-head: #ffffff;
   --table-row: #fff;
-  --table-alt: #fafafa;
-  --table-hover: #f0f6ff;
+  --table-alt: #F5F5F7;
+  --table-hover: #e8f1fc;
   --bar-track: #e5e5ea;
   --chip: #e8f1fc;
   --logo-grad: #007aff;
-  --header-active-bg: rgba(0, 122, 255, 0.10);
+  --header-active-bg: transparent;
   --glass-blur: 0px;
   --card-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04);
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
@@ -282,10 +282,10 @@
    density tokens as light so switching appearance does not reflow layout. */
 [data-theme="macos-dark"] {
   --bg: #1c1c1e;
-  --header: rgba(28, 28, 30, 0.82);
+  --header: #1c1c1e;
   --header-txt: #f5f5f7;
   --header-muted: #98989d;
-  --nav-hover: rgba(255, 255, 255, 0.08);
+  --nav-hover: #3a3a3c;
   --card: #2c2c2e;
   --txt: #f5f5f7;
   --sub: #98989d;
@@ -308,7 +308,7 @@
   --bar-track: #3a3a3c;
   --chip: rgba(10, 132, 255, 0.18);
   --logo-grad: #0a84ff;
-  --header-active-bg: rgba(10, 132, 255, 0.16);
+  --header-active-bg: transparent;
   --glass-blur: 0px;
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
@@ -394,7 +394,14 @@
   --font-size: 15px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow-x: clip; }
+html, body {
+  height: 100%;
+  overflow-x: clip;
+  /* Paint the canvas on html too: iOS rubber-band / overscroll at scrollTop 0
+     reveals html, and the UA default is white. A translucent sticky header
+     then flashed a white strip under the status bar. */
+  background: var(--bg);
+}
 /* color-scheme: native form controls & scrollbars follow theme */
 [data-color-mode="dark"] { color-scheme: dark; }
 [data-color-mode="light"] { color-scheme: light; }
@@ -474,11 +481,14 @@ button.primary.loading::after { color: #fff; }
   box-shadow: 0 2px 8px rgba(0,0,0,.3);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
+  /* Safe-area inset on the same box that owns the header fill, so
+     viewport-fit=cover + black-translucent status bar is painted, not a
+     gap of unstyled html white above the toolbar. */
+  padding-top: env(safe-area-inset-top, 0px);
 }
 .topchrome-inner {
   max-width: 1600px; margin: 0 auto;
   padding: 0 16px;
-  padding-top: env(safe-area-inset-top);
   display: flex; align-items: center; gap: 6px; min-height: 46px; flex-wrap: wrap;
 }
 .brand {
@@ -1706,18 +1716,16 @@ img[loading="lazy"][complete] {
 }
 
 /* macOS chrome: light toolbar uses dark labels (Unraid chrome hardcodes #fff).
-   Header blur is desktop-only — a backdrop-filter on .topchrome creates a
-   containing block that clips the mobile drawer to the 46px header. */
+   Opaque solid --header (not rgba) + no backdrop-filter: a desktop
+   saturate/blur on .topchrome frosted .main through the sticky nav and, with
+   unpainted html white + safe-area, flashed a strip at scrollTop 0. Mobile
+   still needs blur none so the drawer is not clipped to the header box. */
 [data-theme="macos"] .topchrome,
 [data-theme="macos-dark"] .topchrome {
   box-shadow: 0 1px 0 var(--line);
-}
-@media (min-width: 641px) {
-  [data-theme="macos"] .topchrome,
-  [data-theme="macos-dark"] .topchrome {
-    backdrop-filter: saturate(180%) blur(20px);
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
-  }
+  background: var(--header);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 [data-theme="macos"] .brand,
 [data-theme="macos"] .top-nav a:hover,
@@ -1727,7 +1735,8 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .assist-launch:hover {
   color: var(--header-txt);
 }
-[data-theme="macos"] .pill b {
+[data-theme="macos"] .pill b,
+[data-theme="macos-dark"] .pill b {
   color: inherit;
 }
 [data-theme="macos"] .top-nav a.active,
@@ -1735,10 +1744,13 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .top-nav a.active,
 [data-theme="macos-dark"] .subchrome-inner a.active {
   color: var(--accent);
+  background: transparent;
+  border-bottom-color: var(--accent);
 }
-[data-theme="macos"] .subchrome {
+[data-theme="macos"] .subchrome,
+[data-theme="macos-dark"] .subchrome {
   border-top-color: var(--line);
-  background: color-mix(in srgb, var(--header) 86%, #fff);
+  background: var(--header);
 }
 [data-theme="macos"] .brand .logo {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
@@ -1746,30 +1758,59 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .top-controls select,
 [data-theme="macos"] .logout-btn,
 [data-theme="macos"] .assist-launch {
-  background: rgba(0, 0, 0, 0.05);
-  border-color: rgba(0, 0, 0, 0.12);
+  background: #e8e8ed;
+  border-color: #d2d2d7;
   color: var(--header-txt);
 }
 [data-theme="macos"] .top-controls .logout-btn:hover,
 [data-theme="macos"] .assist-launch:hover {
   background: var(--nav-hover);
-  border-color: rgba(0, 0, 0, 0.18);
+  border-color: #c7c7cc;
+}
+[data-theme="macos-dark"] .top-controls select,
+[data-theme="macos-dark"] .logout-btn,
+[data-theme="macos-dark"] .assist-launch {
+  background: #3a3a3c;
+  border-color: #48484a;
+  color: var(--header-txt);
+}
+[data-theme="macos-dark"] .top-controls .logout-btn:hover,
+[data-theme="macos-dark"] .assist-launch:hover {
+  background: var(--nav-hover);
+  border-color: #636366;
+  color: var(--header-txt);
 }
 [data-theme="macos"] .pill {
-  background: rgba(0, 0, 0, 0.06);
+  background: #e8e8ed;
   color: var(--header-txt);
 }
 [data-theme="macos"] .pill.ok {
-  background: rgba(52, 199, 89, 0.16);
+  background: #d8f5e2;
   color: #248a3d;
 }
 [data-theme="macos"] .pill.warn {
-  background: rgba(255, 159, 10, 0.18);
+  background: #ffe8c8;
   color: #c93400;
 }
 [data-theme="macos"] .pill.down {
-  background: rgba(255, 59, 48, 0.16);
+  background: #ffd4d1;
   color: #d70015;
+}
+[data-theme="macos-dark"] .pill {
+  background: #3a3a3c;
+  color: var(--header-txt);
+}
+[data-theme="macos-dark"] .pill.ok {
+  background: #1c3d28;
+  color: #30d158;
+}
+[data-theme="macos-dark"] .pill.warn {
+  background: #3d3208;
+  color: #ffd60a;
+}
+[data-theme="macos-dark"] .pill.down {
+  background: #3d1515;
+  color: #ff453a;
 }
 [data-theme="macos"] .toast {
   background: #1c1c1e;
@@ -1777,11 +1818,13 @@ img[loading="lazy"][complete] {
   border-radius: 10px;
 }
 @media (max-width: 640px) {
-  [data-theme="macos"] .nav-drawer-title {
+  [data-theme="macos"] .nav-drawer-title,
+  [data-theme="macos-dark"] .nav-drawer-title {
     color: var(--header-txt);
     border-bottom-color: var(--line);
   }
-  [data-theme="macos"] .top-controls {
+  [data-theme="macos"] .top-controls,
+  [data-theme="macos-dark"] .top-controls {
     border-top-color: var(--line);
   }
 }
@@ -1824,10 +1867,24 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .tile,
 [data-theme="macos-dark"] .card,
 [data-theme="macos-dark"] .tile {
+  background: var(--card);
   border-color: var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow);
   padding: var(--pad-tile);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="macos"] .stat,
+[data-theme="macos-dark"] .stat {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="macos"] .main,
+[data-theme="macos-dark"] .main {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 [data-theme="macos"] .dash-grid,
 [data-theme="macos"] .grid,
@@ -1918,15 +1975,18 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] table.dense td {
   padding: var(--table-pad);
   border: none;
+  border-left: none;
+  border-right: none;
   border-bottom: none;
 }
 [data-theme="macos"] table.dense th,
 [data-theme="macos-dark"] table.dense th {
-  background: transparent;
+  background: var(--card);
   color: var(--sub);
   font-weight: 600;
   font-size: 11px;
   letter-spacing: 0.02em;
+  box-shadow: inset 0 -1px 0 var(--line);
 }
 [data-theme="macos"] table.dense tbody tr:nth-child(odd),
 [data-theme="macos-dark"] table.dense tbody tr:nth-child(odd) {
@@ -1941,14 +2001,44 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] table.dense tbody tr:hover,
 [data-theme="macos-dark"] table.dense tbody tr:hover {
   box-shadow: none;
-  background: color-mix(in srgb, var(--accent) 6%, var(--card));
+  background: var(--table-hover);
+}
+[data-theme="macos"] table.dense tbody tr.selected,
+[data-theme="macos"] table.dense tbody tr.selected td,
+[data-theme="macos"] table.dense tbody tr.selected:hover,
+[data-theme="macos"] table.dense tbody tr.selected:hover td,
+[data-theme="macos-dark"] table.dense tbody tr.selected,
+[data-theme="macos-dark"] table.dense tbody tr.selected td,
+[data-theme="macos-dark"] table.dense tbody tr.selected:hover,
+[data-theme="macos-dark"] table.dense tbody tr.selected:hover td {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
+[data-theme="macos"] table.dense tbody tr.selected .sub,
+[data-theme="macos"] table.dense tbody tr.selected .sub-id,
+[data-theme="macos"] table.dense tbody tr.selected .detail-cell,
+[data-theme="macos"] table.dense tbody tr.selected .name-text,
+[data-theme="macos-dark"] table.dense tbody tr.selected .sub,
+[data-theme="macos-dark"] table.dense tbody tr.selected .sub-id,
+[data-theme="macos-dark"] table.dense tbody tr.selected .detail-cell,
+[data-theme="macos-dark"] table.dense tbody tr.selected .name-text {
+  color: #fff;
+}
+[data-theme="macos"] table.dense tbody tr.dim td,
+[data-theme="macos-dark"] table.dense tbody tr.dim td {
+  color: var(--sub);
+  opacity: 1;
 }
 [data-theme="macos"] .table-wrap,
 [data-theme="macos-dark"] .table-wrap {
-  border: none;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 45%, transparent);
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: none;
   border-radius: var(--radius-lg);
   overflow: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 [data-theme="macos"] .badge.ok,
 [data-theme="macos-dark"] .badge.ok {

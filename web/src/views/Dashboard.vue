@@ -1542,7 +1542,7 @@ onUnmounted(() => {
 :global([data-theme="macos"]) table.top-cpu tbody tr.dim td,
 :global([data-theme="macos-dark"]) table.top-cpu tbody tr.dim td {
   color: var(--sub);
-  opacity: 0.72;
+  opacity: 1;
 }
 :global([data-theme="macos"]) .cpu-facts,
 :global([data-theme="macos-dark"]) .cpu-facts { gap: 4px; margin-bottom: 6px; }
@@ -1567,7 +1567,7 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 8px;
   padding: 5px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 .apple-cpu-row:last-child { border-bottom: none; }
@@ -1581,7 +1581,20 @@ onUnmounted(() => {
 .apple-cpu-row b.user { color: #5AC8FA; }
 .apple-cpu-row.idle span,
 .apple-cpu-row.idle b { color: var(--sub); }
-.apple-cpu-chart { min-width: 0; }
+.apple-cpu-chart {
+  min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 8px 6px;
+  box-shadow: none;
+}
+:global([data-theme="macos"]) .apple-cpu-chart .lc-plot,
+:global([data-theme="macos-dark"]) .apple-cpu-chart .lc-plot {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
 @media (max-width: 640px) {
   .apple-cpu { grid-template-columns: 1fr; }
 }

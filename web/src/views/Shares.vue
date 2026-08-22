@@ -626,6 +626,24 @@ onUnmounted(() => {
 .share-list { padding:0; overflow:hidden; }
 .share-row { display:grid; grid-template-columns:auto minmax(180px,1fr) auto auto; align-items:center; gap:10px; min-height:56px; padding:6px 10px; }
 .share-row + .share-row,.service-row + .service-row,.file-service-row + .file-service-row { border-top:1px solid var(--line); }
+:global([data-theme="macos"]) .share-row:nth-child(odd),
+:global([data-theme="macos"]) .service-row:nth-child(odd),
+:global([data-theme="macos"]) .file-service-row:nth-child(odd),
+:global([data-theme="macos-dark"]) .share-row:nth-child(odd),
+:global([data-theme="macos-dark"]) .service-row:nth-child(odd),
+:global([data-theme="macos-dark"]) .file-service-row:nth-child(odd) {
+  background: var(--card);
+}
+:global([data-theme="macos"]) .share-row:nth-child(even),
+:global([data-theme="macos"]) .service-row:nth-child(even),
+:global([data-theme="macos"]) .file-service-row:nth-child(even) {
+  background: #F5F5F7;
+}
+:global([data-theme="macos-dark"]) .share-row:nth-child(even),
+:global([data-theme="macos-dark"]) .service-row:nth-child(even),
+:global([data-theme="macos-dark"]) .file-service-row:nth-child(even) {
+  background: #232325;
+}
 .folder-icon { width:34px; height:34px; border-radius:var(--radius); background:var(--accent); }
 .share-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
 .share-copy strong { font-size:13px; }

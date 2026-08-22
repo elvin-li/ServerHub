@@ -659,7 +659,7 @@ describe('operations polling and submission guards', () => {
     expect(dashboard).toContain('if (r.ok) scheduleActionRefresh()')
     expect(dashboard).not.toContain('setTimeout(refresh, 1000)')
     expect(dashboard).toContain('loadSensors(false, { light: !highMode.value })')
-    expect(dashboard).toContain('loadSensors(forceSensors, { light: !highMode.value && !forceSensors })')
+    expect(dashboard).toContain('loadSensors(forceSensors, { light: false })')
     expect(dashboard).toContain('refreshHeavy(false, highMode.value)')
     expect(dashboard).toMatch(/onUnmounted\([\s\S]*clearTimeout\(actionRefreshTimer\)/)
     expect(dashboard).toMatch(/async function loadPower\(\)[\s\S]*if \(!dashAlive\) return/)
