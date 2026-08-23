@@ -152,7 +152,7 @@ describe('Dashboard GPU density', () => {
     expect(wrapper.get('[data-test="gpu-mem"]').text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
     const charts = wrapper.findAll('.lc-stub')
     const heights = charts.map((n) => n.attributes('data-height'))
-    expect(heights).toEqual(['88', '88', '88', '88'])
+    expect(heights).toEqual(['128', '128', '88', '88'])
     expect(charts[0].attributes('data-title')).toBe('CPU Load')
     expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
     expect(wrapper.find('[data-test="gpu-chart"]').exists()).toBe(true)
@@ -233,7 +233,7 @@ describe('Dashboard GPU density', () => {
     themeId.value = 'unraid'
     const wrapper = await render()
     const charts = wrapper.findAll('.lc-stub')
-    expect(charts.map((n) => n.attributes('data-height'))).toEqual(['88', '88', '72', '52'])
+    expect(charts.map((n) => n.attributes('data-height'))).toEqual(['128', '128', '72', '52'])
     expect(charts[0].attributes('data-title')).toBe('CPU Load')
     expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
     const procCharts = wrapper.find('.cpu-charts')

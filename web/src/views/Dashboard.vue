@@ -217,12 +217,12 @@
             </span>
           </span>
         </h3>
-        <!-- CPU left, GPU right — same chart height as Memory/Disk. -->
+        <!-- CPU left, GPU right — taller twin plots than Memory/Disk. -->
         <div v-if="isMacSurface" class="cpu-charts am-cpu">
           <LineChart
             class="am-chart"
             data-test="cpu-chart"
-            :height="AM_CHART_HEIGHT"
+            :height="PROC_CHART_HEIGHT"
             fill
             :min="0"
             :max="100"
@@ -237,7 +237,7 @@
           <LineChart
             class="am-chart"
             data-test="gpu-chart"
-            :height="AM_CHART_HEIGHT"
+            :height="PROC_CHART_HEIGHT"
             fill
             :min="0"
             :max="100"
@@ -252,7 +252,7 @@
         <div v-else class="cpu-charts">
           <LineChart
             data-test="cpu-chart"
-            :height="AM_CHART_HEIGHT"
+            :height="PROC_CHART_HEIGHT"
             :min="0"
             :max="100"
             percent
@@ -263,7 +263,7 @@
           />
           <LineChart
             data-test="gpu-chart"
-            :height="AM_CHART_HEIGHT"
+            :height="PROC_CHART_HEIGHT"
             :min="0"
             :max="100"
             percent
@@ -722,6 +722,7 @@ const isMacSurface = computed(() => {
   return id === 'macos' || id === 'macos-dark'
 })
 const AM_CHART_HEIGHT = 88
+const PROC_CHART_HEIGHT = 128
 
 // Member sessions render the reduced services-only dashboard; the router
 // guard refreshed authState before this component was allowed to mount.
@@ -1772,8 +1773,8 @@ onUnmounted(() => {
   margin-bottom: 2px;
   padding-bottom: 0;
 }
-.am-surface .am-monitor-chart :deep(.lc-plot),
-.am-surface .cpu-charts :deep(.lc-plot) { min-height: 0; }
+.am-surface .am-monitor-chart :deep(.lc-plot) { min-height: 0; }
+.am-surface .cpu-charts :deep(.lc-plot) { min-height: 128px; }
 .am-surface .res-head {
   flex-direction: column;
   align-items: flex-start;
@@ -1841,7 +1842,7 @@ onUnmounted(() => {
 .am-surface .disk-primary-meta { white-space: nowrap; }
 .am-surface .disk-primary strong { font-size: 12px; font-weight: 500; }
 .res-card > h3 { margin-bottom: 8px; }
-.cpu-loadline { margin-top: 4px; }
+.cpu-loadline { margin-top: 8px; }
 .tile .mem-footnote {
   margin-top: 6px;
   white-space: nowrap;
@@ -1920,11 +1921,11 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .cpu-charts {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 6px 10px;
+  gap: 8px 12px;
   min-width: 0;
 }
 .cpu-charts > * { min-width: 0; }
-.cpu-charts :deep(.lc-plot) { min-height: 0; }
+.cpu-charts :deep(.lc-plot) { min-height: 128px; }
 .cpu-charts :deep(.lc-title) {
   margin-bottom: 2px;
   padding-bottom: 0;
