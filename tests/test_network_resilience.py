@@ -1,3 +1,5 @@
+import contextlib
+import json
 import unittest
 from unittest.mock import patch
 
@@ -258,6 +260,65 @@ class NetworkResilienceTests(unittest.TestCase):
         )
         self.assertTrue(order_step["critical"])
         self.assertFalse(order_step["ok"])
+
+
+def _overview_collector_patches(**overrides):
+    """Patch every `_build_overview` collector; override any one by name."""
+    defaults = {
+        "interfaces": [],
+        "network_services": [],
+        "hardware_ports": [],
+        "interface_addresses": [],
+        "listening_ports": [],
+        "routes": [],
+        "default_route": {},
+        "docker_published_ports": [],
+        "docker_networks_detail": [],
+        "alias_auto_status": None,
+        "network_failover_status": None,
+        "engine_up": False,
+        "_wstunnel_snapshot": None,
+        "wifi_power_status": {
+            "ok": False, "on": None, "device": None, "message": "",
+        },
+    }
+    defaults.update(overrides)
+    return [
+        patch.object(network_svc, name, return_value=value)
+        if not isinstance(value, BaseException)
+        else patch.object(network_svc, name, side_effect=value)
+        for name, value in defaults.items()
+    ]
+
+
+class NetworkOverviewWifiPowerTests(unittest.TestCase):
+    def test_overview_includes_live_wifi_power(self):
+        wifi = {
+            "ok": True,
+            "on": False,
+            "device": "en0",
+            "message": "Wi-Fi Power (en0): Off",
+        }
+        with contextlib.ExitStack() as stack:
+            for p in _overview_collector_patches(wifi_power_status=wifi):
+                stack.enter_context(p)
+            v = network_svc._build_overview()
+        self.assertEqual(v["wifi_power"], wifi)
+        self.assertFalse(v["wifi_power"]["on"])
+        json.dumps(v, allow_nan=False)
+
+    def test_overview_wifi_power_probe_failure_is_unknown(self):
+        with contextlib.ExitStack() as stack:
+            for p in _overview_collector_patches(
+                wifi_power_status=RuntimeError("airportpower failed"),
+            ):
+                stack.enter_context(p)
+            v = network_svc._build_overview()
+        self.assertEqual(
+            v["wifi_power"],
+            {"ok": False, "on": None, "device": None, "message": ""},
+        )
+        json.dumps(v, allow_nan=False)
 
 
 if __name__ == "__main__":

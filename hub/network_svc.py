@@ -1844,7 +1844,7 @@ def _build_overview(force_services: bool = False) -> dict:
     # Every collector below is an independent subprocess-bound call; run them
     # concurrently so page latency ≈ the single slowest call, not their sum.
     #
-    # Named futures rather than `fan_out` deliberately: twelve heterogeneous results
+    # Named futures rather than `fan_out` deliberately: heterogeneous results
     # with per-collector fallbacks, where positional unpacking would silently pair a
     # value with the wrong key. `fan_out` is the right tool for mapping one probe
     # over many like items, which is what the rest of this module uses it for.
@@ -1853,6 +1853,8 @@ def _build_overview(force_services: bool = False) -> dict:
             return fn()
         except Exception:
             return default
+
+    _wifi_power_unknown = {"ok": False, "on": None, "device": None, "message": ""}
 
     f_ifaces = _overview_pool.submit(interfaces)
     f_services = _overview_pool.submit(network_services, force_services)
@@ -1867,6 +1869,7 @@ def _build_overview(force_services: bool = False) -> dict:
     f_failover = _overview_pool.submit(_safe, network_failover_status, None)
     f_engine = _overview_pool.submit(engine_up)
     f_wstunnel = _overview_pool.submit(_safe, _wstunnel_snapshot, None)
+    f_wifi = _overview_pool.submit(_safe, wifi_power_status, dict(_wifi_power_unknown))
 
     ifaces = _safe(f_ifaces.result, [])
     if not isinstance(ifaces, list):
@@ -1905,6 +1908,7 @@ def _build_overview(force_services: bool = False) -> dict:
         "alias_auto": _safe(f_alias.result, None),
         "network_failover": _safe(f_failover.result, None),
         "wstunnel": _safe(f_wstunnel.result, None),
+        "wifi_power": _safe(f_wifi.result, dict(_wifi_power_unknown)),
         "ts": strftime_now("%H:%M:%S"),
         "profiles": [
             {"id": "wifi", "label": "Prefer Wi-Fi (wired as fallback)"},

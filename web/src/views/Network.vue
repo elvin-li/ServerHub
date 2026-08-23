@@ -139,16 +139,20 @@
                 <span v-if="s.disabled" class="badge down">{{ t('network.act_disable') }}</span>
                 <span v-if="isWifi(s)" class="badge accent">{{ t('network.badge_wifi') }}</span>
                 <span v-else-if="looksEthernet(s)" class="badge ok">{{ t('network.badge_wired') }}</span>
-                <div class="show-m sub mono">{{ finiteText(s.device) }} · {{ s.disabled ? t('network.off') : t('network.on') }}</div>
+                <div class="show-m sub mono">{{ finiteText(s.device) }} · {{ t(priorityStatusKey(s)) }}</div>
                 <div class="show-m sub mono">{{ finiteText(s.mode) }} {{ finiteText(s.ip, '') }}</div>
               </td>
               <td class="mono col-hide-m">{{ finiteText(s.device) }}</td>
-              <td class="col-hide-m">{{ s.disabled ? t('network.off') : t('network.on') }}</td>
+              <td class="col-hide-m">{{ t(priorityStatusKey(s)) }}</td>
               <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(s.mode) }} {{ finiteText(s.ip, '') }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || idx===0" @click="moveService(idx, -1)" :aria-label="t('network.move_up')">↑</button>
                 <button class="tiny" :disabled="busy || idx===orderList.length-1" @click="moveService(idx, 1)" :aria-label="t('network.move_down')">↓</button>
                 <button class="tiny" :disabled="busy" @click="toggleService(s)">{{ s.disabled ? t('network.act_enable') : t('network.act_disable') }}</button>
+                <template v-if="isWifi(s)">
+                  <button class="tiny" :disabled="busy" @click="wifi('on')">{{ t('network.wifi_on') }}</button>
+                  <button class="tiny danger" :disabled="busy" @click="wifi('off')">{{ t('network.wifi_off') }}</button>
+                </template>
               </td>
             </tr>
           </tbody>
@@ -717,6 +721,21 @@ function looksEthernet(s) {
   const n = (s.name || '') + (s.hardware_port || '')
   const d = s.device || ''
   return /ethernet|lan|usb.*lan|有线/i.test(n) || (d.startsWith('en') && d !== 'en0') // cjk-input: networksetup port names are localized
+}
+
+function serviceHasIpv4(s) {
+  const ip = String(s?.ip || '').trim()
+  return Boolean(ip) && ip.toLowerCase() !== 'none'
+}
+
+function priorityStatusKey(s) {
+  if (s.disabled) return 'network.off'
+  if (isWifi(s)) {
+    // Live radio from overview, not the last failover tick.
+    if (data.value?.wifi_power?.on === false) return 'network.off'
+    if (!serviceHasIpv4(s)) return 'network.no_ipv4'
+  }
+  return 'network.on'
 }
 
 function syncOrderFromData() {
