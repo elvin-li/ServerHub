@@ -80,6 +80,10 @@ class Target:
     pattern: str
     #: Alert once the newest match is older than this.
     max_age_hours: float
+    #: Optional absolute path that must exist (e.g. an external volume mount).
+    #: When missing, the target is treated as OK/skipped — the job itself exits 0
+    #: when the disk is unplugged, so freshness must not false-alarm.
+    require_dir: str | None = None
 
 
 #: ids end up in state keys, alert ids and alert prose, so they keep the shape
@@ -130,12 +134,21 @@ def configured_targets(raw: list | None = None) -> tuple[Target, ...]:
                 or not os.path.isabs(pattern) or max_age <= 0):
             log.warning("freshness_targets: skipping malformed entry %r", entry)
             continue
+        req_raw = entry.get("require_dir") or entry.get("require_mount") or ""
+        try:
+            require_dir = os.path.expanduser(_utf8_text(req_raw).strip()) or None
+        except (TypeError, ValueError, RuntimeError, OSError):
+            require_dir = None
+        if require_dir is not None and not os.path.isabs(require_dir):
+            log.warning("freshness_targets: ignoring non-absolute require_dir on %r", entry)
+            require_dir = None
         seen.add(tid)
         out.append(Target(
             id=tid,
             label=_utf8_text(entry.get("label") or "").strip() or tid,
             pattern=_utf8_text(pattern),
             max_age_hours=max_age,
+            require_dir=_utf8_text(require_dir) if require_dir else None,
         ))
     return tuple(out)
 
@@ -215,6 +228,43 @@ def check_freshness(prev: dict, new_state: dict, now: int,
             continue
         if limit_sec != limit_sec or limit_sec in (float("inf"), float("-inf")) or limit_sec <= 0:
             continue
+        # External-disk jobs: when the mount is absent, the LaunchAgent exits 0
+        # with SKIP — treat freshness as OK so ServerHub does not false-alarm.
+        req = getattr(t, "require_dir", None)
+        if req:
+            req = _utf8_text(req)
+            try:
+                mounted = os.path.isdir(req)
+            except OSError:
+                mounted = False
+            if not mounted:
+                new_state[key] = "ok"
+                old = prev.get(key)
+                if old == "down":
+                    message = (
+                        f"{label} freshness skipped: required mount {req} is "
+                        f"not present (job skips cleanly until the disk returns)"
+                    )
+                    alert = {
+                        "t": now,
+                        "id": key,
+                        "name": f"Freshness · {label}",
+                        "kind": "freshness",
+                        "group": "scheduled",
+                        "level": "ok",
+                        "event": "resolved",
+                        "detail": f"require_dir missing: {req}",
+                        "message": message,
+                    }
+                    _alerts._append_alert(alert)
+                    emitted.append(alert)
+                    new_last.pop(t.id, None)
+                    if n.get("enabled") and n.get("notify_resolve", True):
+                        _alerts.send_ha_notify(
+                            "ServerHub freshness recovered", message,
+                            level="ok", event="resolved",
+                        )
+                continue
         mt = newest_mtime(pattern)
         try:
             mt = float(mt) if mt is not None else None

@@ -306,6 +306,30 @@ class FreshnessLeftoverTests(unittest.TestCase):
         self.assertNotIn("\ud800", emitted[0]["name"])
         self.assertNotIn("\ud800", emitted[0]["message"])
 
+    def test_require_dir_leftover_does_not_500(self):
+        parsed = configured_targets([
+            {"id": "good", "pattern": "/x/*.log", "max_age_hours": 25,
+             "require_dir": "/Volumes/X\ud800"},
+        ])
+        self.assertEqual(len(parsed), 1)
+        self.assertTrue(parsed[0].require_dir)
+        self.assertNotIn("\ud800", parsed[0].require_dir)
+        _starlette({"require_dir": parsed[0].require_dir})
+
+        def expand(path):
+            text = str(path)
+            if text.startswith("~"):
+                raise RuntimeError("no home")
+            return text
+
+        with mock.patch.object(freshness_svc.os.path, "expanduser", side_effect=expand):
+            parsed = configured_targets([
+                {"id": "good", "pattern": "/x/*.log", "max_age_hours": 25,
+                 "require_dir": "~/Volumes/X"},
+            ])
+        self.assertEqual(len(parsed), 1)
+        self.assertIsNone(parsed[0].require_dir)
+
 
 class StaleRuntimeInfPidTests(unittest.TestCase):
     def test_leftover_surrogate_label_does_not_500_health(self):

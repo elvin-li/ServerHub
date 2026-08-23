@@ -105,12 +105,18 @@ class _Harness(unittest.TestCase):
         os.utime(p, (stamp, stamp))
         return p
 
-    def target(self, pattern: str | None = None, max_age_hours: float = 25.0) -> Target:
+    def target(
+        self,
+        pattern: str | None = None,
+        max_age_hours: float = 25.0,
+        require_dir: str | None = None,
+    ) -> Target:
         return Target(
             id="t1",
             label="local.example-daily",
             pattern=pattern or str(self.artifacts / "example_*.tgz"),
             max_age_hours=max_age_hours,
+            require_dir=require_dir,
         )
 
     def sweep(self, targets, prev=None, now=NOW):
@@ -181,6 +187,34 @@ class FreshnessTests(_Harness):
         alert = self.one([self.target(pattern=str(gone))])
         self.assertEqual(alert["level"], "down")
         self.assertIn("no artifact matches", alert["detail"])
+
+    def test_missing_require_dir_is_ok_without_false_down(self):
+        """External-disk jobs exit 0 with SKIP when the mount is unplugged.
+        Freshness must not treat the missing artifact as a job that failed."""
+        gone = str(self.tmp / "no-such-volume")
+        emitted, state = self.sweep([self.target(require_dir=gone)])
+        self.assertEqual(emitted, [])
+        self.assertEqual(state["freshness:t1"], "ok")
+
+        prev = {"freshness:t1": "down", "_freshness_last": {"t1": NOW - 90}}
+        emitted, state = self.sweep([self.target(require_dir=gone)], prev=prev)
+        self.assertEqual(state["freshness:t1"], "ok")
+        self.assertTrue(emitted)
+        self.assertEqual(emitted[0]["event"], "resolved")
+        self.assertEqual(emitted[0]["level"], "ok")
+
+    def test_require_dir_present_still_age_checks(self):
+        mount = self.tmp / "volume"
+        mount.mkdir()
+        self.write_artifact("example_x.tgz", age_hours=26)
+        alert = self.one([self.target(require_dir=str(mount))])
+        self.assertEqual(alert["level"], "down")
+        self.assertIn("26.0h", alert["detail"])
+
+        self.write_artifact("example_x.tgz", age_hours=1)
+        emitted, state = self.sweep([self.target(require_dir=str(mount))])
+        self.assertEqual(emitted, [])
+        self.assertEqual(state["freshness:t1"], "ok")
 
     def test_exactly_at_the_limit_is_still_fresh(self):
         """The comparison is strict: 25.0h old against 25h does not alert.
@@ -457,6 +491,27 @@ class ConfiguredTargetsTests(unittest.TestCase):
         )
         self.assertEqual(t.label, "nightly")
         self.assertEqual(t.max_age_hours, 26.5)
+        self.assertIsNone(t.require_dir)
+
+    def test_require_dir_is_parsed_and_relative_is_ignored(self):
+        (t,) = configured_targets([
+            {"id": "ext", "label": "local.ext",
+             "pattern": "/x/*.log", "max_age_hours": 25,
+             "require_dir": "/Volumes/Backup"},
+        ])
+        self.assertEqual(t.require_dir, "/Volumes/Backup")
+
+        (aliased,) = configured_targets([
+            {"id": "ext", "pattern": "/x/*.log", "max_age_hours": 25,
+             "require_mount": "/Volumes/Backup"},
+        ])
+        self.assertEqual(aliased.require_dir, "/Volumes/Backup")
+
+        (relative,) = configured_targets([
+            {"id": "ext", "pattern": "/x/*.log", "max_age_hours": 25,
+             "require_dir": "Volumes/Backup"},
+        ])
+        self.assertIsNone(relative.require_dir)
 
 
 if __name__ == "__main__":

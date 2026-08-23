@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +29,8 @@ class LaunchdDiscoveryTests(unittest.TestCase):
         pid_exe: str | None = "/bin/zsh",
         http_alive: bool = True,
         port_reachable: bool = True,
+        orphan_pids: list[int] | None = None,
+        probe_orphans: bool = False,
         **extra,
     ):
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,6 +45,15 @@ class LaunchdDiscoveryTests(unittest.TestCase):
             path.write_bytes(plistlib.dumps(payload))
             table = {} if table_value is None else {label: table_value}
             ov = {"hide": True} if hide else dict(override or {})
+            orphan_ctx = (
+                nullcontext()
+                if probe_orphans
+                else patch.object(
+                    launchd,
+                    "pids_for_argv",
+                    return_value=list(orphan_pids or []),
+                )
+            )
             with (
                 patch.object(launchd, "AGENTS_DIR", tmp),
                 patch.object(launchd, "launchctl_table", return_value=table),
@@ -57,6 +69,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 patch.object(launchd, "port_open", lambda port, **kw: port_reachable),
                 patch.object(launchd, "pid_exe_path", lambda pid: pid_exe),
                 patch.object(launchd, "_http_alive", lambda port: http_alive),
+                orphan_ctx,
             ):
                 items = launchd.discover_launchd()
                 return items[0] if items else None
@@ -135,6 +148,89 @@ class LaunchdDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(item["state"], "stopped")
         self.assertEqual(item["detail"], "Disabled")
+
+    def test_keepalive_exact_path_orphan_is_ok(self):
+        """App-managed helper is healthy even though launchd shows pid '-'."""
+        helper = "/Applications/BaiduNetdisk.app/Contents/MacOS/BaiduNetdisk_mac"
+        item = self._discover(
+            [helper],
+            ("-", "1"),
+            KeepAlive=True,
+            orphan_pids=[4242],
+        )
+        self.assertEqual(item["state"], "ok")
+        self.assertIn("Running", item["detail"])
+        self.assertIn("pid 4242", item["detail"])
+
+    def test_orphan_not_promoted_for_disabled_interval_or_open(self):
+        disabled = self._discover(
+            ["/opt/homebrew/opt/redis/bin/redis-server"],
+            ("-", "1"),
+            Disabled=True,
+            KeepAlive=True,
+            orphan_pids=[9],
+        )
+        self.assertEqual(disabled["state"], "stopped")
+        self.assertEqual(disabled["detail"], "Disabled")
+
+        never_loaded = self._discover(
+            ["/Applications/BaiduNetdisk.app/Contents/MacOS/BaiduNetdisk_mac"],
+            None,
+            KeepAlive=True,
+            orphan_pids=[9],
+        )
+        self.assertEqual(never_loaded["state"], "down")
+        self.assertEqual(never_loaded["detail"], "Not loaded")
+
+        interval = self._discover(
+            ["/usr/local/bin/helper"],
+            ("-", "1"),
+            StartCalendarInterval={"Hour": 3, "Minute": 30},
+            orphan_pids=[9],
+        )
+        self.assertEqual(interval["state"], "ok")
+        self.assertIn("scheduled task", interval["detail"])
+        self.assertNotIn("pid 9", interval["detail"])
+
+        opened = self._discover(
+            ["/usr/bin/open", "-gj", "/Applications/ServerHub.app"],
+            ("-", "0"),
+            orphan_pids=[9],
+        )
+        self.assertEqual(opened["state"], "ok")
+        self.assertEqual(opened["detail"], "loaded · opens app at login")
+        self.assertNotIn("pid 9", opened["detail"])
+
+    def test_orphan_basename_collision_does_not_promote(self):
+        """Host cloudflared / zsh / true must not match a different argv."""
+        rows = (
+            (111, "cloudflared"),
+            (112, "/opt/homebrew/bin/cloudflared --version"),
+            (113, "/bin/zsh"),
+            (114, "/usr/bin/true"),
+        )
+        with patch("hub.proc_utils.ps_pid_commands", return_value=rows):
+            collided = self._discover(
+                ["/opt/homebrew/bin/cloudflared", "tunnel", "run"],
+                ("-", "255"),
+                KeepAlive=True,
+                probe_orphans=True,
+            )
+        self.assertEqual(collided["state"], "down")
+        self.assertEqual(collided["detail"], "Crash-looping · last exit 255")
+
+    def test_orphan_full_argv_match_promotes(self):
+        rows = ((4242, "/opt/homebrew/bin/cloudflared tunnel run --token x"),)
+        with patch("hub.proc_utils.ps_pid_commands", return_value=rows):
+            item = self._discover(
+                ["/opt/homebrew/bin/cloudflared", "tunnel", "run"],
+                ("-", "255"),
+                KeepAlive=True,
+                probe_orphans=True,
+            )
+        self.assertEqual(item["state"], "ok")
+        self.assertIn("Running", item["detail"])
+        self.assertIn("pid 4242", item["detail"])
 
     def test_hidden_override_is_omitted(self):
         item = self._discover(
@@ -226,6 +322,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 patch.object(launchd, "port_open", lambda port, **kw: True),
                 patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
                 patch.object(launchd, "_http_alive", lambda port: True),
+                patch.object(launchd, "pids_for_argv", return_value=[]),
             ):
                 items = launchd.discover_launchd()
         json.dumps(items, allow_nan=False)
@@ -257,6 +354,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 patch.object(launchd, "port_open", lambda port, **kw: True),
                 patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
                 patch.object(launchd, "_http_alive", lambda port: True),
+                patch.object(launchd, "pids_for_argv", return_value=[]),
             ):
                 items = launchd.discover_launchd()
         self.assertEqual(len(items), 1)
@@ -292,6 +390,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 patch.object(launchd, "port_open", lambda port, **kw: True),
                 patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
                 patch.object(launchd, "_http_alive", lambda port: True),
+                patch.object(launchd, "pids_for_argv", return_value=[]),
                 patch.object(
                     launchd.plistlib, "loads",
                     return_value={
@@ -377,6 +476,43 @@ class LaunchdDiscoveryTests(unittest.TestCase):
             http_alive=False,
         )
         self.assertEqual(item["state"], "ok")
+
+
+class ProcUtilsTests(unittest.TestCase):
+    """Command-prefix matching must never fall back to a basename pgrep."""
+
+    def test_pids_for_exe_is_absolute_argv0_not_basename(self):
+        from hub.proc_utils import pids_for_argv, pids_for_exe
+
+        rows = (
+            (1, "/usr/bin/true"),
+            (2, "true"),
+            (3, "/usr/bin/true extra"),
+            (4, "/bin/zsh"),
+            (5, "/bin/zsh /tmp/refresh.sh"),
+            (6, "/opt/homebrew/bin/cloudflared tunnel run"),
+            (7, "cloudflared"),
+            (8, "/Applications/BaiduNetdisk.app/Contents/MacOS/BaiduNetdisk_mac"),
+        )
+        with patch("hub.proc_utils.ps_pid_commands", return_value=rows):
+            self.assertEqual(pids_for_exe("/usr/bin/true"), [1, 3])
+            self.assertEqual(pids_for_exe("true"), [])
+            self.assertEqual(pids_for_exe("/bin/zsh"), [4, 5])
+            self.assertEqual(pids_for_argv(["/bin/zsh", "/tmp/refresh.sh"]), [5])
+            self.assertEqual(
+                pids_for_argv(["/opt/homebrew/bin/cloudflared", "tunnel", "run"]),
+                [6],
+            )
+            self.assertEqual(pids_for_exe("cloudflared"), [])
+            self.assertEqual(
+                pids_for_argv([
+                    "/Applications/BaiduNetdisk.app/Contents/MacOS/BaiduNetdisk_mac",
+                ]),
+                [8],
+            )
+            self.assertEqual(pids_for_exe(""), [])
+            self.assertEqual(pids_for_argv(["zsh"]), [])
+            self.assertEqual(pids_for_argv("not-a-list"), [])
 
 
 class _SilentTCP:

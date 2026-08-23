@@ -21,6 +21,7 @@ from hub.group_rules import configured_group_rules, resolve_group
 from hub.host_address import resolve_template
 from hub.launchd_cache import listing as launchd_listing
 from hub.paths import AGENTS_DIR
+from hub.proc_utils import pids_for_argv
 from hub.service_signatures import configured_signatures, identify
 from hub.stale_runtime import pid_exe_path
 from hub.util import fan_out, port_open, read_bytes_capped
@@ -252,6 +253,30 @@ def discover_launchd():
         )
         pid, last = table.get(label, (None, None))
         loaded, running = pid is not None, pid not in (None, "-")
+        plist_disabled = bool(pl.get("Disabled"))
+
+        # App-managed helpers (e.g. Baidu Netdisk) hold a singleton outside
+        # launchd.  The agent stays loaded, exits on the lock, and used to
+        # report Exited while the helper was healthy.  Match the full
+        # ProgramArguments command prefix (never basename pgrep): host
+        # zsh / true / cloudflared used to flip those rows to state=ok.
+        # Disabled / interval / /usr/bin/open login jobs, and jobs launchd
+        # has not listed, must not adopt.
+        if (
+            loaded
+            and not running
+            and not plist_disabled
+            and not interval
+            and not launchservices_open
+            and arguments
+        ):
+            try:
+                orphans = pids_for_argv(arguments)
+            except Exception:
+                orphans = []
+            if orphans:
+                pid = str(orphans[0])
+                running = True
 
         # Adaptive port: override → plist args/env → live pid lsof
         port = ov.get("port")
