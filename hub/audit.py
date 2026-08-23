@@ -31,7 +31,7 @@ from typing import Any
 
 from hub import secure_io
 from hub.paths import DATA_DIR
-from hub.util import strftime_now, tail_file_lines
+from hub.util import safe_json_loads, strftime_now, tail_file_lines
 
 AUDIT_PATH = DATA_DIR / "auth-audit.jsonl"
 
@@ -351,7 +351,7 @@ def recent(limit: int = 100) -> list[dict]:
     out: list[dict] = []
     for raw in lines:
         try:
-            parsed = json.loads(raw)
+            parsed = safe_json_loads(raw)
         except (ValueError, RecursionError):
             continue
         if isinstance(parsed, dict):

@@ -30,7 +30,7 @@ from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
 from hub.secure_io import replace_bytes
-from hub.util import cached_snapshot, fan_out, read_text_capped, sh, strftime_now
+from hub.util import cached_snapshot, fan_out, read_text_capped, safe_json_loads, sh, strftime_now
 
 HISTORY_PATH = DATA_DIR / "smart-tests.json"
 #: Leftover multi-MB smart-tests.json used to OOM GET /api/smart.
@@ -452,7 +452,7 @@ def _jsonable(value, depth: int = 0):
 
 def _load_history() -> list[dict]:
     try:
-        data = json.loads(read_text_capped(HISTORY_PATH, _HISTORY_CAP))
+        data = safe_json_loads(read_text_capped(HISTORY_PATH, _HISTORY_CAP))
     except (OSError, TypeError, ValueError, RecursionError):
         return []
     if not isinstance(data, list):

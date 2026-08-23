@@ -20,7 +20,7 @@ from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.host_address import resolve_value
 from hub.secure_io import replace_bytes
 from hub.status import invalidate_status
-from hub.util import iter_capped_lines, read_text_capped, run_capped, strftime_now, ttl_memo, utf8_env
+from hub.util import iter_capped_lines, read_text_capped, run_capped, safe_json_loads, strftime_now, ttl_memo, utf8_env
 
 # long-running compose / pull jobs (reuse pattern of maintenance)
 _cjobs: dict = {}
@@ -234,7 +234,7 @@ def _load_update_status() -> dict:
         # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/containers.
         if not UPDATE_STATUS_PATH.exists():
             return {}
-        data = json.loads(read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP))
+        data = safe_json_loads(read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP))
         if not isinstance(data, dict):
             return {}
         cleaned = _jsonable(data)
@@ -444,7 +444,7 @@ def _build_container_list() -> tuple[bool, list]:
         rc2, jout, _ = docker("inspect", *names, timeout=15)
         if rc2 == 0:
             try:
-                arr = json.loads(jout)
+                arr = safe_json_loads(jout)
             except (TypeError, ValueError, RecursionError):
                 # RecursionError: leftover deeply-nested inspect JSON is not ValueError.
                 arr = []

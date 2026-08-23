@@ -5,7 +5,7 @@ import json
 
 from hub.docker_cli import _jsonable, docker, engine_up
 from hub.paths import DOCKER, ORB
-from hub.util import fan_out, sh
+from hub.util import fan_out, safe_json_loads, sh
 
 
 def _as_text(value) -> str:
@@ -37,7 +37,7 @@ def _slim_info() -> dict:
     text = _as_text(out).strip()
     if rc == 0 and text:
         try:
-            parsed = json.loads(text)
+            parsed = safe_json_loads(text)
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
             info = {"raw": text[:2000]}
@@ -74,7 +74,7 @@ def _version() -> dict:
     text = _as_text(ver).strip()
     if rc == 0 and text:
         try:
-            parsed = json.loads(text)
+            parsed = safe_json_loads(text)
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return {}
         return parsed if isinstance(parsed, dict) else {}

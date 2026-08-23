@@ -29,7 +29,7 @@ from hub.http_guard import (
 )
 from hub.jobs import run_watchdog
 from hub.paths import user_home
-from hub.util import read_text_capped, tail_file_lines
+from hub.util import read_text_capped, safe_json_loads, tail_file_lines
 
 
 def _default_hub() -> Path:
@@ -190,7 +190,7 @@ def _load_json(path: Path, default: Any = None) -> Any:
     try:
         if not path.exists():
             return default
-        return _jsonable(json.loads(read_text_capped(path, _JSON_CAP, encoding="utf-8")))
+        return _jsonable(safe_json_loads(read_text_capped(path, _JSON_CAP, encoding="utf-8")))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested status JSON is not ValueError.
         return default
@@ -212,7 +212,7 @@ def _cfg_strict() -> dict:
     try:
         if not CFG_PATH.exists():
             return {}
-        data = _jsonable(json.loads(read_text_capped(CFG_PATH, _JSON_CAP, encoding="utf-8")))
+        data = _jsonable(safe_json_loads(read_text_capped(CFG_PATH, _JSON_CAP, encoding="utf-8")))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested config.json is not ValueError.
         raise api_error("photoshub.bad_config")
@@ -433,7 +433,7 @@ def _immich_api(method: str, path: str, body: Any = None) -> Any:
     if len(raw) > _API_MAX:
         raise api_error("photoshub.immich_response", detail="payload too large")
     try:
-        parsed = json.loads(raw)
+        parsed = safe_json_loads(raw, loads=json.loads)
     except (ValueError, RecursionError):
         # RecursionError is leftover deeply-nested Immich JSON — not ValueError
         # (JSONDecodeError).  `_jsonable` depth-caps *after* the parse.

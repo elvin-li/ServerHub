@@ -55,7 +55,7 @@ from hub.http_guard import (
 )
 from hub.jobs import run_watchdog
 from hub.paths import AGENTS_DIR
-from hub.util import cached_snapshot, read_bytes_capped, strftime_now
+from hub.util import cached_snapshot, read_bytes_capped, safe_json_loads, strftime_now
 
 _OPENER = no_redirect_opener()
 
@@ -337,7 +337,7 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
     if len(raw) >= MAX_BODY_BYTES:
         raise ValueError("response body exceeds the parse cap")
     try:
-        parsed = json.loads(raw) if raw else {}
+        parsed = safe_json_loads(raw) if raw else {}
     except (ValueError, RecursionError):
         # RecursionError: leftover deeply-nested daemon JSON is not ValueError.
         raise ValueError("response is not json")

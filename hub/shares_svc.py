@@ -21,7 +21,7 @@ from hub.config import cfg
 from hub.host_address import host_ip, resolve_value
 from hub.macos_admin import run_admin, run_admin_sequence
 from hub.paths import BASE, STATE_ROOT, user_home
-from hub.util import fan_out, iter_capped_lines, port_open, sh, ttl_memo, utf8_env
+from hub.util import fan_out, iter_capped_lines, port_open, safe_json_loads, sh, ttl_memo, utf8_env
 
 SHARING = "/usr/sbin/sharing"
 DSCL = "/usr/bin/dscl"
@@ -166,7 +166,7 @@ def _flag(value: object) -> bool:
 
 def _json_shares(output: str) -> list[dict]:
     try:
-        parsed = json.loads(output)
+        parsed = safe_json_loads(output)
     except (TypeError, ValueError, RecursionError) as e:
         # RecursionError: leftover deeply-nested ``sharing -l -f json`` is
         # not ValueError; GET /api/shares used to 500.

@@ -9,7 +9,7 @@ import time
 
 from hub import secure_io
 from hub.paths import DATA_DIR
-from hub.util import sh, tail_file_lines
+from hub.util import safe_json_loads, sh, tail_file_lines
 
 METRICS_FILE = DATA_DIR / "metrics.jsonl"
 # ~48h at 90s interval ≈ 1920 points; keep headroom
@@ -358,7 +358,7 @@ def latest_sample() -> dict | None:
                 chunk = f.read().decode(errors="replace")
             lines = [ln for ln in chunk.splitlines() if ln.strip()]
             if lines:
-                parsed = json.loads(lines[-1])
+                parsed = safe_json_loads(lines[-1], loads=json.loads)
                 if isinstance(parsed, dict):
                     _last_sample = _jsonable(parsed)
                     return _last_sample
@@ -391,7 +391,7 @@ def history(minutes: int = 60) -> list:
                 if not line.strip():
                     continue
                 try:
-                    o = json.loads(line)
+                    o = safe_json_loads(line)
                 except (json.JSONDecodeError, RecursionError):
                     continue
                 t = sample_ts(o.get("t") if isinstance(o, dict) else None)
@@ -406,7 +406,7 @@ def history(minutes: int = 60) -> list:
     with _lock:
         for line in _write_buf:
             try:
-                o = json.loads(line)
+                o = safe_json_loads(line)
             except (json.JSONDecodeError, RecursionError):
                 continue
             t = sample_ts(o.get("t") if isinstance(o, dict) else None)

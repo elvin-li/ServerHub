@@ -22,7 +22,7 @@ from hub.errors import api_error
 from hub.paths import DATA_DIR, user_home
 from hub.host_address import normalize_local_url
 from hub import secure_io
-from hub.util import read_bytes_capped, read_text_capped, utf8_env
+from hub.util import read_bytes_capped, read_text_capped, safe_json_loads, utf8_env
 
 INDEX_FILE = DATA_DIR / "service-credentials.json"
 #: Leftover multi-MB service-credentials.json used to OOM GET /api/apps/credentials.
@@ -176,7 +176,7 @@ def _keychain_service(service_id: str) -> str:
 
 def _load() -> dict[str, dict]:
     try:
-        raw = json.loads(read_text_capped(INDEX_FILE, _INDEX_CAP, encoding="utf-8"))
+        raw = safe_json_loads(read_text_capped(INDEX_FILE, _INDEX_CAP, encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); RecursionError is a leftover

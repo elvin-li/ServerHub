@@ -12,7 +12,7 @@ import urllib.request
 from hub import secure_io
 from hub.paths import DATA_DIR
 from hub.status import full_status
-from hub.util import read_text_capped, strftime_now, tail_file_lines
+from hub.util import read_text_capped, safe_json_loads, strftime_now, tail_file_lines
 
 ALERTS_FILE = DATA_DIR / "alerts.jsonl"
 STATE_FILE = DATA_DIR / "alert_state.json"
@@ -40,7 +40,7 @@ def _load_state() -> dict:
         # mount used to raise out of GET /api/alerts and POST /api/alerts/check.
         if not STATE_FILE.exists():
             return {}
-        data = json.loads(read_text_capped(STATE_FILE, _STATE_CAP))
+        data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested alert_state.json is not ValueError.
         return {}
@@ -218,7 +218,7 @@ def list_alerts(limit: int = 50) -> list:
     out = []
     for ln in lines:
         try:
-            parsed = json.loads(ln)
+            parsed = safe_json_loads(ln)
         except (json.JSONDecodeError, RecursionError):
             continue
         if isinstance(parsed, dict):

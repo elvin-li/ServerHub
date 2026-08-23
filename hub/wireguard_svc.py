@@ -52,7 +52,7 @@ from hub.macos_admin import (
 )
 from hub.paths import DATA_DIR, pinned_or
 from hub.secure_io import drop_leftover_nonfile, replace_secret_text
-from hub.util import fan_out, read_text_capped, sh, strftime_now, utf8_env
+from hub.util import fan_out, read_text_capped, safe_json_loads, sh, strftime_now, utf8_env
 
 WG = pinned_or("wg", "/opt/homebrew/bin/wg")
 WG_QUICK = "/opt/homebrew/bin/wg-quick"
@@ -661,7 +661,7 @@ def server_identity() -> dict:
 
 def _load_registry() -> dict:
     try:
-        data = json.loads(read_text_capped(REGISTRY_PATH, _REGISTRY_CAP))
+        data = safe_json_loads(read_text_capped(REGISTRY_PATH, _REGISTRY_CAP))
     except (OSError, ValueError, RecursionError):
         return {"peers": {}}
     if not isinstance(data, dict) or not isinstance(data.get("peers"), dict):

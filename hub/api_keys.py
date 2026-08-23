@@ -34,7 +34,7 @@ from contextlib import contextmanager
 
 from hub import secure_io
 from hub.paths import DATA_DIR
-from hub.util import read_text_capped
+from hub.util import read_text_capped, safe_json_loads
 
 #: Module-level so tests can point it at a scratch directory.
 STORE_FILE = DATA_DIR / "api-keys.json"
@@ -218,7 +218,7 @@ def _store_rows(raw) -> list:
 
 def _load() -> list[dict]:
     try:
-        raw = json.loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
+        raw = safe_json_loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError: a
         # torn write leaving non-UTF-8 bytes used to raise past this guard,

@@ -19,7 +19,7 @@ from hub import secure_io
 from hub.config import cfg
 from hub.errors import CODES, api_error
 from hub.paths import CONFIG_FILE, DATA_DIR, user_home
-from hub.util import read_text_capped, run_capped, strftime_now, utf8_env
+from hub.util import read_text_capped, run_capped, safe_json_loads, strftime_now, utf8_env
 
 
 def _as_text(value) -> str:
@@ -407,7 +407,7 @@ def _pg_password(target_id: str) -> str:
     try:
         if not BACKUP_SECRETS_FILE.is_file():
             return ""
-        raw = json.loads(
+        raw = safe_json_loads(
             read_text_capped(BACKUP_SECRETS_FILE, _SECRETS_CAP, encoding="utf-8")
         )
     except (OSError, ValueError, RecursionError):
@@ -693,7 +693,7 @@ def _json_object(path: Path) -> dict:
         # a dying FUSE mount re-raises EIO from is_file() itself.
         if not path.is_file():
             return {}
-        raw = json.loads(read_text_capped(path, _JSON_CAP, encoding="utf-8"))
+        raw = safe_json_loads(read_text_capped(path, _JSON_CAP, encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError:
         # a torn panel_status.json used to 500 the Backups page.
@@ -1269,7 +1269,7 @@ def _stack_mounts(compose_path: str, workdir: str | None) -> tuple[list[str], li
     if rc != 0 or not out.strip():
         return [], [], (err or out or f"compose config exit {rc}").strip()[:300]
     try:
-        resolved = json.loads(out)
+        resolved = safe_json_loads(out, loads=json.loads)
     except (TypeError, ValueError, RecursionError) as e:
         # RecursionError: leftover deeply-nested compose JSON is not ValueError.
         return [], [], "unparsable compose config: " + (_as_text(e) or "error")
@@ -1388,7 +1388,7 @@ def recover_interrupted_stack_backups() -> list[dict]:
         return recovered
     for marker in markers:
         try:
-            info = json.loads(read_text_capped(marker, _MARKER_CAP))
+            info = safe_json_loads(read_text_capped(marker, _MARKER_CAP))
         except (OSError, ValueError, RecursionError):
             info = {}
         if not isinstance(info, dict):

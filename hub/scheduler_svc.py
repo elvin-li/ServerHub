@@ -45,7 +45,7 @@ from hub import secure_io
 from hub.config import cfg, maintenance_env, mutate
 from hub.jobs import run_watchdog
 from hub.paths import DATA_DIR
-from hub.util import tail_file_lines
+from hub.util import safe_json_loads, tail_file_lines
 
 RUNS_PATH = DATA_DIR / "schedule-runs.jsonl"
 
@@ -449,7 +449,7 @@ def runs(job_id: str | None = None, limit: int = 50) -> list[dict]:
     out: list[dict] = []
     for raw in reversed(_journal_lines()):
         try:
-            rec = json.loads(raw)
+            rec = safe_json_loads(raw)
         except (ValueError, RecursionError):
             continue
         rec = _jsonable(rec) if isinstance(rec, dict) else None
@@ -479,7 +479,7 @@ def last_runs_by_job() -> dict[str, dict]:
     out: dict[str, dict] = {}
     for raw in reversed(_journal_lines()):
         try:
-            rec = json.loads(raw)
+            rec = safe_json_loads(raw)
         except (ValueError, RecursionError):
             continue
         rec = _jsonable(rec) if isinstance(rec, dict) else None

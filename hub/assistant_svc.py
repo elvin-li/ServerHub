@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.errors import CODES, api_error
-from hub.util import read_text_capped
+from hub.util import read_text_capped, safe_json_loads
 
 CODES.setdefault("assistant.query_required", (400, "a question or page name is required"))
 CODES.setdefault("assistant.bad_action", (400, "action must be auto, find, brief, ask, or page"))
@@ -34,7 +34,7 @@ _CATALOG_CAP = 256 * 1024
 
 def _load_json(name: str):
     try:
-        return json.loads(
+        return safe_json_loads(
             read_text_capped(_HERE / name, _CATALOG_CAP, encoding="utf-8")
         )
     except (OSError, ValueError, RecursionError):

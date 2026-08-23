@@ -30,7 +30,7 @@ from hub import cli_args, secure_io
 from hub.config import settings_section
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR, DOCKER, user_home
-from hub.util import iter_capped_lines, tail_file_lines, utf8_env
+from hub.util import iter_capped_lines, safe_json_loads, tail_file_lines, utf8_env
 
 AUDIT_PATH = DATA_DIR / "terminal-audit.jsonl"
 
@@ -617,7 +617,7 @@ def recent_audit(limit: int = 50) -> list[dict]:
     out: list[dict] = []
     for raw in lines:
         try:
-            parsed = json.loads(raw)
+            parsed = safe_json_loads(raw)
         except (ValueError, RecursionError):
             continue
         if isinstance(parsed, dict):

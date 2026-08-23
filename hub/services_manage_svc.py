@@ -26,7 +26,7 @@ from hub.service_signatures import (
     yaml_signature,
 )
 from hub.status import _jsonable, full_status, invalidate_status
-from hub.util import read_bytes_capped, sh, tail_file_lines
+from hub.util import read_bytes_capped, safe_json_loads, sh, tail_file_lines
 
 
 def _as_text(value) -> str:
@@ -179,8 +179,7 @@ def _docker_inspect(name: str) -> dict:
     if rc != 0 or not out:
         return {}
     try:
-        import json
-        parsed = json.loads(out)
+        parsed = safe_json_loads(out)
     except (TypeError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
         return {}

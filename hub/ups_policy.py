@@ -53,7 +53,7 @@ from contextlib import contextmanager
 
 from hub.paths import DATA_DIR
 from hub.secure_io import replace_bytes
-from hub.util import read_text_capped
+from hub.util import read_text_capped, safe_json_loads
 
 log = logging.getLogger("serverhub.ups_policy")
 
@@ -296,7 +296,7 @@ def _load_state() -> dict:
     try:
         if not STATE_FILE.exists():
             return {}
-        data = json.loads(read_text_capped(STATE_FILE, _STATE_CAP))
+        data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP))
         if isinstance(data, dict):
             return data
     except (OSError, ValueError, TypeError, RecursionError):

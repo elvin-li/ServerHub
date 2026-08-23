@@ -31,7 +31,7 @@ from hub.service_signatures import unescape_proc_name
 from hub.docker_cli import docker, engine_up
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
-from hub.util import LazyPool, fan_out, read_bytes_capped, sh, strftime_now, tail_file_lines, ttl_memo
+from hub.util import LazyPool, fan_out, read_bytes_capped, safe_json_loads, sh, strftime_now, tail_file_lines, ttl_memo
 from hub.brew_cache import _brew_busy
 
 _pool = LazyPool(2, "hub-tools")
@@ -894,7 +894,7 @@ def _github_get_json(path: str):
         except Exception:
             pass
     try:
-        parsed = json.loads(raw.decode("utf-8", "replace") or "null")
+        parsed = safe_json_loads(raw.decode("utf-8", "replace") or "null")
     except (ValueError, TypeError, RecursionError):
         raise RuntimeError("invalid github json")
     return parsed

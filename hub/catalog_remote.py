@@ -68,7 +68,7 @@ import yaml
 from hub import audit, secure_io
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR
-from hub.util import read_text_capped, strftime_now
+from hub.util import read_text_capped, safe_json_loads, strftime_now
 
 REMOTE_DIR = DATA_DIR / "catalog-remote"
 STATE_PATH = REMOTE_DIR / "state.json"
@@ -324,7 +324,7 @@ def _ensure_dir() -> None:
 
 def _load_state() -> dict:
     try:
-        data = json.loads(read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"))
+        data = safe_json_loads(read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested state is not ValueError.
         return {}
@@ -625,7 +625,7 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
         raise api_error("catalog_remote.fetch_failed", reason=_as_text(exc))
 
     try:
-        manifest = json.loads(raw.decode("utf-8"))
+        manifest = safe_json_loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise api_error(
             "catalog_remote.bad_manifest", reason="not JSON: " + _as_text(exc)

@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from hub.paths import DOCKER
-from hub.util import sh
+from hub.util import safe_json_loads, sh
 
 SENSITIVE = re.compile(r"(PASSWORD|SECRET|TOKEN|API_KEY|KEY|PASS|CREDENTIAL)", re.I)
 
@@ -108,7 +108,7 @@ def inspect_object(out: str) -> dict | None:
     and 500 the inspect and recreate routes.
     """
     try:
-        parsed = json.loads(out)
+        parsed = safe_json_loads(out)
     except (TypeError, ValueError, RecursionError):
         return None
     if isinstance(parsed, list):
@@ -136,7 +136,7 @@ def docker_json(args: list[str], timeout=30) -> Any:
                 objs: list[dict] = []
                 for ln in lines:
                     try:
-                        parsed = json.loads(ln)
+                        parsed = safe_json_loads(ln)
                     except (TypeError, ValueError, RecursionError):
                         # RecursionError: leftover nested NDJSON row is not
                         # ValueError; skip it so siblings still list.
@@ -148,7 +148,7 @@ def docker_json(args: list[str], timeout=30) -> Any:
                     elif isinstance(parsed, dict):
                         objs.append(_jsonable(parsed))
                 return [x for x in objs if isinstance(x, dict)], 0, ""
-        parsed = json.loads(out)
+        parsed = safe_json_loads(out)
         if isinstance(parsed, list):
             return [
                 x for x in (_jsonable(row) for row in parsed if isinstance(row, dict))

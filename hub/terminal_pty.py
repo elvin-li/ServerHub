@@ -29,6 +29,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from hub.paths import DOCKER
 from hub import terminal_svc
 from hub.errors import exc_detail
+from hub.util import safe_json_loads
 from hub.websocket_security import authenticate_websocket
 
 MAX_SESSIONS = 4
@@ -86,7 +87,7 @@ def _safe_container(value: str | None) -> str:
 def _json_object(text: str) -> dict | None:
     """Control-plane JSON from the browser.  A list used to raise ``.get``."""
     try:
-        payload = json.loads(text)
+        payload = safe_json_loads(text, loads=json.loads)
     except (TypeError, ValueError, RecursionError):
         return None
     return payload if isinstance(payload, dict) else None

@@ -50,7 +50,7 @@ from hub.http_guard import (
     pinned_no_redirect_opener,
 )
 from hub.paths import DATA_DIR
-from hub.util import read_text_capped
+from hub.util import read_text_capped, safe_json_loads
 
 _OPENER = no_redirect_opener()
 
@@ -331,7 +331,7 @@ def _drop_leftover_nonfile(path) -> None:
 
 def _load_secrets() -> dict[str, dict]:
     try:
-        raw = json.loads(read_text_capped(SECRETS_FILE, _SECRETS_CAP, encoding="utf-8"))
+        raw = safe_json_loads(read_text_capped(SECRETS_FILE, _SECRETS_CAP, encoding="utf-8"))
         return raw if isinstance(raw, dict) else {}
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError

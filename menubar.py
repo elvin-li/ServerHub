@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 import rumps
 from rumps.rumps import NSApp
 
+from hub.util import safe_json_loads
+
 # Port must match the panel (install.sh writes SERVERHUB_PORT into the plist).
 API = f"http://127.0.0.1:{os.environ.get('SERVERHUB_PORT', '8086')}"
 #: install.sh writes local.serverhub.panel; older trees used the other two.
@@ -208,7 +210,7 @@ def _json(url, method="GET", data=None, timeout=10):
         if len(raw) > _BODY_CAP:
             return {}
         try:
-            return json.loads(raw)
+            return safe_json_loads(raw)
         except (ValueError, RecursionError, TypeError):
             return {}
 

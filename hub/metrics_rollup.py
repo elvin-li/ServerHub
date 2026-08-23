@@ -50,7 +50,7 @@ import time
 
 from hub import secure_io
 from hub.paths import DATA_DIR
-from hub.util import read_text_capped
+from hub.util import read_text_capped, safe_json_loads
 
 FILE_5M = DATA_DIR / "metrics-5m.jsonl"
 FILE_1H = DATA_DIR / "metrics-1h.jsonl"
@@ -220,7 +220,7 @@ def _first_row_ts(path) -> int | None:
         return None
     for ln in head.decode(errors="replace").splitlines():
         try:
-            t = _sample_ts(json.loads(ln).get("t"))
+            t = _sample_ts(safe_json_loads(ln).get("t"))
         except (json.JSONDecodeError, AttributeError, RecursionError):
             continue
         if t is not None:
@@ -240,7 +240,7 @@ def _last_row_ts(path) -> int | None:
         return None
     for ln in reversed(tail.decode(errors="replace").splitlines()):
         try:
-            t = _sample_ts(json.loads(ln).get("t"))
+            t = _sample_ts(safe_json_loads(ln).get("t"))
         except (json.JSONDecodeError, AttributeError, RecursionError):
             continue
         if t is not None:
@@ -278,7 +278,7 @@ def _rows_since(path, since_ts: int) -> list[dict]:
         covered = offset == 0
         for ln in lines:
             try:
-                o = json.loads(ln)
+                o = safe_json_loads(ln)
             except (json.JSONDecodeError, RecursionError):
                 continue
             t = _sample_ts(o.get("t") if isinstance(o, dict) else None)
@@ -364,7 +364,7 @@ def _load_state_locked() -> None:
         return
     saved: dict = {}
     try:
-        loaded = json.loads(read_text_capped(STATE_FILE, _STATE_CAP))
+        loaded = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP))
         if isinstance(loaded, dict):
             saved = loaded
     except (OSError, json.JSONDecodeError, ValueError, RecursionError):
@@ -478,7 +478,7 @@ def _maybe_trim_locked(tier: str, path, now: float) -> bool:
             for raw in fh:
                 ln = raw.decode("utf-8", "replace").rstrip("\n")
                 try:
-                    parsed = json.loads(ln)
+                    parsed = safe_json_loads(ln)
                 except (json.JSONDecodeError, RecursionError):
                     continue  # corrupt / leftover nested line: dropped with the trim
                 t = _sample_ts(parsed.get("t") if isinstance(parsed, dict) else None)

@@ -10,7 +10,7 @@ from hub import cli_args, vm_console
 from hub.config import override
 from hub.errors import api_error
 from hub.paths import ORBCTL, UTMCTL
-from hub.util import cached_snapshot, fan_out, port_open, sh
+from hub.util import cached_snapshot, fan_out, port_open, safe_json_loads, sh
 
 
 # Short TTL shared by status feed, bookmarks, and /api/vms (dedupe utmctl/orbctl).
@@ -296,9 +296,8 @@ def _list_orb_machines_uncached() -> list[dict]:
     items: list[dict] = []
     out = _as_text(out)
     if rc == 0 and out.strip().startswith(("[", "{")):
-        import json
         try:
-            data = json.loads(out)
+            data = safe_json_loads(out)
         except (TypeError, ValueError, RecursionError):
             # RecursionError: leftover deeply-nested ``orbctl list -f json``
             # is not ValueError; GET /api/vms used to 500.

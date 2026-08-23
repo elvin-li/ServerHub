@@ -4,6 +4,7 @@ from __future__ import annotations
 import errno
 import functools
 import inspect
+import json
 import logging
 import os
 import socket
@@ -387,6 +388,83 @@ def read_text_capped(
     if len(data) > cap:
         raise OSError(errno.EFBIG, "file exceeds read cap", str(p))
     return data
+
+
+#: Depth at which leftover JSON is treated as corrupt.  Python 3.14's
+#: ``json.loads`` is iterative and will build a 12k-deep tree; 3.12
+#: RecursionError'd around the C recursion limit (~1000).  256 is below
+#: that and far above any store this panel writes.
+JSON_MAX_DEPTH = 256
+
+_STR_QUOTE = '"'
+_STR_SLASH = "\\"
+_STR_OPEN = frozenset("{[")
+_STR_CLOSE = frozenset("}]")
+_BYTE_QUOTE = 0x22
+_BYTE_SLASH = 0x5C
+_BYTE_OPEN = frozenset((0x7B, 0x5B))
+_BYTE_CLOSE = frozenset((0x7D, 0x5D))
+
+
+def json_nesting_exceeds(raw, max_depth: int = JSON_MAX_DEPTH) -> bool:
+    """True when *raw* has more unquoted ``{`` / ``[`` than *max_depth*."""
+    try:
+        limit = int(max_depth)
+    except (TypeError, ValueError, OverflowError):
+        limit = JSON_MAX_DEPTH
+    if limit < 1:
+        return True
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        data = raw if not isinstance(raw, memoryview) else raw.tobytes()
+        quote, slash, openers, closers = (
+            _BYTE_QUOTE, _BYTE_SLASH, _BYTE_OPEN, _BYTE_CLOSE,
+        )
+    elif isinstance(raw, str):
+        data = raw
+        quote, slash, openers, closers = (
+            _STR_QUOTE, _STR_SLASH, _STR_OPEN, _STR_CLOSE,
+        )
+    else:
+        return False
+    depth = 0
+    in_str = False
+    escape = False
+    for ch in data:
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == slash:
+                escape = True
+            elif ch == quote:
+                in_str = False
+            continue
+        if ch == quote:
+            in_str = True
+        elif ch in openers:
+            depth += 1
+            if depth > limit:
+                return True
+        elif ch in closers and depth:
+            depth -= 1
+    return False
+
+
+def safe_json_loads(s, *, loads=None, max_depth: int = JSON_MAX_DEPTH, **kwargs):
+    """``json.loads`` that RecursionError's leftover deeply-nested documents.
+
+    Python 3.12's decoder RecursionError's around the C recursion limit.
+    Python 3.14's is iterative and returns the nest, so call sites that
+    catch RecursionError and return ``{}`` / skip would accept a huge
+    nested object.  Scan first; RecursionError stays the corrupt-document
+    signal on both versions.
+
+    *loads* is the decoder (default ``json.loads``) so tests that patch
+    ``module.json.loads`` still apply when the caller passes that name.
+    """
+    if json_nesting_exceeds(s, max_depth):
+        raise RecursionError("JSON nesting exceeds limit")
+    decoder = json.loads if loads is None else loads
+    return decoder(s, **kwargs)
 
 
 def read_bytes_capped(path, max_bytes: int) -> bytes:

@@ -33,7 +33,7 @@ from contextlib import contextmanager
 
 from hub import secure_io, totp
 from hub.paths import DATA_DIR
-from hub.util import read_text_capped
+from hub.util import read_text_capped, safe_json_loads
 
 #: Module-level so tests can point it at a scratch directory, same pattern as
 #: notify_channels.SECRETS_FILE.
@@ -207,7 +207,7 @@ def _persistable_entry(entry: dict) -> dict:
 
 def _load() -> dict[str, dict]:
     try:
-        raw = json.loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
+        raw = safe_json_loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); the login path reads this.

@@ -22,7 +22,7 @@ from hub.errors import api_error
 from hub.paths import AGENTS_DIR, BREW, user_home
 from hub.launchd_cache import invalidate_launchd
 from hub.proc_cache import invalidate_processes, ps_lines, ps_pid_commands
-from hub.util import fan_out, read_text_capped, sh, tail_file_lines, utf8_env
+from hub.util import fan_out, read_text_capped, safe_json_loads, sh, tail_file_lines, utf8_env
 
 def _probe_cf_bin() -> str:
     """First cloudflared path that is readable.  ``is_file`` EIO used to 500 import."""
@@ -107,7 +107,7 @@ def _compact_token_payload(text: str) -> dict | None:
     try:
         raw = text + "=" * (-len(text) % 4)
         data = base64.urlsafe_b64decode(raw.encode("ascii"))
-        obj = json.loads(data)
+        obj = safe_json_loads(data)
     except (ValueError, TypeError, RecursionError, OverflowError):
         return None
     if not isinstance(obj, dict):
@@ -312,7 +312,7 @@ def _load_state() -> dict:
     _ensure_dirs()
     if _path_is_file(STATE_FILE):
         try:
-            data = json.loads(read_text_capped(STATE_FILE, _STATE_CAP) or "{}")
+            data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP) or "{}")
         except (OSError, ValueError, RecursionError):
             # RecursionError: leftover deeply-nested tunnel state is not ValueError.
             return {}

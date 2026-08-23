@@ -19,7 +19,7 @@ from typing import Any
 
 from hub.paths import BREW, DATA_DIR
 from hub.secure_io import replace_bytes
-from hub.util import read_text_capped, sh, utf8_env
+from hub.util import read_text_capped, safe_json_loads, sh, utf8_env
 
 #: Service state changes only on user action, and every caller in a single
 #: request wants the same snapshot.
@@ -178,7 +178,7 @@ def _read_disk_file() -> list[dict] | None:
     `[]` as a fresh hit — every brew row vanished for the whole TTL.
     """
     try:
-        parsed = json.loads(read_text_capped(_DISK, _DISK_CAP))
+        parsed = safe_json_loads(read_text_capped(_DISK, _DISK_CAP))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested cache is not ValueError.
         return None
@@ -261,7 +261,7 @@ def _services_from_output(out) -> list[dict] | None:
         if not text:
             return None
         try:
-            parsed = json.loads(text)
+            parsed = safe_json_loads(text)
         except (ValueError, RecursionError):
             return None
     if not isinstance(parsed, list):
