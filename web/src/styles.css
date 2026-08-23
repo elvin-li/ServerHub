@@ -801,12 +801,14 @@ button.primary.loading::after { color: #fff; }
     padding-top: env(safe-area-inset-top);
     padding-left: max(12px, env(safe-area-inset-left));
     padding-right: max(12px, env(safe-area-inset-right));
-    /* Extra 16px hides a subpixel peek of the closed drawer (the 3px accent
-       border-left on the active item read as a full-height system-blue strip
-       once the header no longer covered it). Shadow only while open so a
-       closed drawer cannot paint at x=0. */
+    /* Extra 16px hides a subpixel peek of the closed drawer. visibility:hidden
+       also keeps WebKit from stroking an untransformed :focus-visible outline
+       as a full-height left accent. Shadow only while open so a closed drawer
+       cannot paint at x=0. */
     transform: translateX(calc(-100% - 16px));
-    transition: transform .28s cubic-bezier(.4,0,.2,1);
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform .28s cubic-bezier(.4,0,.2,1), visibility 0s linear .28s;
     z-index: 38;
     overflow-y: auto;
     box-shadow: none;
@@ -824,7 +826,10 @@ button.primary.loading::after { color: #fff; }
   }
   .top-nav.open {
     transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
     box-shadow: 4px 0 16px rgba(0,0,0,.3);
+    transition: transform .28s cubic-bezier(.4,0,.2,1), visibility 0s;
   }
   .top-nav a {
     display: flex; align-items: center; gap: 7px;
@@ -833,7 +838,7 @@ button.primary.loading::after { color: #fff; }
     padding: 14px 16px;
     font-size: 15px;
     border-bottom: none;
-    border-left: 3px solid transparent;
+    border-left: none;
     letter-spacing: .3px;
     line-height: 1;
     /* If a translation ever does overflow, ellipsis beats a reflowed two-line
@@ -842,7 +847,10 @@ button.primary.loading::after { color: #fff; }
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .top-nav a.active {
+  .top-nav.open a {
+    border-left: 3px solid transparent;
+  }
+  .top-nav.open a.active {
     border-left-color: var(--accent);
     border-bottom: none;
   }
@@ -1259,13 +1267,25 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 input:focus-visible, select:focus-visible { outline: none; }
 /* Page chrome is not a control. A UA / :focus-visible ring on these boxes is a
    full-height accent stroke; the fixed header covers the top so only the left
-   edge reads as a system-blue strip. */
+   edge reads as a system-blue strip. Always-off outline on the shell, then
+   focus suppress including .topchrome / .top-nav. Keep global :focus-visible
+   on real controls. */
+html, body, #app, .layout, .main,
+.topchrome, .topchrome-inner, .subchrome, .top-nav {
+  outline: none;
+}
 html:focus, html:focus-visible,
 body:focus, body:focus-visible,
 #app:focus, #app:focus-visible,
 .layout:focus, .layout:focus-visible,
-.main:focus, .main:focus-visible {
+.main:focus, .main:focus-visible,
+.topchrome:focus, .topchrome:focus-visible,
+.topchrome-inner:focus, .topchrome-inner:focus-visible,
+.subchrome:focus, .subchrome:focus-visible,
+.top-nav:focus, .top-nav:focus-visible,
+.main > div:focus, .main > div:focus-visible {
   outline: none;
+  box-shadow: none;
 }
 
 /* status LED — Unraid style with glow */
@@ -1842,11 +1862,14 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .subchrome-inner a.active::after {
   content: "";
   position: absolute;
-  inset: auto 10px 0 10px;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
   top: auto;
   width: auto;
   height: 2px;
   max-height: 2px;
+  max-width: calc(100% - 20px);
   background: var(--accent);
   border-radius: 1px;
   pointer-events: none;
@@ -1936,13 +1959,14 @@ img[loading="lazy"][complete] {
   [data-theme="macos-dark"] .top-nav a.active::after {
     content: none;
   }
-  /* Restore the drawer’s 3px leading mark; the desktop rule above zeroes it. */
-  [data-theme="macos"] .top-nav a,
-  [data-theme="macos-dark"] .top-nav a {
+  /* Restore the drawer’s 3px leading mark only while open; a closed drawer
+     keeping the border can subpixel-peek at x=0. */
+  [data-theme="macos"] .top-nav.open a,
+  [data-theme="macos-dark"] .top-nav.open a {
     border-left: 3px solid transparent;
   }
-  [data-theme="macos"] .top-nav a.active,
-  [data-theme="macos-dark"] .top-nav a.active {
+  [data-theme="macos"] .top-nav.open a.active,
+  [data-theme="macos-dark"] .top-nav.open a.active {
     border-left-color: var(--accent);
   }
 }

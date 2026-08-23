@@ -782,10 +782,12 @@ class TestDashboardCollectorIsolation(unittest.TestCase):
             patch.object(sensors_svc, "_network_rates", return_value={}),
             patch.object(sensors_svc, "_top_processes", return_value=[]),
             patch.object(sensors_svc, "_uptime", return_value={"uptime_text": "1h"}),
+            patch.object(sensors_svc, "_gpu", return_value=None),
         ):
             data = sensors_svc._collect_sensors_uncached()
         self.assertEqual(data["disk"]["root_pct"], 11)
         self.assertIsNone(data["cpu"]["thermal"])
+        self.assertIsNone(data["gpu"])
 
     def test_uptime_tolerates_a_malformed_boottime(self):
         with patch.object(sensors_svc, "sh", return_value=(0, "sec = not-a-number, usec = 0", "")):

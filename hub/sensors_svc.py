@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import plistlib
 import re
 import shutil
 import threading
@@ -235,7 +236,7 @@ _net_prev = {"t": 0.0, "rx": 0, "tx": 0}
 # hw.ncpu / memsize / pagesize almost never change at runtime
 _static = {"t": 0.0, "ncpu": None, "mem_gb": None, "page_size": 16384}
 _STATIC_TTL = 300.0
-_pool = LazyPool(8, "hub-sensors")
+_pool = LazyPool(9, "hub-sensors")
 
 
 def shutdown_executor() -> None:
@@ -609,6 +610,98 @@ def _thermal() -> dict | None:
     }
 
 
+def _nonneg_bytes(value) -> int | None:
+    """Non-negative byte count, or None for leftovers that would 500 JSON."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= 2**62 else None
+    n = _finite_float(value)
+    if n is None:
+        return None
+    try:
+        i = int(n)
+    except (OverflowError, ValueError):
+        return None
+    return i if 0 <= i <= 2**62 else None
+
+
+def _gpu_model(entry: dict) -> str | None:
+    for key in ("model", "Model", "IORegistryEntryName", "IONameMatched"):
+        raw = entry.get(key)
+        if raw is None:
+            continue
+        text = _utf8_text(raw).strip()
+        if text and text != "IOAccelerator":
+            return text[:80]
+    return None
+
+
+def _iter_ioreg_dicts(value, depth: int = 0):
+    if depth > 6 or value is None:
+        return
+    if isinstance(value, dict):
+        yield value
+        for v in value.values():
+            yield from _iter_ioreg_dicts(v, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_ioreg_dicts(item, depth + 1)
+
+
+def _gpu() -> dict | None:
+    """Best-effort GPU util / memory from IOAccelerator (macOS IORegistry).
+
+    ``ioreg -a`` is an XML plist. Failures return None so GET /api/system/sensors
+    never 500s when the accelerator is missing or the plist is leftover junk.
+    """
+    try:
+        rc, out, _ = sh(
+            ["/usr/sbin/ioreg", "-a", "-r", "-d", "1", "-c", "IOAccelerator"],
+            timeout=4,
+        )
+        if rc != 0 or not out:
+            return None
+        raw = out.encode("utf-8", "replace") if isinstance(out, str) else out
+        parsed = plistlib.loads(raw)
+
+        best = None
+        best_score = -1.0
+        for entry in _iter_ioreg_dicts(parsed):
+            if not isinstance(entry, dict):
+                continue
+            stats = entry.get("PerformanceStatistics")
+            if not isinstance(stats, dict):
+                stats = {}
+            util_raw = stats.get("Device Utilization %")
+            util = None if isinstance(util_raw, bool) else _finite_float(util_raw)
+            used = _nonneg_bytes(stats.get("In use system memory"))
+            alloc = _nonneg_bytes(stats.get("Alloc system memory"))
+            model = _gpu_model(entry)
+            if util is None and used is None and alloc is None and not model:
+                continue
+            score = 0.0
+            if util is not None:
+                score += 1000.0
+            if alloc is not None:
+                score += min(alloc, 10**15) / 10**9
+            if used is not None:
+                score += 1.0
+            if model:
+                score += 0.1
+            if score > best_score:
+                best_score = score
+                best = {
+                    "util_pct": None if util is None else round(util, 1),
+                    "mem_used_bytes": used,
+                    "mem_alloc_bytes": alloc,
+                    "model": model,
+                }
+        return best
+    except Exception:
+        return None
+
+
 def _uptime() -> dict:
     rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
     hours = 0.0
@@ -714,6 +807,8 @@ def collect_light() -> dict:
         "disk": disk,
         "network": {},
         "top_processes": [],
+        # ioreg GPU is cheap vs top; light ticks still need util for the CPU card.
+        "gpu": _gpu(),
         "cpu_used_pct": cpu_used,
         "load1": load1,
         "load5": load5,
@@ -746,6 +841,7 @@ def _collect_sensors_uncached() -> dict:
     f_top = _pool.submit(_cpu_and_mem_from_top_cached)
     f_cpu = _pool.submit(_cpu_from_ticks)
     f_thermal = _pool.submit(_thermal)
+    f_gpu = _pool.submit(_gpu)
     f_net = _pool.submit(_network_rates)
     f_procs = _pool.submit(_top_processes, 8)
     f_up = _pool.submit(_uptime)
@@ -762,6 +858,7 @@ def _collect_sensors_uncached() -> dict:
     top = _result(f_top, {}) or {}
     cpu_ticks = _result(f_cpu, {}) or {}
     thermal = _result(f_thermal, None)
+    gpu = _result(f_gpu, None)
     net = _result(f_net, {}) or {}
     procs = _result(f_procs, []) or []
     up = _result(f_up, {}) or {}
@@ -886,6 +983,7 @@ def _collect_sensors_uncached() -> dict:
         "network": net,
         "top_processes": procs,
         "thermal": thermal,
+        "gpu": gpu,
         # backward-compat flat fields used by existing UI
         "cpu_used_pct": cpu_used_pct,
         "load1": load1,

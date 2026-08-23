@@ -335,11 +335,32 @@ describe('theme', () => {
     })
 
     it('does not paint an accent focus ring on the page chrome', () => {
-      // A :focus-visible ring on #app/.layout/.main is a full-height accent
-      // stroke; the fixed header covers the top so only the left edge shows.
+      // A :focus-visible ring on #app/.layout/.main/.top-nav is a full-height
+      // accent stroke; the fixed header covers the top so only the left edge
+      // shows. Shell nodes also keep outline always off.
+      expect(css).toMatch(
+        /html, body, #app, \.layout, \.main,\s*\.topchrome, \.topchrome-inner, \.subchrome, \.top-nav \{[\s\S]*?outline:\s*none/,
+      )
       expect(css).toMatch(/#app:focus-visible[\s\S]*?outline:\s*none/)
       expect(css).toMatch(/\.layout:focus-visible[\s\S]*?outline:\s*none/)
       expect(css).toMatch(/\.main:focus-visible[\s\S]*?outline:\s*none/)
+      expect(css).toMatch(/\.topchrome:focus-visible[\s\S]*?outline:\s*none/)
+      expect(css).toMatch(/\.top-nav:focus-visible[\s\S]*?outline:\s*none/)
+    })
+
+    it('hides the closed phone drawer and paints the accent mark only while open', () => {
+      expect(css).toMatch(
+        /@media \(max-width: 640px\) \{[\s\S]*?\.top-nav \{[\s\S]*?visibility:\s*hidden/,
+      )
+      expect(css).toMatch(
+        /@media \(max-width: 640px\) \{[\s\S]*?\.top-nav\.open \{[\s\S]*?visibility:\s*visible/,
+      )
+      expect(css).toMatch(
+        /\.top-nav\.open a \{[\s\S]*?border-left:\s*3px solid transparent/,
+      )
+      expect(css).toMatch(
+        /\.top-nav\.open a\.active \{[\s\S]*?border-left-color:\s*var\(--accent\)/,
+      )
     })
 
     it('renders macos tabs as a segmented well, not underline-only pills', () => {

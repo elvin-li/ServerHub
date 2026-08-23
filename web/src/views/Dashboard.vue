@@ -237,11 +237,19 @@
               <span>{{ t('dashboard.load_avg') }}</span>
               <b>{{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}</b>
             </div>
+            <div v-if="gpuUtilPct != null" class="am-row" data-test="gpu-util">
+              <span>{{ t('dashboard.gpu') }}</span>
+              <b>{{ fmtN(gpuUtilPct) }}%</b>
+            </div>
+            <div v-if="gpuMemLabel" class="am-row" data-test="gpu-mem">
+              <span>{{ t('dashboard.gpu_memory') }}</span>
+              <b>{{ gpuMemLabel }}</b>
+            </div>
           </div>
           <div class="am-monitor-chart">
             <LineChart
               class="am-chart"
-              :height="112"
+              :height="AM_CHART_HEIGHT"
               fill
               :min="0"
               :max="100"
@@ -264,6 +272,8 @@
             <div><span>sys</span><b>{{ fmtN(cpu.sys) }}%</b></div>
             <div><span>idle</span><b>{{ fmtN(cpu.idle) }}%</b></div>
             <div><span>{{ t('dashboard.thermal_status') }}</span><b :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</b></div>
+            <div v-if="gpuUtilPct != null" data-test="gpu-compact-util"><span>{{ t('dashboard.gpu') }}</span><b>{{ fmtN(gpuUtilPct) }}%</b></div>
+            <div v-if="gpuMemLabel" data-test="gpu-compact-mem"><span>{{ t('dashboard.gpu_memory') }}</span><b>{{ gpuMemLabel }}</b></div>
           </div>
           <StackBar
             :segments="cpuStack"
@@ -334,7 +344,7 @@
           <div class="am-monitor-chart">
             <LineChart
               class="am-chart"
-              :height="isMacSurface ? 112 : 72"
+              :height="isMacSurface ? AM_CHART_HEIGHT : 72"
               :fill="isMacSurface"
               :min="0"
               :max="100"
@@ -354,7 +364,7 @@
           {{ t('dashboard.disk_smart') }}
           <span class="tile-tools">
             <span class="badge" :class="barClass(diskPct) || ''">{{ withUnit(diskPct, '%') }}</span>
-            <span class="badge" :class="smartSummaryClass">{{ smartSummary }}</span>
+            <span class="badge" :class="smartSummaryClass" :title="smartSummaryTitle" :aria-label="smartSummaryTitle">{{ smartSummary }}</span>
           </span>
         </h3>
         <div class="am-monitor am-disk">
@@ -372,11 +382,16 @@
                   <strong :title="finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id)">{{ finiteText(d.name, '') || finiteText(d.smart?.model, '') || finiteText(d.id) }}</strong>
                   <span class="disk-primary-meta">
                     <span v-if="formatDiskSize(d)" class="disk-capacity">{{ formatDiskSize(d) }}</span>
-                    <span class="badge" :class="smartBadgeClass(d)">{{ smartHealthLabel(d) }}</span>
+                    <span
+                      class="badge"
+                      :class="smartBadgeClass(d)"
+                      :title="smartHealthTitle(d)"
+                      :aria-label="smartHealthTitle(d)"
+                    >{{ smartHealthLabel(d) }}</span>
                   </span>
                 </div>
                 <div v-if="d.smart" class="disk-facts">
-                  <span class="disk-temp">{{ finiteText(d.smart.temp) }}</span>
+                  <span class="disk-temp" :title="formatSmartTemp(d.smart.temp)">{{ formatSmartTemp(d.smart.temp) }}</span>
                   <span>{{ t('dashboard.wear') }} <b>{{ finiteText(d.smart.wear) }}</b></span>
                   <span>{{ t('dashboard.written') }} <b>{{ finiteText(d.smart.written) }}</b></span>
                   <span v-if="finiteN(d.smart.media_errors, null) != null">{{ t('dashboard.media_errors') }} <b>{{ finiteN(d.smart.media_errors) }}</b></span>
@@ -390,7 +405,7 @@
           <div class="am-monitor-chart">
             <LineChart
               class="am-chart"
-              :height="isMacSurface ? 112 : 52"
+              :height="isMacSurface ? AM_CHART_HEIGHT : 52"
               :fill="isMacSurface"
               :min="0"
               :max="100"
@@ -722,6 +737,7 @@ const isMacSurface = computed(() => {
   const id = theme.value === 'system' ? resolveThemeId('system') : theme.value
   return id === 'macos' || id === 'macos-dark'
 })
+const AM_CHART_HEIGHT = 88
 
 // Member sessions render the reduced services-only dashboard; the router
 // guard refreshed authState before this component was allowed to mount.
@@ -841,6 +857,22 @@ const thermalStatus = computed(() =>
     : (thermal.value.pressure === 'normal' ? t('dashboard.thermal_normal') : t('dashboard.thermal_unknown'))
 )
 const cpuTempC = computed(() => finiteN(thermal.value.cpu_temp_c, null))
+const gpu = computed(() => {
+  const raw = sensors.value?.gpu
+  return raw && typeof raw === 'object' ? raw : null
+})
+const gpuUtilPct = computed(() => finiteN(gpu.value?.util_pct, null))
+function gpuBytesToGb(bytes) {
+  const n = finiteN(bytes, null)
+  if (n == null || n < 0) return null
+  return Math.round((n / (1024 ** 3)) * 10) / 10
+}
+const gpuMemLabel = computed(() => {
+  const used = gpuBytesToGb(gpu.value?.mem_used_bytes)
+  const alloc = gpuBytesToGb(gpu.value?.mem_alloc_bytes)
+  if (used == null && alloc == null) return ''
+  return `${used == null ? '—' : fmtN(used)} / ${alloc == null ? '—' : fmtN(alloc)} GB`
+})
 function smartIsOk(d) {
   const h = String(d?.smart?.health || '').toUpperCase()
   return !!d?.smart && (h.includes('PASSED') || h === 'OK')
@@ -851,7 +883,29 @@ function smartBadgeClass(d) {
 }
 function smartHealthLabel(d) {
   if (!d?.smart) return t('dashboard.smart_na')
-  return smartIsOk(d) ? t('dashboard.smart_passed') : (finiteText(d.smart.health, '') || t('dashboard.smart_warning'))
+  return smartIsOk(d) ? t('dashboard.smart_passed') : t('dashboard.smart_warning')
+}
+function smartHealthTitle(d) {
+  if (!d?.smart) return t('dashboard.smart_na_title')
+  if (smartIsOk(d)) return t('dashboard.smart_passed_title')
+  return finiteText(d.smart.health, '') || t('dashboard.smart_warning_title')
+}
+function formatSmartTemp(raw) {
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) return '—'
+    return `${formatSmartTempNumber(raw)}°C`
+  }
+  const text = finiteText(raw, '')
+  if (!text) return finiteText(raw)
+  const m = String(text).replace(/,/g, '').match(/-?\d+(?:\.\d+)?/)
+  if (!m) return finiteText(raw)
+  const n = Number(m[0])
+  if (!Number.isFinite(n)) return finiteText(raw)
+  return `${formatSmartTempNumber(n)}°C`
+}
+function formatSmartTempNumber(n) {
+  const r = Math.round(n)
+  return Math.abs(n - r) < 1e-6 ? String(r) : String(Math.round(n * 10) / 10)
 }
 function formatDiskSize(d) {
   const labeled = finiteText(d?.size, '')
@@ -870,6 +924,10 @@ const smartReadableCount = computed(() => smartDisks.value.filter(d => d.smart).
 const smartHasWarning = computed(() => smartDisks.value.some(d => d.smart && !smartIsOk(d)))
 const smartSummaryClass = computed(() => smartHasWarning.value ? 'down' : (smartReadableCount.value ? 'ok' : ''))
 const smartSummary = computed(() => t('dashboard.smart_summary', {
+  ok: smartReadableCount.value,
+  total: smartDisks.value.length,
+}))
+const smartSummaryTitle = computed(() => t('dashboard.smart_summary_title', {
   ok: smartReadableCount.value,
   total: smartDisks.value.length,
 }))
@@ -1572,7 +1630,7 @@ onUnmounted(() => {
 :global([data-theme="macos"] .disk-item),
 :global([data-theme="macos-dark"] .disk-item) {
   border-radius: 0;
-  padding: 4px 0;
+  padding: 2px 0;
 }
 :global([data-theme="macos"]) table.top-cpu,
 :global([data-theme="macos-dark"]) table.top-cpu {
@@ -1655,23 +1713,23 @@ onUnmounted(() => {
   flex: 1 1 auto;
   min-height: 0;
 }
-.am-surface .am-monitor-chart { min-height: 112px; }
+.am-surface .am-monitor-chart { min-height: 88px; }
 .am-surface .am-monitor,
 .am-surface .am-monitor.chart-first {
-  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(108px, 0.72fr) minmax(0, 1.65fr);
   grid-template-areas: "stats chart";
-  gap: 8px 12px;
+  gap: 6px 10px;
   margin: 0;
 }
 .am-surface .am-monitor.am-cpu {
-  grid-template-columns: minmax(min-content, 0.9fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(min-content, 0.72fr) minmax(0, 1.65fr);
 }
 .am-monitor .cpu-head { margin-bottom: 2px; }
 .am-cpu .am-monitor-stats {
-  gap: 2px;
+  gap: 1px;
   min-width: min-content;
 }
-.am-cpu .am-monitor-stats > .cpu-head { margin-bottom: 6px; }
+.am-cpu .am-monitor-stats > .cpu-head { margin-bottom: 2px; }
 .am-cpu :deep(.lc-legend) { display: none; }
 .am-mem :deep(.lc-legend) { display: none; }
 .am-disk .am-monitor-chart { position: relative; }
@@ -1691,12 +1749,12 @@ onUnmounted(() => {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   box-sizing: border-box;
   padding: 0;
-  line-height: 1.35;
-  font-size: 12px;
+  line-height: 1.2;
+  font-size: 11px;
   white-space: nowrap;
 }
 .am-row span {
@@ -1708,7 +1766,7 @@ onUnmounted(() => {
   flex: 0 0 auto;
   margin-left: auto;
   text-align: right;
-  font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
   color: var(--txt);
 }
@@ -1724,12 +1782,18 @@ onUnmounted(() => {
 }
 .am-chart { margin-top: 6px; }
 .am-monitor-chart .am-chart { margin-top: 0; min-width: 0; width: 100%; }
+.am-surface .am-monitor-chart :deep(.lc-title) {
+  margin-bottom: 2px;
+  padding-bottom: 0;
+}
+.am-surface .am-monitor-chart :deep(.lc-plot) { min-height: 0; }
 .am-surface .res-head {
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 4px;
+  margin-bottom: 4px;
 }
+.am-surface .big { font-size: 24px; }
 .am-surface .res-side { width: 100%; }
 .am-surface .kv-mini {
   width: 100%;
@@ -1738,12 +1802,12 @@ onUnmounted(() => {
 }
 .am-surface .kv-mini span {
   color: var(--txt);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
 }
 .am-surface .kv-mini b {
-  font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1762,7 +1826,7 @@ onUnmounted(() => {
   border-radius: 0;
 }
 .am-surface .mb .k {
-  font-size: 12px;
+  font-size: 11px;
   text-transform: none;
   letter-spacing: 0;
   color: var(--txt);
@@ -1771,7 +1835,7 @@ onUnmounted(() => {
 }
 .am-surface .mb .v {
   margin-top: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -1780,9 +1844,9 @@ onUnmounted(() => {
 .am-monitor-stats > .pct-bar { margin-top: 0; }
 .am-monitor-stats > .disk-list,
 .am-monitor-stats > .mem-break { margin-top: 0; }
-.am-surface .disk-list { gap: 2px; }
+.am-surface .disk-list { gap: 1px; }
 .am-surface .disk-item {
-  padding: 4px 0;
+  padding: 2px 0;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -1895,13 +1959,14 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .temp-warn { color: var(--warn) !important; }
 .disk-head { align-items: end; }
 .disk-head .sub { margin: 0; white-space: nowrap; }
-.disk-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-.disk-item { min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
-.disk-primary { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.disk-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.disk-item { min-width: 0; padding: 3px 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
+.disk-primary { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
 .disk-primary strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.disk-primary-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
+.disk-primary-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; }
+.disk-primary-meta .badge { padding: 1px 5px; min-width: 1.15em; text-align: center; letter-spacing: 0; }
 .disk-capacity { color: var(--txt); font: 700 10px ui-monospace, Menlo, monospace; white-space: nowrap; }
-.disk-facts { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 3px; color: var(--sub); font-size: 10px; line-height: 1.3; }
+.disk-facts { display: flex; flex-wrap: wrap; gap: 0 6px; margin-top: 1px; color: var(--sub); font-size: 10px; line-height: 1.3; }
 .disk-facts b { color: var(--txt); font-family: ui-monospace, Menlo, monospace; }
 .disk-temp { color: var(--txt); font-weight: 700; font-family: ui-monospace, Menlo, monospace; }
 .disk-unavailable, .disk-empty { margin-top: 2px; color: var(--sub); font-size: 10px; line-height: 1.25; }

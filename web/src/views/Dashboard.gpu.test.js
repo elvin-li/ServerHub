@@ -1,0 +1,155 @@
+/**
+ * Overview CPU card: live GPU rows under the metric list, denser mac charts.
+ */
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { applyAuthStatus } from '../lib/authState'
+import en from '../i18n/en.js'
+import ja from '../i18n/ja.js'
+import zhCN from '../i18n/zh-CN.js'
+
+const locale = vi.hoisted(() => ({
+  t: (key) => key,
+}))
+const themeId = vi.hoisted(() => ({ value: 'macos' }))
+
+vi.mock('../api/client', () => ({
+  doAction: vi.fn(),
+  getAlerts: vi.fn(async () => ({ alerts: [] })),
+  getBookmarks: vi.fn(async () => ({ bookmarks: [] })),
+  getContainers: vi.fn(async () => ({ containers: [], stats: {} })),
+  getHealthChecks: vi.fn(async () => ({ summary: { ok: 0, warn: 0, error: 0 }, checks: [] })),
+  getHost: vi.fn(async () => ({ hostname: 'test-host', ncpu: 8 })),
+  getListeningPorts: vi.fn(async () => ({ ports: [] })),
+  getMetricsRange: vi.fn(async () => ({ points: [], tier: 'raw', since: 0, until: 1 })),
+  getPower: vi.fn(async () => ({})),
+  getSensors: vi.fn(async () => ({ cpu: {}, memory: {}, network: {} })),
+  getStatus: vi.fn(async () => ({ groups: [] })),
+  getStorage: vi.fn(async () => ({ volumes: [], disks: [] })),
+  getUps: vi.fn(async () => ({ present: false })),
+  getOllamaStatus: vi.fn(async () => ({ installed: false, reachable: false })),
+  powerAction: vi.fn(),
+  setSystemSharing: vi.fn(),
+}))
+vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
+vi.mock('../theme', () => ({
+  injectTheme: () => ({
+    theme: themeId,
+    resolveThemeId: (id) => id,
+    themes: [],
+    setTheme: vi.fn(),
+  }),
+}))
+vi.mock('../i18n', () => ({
+  injectI18n: () => ({
+    t: (key, params = {}) => locale.t(key, params),
+    errText: (v) => String(v),
+  }),
+}))
+
+const { getSensors } = await import('../api/client')
+const Dashboard = (await import('./Dashboard.vue')).default
+
+const GPU = {
+  util_pct: 68,
+  mem_used_bytes: 1159086080,
+  mem_alloc_bytes: 8613429248,
+  model: 'Apple M1 Pro',
+}
+
+async function render() {
+  const wrapper = mount(Dashboard, {
+    global: {
+      provide: { toast: () => {} },
+      stubs: {
+        RouterLink: { template: '<a class="router-link-stub" :href="to"><slot /></a>', props: ['to'] },
+        LineChart: {
+          props: ['height', 'fill'],
+          template: '<div class="lc-stub" :data-height="height"></div>',
+        },
+        StackBar: true,
+      },
+    },
+  })
+  await flushPromises()
+  await flushPromises()
+  return wrapper
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  applyAuthStatus({ authenticated: false })
+  themeId.value = 'macos'
+  locale.t = (key, params = {}) => {
+    const text = key.split('.').reduce((o, k) => (o == null ? o : o[k]), en)
+    return Object.entries(params).reduce(
+      (out, [name, value]) => out.replace(`{${name}}`, value),
+      String(text ?? key),
+    )
+  }
+  getSensors.mockResolvedValue({
+    cpu: { user: 10, sys: 5, idle: 85, used_pct: 15, load1: 1, load5: 1, load15: 1 },
+    memory: {},
+    network: {},
+    gpu: GPU,
+  })
+})
+
+afterEach(() => {
+  applyAuthStatus({ authenticated: false })
+  vi.clearAllMocks()
+})
+
+describe('Dashboard GPU density', () => {
+  it('ships GPU strings in every locale and keeps SMART shortening', () => {
+    expect(zhCN.dashboard.gpu).toBe('GPU')
+    expect(zhCN.dashboard.gpu_memory).toBe('GPU 内存')
+    expect(en.dashboard.gpu).toBe('GPU')
+    expect(en.dashboard.gpu_memory).toBe('GPU memory')
+    expect(ja.dashboard.gpu).toBe('GPU')
+    expect(ja.dashboard.gpu_memory).toBe('GPUメモリ')
+    for (const dict of [zhCN, en, ja]) {
+      expect(dict.dashboard.smart_passed).toBe('S')
+      expect(dict.dashboard.smart_summary).toBe('{ok}/{total} S')
+    }
+  })
+
+  it('shows GPU util and memory under the load row on the mac CPU card', async () => {
+    const wrapper = await render()
+    const util = wrapper.get('[data-test="gpu-util"]')
+    expect(util.text()).toContain('GPU')
+    expect(util.text()).toContain('68%')
+    const mem = wrapper.get('[data-test="gpu-mem"]')
+    expect(mem.text()).toContain('GPU memory')
+    expect(mem.text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
+    const heights = wrapper.findAll('.lc-stub').map((n) => n.attributes('data-height'))
+    expect(heights).toEqual(['88', '88', '88'])
+    wrapper.unmount()
+  })
+
+  it('hides GPU util when null and memory when both fields are null', async () => {
+    getSensors.mockResolvedValue({
+      cpu: { user: 1, sys: 1, idle: 98 },
+      memory: {},
+      network: {},
+      gpu: { util_pct: null, mem_used_bytes: null, mem_alloc_bytes: null, model: 'Apple M1 Pro' },
+    })
+    const wrapper = await render()
+    expect(wrapper.find('[data-test="gpu-util"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="gpu-mem"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows the memory row when only one of used/alloc is present', async () => {
+    getSensors.mockResolvedValue({
+      cpu: { user: 1, sys: 1, idle: 98 },
+      memory: {},
+      network: {},
+      gpu: { util_pct: null, mem_used_bytes: 2 * 1024 ** 3, mem_alloc_bytes: null, model: 'Apple M1 Pro' },
+    })
+    const wrapper = await render()
+    expect(wrapper.find('[data-test="gpu-util"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="gpu-mem"]').text()).toMatch(/2(\.0)?\s*\/\s*— GB/)
+    wrapper.unmount()
+  })
+})
