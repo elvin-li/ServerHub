@@ -919,6 +919,10 @@ class HealthPortTests(unittest.TestCase):
         self.assertNotIn(8086, ports)
 
 
+#: Ubuntu CI has no /bin/zsh; a present path keeps a running pid in state ok.
+_PRESENT_EXE = "/bin/sh" if Path("/bin/sh").exists() else sys.executable
+
+
 class LaunchdDiscoveryTests(unittest.TestCase):
     """Two network stages per agent used to sit in one serial loop.
 
@@ -977,7 +981,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 self.launchd, "enrich_service", enrich_impl or default_enrich
             ),
             mock.patch.object(self.launchd, "resolve_template", lambda u: u),
-            mock.patch.object(self.launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
+            mock.patch.object(self.launchd, "pid_exe_path", lambda pid: _PRESENT_EXE),
             mock.patch.object(self.launchd, "_http_alive", lambda port: True),
         ):
             started = time.time()

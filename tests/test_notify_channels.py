@@ -452,7 +452,9 @@ class SenderTests(_Sandbox):
 
         with mock.patch.object(
             notify_channels, "_open_request", side_effect=Recursing(),
-        ):
+        ), mock.patch("hub.http_guard.socket.getaddrinfo", return_value=[
+            (__import__("socket").AF_INET, __import__("socket").SOCK_STREAM, 0, "", ("203.0.113.10", 0)),
+        ]):
             res = notify_channels._post("https://hooks.example.com/x", {"a": 1})
         self.assertFalse(res["ok"])
         json.dumps(res, ensure_ascii=False, allow_nan=False).encode("utf-8")

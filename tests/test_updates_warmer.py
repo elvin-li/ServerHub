@@ -121,7 +121,9 @@ class BrewBusySkipTests(unittest.TestCase):
         tools_svc._updates_cache.update(t=time.time(), v={
             "brew": {"ok": True, "outdated": ["wget"], "count": 1, "raw": ""},
         })
+        brew = "/bin/sh" if Path("/bin/sh").exists() else sys.executable
         with (
+            patch.object(tools_svc, "BREW", brew),
             patch.object(tools_svc, "_brew_busy", return_value=True),
             patch.object(tools_svc, "sh", side_effect=AssertionError("brew must not start")),
         ):

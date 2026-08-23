@@ -167,7 +167,8 @@ class BrewOutdatedCooldownTests(unittest.TestCase):
         )
         self.addCleanup(svc._updates_cache.update, t=0.0, v=None)
         svc._brew_retry_at = svc.time.time() + 60
-        with patch.object(svc, "sh") as sh:
+        brew = "/bin/sh" if Path("/bin/sh").exists() else sys.executable
+        with patch.object(svc, "BREW", brew), patch.object(svc, "sh") as sh:
             out = svc._brew_outdated()
         sh.assert_not_called()
         self.assertEqual(out["raw"], "timeout")

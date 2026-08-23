@@ -25,12 +25,13 @@ These tests pin the properties that make the check trustworthy:
   that config (LIVE_FRESHNESS_TARGETS below is a verbatim fixture copy of it).
   ``test_live_yaml_gravity_marker_matches_fixture`` greps the live pattern
   line (never yaml.safe_load -- secrets) so fixture-vs-live drift cannot
-  go green.  Missing services.yaml (gitignored on a fresh checkout) skips.
+  go green.  Missing services.yaml, or an example/bootstrap file with no
+  gravity-rotate-logs, skips.
 
 Everything runs against a temp directory; no test stat()s the host's real
 backups.  The one live-file read is the pattern-line grep above, skipped
-when services.yaml is absent, so the rest of the suite is green regardless
-of what state this machine's archives are in.
+when services.yaml is absent or is the example bootstrap, so the rest of
+the suite is green regardless of what state this machine's archives are in.
 """
 from __future__ import annotations
 
@@ -438,11 +439,18 @@ class ConfiguredTargetsTests(unittest.TestCase):
     def test_live_yaml_gravity_marker_matches_fixture(self):
         """services.yaml 的 gravity-rotate-logs pattern 必须与夹具同字,
         否则热加载看着绿、夹具却还盯着 freshness.log。不 yaml.safe_load
-        整文件(里面有凭据)。"""
+        整文件(里面有凭据)。
+
+        This is a this-host live-config drift guard. Fresh CI checkouts
+        bootstrap services.yaml from the example (no gravity-rotate-logs);
+        skip there rather than grepping an empty table.
+        """
         yaml_path = BASE / "services.yaml"
         if not yaml_path.exists():
             self.skipTest("no live services.yaml in this checkout")
         text = yaml_path.read_text(encoding="utf-8")
+        if "gravity-rotate-logs" not in text:
+            self.skipTest("live services.yaml has no gravity-rotate-logs (example/bootstrap)")
         expected = LIVE_FRESHNESS_TARGETS[-1]["pattern"]
         self.assertEqual(LIVE_FRESHNESS_TARGETS[-1]["id"], "gravity-rotate-logs")
         self.assertIn("pattern: " + expected, text)

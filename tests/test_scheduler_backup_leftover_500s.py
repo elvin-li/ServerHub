@@ -598,6 +598,14 @@ class BackupLeftoverTests(unittest.TestCase):
 
 
 class BackupStateJsonLeftoverTests(unittest.TestCase):
+    #: Ubuntu CI has no Immich ``backup-db.sh``. A present executable sets
+    #: ``via="script"`` so GET /api/backups still returns ``layers``. Hosts
+    #: without Immich keep ``layers: None``; this patch is test-only.
+    _PRESENT_SCRIPT = Path("/bin/sh")
+
+    def _immich_via_script(self):
+        return mock.patch.object(backups, "IMMICH_SCRIPT", self._PRESENT_SCRIPT)
+
     def test_inf_backup_status_does_not_500_the_page(self):
         root = Path(tempfile.mkdtemp(prefix="serverhub-bak-state-"))
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
@@ -614,6 +622,7 @@ class BackupStateJsonLeftoverTests(unittest.TestCase):
             encoding="utf-8",
         )
         with (
+            self._immich_via_script(),
             mock.patch.object(backups, "PHOTOSHUB_CFG", root / "missing.json"),
             mock.patch.object(backups, "PHOTOSHUB_STATE", state),
             mock.patch.object(backups, "BACKUP_ROOT", root / "nobackups"),
@@ -639,6 +648,7 @@ class BackupStateJsonLeftoverTests(unittest.TestCase):
             encoding="utf-8",
         )
         with (
+            self._immich_via_script(),
             mock.patch.object(backups, "PHOTOSHUB_CFG", root / "missing.json"),
             mock.patch.object(backups, "PHOTOSHUB_STATE", state),
             mock.patch.object(backups, "BACKUP_ROOT", root / "nobackups"),
@@ -710,6 +720,7 @@ class BackupStateJsonLeftoverTests(unittest.TestCase):
         (state / "backup_status.json").write_text(nested, encoding="utf-8")
         (state / "panel_status.json").write_text(nested, encoding="utf-8")
         with (
+            self._immich_via_script(),
             mock.patch.object(backups, "PHOTOSHUB_CFG", root / "missing.json"),
             mock.patch.object(backups, "PHOTOSHUB_STATE", state),
             mock.patch.object(backups, "BACKUP_ROOT", root / "nobackups"),
@@ -729,6 +740,7 @@ class BackupStateJsonLeftoverTests(unittest.TestCase):
         (state / "backup_status.json").write_bytes(b"x" * (2 * 1024 * 1024))
         (state / "panel_status.json").write_bytes(b"x" * (2 * 1024 * 1024))
         with (
+            self._immich_via_script(),
             mock.patch.object(backups, "PHOTOSHUB_CFG", root / "missing.json"),
             mock.patch.object(backups, "PHOTOSHUB_STATE", state),
             mock.patch.object(backups, "BACKUP_ROOT", root / "nobackups"),
