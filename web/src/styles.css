@@ -259,7 +259,7 @@
   --radius-lg: 12px;
   --radius-modal: 14px;
   --radius-shell: 12px;
-  --table-head: #ffffff;
+  --table-head: #F5F5F7;
   --table-row: #fff;
   --table-alt: #F5F5F7;
   --table-hover: #e8f1fc;
@@ -305,7 +305,7 @@
   --radius-lg: 12px;
   --radius-modal: 14px;
   --radius-shell: 12px;
-  --table-head: #2c2c2e;
+  --table-head: #232325;
   --table-row: #2c2c2e;
   --table-alt: #232325;
   --table-hover: #3a3a3c;
@@ -401,6 +401,8 @@
 html, body {
   /* Paint the canvas on html too: iOS rubber-band / overscroll at scrollTop 0
      reveals html, and the UA default is white. */
+  margin: 0;
+  padding: 0;
   background: var(--bg);
 }
 html {
@@ -415,6 +417,17 @@ body {
      flash unpainted white. */
   min-height: 100%;
   overflow: visible;
+}
+/* Vue 3.5 scoped CSS compiles `:global([data-theme="macos"]) .x` to a bare
+   `[data-theme="macos"]` rule. That matches <html> and can leak component
+   padding/accent onto the document (full-height blue gutters). Keep the
+   layout root at a zero box + --bg even if a later Vue chunk ships that
+   form. html[data-theme] beats a leaked [data-theme] attribute selector. */
+html[data-theme],
+html[data-theme] body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
 }
 #app {
   min-height: 100%;
@@ -705,6 +718,7 @@ button.primary.loading::after { color: #fff; }
   line-height: 1.3;
   white-space: nowrap;
   flex: 0 0 auto;
+  color: var(--txt);
 }
 .page-title .meta {
   color: var(--sub);
@@ -738,7 +752,7 @@ button.primary.loading::after { color: #fff; }
 }
 .tile:hover { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
 .tile h3 {
-  font-size: 11px; font-weight: 700; color: var(--sub);
+  font-size: 11px; font-weight: 700; color: var(--txt);
   text-transform: uppercase; letter-spacing: .5px;
   margin-bottom: 10px;
   display: flex; justify-content: space-between; align-items: center;
@@ -1004,7 +1018,7 @@ button.primary.loading::after { color: #fff; }
 .pct-bar.thick { height: 10px; }
 
 .section-title {
-  font-size: 11px; color: var(--sub); font-weight: 700;
+  font-size: 11px; color: var(--txt); font-weight: 700;
   text-transform: uppercase; letter-spacing: .5px;
   margin: 16px 0 8px;
   display: flex; align-items: center; gap: 8px;
@@ -2052,6 +2066,16 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] .section-title {
   margin: 10px 0 6px;
   font-size: 13px;
+  color: var(--txt);
+  text-transform: none;
+  letter-spacing: 0;
+}
+[data-theme="macos"] .tile h3,
+[data-theme="macos-dark"] .tile h3 {
+  color: var(--txt);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
 }
 [data-theme="macos"] .hint,
 [data-theme="macos-dark"] .hint {
@@ -2162,12 +2186,13 @@ img[loading="lazy"][complete] {
 }
 [data-theme="macos"] table.dense th,
 [data-theme="macos-dark"] table.dense th {
-  background: var(--card);
+  background: var(--table-head);
   color: var(--sub);
   font-weight: 600;
   font-size: 11px;
   letter-spacing: 0.02em;
   white-space: nowrap;
+  border-bottom: 1px solid var(--line);
 }
 [data-theme="macos"] table.dense tbody tr:nth-child(odd),
 [data-theme="macos-dark"] table.dense tbody tr:nth-child(odd) {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 
 const api = vi.hoisted(() => ({
   changeAuthPassword: vi.fn(),
@@ -41,7 +41,23 @@ vi.mock('../theme', () => ({
   }),
 }))
 
+const route = reactive({ path: '/settings', query: {} })
+vi.mock('vue-router', () => ({
+  useRoute: () => route,
+  useRouter: () => ({
+    replace: vi.fn((loc) => {
+      if (loc && typeof loc === 'object' && loc.query) route.query = { ...loc.query }
+    }),
+    push: vi.fn(),
+  }),
+}))
+
 import Settings from './Settings.vue'
+
+async function selectTab(id) {
+  route.query = { ...route.query, tab: id }
+  await flushPromises()
+}
 
 const launcherStatus = (overrides = {}) => ({
   app_installed: true,
@@ -77,10 +93,7 @@ async function mountPanel(status = launcherStatus(), configureStatus = true) {
     },
   })
   await flushPromises()
-  const panelTab = wrapper.findAll('button').find((button) => button.text() === 'settings.tab_panel')
-  expect(panelTab).toBeTruthy()
-  await panelTab.trigger('click')
-  await flushPromises()
+  await selectTab('panel')
   return { wrapper, toast }
 }
 
@@ -94,6 +107,7 @@ describe('Settings native launcher controls', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.stubGlobal('confirm', vi.fn(() => true))
+    route.query = {}
     api.getSettings.mockResolvedValue(settingsPayload())
     api.getHost.mockResolvedValue({ hostname: 'test-host' })
     api.getIdentity.mockResolvedValue({})
@@ -112,6 +126,7 @@ describe('Settings native launcher controls', () => {
     await button(wrapper, 'settings.launcher_stop').trigger('click')
     await flushPromises()
 
+    expect(wrapper.find('.tabs').exists()).toBe(false)
     expect(api.controlPanelService).toHaveBeenCalledWith('stop')
     expect(wrapper.text()).toContain('common.stopped')
     expect(button(wrapper, 'settings.launcher_stop').attributes('disabled')).toBeDefined()
@@ -208,8 +223,7 @@ describe('Settings native launcher controls', () => {
   it('does not reload launcher status when the selected panel tab is clicked again', async () => {
     const { wrapper } = await mountPanel()
 
-    await button(wrapper, 'settings.tab_panel').trigger('click')
-    await flushPromises()
+    await selectTab('panel')
 
     expect(api.getLauncherStatus).toHaveBeenCalledTimes(1)
     wrapper.unmount()
@@ -225,10 +239,10 @@ describe('Settings native launcher controls', () => {
       .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve }))
     const { wrapper } = await mountPanel()
 
-    await button(wrapper, 'settings.tab_appearance').trigger('click')
-    await button(wrapper, 'settings.tab_panel').trigger('click')
-    await button(wrapper, 'settings.tab_appearance').trigger('click')
-    await button(wrapper, 'settings.tab_panel').trigger('click')
+    await selectTab('appearance')
+    await selectTab('panel')
+    await selectTab('appearance')
+    await selectTab('panel')
     expect(wrapper.find('.launcher-card').attributes('aria-busy')).toBe('true')
 
     resolveOld(launcherStatus({ login_enabled: true }))
@@ -252,10 +266,10 @@ describe('Settings native launcher controls', () => {
       .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve }))
     const { wrapper, toast } = await mountPanel()
 
-    await button(wrapper, 'settings.tab_appearance').trigger('click')
-    await button(wrapper, 'settings.tab_panel').trigger('click')
-    await button(wrapper, 'settings.tab_appearance').trigger('click')
-    await button(wrapper, 'settings.tab_panel').trigger('click')
+    await selectTab('appearance')
+    await selectTab('panel')
+    await selectTab('appearance')
+    await selectTab('panel')
 
     resolveNew(launcherStatus({ login_enabled: false }))
     await flushPromises()
@@ -302,7 +316,7 @@ describe('Settings native launcher controls', () => {
     })
     await flushPromises()
 
-    await button(wrapper, 'settings.tab_panel').trigger('click')
+    await selectTab('panel')
     await wrapper.vm.$nextTick()
     const card = wrapper.find('.launcher-card')
     const loading = card.find('.launcher-placeholder')

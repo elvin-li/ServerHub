@@ -626,28 +626,28 @@ onUnmounted(() => {
 .share-row { display:grid; grid-template-columns:auto minmax(180px,1fr) auto auto; align-items:center; gap:10px; min-height:56px; padding:6px 10px; }
 .share-row, .service-row, .file-service-row { position: relative; }
 .share-row + .share-row,.service-row + .service-row,.file-service-row + .file-service-row { border-top:1px solid var(--line); }
-:global([data-theme="macos"]) .share-row,
-:global([data-theme="macos"]) .service-row,
-:global([data-theme="macos"]) .file-service-row,
-:global([data-theme="macos-dark"]) .share-row,
-:global([data-theme="macos-dark"]) .service-row,
-:global([data-theme="macos-dark"]) .file-service-row {
+:global([data-theme="macos"] .share-row),
+:global([data-theme="macos"] .service-row),
+:global([data-theme="macos"] .file-service-row),
+:global([data-theme="macos-dark"] .share-row),
+:global([data-theme="macos-dark"] .service-row),
+:global([data-theme="macos-dark"] .file-service-row) {
   background: var(--card);
 }
-:global([data-theme="macos"]) .share-row + .share-row,
-:global([data-theme="macos"]) .service-row + .service-row,
-:global([data-theme="macos"]) .file-service-row + .file-service-row,
-:global([data-theme="macos-dark"]) .share-row + .share-row,
-:global([data-theme="macos-dark"]) .service-row + .service-row,
-:global([data-theme="macos-dark"]) .file-service-row + .file-service-row {
+:global([data-theme="macos"] .share-row + .share-row),
+:global([data-theme="macos"] .service-row + .service-row),
+:global([data-theme="macos"] .file-service-row + .file-service-row),
+:global([data-theme="macos-dark"] .share-row + .share-row),
+:global([data-theme="macos-dark"] .service-row + .service-row),
+:global([data-theme="macos-dark"] .file-service-row + .file-service-row) {
   border-top: none;
 }
-:global([data-theme="macos"]) .share-row + .share-row::after,
-:global([data-theme="macos"]) .service-row + .service-row::after,
-:global([data-theme="macos"]) .file-service-row + .file-service-row::after,
-:global([data-theme="macos-dark"]) .share-row + .share-row::after,
-:global([data-theme="macos-dark"]) .service-row + .service-row::after,
-:global([data-theme="macos-dark"]) .file-service-row + .file-service-row::after {
+:global([data-theme="macos"] .share-row + .share-row::after),
+:global([data-theme="macos"] .service-row + .service-row::after),
+:global([data-theme="macos"] .file-service-row + .file-service-row::after),
+:global([data-theme="macos-dark"] .share-row + .share-row::after),
+:global([data-theme="macos-dark"] .service-row + .service-row::after),
+:global([data-theme="macos-dark"] .file-service-row + .file-service-row::after) {
   content: "";
   position: absolute;
   left: 52px;
@@ -657,8 +657,8 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--line) 80%, transparent);
   pointer-events: none;
 }
-:global([data-theme="macos"]) .service-row + .service-row::after,
-:global([data-theme="macos-dark"]) .service-row + .service-row::after {
+:global([data-theme="macos"] .service-row + .service-row::after),
+:global([data-theme="macos-dark"] .service-row + .service-row::after) {
   right: 58px;
 }
 .folder-icon { width:34px; height:34px; border-radius:var(--radius); background:var(--accent); }
@@ -686,35 +686,35 @@ onUnmounted(() => {
 .service-icon { width:31px; height:31px; border-radius:var(--radius); background:#777; }
 .service-screen_sharing { background:#2397a8; }.service-remote_login { background:#635bba; }.service-remote_apple_events { background:#9f4db5; }.service-content_caching { background:#d27d00; }.service-remote_management { background:#287ed1; }.service-media_sharing { background:#d93669; }.service-printer_sharing { background:#349ac2; }.service-internet_sharing { background:#2b9e52; }.service-bluetooth_sharing { background:#287ed1; }.service-file { background:#287ed1; }
 /* macOS themes: System Settings–style gray icon wells, single accent elsewhere. */
-:global([data-theme="macos"]) .host-icon,
-:global([data-theme="macos"]) .folder-icon,
-:global([data-theme="macos-dark"]) .host-icon,
-:global([data-theme="macos-dark"]) .folder-icon {
+:global([data-theme="macos"] .host-icon),
+:global([data-theme="macos"] .folder-icon),
+:global([data-theme="macos-dark"] .host-icon),
+:global([data-theme="macos-dark"] .folder-icon) {
   background: var(--accent);
   color: #fff;
 }
-:global([data-theme="macos"]) .service-icon,
-:global([data-theme="macos"]) .service-icon[class*="service-"],
-:global([data-theme="macos-dark"]) .service-icon,
-:global([data-theme="macos-dark"]) .service-icon[class*="service-"] {
+:global([data-theme="macos"] .service-icon),
+:global([data-theme="macos"] .service-icon[class*="service-"]),
+:global([data-theme="macos-dark"] .service-icon),
+:global([data-theme="macos-dark"] .service-icon[class*="service-"]) {
   background: #e5e5ea;
   color: #1d1d1f;
 }
-:global([data-theme="macos-dark"]) .service-icon,
-:global([data-theme="macos-dark"]) .service-icon[class*="service-"] {
+:global([data-theme="macos-dark"] .service-icon),
+:global([data-theme="macos-dark"] .service-icon[class*="service-"]) {
   background: #3a3a3c;
   color: #f5f5f7;
 }
-:global([data-theme="macos"]) .share-badges .badge.accent,
-:global([data-theme="macos-dark"]) .share-badges .badge.accent {
+:global([data-theme="macos"] .share-badges .badge.accent),
+:global([data-theme="macos-dark"] .share-badges .badge.accent) {
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
   color: var(--accent);
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
 }
-:global([data-theme="macos"]) .service-action .badge.ok,
-:global([data-theme="macos"]) .file-service-row .badge.ok,
-:global([data-theme="macos-dark"]) .service-action .badge.ok,
-:global([data-theme="macos-dark"]) .file-service-row .badge.ok {
+:global([data-theme="macos"] .service-action .badge.ok),
+:global([data-theme="macos"] .file-service-row .badge.ok),
+:global([data-theme="macos-dark"] .service-action .badge.ok),
+:global([data-theme="macos-dark"] .file-service-row .badge.ok) {
   background: color-mix(in srgb, var(--ok) 14%, var(--card));
   color: color-mix(in srgb, var(--ok) 72%, var(--txt));
   border: 1px solid color-mix(in srgb, var(--ok) 22%, var(--line));
@@ -725,17 +725,17 @@ onUnmounted(() => {
 .service-copy span,.managed-service span { color:var(--sub); font-size:10.5px; line-height:1.35; }
 .service-action { display:flex; align-items:center; gap:8px; }
 .managed-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); }
-:global([data-theme="macos"]) .managed-grid,
-:global([data-theme="macos-dark"]) .managed-grid {
+:global([data-theme="macos"] .managed-grid),
+:global([data-theme="macos-dark"] .managed-grid) {
   gap: 0;
   background: transparent;
 }
-:global([data-theme="macos"]) .managed-service,
-:global([data-theme="macos-dark"]) .managed-service {
+:global([data-theme="macos"] .managed-service),
+:global([data-theme="macos-dark"] .managed-service) {
   position: relative;
 }
-:global([data-theme="macos"]) .managed-service:nth-child(odd)::before,
-:global([data-theme="macos-dark"]) .managed-service:nth-child(odd)::before {
+:global([data-theme="macos"] .managed-service:nth-child(odd)::before),
+:global([data-theme="macos-dark"] .managed-service:nth-child(odd)::before){
   content: "";
   position: absolute;
   top: 12px;
@@ -745,8 +745,8 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--line) 70%, transparent);
   pointer-events: none;
 }
-:global([data-theme="macos"]) .managed-service:nth-child(n + 3)::after,
-:global([data-theme="macos-dark"]) .managed-service:nth-child(n + 3)::after {
+:global([data-theme="macos"] .managed-service:nth-child(n + 3)::after),
+:global([data-theme="macos-dark"] .managed-service:nth-child(n + 3)::after){
   content: "";
   position: absolute;
   left: 12px;
@@ -756,13 +756,13 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--line) 80%, transparent);
   pointer-events: none;
 }
-:global([data-theme="macos"]) .card-heading,
-:global([data-theme="macos-dark"]) .card-heading {
+:global([data-theme="macos"] .card-heading),
+:global([data-theme="macos-dark"] .card-heading) {
   position: relative;
   border-bottom: none;
 }
-:global([data-theme="macos"]) .card-heading::after,
-:global([data-theme="macos-dark"]) .card-heading::after {
+:global([data-theme="macos"] .card-heading::after),
+:global([data-theme="macos-dark"] .card-heading::after) {
   content: "";
   position: absolute;
   left: 12px;
@@ -772,8 +772,8 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--line) 80%, transparent);
   pointer-events: none;
 }
-:global([data-theme="macos"]) .managed-note,
-:global([data-theme="macos-dark"]) .managed-note {
+:global([data-theme="macos"] .managed-note),
+:global([data-theme="macos-dark"] .managed-note) {
   border-top: none;
   box-shadow: inset 12px 0 0 var(--card), inset -12px 0 0 var(--card), inset 0 1px 0 color-mix(in srgb, var(--line) 80%, transparent);
 }
@@ -833,12 +833,12 @@ button:disabled { opacity:.48; cursor:not-allowed; }
   .share-badges,.share-actions { grid-column:2; justify-content:flex-start; }
   .share-actions button { min-height:36px; }
   .managed-grid { grid-template-columns:1fr; }
-  :global([data-theme="macos"]) .managed-service:nth-child(odd)::before,
-  :global([data-theme="macos-dark"]) .managed-service:nth-child(odd)::before {
+  :global([data-theme="macos"] .managed-service:nth-child(odd)::before),
+  :global([data-theme="macos-dark"] .managed-service:nth-child(odd)::before){
     content: none;
   }
-  :global([data-theme="macos"]) .managed-service + .managed-service::after,
-  :global([data-theme="macos-dark"]) .managed-service + .managed-service::after {
+  :global([data-theme="macos"] .managed-service + .managed-service::after),
+  :global([data-theme="macos-dark"] .managed-service + .managed-service::after) {
     content: "";
     position: absolute;
     left: 12px;

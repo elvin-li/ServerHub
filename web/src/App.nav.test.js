@@ -37,7 +37,7 @@ vi.mock('./components/AdminPasswordDialog.vue', () => ({
 }))
 vi.mock('./composables/useDismissable', () => ({ useDismissable: vi.fn() }))
 
-const route = reactive({ path: '/', meta: {}, fullPath: '/' })
+const route = reactive({ path: '/', query: {}, meta: {}, fullPath: '/' })
 vi.mock('vue-router', () => ({
   useRoute: () => route,
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
@@ -49,6 +49,7 @@ import { getPhotosHubStatus } from './api/client'
 
 beforeEach(() => {
   route.path = '/'
+  route.query = {}
   getPhotosHubStatus.mockReset()
   getPhotosHubStatus.mockImplementation(() => Promise.resolve({ photoshub_ok: false }))
 })
@@ -140,6 +141,56 @@ describe('shell navigation by role', () => {
     const wrapper = mountShell()
     await flushPromises()
     expect(childLabels(wrapper).join(' ')).toContain('nav.photoshub')
+    wrapper.unmount()
+  })
+
+  it('lists every Settings category in the subchrome on /settings', async () => {
+    route.path = '/settings'
+    applyAuthStatus({
+      authenticated: true, username: 'admin', role: 'admin',
+      resources: [], can_manage: true,
+    })
+    const wrapper = mountShell()
+    expect(childLabels(wrapper)).toEqual([
+      'settings.tab_appearance',
+      'settings.tab_identity',
+      'settings.tab_datetime',
+      'settings.tab_network',
+      'settings.tab_disk',
+      'settings.tab_power',
+      'settings.tab_docker',
+      'settings.tab_vms',
+      'settings.tab_notify',
+      'settings.tab_shares',
+      'settings.tab_scheduler',
+      'settings.tab_access',
+      'settings.tab_advanced',
+      'settings.tab_diagnostics',
+      'settings.tab_panel',
+    ])
+    const active = wrapper.findAll('.subchrome a').filter((a) => a.classes().includes('active'))
+    expect(active).toHaveLength(1)
+    expect(active[0].text()).toBe('settings.tab_appearance')
+    wrapper.unmount()
+  })
+
+  it('highlights only the Settings child that matches ?tab=', async () => {
+    route.path = '/settings'
+    route.query = { tab: 'advanced' }
+    applyAuthStatus({
+      authenticated: true, username: 'admin', role: 'admin',
+      resources: [], can_manage: true,
+    })
+    const wrapper = mountShell()
+    let active = wrapper.findAll('.subchrome a').filter((a) => a.classes().includes('active'))
+    expect(active).toHaveLength(1)
+    expect(active[0].text()).toBe('settings.tab_advanced')
+
+    route.query = { tab: 'panel' }
+    await wrapper.vm.$nextTick()
+    active = wrapper.findAll('.subchrome a').filter((a) => a.classes().includes('active'))
+    expect(active).toHaveLength(1)
+    expect(active[0].text()).toBe('settings.tab_panel')
     wrapper.unmount()
   })
 })

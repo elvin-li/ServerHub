@@ -14,6 +14,7 @@
  */
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
 
 vi.mock('../api/client', () => ({
   adminDisableTotp: vi.fn(),
@@ -67,6 +68,17 @@ vi.mock('../theme', () => ({
   }),
 }))
 
+const route = reactive({ path: '/settings', query: {} })
+vi.mock('vue-router', () => ({
+  useRoute: () => route,
+  useRouter: () => ({
+    replace: vi.fn((loc) => {
+      if (loc && typeof loc === 'object' && loc.query) route.query = { ...loc.query }
+    }),
+    push: vi.fn(),
+  }),
+}))
+
 const {
   getUps, getUpsShutdownPlan, putUpsSettings, runUpsShutdownDrill,
 } = await import('../api/client')
@@ -110,16 +122,13 @@ const PLAN = {
 }
 
 async function renderNotifyTab() {
+  route.query = { tab: 'notify' }
   const wrapper = mount(Settings, {
     global: {
       provide: { toast: () => {} },
       stubs: { RouterLink: true, NotifyChannels: true, LoadFailure: true },
     },
   })
-  await flushPromises()
-  const tabBtn = wrapper.findAll('.tabs button')
-    .find((b) => b.text() === 'settings.tab_notify')
-  await tabBtn.trigger('click')
   await flushPromises()
   return wrapper
 }
@@ -130,6 +139,7 @@ function buttonByText(wrapper, text) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  route.query = {}
   getUps.mockResolvedValue(JSON.parse(JSON.stringify(UPS)))
   getUpsShutdownPlan.mockResolvedValue(JSON.parse(JSON.stringify(PLAN)))
 })

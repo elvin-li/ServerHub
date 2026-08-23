@@ -12,7 +12,7 @@
  * test here pins them to each other.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -417,6 +417,22 @@ describe('theme', () => {
 
     it('paints html and body with --bg so overscroll is not UA white', () => {
       expect(css).toMatch(/html, body \{[\s\S]*?background:\s*var\(--bg\)/)
+      expect(css).toMatch(/html, body \{[\s\S]*?margin:\s*0/)
+      expect(css).toMatch(/html, body \{[\s\S]*?padding:\s*0/)
+    })
+
+    it('resets themed html/body so leaked Vue :global rules cannot pad or paint the canvas', () => {
+      // Vue 3.5 compiles `:global([data-theme="macos"]) .x` to `[data-theme="macos"]`
+      // which matches <html>. Specificity of html[data-theme] beats that leak.
+      expect(css).toMatch(
+        /html\[data-theme\],\s*html\[data-theme\] body \{[\s\S]*?margin:\s*0/,
+      )
+      expect(css).toMatch(
+        /html\[data-theme\],\s*html\[data-theme\] body \{[\s\S]*?padding:\s*0/,
+      )
+      expect(css).toMatch(
+        /html\[data-theme\],\s*html\[data-theme\] body \{[\s\S]*?background:\s*var\(--bg\)/,
+      )
     })
 
     it('puts safe-area padding on the header that owns the fill', () => {
@@ -525,6 +541,100 @@ describe('theme', () => {
       expect(css).toMatch(
         /\[data-theme="macos-dark"\] \.layout[\s\S]*?border-radius:\s*var\(--radius-shell\)/,
       )
+    })
+  })
+
+  describe('vue :global theme selector compile trap', () => {
+    // Vue 3.5 scoped CSS compiles
+    //   :global([data-theme="macos"]) .x { ... }
+    // to `[data-theme="macos"] { ... }`, which paints <html>. The inner-paren
+    // form `:global([data-theme="macos"] .x)` preserves the full selector.
+
+    const SRC = join(HERE, '..')
+    const STATIC_ASSETS = join(HERE, '..', '..', '..', 'static', 'assets')
+    const BROKEN_GLOBAL = /:global\(\[data-theme="[^"]+"\]\)\s+\S/
+
+    function walkVue(dir) {
+      const out = []
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, ent.name)
+        if (ent.isDirectory()) out.push(...walkVue(p))
+        else if (ent.name.endsWith('.vue')) out.push(p)
+      }
+      return out
+    }
+
+    function cssFiles(dir) {
+      try {
+        return readdirSync(dir)
+          .filter((name) => name.endsWith('.css'))
+          .map((name) => join(dir, name))
+      } catch {
+        return []
+      }
+    }
+
+    function bareThemeLeaks(css) {
+      const leaks = []
+      const text = css.replace(/\/\*[\s\S]*?\*\//g, '')
+      for (const m of text.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+        const sel = m[1].replace(/@[\w-]+[^{]*/g, '').trim()
+        if (!sel) continue
+        const parts = sel.split(',').map((s) => s.trim()).filter(Boolean)
+        const bare = parts.length > 0 && parts.every((p) => (
+          /^\[data-theme=["']?(macos|macos-dark)["']?\]$/.test(p)
+        ))
+        if (!bare) continue
+        const body = m[2]
+        if (
+          /background\s*:\s*var\(\s*--accent\s*\)/.test(body)
+          || /padding\s*:\s*6px\s+8px/.test(body)
+        ) {
+          leaks.push(`${sel}{${body}}`)
+        }
+      }
+      return leaks
+    }
+
+    it('does not use the broken :global([data-theme]) descendant form in Vue SFCs', () => {
+      const offenders = []
+      for (const file of walkVue(SRC)) {
+        const src = readFileSync(file, 'utf8')
+        src.split('\n').forEach((line, i) => {
+          if (BROKEN_GLOBAL.test(line)) {
+            offenders.push(`${file}:${i + 1}:${line.trim()}`)
+          }
+        })
+      }
+      expect(offenders).toEqual([])
+    })
+
+    it('keeps macos selected-row rules targeting the table, not html', () => {
+      const services = readFileSync(join(SRC, 'views', 'Services.vue'), 'utf8')
+      expect(services).toMatch(
+        /:global\(\[data-theme="macos"\] \.svc-table tr\.selected\)/,
+      )
+      expect(services).toMatch(
+        /:global\(\[data-theme="macos"\] \.svc-table tr\.selected td\)[\s\S]*?background:\s*var\(--accent\)/,
+      )
+      const files = readFileSync(join(SRC, 'views', 'Files.vue'), 'utf8')
+      expect(files).toMatch(
+        /:global\(\[data-theme="macos"\] \.files-table tr\.selected\)/,
+      )
+    })
+
+    it('does not leave a bare macos theme rule painting accent or 6px 8px padding', () => {
+      const sources = [
+        join(SRC, 'styles.css'),
+        ...cssFiles(STATIC_ASSETS),
+      ]
+      const leaks = []
+      for (const file of sources) {
+        for (const leak of bareThemeLeaks(readFileSync(file, 'utf8'))) {
+          leaks.push(`${file}: ${leak}`)
+        }
+      }
+      expect(leaks).toEqual([])
     })
   })
 })

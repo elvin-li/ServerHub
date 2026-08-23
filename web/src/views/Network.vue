@@ -1,13 +1,5 @@
 <template>
   <div>
-    <div class="page-title">
-      <h1>{{ t('network.title') }}</h1>
-      <span class="meta">
-        {{ t('network.meta') }}
-        <span v-if="finiteText(data?.ts, '')"> · {{ finiteText(data.ts) }}</span>
-      </span>
-    </div>
-
     <div class="tabs">
       <button :class="{ active: tab==='switch' }" :aria-pressed="tab === 'switch'" @click="tab='switch'">{{ t('network.tab_switch') }}</button>
       <button :class="{ active: tab==='ifaces' }" :aria-pressed="tab === 'ifaces'" @click="tab='ifaces'">{{ t('network.tab_ifaces') }}</button>

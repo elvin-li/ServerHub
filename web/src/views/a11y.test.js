@@ -420,7 +420,7 @@ describe('appearance controls', () => {
 
   it('exposes theme and density selection with aria-pressed', () => {
     const settings = readFileSync(resolve(__dirname, 'Settings.vue'), 'utf8')
-    expect(settings).toMatch(/class="theme-card"[\s\S]*:aria-pressed="theme === th\.id"/)
+    expect(settings).toMatch(/class="theme-card"[\s\S]*:aria-pressed="\(appliedTheme \?\? theme\) === th\.id"/)
     expect(settings).toMatch(/:aria-pressed="density === d\.id"/)
   })
 
@@ -1860,7 +1860,7 @@ describe('leftover Infinity interpolations', () => {
     expect(settings).not.toMatch(/host\?\.hostname \|\| '—'/)
     expect(settings).toMatch(/finiteText\(host\?\.hostname/)
     expect(settings).not.toMatch(/form\?\.version \|\| sysBundle/)
-    expect(settings).toMatch(/finiteText\(form\?\.version/)
+    expect(settings).not.toMatch(/class="page-title"/)
     expect(settings).toMatch(/finiteText\(sysBundle\.management\.version/)
     expect(settings).not.toMatch(/dockerInfo\.orb_version \|\| '—'/)
     expect(settings).toMatch(/finiteText\(dockerInfo\.orb_version/)

@@ -201,7 +201,7 @@ import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
   Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot, Camera,
-  Settings, ScrollText, ShieldCheck, CircleUser, Sparkles, BookOpen,
+  Settings, ScrollText, ShieldCheck, CircleUser, Sparkles, BookOpen, Palette, Zap,
 } from '@lucide/vue'
 import { authState, clearAuthState } from './lib/authState'
 import { startVisibleInterval } from './lib/poll'
@@ -391,7 +391,28 @@ const NAV_ADMIN = [
       { to: '/modules', labelKey: 'nav.modules', icon: Blocks },
     ],
   },
-  { to: '/settings', labelKey: 'nav.settings', icon: Settings },
+  {
+    to: '/settings',
+    labelKey: 'nav.settings',
+    icon: Settings,
+    children: [
+      { to: '/settings?tab=appearance', labelKey: 'settings.tab_appearance', icon: Palette },
+      { to: '/settings?tab=identity', labelKey: 'settings.tab_identity', icon: CircleUser },
+      { to: '/settings?tab=datetime', labelKey: 'settings.tab_datetime', icon: Clock },
+      { to: '/settings?tab=network', labelKey: 'settings.tab_network', icon: Network },
+      { to: '/settings?tab=disk', labelKey: 'settings.tab_disk', icon: HardDrive },
+      { to: '/settings?tab=power', labelKey: 'settings.tab_power', icon: Zap },
+      { to: '/settings?tab=docker', labelKey: 'settings.tab_docker', icon: Container },
+      { to: '/settings?tab=vms', labelKey: 'settings.tab_vms', icon: Monitor },
+      { to: '/settings?tab=notify', labelKey: 'settings.tab_notify', icon: Bell },
+      { to: '/settings?tab=shares', labelKey: 'settings.tab_shares', icon: Share2 },
+      { to: '/settings?tab=scheduler', labelKey: 'settings.tab_scheduler', icon: Clock },
+      { to: '/settings?tab=access', labelKey: 'settings.tab_access', icon: ShieldCheck },
+      { to: '/settings?tab=advanced', labelKey: 'settings.tab_advanced', icon: Settings },
+      { to: '/settings?tab=diagnostics', labelKey: 'settings.tab_diagnostics', icon: Heart },
+      { to: '/settings?tab=panel', labelKey: 'settings.tab_panel', icon: Server },
+    ],
+  },
 ]
 
 /**
@@ -438,7 +459,28 @@ function isActive(item) {
   return path === item.to || path.startsWith(item.to + '/')
 }
 
+function childPathAndTab(c) {
+  const raw = typeof c.to === 'string' ? c.to : ''
+  const qi = raw.indexOf('?')
+  if (qi < 0) return { path: raw, tab: null }
+  return { path: raw.slice(0, qi), tab: new URLSearchParams(raw.slice(qi + 1)).get('tab') }
+}
+
+function queryTabValue() {
+  const raw = route.query?.tab
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return typeof value === 'string' ? value : ''
+}
+
 function isChildActive(c) {
+  const { path: childPath, tab: childTab } = childPathAndTab(c)
+  // Query-tab children share one route (Settings). Only the matching ?tab=
+  // is active; missing tab is the default category (appearance).
+  if (childTab != null) {
+    if (route.path !== childPath) return false
+    const current = queryTabValue() || 'appearance'
+    return current === childTab
+  }
   const path = route.path
   if (c.exact) return path === c.to
   // A child may own several routes (e.g. Array covers /main and /storage), so

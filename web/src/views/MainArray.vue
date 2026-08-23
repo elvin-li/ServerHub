@@ -1,9 +1,5 @@
 <template>
   <div>
-    <div class="page-title">
-      <h1>{{ t('pages.main') }}</h1>
-      <span class="meta">{{ t('pages.main_meta') }}</span>
-    </div>
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
       <button @click="openSmart" :disabled="smartLoading">{{ t('main.smart_btn') }}</button>

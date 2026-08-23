@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 
 const api = vi.hoisted(() => ({
   changeAuthPassword: vi.fn(),
@@ -55,7 +55,23 @@ vi.mock('../theme', () => ({
   }),
 }))
 
+const route = reactive({ path: '/settings', query: {} })
+vi.mock('vue-router', () => ({
+  useRoute: () => route,
+  useRouter: () => ({
+    replace: vi.fn((loc) => {
+      if (loc && typeof loc === 'object' && loc.query) route.query = { ...loc.query }
+    }),
+    push: vi.fn(),
+  }),
+}))
+
 import Settings from './Settings.vue'
+
+async function selectTab(id) {
+  route.query = { ...route.query, tab: id }
+  await flushPromises()
+}
 
 function settingsPayload() {
   return {
@@ -95,6 +111,7 @@ async function mountSettings() {
 }
 
 beforeEach(() => {
+  route.query = {}
   api.getSettings.mockResolvedValue(settingsPayload())
   api.getHost.mockResolvedValue({ hostname: 'test-host' })
   api.getIdentity.mockResolvedValue({ computer_name: 'box', comment: '', host_ip_config: 'auto' })
@@ -123,8 +140,7 @@ describe('Settings leave-guards', () => {
     let resolveSave
     api.putIdentity.mockImplementation(() => new Promise((resolve) => { resolveSave = resolve }))
     const { wrapper, toast } = await mountSettings()
-    await button(wrapper, 'settings.tab_identity').trigger('click')
-    await flushPromises()
+    await selectTab('identity')
     await button(wrapper, 'settings.save_identity').trigger('click')
     wrapper.unmount()
     resolveSave({ message: 'saved' })
@@ -136,8 +152,7 @@ describe('Settings leave-guards', () => {
     let resolveSave
     api.putSettings.mockImplementation(() => new Promise((resolve) => { resolveSave = resolve }))
     const { wrapper, toast } = await mountSettings()
-    await button(wrapper, 'settings.tab_panel').trigger('click')
-    await flushPromises()
+    await selectTab('panel')
     await button(wrapper, 'settings.save_settings').trigger('click')
     wrapper.unmount()
     resolveSave({})
@@ -173,8 +188,7 @@ describe('Settings leave-guards', () => {
     clipboard.copyToClipboard.mockImplementation(() => new Promise((resolve) => { resolveCopy = resolve }))
     api.createApiKey.mockResolvedValue({ key: 'shk_test', record: { id: '1', name: 'cli' } })
     const { wrapper, toast } = await mountSettings()
-    await button(wrapper, 'settings.tab_panel').trigger('click')
-    await flushPromises()
+    await selectTab('panel')
     await wrapper.get('input[aria-label="common.name"]').setValue('cli')
     await button(wrapper, 'apikeys.create').trigger('click')
     await flushPromises()

@@ -1,16 +1,5 @@
 <template>
   <div>
-    <div class="page-title">
-      <h1>{{ t('settings.title') }}</h1>
-      <span class="meta">{{ t('settings.meta') }} · v{{ finiteText(form?.version, '') || finiteText(sysBundle?.management?.version) }}</span>
-    </div>
-
-    <div class="tabs">
-      <button v-for="tb in tabs" :key="tb.id" :class="{ active: tab===tb.id }" :aria-pressed="tab === tb.id" @click="switchTab(tb.id)">
-        {{ t(tb.labelKey) }}
-      </button>
-    </div>
-
     <!-- Appearance & Language -->
     <div v-if="tab==='appearance'">
       <div class="card" style="margin-bottom:12px">
@@ -949,7 +938,7 @@
           </div>
         </div>
         <div class="btns" style="margin-top:12px">
-          <button class="primary" @click="tab='panel'">{{ t('settings.edit_panel') }}</button>
+          <button class="primary" @click="switchTab('panel')">{{ t('settings.edit_panel') }}</button>
           <a class="btn" href="/api/export/services-yaml" download="services.yaml">{{ t('settings.export_yaml') }}</a>
         </div>
       </div>
@@ -1085,7 +1074,8 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import qrcode from 'qrcode-generator'
 import { finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
 import {
@@ -1108,6 +1098,8 @@ import ServiceSignatures from '../components/ServiceSignatures.vue'
 import GroupRules from '../components/GroupRules.vue'
 
 const toast = inject('toast')
+const route = useRoute()
+const router = useRouter()
 const { t, locale, locales, setLocale } = injectI18n()
 const {
   theme, appliedTheme, density, themes, densities, followSystem,
@@ -1315,19 +1307,38 @@ function sizeGb(value) {
   return Number.isFinite(n) ? `${n} GB` : '—'
 }
 
-function switchTab(id) {
-  if (id === tab.value) return
-  tab.value = id
-  if (id === 'docker') loadDockerInfo()
-  if (id === 'panel') {
+function normalizeTab(id) {
+  return tabs.some((tb) => tb.id === id) ? id : 'appearance'
+}
+
+function queryTab() {
+  const q = route.query?.tab
+  const raw = Array.isArray(q) ? q[0] : q
+  return typeof raw === 'string' ? raw : ''
+}
+
+function applyTab(id) {
+  const next = normalizeTab(id)
+  if (next === tab.value) return
+  tab.value = next
+  if (next === 'docker') loadDockerInfo()
+  if (next === 'panel') {
     loadLauncher()
     loadTwofa()
     loadApiKeys()
   }
-  if (id === 'notify') loadUps()
-  if (['datetime', 'power', 'disk', 'network', 'shares', 'access', 'vms', 'scheduler', 'advanced', 'diagnostics'].includes(id)) {
+  if (next === 'notify') loadUps()
+  if (['datetime', 'power', 'disk', 'network', 'shares', 'access', 'vms', 'scheduler', 'advanced', 'diagnostics'].includes(next)) {
     loadSysBundle()
   }
+}
+
+function switchTab(id) {
+  const next = normalizeTab(id)
+  if (next !== normalizeTab(queryTab())) {
+    router.replace({ query: { ...route.query, tab: next } })
+  }
+  applyTab(next)
 }
 
 async function loadSysBundle() {
@@ -2249,13 +2260,17 @@ async function forceCheck() {
   }
 }
 
+watch(() => route.query.tab, (q) => {
+  const raw = Array.isArray(q) ? q[0] : q
+  applyTab(typeof raw === 'string' ? raw : '')
+})
+
 onMounted(() => {
   pageAlive = true
   launcherPageAlive = true
   load()
   loadIdentity()
-  const wanted = new URLSearchParams(window.location.search).get('tab') || ''
-  if (tabs.some((tb) => tb.id === wanted)) switchTab(wanted)
+  applyTab(queryTab())
   // Don't load full system bundle until a tab needs it (saves ~1.5s shell storm)
 })
 onUnmounted(() => {
@@ -2415,16 +2430,6 @@ onUnmounted(() => {
 .apikey-value-row code { flex: 1; min-width: 0; padding: 6px 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--line); overflow-wrap: anywhere; }
 .ups-pick-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; flex-wrap: wrap; }
 .ups-pick-row .mono { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0;
-  margin-bottom: 4px;
-}
-.tabs button {
-  font-size: 12px;
-  padding: 8px 12px;
-}
 @media (max-width: 900px) {
   .launcher-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .launcher-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2440,7 +2445,6 @@ onUnmounted(() => {
   .launcher-actions button:last-child { grid-column: 1 / -1; }
   .password-footer { flex-direction: column; align-items: stretch; }
   .password-footer button { width: 100%; }
-  .tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .apikey-value-row { flex-direction: column; align-items: stretch; }
 }
 </style>

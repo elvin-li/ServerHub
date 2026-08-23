@@ -1679,18 +1679,18 @@ onUnmounted(() => {
 <style scoped>
 .dash { }
 .dash-grid { gap: 10px; }
-:global([data-theme="macos"]) .dash-grid,
-:global([data-theme="macos-dark"]) .dash-grid { gap: 8px; }
-:global([data-theme="macos"]) .host-strip,
-:global([data-theme="macos-dark"]) .host-strip {
+:global([data-theme="macos"] .dash-grid),
+:global([data-theme="macos-dark"] .dash-grid) { gap: 8px; }
+:global([data-theme="macos"] .host-strip),
+:global([data-theme="macos-dark"] .host-strip) {
   gap: 8px;
   margin-bottom: 8px;
   padding: 6px 8px;
 }
-:global([data-theme="macos"]) .net-stats,
-:global([data-theme="macos-dark"]) .net-stats { gap: 6px; }
-:global([data-theme="macos"]) .ns,
-:global([data-theme="macos-dark"]) .ns {
+:global([data-theme="macos"] .net-stats),
+:global([data-theme="macos-dark"] .net-stats) { gap: 6px; }
+:global([data-theme="macos"] .ns),
+:global([data-theme="macos-dark"] .ns) {
   padding: 6px 8px;
   border: none;
   background: var(--bg);
@@ -1711,36 +1711,36 @@ onUnmounted(() => {
   border-radius: 0;
   padding: 2px 0;
 }
-:global([data-theme="macos"]) table.top-cpu,
-:global([data-theme="macos-dark"]) table.top-cpu {
+:global([data-theme="macos"] table.top-cpu),
+:global([data-theme="macos-dark"] table.top-cpu) {
   border: none;
 }
-:global([data-theme="macos"]) table.top-cpu th,
-:global([data-theme="macos"]) table.top-cpu td,
-:global([data-theme="macos-dark"]) table.top-cpu th,
-:global([data-theme="macos-dark"]) table.top-cpu td {
+:global([data-theme="macos"] table.top-cpu th),
+:global([data-theme="macos"] table.top-cpu td),
+:global([data-theme="macos-dark"] table.top-cpu th),
+:global([data-theme="macos-dark"] table.top-cpu td) {
   border: none !important;
   border-bottom: none !important;
 }
-:global([data-theme="macos"]) table.top-cpu tbody tr:nth-child(odd),
-:global([data-theme="macos-dark"]) table.top-cpu tbody tr:nth-child(odd) {
+:global([data-theme="macos"] table.top-cpu tbody tr:nth-child(odd)),
+:global([data-theme="macos-dark"] table.top-cpu tbody tr:nth-child(odd)){
   background: var(--card);
 }
-:global([data-theme="macos"]) table.top-cpu tbody tr:nth-child(even) {
+:global([data-theme="macos"] table.top-cpu tbody tr:nth-child(even)){
   background: #F5F5F7;
 }
-:global([data-theme="macos-dark"]) table.top-cpu tbody tr:nth-child(even) {
+:global([data-theme="macos-dark"] table.top-cpu tbody tr:nth-child(even)){
   background: #232325;
 }
-:global([data-theme="macos"]) table.top-cpu tbody tr.dim td,
-:global([data-theme="macos-dark"]) table.top-cpu tbody tr.dim td {
+:global([data-theme="macos"] table.top-cpu tbody tr.dim td),
+:global([data-theme="macos-dark"] table.top-cpu tbody tr.dim td) {
   color: var(--sub);
   opacity: 1;
 }
-:global([data-theme="macos"]) .cpu-facts,
-:global([data-theme="macos-dark"]) .cpu-facts { gap: 4px; margin-bottom: 6px; }
-:global([data-theme="macos"]) .top-cpu-head,
-:global([data-theme="macos-dark"]) .top-cpu-head { margin-top: 6px; }
+:global([data-theme="macos"] .cpu-facts),
+:global([data-theme="macos-dark"] .cpu-facts) { gap: 4px; margin-bottom: 6px; }
+:global([data-theme="macos"] .top-cpu-head),
+:global([data-theme="macos-dark"] .top-cpu-head) { margin-top: 6px; }
 /* Shared monitor family: stats column left, chart column right on mac. */
 .am-monitor {
   display: grid;

@@ -1,20 +1,5 @@
 <template>
   <div class="svc-page">
-    <div class="page-title">
-      <h1>{{ t('services.title') }}</h1>
-      <span class="meta" v-if="status">
-        {{ t('services.summary', {
-          ok: finiteN(status.counts?.ok, 0),
-          warn: finiteN(status.counts?.warn, 0),
-          down: finiteN(status.counts?.down, 0),
-          stopped: finiteN(status.counts?.stopped, 0),
-          ts: finiteText(status.ts),
-        }) }}
-        · {{ finiteN(status.service_total, flat.length) }} {{ t('services.total_unit') }}
-        <span v-if="!status.engine_up" class="warn-tag">{{ t('services.engine_down') }}</span>
-      </span>
-    </div>
-
     <!-- Problems banner -->
     <div v-if="(status?.problems || []).length" class="problems-bar">
       <strong>{{ t('services.problems') }}</strong>
@@ -57,6 +42,17 @@
         <label class="chk"><input type="checkbox" v-model="onlyBad" /> {{ t('services.only_bad') }}</label>
         <label class="chk"><input type="checkbox" v-model="dense" /> {{ t('services.dense') }}</label>
         <span class="meta-count">{{ filtered.length }} / {{ flat.length }}</span>
+      </span>
+      <span class="meta svc-summary" v-if="status">
+        {{ t('services.summary', {
+          ok: finiteN(status.counts?.ok, 0),
+          warn: finiteN(status.counts?.warn, 0),
+          down: finiteN(status.counts?.down, 0),
+          stopped: finiteN(status.counts?.stopped, 0),
+          ts: finiteText(status.ts),
+        }) }}
+        · {{ finiteN(status.service_total, flat.length) }} {{ t('services.total_unit') }}
+        <span v-if="!status.engine_up" class="warn-tag">{{ t('services.engine_down') }}</span>
       </span>
     </div>
 
@@ -686,6 +682,7 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .svc-page { min-width: 0; }
 .svc-toolbar { flex-wrap: wrap; gap: 8px; }
 .svc-toolbar .search { min-width: 200px; flex: 1; }
+.svc-summary { color: var(--sub); font-size: 12px; line-height: 1.4; min-width: 0; }
 .toolbar-toggles { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
 /* Size and colour come from the global .meta-count. */
 .meta-count { font-weight: 600; }
@@ -735,22 +732,22 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .svc-table tr { cursor: pointer; transition: background .1s; }
 .svc-table tr:hover { background: var(--table-hover); }
 .svc-table tr.selected { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-:global([data-theme="macos"]) .svc-table tr.selected,
-:global([data-theme="macos"]) .svc-table tr.selected td,
-:global([data-theme="macos"]) .svc-table tr.selected:hover,
-:global([data-theme="macos"]) .svc-table tr.selected:hover td,
-:global([data-theme="macos-dark"]) .svc-table tr.selected,
-:global([data-theme="macos-dark"]) .svc-table tr.selected td,
-:global([data-theme="macos-dark"]) .svc-table tr.selected:hover,
-:global([data-theme="macos-dark"]) .svc-table tr.selected:hover td {
+:global([data-theme="macos"] .svc-table tr.selected),
+:global([data-theme="macos"] .svc-table tr.selected td),
+:global([data-theme="macos"] .svc-table tr.selected:hover),
+:global([data-theme="macos"] .svc-table tr.selected:hover td),
+:global([data-theme="macos-dark"] .svc-table tr.selected),
+:global([data-theme="macos-dark"] .svc-table tr.selected td),
+:global([data-theme="macos-dark"] .svc-table tr.selected:hover),
+:global([data-theme="macos-dark"] .svc-table tr.selected:hover td) {
   background: var(--accent);
   color: #fff;
   box-shadow: none;
 }
-:global([data-theme="macos"]) .svc-table tr.selected .sub-id,
-:global([data-theme="macos"]) .svc-table tr.selected .detail-cell,
-:global([data-theme="macos-dark"]) .svc-table tr.selected .sub-id,
-:global([data-theme="macos-dark"]) .svc-table tr.selected .detail-cell {
+:global([data-theme="macos"] .svc-table tr.selected .sub-id),
+:global([data-theme="macos"] .svc-table tr.selected .detail-cell),
+:global([data-theme="macos-dark"] .svc-table tr.selected .sub-id),
+:global([data-theme="macos-dark"] .svc-table tr.selected .detail-cell) {
   color: #fff;
 }
 .svc-table tr.bad { box-shadow: inset 3px 0 0 var(--down); }

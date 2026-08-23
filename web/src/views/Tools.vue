@@ -1,10 +1,5 @@
 <template>
   <div class="tools-page">
-    <div class="page-title">
-      <h1>{{ t('tools.title') }}</h1>
-      <span class="meta">{{ t('tools.meta') }}</span>
-    </div>
-
     <div class="tabs">
       <button
         v-for="tb in tabs"
