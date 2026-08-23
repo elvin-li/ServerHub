@@ -205,7 +205,16 @@
           {{ t('dashboard.cpu') }}
           <span class="tile-tools">
             <span class="badge" data-test="cpu-badge" :class="cpuBadge">{{ cpuBadgeText }}</span>
-            <span v-if="gpuUtilPct != null" class="badge" data-test="gpu-badge" :class="gpuBadge">{{ t('dashboard.gpu_pct', { p: fmtN(gpuUtilPct) }) }}</span>
+            <span
+              v-if="gpuUtilPct != null || gpuMemLabel"
+              class="badge"
+              data-test="gpu-badge"
+              :class="gpuBadge"
+            >
+              <template v-if="gpuUtilPct != null">{{ t('dashboard.gpu_pct', { p: fmtN(gpuUtilPct) }) }}</template>
+              <template v-if="gpuUtilPct != null && gpuMemLabel"> · </template>
+              <span v-if="gpuMemLabel" data-test="gpu-mem">{{ gpuMemLabel }}</span>
+            </span>
           </span>
         </h3>
         <!-- Activity Monitor–style breakdown under macOS themes. -->
@@ -232,24 +241,9 @@
               <b>{{ fmtN(cpuTempC) }}°C</b>
             </div>
             <div class="am-row">
-              <span>{{ t('dashboard.thermal_status') }}</span>
-              <b :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</b>
-            </div>
-            <div class="am-row">
               <span>{{ t('dashboard.load_avg') }}</span>
               <b>{{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}</b>
             </div>
-            <template v-if="gpuUtilPct != null || gpuMemLabel">
-              <div class="am-section" data-test="gpu-section">{{ t('dashboard.gpu') }}</div>
-              <div v-if="gpuUtilPct != null" class="am-row" data-test="gpu-util">
-                <span>{{ t('dashboard.gpu_util') }}</span>
-                <b>{{ fmtN(gpuUtilPct) }}%</b>
-              </div>
-              <div v-if="gpuMemLabel" class="am-row" data-test="gpu-mem">
-                <span>{{ t('dashboard.gpu_memory') }}</span>
-                <b>{{ gpuMemLabel }}</b>
-              </div>
-            </template>
           </div>
           <div class="am-monitor-chart">
             <LineChart
@@ -287,15 +281,6 @@
           <div class="res-head cpu-head">
             <div class="big">{{ cpuUsed }}<small>%</small></div>
           </div>
-          <div class="cpu-facts">
-            <div><span>user</span><b>{{ fmtN(cpu.user) }}%</b></div>
-            <div><span>sys</span><b>{{ fmtN(cpu.sys) }}%</b></div>
-            <div><span>idle</span><b>{{ fmtN(cpu.idle) }}%</b></div>
-            <div><span>{{ t('dashboard.thermal_status') }}</span><b :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</b></div>
-            <div v-if="gpuUtilPct != null || gpuMemLabel" class="cpu-facts-gpu" data-test="gpu-section">{{ t('dashboard.gpu') }}</div>
-            <div v-if="gpuUtilPct != null" data-test="gpu-compact-util"><span>{{ t('dashboard.gpu_util') }}</span><b>{{ fmtN(gpuUtilPct) }}%</b></div>
-            <div v-if="gpuMemLabel" data-test="gpu-compact-mem"><span>{{ t('dashboard.gpu_memory') }}</span><b>{{ gpuMemLabel }}</b></div>
-          </div>
           <StackBar
             :segments="cpuStack"
             :total="100"
@@ -332,6 +317,10 @@
             ·
           </template>
           {{ t('dashboard.load_capacity', { p: finiteN(loadPct) }) }}
+          <span data-test="cpu-thermal">
+            · {{ t('dashboard.thermal_status') }}
+            <span :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</span>
+          </span>
           <span class="badge" style="margin-left:4px">{{ t('dashboard.cores', { n: ncpu }) }}</span>
         </div>
       </div>
@@ -906,10 +895,6 @@ const gpuBadge = computed(() => {
   if (n >= 70) return 'warn'
   return 'ok'
 })
-const cpuBadgeText = computed(() => {
-  const pct = `${cpuUsed.value}%`
-  return gpuUtilPct.value == null ? pct : t('dashboard.cpu_pct', { p: cpuUsed.value })
-})
 function gpuBytesToGb(bytes) {
   const n = finiteN(bytes, null)
   if (n == null || n < 0) return null
@@ -920,6 +905,11 @@ const gpuMemLabel = computed(() => {
   const alloc = gpuBytesToGb(gpu.value?.mem_alloc_bytes)
   if (used == null && alloc == null) return ''
   return `${used == null ? '—' : fmtN(used)} / ${alloc == null ? '—' : fmtN(alloc)} GB`
+})
+const cpuBadgeText = computed(() => {
+  const pct = `${cpuUsed.value}%`
+  const gpuVisible = gpuUtilPct.value != null || !!gpuMemLabel.value
+  return gpuVisible ? t('dashboard.cpu_pct', { p: cpuUsed.value }) : pct
 })
 function smartIsOk(d) {
   const h = String(d?.smart?.health || '').toUpperCase()
@@ -1696,8 +1686,6 @@ onUnmounted(() => {
   background: var(--bg);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 40%, transparent);
 }
-:global([data-theme="macos"] .cpu-facts > div),
-:global([data-theme="macos-dark"] .cpu-facts > div),
 :global([data-theme="macos"] .mb),
 :global([data-theme="macos-dark"] .mb),
 :global([data-theme="macos"] .disk-item),
@@ -1737,8 +1725,6 @@ onUnmounted(() => {
   color: var(--sub);
   opacity: 1;
 }
-:global([data-theme="macos"] .cpu-facts),
-:global([data-theme="macos-dark"] .cpu-facts) { gap: 4px; margin-bottom: 6px; }
 :global([data-theme="macos"] .top-cpu-head),
 :global([data-theme="macos-dark"] .top-cpu-head) { margin-top: 6px; }
 /* Shared monitor family: stats column left, chart column right on mac. */
@@ -2036,23 +2022,6 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   gap: 8px; margin-bottom: 8px;
 }
 .cpu-head { margin-bottom: 4px; }
-.cpu-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin-bottom: 8px; }
-.cpu-facts > div { min-width: 0; padding: 5px 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
-.cpu-facts span, .cpu-facts b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cpu-facts span { color: var(--sub); font-size: 9px; text-transform: uppercase; letter-spacing: .3px; }
-.cpu-facts b { margin-top: 2px; color: var(--txt); font: 700 11px ui-monospace, Menlo, monospace; }
-.cpu-facts > .cpu-facts-gpu {
-  grid-column: 1 / -1;
-  padding: 2px 0 0;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  color: var(--sub);
-  font-size: 9px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .3px;
-}
 .cpu-charts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .cpu-charts :deep(.lc-plot) { min-height: 0; }
 .cpu-charts :deep(.lc-title) {
@@ -2240,7 +2209,6 @@ table.top-cpu .mini-bar { margin-left: 6px; }
   .disk-head .sub { white-space: normal; }
   .top-cpu-head { flex-wrap: wrap; gap: 6px; }
   .range-btns { flex-wrap: wrap; }
-  .cpu-facts { grid-template-columns: repeat(2, 1fr); }
   .mem-break { grid-template-columns: repeat(2, 1fr); }
   .net-stats { grid-template-columns: 1fr 1fr; }
   .health-grid { grid-template-columns: repeat(2, 1fr); }
@@ -2254,7 +2222,6 @@ table.top-cpu .mini-bar { margin-left: 6px; }
   .range-btns { margin-top: 0; }
 }
 @media (max-width: 380px) {
-  .cpu-facts { grid-template-columns: 1fr 1fr; gap: 4px; }
   .net-stats { grid-template-columns: 1fr; }
   .health-grid { grid-template-columns: 1fr 1fr; }
   .mem-break { grid-template-columns: 1fr; }

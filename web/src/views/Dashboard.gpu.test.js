@@ -137,16 +137,20 @@ describe('Dashboard GPU density', () => {
     }
   })
 
-  it('shows GPU util and memory under the load row on the mac CPU card', async () => {
+  it('shows GPU util and memory on the header badge, not as AM rows', async () => {
     const wrapper = await render()
     expect(wrapper.find('.res-card h3').text()).toContain('Processor')
-    expect(wrapper.get('[data-test="gpu-section"]').text()).toBe('GPU')
-    const util = wrapper.get('[data-test="gpu-util"]')
-    expect(util.text()).toContain('GPU utilization')
-    expect(util.text()).toContain('68%')
-    const mem = wrapper.get('[data-test="gpu-mem"]')
-    expect(mem.text()).toContain('GPU memory')
-    expect(mem.text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
+    expect(wrapper.find('[data-test="gpu-section"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="gpu-util"]').exists()).toBe(false)
+    expect(wrapper.find('.cpu-facts').exists()).toBe(false)
+    const amLabels = wrapper.findAll('.am-cpu .am-row > span').map((n) => n.text())
+    expect(amLabels).not.toContain('GPU utilization')
+    expect(amLabels).not.toContain('GPU memory')
+    expect(amLabels).not.toContain('Thermal')
+    const badge = wrapper.get('[data-test="gpu-badge"]')
+    expect(badge.text()).toContain('GPU 68%')
+    expect(badge.text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
+    expect(wrapper.get('[data-test="gpu-mem"]').text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
     const charts = wrapper.findAll('.lc-stub')
     const heights = charts.map((n) => n.attributes('data-height'))
     expect(heights).toEqual(['54', '54', '88', '88'])
@@ -154,7 +158,9 @@ describe('Dashboard GPU density', () => {
     expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
     expect(wrapper.find('[data-test="gpu-chart"]').exists()).toBe(true)
     expect(wrapper.get('[data-test="cpu-badge"]').text()).toBe('CPU 15%')
-    expect(wrapper.get('[data-test="gpu-badge"]').text()).toBe('GPU 68%')
+    const thermal = wrapper.get('[data-test="cpu-thermal"]')
+    expect(thermal.text()).toContain('Thermal')
+    expect(thermal.text()).toContain('Unavailable')
     wrapper.unmount()
   })
 
@@ -174,7 +180,7 @@ describe('Dashboard GPU density', () => {
     wrapper.unmount()
   })
 
-  it('shows the memory row when only one of used/alloc is present', async () => {
+  it('shows GPU memory on the badge when only one of used/alloc is present', async () => {
     getSensors.mockResolvedValue({
       cpu: { user: 1, sys: 1, idle: 98 },
       memory: {},
@@ -184,6 +190,8 @@ describe('Dashboard GPU density', () => {
     const wrapper = await render()
     expect(wrapper.find('[data-test="gpu-util"]').exists()).toBe(false)
     expect(wrapper.get('[data-test="gpu-mem"]').text()).toMatch(/2(\.0)?\s*\/\s*— GB/)
+    expect(wrapper.get('[data-test="gpu-badge"]').text()).toMatch(/2(\.0)?\s*\/\s*— GB/)
+    expect(wrapper.get('[data-test="gpu-badge"]').text()).not.toMatch(/%/)
     wrapper.unmount()
   })
 
@@ -226,9 +234,38 @@ describe('Dashboard GPU density', () => {
     expect(charts.map((n) => n.attributes('data-height'))).toEqual(['54', '54', '72', '52'])
     expect(charts[0].attributes('data-title')).toBe('CPU Load')
     expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
-    expect(wrapper.get('[data-test="gpu-compact-util"]').text()).toContain('GPU utilization')
+    expect(wrapper.find('.cpu-facts').exists()).toBe(false)
+    expect(wrapper.find('[data-test="gpu-compact-util"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="gpu-compact-mem"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="gpu-section"]').exists()).toBe(false)
     expect(wrapper.get('[data-test="cpu-badge"]').text()).toBe('CPU 15%')
-    expect(wrapper.get('[data-test="gpu-badge"]').text()).toBe('GPU 68%')
+    const badge = wrapper.get('[data-test="gpu-badge"]')
+    expect(badge.text()).toContain('GPU 68%')
+    expect(badge.text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
+    const thermal = wrapper.get('[data-test="cpu-thermal"]')
+    expect(thermal.text()).toContain('Thermal')
+    expect(thermal.text()).toContain('Unavailable')
+    wrapper.unmount()
+  })
+
+  it('warns on thermal pressure in the shared loadline', async () => {
+    getSensors.mockResolvedValue({
+      cpu: {
+        user: 10,
+        sys: 5,
+        idle: 85,
+        used_pct: 15,
+        thermal: { pressure: 'warning' },
+      },
+      memory: {},
+      network: {},
+      gpu: GPU,
+    })
+    const wrapper = await render()
+    const thermal = wrapper.get('[data-test="cpu-thermal"]')
+    expect(thermal.text()).toContain('Thermal')
+    expect(thermal.text()).toContain('Pressure warning')
+    expect(thermal.find('.temp-warn').exists()).toBe(true)
     wrapper.unmount()
   })
 })
