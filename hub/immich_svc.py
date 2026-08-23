@@ -191,7 +191,10 @@ def worker_pid() -> int | None:
         # to OOM GET /api/photoshub.
         with open(WORKER_PID, encoding="utf-8", errors="replace") as fh:
             raw = fh.read(256)
-        line = raw.splitlines()[0].strip()
+        # Cap leaves a str; index lines, not characters — raw[1] was the digit
+        # after the first pid char and always failed the lstart match.
+        lines = raw.splitlines()
+        line = lines[0].strip()
     except (OSError, ValueError, IndexError, TypeError):
         return None
     if isinstance(line, float) and (line != line or line in (float("inf"), float("-inf"))):
@@ -223,7 +226,7 @@ def worker_pid() -> int | None:
     # "dist/main.js" covers a future version that stops renaming itself.
     if cmd != "immich" and "dist/main.js" not in cmd:
         return None
-    recorded = raw[1].strip() if len(raw) > 1 else ""
+    recorded = lines[1].strip() if len(lines) > 1 else ""
     if recorded and started and recorded != started:
         return None  # pid was recycled by a different process
     return pid

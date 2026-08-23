@@ -522,6 +522,20 @@ class ImmichChecksLeftoverTests(unittest.TestCase):
             with mock.patch.object(immich_svc, "WORKER_PID", path):
                 self.assertIsNone(immich_svc.worker_pid())
 
+    def test_worker_pid_matches_lstart_line_not_char(self):
+        """OOM-cap read left raw as str; raw[1] was a pid digit, not lstart line."""
+        from hub import immich_svc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "worker.pid"
+            path.write_text("4242\nSun Aug 16 21:11:46 2026\n")
+            ps_out = "Sun Aug 16 21:11:46 2026     immich\n"
+            with (
+                mock.patch.object(immich_svc, "WORKER_PID", path),
+                mock.patch.object(immich_svc, "sh", return_value=(0, ps_out, "")),
+            ):
+                self.assertEqual(immich_svc.worker_pid(), 4242)
+
     def test_huge_start_worker_script_does_not_oom_health(self):
         """``Path.read_text()`` of leftover start-worker-native.sh used to OOM GET /api/health."""
         from hub import immich_svc
