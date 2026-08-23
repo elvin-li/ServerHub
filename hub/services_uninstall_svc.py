@@ -15,6 +15,8 @@ so the panel cannot uninstall the process serving the request.
 """
 from __future__ import annotations
 
+import errno
+import os
 import plistlib
 import re
 import shutil
@@ -95,11 +97,24 @@ _LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def _safe_resolve(path) -> Path | None:
-    """``Path.resolve()`` raises RuntimeError on a symlink loop, not OSError."""
+    """Resolve *path*, or None on a leftover the kernel will not follow.
+
+    Python 3.12 ``Path.resolve()`` raises RuntimeError on a symlink loop.
+    Python 3.14's non-strict resolve returns the looping path; ``stat`` still
+    ELOOP's.
+    """
     try:
-        return Path(path).expanduser().resolve()
+        p = Path(path).expanduser().resolve()
     except (OSError, ValueError, TypeError, RuntimeError):
         return None
+    try:
+        os.stat(p)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+    except (ValueError, TypeError, RuntimeError):
+        return None
+    return p
 
 
 def _tree_present(path: Path) -> bool:

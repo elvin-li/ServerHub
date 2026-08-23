@@ -256,11 +256,10 @@ def _resolve(path: str | None, root_id: str | None) -> Path:
     if not path or path in (".", "/"):
         return base or Path(roots[0]["path"])
 
-    try:
-        candidate = Path(os.path.expanduser(str(path))).resolve()
-    except (OSError, ValueError, RuntimeError):
-        # Symlink loops raise RuntimeError, not OSError — that used to 500
-        # /api/storage/usage/tree.
+    candidate = files_svc._try_resolve(path)
+    if candidate is None:
+        # Symlink loops: 3.12 resolve() raised RuntimeError; 3.14 returns the
+        # looping path.  Either way this is not a walkable directory.
         raise api_error("files.not_found", path=str(path)[:200])
 
     allowed = [base] if base else [Path(r["path"]) for r in roots]

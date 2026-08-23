@@ -172,11 +172,25 @@ def _as_text(value) -> str:
 
 
 def _try_resolve(value) -> Path | None:
-    """``Path.resolve()`` raises RuntimeError on a symlink loop, not OSError."""
+    """Resolve *value*, or None on a leftover path the kernel will not follow.
+
+    Python 3.12 ``Path.resolve()`` raises RuntimeError on a symlink loop.
+    Python 3.14's non-strict resolve returns the looping path instead, and
+    later ``relative_to`` / ``exists`` checks used to surface
+    ``files.path_outside_root`` or succeed.  ``stat`` still ELOOP's.
+    """
     try:
-        return Path(os.path.expanduser(str(value))).resolve()
+        p = Path(os.path.expanduser(str(value))).resolve()
     except (OSError, ValueError, TypeError, RuntimeError):
         return None
+    try:
+        os.stat(p)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+    except (ValueError, TypeError, RuntimeError):
+        return None
+    return p
 
 
 def _is_dir(p: Path) -> bool:
@@ -600,6 +614,11 @@ def rename_path(path: str, new_name: str, root_id: str | None = None) -> dict:
         dest = (p.parent / new_name).resolve()
     except (OSError, ValueError, RuntimeError):
         raise api_error("files.bad_name")
+    try:
+        os.stat(dest)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise api_error("files.bad_name")
     _resolve_safe(str(dest), root_id)
     try:
         taken = dest.exists()
