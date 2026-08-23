@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="system" data-density="compact">
+<html lang="zh-CN" data-theme="macos" data-density="compact">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
@@ -18,18 +18,25 @@
     <link rel="manifest" href="/site.webmanifest" />
     <script>
       try {
-        var t = localStorage.getItem('serverhub.theme') || 'system';
+        var t = localStorage.getItem('serverhub.theme') || '';
         var family = localStorage.getItem('serverhub.themeFamily') || 'macos';
+        var followRaw = localStorage.getItem('serverhub.followSystem');
         var d = localStorage.getItem('serverhub.density') || 'compact';
         var l = localStorage.getItem('serverhub.locale') || '';
         // Follow system → concrete macos/macos-dark (or unraid pair) before paint.
+        // Legacy theme=system still follows OS. Missing followSystem follows
+        // only when storage is empty or still on that legacy id.
         var pairs = { macos: 'macos-dark', unraid: 'unraid-dark' };
+        var fromDark = { 'macos-dark': 'macos', 'unraid-dark': 'unraid' };
+        var osDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var follow = t === 'system' || followRaw === '1' || (followRaw !== '0' && !t);
         var applied = t;
-        if (t === 'system') {
+        if (t === 'system' || !t) {
           var lightFamily = pairs[family] ? family : 'macos';
-          applied = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
-            ? pairs[lightFamily]
-            : lightFamily;
+          applied = osDark ? pairs[lightFamily] : lightFamily;
+        } else if (follow) {
+          var lightId = pairs[t] ? t : fromDark[t];
+          if (lightId) applied = osDark ? pairs[lightId] : lightId;
         }
         document.documentElement.setAttribute('data-theme', applied);
         document.documentElement.setAttribute('data-density', d);

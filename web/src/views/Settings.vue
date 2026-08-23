@@ -29,14 +29,22 @@
       <div class="card" style="margin-bottom:12px">
         <h2 class="section-title" style="margin-top:0">{{ t('theme.title') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('appearance.theme_hint') }}</p>
+        <label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;cursor:pointer">
+          <input
+            type="checkbox"
+            :checked="followSystem"
+            @change="pickFollowSystem($event.target.checked)"
+          >
+          {{ t('theme.system') }}
+        </label>
         <div class="theme-grid">
           <button
             v-for="th in themes"
             :key="th.id"
             type="button"
             class="theme-card"
-            :class="{ active: theme === th.id }"
-            :aria-pressed="theme === th.id"
+            :class="{ active: (appliedTheme ?? theme) === th.id }"
+            :aria-pressed="(appliedTheme ?? theme) === th.id"
             @click="pickTheme(th.id)"
           >
             <div class="swatches">
@@ -1100,7 +1108,10 @@ import GroupRules from '../components/GroupRules.vue'
 
 const toast = inject('toast')
 const { t, locale, locales, setLocale } = injectI18n()
-const { theme, density, themes, densities, setTheme, setDensity } = injectTheme()
+const {
+  theme, appliedTheme, density, themes, densities, followSystem,
+  setTheme, setFollowSystem, setDensity,
+} = injectTheme()
 
 const tab = ref('appearance')
 const form = ref(null)
@@ -1424,31 +1435,41 @@ function persistUi(patch) {
   })
 }
 
+function uiThemeId() {
+  return followSystem?.value ? 'system' : (theme?.value ?? theme)
+}
+
 async function pickLocale(id) {
   if (await setLocale(id)) {
     if (!pageAlive) return
     toast('✅ ' + t('appearance.saved_local'))
-    persistUi({ locale: id, theme: theme.value, density: density.value })
+    persistUi({ locale: id, theme: uiThemeId(), density: density.value })
   }
 }
 
 function pickTheme(id) {
   setTheme(id)
   toast('✅ ' + t('theme.applied'))
-  persistUi({ locale: locale.value, theme: id, density: density.value })
+  persistUi({ locale: locale.value, theme: uiThemeId(), density: density.value })
+}
+
+function pickFollowSystem(on) {
+  setFollowSystem(on)
+  toast('✅ ' + t('appearance.saved_local'))
+  persistUi({ locale: locale.value, theme: on ? 'system' : theme.value, density: density.value })
 }
 
 function pickDensity(id) {
   setDensity(id)
   toast('✅ ' + t('appearance.saved_local'))
-  persistUi({ locale: locale.value, theme: theme.value, density: id })
+  persistUi({ locale: locale.value, theme: uiThemeId(), density: id })
 }
 
 async function syncUiToServer() {
   const generation = beginSaving()
   try {
     await putSettings({
-      ui: { locale: locale.value, theme: theme.value, density: density.value },
+      ui: { locale: locale.value, theme: uiThemeId(), density: density.value },
     })
     if (!pageAlive) return
     toast('✅ ' + t('appearance.saved_server'))
@@ -1732,7 +1753,7 @@ async function save() {
       },
       ui: {
         locale: locale.value,
-        theme: theme.value,
+        theme: uiThemeId(),
         density: density.value,
       },
     }

@@ -801,14 +801,16 @@ button.primary.loading::after { color: #fff; }
     padding-top: env(safe-area-inset-top);
     padding-left: max(12px, env(safe-area-inset-left));
     padding-right: max(12px, env(safe-area-inset-right));
-    /* Extra 16px hides a subpixel peek of the closed drawer. visibility:hidden
-       also keeps WebKit from stroking an untransformed :focus-visible outline
-       as a full-height left accent. Shadow only while open so a closed drawer
-       cannot paint at x=0. */
+    /* Extra 16px hides a subpixel peek of the closed drawer. visibility +
+       opacity + clip-path contain paint: transform-only offscreen can still
+       leak a 1px left accent, and WebKit may stroke an untransformed
+       :focus-visible outline at x=0. Shadow only while open. */
     transform: translateX(calc(-100% - 16px));
     visibility: hidden;
     pointer-events: none;
-    transition: transform .28s cubic-bezier(.4,0,.2,1), visibility 0s linear .28s;
+    opacity: 0;
+    clip-path: inset(0 100% 0 0);
+    transition: transform .28s cubic-bezier(.4,0,.2,1), visibility 0s linear .28s, opacity 0s linear .28s, clip-path 0s linear .28s;
     z-index: 38;
     overflow-y: auto;
     box-shadow: none;
@@ -828,8 +830,10 @@ button.primary.loading::after { color: #fff; }
     transform: translateX(0);
     visibility: visible;
     pointer-events: auto;
+    opacity: 1;
+    clip-path: none;
     box-shadow: 4px 0 16px rgba(0,0,0,.3);
-    transition: transform .28s cubic-bezier(.4,0,.2,1), visibility 0s;
+    transition: transform .28s cubic-bezier(.4,0,.2,1), visibility 0s, opacity 0s, clip-path 0s;
   }
   .top-nav a {
     display: flex; align-items: center; gap: 7px;
@@ -1268,10 +1272,13 @@ input:focus-visible, select:focus-visible { outline: none; }
 /* Page chrome is not a control. A UA / :focus-visible ring on these boxes is a
    full-height accent stroke; the fixed header covers the top so only the left
    edge reads as a system-blue strip. Always-off outline on the shell, then
-   focus suppress including .topchrome / .top-nav. Keep global :focus-visible
-   on real controls. */
+   focus suppress including .topchrome / .top-nav / the full-viewport overlay.
+   Closed-drawer descendants (.top-nav[inert] *) too: inert keeps them out of
+   the tab order, but a leftover ring can still paint at the untransformed
+   origin. Keep global :focus-visible on real controls. */
 html, body, #app, .layout, .main,
-.topchrome, .topchrome-inner, .subchrome, .top-nav {
+.topchrome, .topchrome-inner, .subchrome, .top-nav,
+.nav-overlay {
   outline: none;
 }
 html:focus, html:focus-visible,
@@ -1283,7 +1290,10 @@ body:focus, body:focus-visible,
 .topchrome-inner:focus, .topchrome-inner:focus-visible,
 .subchrome:focus, .subchrome:focus-visible,
 .top-nav:focus, .top-nav:focus-visible,
-.main > div:focus, .main > div:focus-visible {
+.nav-overlay:focus, .nav-overlay:focus-visible,
+.main > div:focus, .main > div:focus-visible,
+.top-nav[inert]:focus, .top-nav[inert]:focus-visible,
+.top-nav[inert] *:focus, .top-nav[inert] *:focus-visible {
   outline: none;
   box-shadow: none;
 }
@@ -2281,7 +2291,7 @@ img[loading="lazy"][complete] {
   background: var(--logo-grad);
 }
 
-/* Segmented wells — Network/Settings .tabs, Tools chips, Dashboard ranges. */
+/* Segmented wells — shared .tabs, Dashboard ranges. */
 html[data-theme="macos"] .tabs,
 html[data-theme="macos-dark"] .tabs {
   display: inline-flex;
@@ -2332,45 +2342,6 @@ html[data-theme="macos-dark"] .tabs button.active:not(.primary):not(.danger):not
 }
 html[data-theme="macos-dark"] .tabs button.active,
 html[data-theme="macos-dark"] .tabs button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
-  background: #636366;
-  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.4);
-}
-html[data-theme="macos"] .tools-tabs,
-html[data-theme="macos-dark"] .tools-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 3px;
-  background: #e8e8ed;
-  border-radius: 9px;
-  max-width: 100%;
-}
-html[data-theme="macos-dark"] .tools-tabs {
-  background: #3a3a3c;
-}
-html[data-theme="macos"] .tools-tab,
-html[data-theme="macos-dark"] .tools-tab {
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  border-radius: 6px;
-  color: var(--txt);
-}
-html[data-theme="macos"] .tools-tab:hover,
-html[data-theme="macos-dark"] .tools-tab:hover {
-  background: color-mix(in srgb, var(--txt) 6%, transparent);
-  border: 0;
-  filter: none;
-}
-html[data-theme="macos"] .tools-tab.active,
-html[data-theme="macos-dark"] .tools-tab.active {
-  background: #fff;
-  color: var(--txt);
-  border: 0;
-  font-weight: 600;
-  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
-}
-html[data-theme="macos-dark"] .tools-tab.active {
   background: #636366;
   box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.4);
 }

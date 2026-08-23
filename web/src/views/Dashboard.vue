@@ -734,7 +734,7 @@ const toast = inject('toast')
 const { t, errText } = injectI18n()
 const { theme, resolveThemeId } = injectTheme()
 const isMacSurface = computed(() => {
-  const id = theme.value === 'system' ? resolveThemeId('system') : theme.value
+  const id = resolveThemeId(theme.value)
   return id === 'macos' || id === 'macos-dark'
 })
 const AM_CHART_HEIGHT = 88
@@ -1724,6 +1724,9 @@ onUnmounted(() => {
 .am-surface .am-monitor.am-cpu {
   grid-template-columns: minmax(min-content, 0.72fr) minmax(0, 1.65fr);
 }
+.am-surface .am-monitor.am-disk {
+  grid-template-columns: minmax(160px, 1.1fr) minmax(0, 1.15fr);
+}
 .am-monitor .cpu-head { margin-bottom: 2px; }
 .am-cpu .am-monitor-stats {
   gap: 1px;
@@ -1869,7 +1872,8 @@ onUnmounted(() => {
   .am-monitor.chart-first,
   .am-surface .am-monitor,
   .am-surface .am-monitor.chart-first,
-  .am-surface .am-monitor.am-cpu {
+  .am-surface .am-monitor.am-cpu,
+  .am-surface .am-monitor.am-disk {
     grid-template-columns: 1fr;
     grid-template-areas:
       "stats"

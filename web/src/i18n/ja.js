@@ -241,7 +241,7 @@ export default {
   appearance: {
     language: '言語',
     language_hint: 'すぐに反映され、ローカルとパネル設定に保存されます。',
-    theme_hint: 'テーマは配色・ヘッダー・角丸を変更します。「システムに合わせる」は OS の外観に合わせて macOS / Unraid のライトとダークを切り替えます。密度は表と余白に影響します。',
+    theme_hint: 'テーマは配色・ヘッダー・角丸を変更します。「システムに合わせる」をオンにすると、macOS / Unraid のライトとダークが OS の外観に合わせて切り替わります。密度は表と余白に影響します。',
     save_server: 'サーバーに同期',
     saved_local: 'ローカルに保存しました',
     saved_server: 'サーバーに同期しました',

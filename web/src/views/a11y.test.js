@@ -392,10 +392,20 @@ describe('tab selection state', () => {
   it('exposes the selected tab to assistive technology', () => {
     const offenders = []
     for (const [name, src] of vueFiles()) {
-      for (const [, tabs] of src.matchAll(/<div class="(?:tabs|tools-tabs)">([\s\S]*?)<\/div>/g)) {
+      for (const [, tabs] of src.matchAll(/<div class="tabs">([\s\S]*?)<\/div>/g)) {
         const buttons = (tabs.match(/<button\b/g) || []).length
         const states = (tabs.match(/:aria-pressed=/g) || []).length
         if (buttons !== states) offenders.push(`${name}: ${buttons - states} tab button(s) hide their selected state`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('does not invent a Tools-specific tab chrome', () => {
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      if (src.includes('tools-tabs') || /class="tools-tab"/.test(src)) {
+        offenders.push(name)
       }
     }
     expect(offenders).toEqual([])
@@ -1773,7 +1783,7 @@ describe('leftover Infinity interpolations', () => {
     expect(dash).not.toMatch(/finiteText\(cstats\[c\.id\]\?\.mem_pct \|\| cstats\[c\.id\]\?\.mem\)/)
     expect(dash).toMatch(/finiteText\(cstats\[c\.id\]\?\.mem_pct, ''\) \|\| finiteText\(cstats\[c\.id\]\?\.mem\)/)
     expect(dash).toMatch(/finiteText\(cstats\[c\.id\]\?\.cpu\)/)
-    expect(dash).toMatch(/finiteText\(d\.smart\.temp\)/)
+    expect(dash).toMatch(/formatSmartTemp\(d\.smart\.temp\)/)
     expect(dash).toMatch(/finiteN\(status\.adaptive\.auto_labeled, 0\)/)
     expect(dash).toMatch(/finiteN\(status\.adaptive\.orphan_count, 0\)/)
     expect(dash).not.toMatch(/status\.adaptive\.auto_labeled \|\| 0/)

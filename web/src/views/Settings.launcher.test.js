@@ -29,11 +29,14 @@ vi.mock('../i18n', () => ({
 }))
 vi.mock('../theme', () => ({
   injectTheme: () => ({
-    theme: ref('system'),
+    theme: ref('macos'),
+    appliedTheme: ref('macos'),
     density: ref('compact'),
     themes: [],
     densities: [],
+    followSystem: ref(true),
     setTheme: vi.fn(),
+    setFollowSystem: vi.fn(),
     setDensity: vi.fn(),
   }),
 }))

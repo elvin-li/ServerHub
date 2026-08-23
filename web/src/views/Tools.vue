@@ -5,12 +5,11 @@
       <span class="meta">{{ t('tools.meta') }}</span>
     </div>
 
-    <div class="tools-tabs">
+    <div class="tabs">
       <button
         v-for="tb in tabs"
         :key="tb.id"
         type="button"
-        class="tools-tab"
         :class="{ active: tab===tb.id }"
         :aria-pressed="tab===tb.id"
         @click="switchTab(tb.id)"
@@ -1093,40 +1092,6 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-/* Top tab bar — wrap fully, no overflow off page */
-.tools-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-  max-width: 100%;
-}
-
-.tools-tab {
-  font-size: 12px;
-  padding: 6px 11px;
-  line-height: 1.3;
-  white-space: nowrap;
-  color: var(--sub);
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  cursor: pointer;
-  max-width: 100%;
-}
-
-.tools-tab:hover {
-  border-color: var(--accent);
-  color: var(--txt);
-}
-
-.tools-tab.active {
-  color: var(--txt);
-  font-weight: 600;
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--card));
-}
-
 /* Home tiles */
 .tool-grid {
   display: grid;
@@ -1264,10 +1229,6 @@ button.warn {
 @media (max-width: 520px) {
   .tool-grid {
     grid-template-columns: 1fr 1fr;
-  }
-  .tools-tab {
-    font-size: 11px;
-    padding: 5px 8px;
   }
 }
 @media (max-width: 380px) {

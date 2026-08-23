@@ -242,7 +242,7 @@ export default {
   appearance: {
     language: '界面语言',
     language_hint: '切换后立即生效，并保存到本机与面板设置。',
-    theme_hint: '多风格主题会改变配色、顶栏与圆角。「跟随系统」会按系统亮暗在 macOS / Unraid 的浅色与暗色之间切换。密度影响表格与间距。',
+    theme_hint: '多风格主题会改变配色、顶栏与圆角。勾选「跟随系统」后，macOS / Unraid 会按系统亮暗自动切换配对主题。密度影响表格与间距。',
     save_server: '同步到服务器',
     saved_local: '已保存到本机',
     saved_server: '已同步到服务器',

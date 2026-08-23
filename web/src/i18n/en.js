@@ -241,7 +241,7 @@ export default {
   appearance: {
     language: 'Language',
     language_hint: 'Applies immediately and is saved locally and to panel settings.',
-    theme_hint: 'Themes change colors, header, and radius. “Follow system” switches the macOS or Unraid light/dark pair with the OS. Density affects tables and spacing.',
+    theme_hint: 'Themes change colors, header, and radius. Tick “Follow system” to switch the macOS or Unraid light/dark pair with the OS. Density affects tables and spacing.',
     save_server: 'Sync to server',
     saved_local: 'Saved locally',
     saved_server: 'Synced to server',

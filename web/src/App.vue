@@ -214,7 +214,7 @@ import { finiteN, finiteText } from './lib/finite'
 const route = useRoute()
 const router = useRouter()
 const { t, locale, locales, setLocale } = injectI18n()
-const { theme, themes, setTheme } = injectTheme()
+const { theme, themes, setTheme, followSystem } = injectTheme()
 
 const toast = ref('')
 const status = ref(null)
@@ -451,7 +451,7 @@ async function onLocale(ev) {
 
 function onTheme(ev) {
   setTheme(ev.target.value)
-  putSettings({ ui: { theme: ev.target.value } }).catch(() => {})
+  putSettings({ ui: { theme: followSystem?.value ? 'system' : ev.target.value } }).catch(() => {})
   showToast(t('theme.applied'))
 }
 

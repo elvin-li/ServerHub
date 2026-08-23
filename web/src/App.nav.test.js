@@ -22,7 +22,12 @@ vi.mock('./i18n', () => ({
   injectI18n: () => ({ t: (k) => k, locale: ref('en'), locales: [], setLocale: vi.fn() }),
 }))
 vi.mock('./theme', () => ({
-  injectTheme: () => ({ theme: ref('dark'), themes: [], setTheme: vi.fn() }),
+  injectTheme: () => ({
+    theme: ref('dark'),
+    themes: [],
+    setTheme: vi.fn(),
+    followSystem: ref(false),
+  }),
 }))
 vi.mock('./lib/poll', () => ({ startVisibleInterval: () => () => {} }))
 vi.mock('./lib/adminPassword', () => ({ clearAdminPassword: vi.fn() }))

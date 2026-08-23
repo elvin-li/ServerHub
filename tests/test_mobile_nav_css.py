@@ -105,6 +105,34 @@ class TestMobileDrawerContainingBlock(unittest.TestCase):
         joined = " ".join(top_nav)
         self.assertIn("position: fixed", joined.replace("  ", " "))
 
+    def test_closed_drawer_does_not_paint_at_viewport_left(self):
+        """Closed off-canvas nav must not leak a full-height accent at x=0.
+
+        Transform-only hide can subpixel-peek; visibility:hidden alone still
+        lets some WebKit builds stroke an untransformed outline. Opacity and
+        clip-path contain paint until .open restores them.
+        """
+        top_nav = [
+            body
+            for sel, body in _blocks(self.mobile)
+            if sel == ".top-nav"
+        ]
+        self.assertTrue(top_nav, ".top-nav rule missing from the mobile query")
+        closed = " ".join(top_nav)
+        self.assertIn("visibility: hidden", closed)
+        self.assertIn("opacity: 0", closed)
+        self.assertIn("clip-path: inset(0 100% 0 0)", closed)
+        opened = [
+            body
+            for sel, body in _blocks(self.mobile)
+            if sel == ".top-nav.open"
+        ]
+        self.assertTrue(opened, ".top-nav.open rule missing from the mobile query")
+        open_joined = " ".join(opened)
+        self.assertIn("visibility: visible", open_joined)
+        self.assertIn("opacity: 1", open_joined)
+        self.assertIn("clip-path: none", open_joined)
+
     def test_header_does_not_trap_the_fixed_drawer_on_mobile(self):
         """Every containing-block property on an ancestor must be neutralised.
 

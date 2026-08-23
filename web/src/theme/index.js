@@ -2,9 +2,14 @@ import { inject, ref } from 'vue'
 
 const THEMES = [
   {
-    id: 'system',
-    labelKey: 'theme.system',
-    swatches: ['#007AFF', '#F5F5F7', '#1C1C1E'],
+    id: 'macos',
+    labelKey: 'theme.macos',
+    swatches: ['#007AFF', '#F5F5F7', '#FFFFFF'],
+  },
+  {
+    id: 'macos-dark',
+    labelKey: 'theme.macos_dark',
+    swatches: ['#0A84FF', '#1C1C1E', '#2C2C2E'],
   },
   {
     id: 'unraid',
@@ -25,16 +30,6 @@ const THEMES = [
     id: 'docker',
     labelKey: 'theme.docker',
     swatches: ['#2496ed', '#0d2137', '#f0f7fc'],
-  },
-  {
-    id: 'macos',
-    labelKey: 'theme.macos',
-    swatches: ['#007AFF', '#F5F5F7', '#FFFFFF'],
-  },
-  {
-    id: 'macos-dark',
-    labelKey: 'theme.macos_dark',
-    swatches: ['#0A84FF', '#1C1C1E', '#2C2C2E'],
   },
   {
     id: 'nord',
@@ -61,6 +56,7 @@ const DENSITIES = [
 
 const THEME_KEY = 'serverhub.theme'
 const THEME_FAMILY_KEY = 'serverhub.themeFamily'
+const FOLLOW_KEY = 'serverhub.followSystem'
 const DENSITY_KEY = 'serverhub.density'
 
 /** Light id → dark twin for “Follow system”. Default family is macOS. */
@@ -87,9 +83,11 @@ function write(key, value) {
   } catch {}
 }
 
-const theme = ref(read(THEME_KEY, 'system'))
-const themeFamily = ref(read(THEME_FAMILY_KEY, 'macos'))
-const density = ref(read(DENSITY_KEY, 'compact'))
+const theme = ref('macos')
+const themeFamily = ref('macos')
+const followSystem = ref(true)
+const appliedTheme = ref('macos')
+const density = ref('compact')
 
 const THEME_COLORS = {
   unraid: '#f5f0e8', 'unraid-dark': '#1c1b1b', omv: '#f5f5f5',
@@ -115,28 +113,52 @@ function prefersDark() {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-function normalizeFamily(id) {
+function isCatalogueId(id) {
+  return THEMES.some(t => t.id === id)
+}
+
+function pairFamily(id) {
   if (THEME_PAIRS[id]) return id
   if (THEME_PAIR_LIGHT[id]) return THEME_PAIR_LIGHT[id]
-  return 'macos'
+  return null
 }
 
 function rememberFamily(id) {
-  if (id === 'system') return
-  const family = normalizeFamily(id)
-  if (THEME_PAIRS[family]) {
-    themeFamily.value = family
-    write(THEME_FAMILY_KEY, family)
-  }
+  const family = pairFamily(id)
+  if (!family) return
+  themeFamily.value = family
+  write(THEME_FAMILY_KEY, family)
 }
 
-/** Resolve picker id → concrete data-theme (system → macos / macos-dark). */
-export function resolveThemeId(id, family = themeFamily.value, dark = prefersDark()) {
-  const valid = THEMES.some(t => t.id === id) ? id : 'system'
-  if (valid !== 'system') return valid
-  const light = THEME_PAIRS[family] ? family : 'macos'
-  const twin = THEME_PAIRS[light]
-  return dark ? twin : light
+function readFollowFlag(storedTheme) {
+  const raw = read(FOLLOW_KEY, '')
+  if (raw === '1') return true
+  if (raw === '0') {
+    // Legacy `theme=system` always meant follow-OS, even if the new flag is off.
+    return storedTheme === 'system'
+  }
+  return !storedTheme || storedTheme === 'system'
+}
+
+/**
+ * Resolve a picker / persisted id → concrete data-theme.
+ * Legacy `system` (and unknown ids) follow the stored family.
+ * With follow-system on, paired ids paint the OS twin; unpaired ids stay put.
+ */
+export function resolveThemeId(
+  id,
+  family = themeFamily.value,
+  dark = prefersDark(),
+  follow = followSystem.value,
+) {
+  if (id === 'system' || !isCatalogueId(id)) {
+    const light = THEME_PAIRS[family] ? family : 'macos'
+    return dark ? THEME_PAIRS[light] : light
+  }
+  if (!follow) return id
+  const light = pairFamily(id)
+  if (!light) return id
+  return dark ? THEME_PAIRS[light] : light
 }
 
 function stopSchemeListener() {
@@ -156,7 +178,8 @@ function startSchemeListener() {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
   schemeMql = window.matchMedia('(prefers-color-scheme: dark)')
   schemeListener = () => {
-    if (theme.value === 'system') paintTheme('system')
+    if (!followSystem.value) return
+    paintTheme(theme.value)
   }
   if (typeof schemeMql.addEventListener === 'function') {
     schemeMql.addEventListener('change', schemeListener)
@@ -166,36 +189,63 @@ function startSchemeListener() {
 }
 
 function paintTheme(id) {
-  const valid = THEMES.some(t => t.id === id) ? id : 'system'
-  const applied = resolveThemeId(valid)
+  const applied = resolveThemeId(id)
+  appliedTheme.value = applied
   if (typeof document === 'undefined') return applied
   const root = document.documentElement
   root.setAttribute('data-theme', applied)
-  if (valid === 'system') {
-    // Follow OS: pin color-mode to the resolved twin so form controls match
-    // the concrete macos / macos-dark (or unraid) palette we just applied.
-    root.setAttribute(
-      'data-color-mode',
-      LIGHT_THEMES.includes(applied) ? 'light' : 'dark',
-    )
-  } else if (LIGHT_THEMES.includes(applied)) {
-    root.setAttribute('data-color-mode', 'light')
-  } else {
-    root.setAttribute('data-color-mode', 'dark')
-  }
+  root.setAttribute(
+    'data-color-mode',
+    LIGHT_THEMES.includes(applied) ? 'light' : 'dark',
+  )
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta && THEME_COLORS[applied]) meta.setAttribute('content', THEME_COLORS[applied])
   return applied
 }
 
+function persistFollow(on) {
+  followSystem.value = on
+  write(FOLLOW_KEY, on ? '1' : '0')
+}
+
+function persistTheme(id) {
+  theme.value = id
+  write(THEME_KEY, id)
+}
+
 function applyTheme(id) {
-  const valid = THEMES.some(t => t.id === id) ? id : 'system'
-  theme.value = valid
-  write(THEME_KEY, valid)
+  if (id === 'system') {
+    persistFollow(true)
+    const applied = resolveThemeId('system')
+    persistTheme(applied)
+    rememberFamily(applied)
+    paintTheme(applied)
+    startSchemeListener()
+    return applied
+  }
+  const valid = isCatalogueId(id) ? id : 'macos'
+  persistTheme(valid)
   rememberFamily(valid)
   paintTheme(valid)
-  if (valid === 'system') startSchemeListener()
+  if (followSystem.value) startSchemeListener()
   else stopSchemeListener()
+  return valid
+}
+
+function applyFollowSystem(on) {
+  const next = !!on
+  if (next) {
+    persistFollow(true)
+    paintTheme(theme.value)
+    startSchemeListener()
+    return
+  }
+  const frozen = appliedTheme.value || resolveThemeId(theme.value)
+  persistFollow(false)
+  persistTheme(frozen)
+  rememberFamily(frozen)
+  paintTheme(frozen)
+  stopSchemeListener()
 }
 
 function applyDensity(id) {
@@ -207,26 +257,45 @@ function applyDensity(id) {
 }
 
 function initTheme() {
+  const storedTheme = read(THEME_KEY, '')
   const storedFamily = read(THEME_FAMILY_KEY, '')
   if (THEME_PAIRS[storedFamily]) {
     themeFamily.value = storedFamily
-  } else if (theme.value !== 'system') {
-    rememberFamily(theme.value)
+  } else if (storedTheme && storedTheme !== 'system') {
+    rememberFamily(storedTheme)
+    if (!pairFamily(storedTheme)) themeFamily.value = 'macos'
   } else {
     themeFamily.value = 'macos'
   }
-  applyTheme(theme.value)
-  applyDensity(density.value)
+
+  persistFollow(readFollowFlag(storedTheme))
+
+  if (storedTheme === 'system' || !storedTheme || !isCatalogueId(storedTheme)) {
+    const applied = resolveThemeId('system')
+    persistTheme(applied)
+    rememberFamily(applied)
+    paintTheme(applied)
+  } else {
+    persistTheme(storedTheme)
+    paintTheme(storedTheme)
+  }
+
+  if (followSystem.value) startSchemeListener()
+  else stopSchemeListener()
+  applyDensity(read(DENSITY_KEY, 'compact'))
 }
 
 function useTheme() {
   return {
     theme,
+    appliedTheme,
     themeFamily,
+    followSystem,
     density,
     themes: THEMES,
     densities: DENSITIES,
     setTheme: applyTheme,
+    setFollowSystem: applyFollowSystem,
     setDensity: applyDensity,
     resolveThemeId,
   }

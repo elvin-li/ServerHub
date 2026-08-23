@@ -62,8 +62,8 @@ vi.mock('../i18n', () => ({
 }))
 vi.mock('../theme', () => ({
   injectTheme: () => ({
-    theme: 'system', density: 'compact', themes: [], densities: [],
-    setTheme: () => {}, setDensity: () => {},
+    theme: 'macos', appliedTheme: 'macos', density: 'compact', themes: [], densities: [],
+    followSystem: true, setTheme: () => {}, setFollowSystem: () => {}, setDensity: () => {},
   }),
 }))
 

@@ -55,6 +55,24 @@ afterEach(() => {
 })
 
 describe('Tools leftover calendar', () => {
+  it('uses the shared in-page tab chrome', async () => {
+    const wrapper = mount(Tools, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: {
+          RouterLink: { template: '<a><slot /></a>' },
+          SkeletonLoader: true,
+          LoadFailure: true,
+        },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.find('.tabs').exists()).toBe(true)
+    expect(wrapper.find('.tools-tabs').exists()).toBe(false)
+    expect(wrapper.find('.tools-tab').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('does not throw when a leftover calendar is not JSON-serializable', async () => {
     const calendar = {}
     calendar.self = calendar
