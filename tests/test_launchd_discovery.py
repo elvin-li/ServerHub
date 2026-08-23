@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import plistlib
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -12,6 +13,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hub.discovery import launchd
+
+# Ubuntu CI has no /bin/zsh; a present path keeps a running pid in state ok.
+_PRESENT_EXE = "/bin/sh" if Path("/bin/sh").exists() else sys.executable
 
 
 class LaunchdDiscoveryTests(unittest.TestCase):
@@ -26,7 +30,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
         hide: bool = False,
         group: str = "Native",
         override: dict | None = None,
-        pid_exe: str | None = "/bin/zsh",
+        pid_exe: str | None = _PRESENT_EXE,
         http_alive: bool = True,
         port_reachable: bool = True,
         orphan_pids: list[int] | None = None,
@@ -320,7 +324,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 patch.object(launchd, "resolve_template", side_effect=lambda value: value),
                 patch.object(launchd, "enrich_service", side_effect=lambda item, **_: item),
                 patch.object(launchd, "port_open", lambda port, **kw: True),
-                patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
+                patch.object(launchd, "pid_exe_path", lambda pid: _PRESENT_EXE),
                 patch.object(launchd, "_http_alive", lambda port: True),
                 patch.object(launchd, "pids_for_argv", return_value=[]),
             ):
@@ -352,7 +356,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 patch.object(launchd, "resolve_template", side_effect=lambda value: value),
                 patch.object(launchd, "enrich_service", side_effect=lambda item, **_: item),
                 patch.object(launchd, "port_open", lambda port, **kw: True),
-                patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
+                patch.object(launchd, "pid_exe_path", lambda pid: _PRESENT_EXE),
                 patch.object(launchd, "_http_alive", lambda port: True),
                 patch.object(launchd, "pids_for_argv", return_value=[]),
             ):
@@ -388,7 +392,7 @@ class LaunchdDiscoveryTests(unittest.TestCase):
                 patch.object(launchd, "resolve_template", side_effect=lambda value: value),
                 patch.object(launchd, "enrich_service", side_effect=lambda item, **_: item),
                 patch.object(launchd, "port_open", lambda port, **kw: True),
-                patch.object(launchd, "pid_exe_path", lambda pid: "/bin/zsh"),
+                patch.object(launchd, "pid_exe_path", lambda pid: _PRESENT_EXE),
                 patch.object(launchd, "_http_alive", lambda port: True),
                 patch.object(launchd, "pids_for_argv", return_value=[]),
                 patch.object(

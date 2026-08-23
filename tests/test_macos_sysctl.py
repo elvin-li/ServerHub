@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import json
+import sys
 import unittest
 from unittest.mock import patch
 
 from hub import macos_sysctl, metrics, sensors_svc, system
 
+# Live ctypes / hw.ncpu reads need Darwin libSystem.  On Linux _libc is None
+# and sysctl_int would shell ``/usr/sbin/sysctl -n hw.ncpu``, which is not Darwin.
+_LIVE_CTYPES = sys.platform == "darwin" and macos_sysctl._libc is not None
+
 
 class SysctlIntHelperTests(unittest.TestCase):
+    @unittest.skipUnless(_LIVE_CTYPES, "live integer sysctl needs Darwin libSystem")
     def test_live_integer_keys_are_positive(self):
         ncpu = macos_sysctl.sysctlbyname_int("hw.ncpu")
         mem = macos_sysctl.sysctlbyname_int("hw.memsize")
@@ -65,6 +71,7 @@ class SysctlIntHelperTests(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(_LIVE_CTYPES, "live static hw sysctl needs Darwin libSystem")
 class StaticHwTests(unittest.TestCase):
     def setUp(self):
         sensors_svc._static.update(t=0.0, ncpu=None, mem_gb=None, page_size=16384)
@@ -99,6 +106,7 @@ class StaticHwTests(unittest.TestCase):
         self.assertEqual(again["ncpu"], first["ncpu"])
 
 
+@unittest.skipUnless(_LIVE_CTYPES, "in-process ncpu needs Darwin libSystem")
 class CollectSystemSysctlTests(unittest.TestCase):
     def test_collect_system_uses_in_process_ncpu_without_shell(self):
         def fake_sh(argv, **kwargs):
@@ -141,6 +149,7 @@ class CollectSystemSysctlTests(unittest.TestCase):
         self.assertNotIn("hw.memsize", seen)
 
 
+@unittest.skipUnless(_LIVE_CTYPES, "in-process ncpu needs Darwin libSystem")
 class MetricsNcpuTests(unittest.TestCase):
     def setUp(self):
         metrics._ncpu_cache.update(t=0.0, n=None)

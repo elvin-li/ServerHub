@@ -58,7 +58,7 @@ class ScanTests(unittest.TestCase):
 
     def test_present_exe_is_clean(self):
         self._write("local.esphome", KeepAlive=True)
-        rows = self._scan({"local.esphome": "4242"}, exe="/bin/zsh")
+        rows = self._scan({"local.esphome": "4242"}, exe="/bin/sh")
         self.assertEqual(rows, [])
 
     def test_no_pid_is_skipped(self):

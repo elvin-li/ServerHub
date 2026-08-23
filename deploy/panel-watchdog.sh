@@ -22,6 +22,21 @@
 #     requires authentication, so "refused sign-in" still proves it is serving.
 set -u
 
+# BSD ``stat -f`` is Darwin/launchd PATH; GNU ``stat -c`` is Linux CI.
+# Prefer BSD, then GNU, and reject a non-numeric hit so GNU's ``stat -f``
+# (``--file-system``) cannot steal a fresh lock or skip log rotation.
+_stat_int() {
+  # $1 = BSD format, $2 = GNU format, $3 = path
+  n=$(stat -f "$1" "$3" 2>/dev/null) || n=""
+  case "$n" in
+    ''|*[!0-9]*) n=$(stat -c "$2" "$3" 2>/dev/null) || n=0 ;;
+  esac
+  case "$n" in
+    ''|*[!0-9]*) n=0 ;;
+  esac
+  printf '%s\n' "$n"
+}
+
 PORT="${SERVERHUB_PORT:-8086}"
 # A port that is not a number cannot be probed, only miscounted: curl fails on
 # the garbage URL, lsof matches nothing, and three ticks later the real panel
@@ -57,7 +72,7 @@ DOMAIN="gui/$(id -u)"
 LOCK_DIR="${STATE_FILE}.lck"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   # Stale leftover from a SIGKILL'd tick (trap never ran).
-  age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0) ))
+  age=$(( $(date +%s) - $(_stat_int %m %Y "$LOCK_DIR") ))
   if [ "$age" -le 180 ]; then
     exit 0
   fi
@@ -69,7 +84,7 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$LOG"; }
 
 # Keep the log from growing without bound; this runs every minute forever.
-if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+if [ -f "$LOG" ] && [ "$(_stat_int %z %s "$LOG")" -gt 262144 ]; then
   tmp="$LOG.$$.tmp"
   tail -n 500 "$LOG" > "$tmp" 2>/dev/null && mv "$tmp" "$LOG"
   rm -f "$tmp"
@@ -91,7 +106,7 @@ for panel_log in "$HOME/Library/Logs/serverhub.out.log" \
                  "$HOME/Library/Logs/serverhub.err.log" \
                  "$HOME/Library/Logs/serverhub-watchdog.err.log"; do
   [ -f "$panel_log" ] || continue
-  [ "$(stat -f%z "$panel_log" 2>/dev/null || echo 0)" -gt "$PANEL_LOG_MAX" ] || continue
+  [ "$(_stat_int %z %s "$panel_log")" -gt "$PANEL_LOG_MAX" ] || continue
   if gzip -c "$panel_log" > "$panel_log.0.gz" 2>/dev/null; then
     : > "$panel_log"
     log "rotated $(basename "$panel_log") past $PANEL_LOG_MAX bytes into $(basename "$panel_log").0.gz"

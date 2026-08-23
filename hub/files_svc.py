@@ -561,25 +561,37 @@ def _dir_rename_no_clobber(src: Path, dest: Path) -> None:
     POSIX ``rename`` of a directory onto an empty dest directory succeeds and
     deletes dest.  ``dest.exists()`` then ``os.rename`` is therefore still a
     TOCTOU for directories.  ``renameatx_np(RENAME_EXCL)`` is one syscall.
+    When libSystem is absent, refuse dest via lstat before rename — never
+    ``os.rename`` onto an existing empty directory.
     """
     global _renameatx_np
     import ctypes
 
     if _renameatx_np is None:
-        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-        fn = libc.renameatx_np
-        fn.argtypes = [
-            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
-        ]
-        fn.restype = ctypes.c_int
-        _renameatx_np = fn
-    rc = _renameatx_np(
-        _AT_FDCWD, os.fsencode(src), _AT_FDCWD, os.fsencode(dest), _RENAME_EXCL,
-    )
-    if rc == 0:
+        try:
+            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+            fn = libc.renameatx_np
+            fn.argtypes = [
+                ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+            ]
+            fn.restype = ctypes.c_int
+            _renameatx_np = fn
+        except OSError:
+            _renameatx_np = False
+    if _renameatx_np:
+        rc = _renameatx_np(
+            _AT_FDCWD, os.fsencode(src), _AT_FDCWD, os.fsencode(dest), _RENAME_EXCL,
+        )
+        if rc == 0:
+            return
+        err = ctypes.get_errno() or errno.EIO
+        raise OSError(err, os.strerror(err), str(src), None, str(dest))
+    try:
+        os.lstat(dest)
+    except FileNotFoundError:
+        os.rename(src, dest)
         return
-    err = ctypes.get_errno() or errno.EIO
-    raise OSError(err, os.strerror(err), str(src), None, str(dest))
+    raise OSError(errno.EEXIST, os.strerror(errno.EEXIST), str(src), None, str(dest))
 
 
 def _rename_no_clobber(src: Path, dest: Path) -> None:
