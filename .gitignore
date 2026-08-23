@@ -2,7 +2,10 @@
 .venv/
 __pycache__/
 *.pyc
-web/node_modules/
+.pytest_cache/
+# Any tree named node_modules, not just web/. A vitest cache at the repo
+# root was committed because only web/node_modules/ was ignored.
+node_modules/
 web/dist/
 .build/
 .perf-audit-dist/
