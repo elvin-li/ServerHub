@@ -26,6 +26,7 @@ vi.mock('./theme', () => ({
     theme: ref('dark'),
     themes: [],
     setTheme: vi.fn(),
+    setFollowSystem: vi.fn(),
     followSystem: ref(false),
   }),
 }))
@@ -156,6 +157,19 @@ describe('mobile shell chrome', () => {
     expect(nav.find('.nav-drawer-title').text()).toBe('brand')
     expect(wrapper.find('.hamburger').attributes('aria-controls')).toBe('app-nav')
     expect(wrapper.find('.hamburger').attributes('aria-expanded')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('offers follow-system in the nav theme select', () => {
+    applyAuthStatus({
+      authenticated: true, username: 'admin', role: 'admin',
+      resources: [], can_manage: true,
+    })
+    const wrapper = mountShell()
+    const themeSelect = wrapper.get('[data-test="nav-theme"]')
+    const values = themeSelect.findAll('option').map((o) => o.element.value)
+    expect(values[0]).toBe('system')
+    expect(themeSelect.text()).toContain('theme.system')
     wrapper.unmount()
   })
 

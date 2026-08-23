@@ -757,6 +757,8 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .col-check { width: 32px; }
 .sub-id { font-size: 10px; color: var(--sub); margin-top: 2px; }
 .detail-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--sub); }
+.actions-cell { vertical-align: middle; }
+.svc-table .actions-cell :deep(.act-row) { align-items: center; }
 .kind-badge { font-size: 10px; }
 .empty-row { text-align: center; color: var(--sub); padding: 24px; }
 .bulk-bar {

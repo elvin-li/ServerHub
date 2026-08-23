@@ -1,6 +1,12 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import MacSwitch from './MacSwitch.vue'
+
+const sfc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'MacSwitch.vue'), 'utf8')
+const style = sfc.match(/<style[^>]*>([\s\S]*?)<\/style>/)[1]
 
 describe('MacSwitch', () => {
   it('exposes a switch with the current checked state', () => {
@@ -36,5 +42,17 @@ describe('MacSwitch', () => {
     })
     expect(wrapper.get('[role="switch"]').attributes('aria-label')).toBe('shares.toggle_service')
     wrapper.unmount()
+  })
+
+  it('paints the checked track with accent, not ok', () => {
+    expect(style).toMatch(
+      /\.mac-switch\[aria-checked="true"\]\s*\{[^}]*background:\s*var\(--accent\)/,
+    )
+    expect(style).not.toMatch(
+      /\.mac-switch\[aria-checked="true"\]\s*\{[^}]*background:\s*var\(--ok\)/,
+    )
+    expect(style).not.toMatch(/background:\s*var\(--ok\)/)
+    expect(style).toMatch(/\.mac-switch \{[\s\S]*?background:\s*#999/)
+    expect(style).toMatch(/\.mac-switch span \{[\s\S]*?background:\s*#fff/)
   })
 })

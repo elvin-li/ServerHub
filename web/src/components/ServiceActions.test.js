@@ -66,17 +66,78 @@ describe('busy state', () => {
   it('disables control buttons but never logs or details', () => {
     const w = mountVariant('table', { busy: true })
     expect(w.get('.act-row').attributes('aria-busy')).toBe('true')
+    expect(w.get('[role="switch"]').attributes('disabled') !== undefined).toBe(true)
     for (const b of w.findAll('button')) {
-      const isControl = b.text().startsWith('services.act_')
-      expect(b.attributes('disabled') !== undefined, b.text()).toBe(isControl)
+      const isSwitch = b.attributes('role') === 'switch'
+      const isControl = isSwitch || b.text().startsWith('services.act_')
+      expect(b.attributes('disabled') !== undefined, b.text() || 'switch').toBe(isControl)
     }
+  })
+})
+
+describe('start/stop switch', () => {
+  it('replaces start/stop pills with MacSwitch on table and card', () => {
+    for (const variant of ['table', 'card']) {
+      const w = mountVariant(variant)
+      const sw = w.get('[role="switch"]')
+      expect(sw.classes()).toContain('mac-switch')
+      expect(sw.attributes('aria-checked')).toBe('true')
+      expect(w.text()).not.toContain('services.act_start')
+      expect(w.text()).not.toContain('services.act_stop')
+      expect(w.findAll('button.primary').length).toBe(0)
+      w.unmount()
+    }
+  })
+
+  it('keeps drawer start/stop as buttons', () => {
+    const w = mountVariant('drawer')
+    expect(w.find('[role="switch"]').exists()).toBe(false)
+    expect(offered(w)).toContain('services.act_stop')
+    w.unmount()
+  })
+
+  it('is on for ok/warn and off for stopped/down/unknown', () => {
+    expect(mountVariant('table').get('[role="switch"]').attributes('aria-checked')).toBe('true')
+    const warn = mount(ServiceActions, {
+      props: { service: { ...service, state: 'warn' }, variant: 'table' },
+    })
+    expect(warn.get('[role="switch"]').attributes('aria-checked')).toBe('true')
+    warn.unmount()
+    for (const state of ['stopped', 'down', 'unknown']) {
+      const w = mount(ServiceActions, {
+        props: { service: { ...service, state, actions: ['start', 'logs', 'detail'] }, variant: 'table' },
+      })
+      expect(w.get('[role="switch"]').attributes('aria-checked'), state).toBe('false')
+      w.unmount()
+    }
+  })
+
+  it('omits the switch when start/stop are not offered', () => {
+    const w = mount(ServiceActions, {
+      props: { service: { ...service, actions: ['restart', 'run', 'logs', 'detail'] }, variant: 'table' },
+    })
+    expect(w.find('[role="switch"]').exists()).toBe(false)
+    expect(offered(w)).toEqual(['services.act_restart', 'services.act_run'])
+    w.unmount()
+  })
+
+  it('emits start when switching a stopped service on', async () => {
+    const w = mount(ServiceActions, {
+      props: {
+        service: { ...service, state: 'stopped', actions: ['start', 'logs', 'detail'] },
+        variant: 'table',
+      },
+    })
+    await w.get('[role="switch"]').trigger('click')
+    expect(w.emitted('act')).toEqual([['start']])
+    w.unmount()
   })
 })
 
 describe('emits', () => {
   it('emits act/logs/more without executing anything itself', async () => {
     const w = mountVariant('table')
-    await w.findAll('button').find((b) => b.text() === 'services.act_stop').trigger('click')
+    await w.get('[role="switch"]').trigger('click')
     await w.findAll('button').find((b) => b.text() === 'services.logs').trigger('click')
     await w.findAll('button').find((b) => b.text() === 'services.more').trigger('click')
     expect(w.emitted('act')).toEqual([['stop']])

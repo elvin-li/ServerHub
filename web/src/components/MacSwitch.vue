@@ -3,7 +3,7 @@
 
   Those two surfaces used to drift: Shares already had a knob switch, Apps used
   a green checkbox plus On/Off labels. One control keeps the macOS/iOS look
-  (system green track, no checkmark) and the same aria switch contract.
+  (accent track, no checkmark) and the same aria switch contract.
 -->
 <template>
   <button
@@ -65,7 +65,7 @@ function onClick() {
   transition: transform .16s ease;
 }
 .mac-switch[aria-checked="true"] {
-  background: var(--ok);
+  background: var(--accent);
 }
 .mac-switch[aria-checked="true"] span {
   transform: translateX(16px);

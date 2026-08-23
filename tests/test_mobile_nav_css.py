@@ -109,8 +109,8 @@ class TestMobileDrawerContainingBlock(unittest.TestCase):
         """Closed off-canvas nav must not leak a full-height accent at x=0.
 
         Transform-only hide can subpixel-peek; visibility:hidden alone still
-        lets some WebKit builds stroke an untransformed outline. Opacity and
-        clip-path contain paint until .open restores them.
+        lets some WebKit builds stroke an untransformed outline. display:none
+        plus opacity and clip-path contain paint until .open restores them.
         """
         top_nav = [
             body
@@ -119,6 +119,7 @@ class TestMobileDrawerContainingBlock(unittest.TestCase):
         ]
         self.assertTrue(top_nav, ".top-nav rule missing from the mobile query")
         closed = " ".join(top_nav)
+        self.assertIn("display: none", closed)
         self.assertIn("visibility: hidden", closed)
         self.assertIn("opacity: 0", closed)
         self.assertIn("clip-path: inset(0 100% 0 0)", closed)
@@ -129,6 +130,7 @@ class TestMobileDrawerContainingBlock(unittest.TestCase):
         ]
         self.assertTrue(opened, ".top-nav.open rule missing from the mobile query")
         open_joined = " ".join(opened)
+        self.assertIn("display: flex", open_joined)
         self.assertIn("visibility: visible", open_joined)
         self.assertIn("opacity: 1", open_joined)
         self.assertIn("clip-path: none", open_joined)

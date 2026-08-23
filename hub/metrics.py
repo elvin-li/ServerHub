@@ -100,6 +100,7 @@ def _sample() -> dict:
     s = _sensors_snapshot()
     cpu_used = _cpu_used_quick(s)
     mem_used_pct = None
+    gpu_util_pct = None
     load_pct = round(min(200.0, load1 / ncpu * 100), 1) if ncpu else None
 
     net_rx = net_tx = None
@@ -120,6 +121,17 @@ def _sample() -> dict:
                 cpu_used = min(100.0, max(0.0, float(s["cpu_used_pct"])))
             except (TypeError, ValueError, OverflowError):
                 pass
+        gpu = s.get("gpu")
+        if isinstance(gpu, dict):
+            raw = gpu.get("util_pct")
+            # Bool is an int; float(True) would store a fake 1.0% reading.
+            if not isinstance(raw, bool) and raw is not None:
+                try:
+                    v = float(raw)
+                    if v == v and v not in (float("inf"), float("-inf")):
+                        gpu_util_pct = round(min(100.0, max(0.0, v)), 1)
+                except (TypeError, ValueError, OverflowError):
+                    pass
 
     if not sensors_hit or mem_free is None:
         rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
@@ -149,6 +161,7 @@ def _sample() -> dict:
         "disk_used_gb": round(du.used / 2**30, 1),
         "net_rx_bps": net_rx,
         "net_tx_bps": net_tx,
+        "gpu_util_pct": gpu_util_pct,
     }
 
 

@@ -29,10 +29,11 @@
       <div class="card" style="margin-bottom:12px">
         <h2 class="section-title" style="margin-top:0">{{ t('theme.title') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('appearance.theme_hint') }}</p>
-        <label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;cursor:pointer">
+        <label class="follow-system-row" style="display:flex;align-items:center;gap:8px;margin:0 0 12px;cursor:pointer">
           <input
             type="checkbox"
-            :checked="followSystem"
+            data-test="follow-system"
+            :checked="followSystemOn"
             @change="pickFollowSystem($event.target.checked)"
           >
           {{ t('theme.system') }}
@@ -1112,6 +1113,11 @@ const {
   theme, appliedTheme, density, themes, densities, followSystem,
   setTheme, setFollowSystem, setDensity,
 } = injectTheme()
+const followSystemOn = computed(() => {
+  const v = followSystem
+  if (v && typeof v === 'object' && 'value' in v) return !!v.value
+  return !!v
+})
 
 const tab = ref('appearance')
 const form = ref(null)

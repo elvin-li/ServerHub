@@ -47,7 +47,7 @@ vi.mock('../i18n', () => ({
   }),
 }))
 
-const { getSensors } = await import('../api/client')
+const { getSensors, getMetricsRange } = await import('../api/client')
 const Dashboard = (await import('./Dashboard.vue')).default
 
 const GPU = {
@@ -64,8 +64,15 @@ async function render() {
       stubs: {
         RouterLink: { template: '<a class="router-link-stub" :href="to"><slot /></a>', props: ['to'] },
         LineChart: {
-          props: ['height', 'fill'],
-          template: '<div class="lc-stub" :data-height="height"></div>',
+          props: ['height', 'fill', 'title', 'series'],
+          template: '<div class="lc-stub" :data-height="height" :data-title="title" :data-head="head"></div>',
+          computed: {
+            head() {
+              const s = (this.series || [])[0]
+              const v = (s?.values || []).find((x) => x != null)
+              return v == null ? '' : String(v)
+            },
+          },
         },
         StackBar: true,
       },
@@ -80,6 +87,7 @@ beforeEach(() => {
   localStorage.clear()
   applyAuthStatus({ authenticated: false })
   themeId.value = 'macos'
+  getMetricsRange.mockResolvedValue({ points: [], tier: 'raw', since: 0, until: 1 })
   locale.t = (key, params = {}) => {
     const text = key.split('.').reduce((o, k) => (o == null ? o : o[k]), en)
     return Object.entries(params).reduce(
@@ -102,12 +110,27 @@ afterEach(() => {
 
 describe('Dashboard GPU density', () => {
   it('ships GPU strings in every locale and keeps SMART shortening', () => {
+    expect(zhCN.dashboard.cpu).toBe('处理器')
+    expect(en.dashboard.cpu).toBe('Processor')
+    expect(ja.dashboard.cpu).toBe('プロセッサ')
     expect(zhCN.dashboard.gpu).toBe('GPU')
+    expect(zhCN.dashboard.gpu_util).toBe('GPU 利用率')
+    expect(zhCN.dashboard.cpu_pct).toBe('CPU {p}%')
+    expect(zhCN.dashboard.gpu_pct).toBe('GPU {p}%')
     expect(zhCN.dashboard.gpu_memory).toBe('GPU 内存')
     expect(en.dashboard.gpu).toBe('GPU')
+    expect(en.dashboard.gpu_util).toBe('GPU utilization')
+    expect(en.dashboard.cpu_pct).toBe('CPU {p}%')
+    expect(en.dashboard.gpu_pct).toBe('GPU {p}%')
     expect(en.dashboard.gpu_memory).toBe('GPU memory')
     expect(ja.dashboard.gpu).toBe('GPU')
+    expect(ja.dashboard.gpu_util).toBe('GPU 使用率')
+    expect(ja.dashboard.cpu_pct).toBe('CPU {p}%')
+    expect(ja.dashboard.gpu_pct).toBe('GPU {p}%')
     expect(ja.dashboard.gpu_memory).toBe('GPUメモリ')
+    expect(zhCN.dashboard.cpu_load).toBe('CPU 负载')
+    expect(en.dashboard.cpu_load).toBe('CPU Load')
+    expect(ja.dashboard.cpu_load).toBe('CPU 負荷')
     for (const dict of [zhCN, en, ja]) {
       expect(dict.dashboard.smart_passed).toBe('S')
       expect(dict.dashboard.smart_summary).toBe('{ok}/{total} S')
@@ -116,14 +139,22 @@ describe('Dashboard GPU density', () => {
 
   it('shows GPU util and memory under the load row on the mac CPU card', async () => {
     const wrapper = await render()
+    expect(wrapper.find('.res-card h3').text()).toContain('Processor')
+    expect(wrapper.get('[data-test="gpu-section"]').text()).toBe('GPU')
     const util = wrapper.get('[data-test="gpu-util"]')
-    expect(util.text()).toContain('GPU')
+    expect(util.text()).toContain('GPU utilization')
     expect(util.text()).toContain('68%')
     const mem = wrapper.get('[data-test="gpu-mem"]')
     expect(mem.text()).toContain('GPU memory')
     expect(mem.text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
-    const heights = wrapper.findAll('.lc-stub').map((n) => n.attributes('data-height'))
-    expect(heights).toEqual(['88', '88', '88'])
+    const charts = wrapper.findAll('.lc-stub')
+    const heights = charts.map((n) => n.attributes('data-height'))
+    expect(heights).toEqual(['54', '54', '88', '88'])
+    expect(charts[0].attributes('data-title')).toBe('CPU Load')
+    expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
+    expect(wrapper.find('[data-test="gpu-chart"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="cpu-badge"]').text()).toBe('CPU 15%')
+    expect(wrapper.get('[data-test="gpu-badge"]').text()).toBe('GPU 68%')
     wrapper.unmount()
   })
 
@@ -137,6 +168,9 @@ describe('Dashboard GPU density', () => {
     const wrapper = await render()
     expect(wrapper.find('[data-test="gpu-util"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="gpu-mem"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="gpu-badge"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="cpu-badge"]').text()).toBe('0%')
+    expect(wrapper.get('[data-test="gpu-chart"]').attributes('data-title')).toBe('GPU utilization')
     wrapper.unmount()
   })
 
@@ -150,6 +184,51 @@ describe('Dashboard GPU density', () => {
     const wrapper = await render()
     expect(wrapper.find('[data-test="gpu-util"]').exists()).toBe(false)
     expect(wrapper.get('[data-test="gpu-mem"]').text()).toMatch(/2(\.0)?\s*\/\s*— GB/)
+    wrapper.unmount()
+  })
+
+  it('plots gpu_util_pct from metrics history on the GPU chart', async () => {
+    getMetricsRange.mockResolvedValue({
+      points: [
+        { t: 1, cpu_used_pct: 10, gpu_util_pct: 42 },
+        { t: 2, cpu_used_pct: 12, gpu_util_pct: 50, gpu_util_pct_max: 80 },
+      ],
+      tier: 'raw',
+      since: 0,
+      until: 2,
+    })
+    const wrapper = await render()
+    expect(wrapper.get('[data-test="gpu-chart"]').attributes('data-head')).toBe('42')
+    expect(wrapper.get('[data-test="gpu-chart"]').attributes('data-title')).toBe('GPU utilization 68%')
+    wrapper.unmount()
+  })
+
+  it('mirrors live GPU util onto the last history slot when that point is empty', async () => {
+    getMetricsRange.mockResolvedValue({
+      points: [
+        { t: 1, cpu_used_pct: 10 },
+        { t: 2, cpu_used_pct: 12 },
+      ],
+      tier: 'raw',
+      since: 0,
+      until: 2,
+    })
+    const wrapper = await render()
+    expect(wrapper.get('[data-test="gpu-chart"]').attributes('data-head')).toBe('68')
+    expect(wrapper.get('[data-test="gpu-chart"]').attributes('data-title')).toBe('GPU utilization 68%')
+    wrapper.unmount()
+  })
+
+  it('shows a GPU chart under the CPU chart on the compact path', async () => {
+    themeId.value = 'unraid'
+    const wrapper = await render()
+    const charts = wrapper.findAll('.lc-stub')
+    expect(charts.map((n) => n.attributes('data-height'))).toEqual(['54', '54', '72', '52'])
+    expect(charts[0].attributes('data-title')).toBe('CPU Load')
+    expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
+    expect(wrapper.get('[data-test="gpu-compact-util"]').text()).toContain('GPU utilization')
+    expect(wrapper.get('[data-test="cpu-badge"]').text()).toBe('CPU 15%')
+    expect(wrapper.get('[data-test="gpu-badge"]').text()).toBe('GPU 68%')
     wrapper.unmount()
   })
 })

@@ -131,6 +131,7 @@ class TestMetricsSampleReadsSensorsOnce(unittest.TestCase):
             sample = metrics._sample()
         self.assertEqual(sample["cpu_used_pct"], 12.5)
         self.assertEqual(sample["net_rx_bps"], 1)
+        self.assertIsNone(sample["gpu_util_pct"])
 
     def test_sample_uses_light_sensors_when_the_cache_is_cold(self):
         light = {
@@ -172,6 +173,46 @@ class TestMetricsSampleReadsSensorsOnce(unittest.TestCase):
             sample = metrics._sample()
         json.dumps(sample, allow_nan=False)
         self.assertNotEqual(sample["cpu_used_pct"], 10 ** 400)
+
+    def test_sample_records_finite_gpu_util_pct(self):
+        warm = {
+            "cpu_used_pct": 12.5,
+            "network": {},
+            "memory": {"pressure_used_pct": 40, "pressure_free_pct": 60},
+            "gpu": {"util_pct": 71.2},
+        }
+        with (
+            patch("hub.sensors_svc.peek_sensors", return_value=warm),
+            patch("hub.sensors_svc.collect_light", side_effect=AssertionError("light")),
+            patch("hub.sensors_svc.collect_sensors", side_effect=AssertionError("full")),
+            patch("hub.metrics.os.getloadavg", return_value=(0.5, 0.4, 0.3)),
+            patch("hub.metrics.shutil.disk_usage", return_value=type(
+                "DU", (), {"used": 50 * 2**30, "total": 100 * 2**30}
+            )()),
+            patch("hub.metrics._ncpu", return_value=8),
+        ):
+            sample = metrics._sample()
+        self.assertEqual(sample["gpu_util_pct"], 71.2)
+
+    def test_sample_gpu_util_pct_null_when_non_finite(self):
+        warm = {
+            "cpu_used_pct": 1.0,
+            "network": {},
+            "memory": {},
+            "gpu": {"util_pct": float("nan")},
+        }
+        with (
+            patch("hub.sensors_svc.peek_sensors", return_value=warm),
+            patch("hub.sensors_svc.collect_light", side_effect=AssertionError("light")),
+            patch("hub.sensors_svc.collect_sensors", side_effect=AssertionError("full")),
+            patch("hub.metrics.os.getloadavg", return_value=(0.5, 0.4, 0.3)),
+            patch("hub.metrics.shutil.disk_usage", return_value=type(
+                "DU", (), {"used": 50 * 2**30, "total": 100 * 2**30}
+            )()),
+            patch("hub.metrics._ncpu", return_value=8),
+        ):
+            sample = metrics._sample()
+        self.assertIsNone(sample["gpu_util_pct"])
 
 
 class TestSensorsStayOffTheIdlePath(unittest.TestCase):

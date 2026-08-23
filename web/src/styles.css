@@ -801,10 +801,11 @@ button.primary.loading::after { color: #fff; }
     padding-top: env(safe-area-inset-top);
     padding-left: max(12px, env(safe-area-inset-left));
     padding-right: max(12px, env(safe-area-inset-right));
-    /* Extra 16px hides a subpixel peek of the closed drawer. visibility +
-       opacity + clip-path contain paint: transform-only offscreen can still
-       leak a 1px left accent, and WebKit may stroke an untransformed
-       :focus-visible outline at x=0. Shadow only while open. */
+    /* Extra 16px hides a subpixel peek of the closed drawer. display:none
+       plus visibility + opacity + clip-path contain paint: transform-only
+       offscreen can still leak a 1px left accent, and WebKit may stroke an
+       untransformed :focus-visible outline at x=0. Shadow only while open. */
+    display: none;
     transform: translateX(calc(-100% - 16px));
     visibility: hidden;
     pointer-events: none;
@@ -827,6 +828,7 @@ button.primary.loading::after { color: #fff; }
     border-bottom: 1px solid rgba(255,255,255,.08);
   }
   .top-nav.open {
+    display: flex;
     transform: translateX(0);
     visibility: visible;
     pointer-events: auto;

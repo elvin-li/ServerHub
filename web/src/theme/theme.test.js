@@ -461,6 +461,9 @@ describe('theme', () => {
 
     it('hides the closed phone drawer and paints the accent mark only while open', () => {
       expect(css).toMatch(
+        /@media \(max-width: 640px\) \{[\s\S]*?\.top-nav \{[\s\S]*?display:\s*none/,
+      )
+      expect(css).toMatch(
         /@media \(max-width: 640px\) \{[\s\S]*?\.top-nav \{[\s\S]*?visibility:\s*hidden/,
       )
       expect(css).toMatch(
@@ -468,6 +471,9 @@ describe('theme', () => {
       )
       expect(css).toMatch(
         /@media \(max-width: 640px\) \{[\s\S]*?\.top-nav \{[\s\S]*?clip-path:\s*inset\(0 100% 0 0\)/,
+      )
+      expect(css).toMatch(
+        /@media \(max-width: 640px\) \{[\s\S]*?\.top-nav\.open \{[\s\S]*?display:\s*flex/,
       )
       expect(css).toMatch(
         /@media \(max-width: 640px\) \{[\s\S]*?\.top-nav\.open \{[\s\S]*?visibility:\s*visible/,

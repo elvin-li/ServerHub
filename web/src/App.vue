@@ -75,7 +75,13 @@
             </label>
             <label class="nav-tool">
               <span class="nav-tool-label">{{ t('theme.title') }}</span>
-              <select :value="theme" @change="onTheme($event)" :title="t('theme.title')">
+              <select
+                :value="themeSelectValue"
+                @change="onTheme($event)"
+                :title="t('theme.title')"
+                data-test="nav-theme"
+              >
+                <option value="system">{{ t('theme.system') }}</option>
                 <option v-for="th in themes" :key="th.id" :value="th.id">{{ t(th.labelKey) }}</option>
               </select>
             </label>
@@ -214,7 +220,8 @@ import { finiteN, finiteText } from './lib/finite'
 const route = useRoute()
 const router = useRouter()
 const { t, locale, locales, setLocale } = injectI18n()
-const { theme, themes, setTheme, followSystem } = injectTheme()
+const { theme, themes, setTheme, followSystem, setFollowSystem } = injectTheme()
+const themeSelectValue = computed(() => (followSystem?.value ? 'system' : (theme?.value ?? theme)))
 
 const toast = ref('')
 const status = ref(null)
@@ -450,8 +457,15 @@ async function onLocale(ev) {
 }
 
 function onTheme(ev) {
-  setTheme(ev.target.value)
-  putSettings({ ui: { theme: followSystem?.value ? 'system' : ev.target.value } }).catch(() => {})
+  const id = ev.target.value
+  if (id === 'system') {
+    setTheme('system')
+    putSettings({ ui: { theme: 'system' } }).catch(() => {})
+  } else {
+    if (followSystem?.value && typeof setFollowSystem === 'function') setFollowSystem(false)
+    setTheme(id)
+    putSettings({ ui: { theme: id } }).catch(() => {})
+  }
   showToast(t('theme.applied'))
 }
 
