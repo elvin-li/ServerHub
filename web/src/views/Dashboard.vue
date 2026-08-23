@@ -217,109 +217,70 @@
             </span>
           </span>
         </h3>
-        <!-- Activity Monitor–style breakdown under macOS themes. -->
-        <div v-if="isMacSurface" class="am-monitor am-cpu">
-          <div class="am-monitor-stats">
-            <div class="res-head cpu-head">
-              <div class="big">{{ cpuUsed }}<small>%</small></div>
-            </div>
-            <div class="am-section am-section-cpu">{{ t('dashboard.chart_cpu') }}</div>
-            <div class="am-row">
-              <span>{{ t('dashboard.cpu_system') }}</span>
-              <b class="sys">{{ fmtN(cpu.sys) }}%</b>
-            </div>
-            <div class="am-row">
-              <span>{{ t('dashboard.cpu_user') }}</span>
-              <b class="user">{{ fmtN(cpu.user) }}%</b>
-            </div>
-            <div class="am-row idle">
-              <span>{{ t('dashboard.cpu_idle') }}</span>
-              <b>{{ fmtN(cpu.idle) }}%</b>
-            </div>
-            <div v-if="cpuTempC != null" class="am-row">
-              <span>{{ t('dashboard.cpu_temp') }}</span>
-              <b>{{ fmtN(cpuTempC) }}°C</b>
-            </div>
-            <div class="am-row">
-              <span>{{ t('dashboard.load_avg') }}</span>
-              <b>{{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}</b>
-            </div>
-          </div>
-          <div class="am-monitor-chart">
-            <LineChart
-              class="am-chart"
-              data-test="cpu-chart"
-              :height="AM_PROC_CHART_HEIGHT"
-              fill
-              :min="0"
-              :max="100"
-              percent
-              stacked
-              :areaOpacity="0.28"
-              :title="t('dashboard.cpu_load')"
-              :times="metricTimes"
-              :series="cpuAppleChartSeries"
-              unit="%"
-            />
-            <LineChart
-              class="am-chart"
-              data-test="gpu-chart"
-              :height="AM_PROC_CHART_HEIGHT"
-              fill
-              :min="0"
-              :max="100"
-              percent
-              :areaOpacity="0.28"
-              :title="gpuChartTitle"
-              :times="metricTimes"
-              :series="gpuChartSeries"
-              unit="%"
-            />
-          </div>
-        </div>
-        <template v-else>
-          <div class="res-head cpu-head">
-            <div class="big">{{ cpuUsed }}<small>%</small></div>
-          </div>
-          <StackBar
-            :segments="cpuStack"
-            :total="100"
+        <!-- CPU left, GPU right — same chart height as Memory/Disk. -->
+        <div v-if="isMacSurface" class="cpu-charts am-cpu">
+          <LineChart
+            class="am-chart"
+            data-test="cpu-chart"
+            :height="AM_CHART_HEIGHT"
+            fill
+            :min="0"
+            :max="100"
+            percent
+            stacked
+            :areaOpacity="0.28"
+            :title="t('dashboard.cpu_load')"
+            :times="metricTimes"
+            :series="cpuAppleChartSeries"
             unit="%"
           />
-          <div class="cpu-charts">
-            <LineChart
-              data-test="cpu-chart"
-              :height="AM_PROC_CHART_HEIGHT"
-              :min="0"
-              :max="100"
-              percent
-              :title="t('dashboard.cpu_load')"
-              :times="metricTimes"
-              :series="cpuChartSeries"
-              unit="%"
-            />
-            <LineChart
-              data-test="gpu-chart"
-              :height="AM_PROC_CHART_HEIGHT"
-              :min="0"
-              :max="100"
-              percent
-              :title="gpuChartTitle"
-              :times="metricTimes"
-              :series="gpuChartSeries"
-              unit="%"
-            />
-          </div>
-        </template>
+          <LineChart
+            class="am-chart"
+            data-test="gpu-chart"
+            :height="AM_CHART_HEIGHT"
+            fill
+            :min="0"
+            :max="100"
+            percent
+            :areaOpacity="0.28"
+            :title="gpuChartTitle"
+            :times="metricTimes"
+            :series="gpuChartSeries"
+            unit="%"
+          />
+        </div>
+        <div v-else class="cpu-charts">
+          <LineChart
+            data-test="cpu-chart"
+            :height="AM_CHART_HEIGHT"
+            :min="0"
+            :max="100"
+            percent
+            :title="t('dashboard.cpu_load')"
+            :times="metricTimes"
+            :series="cpuChartSeries"
+            unit="%"
+          />
+          <LineChart
+            data-test="gpu-chart"
+            :height="AM_CHART_HEIGHT"
+            :min="0"
+            :max="100"
+            percent
+            :title="gpuChartTitle"
+            :times="metricTimes"
+            :series="gpuChartSeries"
+            unit="%"
+          />
+        </div>
         <div class="sub cpu-loadline">
-          <template v-if="!isMacSurface">
-            Load {{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}
-            ·
-          </template>
+          Load {{ fmtN(load1) }} / {{ fmtN(load5) }} / {{ fmtN(load15) }}
+          ·
           {{ t('dashboard.load_capacity', { p: finiteN(loadPct) }) }}
           <span data-test="cpu-thermal">
             · {{ t('dashboard.thermal_status') }}
             <span :class="thermal.pressure === 'warning' ? 'temp-warn' : ''">{{ thermalStatus }}</span>
+            <template v-if="cpuTempC != null"> · {{ fmtN(cpuTempC) }}°C</template>
           </span>
           <span class="badge" style="margin-left:4px">{{ t('dashboard.cores', { n: ncpu }) }}</span>
         </div>
@@ -742,7 +703,6 @@ import { authState } from '../lib/authState'
 // Charts are first-screen but not first-paint: keep them out of the entry
 // chunk so the 150 KiB budget stays on the shell + dashboard chrome.
 const LineChart = defineAsyncComponent(() => import('../components/LineChart.vue'))
-const StackBar = defineAsyncComponent(() => import('../components/StackBar.vue'))
 import {
   doAction, getAlerts, getBookmarks, getContainers, getHealthChecks, getHost,
   getListeningPorts, getMetricsRange, getPower, getSensors, getStatus,
@@ -762,8 +722,6 @@ const isMacSurface = computed(() => {
   return id === 'macos' || id === 'macos-dark'
 })
 const AM_CHART_HEIGHT = 88
-/** CPU + GPU plots share the processor card's right column. */
-const AM_PROC_CHART_HEIGHT = 54
 
 // Member sessions render the reduced services-only dashboard; the router
 // guard refreshed authState before this component was allowed to mount.
@@ -969,11 +927,6 @@ const smartSummaryTitle = computed(() => t('dashboard.smart_summary_title', {
   ok: smartReadableCount.value,
   total: smartDisks.value.length,
 }))
-const cpuStack = computed(() => [
-  { label: 'user', value: finiteN(cpu.value.user, 0), color: 'var(--accent)' },
-  { label: 'sys', value: finiteN(cpu.value.sys, 0), color: 'var(--warn)' },
-  { label: 'idle', value: finiteN(cpu.value.idle, 0), color: 'var(--bar-track)' },
-])
 /** Activity Monitor red (system) + cyan (user). */
 const CPU_APPLE_SYS = '#FF453A'
 const CPU_APPLE_USER = '#5AC8FA'
@@ -1774,36 +1727,20 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
 }
-.am-surface .am-monitor {
+.am-surface .am-monitor,
+.am-surface .cpu-charts {
   flex: 1 1 auto;
   min-height: 0;
 }
 .am-surface .am-monitor-chart { min-height: 88px; }
-.am-surface .am-cpu .am-monitor-chart {
-  min-height: 0;
-  gap: 6px;
-  justify-content: flex-start;
-}
-.am-surface .am-cpu .am-monitor-chart > * {
-  flex: 1 1 0;
-  min-height: 0;
-  height: auto;
-}
 .am-surface .am-monitor,
 .am-surface .am-monitor.chart-first,
-.am-surface .am-monitor.am-cpu,
 .am-surface .am-monitor.am-disk {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   grid-template-areas: "stats chart";
   gap: 6px 10px;
   margin: 0;
 }
-.am-monitor .cpu-head { margin-bottom: 2px; }
-.am-cpu .am-monitor-stats {
-  gap: 1px;
-  min-width: 0;
-}
-.am-cpu .am-monitor-stats > .cpu-head { margin-bottom: 2px; }
 .am-cpu :deep(.lc-legend) { display: none; }
 .am-mem :deep(.lc-legend) { display: none; }
 .am-disk .am-monitor-chart { position: relative; }
@@ -1819,64 +1756,24 @@ onUnmounted(() => {
   max-width: calc(100% - 16px);
 }
 .am-disk :deep(.leg-unit) { display: none; }
-.am-section {
-  margin: 4px 0 1px;
-  padding-top: 3px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
-  color: var(--sub);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  line-height: 1.2;
-}
-.am-section-cpu {
-  margin-top: 2px;
-  padding-top: 0;
-  border-top: none;
-}
-.am-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0;
-  line-height: 1.2;
-  font-size: 11px;
-  white-space: nowrap;
-}
-.am-row span {
-  color: var(--txt);
-  font-weight: 500;
-  flex: 1 1 auto;
-}
-.am-row b {
-  flex: 0 0 auto;
-  margin-left: auto;
-  text-align: right;
-  font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  color: var(--txt);
-}
-.am-row b.sys { color: #FF453A; }
-.am-row b.user { color: #5AC8FA; }
-.am-row.idle span,
-.am-row.idle b { color: var(--sub); }
 :global([data-theme="macos"] .am-monitor-chart .lc-plot),
-:global([data-theme="macos-dark"] .am-monitor-chart .lc-plot) {
+:global([data-theme="macos-dark"] .am-monitor-chart .lc-plot),
+:global([data-theme="macos"] .cpu-charts .lc-plot),
+:global([data-theme="macos-dark"] .cpu-charts .lc-plot) {
   background: transparent;
   border: none;
   padding: 0;
 }
 .am-chart { margin-top: 6px; }
-.am-monitor-chart .am-chart { margin-top: 0; min-width: 0; width: 100%; }
-.am-surface .am-monitor-chart :deep(.lc-title) {
+.am-monitor-chart .am-chart,
+.cpu-charts .am-chart { margin-top: 0; min-width: 0; width: 100%; }
+.am-surface .am-monitor-chart :deep(.lc-title),
+.am-surface .cpu-charts :deep(.lc-title) {
   margin-bottom: 2px;
   padding-bottom: 0;
 }
-.am-surface .am-monitor-chart :deep(.lc-plot) { min-height: 0; }
+.am-surface .am-monitor-chart :deep(.lc-plot),
+.am-surface .cpu-charts :deep(.lc-plot) { min-height: 0; }
 .am-surface .res-head {
   flex-direction: column;
   align-items: flex-start;
@@ -1929,8 +1826,7 @@ onUnmounted(() => {
   font-weight: 600;
   white-space: nowrap;
 }
-.am-monitor-stats > .res-head,
-.am-monitor-stats > .cpu-head { margin-bottom: 0; }
+.am-monitor-stats > .res-head { margin-bottom: 0; }
 .am-monitor-stats > .pct-bar { margin-top: 0; }
 .am-monitor-stats > .disk-list,
 .am-monitor-stats > .mem-break { margin-top: 0; }
@@ -1959,13 +1855,13 @@ onUnmounted(() => {
   .am-monitor.chart-first,
   .am-surface .am-monitor,
   .am-surface .am-monitor.chart-first,
-  .am-surface .am-monitor.am-cpu,
   .am-surface .am-monitor.am-disk {
     grid-template-columns: 1fr;
     grid-template-areas:
       "stats"
       "chart";
   }
+  .cpu-charts { grid-template-columns: 1fr; }
 }
 .member-group { font-size: 14px; margin: 14px 0 8px; color: var(--sub); }
 .member-svc .name { font-weight: 600; }
@@ -2021,8 +1917,13 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   display: flex; justify-content: space-between; align-items: flex-start;
   gap: 8px; margin-bottom: 8px;
 }
-.cpu-head { margin-bottom: 4px; }
-.cpu-charts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.cpu-charts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 10px;
+  min-width: 0;
+}
+.cpu-charts > * { min-width: 0; }
 .cpu-charts :deep(.lc-plot) { min-height: 0; }
 .cpu-charts :deep(.lc-title) {
   margin-bottom: 2px;

@@ -1,5 +1,5 @@
 /**
- * Overview CPU card: live GPU rows under the metric list, denser mac charts.
+ * Overview processor card: CPU | GPU side-by-side, header badges, shared loadline.
  */
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -74,7 +74,6 @@ async function render() {
             },
           },
         },
-        StackBar: true,
       },
     },
   })
@@ -153,10 +152,13 @@ describe('Dashboard GPU density', () => {
     expect(wrapper.get('[data-test="gpu-mem"]').text()).toMatch(/1\.1\s*\/\s*8(\.0)? GB/)
     const charts = wrapper.findAll('.lc-stub')
     const heights = charts.map((n) => n.attributes('data-height'))
-    expect(heights).toEqual(['54', '54', '88', '88'])
+    expect(heights).toEqual(['88', '88', '88', '88'])
     expect(charts[0].attributes('data-title')).toBe('CPU Load')
     expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
     expect(wrapper.find('[data-test="gpu-chart"]').exists()).toBe(true)
+    const procCharts = wrapper.find('.cpu-charts.am-cpu')
+    expect(procCharts.exists()).toBe(true)
+    expect(procCharts.findAll('.lc-stub')).toHaveLength(2)
     expect(wrapper.get('[data-test="cpu-badge"]').text()).toBe('CPU 15%')
     const thermal = wrapper.get('[data-test="cpu-thermal"]')
     expect(thermal.text()).toContain('Thermal')
@@ -227,13 +229,17 @@ describe('Dashboard GPU density', () => {
     wrapper.unmount()
   })
 
-  it('shows a GPU chart under the CPU chart on the compact path', async () => {
+  it('shows a GPU chart beside the CPU chart on the compact path', async () => {
     themeId.value = 'unraid'
     const wrapper = await render()
     const charts = wrapper.findAll('.lc-stub')
-    expect(charts.map((n) => n.attributes('data-height'))).toEqual(['54', '54', '72', '52'])
+    expect(charts.map((n) => n.attributes('data-height'))).toEqual(['88', '88', '72', '52'])
     expect(charts[0].attributes('data-title')).toBe('CPU Load')
     expect(charts[1].attributes('data-title')).toBe('GPU utilization 68%')
+    const procCharts = wrapper.find('.cpu-charts')
+    expect(procCharts.exists()).toBe(true)
+    expect(procCharts.classes()).not.toContain('am-cpu')
+    expect(procCharts.findAll('.lc-stub')).toHaveLength(2)
     expect(wrapper.find('.cpu-facts').exists()).toBe(false)
     expect(wrapper.find('[data-test="gpu-compact-util"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="gpu-compact-mem"]').exists()).toBe(false)

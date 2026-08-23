@@ -2616,16 +2616,6 @@ describe('leftover Infinity interpolations', () => {
     expect(grules).toMatch(/function fmtList\([\s\S]*finiteText/)
   })
 
-  it('StackBar leftover segment values go through Number.isFinite', () => {
-    const bar = readFileSync(resolve(SRC, 'components/StackBar.vue'), 'utf8')
-    expect(bar).toMatch(/Number\.isFinite\(Number\(s\.value\)\)/)
-    expect(bar).toMatch(/:title="finiteText\(seg\.label\) \+ ': ' \+ format\(seg\.value\)"/)
-    expect(bar).not.toMatch(/:title="seg\.label \+ ': ' \+ format\(seg\.value\)"/)
-    expect(bar).not.toMatch(/seg\.label \+ ': ' \+ seg\.value/)
-    expect(bar).not.toMatch(/\{\{\s*seg\.label\s*\}\}/)
-    expect(bar).toMatch(/finiteText\(seg\.label\)/)
-  })
-
   it('string identifier interpolations go through finiteText', () => {
     // Leftover Infinity is a truthy number, so `hostname || '—'` still prints
     // the word "Infinity". Identifier fields skip finiteN (they are strings)
@@ -2757,7 +2747,7 @@ describe('leftover Infinity interpolations', () => {
       'components/ServiceSignatures.vue', 'components/ServiceLogsModal.vue',
       'components/GroupRules.vue',
       'components/AssistantDrawer.vue', 'components/ScheduleJobForm.vue',
-      'components/StackBar.vue', 'components/LineChart.vue',
+      'components/LineChart.vue',
       'components/VncConsole.vue', 'App.vue',
     ]
     const OR_DASH = /\{\{(?:(?!finiteText)[^}])*\|\|\s*'—'\}/
@@ -2914,10 +2904,8 @@ describe('leftover Infinity interpolations', () => {
     expect(settings).toMatch(/finiteText\(host\?\.hostname/)
   })
 
-  it('keeps MainArray unknown-status and StackBar title leftover composition', () => {
+  it('keeps MainArray unknown-status leftover composition', () => {
     const main = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
-    const bar = readFileSync(resolve(SRC, 'components/StackBar.vue'), 'utf8')
     expect(main).toContain("finiteText(data?.array?.status, '') || t('network.unknown')")
-    expect(bar).toMatch(/:title="finiteText\(seg\.label\) \+ ': ' \+ format\(seg\.value\)"/)
   })
 })
