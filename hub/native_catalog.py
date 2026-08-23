@@ -700,15 +700,16 @@ NATIVE_APPS: list[dict[str, Any]] = [
         "method": "script",
         "script_id": "homeassistant",
         "check": [
-            "path:~/Services/homeassistant/venv/bin/hass",
+            "path:~/venvs/shared/bin/hass",
             "path:~/Library/LaunchAgents/com.homeassistant.core.plist",
         ],
         "ports": ["8123"],
         "url_hint": "http://{{HOST}}:8123",
         "launchd_label": "com.homeassistant.core",
-        "process_match": "homeassistant/venv/bin/hass",
+        "process_match": "venvs/shared/bin/hass",
         "notes": (
-            "Installs to ~/Services/homeassistant (venv + config + LaunchAgent). "
+            "Runs from shared venv ~/venvs/shared/bin/hass with config under "
+            "~/Services/homeassistant (LaunchAgent com.homeassistant.core). "
             "An existing native deployment is detected automatically and can be started/stopped. "
             "Web UI defaults to :8123."
         ),
