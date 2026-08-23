@@ -1804,22 +1804,18 @@ onUnmounted(() => {
   height: auto;
 }
 .am-surface .am-monitor,
-.am-surface .am-monitor.chart-first {
-  grid-template-columns: minmax(108px, 0.72fr) minmax(0, 1.65fr);
+.am-surface .am-monitor.chart-first,
+.am-surface .am-monitor.am-cpu,
+.am-surface .am-monitor.am-disk {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   grid-template-areas: "stats chart";
   gap: 6px 10px;
   margin: 0;
 }
-.am-surface .am-monitor.am-cpu {
-  grid-template-columns: minmax(min-content, 0.72fr) minmax(0, 1.65fr);
-}
-.am-surface .am-monitor.am-disk {
-  grid-template-columns: minmax(160px, 1.1fr) minmax(0, 1.15fr);
-}
 .am-monitor .cpu-head { margin-bottom: 2px; }
 .am-cpu .am-monitor-stats {
   gap: 1px;
-  min-width: min-content;
+  min-width: 0;
 }
 .am-cpu .am-monitor-stats > .cpu-head { margin-bottom: 2px; }
 .am-cpu :deep(.lc-legend) { display: none; }
@@ -1952,7 +1948,7 @@ onUnmounted(() => {
 .am-monitor-stats > .pct-bar { margin-top: 0; }
 .am-monitor-stats > .disk-list,
 .am-monitor-stats > .mem-break { margin-top: 0; }
-.am-surface .disk-list { gap: 1px; }
+.am-surface .disk-list { gap: 1px; min-width: 0; }
 .am-surface .disk-item {
   padding: 2px 0;
   border: none;
