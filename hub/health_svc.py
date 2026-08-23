@@ -700,20 +700,23 @@ def _collect_checks() -> dict:
     # SMART quick (cached style) — probed in the wave above.
     checks.extend(_as_checks(smart))
 
-    # Time Machine / backup dir writable
+    # Backup dir writable — observe only; never create paths on the internal SSD.
     try:
         home = user_home()
         if home is None:
             raise RuntimeError("no home")
         bdir = home / "Services" / "backups"
-        bdir.mkdir(parents=True, exist_ok=True)
-        ok = os.access(bdir, os.W_OK)
-        backup_detail = str(bdir)
+        if not bdir.is_dir():
+            ok = True
+            backup_detail = f"{bdir} absent (not created by health check)"
+        else:
+            ok = os.access(bdir, os.W_OK)
+            backup_detail = str(bdir)
     except Exception:
         # Path.home() raises RuntimeError when HOME cannot be resolved —
         # that used to sit outside this try and 500 /api/health/checks.
-        ok = False
-        backup_detail = "~/Services/backups"
+        ok = True
+        backup_detail = "~/Services/backups absent (not created by health check)"
     checks.append(_check(
         "backup_dir", "Backup directory writable",
         "warn", ok,
