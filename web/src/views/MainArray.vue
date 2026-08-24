@@ -32,7 +32,7 @@
         <h2>{{ t('main.array_status') }}</h2>
         <div
           class="v"
-          :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok)' : 'var(--warn)' }"
+          :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok-text)' : 'var(--warn-text)' }"
         >{{ finiteText(data?.array?.status, '') || t('network.unknown') }}</div>
         <div class="sub">{{ finiteN(data?.array?.system_count, 0) }} + {{ finiteN(data?.array?.data_count, 0) }}</div>
       </div>
@@ -355,7 +355,7 @@
             <td class="col-hide-m">{{ fmtGb(v.used_gb) }}</td>
             <td class="col-hide-m">{{ fmtGb(v.avail_gb) }}</td>
             <td style="min-width:120px">
-              <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
+              <strong :style="{ color: v.pct >= 90 ? 'var(--down-text)' : (v.pct >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
               <div class="pct-bar" :class="v.pct>=90?'danger':v.pct>=75?'warn':''" style="margin-top:3px">
                 <i :style="{ width: barPct(v.pct) + '%' }"></i>
               </div>
@@ -487,10 +487,10 @@
         <div class="sub" style="margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;font-size:11px">
           <span v-if="finiteText(smartData?.ts, '')">{{ finiteText(smartData.ts) }}</span>
           <template v-if="smartData">
-            <span :style="{ color: smartData.passwordless_sudo ? 'var(--ok)' : 'var(--warn)' }">
+            <span :style="{ color: smartData.passwordless_sudo ? 'var(--ok-text)' : 'var(--warn-text)' }">
               {{ smartData.passwordless_sudo ? t('main_extra.smart_sudo_ok') : t('main_extra.smart_sudo_no') }}
             </span>
-            <span :style="{ color: smartData.smartctl_installed ? 'var(--ok)' : 'var(--down)' }">
+            <span :style="{ color: smartData.smartctl_installed ? 'var(--ok-text)' : 'var(--down-text)' }">
               {{ smartData.smartctl_installed ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
             </span>
           </template>
