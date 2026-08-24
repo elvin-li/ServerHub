@@ -296,6 +296,8 @@ class ServicesBulkLeftoverTests(unittest.TestCase):
                 side_effect=[(0, "ok\ud800", ""), (1, b"bytes-out", None)],
             ),
             mock.patch.object(services_api, "invalidate_status"),
+            # Keep the bulk-action audit line out of the real trail.
+            mock.patch.object(services_api.audit, "record"),
         ):
             out = services_api.services_bulk(body)
         json.dumps(out, ensure_ascii=False, allow_nan=False).encode("utf-8")

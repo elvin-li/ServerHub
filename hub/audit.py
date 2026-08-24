@@ -132,6 +132,18 @@ UPS_POLICY_CHANGED = "ups.policy.changed"
 UPS_POLICY_DRILL = "ups.policy.drill"
 UPS_HALT_CHANGED = "ups.halt.changed"
 
+#: Service lifecycle (hub/routers/api.py, hub/routers/services_api.py).
+#: Starting, stopping or restarting a workload changes what is running on the
+#: host, and unregistering a launch agent changes what starts at login — the
+#: exact questions an operator asks after the fact ("who stopped Immich?").
+#: These were the panel's most-used mutations and the only privileged ones
+#: that left no record at all.  Maintenance tasks run arbitrary repo-defined
+#: scripts, so a manual kick is recorded too.
+SERVICE_ACTION = "service.action"
+SERVICE_BULK_ACTION = "service.bulk_action"
+SERVICE_UNINSTALLED = "service.uninstalled"
+MAINTENANCE_RUN = "maintenance.run"
+
 #: Any field whose name contains one of these is replaced wholesale.  Substring
 #: matching rather than exact names, so ``current_password``, ``new_password``
 #: and ``setup_token`` are all covered without enumerating every variant a

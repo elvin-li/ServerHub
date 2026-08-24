@@ -6,7 +6,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from hub import actions, auth, services_manage_svc, services_uninstall_svc
+from hub import actions, audit, auth, services_manage_svc, services_uninstall_svc
 from hub.errors import api_error
 from hub.status import invalidate_status, member_service_summary
 
@@ -235,13 +235,23 @@ def services_uninstall(sid: str, request: Request, body: Optional[UninstallBody]
     """
     if not auth.browser_authenticated(request):
         raise api_error("services.uninstall_browser_session_required", id=sid)
-    return services_uninstall_svc.uninstall(
+    result = services_uninstall_svc.uninstall(
         sid, remove_data=bool(body and body.remove_data),
     )
+    # uninstall() raises on an unknown or protected service, so a record here
+    # means the launch agent really was unregistered.
+    audit.record(
+        audit.SERVICE_UNINSTALLED,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        target=sid,
+        remove_data=bool(body and body.remove_data),
+    )
+    return result
 
 
 @router.post("/api/services/bulk-action")
-def services_bulk(body: BulkActionBody):
+def services_bulk(body: BulkActionBody, request: Request = None):
     if body.action not in ("start", "stop", "restart", "run"):
         raise api_error("services.bad_action")
     results = []
@@ -274,6 +284,20 @@ def services_bulk(body: BulkActionBody):
             })
     invalidate_status()
     ok_n = sum(1 for r in results if r["ok"])
+    # One record per request, not per id: the trail is capped and evicts
+    # oldest-first, so a stop of forty services must not push forty real
+    # security events out.  The ids ride along for "what exactly was hit".
+    audit.record(
+        audit.SERVICE_BULK_ACTION,
+        # FastAPI always injects `request`; the None default only keeps
+        # direct in-process calls (tests, tooling) working.
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        action=body.action,
+        targets=",".join(_as_text(sid) for sid in (body.ids or [])),
+        ok_count=ok_n,
+        fail_count=len(results) - ok_n,
+    )
     return {
         "ok": ok_n == len(results) and bool(results),
         "ok_count": ok_n,

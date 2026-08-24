@@ -861,6 +861,13 @@ class CredentialsLeftoverTests(unittest.TestCase):
 
 
 class ServicesBulkLeftoverTests(unittest.TestCase):
+    def setUp(self):
+        # The endpoint audits each bulk call; keep fixture noise out of the
+        # real trail (see AuditIsolatedInTestsTests).
+        patched = patch("hub.routers.services_api.audit.record")
+        patched.start()
+        self.addCleanup(patched.stop)
+
     def test_leftover_inf_and_surrogate_output_do_not_500(self):
         """``sh`` leftover inf / ``\\ud800`` used to 500 POST /api/services/bulk-action."""
         with patch.object(

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from hub import __version__, actions, auth, jobs
+from hub import __version__, actions, audit, auth, jobs
 from hub.errors import api_error
 from hub.status import cached_status, filter_status_for_resources, full_status, invalidate_status
 
@@ -109,6 +109,18 @@ def api_action(a: Action, request: Request):
     rc, out, err = actions.run_action(a.target, a.action)
     invalidate_status()
     ok = rc == 0
+    # run_action raises before touching anything on an unknown target or a
+    # disallowed action, so reaching record() means the command really ran;
+    # the outcome rides along rather than gating the record — a failed stop
+    # is still an operator acting on the host.
+    audit.record(
+        audit.SERVICE_ACTION,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        target=a.target,
+        action=a.action,
+        ok=bool(ok),
+    )
     raw = out if ok else (err or out or f"exit {rc}")
     if isinstance(raw, (bytes, bytearray)):
         message = raw.decode("utf-8", "replace")
@@ -140,11 +152,19 @@ def api_maintenance():
 
 
 @router.post("/api/maintenance/{tid}/run")
-def api_maintenance_run(tid: str):
+def api_maintenance_run(tid: str, request: Request = None):
     task = jobs.maintenance_tasks().get(tid)
     if not task:
         raise api_error("maintenance.unknown_task")
     jobs.start_job(task)
+    audit.record(
+        audit.MAINTENANCE_RUN,
+        # FastAPI always injects `request`; the None default only keeps
+        # direct in-process calls (tests, tooling) working.
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        task=tid,
+    )
     return {"ok": True, "message": "Task started"}
 
 

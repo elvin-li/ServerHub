@@ -264,6 +264,8 @@ class AuthHardeningTests(unittest.TestCase):
         with (
             patch("hub.routers.api.actions.run_action", return_value=(0, "removed", "")) as run_action,
             patch("hub.routers.api.invalidate_status"),
+            # The action is audited; keep the fixture line out of the real trail.
+            patch("hub.routers.api.audit.record"),
         ):
             response = api_action(Action(target="media", action="remove"), req)
         self.assertEqual(response.status_code, 200)
