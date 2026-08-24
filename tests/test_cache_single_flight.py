@@ -613,6 +613,42 @@ class InvalidationDuringBuildTests(unittest.TestCase):
                 "after",
             )
 
+    def test_the_adaptive_scan_drops_a_build_that_invalidate_superseded(self):
+        """Sixty seconds, so this is the longest-lived of the four.
+
+        Tearing a compose project down ends in ``invalidate_status`` like every
+        other action; without the generation check the project stayed in
+        ``compose_projects`` for a full minute afterwards.
+        """
+        from hub import status
+
+        with status._lock:
+            status._adaptive_cache.update(t=0.0, compose=None, nginx=None)
+        self.addCleanup(
+            lambda: status._adaptive_cache.update(t=0.0, compose=None, nginx=None)
+        )
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+
+        with (
+            mock.patch.object(status, "scan_new_compose_projects",
+                              lambda: [build()]),
+            mock.patch.object(status, "nginx_sites", list),
+        ):
+            slow = threading.Thread(target=status._adaptive_info)
+            slow.start()
+            self.assertTrue(reading.wait(2), "the scan never started")
+            world["state"] = "after"
+            status.invalidate_status()
+            release.set()
+            slow.join(timeout=2)
+            self.assertEqual(
+                status._adaptive_info()["compose_projects"],
+                ["after"],
+                "the pre-action project list was republished for a whole minute",
+            )
+
     def test_container_discovery_drops_a_superseded_docker_ps(self):
         from hub.discovery import containers
 

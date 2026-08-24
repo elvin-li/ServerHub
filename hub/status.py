@@ -38,6 +38,11 @@ _refresh_lock = threading.Lock()
 # is the ordinary case — and it read the pre-action host.  Publishing it stamps
 # the old snapshot fresh and the stopped container keeps showing as running for
 # another TTL. A build from a superseded generation is dropped instead.
+#
+# Shared by both caches below: invalidate_status() drops them together, so a
+# scan is stale for exactly the same reason and at exactly the same moments as
+# a status build.  The adaptive one holds it for a minute rather than seconds,
+# which is how long a compose project stayed listed after being torn down.
 _status_generation = 0
 # Adaptive filesystem scans change rarely — cache longer.
 _adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
@@ -183,6 +188,9 @@ def invalidate_status():
     except Exception:
         pass
     with _lock:
+        # `_status_generation` was bumped above, under this same lock, and it
+        # covers this cache too -- so a scan already running is dropped rather
+        # than allowed to restore the pre-action project list for a minute.
         _adaptive_cache["t"] = 0
 
 
@@ -211,6 +219,7 @@ def _adaptive_info() -> dict:
                     "compose_projects": _adaptive_cache["compose"],
                     "nginx_sites": _adaptive_cache["nginx"],
                 }
+            began = _status_generation
         # Two unrelated filesystem scans (compose project tree, nginx sites dir).
         f_compose = _pool.submit(scan_new_compose_projects)
         f_nginx = _pool.submit(nginx_sites)
@@ -223,7 +232,8 @@ def _adaptive_info() -> dict:
         except Exception:
             nginx = []
         with _lock:
-            _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
+            if _status_generation == began:
+                _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
         return {"compose_projects": compose, "nginx_sites": nginx}
 
 
