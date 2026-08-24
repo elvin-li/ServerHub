@@ -159,9 +159,17 @@
         <span class="pill">{{ finiteText(sensors?.ts, '') || finiteText(status?.ts, '…') }}</span>
        <button class="tiny" @click="refreshAll" :disabled="loading">{{ t('common.refresh') }}</button>
       <span id="remote" class="pwr-group">
+         <!-- While Screen Sharing is off there is no vnc_url, so this renders as
+              an <a> with no href — which has no implicit role, and ARIA forbids
+              aria-label on a role-less element.  The icon-only control was then
+              announced as nothing at all in exactly the state that needs
+              explaining.  An explicit role (plus aria-disabled for the inert
+              styling the .disabled class applies) keeps the name readable. -->
          <a class="tiny primary"
            :class="{ disabled: !ss.running }"
            :href="ss.running ? finiteText(ss.vnc_url, '') : undefined"
+           role="link"
+           :aria-disabled="ss.running ? undefined : 'true'"
            :title="ss.running ? t('power.connect') : t('power.off')"
            :aria-label="ss.running ? t('power.connect') : t('power.off')"
          ><Monitor :size="14" /></a>
@@ -1904,8 +1912,10 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   background: var(--btn); border: 1px solid var(--line);
   color: var(--txt); padding: 4px 10px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600;
 }
-.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
-.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+/* Text pulled toward --txt rather than sitting on the flat status colour: at
+   11px, var(--ok)/var(--down) on their own 12-14% tint read 2.2:1 and 3.0:1. */
+.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: color-mix(in srgb, var(--ok) 55%, var(--txt)); border-color: transparent; }
+.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: color-mix(in srgb, var(--down) 70%, var(--txt)); border-color: transparent; }
 
 .res-card .big {
   font-size: 28px; font-weight: 800; line-height: 1.1;
@@ -2033,7 +2043,10 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 .pwr-group .tiny { font-size: 12px; padding: 2px 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .pwr-group a.tiny.disabled { opacity: .4; pointer-events: none; cursor: not-allowed; }
 .hint-line { margin-top: 8px; font-size: 11px; color: var(--sub); line-height: 1.5; }
-.ok-msg { color: var(--ok); font-weight: 600; padding: 8px 0; }
+/* Flat var(--ok) is a 2.2:1 mint green on the card — the least legible text on
+   the dashboard. Mixing toward --txt darkens it on light palettes and keeps it
+   bright on dark ones, so one rule clears AA for both. */
+.ok-msg { color: color-mix(in srgb, var(--ok) 55%, var(--txt)); font-weight: 600; padding: 8px 0; }
 
 .health-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
