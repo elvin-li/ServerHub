@@ -7,6 +7,10 @@
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="busy">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" :placeholder="t('brew.filter_ph')"  :aria-label="t('brew.filter_ph')"/>
+      <!-- role=status: the count is the only feedback the filter box gives,
+           and it changed silently for a screen reader. Same pattern as the
+           Services filter count. -->
+      <span class="meta-count" role="status">{{ filtered.length }} / {{ services.length }}</span>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />

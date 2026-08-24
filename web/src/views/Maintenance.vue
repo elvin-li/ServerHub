@@ -7,6 +7,10 @@
     <div class="toolbar">
       <button class="primary" @click="refresh">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" :placeholder="t('maintenance.filter_ph')"  :aria-label="t('maintenance.filter_ph')"/>
+      <!-- role=status: the count is the only feedback the filter box gives,
+           and it changed silently for a screen reader. Same pattern as the
+           Services filter count. -->
+      <span class="meta-count" role="status">{{ filtered.length }} / {{ tasks.length }}</span>
     </div>
     <!-- loadError was only rendered inside the empty-table row, so once the table
          had rows the 15s poll could fail indefinitely while stale task and run

@@ -24,6 +24,10 @@
       <button class="primary" @click="refresh" :disabled="busy">{{ t('common.refresh') }}</button>
       <button class="primary" :disabled="busy" @click="showRun=true">{{ t('docker.create') }}</button>
       <input v-model="q" type="text" :placeholder="t('docker.filter_ph')" style="min-width:140px"  :aria-label="t('docker.filter_ph')"/>
+      <!-- role=status: the count is the only feedback the filter box and the
+           hide-system toggle give, and it changed silently for a screen
+           reader. Same pattern as the Services filter count. -->
+      <span class="meta-count" role="status">{{ filteredContainers.length }} / {{ containers.length }}</span>
       <button :disabled="busy" @click="doAll('start')">{{ t('docker.start_all') }}</button>
       <button :disabled="busy" @click="doAll('stop')">{{ t('docker.stop_all') }}</button>
       <button :disabled="busy" @click="doAll('pause')">{{ t('docker.pause_all') }}</button>

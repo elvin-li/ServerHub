@@ -8,6 +8,10 @@
     <div class="toolbar">
       <button class="primary" :disabled="busy" @click="refresh(true)">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" :placeholder="t('audit.filter_ph')" :aria-label="t('audit.filter_ph')" />
+      <!-- role=status: the count is the only feedback the filter box gives,
+           and it changed silently for a screen reader. Same pattern as the
+           Services filter count. -->
+      <span class="meta-count" role="status">{{ filteredRows.length }} / {{ rows.length }}</span>
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
