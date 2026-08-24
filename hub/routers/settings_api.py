@@ -325,7 +325,7 @@ def get_settings():
 
 
 @router.put("/api/settings")
-def put_settings(body: SettingsPatch, request: Request):
+def put_settings(body: SettingsPatch, request: Request = None):
     patch: dict[str, Any] = {}
     if body.host_ip is not None:
         patch["host_ip"] = body.host_ip.strip()
@@ -411,7 +411,9 @@ def put_settings(body: SettingsPatch, request: Request):
         # names only — record() redaction would drop the values anyway.
         audit.record(
             audit.NOTIFY_SETTINGS_CHANGED,
-            username=request_username(request),
+            # FastAPI always injects `request`; the None default only keeps
+            # direct in-process calls (tests, tooling) working.
+            username=request_username(request) if request is not None else "",
             client=request_client_id(request),
             fields=",".join(sorted(patch["notify"].keys())),
         )
