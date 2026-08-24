@@ -604,6 +604,17 @@ def exc_detail(exc, cap: int = 200) -> str:
     RecursionError on ``str(e)`` is not ValueError; leftover ``\\ud800`` in
     the message used to 500 Starlette's UTF-8 encode of GET /api/photoshub.
     """
+    # ``str(HTTPException)`` is ``"404: {'code': 'nginx.conf_missing',
+    # 'message': 'nginx.conf is missing'}"`` -- a Python dict repr, which the
+    # health page rendered verbatim when nginx_overview() raised through
+    # _nginx_pair().  Unwrap it: a bare code is what errText() translates, and
+    # a params-bearing error keeps the already-formatted English message
+    # because errText() would only surface its unfilled {placeholders}.
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
+        detail = exc.detail
+        picked = detail.get("message") if detail.get("params") else detail.get("code")
+        if isinstance(picked, str) and picked:
+            return picked.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
     try:
         text = str(exc)
     except Exception:
