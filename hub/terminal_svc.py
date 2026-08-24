@@ -209,6 +209,11 @@ def _default_shell() -> str:
 #: and recent_audit() reads the whole file per history request.
 _AUDIT_MAX_BYTES = 512 * 1024
 _AUDIT_KEEP_LINES = 1000
+#: Serialises append + trim.  The trim is a read-tail-then-rename; a command
+#: audited by another request thread inside that window vanished with the
+#: temp-file swap, and this trail is the only record of what was typed into
+#: a root-capable shell.
+_AUDIT_LOCK = threading.Lock()
 
 
 def _now() -> int:
@@ -302,23 +307,26 @@ def _audit(entry: dict[str, Any]) -> None:
         # operator typed into a root-capable shell, which is the one thing in it
         # that cannot be un-leaked.  Create-if-absent rather than write, because
         # write_secret_text opens with O_TRUNC and would empty the trail.
-        secure_io.create_secret_text(AUDIT_PATH, "")
-        secure_io.append_text(
-            AUDIT_PATH,
-            json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str) + "\n",
-            mode=0o600,
-        )
-        os.chmod(AUDIT_PATH, 0o600)
-        if AUDIT_PATH.stat().st_size > _AUDIT_MAX_BYTES:
-            # Tail + atomic replace: a full slurp of a 512KB+ trail was
-            # pointless, and write_secret_text (O_TRUNC) emptied the log
-            # if the process died mid-rewrite.
-            lines = tail_file_lines(
-                AUDIT_PATH, _AUDIT_KEEP_LINES, max_bytes=_AUDIT_MAX_BYTES
+        # The lock covers append *and* trim: without it, a line appended by a
+        # concurrent request between the tail-read and the rename was lost.
+        with _AUDIT_LOCK:
+            secure_io.create_secret_text(AUDIT_PATH, "")
+            secure_io.append_text(
+                AUDIT_PATH,
+                json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str) + "\n",
+                mode=0o600,
             )
-            secure_io.replace_secret_text(
-                AUDIT_PATH, "\n".join(lines) + ("\n" if lines else "")
-            )
+            os.chmod(AUDIT_PATH, 0o600)
+            if AUDIT_PATH.stat().st_size > _AUDIT_MAX_BYTES:
+                # Tail + atomic replace: a full slurp of a 512KB+ trail was
+                # pointless, and write_secret_text (O_TRUNC) emptied the log
+                # if the process died mid-rewrite.
+                lines = tail_file_lines(
+                    AUDIT_PATH, _AUDIT_KEEP_LINES, max_bytes=_AUDIT_MAX_BYTES
+                )
+                secure_io.replace_secret_text(
+                    AUDIT_PATH, "\n".join(lines) + ("\n" if lines else "")
+                )
     except (OSError, ValueError, TypeError, OverflowError, UnicodeError, RecursionError):
         # RecursionError: leftover nested terminal audit after _jsonable is not
         # ValueError; POST /api/terminal/run used to 500 after the command ran.

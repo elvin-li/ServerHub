@@ -154,6 +154,53 @@ class ConcurrentRecordTests(unittest.TestCase):
         )
 
 
+class ConcurrentTerminalAuditTests(unittest.TestCase):
+    """The terminal trail has the same append+trim shape as the auth trail and
+    had the same unlocked window; it is the only record of what an operator
+    typed into a root-capable shell."""
+
+    def test_no_command_record_is_lost_to_a_concurrent_trim(self):
+        import threading
+
+        from hub import terminal_svc
+        from hub.util import tail_file_lines as real_tail
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "terminal-audit.jsonl"
+        threads_n, per_thread = 8, 40
+        # _AUDIT_MAX_BYTES=1 forces the trim branch on every record; it also
+        # caps the trim's tail read, so widen that back out or the trim itself
+        # would evict everything and hide the race being tested.
+        with mock.patch.object(terminal_svc, "AUDIT_PATH", path), \
+             mock.patch.object(terminal_svc, "_AUDIT_MAX_BYTES", 1), \
+             mock.patch.object(terminal_svc, "_AUDIT_KEEP_LINES",
+                               threads_n * per_thread + 100), \
+             mock.patch.object(
+                 terminal_svc, "tail_file_lines",
+                 lambda p, n, max_bytes=None: real_tail(p, n, max_bytes=10**7)):
+            start = threading.Barrier(threads_n)
+
+            def hammer(worker: int) -> None:
+                start.wait()
+                for i in range(per_thread):
+                    terminal_svc._audit({"cmd": f"echo w{worker}-{i}", "rc": 0})
+
+            workers = [
+                threading.Thread(target=hammer, args=(w,)) for w in range(threads_n)
+            ]
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join()
+        lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+        self.assertEqual(
+            len(lines),
+            threads_n * per_thread,
+            "terminal audit lines appended during another thread's trim were discarded",
+        )
+
+
 class SourceShapeTests(unittest.TestCase):
     def test_audit_does_not_use_the_truncating_helper(self):
         """Pinned in the source: the O_TRUNC helper must not reach this path."""
