@@ -101,4 +101,43 @@ describe('Alerts page', () => {
     expect(w.text()).toContain('alerts.empty')
     w.unmount()
   })
+
+  it('polls while mounted and stops the poller on leave', async () => {
+    api.getAlerts.mockResolvedValue({ alerts: [] })
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+    expect(api.getAlerts).toHaveBeenCalledTimes(1)
+    // The poller re-arms with setTimeout; a queued tick that fires after
+    // unmount must not hit the API again.
+    vi.useFakeTimers()
+    w.unmount()
+    await vi.advanceTimersByTimeAsync(120000)
+    vi.useRealTimers()
+    expect(api.getAlerts).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps background poll failures silent but toasts a manual refresh failure', async () => {
+    const toast = vi.fn()
+    api.getAlerts.mockRejectedValue(new Error('panel down'))
+    vi.useFakeTimers()
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    // Mount refresh counts as manual: the operator just navigated here.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(toast).toHaveBeenCalledTimes(1)
+    // One background tick later: no second toast for the same outage.
+    await vi.advanceTimersByTimeAsync(31000)
+    expect(toast).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+    w.unmount()
+  })
 })

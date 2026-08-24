@@ -81,5 +81,39 @@ describe('Audit leave-guards', () => {
     expect(wrapper.text()).toContain('bob')
     wrapper.unmount()
   })
+
+  it('polls while mounted and stops the poller on leave', async () => {
+    const wrapper = mount(Audit, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+    expect(api.getAuthAudit).toHaveBeenCalledTimes(1)
+    vi.useFakeTimers()
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(120000)
+    vi.useRealTimers()
+    expect(api.getAuthAudit).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps background poll failures silent but toasts a manual refresh failure', async () => {
+    const toast = vi.fn()
+    api.getAuthAudit.mockRejectedValue(new Error('panel down'))
+    vi.useFakeTimers()
+    const wrapper = mount(Audit, {
+      global: {
+        provide: { toast },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(toast).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(31000)
+    expect(toast).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+    wrapper.unmount()
+  })
 })
 

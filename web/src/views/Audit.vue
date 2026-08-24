@@ -6,7 +6,7 @@
     </div>
 
     <div class="toolbar">
-      <button class="primary" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
+      <button class="primary" :disabled="busy" @click="refresh(true)">{{ t('common.refresh') }}</button>
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
@@ -55,6 +55,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
 import { finiteN, finiteText } from '../lib/finite'
+import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -102,7 +103,7 @@ function detail(e) {
     .join(' · ')
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   // Re-entry guard so repeated Refresh clicks do not issue concurrent reads whose
   // responses can resolve out of order into the shared `entries`.
   if (busy.value) return
@@ -116,9 +117,13 @@ async function refresh() {
     maxRetained.value = Number.isFinite(retained) && retained >= 0 ? retained : 0
     loadError.value = ''
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // Background ticks stay silent: LoadFailure already marks the failure, and
+    // a toast per interval while the panel is down is pure noise.  Returning
+    // false is lib/poll's opt-in sentinel for backoff.
+    if (manual) toast('❌ ' + finiteText(e.message))
+    return false
   } finally {
     if (generation === loadGeneration && pageAlive) {
       loaded.value = true
@@ -127,13 +132,21 @@ async function refresh() {
   }
 }
 
+let stopPoll = null
+
 onMounted(() => {
   pageAlive = true
-  refresh()
+  void refresh(true)
+  // Sign-ins land while the page is open; without a poll the log was frozen at
+  // whatever the first read returned.  Visibility-aware, silent on background
+  // failures, backed off while the panel is unreachable.
+  stopPoll = startVisibleInterval(refresh, 30000)
 })
 
 onUnmounted(() => {
   pageAlive = false
   loadGeneration += 1
+  if (typeof stopPoll === 'function') stopPoll()
+  stopPoll = null
 })
 </script>

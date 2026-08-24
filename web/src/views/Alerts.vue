@@ -5,7 +5,7 @@
       <span class="meta">{{ t('alerts.meta') }}</span>
     </div>
     <div class="toolbar">
-      <button class="primary" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
+      <button class="primary" :disabled="busy" @click="refresh(true)">{{ t('common.refresh') }}</button>
       <button :disabled="busy" @click="check">{{ t('alerts.check_now') }}</button>
       <button class="hide-m" :disabled="busy" @click="test">{{ t('alerts.test_notify') }}</button>
       <router-link class="btn" to="/settings">{{ t('alerts.notify_settings') }}</router-link>
@@ -53,6 +53,7 @@ import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
 import { finiteN, finiteText, fmtTs } from '../lib/finite'
+import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -83,7 +84,7 @@ function kindLabel(a) {
   return leaf ? t(`alerts.${leaf}`) : ''
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   if (busy.value) return
   const generation = ++loadGeneration
   busy.value = true
@@ -93,9 +94,13 @@ async function refresh() {
     alerts.value = Array.isArray(d.alerts) ? d.alerts : []
     loadError.value = ''
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // A background tick that fails must not re-toast every interval while the
+    // panel is unreachable — LoadFailure already marks the state on screen.
+    // The `false` return is lib/poll's opt-in sentinel for backoff.
+    if (manual) toast('❌ ' + finiteText(e.message))
+    return false
   } finally {
     if (generation === loadGeneration && pageAlive) {
       busy.value = false
@@ -139,12 +144,21 @@ async function test() {
   }
 }
 
+let stopPoll = null
+
 onMounted(() => {
   pageAlive = true
-  void refresh()
+  void refresh(true)
+  // Alert state changes on the server's own check cadence; without a poll the
+  // page showed whatever was true when it was opened until a manual refresh.
+  // Visibility-aware like every other polling page, silent on background
+  // failures, with lib/poll backoff while the panel is unreachable.
+  stopPoll = startVisibleInterval(refresh, 30000)
 })
 onUnmounted(() => {
   pageAlive = false
   loadGeneration += 1
+  if (typeof stopPoll === 'function') stopPoll()
+  stopPoll = null
 })
 </script>
