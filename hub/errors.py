@@ -535,6 +535,16 @@ def _jsonable_param(value, depth: int = 0):
         return None
 
 
+def jsonable_error_detail(value):
+    """Sanitize a non-coded error body for Starlette's allow_nan=False encoder.
+
+    Coded errors go through ``error_payload`` and are cleaned there.  FastAPI's
+    own validation handler builds its body from the request, so it needs the
+    same treatment before the response is rendered.
+    """
+    return _jsonable_param(value)
+
+
 def error_payload(code: str, /, **params) -> tuple[int, dict]:
     """(http status, response body) for *code* — the shape the SPA parses.
 
@@ -594,6 +604,17 @@ def exc_detail(exc, cap: int = 200) -> str:
     RecursionError on ``str(e)`` is not ValueError; leftover ``\\ud800`` in
     the message used to 500 Starlette's UTF-8 encode of GET /api/photoshub.
     """
+    # ``str(HTTPException)`` is ``"404: {'code': 'nginx.conf_missing',
+    # 'message': 'nginx.conf is missing'}"`` -- a Python dict repr, which the
+    # health page rendered verbatim when nginx_overview() raised through
+    # _nginx_pair().  Unwrap it: a bare code is what errText() translates, and
+    # a params-bearing error keeps the already-formatted English message
+    # because errText() would only surface its unfilled {placeholders}.
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
+        detail = exc.detail
+        picked = detail.get("message") if detail.get("params") else detail.get("code")
+        if isinstance(picked, str) and picked:
+            return picked.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
     try:
         text = str(exc)
     except Exception:

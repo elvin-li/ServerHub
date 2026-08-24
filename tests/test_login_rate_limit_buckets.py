@@ -119,6 +119,82 @@ class RequestClientTests(unittest.TestCase):
         self.assertFalse(auth.login_allowed("burst")[0])
 
 
+class AttemptTableGrowthTests(unittest.TestCase):
+    """The attempt table must not become a log of every address ever seen.
+
+    ``login_allowed`` prunes only the bucket it was asked about, so a client
+    that never returns leaves its entry behind for good.  Behind the local
+    proxy the bucket key is the forwarded peer address, and a caller on an
+    IPv6 /64 can spend a fresh address per request — so "never returns" is
+    the attacker's normal case, not a rare one.
+    """
+
+    def setUp(self):
+        auth._login_attempts.clear()
+        self.addCleanup(auth._login_attempts.clear)
+
+    def one_shot_clients(self, count: int, *, age: float) -> None:
+        """Fill the table with buckets nobody will ever look up again."""
+        stale = time.time() - age
+        for i in range(count):
+            auth._login_attempts[f"2001:db8::{i:x}"] = [stale]
+
+    def test_stale_buckets_are_forgotten_once_the_table_is_large(self):
+        self.one_shot_clients(auth._LOGIN_SWEEP_AT * 4, age=auth._LOGIN_WINDOW + 60)
+
+        auth.login_allowed("198.51.100.7")
+
+        self.assertEqual(
+            list(auth._login_attempts),
+            ["198.51.100.7"],
+            "buckets whose window had passed were kept",
+        )
+
+    def test_a_bucket_still_inside_its_window_survives_the_sweep(self):
+        self.one_shot_clients(auth._LOGIN_SWEEP_AT * 4, age=auth._LOGIN_WINDOW + 60)
+        for _ in range(5):
+            auth.record_login_failure("198.51.100.7")
+
+        auth.login_allowed("198.51.100.8")
+
+        self.assertFalse(
+            auth.login_allowed("198.51.100.7")[0],
+            "the sweep handed a locked-out client its five attempts back",
+        )
+
+    def test_a_household_sized_table_is_left_alone(self):
+        # The sweep is a safety valve, not a TTL: below the threshold the
+        # table keeps its shape so ordinary use pays nothing for it.
+        self.one_shot_clients(8, age=auth._LOGIN_WINDOW + 60)
+
+        auth.login_allowed("198.51.100.7", consume=False)
+
+        self.assertEqual(len(auth._login_attempts), 8)
+
+    def test_a_backwards_clock_step_does_not_empty_the_table(self):
+        # A negative age is not an expired one.  Failing open here would let
+        # a clock change hand every locked-out client a fresh budget.
+        self.one_shot_clients(auth._LOGIN_SWEEP_AT * 4, age=0.0)
+        with mock.patch.object(time, "time", return_value=time.time() - 86400):
+            auth.login_allowed("198.51.100.7")
+
+        self.assertGreater(len(auth._login_attempts), auth._LOGIN_SWEEP_AT)
+
+    def test_the_sweep_agrees_with_the_window_the_check_uses(self):
+        # One constant, so the two cannot drift into a table that is swept
+        # while attempts still count, or attempts that count after a sweep.
+        auth._login_attempts["edge"] = [time.time() - (auth._LOGIN_WINDOW - 1)]
+        self.one_shot_clients(auth._LOGIN_SWEEP_AT * 4, age=auth._LOGIN_WINDOW + 60)
+
+        auth.login_allowed("other")
+
+        self.assertIn(
+            "edge",
+            auth._login_attempts,
+            "an attempt the limiter still counts was swept away",
+        )
+
+
 class _PanelSandbox(unittest.TestCase):
     """Scratch config/data so the full login route can run."""
 

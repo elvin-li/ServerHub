@@ -1045,8 +1045,12 @@ def login_start() -> dict:
     except OSError:
         pass
     url = None
-    # read up to ~8s for URL line
-    deadline = time.time() + 12
+    # Read up to 12s for the URL line.  monotonic, not time.time(), for the
+    # same reason _wait_login_pid uses it: this loop runs on a request
+    # thread, and the wall clock can step under it -- NTP corrects it, and
+    # the panel's own date & time settings set it outright.  A backwards
+    # step would park the request here for the length of the correction.
+    deadline = time.monotonic() + 12
     buf = ""
     if proc.stdout is None:
         return {
@@ -1054,7 +1058,7 @@ def login_start() -> dict:
             "message": "Login process started but no output was captured",
             "login_pending": True,
         }
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         if proc.poll() is not None:
             break
         try:

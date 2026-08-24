@@ -40,6 +40,84 @@ class TimeoutLogTests(unittest.TestCase):
         self.assertEqual(warn.call_count, 2)
 
 
+class GapTableGrowthTests(unittest.TestCase):
+    """The de-noising table must not keep every argv the panel ever ran.
+
+    Its key is the whole argv, and argv carries identifiers: container IDs,
+    device paths, tunnel names.  Nothing removed an entry, so a long-lived
+    panel accumulated one per distinct command that ever failed -- the table
+    grew for exactly the workloads that made it worth having.
+    """
+
+    def setUp(self):
+        with util._noisy_log_lock:
+            util._noisy_log_at.clear()
+        self.addCleanup(util._noisy_log_at.clear)
+
+    def fail_once(self, argv):
+        expired = subprocess.TimeoutExpired(argv, 1)
+        with (
+            patch.object(util.subprocess, "run", side_effect=expired),
+            patch.object(util.log, "warning"),
+        ):
+            util.sh(argv, timeout=1)
+
+    def fill_with_spent_entries(self, count: int) -> None:
+        """Entries past the gap: the next failure would log regardless."""
+        stale = util.time.time() - (util._TIMEOUT_LOG_GAP + 60)
+        with util._noisy_log_lock:
+            for i in range(count):
+                util._noisy_log_at[("timeout", ("docker", "logs", f"c{i:x}"))] = stale
+
+    def test_spent_entries_are_forgotten_once_the_table_is_large(self):
+        self.fill_with_spent_entries(util._NOISY_SWEEP_AT * 4)
+
+        self.fail_once(["docker", "logs", "fresh"])
+
+        self.assertEqual(
+            list(util._noisy_log_at),
+            [("timeout", ("docker", "logs", "fresh"))],
+            "argvs whose gap had already elapsed were kept",
+        )
+
+    def test_an_entry_still_inside_its_gap_is_not_swept(self):
+        self.fill_with_spent_entries(util._NOISY_SWEEP_AT * 4)
+        with util._noisy_log_lock:
+            util._noisy_log_at[("timeout", ("brew", "outdated"))] = util.time.time()
+
+        self.fail_once(["docker", "logs", "fresh"])
+
+        expired = subprocess.TimeoutExpired(["brew", "outdated"], 1)
+        with (
+            patch.object(util.subprocess, "run", side_effect=expired),
+            patch.object(util.log, "warning") as warn,
+        ):
+            util.sh(["brew", "outdated"], timeout=1)
+        self.assertEqual(
+            warn.call_count, 0, "the sweep let a suppressed line through early"
+        )
+
+    def test_a_quiet_host_pays_nothing_for_the_sweep(self):
+        # Below the threshold the table keeps its shape: the sweep is a
+        # safety valve for argv-as-identifier, not a TTL on the gap.
+        self.fill_with_spent_entries(4)
+
+        self.fail_once(["docker", "logs", "fresh"])
+
+        self.assertEqual(len(util._noisy_log_at), 5)
+
+    def test_distinct_argvs_still_each_get_their_line(self):
+        with (
+            patch.object(
+                util.subprocess, "run", side_effect=subprocess.TimeoutExpired("x", 1)
+            ),
+            patch.object(util.log, "warning") as warn,
+        ):
+            for i in range(3):
+                util.sh(["docker", "logs", f"container{i}"], timeout=1)
+        self.assertEqual(warn.call_count, 3)
+
+
 class RunCappedTests(unittest.TestCase):
     def test_keeps_only_the_tail(self):
         rc, text = util.run_capped(

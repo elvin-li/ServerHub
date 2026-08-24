@@ -595,8 +595,8 @@ onUnmounted(() => {
 :global([data-theme="macos-dark"] .files-table tr.selected td),
 :global([data-theme="macos-dark"] .files-table tr.selected:hover),
 :global([data-theme="macos-dark"] .files-table tr.selected:hover td) {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 :global([data-theme="macos"] .files-table tr.selected .sub),
@@ -680,7 +680,7 @@ onUnmounted(() => {
   white-space: nowrap;
   box-sizing: border-box;
 }
-.act-btn.danger { color: var(--down); border-color: color-mix(in srgb, var(--down) 40%, var(--line)); }
+.act-btn.danger { color: var(--down-text); border-color: color-mix(in srgb, var(--down) 40%, var(--line)); }
 .empty-row, .placeholder { text-align: center; color: var(--sub); padding: 24px; height: auto; }
 .drop-hint { font-size: 11px; color: var(--sub); margin-top: 8px; }
 .parent-row { cursor: pointer; }

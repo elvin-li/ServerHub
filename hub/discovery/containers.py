@@ -28,8 +28,16 @@ _refresh_lock = threading.Lock()
 #: The cap keeps a genuinely wedged daemon visible: when every probe times out,
 #: the tolerance runs out and the report flips to down.
 _TIMEOUT_TOLERANCE = 3
-#: Consecutive timeout count.  Only touched under `_refresh_lock`.
+#: Consecutive timeout count.  Only touched under `_refresh_lock`, apart from
+#: the reset in `invalidate_containers`, which is a whole-word int store.
 _timeouts = 0
+#: Bumped by `invalidate_containers`.  Starting, stopping or removing a
+#: container ends there, and the dashboard polls the whole time, so a
+#: `docker ps -a` launched a moment before the click is the ordinary case
+#: rather than a narrow one -- and it saw the container in its old state.
+#: Publishing that answer afterwards stamps it fresh, and the row the operator
+#: just acted on stays wrong for another TTL. Superseded refreshes are dropped.
+_generation = 0
 
 
 def _aligned_container_name(name: str, image: str, sig: dict) -> bool:
@@ -51,8 +59,9 @@ def _aligned_container_name(name: str, image: str, sig: dict) -> bool:
 
 
 def invalidate_containers():
-    global _timeouts
+    global _timeouts, _generation
     with _lock:
+        _generation += 1
         _cache["t"] = 0
         _cache["v"] = None
     _timeouts = 0
@@ -92,6 +101,8 @@ def discover_containers(force: bool = False):
 
 def _refresh():
     global _timeouts
+    with _lock:
+        began = _generation
     rc, out, err = sh(
         [
             DOCKER,
@@ -110,7 +121,7 @@ def _refresh():
         if _timeouts < _TIMEOUT_TOLERANCE:
             with _lock:
                 prev = _cache["v"]
-                if prev is not None:
+                if prev is not None and _generation == began:
                     _cache["t"] = time.time()
                     prev_items, prev_engine_up = prev
                     return list(prev_items), prev_engine_up
@@ -194,5 +205,6 @@ def _refresh():
                 item.setdefault("meta", {})["signature"] = sig
             items.append(item)
     with _lock:
-        _cache.update(t=time.time(), v=(items, engine_up))
+        if _generation == began:
+            _cache.update(t=time.time(), v=(items, engine_up))
     return list(items), engine_up

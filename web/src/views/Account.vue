@@ -310,7 +310,7 @@ onUnmounted(() => {
 .card { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 16px; }
 .section-title { font-size: 15px; margin: 18px 0 8px; }
 .hint { color: var(--sub); font-size: 12px; line-height: 1.5; }
-.hint.bad { color: var(--down); }
+.hint.bad { color: var(--down-text); }
 .form-grid { display: grid; grid-template-columns: 170px 1fr; gap: 8px 12px; align-items: center; margin-top: 10px; }
 .form-grid label { color: var(--sub); font-size: 12px; font-weight: 600; }
 .form-grid input { min-height: 36px; }

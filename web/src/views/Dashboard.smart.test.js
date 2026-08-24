@@ -142,7 +142,7 @@ describe('Dashboard SMART density', () => {
     expect(na.classes()).not.toContain('down')
     expect(na.attributes('title')).toBe('SMART unavailable')
 
-    const summary = wrapper.findAll('.res-card h3 .tile-tools .badge')
+    const summary = wrapper.findAll('.res-card h2 .tile-tools .badge')
     const smartSummary = summary[summary.length - 1]
     expect(smartSummary.text()).toBe('2/3 S')
     expect(smartSummary.attributes('title')).toBe('2/3 SMART')

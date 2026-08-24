@@ -20,19 +20,19 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
-        <h3>{{ t('health.passed') }}</h3>
-        <div class="v" style="color:var(--ok)">{{ finiteN(data.summary.ok) }}</div>
+        <h2>{{ t('health.passed') }}</h2>
+        <div class="v" style="color:var(--ok-text)">{{ finiteN(data.summary.ok) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.warnings') }}</h3>
-        <div class="v" style="color:var(--warn)">{{ finiteN(data.summary.warn) }}</div>
+        <h2>{{ t('health.warnings') }}</h2>
+        <div class="v" style="color:var(--warn-text)">{{ finiteN(data.summary.warn) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.errors') }}</h3>
-        <div class="v" style="color:var(--down)">{{ finiteN(data.summary.error) }}</div>
+        <h2>{{ t('health.errors') }}</h2>
+        <div class="v" style="color:var(--down-text)">{{ finiteN(data.summary.error) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.overall') }}</h3>
+        <h2>{{ t('health.overall') }}</h2>
         <div class="v" style="font-size:16px">{{ data.healthy ? '✅ OK' : '⚠️' }}</div>
       </div>
     </div>
@@ -49,7 +49,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th style="width:36px"></th>
+            <th style="width:36px"><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('health.check') }}</th>
             <th>{{ t('health.level') }}</th>
             <th class="col-hide-m">{{ t('health.detail') }}</th>

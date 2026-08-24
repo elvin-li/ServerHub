@@ -83,4 +83,20 @@ function onClick() {
 @media (prefers-reduced-motion: reduce) {
   .mac-switch span { transition: none; }
 }
+/* WCAG 2.5.8: 22px tall is under the 24px minimum for a fingertip. iOS sizes
+   its own switch at 51x31, so growing towards that on touch is also the
+   native look. Knob and travel scale with the track. */
+@media (pointer: coarse) {
+  .mac-switch {
+    width: 44px;
+    height: 26px;
+    min-width: 44px;
+    min-height: 26px;
+  }
+  .mac-switch span {
+    width: 22px;
+    height: 22px;
+  }
+  .mac-switch[aria-checked="true"] span { transform: translateX(18px); }
+}
 </style>
