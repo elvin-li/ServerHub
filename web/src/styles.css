@@ -2193,9 +2193,15 @@ img[loading="lazy"][complete] {
   border-color: var(--accent);
   color: #fff;
 }
-[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+/* `.chip` is carved out for the same reason `.mac-switch` and `.hamburger` are:
+   it is a button element that is not meant to look like a button, and it has a
+   full set of macOS rules of its own further down. Without the guard this rule
+   scored (0,5,1) against those rules' (0,3,0) and painted over all of them, so
+   the Services status filter rendered its selected chip identically to the
+   unselected ones. */
+[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos"] .btn:not(.primary):not(.danger),
-[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
   /* White (elevated) fill on gray canvas — gray-on-gray --btn looked inert. */
   background: #fff;
@@ -2203,7 +2209,7 @@ img[loading="lazy"][complete] {
   color: var(--txt);
   box-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.06);
 }
-[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
   background: #3a3a3c;
   border-color: #48484a;
