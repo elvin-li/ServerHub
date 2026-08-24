@@ -21,16 +21,41 @@ def _starlette(payload) -> None:
 def _load_menubar():
     try:
         import menubar
-        return menubar
     except ModuleNotFoundError as exc:
         if exc.name != "rumps":
             raise
+        menubar = None
+    else:
+        bar_cls = getattr(menubar, "ServerHubBar", None)
+        tick = getattr(bar_cls, "tick", None) if isinstance(bar_cls, type) else None
+        if callable(tick) and not isinstance(tick, mock.Mock):
+            return menubar
+
+    # Linux CI has no rumps. MagicMock() as rumps.App makes ServerHubBar
+    # unusable (not a type, no tick); give App a real base so the class
+    # statement in menubar.py still defines tick.
+    class _FakeApp:
+        def __init__(self, *args, **kwargs):
+            self.menu = {}
+            self.title = ""
+
     fake = mock.MagicMock()
-    sys.modules.setdefault("rumps", fake)
-    sys.modules.setdefault("rumps.rumps", fake)
+    fake.App = _FakeApp
+    sys.modules["rumps"] = fake
+    sys.modules["rumps.rumps"] = fake
     if "menubar" in sys.modules:
         del sys.modules["menubar"]
     return importlib.import_module("menubar")
+
+
+class _Recursing:
+    """Leftover recursive ``__format__``/``__str__`` — not a ValueError."""
+
+    def __format__(self, spec):
+        raise RecursionError("nested")
+
+    def __str__(self):
+        raise RecursionError("nested")
 
 
 class MenuBarDumpsLeftoverTests(unittest.TestCase):
@@ -187,3 +212,96 @@ class ActionMessageLeftoverTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertNotIn("\ud800", payload["message"])
             self.assertNotIn("Infinity", json.dumps(payload, allow_nan=False))
+
+
+class MenuBarTranslateLeftoverTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mb = _load_menubar()
+
+    def _safe(self, text):
+        self.assertIsInstance(text, str)
+        text.encode("utf-8")
+        json.dumps(text, ensure_ascii=False).encode("utf-8")
+        self.assertNotIn("\ud800", text)
+        return text
+
+    def test_happy_path_summary_still_fills(self):
+        self.assertEqual(
+            self.mb._t("en", "summary", ok=1, warn=0, down=0),
+            "1 OK · 0 warnings · 0 down",
+        )
+
+    def test_recursing_format_param_does_not_raise(self):
+        """Leftover recursive ``__format__``/``__str__`` used to RecursionError
+        ``_t`` during tick after api_status already succeeded."""
+        text = self.mb._t("en", "notify_fail", message=_Recursing())
+        self._safe(text)
+        text = self.mb._t("en", "maint_start_fail", e=_Recursing())
+        self._safe(text)
+        text = self.mb._t(
+            "en", "group_counts",
+            head="🟢", group=_Recursing(), ok=1, total=2,
+        )
+        self._safe(text)
+
+    def test_leftover_ud800_bytes_inf_params_do_not_raise(self):
+        for leftover in (b"done", float("inf"), "ok\ud800"):
+            text = self.mb._t("en", "notify_done", message=leftover)
+            self._safe(text)
+            text = self.mb._t("en", "docker_error", e=leftover)
+            self._safe(text)
+
+    def test_missing_format_key_does_not_raise(self):
+        text = self.mb._t("en", "summary", ok=1)
+        self._safe(text)
+        text = self.mb._t("en", "group_counts", head="🟢")
+        self._safe(text)
+
+
+class TickRebuildLeftoverTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mb = _load_menubar()
+
+    def _status(self, **extra):
+        row = {
+            "id": "panel",
+            "name": "Panel",
+            "state": "ok",
+            "url": "http://localhost:8086",
+            "actions": ["restart"],
+            "links": [],
+        }
+        row.update(extra)
+        return {
+            "counts": {"ok": 1, "warn": 0, "down": 0},
+            "groups": [{"group": "Core", "services": [row]}],
+            "problems": [],
+            "links": [],
+        }
+
+    def test_leftover_rebuild_after_status_does_not_kill_timer(self):
+        """A leftover RecursionError in the rebuild half used to escape tick
+        and take the 30s rumps timer down; status had already arrived, so the
+        last menu must stay (not flip to offline)."""
+        bar = object.__new__(self.mb.ServerHubBar)
+        bar._menu_state = "kept"
+        bar._summary_item = object()
+        bar._locale = "en"
+        bar.title = "🖥"
+        bar.replace_menu = mock.Mock()
+
+        status = self._status(name=_Recursing())
+        with mock.patch.object(self.mb, "api_status", return_value=status), \
+             mock.patch.object(self.mb, "_json", return_value=[]), \
+             mock.patch.object(
+                 self.mb, "_menu_signature", side_effect=RecursionError("nested"),
+             ):
+            self.mb.ServerHubBar.tick(bar, None)
+        self.assertEqual(bar._menu_state, "kept")
+        for call in bar.replace_menu.call_args_list:
+            args = call.args
+            state = args[1] if len(args) > 1 else call.kwargs.get("state")
+            self.assertNotEqual(state, "offline")
+        bar.replace_menu.assert_not_called()

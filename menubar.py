@@ -150,7 +150,25 @@ def _normalize_locale(raw):
 def _t(locale, key, **params):
     table = _MENU.get(locale) or _MENU["zh-CN"]
     template = table.get(key) or _MENU["en"].get(key) or key
-    return template.format(**params) if params else template
+    if not params:
+        return template
+    safe = {}
+    for name, value in params.items():
+        try:
+            safe[name] = _utf8_text(value)
+        except Exception:
+            continue
+    try:
+        out = template.format(**safe)
+    except (KeyError, IndexError, ValueError, TypeError, RecursionError, OverflowError):
+        # RecursionError: leftover recursive ``__format__``/``__str__`` is not
+        # ValueError; OverflowError: leftover inf width/precision. Either used
+        # to take the 30s rumps timer down after api_status already succeeded.
+        out = template
+    try:
+        return _utf8_text(out)
+    except Exception:
+        return template
 
 
 def _act(locale):
@@ -511,6 +529,15 @@ class ServerHubBar(rumps.App):
                 ], "offline")
             return
 
+        try:
+            self._rebuild_menu(d)
+        except Exception:
+            # Status already arrived. Leftover group/action values used to
+            # RecursionError ``_t`` / rebuild and kill the 30s timer; keep the
+            # last menu instead of flipping offline.
+            return
+
+    def _rebuild_menu(self, d):
         self._locale = _normalize_locale(d.get("locale") if isinstance(d, dict) else None)
         loc = self._locale
         c = _as_dict(_as_dict(d).get("counts"))
