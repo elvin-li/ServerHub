@@ -260,6 +260,10 @@
           </tbody>
         </table>
       </div>
+      <!-- Same gate as the timers table above: this section is not covered by
+           that table's skeleton/LoadFailure chain, so without it a pending
+           load claimed "no agents" and a failed one left a bare header. -->
+      <template v-if="tabLoaded.sched && !tabError.sched">
       <h2 class="section-title">{{ t('tools.agents') }}</h2>
       <p class="hint" style="margin-top:0">{{ finiteText(agents.hint) }} · {{ finiteN(agents.count, 0) }}</p>
       <div class="table-wrap">
@@ -285,12 +289,13 @@
               <td class="mono">{{ finiteN(a.interval_sec, null) ? withUnit(a.interval_sec, 's') : (a.calendar ? 'cal' : '—') }}</td>
               <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(a.program)">{{ finiteText(a.program) }}</td>
             </tr>
-            <tr v-if="!(agents.agents||[]).length && !tabError.sched">
+            <tr v-if="!(agents.agents||[]).length">
               <td colspan="5" class="empty-row">{{ t('tools.no_agents') }}</td>
             </tr>
           </tbody>
         </table>
       </div>
+      </template>
     </template>
 
     <!-- Hardware -->

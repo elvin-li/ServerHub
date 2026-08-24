@@ -104,8 +104,11 @@
                 </div>
               </td>
             </tr>
+            <!-- A failed reload keeps the previous listing on screen; the row
+                 must not claim the folder is empty when the read that would
+                 prove it just failed (the banner above carries the reason). -->
             <tr v-if="!(listing.items || []).length">
-              <td colspan="6" class="empty-row">{{ t('files.empty') }}</td>
+              <td colspan="6" class="empty-row">{{ error ? t('common.load_failed') : t('files.empty') }}</td>
             </tr>
           </tbody>
         </table>

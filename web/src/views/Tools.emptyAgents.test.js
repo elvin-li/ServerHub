@@ -4,6 +4,10 @@
  * The timer table above it already did, so a host with no calendar/interval
  * agents got "no timers" and then a second set of column headings with
  * nothing under them.  See emptyTables.test.js for the rest of the rule.
+ *
+ * The claim also has to be true: the agents section sat outside the timer
+ * table's skeleton/LoadFailure chain, so a load still in flight said
+ * "no agents" and a failed one left a bare header under the failure banner.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -42,6 +46,20 @@ vi.mock('vue-router', () => ({
 
 import Tools from './Tools.vue'
 
+const MOUNT = {
+  global: {
+    provide: { toast: vi.fn() },
+    stubs: { RouterLink: { template: '<a><slot /></a>' } },
+  },
+}
+
+/** Column headings of every rendered table that has a head and no body rows. */
+function headerOnlyTables(wrapper) {
+  return [...wrapper.element.querySelectorAll('table')]
+    .filter((t) => t.querySelector('thead tr') && !t.querySelector('tbody tr'))
+    .map((t) => [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim()).join(' | '))
+}
+
 beforeEach(() => {
   for (const fn of Object.values(api)) {
     if (typeof fn?.mockReset === 'function') fn.mockResolvedValue({})
@@ -56,21 +74,42 @@ afterEach(() => {
 
 describe('Tools scheduler tab', () => {
   it('explains an empty LaunchAgent list instead of showing a bare header', async () => {
-    const wrapper = mount(Tools, {
-      global: {
-        provide: { toast: vi.fn() },
-        stubs: { RouterLink: { template: '<a><slot /></a>' } },
-      },
-    })
+    const wrapper = mount(Tools, MOUNT)
     await flushPromises()
     wrapper.vm.tab = 'sched'
     await flushPromises()
 
-    const bare = [...wrapper.element.querySelectorAll('table')]
-      .filter((t) => t.querySelector('thead tr') && !t.querySelector('tbody tr'))
-      .map((t) => [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim()).join(' | '))
-    expect(bare, 'headings with no rows under them read as still-loading').toEqual([])
+    expect(headerOnlyTables(wrapper), 'headings with no rows under them read as still-loading').toEqual([])
     expect(wrapper.text()).toContain('tools.no_agents')
+    wrapper.unmount()
+  })
+
+  it('does not claim "no agents" while the read is still in flight', async () => {
+    api.getToolsAgents.mockImplementation(() => new Promise(() => {}))
+    const wrapper = mount(Tools, MOUNT)
+    await flushPromises()
+    wrapper.vm.tab = 'sched'
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).not.toContain('tools.no_agents')
+    expect(text).not.toContain('tools.no_timers')
+    wrapper.unmount()
+  })
+
+  it('does not call a failed scheduler read an empty agent list', async () => {
+    api.getScheduler.mockRejectedValue(new Error('launchctl listing failed'))
+    const wrapper = mount(Tools, MOUNT)
+    await flushPromises()
+    wrapper.vm.tab = 'sched'
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text, 'the failure and its reason must be shown').toContain('launchctl listing failed')
+    expect(text).toContain('common.retry')
+    expect(text).not.toContain('tools.no_agents')
+    expect(text).not.toContain('tools.no_timers')
+    expect(headerOnlyTables(wrapper), 'a bare header under the banner reads as still-loading').toEqual([])
     wrapper.unmount()
   })
 })
