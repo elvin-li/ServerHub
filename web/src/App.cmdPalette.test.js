@@ -148,6 +148,31 @@ describe('the command palette highlight', () => {
     wrapper.unmount()
   })
 
+  it('never offers the same destination twice', async () => {
+    // Every group shares a path with its first child, so the flat list had
+    // Storage and Array both pointing at /main -- a wasted row out of eight,
+    // and a duplicate :key that lets Vue reuse the wrong one on an update.
+    const wrapper = await openPalette()
+    const paths = rows(wrapper).map((li) => li.get('kbd').text())
+    expect(paths).toEqual([...new Set(paths)])
+    wrapper.unmount()
+  })
+
+  it('keeps both the group name and the page name searchable', async () => {
+    // De-duplicating before matching would have thrown away whichever name
+    // the reader did not type: /tools answers both to the group's name and
+    // to the diagnostics page's own.  (Labels are their keys under the i18n
+    // stub, so the queries here are substrings of those keys.)
+    const wrapper = await openPalette()
+    const input = wrapper.get('.cmd-palette input')
+    for (const [query, label] of [['nav.tools', 'nav.tools'], ['sub_diag', 'nav.sub_diag']]) {
+      await input.setValue(query)
+      await flushPromises()
+      expect(rows(wrapper).map((li) => li.get('span').text())).toContain(label)
+    }
+    wrapper.unmount()
+  })
+
   it('leaves the cursor alone when the list only grows', async () => {
     // A result set that lengthens (the assistant catalogue arriving) must not
     // yank the reader back to the top of a list they had already walked.

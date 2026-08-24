@@ -789,12 +789,23 @@ function onCmdKey(e) {
 const cmdResults = computed(() => {
   const q = cmdQuery.value.toLowerCase().trim()
   const items = nav.value.flatMap(n => n.children ? [n, ...n.children] : [n])
-  if (!q) return items.slice(0, 8)
-  const fromNav = items.filter(n => {
-    const label = t(n.labelKey).toLowerCase()
-    return label.includes(q) || n.to.includes(q)
-  })
-  const seen = new Set(fromNav.map((n) => n.to))
+  const matched = q
+    ? items.filter(n => t(n.labelKey).toLowerCase().includes(q) || n.to.includes(q))
+    : items
+  // Every group shares a destination with its first child -- Storage and
+  // Array are both /main, Tools and Diagnostics are both /tools -- so the
+  // flat list offered those pages twice: two rows out of only eight going to
+  // the same place, keyed alike, which also let Vue reuse the wrong row when
+  // the list changed underneath.  Matching runs first so both names stay
+  // searchable and only the redundant second row is dropped.
+  const seen = new Set()
+  const fromNav = []
+  for (const n of matched) {
+    if (seen.has(n.to)) continue
+    seen.add(n.to)
+    fromNav.push(n)
+  }
+  if (!q) return fromNav.slice(0, 8)
   const fromCatalog = matchCatalog(assistCatalog.value, q, 8)
     .filter((p) => !seen.has(p.path))
     .map((p) => ({ type: 'nav', to: p.path, title: p.title, labelKey: '' }))
