@@ -1899,9 +1899,9 @@ onUnmounted(() => {
   cursor: default;
 }
 .host-ups .ups-pct { font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
-.host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: transparent; }
-.host-ups.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
-.host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+.host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn-text); border-color: transparent; }
+.host-ups.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); border-color: transparent; }
+.host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); border-color: transparent; }
 a.host-ollama { text-decoration: none; }
 button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .host-meta { color: var(--sub); font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1911,8 +1911,8 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   background: var(--btn); border: 1px solid var(--line);
   color: var(--txt); padding: 4px 10px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600;
 }
-.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
-.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); border-color: transparent; }
+.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); border-color: transparent; }
 
 .res-card .big {
   font-size: 28px; font-weight: 800; line-height: 1.1;
@@ -1957,7 +1957,7 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .mb .k { font-size: 9px; color: var(--sub); text-transform: uppercase; letter-spacing: .3px; }
 .mb .v { font-size: 13px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
 
-.temp-warn { color: var(--warn) !important; }
+.temp-warn { color: var(--warn-text) !important; }
 .disk-head { align-items: end; }
 .disk-head .sub { margin: 0; white-space: nowrap; }
 .disk-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
@@ -2040,7 +2040,7 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 .pwr-group .tiny { font-size: 12px; padding: 2px 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .pwr-group a.tiny.disabled { opacity: .4; pointer-events: none; cursor: not-allowed; }
 .hint-line { margin-top: 8px; font-size: 11px; color: var(--sub); line-height: 1.5; }
-.ok-msg { color: var(--ok); font-weight: 600; padding: 8px 0; }
+.ok-msg { color: var(--ok-text); font-weight: 600; padding: 8px 0; }
 
 .health-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
@@ -2051,9 +2051,9 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 }
 .hg .n { font-size: 24px; font-weight: 800; }
 .hg .l { font-size: 9px; color: var(--sub); text-transform: uppercase; margin-top: 3px; letter-spacing: .3px; }
-.hg.ok .n { color: var(--ok); }
-.hg.warn .n { color: var(--warn); }
-.hg.err .n { color: var(--down); }
+.hg.ok .n { color: var(--ok-text); }
+.hg.warn .n { color: var(--warn-text); }
+.hg.err .n { color: var(--down-text); }
 .failed-checks { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
 
 /* Bookmark health — equal cards, aligned grid */
@@ -2093,7 +2093,7 @@ table.top-cpu .mini-bar { margin-left: 6px; }
   min-width: 0;
   color: var(--accent);
 }
-.bm-card.down .bm-name { color: var(--down); }
+.bm-card.down .bm-name { color: var(--down-text); }
 .bm-card.stopped .bm-name { color: var(--sub); }
 .bm-meta {
   grid-column: 2;

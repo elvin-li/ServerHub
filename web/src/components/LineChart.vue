@@ -720,7 +720,7 @@ function formatLegend(v) {
   transform: translateY(-100%);
   font-size: 10px;
   line-height: 1.2;
-  color: var(--warn);
+  color: var(--warn-text);
   font-family: ui-monospace, Menlo, monospace;
   font-weight: 600;
   background: color-mix(in srgb, var(--card) 88%, transparent);

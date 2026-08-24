@@ -2510,7 +2510,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
    louder tone than ordinary install notes. */
 .tpl-danger {
   font-size: 12px;
-  color: var(--down);
+  color: var(--down-text);
   background: color-mix(in srgb, var(--down) 10%, var(--card));
   border-left: 3px solid var(--down);
   padding: 8px 10px;
@@ -2657,7 +2657,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .act-btn.danger {
   background: color-mix(in srgb, var(--down) 12%, var(--card));
   border-color: color-mix(in srgb, var(--down) 45%, var(--line));
-  color: var(--down);
+  color: var(--down-text);
   font-weight: 700;
 }
 

@@ -202,7 +202,7 @@
           <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: finiteText(runsFor.name) }) }}</span>
           <button class="tiny" @click="runsFor = null">{{ t('common.close') }}</button>
         </div>
-        <div v-if="runsError" class="meta" style="color:var(--down)">{{ finiteText(runsError) }}</div>
+        <div v-if="runsError" class="meta" style="color:var(--down-text)">{{ finiteText(runsError) }}</div>
         <div v-else-if="!runsLoaded" class="meta">{{ t('common.loading') }}</div>
         <div v-else-if="!runs.length" class="meta">{{ t('sched.runs_empty') }}</div>
         <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">

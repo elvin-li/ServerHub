@@ -687,7 +687,7 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 /* Size and colour come from the global .meta-count. */
 .meta-count { font-weight: 600; }
 .warn-tag {
-  margin-left: 8px; color: var(--down); font-weight: 600; font-size: 12px;
+  margin-left: 8px; color: var(--down-text); font-weight: 600; font-size: 12px;
 }
 .problems-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;

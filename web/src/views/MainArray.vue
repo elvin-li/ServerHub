@@ -445,12 +445,12 @@
     <div ref="formatPanel" v-if="formatTarget" class="modal-bg" @click.self="formatTarget=null" role="presentation">
       <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="array-format-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="array-format-title" class="name" style="color:var(--down)">
+          <span id="array-format-title" class="name" style="color:var(--down-text)">
             {{ formatWhole ? t('main_extra.erase_disk') : t('main_extra.format') }} · {{ finiteText(formatTarget.id) }}
           </span>
           <button class="tiny" @click="formatTarget=null">{{ t('common.close') }}</button>
         </div>
-        <p style="font-size:12px;color:var(--down);line-height:1.5;margin-bottom:10px">
+        <p style="font-size:12px;color:var(--down-text);line-height:1.5;margin-bottom:10px">
           ⚠️ {{ t('main_extra.format_warn') }}
         </p>
         <div class="field-grid">
@@ -490,11 +490,11 @@
               {{ smartData.smartctl_installed ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
             </span>
           </template>
-          <span v-else-if="smartError" style="color:var(--down)">{{ finiteText(smartError) }}</span>
+          <span v-else-if="smartError" style="color:var(--down-text)">{{ finiteText(smartError) }}</span>
         </div>
         <div v-if="smartLoading" style="text-align:center;padding:20px;color:var(--sub)">{{ t('main_extra.scanning') }}</div>
         <div v-else>
-          <div v-if="smartError && !smartData" style="color:var(--down)">{{ finiteText(smartError) }}</div>
+          <div v-if="smartError && !smartData" style="color:var(--down-text)">{{ finiteText(smartError) }}</div>
           <div v-else-if="!smartMerged.length" style="color:var(--sub)">{{ t('main_extra.smart_no_devices') }}</div>
           <div v-else class="table-wrap" style="max-height:400px;overflow:auto">
             <table class="dense fit-m">
@@ -516,7 +516,7 @@
                 <tr>
                   <td class="mono">
                     <strong>{{ finiteText(m.id) }}</strong>
-                    <div v-if="m.error" class="sub" style="font-size:10px;color:var(--warn)">{{ finiteText(m.error) }}</div>
+                    <div v-if="m.error" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.error) }}</div>
                   </td>
                   <td>
                     <strong>{{ finiteText(m.smart?.model, '') || finiteText(m.smart?.serial) }}</strong>
@@ -535,8 +535,8 @@
                   <td class="col-hide-m" style="font-size:11px">
                     <span v-if="m.caps?.supported?.length">{{ (m.caps.supported || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
                     <span v-else style="color:var(--sub)">{{ t('main_extra.smart_unsupported') }}</span>
-                    <div v-if="finiteText(m.caps?.reason, '')" class="sub" style="font-size:10px;color:var(--warn)">{{ finiteText(m.caps.reason) }}</div>
-                    <div v-if="m.progress?.running" class="sub" style="font-size:10px;color:var(--ok)">{{ t('main_extra.smart_running', { pct: finiteN(m.progress.percent_remaining, '?') }) }}</div>
+                    <div v-if="finiteText(m.caps?.reason, '')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.caps.reason) }}</div>
+                    <div v-if="m.progress?.running" class="sub" style="font-size:10px;color:var(--ok-text)">{{ t('main_extra.smart_running', { pct: finiteN(m.progress.percent_remaining, '?') }) }}</div>
                     <div v-if="finiteText(m.lastResult, '')" class="sub" style="font-size:10px">{{ finiteText(m.lastResult) }} · {{ finiteN(m.logCount, 0) }} {{ t('main_extra.smart_logs') }}</div>
                   </td>
                   <td class="ops">

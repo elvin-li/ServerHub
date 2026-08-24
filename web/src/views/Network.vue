@@ -190,7 +190,7 @@
             <strong class="mono" v-if="data.alias_auto.preferred">
               {{ finiteText(data.alias_auto.preferred.device) }}
             </strong>
-            <span v-else style="color:var(--down)">{{ t('network.no_network') }}</span>
+            <span v-else style="color:var(--down-text)">{{ t('network.no_network') }}</span>
             <span v-if="data.alias_auto.preferred" style="color:var(--sub)">
               · {{ finiteText(data.alias_auto.preferred.service) }}
               · {{ t('network.primary_ip_is', { ip: finiteText(data.alias_auto.preferred.primary_ip) }) }}
@@ -555,7 +555,7 @@
           <span id="net-port-title" class="name">{{ t('network.port_map') }} · {{ finiteText(portEdit) }}</span>
           <button class="tiny" @click="portEdit=null">{{ t('common.close') }}</button>
         </div>
-        <p style="font-size:12px;color:var(--down);line-height:1.45;margin-bottom:8px">
+        <p style="font-size:12px;color:var(--down-text);line-height:1.45;margin-bottom:8px">
           {{ t('network.recreate_hint') }}
         </p>
         <label style="font-size:12px;color:var(--sub)">{{ t('network.map_list') }}</label>

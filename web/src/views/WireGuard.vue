@@ -452,7 +452,7 @@
         <p v-if="peerFormat === 'wst'" style="font-size:11px;color:var(--sub);line-height:1.5;margin:0 0 8px">
           {{ t('wg.wstunnel_client_hint') }}
         </p>
-        <p v-else-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn);line-height:1.5;margin:0 0 8px">
+        <p v-else-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn-text);line-height:1.5;margin:0 0 8px">
           {{ t('wg.endpoint_missing_warn') }}
         </p>
         <pre class="mono" style="max-height:180px;overflow:auto;font-size:11px">{{ finiteText(peerContent) }}</pre>

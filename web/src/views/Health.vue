@@ -21,15 +21,15 @@
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
         <h3>{{ t('health.passed') }}</h3>
-        <div class="v" style="color:var(--ok)">{{ finiteN(data.summary.ok) }}</div>
+        <div class="v" style="color:var(--ok-text)">{{ finiteN(data.summary.ok) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('health.warnings') }}</h3>
-        <div class="v" style="color:var(--warn)">{{ finiteN(data.summary.warn) }}</div>
+        <div class="v" style="color:var(--warn-text)">{{ finiteN(data.summary.warn) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('health.errors') }}</h3>
-        <div class="v" style="color:var(--down)">{{ finiteN(data.summary.error) }}</div>
+        <div class="v" style="color:var(--down-text)">{{ finiteN(data.summary.error) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('health.overall') }}</h3>

@@ -209,8 +209,8 @@
               <div class="show-m sub">{{ finiteText(r.disk_id) }}</div>
             </td>
             <td class="mono col-hide-m">{{ finiteText(r.disk_id) }}</td>
-            <td style="color:var(--warn)">{{ fmtGb(r.at_risk_gb) }}</td>
-            <td style="color:var(--ok)">{{ fmtGb(r.survives_gb) }}</td>
+            <td style="color:var(--warn-text)">{{ fmtGb(r.at_risk_gb) }}</td>
+            <td style="color:var(--ok-text)">{{ fmtGb(r.survives_gb) }}</td>
             <td class="col-hide-m">
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
@@ -264,7 +264,7 @@
           <button class="tiny" @click="clearOpen = false">{{ t('common.close') }}</button>
         </div>
         <p class="note" style="margin-bottom:8px">{{ t('pool.clear_body') }}</p>
-        <p class="note" style="margin-bottom:12px;color:var(--ok)">{{ t('pool.clear_safe') }}</p>
+        <p class="note" style="margin-bottom:12px;color:var(--ok-text)">{{ t('pool.clear_safe') }}</p>
         <div class="btns">
           <button class="danger" :disabled="busy" @click="doClear">{{ t('pool.clear_ok') }}</button>
           <button @click="clearOpen = false">{{ t('common.cancel') }}</button>

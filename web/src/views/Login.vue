@@ -329,7 +329,7 @@ label input { width: 100%; min-height: 44px; font-size: 16px; border-radius: 8px
   height: 0;
   overflow: hidden;
 }
-.login-error { color: var(--down); font-size: 12px; padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; animation: shake .3s ease; }
+.login-error { color: var(--down-text); font-size: 12px; padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; animation: shake .3s ease; }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-4px); }
@@ -348,7 +348,7 @@ label input { width: 100%; min-height: 44px; font-size: 16px; border-radius: 8px
 .token-value { flex: 1; min-width: 0; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: transparent; border: none; padding: 0; color: var(--fg); word-break: break-all; user-select: all; }
 .token-copy { font-size: 11px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; white-space: nowrap; }
 .token-copy:hover { background: var(--hover); }
-.token-error { font-size: 12px; color: var(--down); padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; }
+.token-error { font-size: 12px; color: var(--down-text); padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; }
 .login-locale { margin-top: 12px; text-align: center; }
 .login-locale select { font-size: 12px; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); background: var(--card); color: var(--sub); cursor: pointer; }
 .login-locale select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }

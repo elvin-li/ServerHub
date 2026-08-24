@@ -186,7 +186,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .bm-page-card.stopped .bm-title { color: var(--sub); }
-.bm-page-card.down .bm-title { color: var(--down); }
+.bm-page-card.down .bm-title { color: var(--down-text); }
 .bm-url {
   font-size: 11px;
   color: var(--sub);
@@ -203,7 +203,7 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.bm-foot .err { color: var(--down); }
+.bm-foot .err { color: var(--down-text); }
 .bm-foot .backend { color: var(--sub); }
 .hint {
   margin-top: 12px;
