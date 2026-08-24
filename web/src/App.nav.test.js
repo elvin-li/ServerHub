@@ -236,3 +236,71 @@ describe('mobile shell chrome', () => {
     wrapper.unmount()
   })
 })
+
+describe('which page the nav says you are on', () => {
+  /**
+   * The highlight was CSS only.  A screen reader user tabbing the nav heard
+   * the same list of destinations on every page, with nothing to say which
+   * one was already open -- so "where am I" had no answer without sight.
+   */
+  function admin() {
+    applyAuthStatus({
+      authenticated: true, username: 'admin', role: 'admin',
+      resources: [], can_manage: true,
+    })
+  }
+
+  function currentOf(links) {
+    return links
+      .filter((a) => a.attributes('aria-current'))
+      .map((a) => [a.text(), a.attributes('aria-current')])
+  }
+
+  it('names the open page in the top nav', () => {
+    route.path = '/'
+    admin()
+    const wrapper = mountShell()
+    expect(currentOf(wrapper.findAll('nav.top-nav a'))).toEqual([
+      ['nav.dashboard', 'page'],
+    ])
+    wrapper.unmount()
+  })
+
+  it('leaves every other destination unmarked', () => {
+    route.path = '/'
+    admin()
+    const wrapper = mountShell()
+    const marked = wrapper
+      .findAll('nav.top-nav a')
+      .filter((a) => a.attributes('aria-current') !== undefined)
+    expect(marked).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('marks a section owner as an ancestor, not as the page itself', () => {
+    // Both links are highlighted at once here.  Saying "page" twice would
+    // claim the reader is on two pages; the group is one level up.
+    route.path = '/pool'
+    admin()
+    const wrapper = mountShell()
+    expect(currentOf(wrapper.findAll('nav.top-nav a'))).toEqual([
+      ['nav.storage', 'true'],
+    ])
+    expect(currentOf(wrapper.findAll('.subchrome a'))).toEqual([
+      ['nav.pool', 'page'],
+    ])
+    wrapper.unmount()
+  })
+
+  it('follows the reader to another page', async () => {
+    route.path = '/'
+    admin()
+    const wrapper = mountShell()
+    route.path = '/files'
+    await flushPromises()
+    expect(currentOf(wrapper.findAll('.subchrome a'))).toEqual([
+      ['nav.files', 'page'],
+    ])
+    wrapper.unmount()
+  })
+})

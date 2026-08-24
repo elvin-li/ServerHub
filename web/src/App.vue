@@ -61,6 +61,7 @@
             :key="item.to"
             :to="item.to"
             :class="{ active: isActive(item) }"
+            :aria-current="navCurrent(item)"
             @click="menuOpen = false"
           >
             <component :is="item.icon" :size="15" />
@@ -111,6 +112,7 @@
             :key="c.to"
             :to="c.to"
             :class="{ active: isChildActive(c) }"
+            :aria-current="isChildActive(c) ? 'page' : undefined"
             @click="menuOpen = false"
           >
             <component :is="c.icon" :size="13" />
@@ -457,6 +459,16 @@ function isActive(item) {
   if (item.exact) return path === item.to
   if (item.match) return item.match.some(m => path === m || path.startsWith(m + '/'))
   return path === item.to || path.startsWith(item.to + '/')
+}
+
+function navCurrent(item) {
+  // `class="active"` is a purely visual cue: tabbing the nav announced every
+  // destination identically, with nothing to say which one you were already
+  // on.  A group whose child is showing in the section nav is an *ancestor*
+  // of the current page rather than the page itself, so it takes `true` and
+  // leaves `page` for the child that is actually open.
+  if (!isActive(item)) return undefined
+  return (item.children || []).some(isChildActive) ? 'true' : 'page'
 }
 
 function childPathAndTab(c) {
