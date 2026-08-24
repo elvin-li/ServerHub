@@ -186,7 +186,12 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
+            <!-- No role="button" on the row: it replaces the implicit row role,
+                 so every <td> stops being exposed as a cell and the whole row
+                 collapses into one button label, and it nests the per-row
+                 buttons and switches inside a widget. The row keeps tabindex
+                 and the key handlers, so keyboard activation is unchanged. -->
+            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
               <td>
                 <strong>{{ finiteText(it.name) }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>

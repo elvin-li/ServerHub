@@ -103,7 +103,7 @@
               v-for="s in filtered"
               :key="s.id"
               :class="{ selected: selected.has(s.id), bad: s.state === 'down' || s.state === 'warn' }"
-              @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
+              @click="openDetail(s)" tabindex="0" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
             >
               <td v-if="canManage" class="col-check" @click.stop>
                 <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row')" @change="toggleSelect(s.id)" />

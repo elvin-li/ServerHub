@@ -159,8 +159,15 @@
         <span class="pill">{{ finiteText(sensors?.ts, '') || finiteText(status?.ts, '…') }}</span>
        <button class="tiny" @click="refreshAll" :disabled="loading">{{ t('common.refresh') }}</button>
       <span id="remote" class="pwr-group">
+         <!-- Screen Sharing is off => no href, and an <a> without href has no
+              implicit role, which makes aria-label a prohibited attribute that
+              assistive tech drops. This control is icon-only, so dropping the
+              label left it announced as nothing at all. State the role and
+              carry the off state in aria-disabled instead. -->
          <a class="tiny primary"
+           role="link"
            :class="{ disabled: !ss.running }"
+           :aria-disabled="!ss.running"
            :href="ss.running ? finiteText(ss.vnc_url, '') : undefined"
            :title="ss.running ? t('power.connect') : t('power.off')"
            :aria-label="ss.running ? t('power.connect') : t('power.off')"
