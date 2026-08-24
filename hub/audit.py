@@ -100,6 +100,11 @@ NOTIFY_CHANNEL_CREATED = "notify.channel.created"
 NOTIFY_CHANNEL_UPDATED = "notify.channel.updated"
 NOTIFY_CHANNEL_DELETED = "notify.channel.deleted"
 NOTIFY_CHANNEL_TESTED = "notify.channel.tested"
+#: The legacy Home Assistant notify config (including its token) is edited
+#: through PUT /api/settings rather than the channel CRUD, so without this
+#: event a credential swap left no trace while the equivalent channel edit
+#: did.  Only the changed field *names* are recorded, never values.
+NOTIFY_SETTINGS_CHANGED = "notify.settings.changed"
 #: A WireGuard peer is a credential granting network access, so issuing and
 #: revoking one is recorded with the operator who did it.
 WIREGUARD_PEER_ADDED = "wireguard.peer.added"
