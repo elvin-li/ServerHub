@@ -158,6 +158,25 @@ describe('the command palette highlight', () => {
     wrapper.unmount()
   })
 
+  it('never leaves a row from an earlier query on screen', async () => {
+    // This is what the duplicate key actually cost.  Vue reuses nodes by
+    // key, and two rows keyed alike made it reuse the wrong ones as the
+    // list changed under each keystroke: rows matching nothing the reader
+    // had typed stayed behind -- still visible, still clickable, still
+    // pointing somewhere else.  Typing "net" left "Array -> /main" sitting
+    // at the top of the results.
+    const wrapper = await openPalette()
+    const input = wrapper.get('.cmd-palette input')
+    for (const query of ['n', 'ne', 'net']) {
+      await input.setValue(query)
+      await flushPromises()
+      const paths = rows(wrapper).map((li) => li.get('kbd').text())
+      expect(paths, `stale rows while typing "${query}"`).toEqual([...new Set(paths)])
+      expect(paths.length, `too many rows for "${query}"`).toBeLessThanOrEqual(9)
+    }
+    wrapper.unmount()
+  })
+
   it('keeps both the group name and the page name searchable', async () => {
     // De-duplicating before matching would have thrown away whichever name
     // the reader did not type: /tools answers both to the group's name and
