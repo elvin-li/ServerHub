@@ -130,7 +130,7 @@ def pending_remove(body: IdsBody, request: Request):
         raise api_error("photoshub.remove_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.pending_remove",
-        user=request_username(request) or "unknown",
+        username=request_username(request) or "unknown",
         detail=f"removed={result.get('removed')}",
     )
     return result
@@ -150,7 +150,7 @@ def run_action(body: ActionBody, request: Request):
         raise api_error("photoshub.action_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.action",
-        user=request_username(request) or "unknown",
+        username=request_username(request) or "unknown",
         detail=f"action={action} ok={result.get('ok')}",
     )
     return result
@@ -177,7 +177,7 @@ def patch_config(body: ConfigPatch, request: Request):
         raise api_error("photoshub.config_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.config",
-        user=request_username(request) or "unknown",
+        username=request_username(request) or "unknown",
         detail="updated=" + ",".join(sorted(patch)) if patch else "noop",
     )
     return result

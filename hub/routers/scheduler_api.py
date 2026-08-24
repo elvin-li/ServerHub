@@ -238,7 +238,7 @@ def create_job(body: JobBody, request: Request):
     record = _validated_record(body, jid)
     scheduler_svc.save_job(record)
     audit.record(audit.SCHEDULE_JOB_CREATED,
-                 user=request_username(request), **_audit_fields(record))
+                 username=request_username(request), **_audit_fields(record))
     return {"ok": True, "job": _public_job(record)}
 
 
@@ -251,7 +251,7 @@ def update_job(jid: str, body: JobBody, request: Request):
     record = _validated_record(body, jid)
     scheduler_svc.save_job(record)
     audit.record(audit.SCHEDULE_JOB_UPDATED,
-                 user=request_username(request), **_audit_fields(record))
+                 username=request_username(request), **_audit_fields(record))
     return {"ok": True, "job": _public_job(record)}
 
 
@@ -263,7 +263,7 @@ def delete_job(jid: str, request: Request):
     if job is None or not scheduler_svc.delete_job(jid):
         raise api_error("scheduler.not_found", id=jid)
     audit.record(audit.SCHEDULE_JOB_DELETED,
-                 user=request_username(request), **_audit_fields(job))
+                 username=request_username(request), **_audit_fields(job))
     return {"ok": True}
 
 
@@ -275,7 +275,7 @@ def enable_job(jid: str, body: EnableBody, request: Request):
     if job is None:
         raise api_error("scheduler.not_found", id=jid)
     audit.record(audit.SCHEDULE_JOB_UPDATED,
-                 user=request_username(request), **_audit_fields(job))
+                 username=request_username(request), **_audit_fields(job))
     return {"ok": True, "job": _public_job(job)}
 
 
@@ -289,7 +289,7 @@ def run_job_now(jid: str, request: Request):
     if scheduler_svc.is_running(jid):
         raise api_error("scheduler.running")
     audit.record(audit.SCHEDULE_JOB_RUN,
-                 user=request_username(request), **_audit_fields(job))
+                 username=request_username(request), **_audit_fields(job))
     return scheduler_svc.run_job_now(jid)
 
 

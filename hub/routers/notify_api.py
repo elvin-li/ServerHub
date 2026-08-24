@@ -151,7 +151,7 @@ def create_channel(body: ChannelBody, request: Request):
         raise
     notify_channels.save_channel(record)
     audit.record(audit.NOTIFY_CHANNEL_CREATED,
-                 user=request_username(request), **_audit_fields(record))
+                 username=request_username(request), **_audit_fields(record))
     return {"ok": True, "channel": notify_channels.public_channel(record)}
 
 
@@ -172,7 +172,7 @@ def update_channel(cid: str, body: ChannelBody, request: Request):
     _require_secrets(cid, body.type)
     notify_channels.save_channel(record)
     audit.record(audit.NOTIFY_CHANNEL_UPDATED,
-                 user=request_username(request), **_audit_fields(record))
+                 username=request_username(request), **_audit_fields(record))
     return {"ok": True, "channel": notify_channels.public_channel(record)}
 
 
@@ -184,7 +184,7 @@ def remove_channel(cid: str, request: Request):
     if not notify_channels.delete_channel(cid):
         raise api_error("notify.not_found", id=cid)
     audit.record(audit.NOTIFY_CHANNEL_DELETED,
-                 user=request_username(request), **_audit_fields(channel))
+                 username=request_username(request), **_audit_fields(channel))
     return {"ok": True}
 
 
@@ -202,6 +202,6 @@ def test_channel(cid: str, request: Request):
         channel_id=cid,
     )
     audit.record(audit.NOTIFY_CHANNEL_TESTED,
-                 user=request_username(request), ok=bool(result.get("ok")),
+                 username=request_username(request), ok=bool(result.get("ok")),
                  **_audit_fields(channel))
     return result
