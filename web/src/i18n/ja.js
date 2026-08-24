@@ -2075,6 +2075,7 @@ export default {
     empty_array_vols: 'アレイボリュームがありません',
     empty_unassigned: 'すべてのディスクがマウント済み、または管理可能な未割当デバイスがありません',
     empty_disks: 'ディスク情報がまだありません',
+    empty_volumes: 'マウント済みボリュームがありません',
     act_wake_mount: 'マウント / 復帰',
     act_sleep: 'スリープ',
     act_wake: '復帰',

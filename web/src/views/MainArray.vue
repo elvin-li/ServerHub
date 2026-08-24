@@ -319,6 +319,9 @@
             <td class="mono col-hide-m">{{ finiteText(d.smart?.power_on) }}</td>
             <td class="col-hide-m">{{ finiteText(d.size) }}</td>
           </tr>
+          <tr v-if="!(data?.disks || []).length && !loadError">
+            <td colspan="10" style="color:var(--sub)">{{ t('main_extra.empty_disks') }}</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -360,6 +363,9 @@
                 <i :style="{ width: barPct(v.pct) + '%' }"></i>
               </div>
             </td>
+          </tr>
+          <tr v-if="!(data?.volumes || []).length && !loadError">
+            <td colspan="8" style="color:var(--sub)">{{ t('main_extra.empty_volumes') }}</td>
           </tr>
         </tbody>
       </table>

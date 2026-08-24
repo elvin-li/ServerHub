@@ -531,6 +531,11 @@
                 </div>
               </td>
             </tr>
+            <!-- Column headings above nothing read as "still loading"; say
+                 which of the two states this actually is. -->
+            <tr v-if="!(storage?.volumes || []).length">
+              <td colspan="6" style="color:var(--sub)">{{ storage ? t('main_extra.empty_volumes') : t('common.loading') }}</td>
+            </tr>
           </tbody>
         </table>
         </div>

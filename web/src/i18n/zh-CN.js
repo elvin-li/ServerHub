@@ -2077,6 +2077,7 @@ export default {
     empty_array_vols: '无阵列卷',
     empty_unassigned: '全部磁盘已挂载或无可管理未分配设备',
     empty_disks: '暂无磁盘信息',
+    empty_volumes: '无已挂载卷',
     act_wake_mount: '挂载/唤醒',
     act_sleep: '休眠',
     act_wake: '唤醒',

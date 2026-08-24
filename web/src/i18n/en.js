@@ -2079,6 +2079,7 @@ export default {
     empty_array_vols: 'No array volumes',
     empty_unassigned: 'All disks are mounted, or no manageable unassigned device',
     empty_disks: 'No disk information yet',
+    empty_volumes: 'No mounted volumes',
     act_wake_mount: 'Mount / wake',
     act_sleep: 'Sleep',
     act_wake: 'Wake',
