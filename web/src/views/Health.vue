@@ -20,19 +20,19 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
-        <h3>{{ t('health.passed') }}</h3>
+        <h2>{{ t('health.passed') }}</h2>
         <div class="v" style="color:var(--ok-text)">{{ finiteN(data.summary.ok) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.warnings') }}</h3>
+        <h2>{{ t('health.warnings') }}</h2>
         <div class="v" style="color:var(--warn-text)">{{ finiteN(data.summary.warn) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.errors') }}</h3>
+        <h2>{{ t('health.errors') }}</h2>
         <div class="v" style="color:var(--down-text)">{{ finiteN(data.summary.error) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.overall') }}</h3>
+        <h2>{{ t('health.overall') }}</h2>
         <div class="v" style="font-size:16px">{{ data.healthy ? '✅ OK' : '⚠️' }}</div>
       </div>
     </div>

@@ -21,7 +21,7 @@
     <!-- ── panel accounts (ServerHub sign-ins, not macOS users) ─────────── -->
     <div class="tile" style="margin-bottom:12px" v-if="authState.canManage">
       <div class="accounts-head">
-        <h3 style="margin:0">{{ t('accounts.title') }}</h3>
+        <h2 style="margin:0">{{ t('accounts.title') }}</h2>
         <button class="primary" @click="creating = !creating">
           {{ creating ? t('common.cancel') : t('accounts.add') }}
         </button>
@@ -162,16 +162,16 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
       <div class="tile span-4">
-        <h3>{{ t('users.total') }}</h3>
+        <h2>{{ t('users.total') }}</h2>
         <div class="v">{{ finiteN(data.count) }}</div>
       </div>
       <div class="tile span-4">
-        <h3>{{ t('users.admins') }}</h3>
+        <h2>{{ t('users.admins') }}</h2>
         <div class="v">{{ finiteN(data.admins) }}</div>
         <div class="sub">admin / wheel / root</div>
       </div>
       <div class="tile span-4">
-        <h3>{{ t('users.normal') }}</h3>
+        <h2>{{ t('users.normal') }}</h2>
         <div class="v">{{ finiteDiff(data.count, data.admins) }}</div>
       </div>
     </div>

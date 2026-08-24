@@ -14,7 +14,7 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="2" :span="6" :tile-height="72" />
     <div class="dash-grid" v-else-if="data">
       <div class="tile span-4">
-        <h3>{{ t('gateway.status') }}</h3>
+        <h2>{{ t('gateway.status') }}</h2>
         <div class="row">
           <span class="led" :class="data.running ? 'on' : 'err'"></span>
           <strong>{{ data.running ? t('gateway.running') : t('gateway.stopped') }}</strong>
@@ -24,7 +24,7 @@
         <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(data.conf) }}</div>
       </div>
       <div class="tile span-8">
-        <h3>{{ t('gateway.about') }}</h3>
+        <h2>{{ t('gateway.about') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">
           {{ t('gateway.about_body') }}
         </p>

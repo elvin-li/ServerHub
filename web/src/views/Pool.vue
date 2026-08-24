@@ -15,7 +15,7 @@
 
     <!-- What this is, and what it deliberately is not. -->
     <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-      <h3 style="margin:0 0 6px">{{ t('pool.model_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('pool.model_title') }}</h2>
       <p class="note">{{ t('pool.model_body') }}</p>
     </div>
 
@@ -26,7 +26,7 @@
       class="tile"
       style="margin-bottom:12px;border-left:3px solid var(--warn)"
     >
-      <h3 style="margin:0 0 6px">{{ t('pool.union_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('pool.union_title') }}</h2>
       <p class="note">{{ t('pool.union_body') }}</p>
       <p class="note" style="margin-top:6px">{{ t('pool.union_available') }}</p>
     </div>
@@ -37,7 +37,7 @@
       class="tile"
       style="margin-bottom:12px;border-left:3px solid var(--warn)"
     >
-      <h3 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h2>
       <p class="note">{{ t('pool.missing_body') }}</p>
       <p class="mono" style="font-size:11px;margin:6px 0 0">
         <span v-for="m in view.missing_members" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>

@@ -85,7 +85,7 @@
 
       <!-- bridged system-managed schedules (read-only) -->
       <div v-if="systemJobs.length" class="tile" style="margin-top:12px">
-        <h3 style="margin-top:0">{{ t('sched.managed_title') }}</h3>
+        <h2 style="margin-top:0">{{ t('sched.managed_title') }}</h2>
         <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.managed_smart_hint') }}</p>
         <div class="table-wrap" style="margin-top:6px">
         <table class="dense fit-m">
@@ -122,16 +122,16 @@
       <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
       <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
         <div class="tile span-4">
-          <h3>{{ t('scheduler.timers') }}</h3>
+          <h2>{{ t('scheduler.timers') }}</h2>
           <div class="v">{{ finiteN(data.count) }}</div>
         </div>
         <div class="tile span-4">
-          <h3>{{ t('scheduler.interval_type') }}</h3>
+          <h2>{{ t('scheduler.interval_type') }}</h2>
           <div class="v">{{ intervalCount }}</div>
           <div class="sub">StartInterval</div>
         </div>
         <div class="tile span-4">
-          <h3>{{ t('scheduler.calendar_type') }}</h3>
+          <h2>{{ t('scheduler.calendar_type') }}</h2>
           <div class="v">{{ calendarCount }}</div>
           <div class="sub">StartCalendarInterval</div>
         </div>

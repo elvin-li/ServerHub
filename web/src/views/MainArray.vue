@@ -29,7 +29,7 @@
     <!-- Unraid-style array summary -->
     <div class="dash-grid" style="margin-bottom:12px" v-if="data?.array || data?.totals">
       <div class="tile span-3">
-        <h3>{{ t('main.array_status') }}</h3>
+        <h2>{{ t('main.array_status') }}</h2>
         <div
           class="v"
           :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok)' : 'var(--warn)' }"
@@ -37,17 +37,17 @@
         <div class="sub">{{ finiteN(data?.array?.system_count, 0) }} + {{ finiteN(data?.array?.data_count, 0) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('main.capacity') }}</h3>
+        <h2>{{ t('main.capacity') }}</h2>
         <div class="v" style="font-size:16px">{{ finiteN(data?.array?.total_tb) }} <span style="font-size:12px;font-weight:500;color:var(--sub)">TB</span></div>
         <div class="sub">{{ t('common.used') }} {{ finiteN(data?.array?.used_tb) }} · {{ t('common.free') }} {{ finiteN(data?.array?.free_tb) }} TB</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('main.physical') }}</h3>
+        <h2>{{ t('main.physical') }}</h2>
         <div class="v">{{ finiteN(data?.array?.disk_count, (data?.disks || []).length) }}</div>
         <div class="sub">SMART</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('main.unassigned') }}</h3>
+        <h2>{{ t('main.unassigned') }}</h2>
         <div class="v">{{ unassigned.length }}</div>
       </div>
     </div>
@@ -148,7 +148,7 @@
     </div>
 
     <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-      <h3 style="margin:0 0 6px">{{ t('main.tip_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('main.tip_title') }}</h2>
       <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">
         {{ t('main.tip_body') }}
       </p>

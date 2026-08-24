@@ -212,7 +212,7 @@
       </div>
       <!-- ===== CPU + Load ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.cpu') }}
           <span class="tile-tools">
             <span class="badge" data-test="cpu-badge" :class="cpuBadge">{{ cpuBadgeText }}</span>
@@ -227,7 +227,7 @@
               <span v-if="gpuMemLabel" data-test="gpu-mem">{{ gpuMemLabel }}</span>
             </span>
           </span>
-        </h3>
+        </h2>
         <!-- CPU left, GPU right — taller twin plots than Memory/Disk. -->
         <div v-if="isMacSurface" class="cpu-charts am-cpu">
           <LineChart
@@ -299,12 +299,12 @@
 
       <!-- ===== Memory ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.memory') }}
           <span class="tile-tools">
             <span class="badge" :class="memBadge">{{ t('dashboard.pressure_pct', { p: finiteN(memUsedPct) }) }}</span>
           </span>
-        </h3>
+        </h2>
         <!-- chart-first keeps non-mac stacked order (chart then stats); mac
              surface CSS still places stats left / chart right. -->
         <div class="am-monitor am-mem chart-first">
@@ -356,13 +356,13 @@
 
       <!-- ===== Disk + SMART ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.disk_smart') }}
           <span class="tile-tools">
             <span class="badge" :class="barClass(diskPct) || ''">{{ withUnit(diskPct, '%') }}</span>
             <span class="badge" :class="smartSummaryClass" :title="smartSummaryTitle" :aria-label="smartSummaryTitle">{{ smartSummary }}</span>
           </span>
-        </h3>
+        </h2>
         <div class="am-monitor am-disk">
           <div class="am-monitor-stats">
             <div class="res-head disk-head">
@@ -416,7 +416,7 @@
 
       <!-- ===== Network + processes ===== -->
       <div class="tile span-4">
-        <h3>{{ t('dashboard.net_proc') }}</h3>
+        <h2>{{ t('dashboard.net_proc') }}</h2>
         <div class="net-stats">
           <div class="ns">
             <div class="k">↓ RX</div>
@@ -431,7 +431,7 @@
             <div class="v2">{{ finiteN(cpu.proc_total) }} <small class="sub">run {{ finiteN(cpu.proc_running) }}</small></div>
           </div>
         </div>
-        <h2 class="section-title top-cpu-head">
+        <h3 class="section-title top-cpu-head">
           <span>{{ t('dashboard.top_cpu') }}</span>
           <span class="ollama-api-wrap">
             <router-link
@@ -453,7 +453,7 @@
               @click="copyOllamaApi"
             ><Copy :size="12" /></button>
           </span>
-        </h2>
+        </h3>
         <div class="table-wrap">
           <table class="dense top-cpu fit-m">
             <colgroup>
@@ -1852,7 +1852,7 @@ onUnmounted(() => {
 .am-surface .disk-primary,
 .am-surface .disk-primary-meta { white-space: nowrap; }
 .am-surface .disk-primary strong { font-size: 12px; font-weight: 500; }
-.res-card > h3 { margin-bottom: 8px; }
+.res-card > h2 { margin-bottom: 8px; }
 .cpu-loadline { margin-top: 8px; }
 .tile .mem-footnote {
   margin-top: 6px;
@@ -1976,7 +1976,9 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .disk-temp { color: var(--txt); font-weight: 700; font-family: ui-monospace, Menlo, monospace; }
 .disk-unavailable, .disk-empty { margin-top: 2px; color: var(--sub); font-size: 10px; line-height: 1.25; }
 
-.top-cpu-head { justify-content: space-between; margin-top: 10px; }
+/* Now an h3 inside an h2-headed tile, so `.tile h3` claims margin-bottom where
+   `.section-title` used to.  Pinned here so the level change is invisible. */
+.top-cpu-head { justify-content: space-between; margin: 10px 0 8px; }
 .ollama-api-wrap { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 .ollama-api {
   display: inline-flex; align-items: center; gap: 5px;

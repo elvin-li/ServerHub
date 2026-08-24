@@ -799,7 +799,13 @@ button.primary.loading::after { color: #fff; }
   transition: box-shadow .15s, border-color .15s;
 }
 .tile:hover { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
-.tile h3 {
+/* A tile heading is h3 when the tile sits in a grid under an h2.section-title,
+   and h2 when the tile is a page-level block with no section above it -- the
+   level follows the document, the look does not. `.section-title` is excluded
+   because it is a heading of the other kind that happens to live inside a tile
+   (the dashboard's Top CPU header) and carries its own margins. */
+.tile h3,
+.tile h2:not(.section-title) {
   font-size: 11px; font-weight: 700; color: var(--txt);
   text-transform: uppercase; letter-spacing: .5px;
   margin-bottom: 10px;
@@ -1005,7 +1011,8 @@ button.primary.loading::after { color: #fff; }
   .name { white-space: normal; overflow-wrap: anywhere; }
   /* Tiles */
   .tile { padding: 10px 12px; min-width: 0; }
-  .tile h3 { font-size: 10px; margin-bottom: 8px; flex-wrap: wrap; gap: 6px; }
+  .tile h3,
+  .tile h2:not(.section-title) { font-size: 10px; margin-bottom: 8px; flex-wrap: wrap; gap: 6px; }
   .tile .v { font-size: 18px; }
   /* Buttons */
   button, .btn { padding: 7px 12px; font-size: 13px; }
@@ -2140,7 +2147,9 @@ img[loading="lazy"][complete] {
   letter-spacing: 0;
 }
 [data-theme="macos"] .tile h3,
-[data-theme="macos-dark"] .tile h3 {
+[data-theme="macos"] .tile h2:not(.section-title),
+[data-theme="macos-dark"] .tile h3,
+[data-theme="macos-dark"] .tile h2:not(.section-title) {
   color: var(--txt);
   text-transform: none;
   letter-spacing: 0;

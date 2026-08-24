@@ -44,7 +44,7 @@
     <SkeletonLoader v-else-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="52" />
     <!-- Not installed: nothing else on this page can work, so say only that. -->
     <div v-else-if="data && !data.installed" class="tile" style="border-left:3px solid var(--down)">
-      <h3>{{ t('wg.not_installed_title') }}</h3>
+      <h2>{{ t('wg.not_installed_title') }}</h2>
       <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
         {{ t('wg.not_installed_hint') }}
       </p>
@@ -59,7 +59,7 @@
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--down)"
       >
-        <h3>{{ t('wg.not_ready') }}</h3>
+        <h2>{{ t('wg.not_ready') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
           {{ t('wg.not_ready_hint') }}
         </p>
@@ -114,7 +114,7 @@
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--warn)"
       >
-        <h3>{{ t('wg.warnings') }}</h3>
+        <h2>{{ t('wg.warnings') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
           {{ t('wg.warnings_hint') }}
         </p>
@@ -171,7 +171,7 @@
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--warn)"
       >
-        <h3>{{ t('wg.foreign_peers_title') }}</h3>
+        <h2>{{ t('wg.foreign_peers_title') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
           {{ t('wg.foreign_peers_hint', { n: finiteN(readiness.peer_origin.foreign), total: finiteN(readiness.peer_origin.total) }) }}
         </p>
@@ -179,22 +179,22 @@
 
       <div class="dash-grid" style="margin-bottom:12px" v-if="data">
         <div class="tile span-3">
-          <h3>{{ t('wg.listen_port') }}</h3>
+          <h2>{{ t('wg.listen_port') }}</h2>
           <div class="v">{{ finiteN(data.listen_port) }}</div>
           <div class="sub">{{ finiteText(data.interface) }}</div>
         </div>
         <div class="tile span-3">
-          <h3>{{ t('wg.subnet') }}</h3>
+          <h2>{{ t('wg.subnet') }}</h2>
           <div class="v" style="font-size:15px">{{ finiteText(data.address, '') || finiteText(data.subnet) }}</div>
           <div class="sub">MTU {{ finiteN(data.mtu) }}</div>
         </div>
         <div class="tile span-3">
-          <h3>{{ t('wg.active_peers') }}</h3>
+          <h2>{{ t('wg.active_peers') }}</h2>
           <div class="v">{{ finiteN(data.active_count) }}/{{ finiteN(data.peer_count) }}</div>
           <div class="sub" v-if="data.stale_count">{{ t('wg.stale', { n: finiteN(data.stale_count, 0) }) }}</div>
         </div>
         <div class="tile span-3">
-          <h3>{{ t('wg.keepalive_missing') }}</h3>
+          <h2>{{ t('wg.keepalive_missing') }}</h2>
           <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn)' : 'var(--ok)' }">
             {{ finiteN(data.keepalive_missing) }}
           </div>
@@ -202,7 +202,7 @@
       </div>
 
       <div class="tile" style="margin-bottom:12px" v-if="data">
-        <h3>{{ t('wg.server_key') }}</h3>
+        <h2>{{ t('wg.server_key') }}</h2>
         <div class="mono" style="font-size:11px;word-break:break-all">{{ finiteText(data.public_key) }}</div>
         <div class="sub" style="margin-top:6px">
           {{ t('wg.endpoint') }}:
@@ -217,7 +217,7 @@
         v-if="data?.wstunnel?.configured || data?.wstunnel?.running || data?.wstunnel?.enabled"
       >
         <div class="row" style="margin-bottom:6px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('wg.wstunnel_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('wg.wstunnel_title') }}</h2>
           <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
             {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
           </span>
@@ -379,7 +379,7 @@
       <!-- Batch + import -->
       <div class="dash-grid" style="margin-top:12px">
         <div class="tile span-6">
-          <h3>{{ t('wg.batch_add') }}</h3>
+          <h2>{{ t('wg.batch_add') }}</h2>
           <div class="form-row">
             <label>
               {{ t('wg.batch_count') }}
@@ -395,7 +395,7 @@
           </button>
         </div>
         <div class="tile span-6">
-          <h3>{{ t('wg.import_peer') }}</h3>
+          <h2>{{ t('wg.import_peer') }}</h2>
           <div class="form-row">
             <label>
               {{ t('wg.public_key') }}
@@ -420,7 +420,7 @@
       </div>
 
       <div v-if="pingResult" class="tile" style="margin-top:12px">
-        <h3>{{ t('wg.ping_result', { ok: finiteN(pingResult.reachable), total: finiteN(pingResult.total) }) }}</h3>
+        <h2>{{ t('wg.ping_result', { ok: finiteN(pingResult.reachable), total: finiteN(pingResult.total) }) }}</h2>
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>

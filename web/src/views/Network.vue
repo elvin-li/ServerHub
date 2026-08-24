@@ -53,7 +53,7 @@
     <!-- Switch profile + multi-IP bindings -->
     <template v-if="tab==='switch'">
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-        <h3 style="margin:0 0 6px">{{ t('network.switch_title') }}</h3>
+        <h2 style="margin:0 0 6px">{{ t('network.switch_title') }}</h2>
         <p style="margin:0;font-size:12px;color:var(--sub);line-height:1.55">
           {{ t('network.wifi_switch_hint1') }}
           <code>networksetup</code> {{ t('network.wifi_switch_hint2') }}
@@ -72,7 +72,7 @@
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--ok)">
         <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('network.failover_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('network.failover_title') }}</h2>
           <span class="badge" :class="data?.network_failover?.state?.mode === 'wired' ? 'ok' : 'warn'">
             {{ failoverModeLabel }}
           </span>
@@ -96,7 +96,7 @@
         v-if="data?.wstunnel?.configured || data?.wstunnel?.running"
       >
         <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('network.wstunnel_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('network.wstunnel_title') }}</h2>
           <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
             {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
           </span>
