@@ -19,10 +19,14 @@
  * stops matching cannot quietly pass.
  */
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const CSS = readFileSync(resolve(__dirname, '../styles.css'), 'utf8')
+// Comments are stripped before any declaration parsing: prose like "not
+// against --card: --down-text is the label..." otherwise matches the
+// declaration regex and swallows the real declaration that follows it.
+const RAW_CSS = readFileSync(resolve(__dirname, '../styles.css'), 'utf8')
+const CSS = RAW_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
 
 /** #rgb / #rrggbb / #rrggbbaa / rgb() / rgba() / transparent, else null. */
 function parseColor(raw) {
@@ -77,15 +81,20 @@ function contrast(ink, surface) {
 function themeBlocks() {
   const themes = new Map()
   const seen = new Map()
+  // Tokens declared once on :root (the tint mixes) are inherited by every
+  // theme; the *inputs* to those mixes resolve against each theme's own
+  // palette, so the defaults are merged under every theme block.
+  let rootVars = {}
   // Leaf rule bodies only: no declaration block in this sheet nests braces.
   for (const [, selector, body] of CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     if (!/--bg\s*:/.test(body)) continue
-    const names = [...selector.matchAll(/\[data-theme="([\w-]+)"\]/g)].map((m) => m[1])
-    if (!names.length) continue
     const vars = {}
     for (const [, name, value] of body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) {
       vars[name] = value.trim()
     }
+    if (selector.includes(':root')) rootVars = { ...rootVars, ...vars }
+    const names = [...selector.matchAll(/\[data-theme="([\w-]+)"\]/g)].map((m) => m[1])
+    if (!names.length) continue
     for (const name of names) {
       const nth = (seen.get(name) || 0) + 1
       seen.set(name, nth)
@@ -93,7 +102,41 @@ function themeBlocks() {
       themes.set(nth === 1 ? name : `${name} (override ${nth})`, { ...base, ...vars })
     }
   }
+  for (const [name, vars] of themes) themes.set(name, { ...rootVars, ...vars })
   return themes
+}
+
+/**
+ * A concrete colour for a token value that may chain through `var()` and
+ * one-argument-percentage `color-mix(in srgb, A n%, B)` -- the only shapes
+ * the tint tokens use.  Returns null for anything else, so a syntax this
+ * cannot follow is skipped rather than mis-measured.
+ */
+function resolveColor(vars, value, depth = 0) {
+  if (depth > 8) return null
+  const v = String(value || '').trim()
+  const direct = parseColor(v)
+  if (direct) return direct
+  let m = v.match(/^var\((--[\w-]+)\)$/)
+  if (m) return resolveColor(vars, vars[m[1]], depth + 1)
+  m = v.match(/^color-mix\(in srgb,\s*(.+?)\s+(\d+(?:\.\d+)?)%\s*,\s*(.+?)\)$/)
+  if (m) {
+    const a = resolveColor(vars, m[1], depth + 1)
+    const b = resolveColor(vars, m[3], depth + 1)
+    if (!a || !b) return null
+    const w = parseFloat(m[2]) / 100
+    // Premultiplied, as the spec interpolates: mixing toward `transparent`
+    // keeps the colour and scales the alpha, it does not darken toward black.
+    const alpha = a.a * w + b.a * (1 - w)
+    if (alpha === 0) return { r: 0, g: 0, b: 0, a: 0 }
+    return {
+      r: (a.r * a.a * w + b.r * b.a * (1 - w)) / alpha,
+      g: (a.g * a.a * w + b.g * b.a * (1 - w)) / alpha,
+      b: (a.b * a.a * w + b.b * b.a * (1 - w)) / alpha,
+      a: alpha,
+    }
+  }
+  return null
 }
 
 /**
@@ -219,5 +262,93 @@ describe('theme contrast', () => {
     }
     expect(raw).toContain('macos-dark')
     expect(CSS).not.toMatch(/\.chip-sig\s*\{[^}]*\bcolor:\s*var\(--sub\)/)
+  })
+
+  it('keeps the status and accent text tints above AA where they land', () => {
+    // --accent-text / --ok-text / --warn-text / --down-text exist because the
+    // raw brand hues fail as text; this measures that the mixes actually
+    // clear the floor with each theme's own inputs.  --down-text also rides
+    // --btn (it is the label of every button.danger), so that surface is in
+    // the list for it.
+    const offenders = []
+    let checked = 0
+    for (const [theme, vars] of themes) {
+      const paper = { r: 255, g: 255, b: 255, a: 1 }
+      const bg = resolveColor(vars, vars['--bg'])
+      const card = resolveColor(vars, vars['--card'])
+      const btn = resolveColor(vars, vars['--btn'])
+      if (!bg || !card) continue
+      const page = over(bg, paper)
+      const onCard = over(card, page)
+      const spots = { '--bg': page, '--card': onCard }
+      for (const inkName of ['--accent-text', '--ok-text', '--warn-text', '--down-text']) {
+        const ink = resolveColor(vars, vars[inkName])
+        if (!ink) continue
+        const landings = { ...spots }
+        if (inkName === '--down-text' && btn) landings['--btn'] = over(btn, onCard)
+        for (const [surfaceName, surface] of Object.entries(landings)) {
+          checked += 1
+          const ratio = contrast(ink, surface)
+          if (ratio < AA) {
+            offenders.push(`${theme} ${inkName} on ${surfaceName}: ${ratio.toFixed(2)}:1`)
+          }
+        }
+      }
+      // The two composed pairs those tints feed: the filled primary button's
+      // label, and the accent badge (tinted wash under tinted ink).
+      const onAccent = resolveColor(vars, vars['--on-accent'])
+      const fill = resolveColor(vars, vars['--accent-fill'])
+      if (onAccent && fill) {
+        checked += 1
+        const ratio = contrast(onAccent, over(fill, onCard))
+        if (ratio < AA) offenders.push(`${theme} --on-accent on --accent-fill: ${ratio.toFixed(2)}:1`)
+      }
+      const wash = resolveColor(vars, vars['--accent-wash'])
+      const onWash = resolveColor(vars, vars['--on-accent-wash'])
+      if (wash && onWash) {
+        for (const [surfaceName, surface] of Object.entries(spots)) {
+          checked += 1
+          const ratio = contrast(onWash, over(wash, surface))
+          if (ratio < AA) {
+            offenders.push(`${theme} --on-accent-wash on wash over ${surfaceName}: ${ratio.toFixed(2)}:1`)
+          }
+        }
+      }
+    }
+    // 11 themes x (4 tints x 2+ surfaces + 3 composed pairs) -- a resolver
+    // that stopped following color-mix would collapse this count.
+    expect(checked).toBeGreaterThan(100)
+    expect(offenders, 'a tint token that fails AA defeats its own purpose').toEqual([])
+  })
+
+  it('never uses the raw accent as text ink', () => {
+    // The tints above only help where they are used.  Raw --accent as a text
+    // colour is 2.3-4.0:1 on --card in most themes (Unraid orange: 2.32:1),
+    // and it kept creeping back in -- the command palette's AI row, the
+    // Services signature chips, the Shares sheet buttons all shipped with it.
+    // Borders, fills, accent-color and icon strokes may keep the raw token;
+    // `color:` declarations may not, except in selectors that only style svg
+    // icons (non-text, so the 3:1 graphics floor applies, not 4.5:1).
+    const sheets = [['styles.css', CSS]]
+    for (const dir of ['views', 'components']) {
+      const abs = resolve(__dirname, '..', dir)
+      for (const file of readdirSync(abs)) {
+        if (!file.endsWith('.vue')) continue
+        const source = readFileSync(resolve(abs, file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+        for (const [, style] of source.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
+          sheets.push([`${dir}/${file}`, style])
+        }
+      }
+    }
+    const offenders = []
+    for (const [name, sheet] of sheets) {
+      for (const [, selector, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!/(?:^|[^-\w])color\s*:\s*var\(--accent\)\s*(?:!important)?\s*(?:;|$)/.test(body)) continue
+        // Selectors targeting svg elements colour an icon, not text.
+        if (/(?:^|[\s>+~(])svg\b/.test(selector)) continue
+        offenders.push(`${name}: ${selector.trim().split('\n').pop().trim()}`)
+      }
+    }
+    expect(offenders, 'use --accent-text for ink; the raw accent is a fill colour').toEqual([])
   })
 })

@@ -43,7 +43,9 @@
       <span class="toolbar-toggles">
         <label class="chk"><input type="checkbox" v-model="onlyBad" /> {{ t('services.only_bad') }}</label>
         <label class="chk"><input type="checkbox" v-model="dense" /> {{ t('services.dense') }}</label>
-        <span class="meta-count">{{ filtered.length }} / {{ flat.length }}</span>
+        <!-- role=status: the count is the only feedback the filter box and
+             state chips give, and it changed silently for a screen reader. -->
+        <span class="meta-count" role="status">{{ filtered.length }} / {{ flat.length }}</span>
       </span>
       <span class="meta svc-summary" v-if="status">
         {{ t('services.summary', {
@@ -108,7 +110,10 @@
               @click="openDetail(s)" tabindex="0" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
             >
               <td v-if="canManage" class="col-check" @click.stop>
-                <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row')" @change="toggleSelect(s.id)" />
+                <!-- Named per row, like the Files list: thirty checkboxes all
+                     called "Select this row" cannot be told apart in a screen
+                     reader's form-controls listing. -->
+                <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row_name', { name: finiteText(s.name, '') || finiteText(s.id) })" @change="toggleSelect(s.id)" />
               </td>
               <td><span class="led" :class="ledOf(s.state)"></span></td>
               <td>
@@ -728,8 +733,10 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .chip-warn.active { border-color: var(--warn); }
 .chip-down.active { border-color: var(--down); }
 .chip-muted { opacity: .85; }
+/* --accent-text, not --accent: this is 10-12px label text on --card, and the
+   raw accent measures 2.3-4.0:1 there in most themes (contrast.test.js). */
 .chip-sig {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; cursor: default;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent-text); font-weight: 600; cursor: default;
   display: inline-block; white-space: nowrap; overflow-wrap: normal; word-break: normal;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
 }

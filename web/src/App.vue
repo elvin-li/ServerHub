@@ -179,9 +179,9 @@
           :aria-activedescendant="cmdFlat.length ? `cmd-opt-${cmdIdx}` : undefined"
           :aria-label="t('common.cmd_title')"
           :placeholder="t('common.cmd_ph')"
-          @keydown.enter="cmdGo(cmdIdx)"
-          @keydown.up.prevent="cmdIdx = Math.max(0, cmdIdx - 1)"
-          @keydown.down.prevent="cmdIdx = Math.min(cmdFlat.length - 1, cmdIdx + 1)"
+          @keydown.enter="cmdEnter"
+          @keydown.up="cmdArrowUp"
+          @keydown.down="cmdArrowDown"
         />
         <ul id="cmd-list" class="cmd-list" role="listbox" :aria-label="t('common.cmd_title')">
           <li
@@ -908,6 +908,32 @@ function cmdGo(i) {
     return
   }
   router.push(item.to)
+}
+
+/**
+ * IME composition owns these keys first.  While composing Japanese or
+ * Chinese, Enter commits the composed text and the arrows walk the
+ * candidate list; acting on them here navigated away mid-word, and the
+ * `.prevent` the arrows carried broke candidate selection outright.
+ * keyCode 229 is the legacy signal some engines still send instead of
+ * (or before) `isComposing`.
+ */
+function cmdComposing(e) {
+  return Boolean(e.isComposing) || e.keyCode === 229
+}
+function cmdEnter(e) {
+  if (cmdComposing(e)) return
+  cmdGo(cmdIdx.value)
+}
+function cmdArrowUp(e) {
+  if (cmdComposing(e)) return
+  e.preventDefault()
+  cmdIdx.value = Math.max(0, cmdIdx.value - 1)
+}
+function cmdArrowDown(e) {
+  if (cmdComposing(e)) return
+  e.preventDefault()
+  cmdIdx.value = Math.min(cmdFlat.value.length - 1, cmdIdx.value + 1)
 }
 
 // Escape used to be bound to the search input alone, so it stopped working the

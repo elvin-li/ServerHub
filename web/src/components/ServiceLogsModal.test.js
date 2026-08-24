@@ -54,6 +54,17 @@ describe('ServiceLogsModal', () => {
     w.unmount()
   })
 
+  it('keeps the scrolling log pane keyboard-reachable and named', () => {
+    // The pane scrolls inside a fixed-height modal; without tabindex a
+    // keyboard user can see the overflow but has no way to move it.
+    const w = mountModal()
+    const pane = w.get('pre.log')
+    expect(pane.attributes('tabindex')).toBe('0')
+    expect(pane.attributes('role')).toBe('region')
+    expect(pane.attributes('aria-label')).toBe('services.logs')
+    w.unmount()
+  })
+
   it('emits refresh and close from the header buttons', async () => {
     const w = mountModal()
     await w.findAll('button').find((b) => b.text() === 'common.refresh').trigger('click')

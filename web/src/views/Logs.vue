@@ -29,11 +29,23 @@
       <span class="mono">{{ finiteText(meta.path) }}</span>
       · {{ fmtSize(meta.size) }}
       · {{ t('logs.lines_n', { n: fmtCount(meta.lines) }) }}
-      <span v-if="filter"> · {{ t('logs.matched', { n: finiteN(displayLines.length) }) }}</span>
+      <!-- Always-rendered live region, text gated inside: typing in the filter
+           otherwise changes nothing a screen reader is told about, so there
+           was no way to hear whether the filter matched anything at all. -->
+      <span role="status"><template v-if="filter"> · {{ t('logs.matched', { n: finiteN(displayLines.length) }) }}</template></span>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="retry" :busy="loading" />
     <pre v-if="!loaded" class="log-viewer" role="status" aria-live="polite">{{ t('common.loading') }}</pre>
-    <pre v-else-if="displayText" class="log-viewer">{{ finiteText(displayText) }}</pre>
+    <!-- tabindex=0: the viewer scrolls (72vh cap) and a scrollable region a
+         keyboard cannot reach cannot be scrolled by one (WCAG 2.1.1).  The
+         role and name are what a reader announces on landing in it. -->
+    <pre
+      v-else-if="displayText"
+      class="log-viewer"
+      tabindex="0"
+      role="region"
+      :aria-label="t('logs.title')"
+    >{{ finiteText(displayText) }}</pre>
     <pre v-else-if="!loadError" class="log-viewer" role="status">{{ t('logs.empty') }}</pre>
   </div>
 </template>

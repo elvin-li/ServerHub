@@ -17,10 +17,12 @@ vi.mock('../api/client', () => api)
 vi.mock('../lib/clipboard', () => clipboard)
 vi.mock('../i18n', () => ({
   injectI18n: () => ({
-    t: (key, params = {}) => Object.entries(params).reduce(
-      (text, [name, value]) => text.replace(`{${name}}`, value),
-      key,
-    ),
+    // Keys carry no {placeholders}, so append the params instead: the live
+    // region test below needs to see the match count in the rendered text.
+    t: (key, params = {}) => {
+      const values = Object.values(params)
+      return values.length ? `${key} ${values.join(' ')}` : key
+    },
   }),
 }))
 vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
@@ -100,5 +102,34 @@ describe('Logs leave-guards', () => {
     rejectTail(new Error('gone'))
     await flushPromises()
     expect(toast).not.toHaveBeenCalled()
+  })
+})
+
+describe('Logs keyboard and announcements', () => {
+  it('keeps the scrollable viewer reachable and named for the keyboard', async () => {
+    // The viewer caps at 72vh and scrolls; without tabindex a keyboard user
+    // can see the overflow but has no way to move it (WCAG 2.1.1).
+    const { wrapper } = await mountPage()
+    const viewer = wrapper.get('.log-viewer')
+    expect(viewer.text()).toContain('hello')
+    expect(viewer.attributes('tabindex')).toBe('0')
+    expect(viewer.attributes('role')).toBe('region')
+    expect(viewer.attributes('aria-label')).toBe('logs.title')
+    wrapper.unmount()
+  })
+
+  it('announces the filter match count through a live region', async () => {
+    const { wrapper } = await mountPage()
+    // Rendered before any filter is typed: a live region that appears
+    // together with its first message is not reliably announced.
+    const status = wrapper.get('[role="status"]')
+    expect(status.text()).toBe('')
+
+    await wrapper.get('input[type="text"]').setValue('hello')
+    expect(status.text()).toContain('logs.matched 1')
+
+    await wrapper.get('input[type="text"]').setValue('no-such-line')
+    expect(status.text()).toContain('logs.matched 0')
+    wrapper.unmount()
   })
 })

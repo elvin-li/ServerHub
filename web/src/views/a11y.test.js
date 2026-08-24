@@ -496,6 +496,32 @@ describe('selected state', () => {
       /<span role="status">\{\{ t\('services\.selected_n'/,
     )
   })
+
+  it('announces the Services filter result count', () => {
+    // The "34 / 50" count is the only feedback the filter box and the state
+    // chips give; without a live region it changed silently.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /<span class="meta-count" role="status">\{\{ filtered\.length \}\}/,
+    )
+  })
+
+  it('names each Services row checkbox after its service', () => {
+    // Thirty checkboxes all called "Select this row" cannot be told apart in
+    // a screen reader's form-controls listing; the Files list already names
+    // its per-row checkboxes after the item, so the pattern is established.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /:aria-label="t\('common\.select_row_name',\s*\{\s*name:/,
+    )
+    for (const [name, source] of vueFiles()) {
+      // A regex, not the literal call text: the backend's i18n contract test
+      // scans every source for translation-key references and would otherwise
+      // count this guard as a use of the removed key.
+      expect(source, `${name} uses the anonymous row-checkbox label`)
+        .not.toMatch(/t\('common\.select_row'\)/)
+    }
+  })
 })
 
 describe('macos switch controls', () => {
