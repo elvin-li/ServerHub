@@ -564,7 +564,7 @@ onUnmounted(() => {
   margin: 0 0 10px; font-size: 12px;
 }
 .crumb {
-  background: none; border: none; color: var(--accent);
+  background: none; border: none; color: var(--accent-text);
   cursor: pointer; padding: 2px 4px; font-size: 12px;
 }
 .crumb.current { color: var(--txt); font-weight: 600; cursor: default; }

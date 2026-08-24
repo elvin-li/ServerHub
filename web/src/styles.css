@@ -1239,9 +1239,13 @@ table.dense tbody tr:has(> td.empty-row):hover {
 .toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
 
 .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+/* --accent-text, not --accent, wherever the accent is *ink*: the raw brand
+   hues measure 2.1-4.0:1 on --card (Unraid's orange is 2.32:1), so a 12px
+   label in them is decoration, not text. The tint keeps the hue; borders and
+   fills keep the raw token. theme/contrast.test.js pins this. */
 .links a {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 10px 8px; text-align: center; color: var(--accent); font-size: 12px; font-weight: 700;
+  padding: 10px 8px; text-align: center; color: var(--accent-text); font-size: 12px; font-weight: 700;
 }
 .links a:hover { border-color: var(--accent); }
 
@@ -1776,7 +1780,8 @@ img[loading="lazy"][complete] {
 .cmd-list li.cmd-ai {
   border-top: 1px solid var(--line);
   margin-top: 4px;
-  color: var(--accent);
+  /* Ink, so the AA-clearing tint — raw --accent is 2.3-4.0:1 on this panel. */
+  color: var(--accent-text);
 }
 
 .assist-launch {
@@ -1847,7 +1852,7 @@ img[loading="lazy"][complete] {
 }
 .assist-ollama {
   font-size: 12px;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 .assist-log {

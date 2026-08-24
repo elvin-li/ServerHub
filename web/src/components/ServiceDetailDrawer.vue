@@ -365,8 +365,9 @@ useDismissable(() => props.service, () => emit('close'), panel)
 }
 .chip-ok { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
 .chip-muted { opacity: .85; }
+/* Ink, so the AA tint — raw --accent is 2.3-4.0:1 on --card in most themes. */
 .chip-sig {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent-text); font-weight: 600;
   display: inline-block; white-space: nowrap; overflow-wrap: normal; word-break: normal;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis;
 }

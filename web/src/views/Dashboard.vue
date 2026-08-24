@@ -1993,7 +1993,7 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   text-transform: none; letter-spacing: 0; color: var(--txt);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ollama-api:hover { color: var(--accent); }
+.ollama-api:hover { color: var(--accent-text); }
 table.top-cpu { table-layout: fixed; }
 table.top-cpu .col-cpu { width: 112px; }
 table.top-cpu .col-mem { width: 52px; }
@@ -2102,7 +2102,7 @@ table.top-cpu .mini-bar { margin-left: 6px; }
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .bm-card.down .bm-name { color: var(--down-text); }
 .bm-card.stopped .bm-name { color: var(--sub); }

@@ -728,8 +728,10 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .chip-warn.active { border-color: var(--warn); }
 .chip-down.active { border-color: var(--down); }
 .chip-muted { opacity: .85; }
+/* --accent-text, not --accent: this is 10-12px label text on --card, and the
+   raw accent measures 2.3-4.0:1 there in most themes (contrast.test.js). */
 .chip-sig {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; cursor: default;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent-text); font-weight: 600; cursor: default;
   display: inline-block; white-space: nowrap; overflow-wrap: normal; word-break: normal;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
 }

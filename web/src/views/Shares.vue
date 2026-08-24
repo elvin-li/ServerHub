@@ -665,7 +665,7 @@ onUnmounted(() => {
 .share-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
 .share-copy strong { font-size:13px; }
 .share-copy .path { overflow:hidden; color:var(--sub); font-size:10.5px; text-overflow:ellipsis; white-space:nowrap; }
-.share-copy a { color:var(--accent); font-size:10.5px; text-decoration:none; }
+.share-copy a { color:var(--accent-text); font-size:10.5px; text-decoration:none; }
 .share-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
 .share-badges .badge { display:inline-flex; align-items:center; gap:3px; }
 .danger-button { color:var(--down-text); }
@@ -708,7 +708,8 @@ onUnmounted(() => {
 :global([data-theme="macos"] .share-badges .badge.accent),
 :global([data-theme="macos-dark"] .share-badges .badge.accent) {
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
-  color: var(--accent);
+  /* Same ink as the global .badge.accent: sized for the wash it sits on. */
+  color: var(--on-accent-wash);
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
 }
 :global([data-theme="macos"] .service-action .badge.ok),
@@ -787,7 +788,7 @@ onUnmounted(() => {
 .share-sheet { width:min(560px,100%); max-height:90vh; overflow:auto; border:1px solid var(--line); border-radius:var(--radius); color:var(--txt); background:var(--card); box-shadow:0 20px 70px rgba(0,0,0,.32); }
 .share-sheet header { position:sticky; top:0; z-index:1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; min-height:52px; padding:0 12px; border-bottom:1px solid var(--line); background:var(--card); }
 .share-sheet header h2 { margin:0; font-size:14px; }
-.sheet-cancel,.sheet-save { border:0; background:transparent; color:var(--accent); }
+.sheet-cancel,.sheet-save { border:0; background:transparent; color:var(--accent-text); }
 .sheet-cancel { justify-self:start; }.sheet-save { justify-self:end; font-weight:700; }
 .sheet-body { display:flex; flex-direction:column; gap:14px; padding:16px; }
 .sheet-body > label { display:flex; flex-direction:column; gap:6px; }
@@ -808,7 +809,7 @@ onUnmounted(() => {
 .acl-user-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:5px 0; }
 .acl-user { display:flex; align-items:baseline; gap:7px; min-width:0; }
 .acl-user small { color:var(--sub); font-size:10px; }
-.acl-owner-tag { color:var(--accent); font-weight:600; }
+.acl-owner-tag { color:var(--accent-text); font-weight:600; }
 .acl-user-row select { font-size:11.5px; padding:3px 6px; border-radius:5px; }
 .acl-entries { margin-top:6px; }
 .acl-entries summary { font-size:10.5px; color:var(--sub); cursor:pointer; }
