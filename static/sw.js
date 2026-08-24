@@ -67,8 +67,17 @@ self.addEventListener('fetch', (event) => {
       const timer = setTimeout(() => controller.abort(), NAV_TIMEOUT_MS)
       try {
         const response = await fetch(request, { signal: controller.signal })
-        cacheIfOk(request, response)
-        return response
+        if (response && response.ok) {
+          cacheIfOk(request, response)
+          return response
+        }
+        // A gateway that is up while the panel behind it is restarting answers
+        // 502 — a successful fetch of somebody else's error page, so the catch
+        // below never sees it. Returning it showed the operator raw nginx
+        // output during the restarts the panel performs on itself. The cached
+        // shell boots instead and the SPA shows its own reconnect state.
+        const stale = (await caches.match(request)) || (await caches.match('/'))
+        return (stale && stale.ok) ? stale : response
       } catch {
         const cached = await caches.match(request)
         if (cached && cached.ok) return cached
