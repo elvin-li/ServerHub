@@ -228,18 +228,22 @@ class TestErrorCodeContract(unittest.TestCase):
     def test_every_registered_code_has_english_and_zh_and_ja(self):
         _import_every_code_registering_module()
         from hub import errors
+        from tests.test_frontend_contracts import _locale_keys
 
-        locales = {}
-        for name in ("en", "zh-CN", "ja"):
-            text = (WEB_SRC / "i18n" / f"{name}.js").read_text(errors="replace")
-            locales[name] = text
+        # The SPA resolves ``err.<area>.<leaf>`` through the *nested* dictionary
+        # (see errText in web/src/i18n/index.js), so the check has to resolve the
+        # whole path.  Searching for the bare leaf anywhere in the file passed on
+        # any leaf name reused by another area, which is how err.vms.bad_id and
+        # err.identity.bad_name shipped untranslated: ``bad_id:`` exists under
+        # err.autostart and ``bad_name:`` under err.scheduler.
+        locales = {name: _locale_keys(name) for name in ("en", "zh-CN", "ja")}
+        for name, keys in locales.items():
+            self.assertGreater(len(keys), 1000, f"{name}.js key scan looks wrong")
 
         missing: list[str] = []
         for code in errors.CODES:
-            area, _, leaf = code.partition(".")
-            for name, text in locales.items():
-                # keys are nested: err: { files: { path_protected: '...' } }
-                if not re.search(rf"\b{re.escape(leaf)}\s*:", text):
+            for name, keys in locales.items():
+                if f"err.{code}" not in keys:
                     missing.append(f"{name}:err.{code}")
         self.assertEqual(
             missing[:20], [], f"error codes with no translation: {missing[:20]}"

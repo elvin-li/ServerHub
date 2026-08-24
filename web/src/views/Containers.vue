@@ -74,7 +74,7 @@
             <thead>
               <tr>
                 <th style="width:28px"><input type="checkbox" :checked="allSelected(grp.items)" @change="toggleAll(grp.items, $event)" /></th>
-                <th></th>
+                <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
                 <th>{{ t('docker.app') }}</th>
                 <th class="col-hide-m">{{ t('docker.version_update') }}</th>
                 <th class="col-hide-m">{{ t('docker.network') }}</th>

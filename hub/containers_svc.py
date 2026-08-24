@@ -213,10 +213,9 @@ def _stats_cached() -> dict:
     """Stats for whatever is currently running.
 
     Deliberately zero-argument.  Keying this by the running-name tuple would look
-    tidier but would leave one cache entry per distinct set of running containers,
-    and ``ttl_memo`` only drops entries on invalidate -- so a host whose containers
-    come and go would accumulate them for the life of the process.  One entry on a
-    15s TTL is also exactly what the dict this replaces did.
+    tidier but would buy nothing: every caller wants the current set, so a second
+    key can only ever be a set that is already out of date.  One entry on a 15s
+    TTL is also exactly what the dict this replaces did.
     """
     engine_ok, items = _container_list_cached()
     if not engine_ok:
@@ -1069,11 +1068,31 @@ def inspect_container(name: str) -> dict:
     }
 
 
+def _raise_list_failure(kind: str):
+    """Fail an inventory read as 503 when the engine is simply not running.
+
+    A stopped container engine is an ordinary state this panel models
+    everywhere else -- ``engine_up`` rides along on /api/status, the
+    Containers page renders "engine is down", and every other
+    engine-dependent entry point raises ``container.engine_down`` (503).
+    The three inventory reads instead mapped *any* non-zero exit to
+    ``container.list_failed`` (500), so with OrbStack stopped the Images,
+    Volumes and Networks tabs reported a panel fault rather than a
+    dependency that is off.
+
+    ``engine_up`` is consulted only after a failure, so the healthy path
+    does not pay for an extra ``docker info`` (and it is cached anyway).
+    """
+    if not engine_up():
+        raise api_error("container.engine_down")
+    raise api_error("container.list_failed", kind=kind)
+
+
 def list_images() -> list:
     data, rc, err = docker_json(
         ["images", "--format", "{{json .}}"], timeout=15)
     if rc != 0:
-        raise api_error("container.list_failed", kind="images")
+        _raise_list_failure("images")
     if isinstance(data, dict):
         data = [data]
     elif not isinstance(data, list):
@@ -1084,7 +1103,7 @@ def list_images() -> list:
 def list_volumes() -> list:
     rc, out, err = docker("volume", "ls", "--format", "{{.Name}}\t{{.Driver}}\t{{.Mountpoint}}", timeout=12)
     if rc != 0:
-        raise api_error("container.list_failed", kind="volumes")
+        _raise_list_failure("volumes")
     items = []
     for line in _as_text(out).splitlines():
         p = line.split("\t")
@@ -1096,7 +1115,7 @@ def list_volumes() -> list:
 def list_networks() -> list:
     rc, out, err = docker("network", "ls", "--format", "{{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}", timeout=12)
     if rc != 0:
-        raise api_error("container.list_failed", kind="networks")
+        _raise_list_failure("networks")
     items = []
     for line in _as_text(out).splitlines():
         p = line.split("\t")

@@ -416,6 +416,63 @@ describe('LineChart x-axis time labels', () => {
     }
   })
 
+  it('thins the labels to what the strip is actually wide enough for', async () => {
+    // The dashboard puts two charts side by side in one card, leaving each
+    // x-axis ~110px. Five `HH:MM` labels at ~30px each ran together as
+    // `11:1711:32`. jsdom has no ResizeObserver and reports zero-size boxes, so
+    // both have to be supplied for the measured path to run at all.
+    const observed = []
+    const width = 110
+    const rect = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width, height: 16, top: 0, left: 0, right: width, bottom: 16 })
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb) { this.cb = cb }
+      observe(el) { observed.push(el) }
+      disconnect() {}
+    })
+    try {
+      const w = chart({
+        series: [{ name: 'cpu', values: [0, 50, 100] }],
+        times: [1_700_000_000, 1_700_001_800, 1_700_003_600],
+        unit: '%',
+      })
+      await w.vm.$nextTick()
+      expect(observed).toHaveLength(1)
+      // floor(110 / 38) = 2, so only the two extents survive.
+      const labels = xLabels(w)
+      expect(labels).toHaveLength(2)
+      expect(labels[0].attributes('style')).toContain('0%')
+      expect(labels[1].attributes('style')).toContain('100%')
+    } finally {
+      rect.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps the full tick count on a strip with room for it', async () => {
+    const width = 400
+    const rect = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width, height: 16, top: 0, left: 0, right: width, bottom: 16 })
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    })
+    try {
+      const w = chart({
+        series: [{ name: 'cpu', values: [0, 50, 100] }],
+        times: [1_700_000_000, 1_700_001_800, 1_700_003_600],
+        unit: '%',
+      })
+      await w.vm.$nextTick()
+      expect(xLabels(w)).toHaveLength(5)
+    } finally {
+      rect.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('hides the x-axis when times are missing', () => {
     const w = chart({ series: [{ name: 'cpu', values: [0, 50, 100] }], unit: '%' })
     expect(xLabels(w)).toHaveLength(0)

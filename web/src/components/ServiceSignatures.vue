@@ -18,7 +18,7 @@
             <th>{{ t('common.name') }}</th>
             <th class="col-hide-m">{{ t('svcsig.category') }}</th>
             <th class="col-hide-m">{{ t('svcsig.ports') }}</th>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.actions') }}</span></th>
           </tr>
         </thead>
         <tbody>

@@ -76,7 +76,7 @@
           {{ previewing ? t('common.loading') : t('sched.rsync_preview') }}
         </button>
       </div>
-      <div v-if="previewError" class="meta" role="status" aria-live="polite" style="color:var(--err,#c33);font-size:12px;margin-bottom:8px">
+      <div v-if="previewError" class="meta" role="status" aria-live="polite" style="color:var(--down-text);font-size:12px;margin-bottom:8px">
         {{ finiteText(previewError) }}
       </div>
       <div v-else-if="preview" role="status" aria-live="polite"

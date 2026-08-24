@@ -55,6 +55,11 @@ _TTL = 5.0
 _cache: dict[str, Any] = {"t": 0.0, "v": None}
 _lock = threading.Lock()
 _refresh_lock = threading.Lock()
+#: Bumped by `invalidate_pool`, which save_pool/delete_pool call after writing
+#: the new membership.  A `df` sweep that started before the write returns the
+#: old member set; without this it would publish over the invalidate and the
+#: page would show the pool the operator just replaced.
+_generation = 0
 
 
 def _pool_config() -> dict:
@@ -327,14 +332,18 @@ def pool_overview(force: bool = False) -> dict:
             hit = _cache["v"]
             if hit is not None and time.time() - _cache["t"] < _TTL:
                 return dict(hit)
+            began = _generation
         data = _build()
         with _lock:
-            _cache.update(t=time.time(), v=data)
+            if _generation == began:
+                _cache.update(t=time.time(), v=data)
         return dict(data)
 
 
 def invalidate_pool() -> None:
+    global _generation
     with _lock:
+        _generation += 1
         _cache.update(t=0.0, v=None)
 
 

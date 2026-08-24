@@ -138,7 +138,7 @@ describe('Dashboard GPU density', () => {
 
   it('shows GPU util and memory on the header badge, not as AM rows', async () => {
     const wrapper = await render()
-    expect(wrapper.find('.res-card h3').text()).toContain('Processor')
+    expect(wrapper.find('.res-card h2').text()).toContain('Processor')
     expect(wrapper.find('[data-test="gpu-section"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="gpu-util"]').exists()).toBe(false)
     expect(wrapper.find('.cpu-facts').exists()).toBe(false)

@@ -310,6 +310,15 @@ class LegacyIndexReadTextEioTests(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         missing = Path("/tmp/serverhub-no-static-leftover")
+        # The CSP is derived from the shell on disk and memoised for 30s
+        # process-wide, so serving a request with STATIC_DIR pointed at
+        # nothing leaves a hash-less policy behind for whoever runs next.
+        # That made the CSP suite fail whenever it happened to start inside
+        # the window -- a flake that depended only on how fast the run was.
+        from hub import app_factory
+
+        app_factory._csp_header.invalidate()
+        self.addCleanup(app_factory._csp_header.invalidate)
         with (
             mock.patch("hub.app_factory.STATIC_DIR", missing),
             mock.patch("hub.app_factory.LEGACY_INDEX", missing / "index.html"),

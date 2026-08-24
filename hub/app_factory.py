@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import contextvars
+import hashlib
 import logging
 import re
 import time
@@ -10,6 +11,8 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
@@ -17,7 +20,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from hub import __version__
 from hub.auth import require_auth
 from hub.config import cfg
-from hub.errors import error_payload
+from hub.errors import error_payload, jsonable_error_detail
 from hub.macos_admin import use_admin_password
 from hub.paths import LEGACY_INDEX, STATIC_DIR
 from hub.routers import router
@@ -26,6 +29,7 @@ from hub.routers.api_keys_api import router as api_keys_router
 from hub.routers.auth_api import router as auth_router
 from hub.routers.twofa_api import router as twofa_router
 from hub.terminal_pty import terminal_websocket
+from hub.util import ttl_memo
 from hub.vm_console import console_websocket
 
 #: Bound per request so ``serverhub.*`` log lines can carry a correlation id
@@ -35,6 +39,69 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 _REQUEST_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
+
+#: `<script>…</script>` with no `src`, i.e. the shell's own inline code.
+_INLINE_SCRIPT_RE = re.compile(
+    r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
+)
+#: Cap on the shell we will hash.  A leftover multi-MB index.html is already
+#: refused elsewhere; refusing it here too keeps startup off that path.
+_INDEX_HASH_CAP = 2 * 1024 * 1024
+#: How long a computed policy is reused before the shell is read again.
+_CSP_TTL = 30.0
+
+
+def _inline_script_hashes() -> tuple[str, ...]:
+    """CSP source expressions for the shell's inline scripts.
+
+    ``index.html`` opens with a small block that reads the saved theme and
+    applies it to <html> before the first paint.  Under ``script-src 'self'``
+    the browser refuses to run it, so the panel painted the default light
+    theme and only switched once main.js booted -- a white flash on every
+    single load for anyone on a dark theme.  Hashing the block is what CSP
+    offers for exactly this case: it authorises those bytes and nothing else,
+    unlike ``'unsafe-inline'``, which would authorise anything injected.
+
+    A missing or unreadable shell yields no hashes and leaves the policy
+    exactly as it was, so the failure mode is the current behaviour rather
+    than a weaker policy.
+    """
+    try:
+        raw = (STATIC_DIR / "index.html").read_bytes()
+    except OSError:
+        return ()
+    if len(raw) > _INDEX_HASH_CAP:
+        return ()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ()
+    digests = []
+    for body in _INLINE_SCRIPT_RE.findall(text):
+        if not body.strip():
+            continue
+        digest = hashlib.sha256(body.encode("utf-8")).digest()
+        digests.append(f"'sha256-{base64.b64encode(digest).decode('ascii')}'")
+    return tuple(dict.fromkeys(digests))
+
+
+@ttl_memo(_CSP_TTL)
+def _csp_header() -> str:
+    """The policy, re-derived every so often rather than pinned at import.
+
+    ``static/`` is served straight off disk, so a rebuild lands live -- and a
+    policy computed once at startup would keep authorising the *previous*
+    shell's theme script until someone restarted the process.  Half a minute
+    of staleness costs one stat, and only ever means the pre-paint script is
+    skipped, which is what used to happen on every load.
+    """
+    script_src = " ".join(("'self'",) + _inline_script_hashes())
+    return (
+        "default-src 'self'; base-uri 'none'; object-src 'none'; "
+        "frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; "
+        f"style-src 'self' 'unsafe-inline'; script-src {script_src}; "
+        "connect-src 'self' ws: wss:"
+    )
 
 
 def _health_ts() -> int:
@@ -333,13 +400,7 @@ def create_app() -> FastAPI:
             resp.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
             resp.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
             resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-            resp.headers.setdefault(
-                "Content-Security-Policy",
-                "default-src 'self'; base-uri 'none'; object-src 'none'; "
-                "frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; "
-                "style-src 'self' 'unsafe-inline'; script-src 'self'; "
-                "connect-src 'self' ws: wss:",
-            )
+            resp.headers.setdefault("Content-Security-Policy", _csp_header())
             if request.url.scheme == "https" or (
                 request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
                 == "https"
@@ -363,6 +424,23 @@ def create_app() -> FastAPI:
             return resp
         finally:
             request_id_var.reset(request_id_token)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        """Keep a 422 body renderable by Starlette's allow_nan=False encoder.
+
+        FastAPI's stock handler echoes the rejected value back in
+        ``detail[].input``.  ``json.loads`` accepts ``Infinity``/``NaN`` and
+        turns plain RFC ``1e999`` into ``inf``, so a body like
+        ``{"name": Infinity}`` made ``json.dumps`` raise *inside* the handler.
+        Every route taking a JSON body then answered a bare 500 instead of 422
+        — POST /api/auth/login included, i.e. before any authentication.
+        """
+        try:
+            detail = jsonable_encoder(exc.errors())
+        except Exception:
+            detail = exc.errors()
+        return JSONResponse({"detail": jsonable_error_detail(detail)}, status_code=422)
 
     @app.get("/api/health")
     def public_liveness():

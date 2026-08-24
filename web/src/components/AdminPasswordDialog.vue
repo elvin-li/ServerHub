@@ -84,11 +84,11 @@ onUnmounted(() => {
 .admin-prompt h3 { margin: 0; font-size: 15px; }
 .admin-prompt .hint { margin: 0; font-size: 12px; color: var(--sub); line-height: 1.5; }
 .admin-error-live:empty { position: absolute; width: 0; height: 0; overflow: hidden; }
-.admin-prompt .warn { margin: 0; font-size: 12px; color: var(--danger, #d33); }
+.admin-prompt .warn { margin: 0; font-size: 12px; color: var(--down-text); }
 .admin-prompt input {
   width: 100%; box-sizing: border-box; padding: 9px 10px; font-size: 16px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
-  color: var(--text, inherit);
+  color: var(--txt);
 }
 .admin-prompt .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 @media (max-width: 640px) {

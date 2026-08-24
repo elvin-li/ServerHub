@@ -1,5 +1,7 @@
 <template>
   <div>
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('settings.title') }}</h1>
     <!-- Appearance & Language -->
     <div v-if="tab==='appearance'">
       <div class="card" style="margin-bottom:12px">
@@ -10,6 +12,7 @@
             v-for="l in locales"
             :key="l.id"
             :class="{ active: locale === l.id }"
+            :aria-pressed="locale === l.id"
             @click="pickLocale(l.id)"
           >{{ finiteText(l.native) }}</button>
         </div>
@@ -335,7 +338,7 @@
               <th class="col-hide-m">{{ t('apikeys.created') }}</th>
               <th class="col-hide-m">{{ t('apikeys.last_used') }}</th>
               <th class="col-hide-m">{{ t('apikeys.expires') }}</th>
-              <th class="ops"></th>
+              <th class="ops"><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>
@@ -356,7 +359,7 @@
           </tbody>
         </table>
         </div>
-        <p v-else-if="apiKeysError" class="hint" style="color:var(--down)">{{ finiteText(apiKeysError) }}</p>
+        <p v-else-if="apiKeysError" class="hint" style="color:var(--down-text)">{{ finiteText(apiKeysError) }}</p>
         <p v-else-if="apiKeys" class="hint">{{ t('apikeys.empty') }}</p>
         <p v-else class="hint">{{ t('common.loading') }}</p>
 
@@ -654,7 +657,7 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_list') }}</h2>
-        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="table-wrap" v-else-if="(sysBundle.vms?.items||[]).length">
         <table class="dense fit-m">
@@ -761,7 +764,7 @@
         </div>
         <p class="hint">{{ finiteText(sysBundle?.power?.ups?.hint) }}</p>
         <h2 class="section-title">{{ t('settings.assertions') }}</h2>
-        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div v-else-if="(sysBundle.power?.assertions||[]).length" class="mono" style="font-size:11px;max-height:180px;overflow:auto">
           <div v-for="(a,i) in sysBundle.power.assertions" :key="i" style="margin-bottom:6px">{{ finiteText(a) }}</div>
@@ -798,7 +801,7 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk_power') }}</h2>
-        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="table-wrap" v-else-if="(sysBundle.disk?.power_disks||[]).length">
         <table class="dense fit-m">
@@ -833,7 +836,7 @@
             {{ finiteText(sysBundle.alias_auto.preferred.device) }} · {{ finiteText(sysBundle.alias_auto.preferred.service) }}
             · {{ finiteText(sysBundle.alias_auto.preferred.primary_ip) }}
           </div>
-          <div v-else style="color:var(--down)">—</div>
+          <div v-else style="color:var(--down-text)">—</div>
           <label>{{ t('settings.managed_ips') }}</label>
           <div>
             <span v-for="ip in (sysBundle.alias_auto.config?.ips||[])" :key="ip" class="badge ok" style="margin-right:4px">{{ finiteText(ip) }}</span>
@@ -2340,11 +2343,11 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .launcher-overall.is-ready {
-  color: var(--ok);
+  color: var(--ok-text);
   background: color-mix(in srgb, var(--ok) 10%, transparent);
 }
 .launcher-overall.is-idle {
-  color: var(--warn);
+  color: var(--warn-text);
   background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 .launcher-overall-dot {
@@ -2408,7 +2411,7 @@ onUnmounted(() => {
 .launcher-actions button { width: 100%; min-width: 0; min-height: 36px; }
 .password-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .password-state { margin: 0; }
-.password-state.bad { color: var(--down); }
+.password-state.bad { color: var(--down-text); }
 /* Same constraint story as WireGuard's .wg-qr: the scalable SVG has no
    intrinsic size, so the wrapper fixes one and keeps a light quiet zone. */
 .twofa-qr {
@@ -2418,8 +2421,8 @@ onUnmounted(() => {
 .twofa-qr :deep(svg) { display: block; width: 100%; height: 100%; }
 .twofa-recovery, .apikey-created {
   margin: 12px 0; padding: 12px; border-radius: 8px;
-  background: color-mix(in srgb, var(--up) 8%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--up) 25%, transparent);
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--ok) 25%, transparent);
 }
 .twofa-recovery-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));

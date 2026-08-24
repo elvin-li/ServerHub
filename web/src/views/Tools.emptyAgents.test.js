@@ -1,0 +1,76 @@
+/**
+ * The Tools scheduler tab lists LaunchAgents; an empty list must say so.
+ *
+ * The timer table above it already did, so a host with no calendar/interval
+ * agents got "no timers" and then a second set of column headings with
+ * nothing under them.  See emptyTables.test.js for the rest of the rule.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+
+const api = vi.hoisted(() => ({
+  flushDns: vi.fn(),
+  generateDiagnostics: vi.fn(),
+  getDockerContainerSizes: vi.fn(),
+  getDockerDiskUsage: vi.fn(),
+  getListeningPorts: vi.fn(),
+  getScheduler: vi.fn(),
+  getSystemDiagnostics: vi.fn(),
+  getSystemProcesses: vi.fn(),
+  getSystemScheduler: vi.fn(),
+  getToolsAbout: vi.fn(),
+  getToolsAgents: vi.fn(),
+  getToolsCatalog: vi.fn(),
+  getToolsHardware: vi.fn(),
+  getToolsSyslog: vi.fn(),
+  getToolsUpdates: vi.fn(),
+  applyServerHubUpdate: vi.fn(),
+  applyBrewUpgrade: vi.fn(),
+  getMaintenanceLog: vi.fn(),
+  lookupDns: vi.fn(),
+  pingHost: vi.fn(),
+  pruneDocker: vi.fn(),
+}))
+vi.mock('../api/client', () => api)
+vi.mock('../i18n', () => ({
+  injectI18n: () => ({ t: (key) => key, errText: (v) => String(v), locale: { value: 'en' } }),
+}))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRoute: () => ({ path: '/tools', query: {}, params: {}, name: 'tools' }),
+}))
+
+import Tools from './Tools.vue'
+
+beforeEach(() => {
+  for (const fn of Object.values(api)) {
+    if (typeof fn?.mockReset === 'function') fn.mockResolvedValue({})
+  }
+  api.getSystemScheduler.mockResolvedValue({ timers: [] })
+  api.getToolsAgents.mockResolvedValue({ agents: [], count: 0, hint: '' })
+})
+
+afterEach(() => {
+  vi.clearAllMocks()
+})
+
+describe('Tools scheduler tab', () => {
+  it('explains an empty LaunchAgent list instead of showing a bare header', async () => {
+    const wrapper = mount(Tools, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { RouterLink: { template: '<a><slot /></a>' } },
+      },
+    })
+    await flushPromises()
+    wrapper.vm.tab = 'sched'
+    await flushPromises()
+
+    const bare = [...wrapper.element.querySelectorAll('table')]
+      .filter((t) => t.querySelector('thead tr') && !t.querySelector('tbody tr'))
+      .map((t) => [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim()).join(' | '))
+    expect(bare, 'headings with no rows under them read as still-loading').toEqual([])
+    expect(wrapper.text()).toContain('tools.no_agents')
+    wrapper.unmount()
+  })
+})

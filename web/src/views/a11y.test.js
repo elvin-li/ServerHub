@@ -431,6 +431,63 @@ describe('appearance controls', () => {
   })
 })
 
+/**
+ * The opening tag containing *index*, quote-aware so that a `=>` inside a
+ * handler cannot be mistaken for the end of the tag.
+ */
+function openingTagAt(source, index) {
+  const start = source.lastIndexOf('<', index)
+  let quote = null
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i]
+    if (quote) {
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      continue
+    }
+    if (ch === '>') return source.slice(start, i + 1)
+  }
+  return source.slice(start)
+}
+
+const ACTIVE_CLASS = /:class="\{[^"]*\bactive:/g
+const ARIA_STATE = /\baria-(pressed|selected|current|checked)\b/
+
+describe('selected state', () => {
+  it('exposes every "active" highlight to assistive technology', () => {
+    // The panel signals the current choice -- filter chip, tab, nav link,
+    // theme card -- by adding an `active` class.  That is paint: it reaches
+    // a sighted reader and nobody else.  Most of these controls already
+    // carried aria-pressed, which is exactly why the handful that did not
+    // went unnoticed: the state chips on Services, the language buttons in
+    // Settings (directly above a theme grid that did have it), the category
+    // pills on Apps, and both levels of the main nav.
+    const unannounced = []
+    for (const [name, source] of vueFiles()) {
+      for (const match of source.matchAll(ACTIVE_CLASS)) {
+        const tag = openingTagAt(source, match.index)
+        if (!ARIA_STATE.test(tag)) {
+          unannounced.push(`${name}: ${tag.replace(/\s+/g, ' ').slice(0, 100)}`)
+        }
+      }
+    }
+    expect(unannounced).toEqual([])
+  })
+
+  it('finds the highlights it is meant to be checking', () => {
+    // A scan that silently matches nothing passes for ever.  These are the
+    // shapes in the tree today; the count only has to stay plausible.
+    const found = vueFiles().reduce(
+      (n, [, source]) => n + [...source.matchAll(ACTIVE_CLASS)].length,
+      0,
+    )
+    expect(found).toBeGreaterThan(20)
+  })
+})
+
 describe('macos switch controls', () => {
   it('uses a capsule switch for autostart and sharing, not a green checkbox', () => {
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')

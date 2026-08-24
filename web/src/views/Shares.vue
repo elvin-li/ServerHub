@@ -668,12 +668,12 @@ onUnmounted(() => {
 .share-copy a { color:var(--accent); font-size:10.5px; text-decoration:none; }
 .share-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
 .share-badges .badge { display:inline-flex; align-items:center; gap:3px; }
-.danger-button { color:var(--down); }
+.danger-button { color:var(--down-text); }
 .tm-note { display:flex; gap:10px; align-items:flex-start; margin-top:8px; padding:12px; border-left:3px solid var(--accent); color:var(--sub); font-size:11px; line-height:1.5; }
 .tm-note > svg { flex:0 0 auto; margin-top:1px; color:var(--accent); }
 .tm-note > div { display:flex; flex-direction:column; gap:3px; min-width:0; }
 .tm-note strong { color:var(--txt); font-size:12px; }
-.tm-note .tm-warn { color:var(--warn); font-weight:600; }
+.tm-note .tm-warn { color:var(--warn-text); font-weight:600; }
 .empty-state { display:flex; align-items:center; justify-content:center; gap:12px; min-height:92px; color:var(--sub); text-align:left; }
 .empty-state > div { display:flex; flex-direction:column; gap:3px; }
 .empty-state strong { color:var(--txt); font-size:13px; }
@@ -804,7 +804,7 @@ onUnmounted(() => {
 .acl-block { border:1px dashed var(--line); border-radius:8px; padding:10px 12px; }
 .acl-block h3 { margin:0 0 4px; font-size:12.5px; }
 .acl-hint { color:var(--sub); font-size:10.5px; line-height:1.45; margin:2px 0 8px; }
-.acl-error { color:var(--down); font-size:11px; }
+.acl-error { color:var(--down-text); font-size:11px; }
 .acl-user-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:5px 0; }
 .acl-user { display:flex; align-items:baseline; gap:7px; min-width:0; }
 .acl-user small { color:var(--sub); font-size:10px; }
