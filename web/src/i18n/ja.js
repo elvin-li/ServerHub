@@ -1648,6 +1648,10 @@ export default {
     kind_service: 'サービス',
     kind_resource: 'リソース',
     kind_smart: 'ディスク',
+    only_issues: '問題のみ',
+    only_down: '障害',
+    only_warn: '警告',
+    filter_empty: 'このレベルのアラートはありません。',
   },
   audit: {
     title: '監査ログ',

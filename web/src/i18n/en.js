@@ -1652,6 +1652,10 @@ export default {
     kind_service: 'Service',
     kind_resource: 'Resource',
     kind_smart: 'Disk',
+    only_issues: 'Issues only',
+    only_down: 'Problems',
+    only_warn: 'Warnings',
+    filter_empty: 'No alerts at this level.',
   },
   audit: {
     title: 'Audit log',

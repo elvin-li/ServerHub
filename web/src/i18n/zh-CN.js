@@ -1650,6 +1650,10 @@ export default {
     kind_service: '服务',
     kind_resource: '资源',
     kind_smart: '磁盘',
+    only_issues: '仅问题',
+    only_down: '故障',
+    only_warn: '警告',
+    filter_empty: '该级别暂无告警。',
   },
   audit: {
     title: '审计日志',
