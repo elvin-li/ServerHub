@@ -28,6 +28,17 @@ NON_FINITE_BODIES = [
     '{"name": {"nested": NaN}}',
 ]
 
+# ``json.loads`` accepts the ``"\\ud800"`` escape (a lone surrogate) and hands
+# the resulting string to pydantic.  Constrained str fields (LoginBody's
+# password carries min/max length) reject it with ``string_unicode`` — and the
+# stock handler then echoes the surrogate back in ``detail[].input``, whose
+# UTF-8 render would 500 without the sanitizing handler.
+SURROGATE_BODIES = [
+    '{"password": "\\ud800secret!!"}',
+    '{"password": ["\\udfff"]}',
+    '{"password": {"nested": "\\ud800"}}',
+]
+
 
 class ValidationErrorEncodingTests(unittest.TestCase):
     def setUp(self):
@@ -44,6 +55,23 @@ class ValidationErrorEncodingTests(unittest.TestCase):
                 self.assertEqual(r.status_code, 422, r.text)
                 # Starlette's own encoder settings: the body has to survive them.
                 json.dumps(r.json(), ensure_ascii=False, allow_nan=False)
+
+    def test_lone_surrogates_are_rejected_with_422_and_do_not_echo(self):
+        for body in SURROGATE_BODIES:
+            with self.subTest(body=body):
+                r = self.client.post(
+                    "/api/auth/login",
+                    content=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(r.status_code, 422, r.text)
+                # Starlette's own encoder settings: the body has to survive
+                # them, i.e. the echoed ``input`` was sanitized.
+                json.dumps(
+                    r.json(), ensure_ascii=False, allow_nan=False
+                ).encode("utf-8")
+                self.assertNotIn("\ud800", r.text)
+                self.assertNotIn("\udfff", r.text)
 
     def test_the_422_body_keeps_its_shape(self):
         r = self.client.post(

@@ -214,6 +214,37 @@ class SchedulerYamlInfTests(_Sandbox):
         json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.assertNotIn("\ud800", body["jobs"][0]["name"])
 
+    def test_surrogate_params_command_create_lands_and_echo_is_clean(self):
+        """A JSON ``"\\ud800"`` inside ``params`` must not 500 the create echo.
+
+        Pydantic rejects lone surrogates in constrained ``str`` fields
+        (``name`` answers a clean 422), so ``params: dict`` is the one field
+        of JobBody a surrogate can still ride through.  The job is saved
+        before the response renders, so an encode failure here would be a
+        bare 500 for a mutation that had in fact landed.
+        """
+        status, body = self._create(
+            id="job-sur-params",
+            params={"command": "echo hi\ud800 there"},
+        )
+        self.assertEqual(status, 200, body)
+        # Starlette's own encoder settings: the echo has to survive them.
+        json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        job = body["job"]
+        self.assertEqual(job["id"], "job-sur-params")
+        command = (job.get("params") or {}).get("command") or ""
+        self.assertNotIn("\ud800", command)
+        self.assertIn("echo hi", command)
+        # The mutation must have landed as a runnable command, not been lost.
+        stored = scheduler_svc.get_job("job-sur-params")
+        self.assertIsNotNone(stored)
+        stored_command = (stored.get("params") or {}).get("command") or ""
+        self.assertTrue(stored_command.startswith("echo hi"))
+        # And the list view over the stored record must stay encodable too.
+        status, listing = request("GET", "/api/scheduler/jobs")
+        self.assertEqual(status, 200, listing)
+        json.dumps(listing, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
     def test_tuple_inf_params_do_not_500_the_list(self):
         job = {
             "id": "job-tup", "name": "nightly", "type": "command",
