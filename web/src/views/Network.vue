@@ -515,7 +515,7 @@
                   <button class="tiny" :disabled="busy || n.builtin" @click="openDisconnect(n)">{{ t('network.disconnect') }}</button>
                 </td>
               </tr>
-              <tr v-if="!(data?.docker_networks || []).length">
+              <tr v-if="!(data?.docker_networks || []).length && !loadError">
                 <td colspan="6" class="empty-row">{{ t('network.empty_docker_nets') }}</td>
               </tr>
             </tbody>
