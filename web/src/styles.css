@@ -2603,3 +2603,32 @@ html[data-theme="macos-dark"] .tool-tile:not(.primary):not(.danger):not(.tiny):n
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Accessibility: target size (WCAG 2.5.8, 24x24 minimum).
+   Measured on a 390px viewport: a native checkbox is 13px, a checkbox row is
+   15-18px tall, and .btn.tiny is 23px -- all misses for a fingertip, and a
+   miss on a row-select box lands on dead space inside the cell.
+   Keyed on `pointer: coarse` rather than viewport width, because it is the
+   input device that decides how big a target has to be: a touchscreen laptop
+   needs this at 1440px and a trackpad does not need it at 390px. Desktop
+   metrics are deliberately left alone -- the macOS control sizes the rest of
+   this sheet is built around are correct for a mouse.
+   Label padding rather than a taller label box: padding on an inline box
+   grows the hit area without moving anything on screen. */
+@media (pointer: coarse) {
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 18px;
+    height: 18px;
+  }
+  label:has(> input[type="checkbox"]),
+  label:has(> input[type="radio"]) {
+    padding-block: 4px;
+  }
+  /* Row selection has no text to grow with it: the box is the whole target. */
+  .col-check input[type="checkbox"] {
+    width: 24px;
+    height: 24px;
+  }
+  button.tiny, .btn.tiny { min-height: 24px; }
+}
