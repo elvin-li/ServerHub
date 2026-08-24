@@ -46,6 +46,26 @@ _MENU = {
         "stop": "⏹ 停止",
         "start": "▶️ 启动",
         "run": "⚡ 立即运行",
+        "notify_done": "✅ 完成 {message}",
+        "notify_fail": "❌ 失败 {message}",
+        "confirm_maint": "确定执行「{name}」？",
+        "alert_ok": "执行",
+        "alert_cancel": "取消",
+        "maint_started": "🚀 已开始，日志在面板查看",
+        "maint_start_fail": "❌ 启动失败 {e}",
+        "docker_start_all": "启动全部容器",
+        "docker_stop_all": "停止全部容器",
+        "docker_restart_all": "重启全部容器",
+        "confirm_docker": "确定{action}？",
+        "docker_error": "❌ {e}",
+        "docker_page": "📦 Docker 页",
+        "storage_array": "💾 存储阵列",
+        "docker_shortcuts": "📦 Docker 快捷",
+        "start_all": "▶️ 全部启动",
+        "stop_all": "⏹ 全部停止",
+        "restart_all": "🔄 全部重启",
+        "maintenance": "🧰 维护与更新",
+        "group_counts": "{head} {group}（{ok}/{total}）",
     },
     "en": {
         "open_panel": "Open ServerHub Panel",
@@ -59,6 +79,26 @@ _MENU = {
         "stop": "⏹ Stop",
         "start": "▶️ Start",
         "run": "⚡ Run Now",
+        "notify_done": "✅ Done {message}",
+        "notify_fail": "❌ Failed {message}",
+        "confirm_maint": "Run “{name}”?",
+        "alert_ok": "Run",
+        "alert_cancel": "Cancel",
+        "maint_started": "🚀 Started — view logs in the panel",
+        "maint_start_fail": "❌ Failed to start {e}",
+        "docker_start_all": "Start all containers",
+        "docker_stop_all": "Stop all containers",
+        "docker_restart_all": "Restart all containers",
+        "confirm_docker": "{action}?",
+        "docker_error": "❌ {e}",
+        "docker_page": "📦 Docker Page",
+        "storage_array": "💾 Storage Array",
+        "docker_shortcuts": "📦 Docker Shortcuts",
+        "start_all": "▶️ Start All",
+        "stop_all": "⏹ Stop All",
+        "restart_all": "🔄 Restart All",
+        "maintenance": "🧰 Maintenance & Updates",
+        "group_counts": "{head} {group} ({ok}/{total})",
     },
     "ja": {
         "open_panel": "ServerHub パネルを開く",
@@ -72,6 +112,26 @@ _MENU = {
         "stop": "⏹ 停止",
         "start": "▶️ 開始",
         "run": "⚡ 今すぐ実行",
+        "notify_done": "✅ 完了 {message}",
+        "notify_fail": "❌ 失敗 {message}",
+        "confirm_maint": "「{name}」を実行しますか？",
+        "alert_ok": "実行",
+        "alert_cancel": "キャンセル",
+        "maint_started": "🚀 開始しました。ログはパネルで確認",
+        "maint_start_fail": "❌ 起動に失敗 {e}",
+        "docker_start_all": "すべてのコンテナを起動",
+        "docker_stop_all": "すべてのコンテナを停止",
+        "docker_restart_all": "すべてのコンテナを再起動",
+        "confirm_docker": "{action}しますか？",
+        "docker_error": "❌ {e}",
+        "docker_page": "📦 Docker ページ",
+        "storage_array": "💾 ストレージ",
+        "docker_shortcuts": "📦 Docker ショートカット",
+        "start_all": "▶️ すべて起動",
+        "stop_all": "⏹ すべて停止",
+        "restart_all": "🔄 すべて再起動",
+        "maintenance": "🧰 メンテナンスと更新",
+        "group_counts": "{head} {group}（{ok}/{total}）",
     },
 }
 
@@ -341,37 +401,48 @@ class ServerHubBar(rumps.App):
     def make_action(self, target, action, name):
         def cb(_):
             res = api_action(target, action)
+            loc = self._locale
+            key = "notify_done" if res.get("ok") else "notify_fail"
             rumps.notification(
                 "ServerHub", name,
-                ("✅ 完成 " if res.get("ok") else "❌ 失败 ")
-                + str(res.get("message", ""))[:120],
+                _t(loc, key, message=str(res.get("message", ""))[:120]),
             )
             self.tick(None)
         return cb
 
     def make_maint(self, t):
         def cb(_):
+            loc = self._locale
             if t.get("confirm"):
                 if rumps.alert(
-                    title="ServerHub", message=f"确定执行「{t['name']}」？",
-                    ok="执行", cancel="取消",
+                    title="ServerHub",
+                    message=_t(loc, "confirm_maint", name=t["name"]),
+                    ok=_t(loc, "alert_ok"), cancel=_t(loc, "alert_cancel"),
                 ) != 1:
                     return
             try:
                 _json(f"{API}/api/maintenance/{t['id']}/run", method="POST", timeout=10)
-                rumps.notification("ServerHub", t["name"], "🚀 已开始，日志在面板查看")
+                rumps.notification("ServerHub", t["name"], _t(loc, "maint_started"))
                 webbrowser.open(API)
             except Exception as e:
-                rumps.notification("ServerHub", t["name"], f"❌ 启动失败 {e}")
+                rumps.notification(
+                    "ServerHub", t["name"], _t(loc, "maint_start_fail", e=e),
+                )
         return cb
 
     def docker_all(self, action):
         def cb(_):
-            labels = {"start": "启动全部容器", "stop": "停止全部容器", "restart": "重启全部容器"}
+            loc = self._locale
+            labels = {
+                "start": _t(loc, "docker_start_all"),
+                "stop": _t(loc, "docker_stop_all"),
+                "restart": _t(loc, "docker_restart_all"),
+            }
             if action in ("stop", "restart"):
                 if rumps.alert(
-                    title="ServerHub", message=f"确定{labels.get(action, action)}？",
-                    ok="执行", cancel="取消",
+                    title="ServerHub",
+                    message=_t(loc, "confirm_docker", action=labels.get(action, action)),
+                    ok=_t(loc, "alert_ok"), cancel=_t(loc, "alert_cancel"),
                 ) != 1:
                     return
             try:
@@ -384,7 +455,9 @@ class ServerHubBar(rumps.App):
                     f"{labels.get(action, action)} {j.get('done', 0)}/{j.get('total', 0)}",
                 )
             except Exception as e:
-                rumps.notification("ServerHub", "Docker", f"❌ {e}")
+                rumps.notification(
+                    "ServerHub", "Docker", _t(loc, "docker_error", e=e),
+                )
             self.tick(None)
         return cb
 
@@ -467,8 +540,8 @@ class ServerHubBar(rumps.App):
         menu = [
             summary_item,
             rumps.MenuItem(_t(loc, "open_panel"), callback=lambda _: webbrowser.open(API)),
-            rumps.MenuItem("📦 Docker 页", callback=lambda _: webbrowser.open(API + "/containers")),
-            rumps.MenuItem("💾 存储阵列", callback=lambda _: webbrowser.open(API + "/main")),
+            rumps.MenuItem(_t(loc, "docker_page"), callback=lambda _: webbrowser.open(API + "/containers")),
+            rumps.MenuItem(_t(loc, "storage_array"), callback=lambda _: webbrowser.open(API + "/main")),
             None,
         ]
 
@@ -497,21 +570,27 @@ class ServerHubBar(rumps.App):
                 "down" if any(s.get("state") == "down" for s in bad) else "warn"
             ]
             gi = rumps.MenuItem(
-                f"{head} {grp.get('group') or 'Other'}（{len(items)-len(bad)}/{len(items)}）"
+                _t(
+                    loc, "group_counts",
+                    head=head,
+                    group=grp.get("group") or "Other",
+                    ok=len(items) - len(bad),
+                    total=len(items),
+                )
             )
             for s in items:
                 gi.add(self.svc_item(s))
             menu.append(gi)
 
         menu.append(None)
-        di = rumps.MenuItem("📦 Docker 快捷")
-        di.add(rumps.MenuItem("▶️ 全部启动", callback=self.docker_all("start")))
-        di.add(rumps.MenuItem("⏹ 全部停止", callback=self.docker_all("stop")))
-        di.add(rumps.MenuItem("🔄 全部重启", callback=self.docker_all("restart")))
+        di = rumps.MenuItem(_t(loc, "docker_shortcuts"))
+        di.add(rumps.MenuItem(_t(loc, "start_all"), callback=self.docker_all("start")))
+        di.add(rumps.MenuItem(_t(loc, "stop_all"), callback=self.docker_all("stop")))
+        di.add(rumps.MenuItem(_t(loc, "restart_all"), callback=self.docker_all("restart")))
         menu.append(di)
 
         if tasks:
-            mi = rumps.MenuItem("🧰 维护与更新")
+            mi = rumps.MenuItem(_t(loc, "maintenance"))
             for t in tasks:
                 if not isinstance(t, dict):
                     continue
