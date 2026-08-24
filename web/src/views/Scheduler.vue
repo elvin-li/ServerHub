@@ -77,7 +77,7 @@
               </td>
             </tr>
             <tr v-if="!jobs.length && !jobsError">
-              <td colspan="7" style="color:var(--sub)">{{ t('sched.no_jobs') }}</td>
+              <td colspan="7" class="empty-row">{{ t('sched.no_jobs') }}</td>
             </tr>
           </tbody>
         </table>
@@ -170,7 +170,7 @@
               </td>
             </tr>
             <tr v-if="!filtered.length && !loadError">
-              <td colspan="5" style="color:var(--sub)">
+              <td colspan="5" class="empty-row">
                 {{ loading ? t('common.loading') : t('common.none') }}
               </td>
             </tr>

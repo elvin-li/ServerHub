@@ -103,7 +103,7 @@
                 </td>
               </tr>
               <tr v-if="!resident.length">
-                <td colspan="5" style="color:var(--sub)">
+                <td colspan="5" class="empty-row">
                   {{ data.reachable ? t('ollama.resident_empty') : t('ollama.daemon_unreachable') }}
                 </td>
               </tr>
@@ -151,7 +151,7 @@
                 </td>
               </tr>
               <tr v-if="!models.length">
-                <td colspan="7" style="color:var(--sub)">
+                <td colspan="7" class="empty-row">
                   {{ data.reachable ? t('ollama.models_empty') : t('ollama.daemon_unreachable') }}
                 </td>
               </tr>

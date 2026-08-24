@@ -337,7 +337,7 @@
               </td>
             </tr>
             <tr v-if="!(data?.peers || []).length">
-              <td colspan="8" style="color:var(--sub)">{{ loading ? t('common.loading') : t('wg.no_peers') }}</td>
+              <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('wg.no_peers') }}</td>
             </tr>
           </tbody>
         </table>

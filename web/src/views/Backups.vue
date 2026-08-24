@@ -119,7 +119,7 @@
             </td>
           </tr>
           <tr v-if="!rsyncJobs.length && jobsLoaded">
-            <td colspan="5" style="color:var(--sub);font-size:12px">{{ t('backups.no_tasks') }}</td>
+            <td colspan="5" class="empty-row" style="font-size:12px">{{ t('backups.no_tasks') }}</td>
           </tr>
         </tbody>
       </table>
@@ -157,7 +157,7 @@
             </td>
           </tr>
           <tr v-if="!stackJobs.length && jobsLoaded">
-            <td colspan="5" style="color:var(--sub);font-size:12px">{{ t('backups.no_tasks') }}</td>
+            <td colspan="5" class="empty-row" style="font-size:12px">{{ t('backups.no_tasks') }}</td>
           </tr>
         </tbody>
       </table>
@@ -196,7 +196,7 @@
             </td>
           </tr>
           <tr v-if="!backups.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ t('backups.empty') }}</td>
+            <td colspan="5" class="empty-row">{{ t('backups.empty') }}</td>
           </tr>
         </tbody>
       </table>

@@ -45,7 +45,7 @@
             </td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ t('brew.empty') }}</td>
+            <td colspan="5" class="empty-row">{{ t('brew.empty') }}</td>
           </tr>
         </tbody>
       </table>

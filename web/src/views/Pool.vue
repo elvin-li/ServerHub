@@ -138,7 +138,7 @@
             </td>
           </tr>
           <tr v-if="!selectedMembers.length && !loadError">
-            <td colspan="8" style="color:var(--sub)">{{ t('pool.empty_members') }}</td>
+            <td colspan="8" class="empty-row">{{ t('pool.empty_members') }}</td>
           </tr>
         </tbody>
       </table>
@@ -180,7 +180,7 @@
             </td>
           </tr>
           <tr v-if="!availableCandidates.length && !loadError">
-            <td colspan="6" style="color:var(--sub)">{{ t('pool.empty_candidates') }}</td>
+            <td colspan="6" class="empty-row">{{ t('pool.empty_candidates') }}</td>
           </tr>
         </tbody>
       </table>
@@ -216,7 +216,7 @@
             </td>
           </tr>
           <tr v-if="!shownFaults.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ t('pool.empty_faults') }}</td>
+            <td colspan="5" class="empty-row">{{ t('pool.empty_faults') }}</td>
           </tr>
         </tbody>
       </table>

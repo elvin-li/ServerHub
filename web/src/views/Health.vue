@@ -71,7 +71,7 @@
             <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? finiteText(errText(c.fix)) : (c.ok ? '—' : '') }}</td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>
+            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>
           </tr>
         </tbody>
       </table>

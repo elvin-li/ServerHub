@@ -489,7 +489,7 @@
                 <td class="num col-hide-m">{{ withUnit(p.rss_mb, 'M') }}</td>
               </tr>
               <tr v-if="!topProcs.length">
-                <td colspan="4" style="color:var(--sub)">{{ sensors ? t('common.none') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
+                <td colspan="4" class="empty-row">{{ sensors ? t('common.none') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
               </tr>
             </tbody>
           </table>
@@ -579,10 +579,10 @@
               </td>
             </tr>
             <tr v-if="containers && !containers.length">
-              <td colspan="6" style="color:var(--sub)">{{ t('dashboard.no_containers') }}</td>
+              <td colspan="6" class="empty-row">{{ t('dashboard.no_containers') }}</td>
             </tr>
             <tr v-else-if="!containers">
-              <td colspan="6" style="color:var(--sub)">{{ t('common.loading') }}</td>
+              <td colspan="6" class="empty-row">{{ t('common.loading') }}</td>
             </tr>
           </tbody>
         </table>
@@ -645,8 +645,8 @@
               <td class="mono">{{ finiteN(p.port) }}</td>
               <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.address) }}</td>
             </tr>
-            <tr v-if="!ports"><td colspan="3" style="color:var(--sub)">{{ t('common.loading') }}</td></tr>
-            <tr v-else-if="!ports.length"><td colspan="3" style="color:var(--sub)">{{ t('common.none') }}</td></tr>
+            <tr v-if="!ports"><td colspan="3" class="empty-row">{{ t('common.loading') }}</td></tr>
+            <tr v-else-if="!ports.length"><td colspan="3" class="empty-row">{{ t('common.none') }}</td></tr>
           </tbody>
         </table>
         </div>

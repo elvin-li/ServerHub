@@ -52,7 +52,7 @@
             <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(a.message) }}</td>
           </tr>
           <tr v-if="!filtered.length">
-            <td colspan="5" style="color:var(--sub)">{{ t('alerts.filter_empty') }}</td>
+            <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
           </tr>
         </tbody>
       </table>

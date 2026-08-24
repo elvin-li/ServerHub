@@ -39,7 +39,7 @@
                 </td>
               </tr>
               <tr v-if="!stacks.length && !loadError">
-                <td colspan="3" style="color:var(--sub)">{{ t('common.none') }}</td>
+                <td colspan="3" class="empty-row">{{ t('common.none') }}</td>
               </tr>
             </tbody>
           </table>

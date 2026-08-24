@@ -56,7 +56,7 @@
             <td class="mono col-hide-m" style="font-size:11px">{{ (s.upstreams || []).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</td>
           </tr>
           <tr v-if="!(data?.sites || []).length && !loadError">
-            <td colspan="4" style="color:var(--sub)">{{ t('gateway.empty') }}</td>
+            <td colspan="4" class="empty-row">{{ t('gateway.empty') }}</td>
           </tr>
         </tbody>
       </table>

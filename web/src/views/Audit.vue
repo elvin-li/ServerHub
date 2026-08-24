@@ -44,7 +44,7 @@
               <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
             </tr>
             <tr v-if="!filteredRows.length">
-              <td colspan="6" style="color:var(--sub)">{{ t('common.none') }}</td>
+              <td colspan="6" class="empty-row">{{ t('common.none') }}</td>
             </tr>
           </tbody>
         </table>

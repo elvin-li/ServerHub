@@ -149,7 +149,7 @@
               </tr>
             </template>
             <tr v-if="!accounts.length">
-              <td colspan="5" style="color:var(--sub)">
+              <td colspan="5" class="empty-row">
                 {{ finiteText(accountsError, '') || (accountsLoaded ? t('common.none') : t('common.loading')) }}
               </td>
             </tr>
@@ -211,7 +211,7 @@
             </td>
           </tr>
           <tr v-if="!(data?.users||[]).length && !loadError">
-            <td colspan="8" style="color:var(--sub)">{{ loading ? t('common.loading') : t('users.empty') }}</td>
+            <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('users.empty') }}</td>
           </tr>
         </tbody>
       </table>

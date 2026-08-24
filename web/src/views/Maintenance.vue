@@ -45,7 +45,7 @@
             </td>
           </tr>
           <tr v-if="!filtered.length">
-            <td colspan="4" style="color:var(--sub)">
+            <td colspan="4" class="empty-row">
               <!-- A configured-empty page deserves a pointer to where tasks are
                    defined, not a bare "None": the list only ever fills from the
                    maintenance: section of services.yaml (see the example file). -->

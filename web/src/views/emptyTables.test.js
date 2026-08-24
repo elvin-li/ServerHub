@@ -17,6 +17,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync, readdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 const api = vi.hoisted(() => ({
   getSystemNetwork: vi.fn(),
@@ -152,3 +154,24 @@ describe('empty tables', () => {
     wrapper.unmount()
   })
 })
+
+describe('empty-row class', () => {
+  it('styles empty table cells through the shared empty-row class', () => {
+    // Inline color:var(--sub) on colspan cells skipped the hover-exempt
+    // empty-row rule in styles.css and drifted from Network/Services.
+    const dir = resolve(__dirname)
+    const offenders = []
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.vue')) continue
+      const src = readFileSync(resolve(dir, f), 'utf8')
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/<td\b[^>]*colspan="\d+"[^>]*>/g)) {
+        const tag = m[0]
+        if (!/style="[^"]*color:var\(--sub\)/.test(tag)) continue
+        offenders.push(`${f}: ${tag}`)
+      }
+    }
+    expect(offenders, 'empty cells should use class="empty-row"').toEqual([])
+  })
+})
+

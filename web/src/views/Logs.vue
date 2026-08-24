@@ -32,9 +32,9 @@
       <span v-if="filter"> · {{ t('logs.matched', { n: finiteN(displayLines.length) }) }}</span>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="retry" :busy="loading" />
-    <pre v-if="!loaded" class="log-viewer">{{ t('common.loading') }}</pre>
+    <pre v-if="!loaded" class="log-viewer" role="status" aria-live="polite">{{ t('common.loading') }}</pre>
     <pre v-else-if="displayText" class="log-viewer">{{ finiteText(displayText) }}</pre>
-    <pre v-else-if="!loadError" class="log-viewer">{{ t('logs.empty') }}</pre>
+    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ t('logs.empty') }}</pre>
   </div>
 </template>
 

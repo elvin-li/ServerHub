@@ -139,7 +139,7 @@
               <td class="mono" style="max-width:480px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(p.command)">{{ finiteText(p.command) }}</td>
             </tr>
             <tr v-if="!filteredProc.length">
-              <td colspan="6" style="color:var(--sub)">{{ t('common.no_match') }}</td>
+              <td colspan="6" class="empty-row">{{ t('common.no_match') }}</td>
             </tr>
           </tbody>
         </table>
@@ -174,7 +174,7 @@
               <td>{{ finiteText(l.reclaimable) }}</td>
             </tr>
             <tr v-if="!(df.lines||[]).length && !tabError.docker">
-              <td colspan="5" style="color:var(--sub)">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
+              <td colspan="5" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -205,7 +205,7 @@
               <td class="mono">{{ finiteText(c.size) }}</td>
             </tr>
             <tr v-if="!sizes.length">
-              <td colspan="4" style="color:var(--sub)">{{ t('tools.no_data') }}</td>
+              <td colspan="4" class="empty-row">{{ t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -244,7 +244,7 @@
               <td class="mono col-hide-m" style="max-width:360px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(row.program)">{{ finiteText(row.program) }}</td>
             </tr>
             <tr v-if="!timers.length && !tabError.sched">
-              <td colspan="4" style="color:var(--sub)">{{ t('tools.no_timers') }}</td>
+              <td colspan="4" class="empty-row">{{ t('tools.no_timers') }}</td>
             </tr>
           </tbody>
         </table>
@@ -275,7 +275,7 @@
               <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(a.program)">{{ finiteText(a.program) }}</td>
             </tr>
             <tr v-if="!(agents.agents||[]).length && !tabError.sched">
-              <td colspan="5" style="color:var(--sub)">{{ t('tools.no_agents') }}</td>
+              <td colspan="5" class="empty-row">{{ t('tools.no_agents') }}</td>
             </tr>
           </tbody>
         </table>
@@ -455,7 +455,7 @@
               <td class="mono">{{ finiteText(p.name) }}</td>
             </tr>
             <tr v-if="!(ports.ports||[]).length">
-              <td colspan="4" style="color:var(--sub)">{{ t('tools.no_data') }}</td>
+              <td colspan="4" class="empty-row">{{ t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>

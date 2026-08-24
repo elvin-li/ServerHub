@@ -99,7 +99,7 @@
             </td>
           </tr>
           <tr v-if="!arrayDevices.length && !loadError">
-            <td colspan="9" style="color:var(--sub)">{{ t('main_extra.empty_array_vols') }}</td>
+            <td colspan="9" class="empty-row">{{ t('main_extra.empty_array_vols') }}</td>
           </tr>
         </tbody>
       </table>
@@ -143,7 +143,7 @@
             </td>
           </tr>
           <tr v-if="!unassigned.length && !loadError && !pendingFull">
-            <td colspan="7" style="color:var(--sub)">{{ t('main_extra.empty_unassigned') }}</td>
+            <td colspan="7" class="empty-row">{{ t('main_extra.empty_unassigned') }}</td>
           </tr>
         </tbody>
       </table>
@@ -225,7 +225,7 @@
             </td>
           </tr>
           <tr v-if="!powerDisks.length && !loadError && !pendingFull">
-            <td colspan="9" style="color:var(--sub)">{{ t('main_extra.empty_disks') }}</td>
+            <td colspan="9" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
           </tr>
         </tbody>
       </table>
@@ -422,7 +422,7 @@
             </td>
           </tr>
           <tr v-if="!managedVols.length && !loadError && !pendingFull">
-            <td colspan="6" style="color:var(--sub)">{{ t('main_extra.no_vols') }}</td>
+            <td colspan="6" class="empty-row">{{ t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
       </table>
