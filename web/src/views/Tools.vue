@@ -274,6 +274,9 @@
               <td class="mono">{{ finiteN(a.interval_sec, null) ? withUnit(a.interval_sec, 's') : (a.calendar ? 'cal' : '—') }}</td>
               <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(a.program)">{{ finiteText(a.program) }}</td>
             </tr>
+            <tr v-if="!(agents.agents||[]).length && !tabError.sched">
+              <td colspan="5" style="color:var(--sub)">{{ t('tools.no_agents') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
