@@ -20,7 +20,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from hub import audit, rsync_svc, scheduler_svc
-from hub.auth import request_username
+from hub.auth import request_client_id, request_username
 from hub.errors import api_error
 
 router = APIRouter(tags=["scheduler"])
@@ -238,7 +238,8 @@ def create_job(body: JobBody, request: Request):
     record = _validated_record(body, jid)
     scheduler_svc.save_job(record)
     audit.record(audit.SCHEDULE_JOB_CREATED,
-                 username=request_username(request), **_audit_fields(record))
+                 username=request_username(request),
+                 client=request_client_id(request), **_audit_fields(record))
     return {"ok": True, "job": _public_job(record)}
 
 
@@ -251,7 +252,8 @@ def update_job(jid: str, body: JobBody, request: Request):
     record = _validated_record(body, jid)
     scheduler_svc.save_job(record)
     audit.record(audit.SCHEDULE_JOB_UPDATED,
-                 username=request_username(request), **_audit_fields(record))
+                 username=request_username(request),
+                 client=request_client_id(request), **_audit_fields(record))
     return {"ok": True, "job": _public_job(record)}
 
 
@@ -263,7 +265,8 @@ def delete_job(jid: str, request: Request):
     if job is None or not scheduler_svc.delete_job(jid):
         raise api_error("scheduler.not_found", id=jid)
     audit.record(audit.SCHEDULE_JOB_DELETED,
-                 username=request_username(request), **_audit_fields(job))
+                 username=request_username(request),
+                 client=request_client_id(request), **_audit_fields(job))
     return {"ok": True}
 
 
@@ -275,7 +278,8 @@ def enable_job(jid: str, body: EnableBody, request: Request):
     if job is None:
         raise api_error("scheduler.not_found", id=jid)
     audit.record(audit.SCHEDULE_JOB_UPDATED,
-                 username=request_username(request), **_audit_fields(job))
+                 username=request_username(request),
+                 client=request_client_id(request), **_audit_fields(job))
     return {"ok": True, "job": _public_job(job)}
 
 
@@ -289,7 +293,8 @@ def run_job_now(jid: str, request: Request):
     if scheduler_svc.is_running(jid):
         raise api_error("scheduler.running")
     audit.record(audit.SCHEDULE_JOB_RUN,
-                 username=request_username(request), **_audit_fields(job))
+                 username=request_username(request),
+                 client=request_client_id(request), **_audit_fields(job))
     return scheduler_svc.run_job_now(jid)
 
 

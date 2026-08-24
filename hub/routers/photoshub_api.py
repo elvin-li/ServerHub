@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from hub import audit, photoshub_svc
-from hub.auth import request_username
+from hub.auth import request_client_id, request_username
 from hub.errors import api_error, exc_detail
 
 router = APIRouter(tags=["photoshub"])
@@ -131,6 +131,7 @@ def pending_remove(body: IdsBody, request: Request):
     audit.record(
         "photoshub.pending_remove",
         username=request_username(request) or "unknown",
+        client=request_client_id(request),
         detail=f"removed={result.get('removed')}",
     )
     return result
@@ -151,6 +152,7 @@ def run_action(body: ActionBody, request: Request):
     audit.record(
         "photoshub.action",
         username=request_username(request) or "unknown",
+        client=request_client_id(request),
         detail=f"action={action} ok={result.get('ok')}",
     )
     return result
@@ -178,6 +180,7 @@ def patch_config(body: ConfigPatch, request: Request):
     audit.record(
         "photoshub.config",
         username=request_username(request) or "unknown",
+        client=request_client_id(request),
         detail="updated=" + ",".join(sorted(patch)) if patch else "noop",
     )
     return result
