@@ -1656,6 +1656,7 @@ export default {
   audit: {
     title: '監査ログ',
     meta: 'サインイン・失敗・資格情報の変更',
+    filter_ph: 'イベント絞り込み…',
     empty: '認証イベントの記録はまだありません。',
     time: '時刻',
     event: 'イベント',

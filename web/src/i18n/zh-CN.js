@@ -1658,6 +1658,7 @@ export default {
   audit: {
     title: '审计日志',
     meta: '登录、失败与凭据变更记录',
+    filter_ph: '筛选事件…',
     empty: '暂无认证事件记录。',
     time: '时间',
     event: '事件',

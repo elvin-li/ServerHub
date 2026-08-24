@@ -1660,6 +1660,7 @@ export default {
   audit: {
     title: 'Audit log',
     meta: 'Sign-ins, failures and credential changes',
+    filter_ph: 'Filter events…',
     empty: 'No authentication events recorded yet.',
     time: 'Time',
     event: 'Event',

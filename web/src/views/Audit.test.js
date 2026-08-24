@@ -82,6 +82,37 @@ describe('Audit leave-guards', () => {
     wrapper.unmount()
   })
 
+  it('filters rows across every rendered column', async () => {
+    api.getAuthAudit.mockResolvedValue({
+      entries: [
+        { ts: 1, event: 'auth.login.ok', username: 'alice', client: '10.0.0.5', outcome: 'success' },
+        { ts: 2, event: 'auth.login.failed', username: 'bob', client: '10.0.0.9', outcome: 'failure', reason: 'bad password' },
+      ],
+      retained_lines: 2,
+    })
+    const wrapper = mount(Audit, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+    const input = wrapper.find('input[type="text"]')
+
+    await input.setValue('alice')
+    expect(wrapper.text()).toContain('alice')
+    expect(wrapper.text()).not.toContain('bob')
+
+    // Extra detail fields count too — that is where failure reasons live.
+    await input.setValue('bad password')
+    expect(wrapper.text()).toContain('bob')
+    expect(wrapper.text()).not.toContain('alice')
+
+    await input.setValue('no-such-thing')
+    expect(wrapper.text()).toContain('common.none')
+    wrapper.unmount()
+  })
+
   it('polls while mounted and stops the poller on leave', async () => {
     const wrapper = mount(Audit, {
       global: {

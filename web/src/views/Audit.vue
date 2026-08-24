@@ -7,6 +7,7 @@
 
     <div class="toolbar">
       <button class="primary" :disabled="busy" @click="refresh(true)">{{ t('common.refresh') }}</button>
+      <input v-model="q" type="text" :placeholder="t('audit.filter_ph')" :aria-label="t('audit.filter_ph')" />
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
@@ -27,7 +28,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(e, i) in rows" :key="i">
+            <tr v-for="(e, i) in filteredRows" :key="i">
               <td class="mono col-hide-m">{{ fmt(e.ts) }}</td>
               <td class="mono">
                 {{ finiteText(e.event) }}
@@ -41,6 +42,9 @@
                 <span class="badge" :class="badgeClass(e.outcome)">{{ finiteText(e.outcome) }}</span>
               </td>
               <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
+            </tr>
+            <tr v-if="!filteredRows.length">
+              <td colspan="6" style="color:var(--sub)">{{ t('common.none') }}</td>
             </tr>
           </tbody>
         </table>
@@ -77,6 +81,20 @@ let loadGeneration = 0
 // happened, not at the start of the file. The API returns oldest-first because
 // that is the natural order of an append-only log.
 const rows = computed(() => entries.value.slice().reverse())
+
+// Text filter over every rendered column — the same convention as the
+// Maintenance task filter.  200 rows of mixed sign-ins need "which of these
+// touched user X / came from client Y" to be one keystroke, not a scan.
+const q = ref('')
+const filteredRows = computed(() => {
+  const needle = q.value.trim().toLowerCase()
+  if (!needle) return rows.value
+  return rows.value.filter((e) => (
+    `${e.event || ''} ${e.username || ''} ${e.client || ''} ${e.outcome || ''} ${detail(e)}`
+      .toLowerCase()
+      .includes(needle)
+  ))
+})
 
 function fmt(ts) {
   if (ts == null || ts === '') return ''
