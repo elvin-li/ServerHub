@@ -681,6 +681,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.datetime') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.datetime_hint') }}</p>
+        <!-- The read-only system tabs render nothing but their headings while
+             the bundle is missing, so a failed read looked like an empty page
+             with no explanation and no way to retry. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.datetime">
           <label>{{ t('settings.now') }}</label>
           <div class="mono">{{ finiteText(sysBundle.datetime.now) }}</div>
@@ -825,6 +830,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.network') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.network_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.alias_auto">
           <label>{{ t('settings.auto_bind') }}</label>
           <div>
@@ -865,6 +873,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.shares') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.shares_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.shares">
           <label>smbd</label>
           <div>
@@ -888,6 +899,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.scheduler') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.scheduler_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.scheduler">
           <label>{{ t('settings.timer_count') }}</label>
           <div>{{ finiteN(sysBundle.scheduler.count, 0) }}</div>
@@ -916,6 +930,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.access') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.access_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.management">
           <label>{{ t('settings.panel_port') }}</label>
           <div class="mono">{{ finiteN(sysBundle.management.panel_port) }}</div>
@@ -1052,7 +1069,9 @@
           <router-link class="btn" to="/health">{{ t('nav.health') }}</router-link>
           <router-link class="btn" to="/logs">{{ t('nav.logs') }}</router-link>
         </div>
-        <p class="hint" v-if="diagMsg" style="margin-top:12px">{{ finiteText(diagMsg) }}</p>
+        <!-- role=status: the saved path (or the save failure) lands here after
+             the click; without a live region it appeared silently. -->
+        <p class="hint" v-if="diagMsg" style="margin-top:12px" role="status">{{ finiteText(diagMsg) }}</p>
       </div>
       <div class="card" v-if="diagPreview">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.diag_preview') }}</h2>

@@ -10,7 +10,10 @@
       <button :disabled="busy" @click="doCfg">{{ t('backups.cfg') }}</button>
       <button :disabled="busy" @click="refresh">{{ t('backups.refresh_list') }}</button>
     </div>
-    <div v-if="msg" class="card" style="margin-bottom:12px;white-space:pre-wrap;font-size:13px">{{ finiteText(msg) }}</div>
+    <!-- role=status: this card is the only durable record of what a backup
+         button just did (the toast is gone in four seconds), and it filled in
+         silently for a screen reader. -->
+    <div v-if="msg" class="card" style="margin-bottom:12px;white-space:pre-wrap;font-size:13px" role="status" aria-live="polite">{{ finiteText(msg) }}</div>
 
     <div v-if="layers" class="tile" style="margin-bottom:12px" data-test="immich-layers">
       <div class="row">
