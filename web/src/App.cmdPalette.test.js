@@ -192,3 +192,81 @@ describe('the command palette highlight', () => {
     wrapper.unmount()
   })
 })
+
+describe('what the command palette tells a screen reader', () => {
+  /**
+   * The arrow keys move a highlight that lives on a list item while focus
+   * stays in the text field.  Nothing about that reaches assistive
+   * technology on its own: without aria-activedescendant the reader hears
+   * their own keystrokes and silence, however far down the list they walk.
+   */
+  function activeRowText(wrapper) {
+    const pointer = wrapper.get('.cmd-palette input').attributes('aria-activedescendant')
+    if (!pointer) return null
+    return wrapper.get(`#${pointer}`).get('span').text()
+  }
+
+  it('points the text field at the row it has highlighted', async () => {
+    const wrapper = await openPalette()
+    const input = wrapper.get('.cmd-palette input')
+    await input.trigger('keydown', { key: 'ArrowDown' })
+
+    const highlightedRow = rows(wrapper).find((li) => li.classes('active'))
+    expect(activeRowText(wrapper)).toBe(highlightedRow.get('span').text())
+    wrapper.unmount()
+  })
+
+  it('follows the highlight as the arrow keys move it', async () => {
+    const wrapper = await openPalette()
+    const input = wrapper.get('.cmd-palette input')
+    const walked = []
+    for (let i = 0; i < 3; i += 1) {
+      walked.push(activeRowText(wrapper))
+      await input.trigger('keydown', { key: 'ArrowDown' })
+    }
+    expect(new Set(walked).size).toBe(3)
+    wrapper.unmount()
+  })
+
+  it('offers the results as a listbox of options', async () => {
+    const wrapper = await openPalette()
+    const input = wrapper.get('.cmd-palette input')
+    const list = wrapper.get('.cmd-list')
+
+    expect(input.attributes('role')).toBe('combobox')
+    expect(input.attributes('aria-controls')).toBe(list.attributes('id'))
+    expect(list.attributes('role')).toBe('listbox')
+    expect(rows(wrapper).every((li) => li.attributes('role') === 'option')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('marks exactly one option selected', async () => {
+    const wrapper = await openPalette()
+    await wrapper.get('.cmd-palette input').trigger('keydown', { key: 'ArrowDown' })
+
+    const selected = rows(wrapper).filter((li) => li.attributes('aria-selected') === 'true')
+    expect(selected).toHaveLength(1)
+    expect(selected[0].classes()).toContain('active')
+    wrapper.unmount()
+  })
+
+  it('points at nothing rather than at a row that is not there', async () => {
+    // "No matches" is a message about the list, not a choice inside it, so
+    // it is not an option and there is nothing for the pointer to name.
+    // Signed in as a member: an admin's palette always keeps the "ask the
+    // assistant" row, so it is the only account that can empty the list.
+    applyAuthStatus({
+      authenticated: true, username: 'mom', role: 'member',
+      resources: [], can_manage: false,
+    })
+    const wrapper = await openPalette()
+    const input = wrapper.get('.cmd-palette input')
+    await input.setValue('zzz-no-such-page')
+    await flushPromises()
+
+    expect(rows(wrapper)).toHaveLength(0)
+    expect(input.attributes('aria-activedescendant')).toBeUndefined()
+    expect(wrapper.get('.cmd-empty').attributes('role')).toBe('presentation')
+    wrapper.unmount()
+  })
+})

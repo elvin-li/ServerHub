@@ -159,19 +159,34 @@
         :aria-label="t('common.cmd_title')"
         tabindex="-1"
       >
+        <!--
+          Combobox, not a bare text field: arrow keys move a highlight that
+          lives on another element while focus stays here, so without
+          aria-activedescendant a screen reader announces nothing at all as
+          the reader walks the results.
+        -->
         <input
           ref="cmdInput"
           v-model="cmdQuery"
           type="text"
+          role="combobox"
+          aria-expanded="true"
+          aria-autocomplete="list"
+          aria-controls="cmd-list"
+          :aria-activedescendant="cmdFlat.length ? `cmd-opt-${cmdIdx}` : undefined"
+          :aria-label="t('common.cmd_title')"
           :placeholder="t('common.cmd_ph')"
           @keydown.enter="cmdGo(cmdIdx)"
           @keydown.up.prevent="cmdIdx = Math.max(0, cmdIdx - 1)"
           @keydown.down.prevent="cmdIdx = Math.min(cmdFlat.length - 1, cmdIdx + 1)"
         />
-        <ul class="cmd-list">
+        <ul id="cmd-list" class="cmd-list" role="listbox" :aria-label="t('common.cmd_title')">
           <li
             v-for="(item, i) in cmdFlat"
             :key="item.to"
+            :id="`cmd-opt-${i}`"
+            role="option"
+            :aria-selected="i === cmdIdx"
             :class="{ active: i === cmdIdx, 'cmd-ai': item.type === 'ai' }"
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
@@ -179,7 +194,9 @@
             <span>{{ item.type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(item.query) }) : (finiteText(item.title, '') || t(item.labelKey)) }}</span>
             <kbd>{{ item.type === 'ai' ? t('assistant.short') : finiteText(item.to) }}</kbd>
           </li>
-          <li v-if="!cmdFlat.length" class="cmd-empty">{{ t('common.cmd_empty') }}</li>
+          <!-- role=presentation: a listbox may only own options, and "no
+               matches" is a message about the list, not a choice in it. -->
+          <li v-if="!cmdFlat.length" class="cmd-empty" role="presentation">{{ t('common.cmd_empty') }}</li>
         </ul>
       </div>
     </div>
