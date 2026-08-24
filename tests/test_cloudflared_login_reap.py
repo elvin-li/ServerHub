@@ -27,6 +27,9 @@ class LoginProcessTestBase(unittest.TestCase):
         patches = (
             mock.patch.object(cloudflared_svc, "CERT", root / "cert.pem"),
             mock.patch.object(cloudflared_svc, "LOGIN_PID", root / "login.pid"),
+            # login_poll clears LOGIN_LOG on success; without this patch the
+            # suite wrote a real ~/Services/cloudflared/login.log on the host.
+            mock.patch.object(cloudflared_svc, "LOGIN_LOG", root / "login.log"),
             mock.patch.object(cloudflared_svc, "LOGIN_URL_FILE", root / "login.url"),
         )
         for patcher in patches:

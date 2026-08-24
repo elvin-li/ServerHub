@@ -37,7 +37,10 @@ Run these from the repo root. Standard commands are documented in `README.md`
 
 - Run (dev): `.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8086 --reload`
   (binds loopback:8086). `SERVERHUB_HOST=0.0.0.0` opens it to the VM's network.
-- Backend tests: `.venv/bin/python -m unittest discover -s tests -q`
+- Backend tests: `.venv/bin/python -m unittest discover -s tests -t . -q`
+  (`-t .` imports the `tests` package so its `__init__.py` can redirect
+  mutable panel state to a temp dir; without it the suite writes
+  `services.yaml` and `data/` into the checkout)
 - Frontend tests: `npm --prefix web test`
 - Frontend build: `npm --prefix web run build`
 - Dead-code check: `npm --prefix web run check:dead-code`

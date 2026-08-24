@@ -113,7 +113,9 @@ class HostMutationTests(unittest.TestCase):
                 f"hub.paths.{name} ({value}) resolved inside the checkout "
                 f"({BASE}); the suite would write panel state into the "
                 "working tree. tests/__init__.py sets SERVERHUB_STATE_DIR "
-                "before hub is imported -- something imported hub first.",
+                "before hub is imported, but it only runs when discovery "
+                "imports the tests *package*: run "
+                "`python -m unittest discover -s tests -t . -q` (note -t .).",
             )
 
     def test_the_detector_catches_the_shape_it_exists_for(self):
