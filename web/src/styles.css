@@ -2456,6 +2456,43 @@ html[data-theme="macos-dark"] .range-btns .btn.primary {
   background: #636366;
   color: var(--header-txt);
 }
+
+/* Settings › Appearance: keep the *selected* language, density and theme
+   visible on the macOS palettes.
+
+   The generic `.lang-row button.active` / `.density-row button.active` /
+   `.theme-card.active` rules already paint the selection, but they score (0,2,1)
+   against the macOS neutral-button rule's (0,5,1) — four `:not(.class)` guards
+   count toward specificity — so on the two default themes the active control
+   resolved to exactly the same fill, border and shadow as its siblings. The
+   theme picker was the worst of it: nothing on the card grid said which theme
+   was currently applied.
+
+   Re-stated at the theme's own weight, mirroring how `.tabs button.active`
+   above already solves this. */
+html[data-theme="macos"] .lang-row button.active,
+html[data-theme="macos"] .lang-row button.active:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+html[data-theme="macos"] .density-row button.active,
+html[data-theme="macos"] .density-row button.active:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .lang-row button.active,
+html[data-theme="macos-dark"] .lang-row button.active:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .density-row button.active,
+html[data-theme="macos-dark"] .density-row button.active:not(.primary):not(.danger):not(.mac-switch):not(.hamburger) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12);
+}
+html[data-theme="macos"] .theme-card.active,
+html[data-theme="macos"] .theme-card.active:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .theme-card.active,
+html[data-theme="macos-dark"] .theme-card.active:not(.primary):not(.danger):not(.mac-switch):not(.hamburger) {
+  /* A ring rather than a fill: the card's job is to preview its own palette,
+     so repainting its background would defeat the swatches it exists to show. */
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 @media (max-width: 640px) {
   html[data-theme="macos"] .tabs,
   html[data-theme="macos-dark"] .tabs {
