@@ -312,12 +312,107 @@ describe('theme', () => {
           .filter(Boolean)
       }
 
-      expect(listOf('dark').sort()).toEqual([...DARK].sort())
-      expect(listOf('light').sort()).toEqual([...LIGHT].sort())
+      expect(listOf('darkThemes').sort()).toEqual([...DARK].sort())
+      expect(listOf('lightThemes').sort()).toEqual([...LIGHT].sort())
       expect(html).toContain("serverhub.themeFamily")
       expect(html).toContain("serverhub.followSystem")
       expect(html).toContain("prefers-color-scheme: dark")
       expect(html).toContain("t === 'system'")
+    })
+  })
+
+  describe('the pre-paint bootstrap and this module', () => {
+    /**
+     * The bootstrap runs before the bundle; this module runs after it. Whatever
+     * the first one paints, the second one repaints — so any disagreement is a
+     * visible two-step on load, which is the flash the bootstrap exists to
+     * prevent. The list comparison above catches a drifting light/dark array
+     * and nothing else: it cannot see the resolution in between, which is where
+     * follow-system, the remembered family, legacy `system` and unpaired themes
+     * are decided.
+     *
+     * So run the real script out of index.html against the real module, over
+     * the storage states an operator can actually be in, and require the four
+     * attributes they both write to come out identical.
+     */
+    const BOOTSTRAP = (() => {
+      const html = readFileSync(INDEX_HTML, 'utf8')
+      const match = html.match(/<script>([\s\S]*?)<\/script>/)
+      if (!match) throw new Error('index.html no longer ships a pre-paint script')
+      return match[1]
+    })()
+
+    const STATES = [
+      ['nothing stored', {}],
+      ['nothing stored, OS dark', {}, true],
+      ['a dark theme pinned', { 'serverhub.theme': 'macos-dark', 'serverhub.followSystem': '0' }],
+      ['a dark theme while following an OS in light', {
+        'serverhub.theme': 'macos-dark', 'serverhub.followSystem': '1' }],
+      ['a light theme while following an OS in dark', {
+        'serverhub.theme': 'macos', 'serverhub.followSystem': '1' }, true],
+      ['legacy theme=system', { 'serverhub.theme': 'system' }, true],
+      ['legacy theme=system with follow off', {
+        'serverhub.theme': 'system', 'serverhub.followSystem': '0' }, true],
+      ['the unraid family remembered', {
+        'serverhub.themeFamily': 'unraid', 'serverhub.followSystem': '1' }, true],
+      ['unraid-dark pinned', {
+        'serverhub.theme': 'unraid-dark', 'serverhub.followSystem': '0' }],
+      ['an unpaired theme while following', {
+        'serverhub.theme': 'nord', 'serverhub.followSystem': '1' }, true],
+      ['mono, the light theme that looks dark', {
+        'serverhub.theme': 'mono', 'serverhub.followSystem': '0' }, true],
+      ['glass', { 'serverhub.theme': 'glass', 'serverhub.followSystem': '0' }],
+      ['a theme id that is not in the catalogue', {
+        'serverhub.theme': 'sunset', 'serverhub.followSystem': '0' }, true],
+      ['a comfortable density', {
+        'serverhub.theme': 'docker', 'serverhub.followSystem': '0',
+        'serverhub.density': 'comfortable' }],
+      ['a locale', { 'serverhub.locale': 'ja', 'serverhub.followSystem': '0' }],
+    ]
+
+    /** data-theme / data-color-mode / data-density / theme-color, as painted. */
+    function painted() {
+      return {
+        theme: root().getAttribute('data-theme'),
+        colorMode: root().getAttribute('data-color-mode'),
+        density: root().getAttribute('data-density'),
+        themeColor: document.querySelector('meta[name="theme-color"]')?.getAttribute('content'),
+      }
+    }
+
+    function reset(storage, osDark) {
+      localStorage.clear()
+      for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value)
+      root().removeAttribute('data-theme')
+      root().removeAttribute('data-color-mode')
+      root().removeAttribute('data-density')
+      document.head.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.remove())
+      installThemeColorMeta()
+      stubPrefersDark(Boolean(osDark))
+    }
+
+    for (const [label, storage, osDark] of STATES) {
+      it(`paint the same thing with ${label}`, () => {
+        reset(storage, osDark)
+        // eslint-disable-next-line no-new-func
+        new Function(BOOTSTRAP)()
+        const beforeBundle = painted()
+
+        reset(storage, osDark)
+        provideTheme(createApp({}))
+        const afterBundle = painted()
+
+        expect(beforeBundle).toEqual(afterBundle)
+      })
+    }
+
+    it('really did paint something, in both halves', () => {
+      reset({ 'serverhub.theme': 'macos-dark', 'serverhub.followSystem': '0' })
+      // eslint-disable-next-line no-new-func
+      new Function(BOOTSTRAP)()
+      expect(painted()).toEqual({
+        theme: 'macos-dark', colorMode: 'dark', density: 'compact', themeColor: '#1C1C1E',
+      })
     })
   })
 
