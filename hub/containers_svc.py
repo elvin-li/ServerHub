@@ -357,7 +357,7 @@ def _friendly_container(name: str, ov: dict) -> dict:
 
 def _build_container_list() -> tuple[bool, list]:
     """ps + inspect (no stats). ~50–100ms typical."""
-    if not engine_up():
+    if not engine_up(force=True):
         return False, []
     rc, out, err = docker(
         "ps", "-a",
@@ -699,7 +699,7 @@ def check_image_update(image: str) -> dict:
 
 def start_check_updates_job(images: list[str] | None = None) -> dict:
     """Background: check updates for all (or given) images used by containers."""
-    if not engine_up():
+    if not engine_up(force=True):
         raise api_error("container.engine_down")
     if not images:
         images = sorted({
@@ -1083,9 +1083,14 @@ def _raise_list_failure(kind: str):
     dependency that is off.
 
     ``engine_up`` is consulted only after a failure, so the healthy path
-    does not pay for an extra ``docker info`` (and it is cached anyway).
+    does not pay for an extra ``docker info``.  The probe is *forced*:
+    the memoised value has a 5s TTL, so for the first seconds after the
+    engine stops the cache still says "up" and the failure this function
+    exists to classify would be misreported as ``container.list_failed``
+    (500).  A fresh probe on the failure path is cheap -- failures are
+    rare -- and is the one moment the cached answer must not be trusted.
     """
-    if not engine_up():
+    if not engine_up(force=True):
         raise api_error("container.engine_down")
     raise api_error("container.list_failed", kind=kind)
 
@@ -1204,7 +1209,7 @@ def rename_container(name: str, new_name: str) -> dict:
 def create_run_container(body: dict) -> dict:
     """docker run -d with common options from panel form."""
     import re
-    if not engine_up():
+    if not engine_up(force=True):
         raise api_error("container.engine_down")
     # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
     # used to 500 POST /api/containers/run.
