@@ -21,10 +21,12 @@ TTL. Consolidating them means the property is asserted once, here, instead of be
 re-established per module.
 
 Two page caches stay hand-written on purpose and are exempted below with reasons:
-``network_svc`` needs a generation counter so an invalidation during a build cannot
-be overwritten by that build, and ``status.full_status`` serves the last good
-snapshot when a rebuild raises. Neither behaviour belongs in the shared helper, and
-both are already single-flight.
+``network_svc`` coalesces a ``force=True`` caller onto a refresh already in flight,
+and ``status.full_status`` serves the last good snapshot when a rebuild raises.
+Neither behaviour belongs in the shared helper, and both are already single-flight.
+The third reason ``network_svc`` used to give -- a generation counter, so that an
+invalidation landing mid-build is not overwritten when the build finishes -- is no
+longer one: both shared helpers do that now, and it is asserted below.
 
 A static scan of this was written first and produced two false positives -- exactly
 those two -- because their work happens inside a ``_build_*()`` call the token list
@@ -563,8 +565,9 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
     #: shape the helper replaced.
     EXEMPT = {
         "hub/network_svc.py":
-            "generation counter: an invalidation during a build must not be "
-            "overwritten when that build finishes",
+            "a refresh serial, so a force=True caller that queued behind another "
+            "refresh reuses that refresh instead of running a second one; also "
+            "hands out a copy per caller rather than the shared list",
         "hub/status.py":
             "serves the last good snapshot when a rebuild raises",
         "hub/health_svc.py": "single-flight via its own _refresh_lock",
