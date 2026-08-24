@@ -47,7 +47,7 @@ class CiWorkflowInvariants(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('python-version: "3.12"', text)
         self.assertIn('node-version: "22"', text)
-        self.assertIn("python -m unittest discover -s tests -q", text)
+        self.assertIn("python -m unittest discover -s tests -t . -q", text)
         self.assertIn("npm --prefix web test", text)
         self.assertIn("grep -vE '^(rumps|pyobjc)'", text)
 
