@@ -2451,6 +2451,19 @@ html[data-theme="macos-dark"] .theme-card.active:not(.primary):not(.danger):not(
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
+/* Tools launcher tiles — same specificity trap as the pickers above.  A tool
+   tile is a card that happens to be a <button>, but the control rules squashed
+   it to 4px 12px / radius 8 and, in dark, repainted it #3a3a3c: --sub body text
+   on that fill is 3.9:1, and it was the only tile in the theme not on --card. */
+html[data-theme="macos"] .tool-tile,
+html[data-theme="macos"] .tool-tile:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .tool-tile,
+html[data-theme="macos-dark"] .tool-tile:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  background: var(--card);
+  border-color: var(--line);
+  padding: 12px 12px 14px;
+  border-radius: var(--radius-lg);
+}
 @media (max-width: 640px) {
   html[data-theme="macos"] .tabs,
   html[data-theme="macos-dark"] .tabs {
