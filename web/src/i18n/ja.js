@@ -180,6 +180,7 @@ export default {
     menu: 'メニュー',
     back_to_top: '先頭へ戻る',
     main_nav: 'メインナビゲーション',
+    skip_to_content: 'コンテンツへスキップ',
     section_nav: 'セクションナビゲーション',
     sort_by: '並べ替え',
     select_all: 'すべての行を選択',

@@ -1,6 +1,9 @@
 <template>
   <router-view v-if="route.meta.authPage" />
   <div v-else class="layout">
+    <!-- WCAG 2.4.1: the nav is 18 tab stops wide and repeats on every page, so
+         a keyboard user cannot reach the page body without walking all of it. -->
+    <a class="skip-link" href="#main-content" @click="focusMain">{{ t('common.skip_to_content') }}</a>
     <header ref="topchromeEl" class="topchrome">
       <div class="topchrome-inner">
         <button
@@ -125,7 +128,7 @@
     <div class="nav-overlay" :class="{ show: menuOpen }" @click="menuOpen = false"></div>
     <!-- Offline banner -->
     <div v-if="offline" class="offline-banner" role="alert">⚠ {{ t('common.offline_banner') }}</div>
-    <main class="main" role="main">
+    <main id="main-content" ref="mainEl" class="main" role="main" tabindex="-1">
       <router-view v-slot="{ Component }">
         <transition name="page-fade" mode="out-in">
           <component :is="Component" />
@@ -248,6 +251,7 @@ const photoHubOk = ref(false)
 const menuOpen = ref(false)
 const navPanel = ref(null)
 const topchromeEl = ref(null)
+const mainEl = ref(null)
 const isNarrow = ref(false)
 const offline = ref(!navigator.onLine)
 let narrowMq = null
@@ -258,6 +262,23 @@ const navInert = computed(() => isNarrow.value && !menuOpen.value)
 
 function closeMenu() {
   menuOpen.value = false
+}
+
+/**
+ * Hand the keyboard to the page body without touching the URL.
+ *
+ * Letting the anchor navigate to `#main-content` would push a history entry
+ * whose only difference is a hash, so Back would appear to do nothing; the
+ * router also has one real hash target (`/#remote`) that a stray fragment
+ * would fight with.  Focusing the region is what actually moves the tab
+ * sequence, and `.main` already suppresses its focus ring, so nothing paints.
+ */
+function focusMain(event) {
+  event?.preventDefault?.()
+  const el = mainEl.value
+  if (!el) return
+  el.focus?.({ preventScroll: true })
+  el.scrollIntoView?.({ block: 'start' })
 }
 
 function fmtLoad(v) {

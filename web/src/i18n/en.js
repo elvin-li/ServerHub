@@ -180,6 +180,7 @@ export default {
     menu: 'Menu',
     back_to_top: 'Back to top',
     main_nav: 'Main navigation',
+    skip_to_content: 'Skip to content',
     section_nav: 'Section navigation',
     sort_by: 'Sort by',
     select_all: 'Select all rows',

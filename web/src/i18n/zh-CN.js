@@ -181,6 +181,7 @@ export default {
     menu: '菜单',
     back_to_top: '回到顶部',
     main_nav: '主导航',
+    skip_to_content: '跳到主要内容',
     section_nav: '栏目导航',
     sort_by: '排序方式',
     select_all: '全选所有行',
