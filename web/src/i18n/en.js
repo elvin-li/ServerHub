@@ -1372,7 +1372,6 @@ export default {
     disabled: 'Disabled',
     edit_ip: 'Edit IP',
     edit: 'Edit',
-    no_services: 'No network services',
     ip_hint: 'Configure via networksetup (DHCP / static IP). May need admin rights and briefly disrupt connectivity.',
     host_ph: 'Hostname / domain',
     resolve: 'Resolve',

@@ -1370,7 +1370,6 @@ export default {
     disabled: '禁用',
     edit_ip: '编辑 IP',
     edit: '编辑',
-    no_services: '无网络服务',
     ip_hint: '通过 networksetup 配置系统网络服务（DHCP / 静态 IP）。修改可能需要管理员权限，且会短暂中断网络。',
     host_ph: '主机名 / 域名',
     resolve: '解析',

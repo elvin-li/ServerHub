@@ -2298,9 +2298,9 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
   /* var(--ok) on its own 16% tint is 1.9:1 — the least legible text in the
-     panel. Mixing toward --txt keeps the green reading as "native" on both
-     palettes while clearing WCAG AA. */
-  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
+     panel. --ok-text keeps the green reading as "native" on both palettes
+     while clearing WCAG AA. */
+  color: var(--ok-text);
 }
 
 .chip-docker {
@@ -2330,7 +2330,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .chip-ok {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
+  color: var(--ok-text);
 }
 
 .chip-muted {

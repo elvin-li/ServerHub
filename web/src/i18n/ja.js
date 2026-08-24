@@ -1368,7 +1368,6 @@ export default {
     disabled: '無効',
     edit_ip: 'IP 編集',
     edit: '編集',
-    no_services: 'ネットワークサービスなし',
     ip_hint: 'networksetup で DHCP/固定 IP を設定。管理者権限が必要で、一時的に切断されることがあります。',
     host_ph: 'ホスト名 / ドメイン',
     resolve: '名前解決',
