@@ -233,10 +233,12 @@ def create_job(body: JobBody, request: Request):
     jid = (body.id or scheduler_svc.new_job_id()).strip()
     if not _ID_RE.match(jid):
         raise api_error("scheduler.bad_id")
-    if scheduler_svc.get_job(jid) is not None:
-        raise api_error("scheduler.exists", id=jid)
     record = _validated_record(body, jid)
-    scheduler_svc.save_job(record)
+    # Insert-only under the write lock: a pre-check with get_job() raced a
+    # concurrent create of the same id, and the loser silently overwrote
+    # the winner's job instead of getting this 409.
+    if not scheduler_svc.save_job(record, mode="create"):
+        raise api_error("scheduler.exists", id=jid)
     audit.record(audit.SCHEDULE_JOB_CREATED,
                  username=request_username(request),
                  client=request_client_id(request), **_audit_fields(record))
@@ -247,10 +249,11 @@ def create_job(body: JobBody, request: Request):
 def update_job(jid: str, body: JobBody, request: Request):
     if not _ID_RE.match(jid):
         raise api_error("scheduler.bad_id")
-    if scheduler_svc.get_job(jid) is None:
-        raise api_error("scheduler.not_found", id=jid)
     record = _validated_record(body, jid)
-    scheduler_svc.save_job(record)
+    # Replace-only under the write lock: the pre-check + unconditional save
+    # let an update racing a delete re-create the job it had just removed.
+    if not scheduler_svc.save_job(record, mode="update"):
+        raise api_error("scheduler.not_found", id=jid)
     audit.record(audit.SCHEDULE_JOB_UPDATED,
                  username=request_username(request),
                  client=request_client_id(request), **_audit_fields(record))
