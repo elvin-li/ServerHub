@@ -79,3 +79,26 @@ describe('Maintenance leave-guards', () => {
     expect(wrapper.vm.starting).toBeUndefined()
   })
 })
+
+describe('Maintenance empty state', () => {
+  it('points a configured-empty list at the services.yaml section', async () => {
+    api.getMaintenance.mockResolvedValue([])
+    const { wrapper } = await mountPage()
+    expect(wrapper.text()).toContain('maintenance.empty_hint')
+    expect(wrapper.text()).toContain('services.yaml → maintenance:')
+  })
+
+  it('keeps a filter miss on the plain none row, not the setup hint', async () => {
+    const { wrapper } = await mountPage()
+    await wrapper.find('input[type="text"]').setValue('nothing-matches-this')
+    expect(wrapper.text()).toContain('common.none')
+    expect(wrapper.text()).not.toContain('maintenance.empty_hint')
+  })
+
+  it('shows the load error instead of the setup hint when the read failed', async () => {
+    api.getMaintenance.mockRejectedValue(new Error('backend gone'))
+    const { wrapper } = await mountPage()
+    expect(wrapper.text()).toContain('backend gone')
+    expect(wrapper.text()).not.toContain('maintenance.empty_hint')
+  })
+})

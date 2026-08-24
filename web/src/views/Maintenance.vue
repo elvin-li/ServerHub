@@ -46,7 +46,16 @@
           </tr>
           <tr v-if="!filtered.length">
             <td colspan="4" style="color:var(--sub)">
-              {{ tasks.length ? t('common.none') : (finiteText(loadError, '') || (loaded ? t('common.none') : t('common.loading'))) }}
+              <!-- A configured-empty page deserves a pointer to where tasks are
+                   defined, not a bare "None": the list only ever fills from the
+                   maintenance: section of services.yaml (see the example file). -->
+              <template v-if="!tasks.length && loaded && !loadError">
+                {{ t('maintenance.empty_hint') }}
+                <span class="mono">services.yaml → maintenance:</span>
+              </template>
+              <template v-else>
+                {{ tasks.length ? t('common.none') : (finiteText(loadError, '') || t('common.loading')) }}
+              </template>
             </td>
           </tr>
         </tbody>

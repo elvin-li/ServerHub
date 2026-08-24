@@ -962,7 +962,9 @@ describe('operations polling and submission guards', () => {
     expect(dashboard).toMatch(/async function copyVnc\(\)[\s\S]*if \(!dashAlive\) return/)
     expect(dashboard).toMatch(/async function copyOllamaApi\(\)[\s\S]*if \(!dashAlive\) return/)
     expect(dashboard).toMatch(/function setMetricRange\([\s\S]*\.finally\(\(\) => \{[\s\S]*if \(dashAlive\) metricsSwitching\.value = false/)
-    expect(audit).toMatch(/async function refresh\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    // refresh takes a `manual` flag now (poll ticks stay silent); the guard
+    // itself is what this test pins, whatever the signature.
+    expect(audit).toMatch(/async function refresh\([^)]*\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(audit).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
     expect(health).toMatch(/async function load\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
   })
