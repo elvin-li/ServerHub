@@ -606,7 +606,8 @@ onUnmounted(() => {
 :global([data-theme="macos"] .files-table tr.selected .name-text),
 :global([data-theme="macos-dark"] .files-table tr.selected .sub),
 :global([data-theme="macos-dark"] .files-table tr.selected .name-text) {
-  color: #fff;
+  /* The row's fill is --accent-fill; its ink has to be the paired token. */
+  color: var(--on-accent);
 }
 
 /* Uniform row height across all columns */
