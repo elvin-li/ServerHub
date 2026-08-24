@@ -186,7 +186,12 @@ describe('actions and dismissal', () => {
     await w.setProps({ log: '', logSource: 'launchd stdout' })
     expect(w.text()).toContain('services.log_empty')
     await w.setProps({ log: 'line one' })
-    expect(w.find('pre.log:not(.mini-log)').text()).toBe('line one')
+    const pane = w.find('pre.log:not(.mini-log)')
+    expect(pane.text()).toBe('line one')
+    // Scrollable pane, so it must be keyboard-reachable and announce a name.
+    expect(pane.attributes('tabindex')).toBe('0')
+    expect(pane.attributes('role')).toBe('region')
+    expect(pane.attributes('aria-label')).toBe('services.logs')
     w.unmount()
   })
 

@@ -191,7 +191,8 @@
           <button type="button" class="tiny" @click="emit('load-logs')">{{ t('common.refresh') }}</button>
           <button type="button" class="tiny" @click="copyLog">{{ t('services.copy_log') }}</button>
         </div>
-        <pre class="log">{{ finiteText(log, '') || t('services.log_empty') }}</pre>
+        <!-- Scrollable, so keyboard-reachable (same as ServiceLogsModal). -->
+        <pre class="log" tabindex="0" role="region" :aria-label="t('services.logs')">{{ finiteText(log, '') || t('services.log_empty') }}</pre>
       </section>
     </aside>
   </div>
