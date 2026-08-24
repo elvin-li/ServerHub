@@ -37,7 +37,10 @@
       <button @click="openConf" :disabled="busy">{{ t('wg.view_conf') }}</button>
       <button @click="ping" :disabled="busy || !data?.running">{{ t('wg.ping') }}</button>
       <span class="toolbar-grow"></span>
-      <button class="primary subtle" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
+      <!-- Neutral, not a dimmed `.primary`: Start/Stop is this toolbar's one
+           primary action, and the 65% opacity that used to hold Refresh back
+           took its label down to 2.5:1. -->
+      <button @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
     </div>
 
     <LoadFailure v-if="loadError && !data" :detail="loadError" :retry="load" :busy="loading" />

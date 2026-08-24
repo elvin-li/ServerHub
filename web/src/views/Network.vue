@@ -158,7 +158,7 @@
               </td>
             </tr>
             <tr v-if="!orderList.length && !loadError">
-              <td colspan="6" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="6" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -263,7 +263,7 @@
               </tr>
             </template>
             <tr v-if="!(data?.interface_addresses||[]).length && !loadError">
-              <td colspan="6" style="color:var(--sub)">{{ t('network.no_bindings') }}</td>
+              <td colspan="6" class="empty-row">{{ t('network.no_bindings') }}</td>
             </tr>
           </tbody>
         </table>
@@ -321,7 +321,7 @@
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
             </tr>
             <tr v-if="!(data?.interfaces||[]).length && !loadError">
-              <td colspan="8" style="color:var(--sub)">{{ t('network.no_interfaces') }}</td>
+              <td colspan="8" class="empty-row">{{ t('network.no_interfaces') }}</td>
             </tr>
           </tbody>
         </table>
@@ -367,7 +367,7 @@
               </td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="8" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="8" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -402,7 +402,7 @@
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="4" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="4" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -429,7 +429,7 @@
               <td class="mono">{{ finiteN(p.port) }}</td>
             </tr>
             <tr v-if="!filteredListen.length && !loadError">
-              <td colspan="5" style="color:var(--sub)">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>
+              <td colspan="5" class="empty-row">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>
             </tr>
           </tbody>
         </table>
@@ -452,7 +452,7 @@
               <td>{{ finiteText(r.netif) }}</td>
             </tr>
             <tr v-if="!(data?.routes||[]).length && !loadError">
-              <td colspan="4" style="color:var(--sub)">{{ t('network.no_routes') }}</td>
+              <td colspan="4" class="empty-row">{{ t('network.no_routes') }}</td>
             </tr>
           </tbody>
         </table>
@@ -489,7 +489,7 @@
                 </td>
               </tr>
               <tr v-if="!filteredDockerPorts.length && !loadError">
-                <td colspan="7" style="color:var(--sub)">{{ t('network.no_published') }}</td>
+                <td colspan="7" class="empty-row">{{ t('network.no_published') }}</td>
               </tr>
             </tbody>
           </table>
@@ -521,6 +521,9 @@
                   <button class="tiny" :disabled="busy || n.builtin" @click="openConnect(n)">{{ t('network.connect') }}</button>
                   <button class="tiny" :disabled="busy || n.builtin" @click="openDisconnect(n)">{{ t('network.disconnect') }}</button>
                 </td>
+              </tr>
+              <tr v-if="!(data?.docker_networks || []).length">
+                <td colspan="6" class="empty-row">{{ t('network.empty_docker_nets') }}</td>
               </tr>
             </tbody>
           </table>
@@ -1220,6 +1223,9 @@ useDismissable(connectNet, () => { connectNet.value = null }, connectPanel)
 </script>
 
 <style scoped>
+/* var(--down) is the vibrant indicator red; as 12px body text on the card it is
+   3.5:1. Mixed toward --txt it still reads as the failure colour and clears AA. */
+.status-down { color: color-mix(in srgb, var(--down) 70%, var(--txt)); }
 .net-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

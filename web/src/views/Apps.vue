@@ -187,12 +187,13 @@
             </tr>
           </thead>
           <tbody>
-            <!-- No role="button" on the row: it replaces the implicit row role,
-                 so every <td> stops being exposed as a cell and the whole row
-                 collapses into one button label, and it nests the per-row
-                 buttons and switches inside a widget. The row keeps tabindex
-                 and the key handlers, so keyboard activation is unchanged. -->
-            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
+            <!-- The row keeps its click shortcut, but not role="button"/tabindex:
+                 it holds the autostart switch and the whole action button row, and
+                 a control may not contain other controls (ARIA nested-interactive).
+                 It also duplicated the tab stop the "Detail" button in the actions
+                 cell already provides, which is the keyboard path to the same
+                 openDetail(it). -->
+            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)">
               <td>
                 <strong>{{ finiteText(it.name) }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
@@ -2296,6 +2297,9 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .chip-native {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+  /* var(--ok) on its own 16% tint is 1.9:1 — the least legible text in the
+     panel. Mixing toward --txt keeps the green reading as "native" on both
+     palettes while clearing WCAG AA. */
   color: color-mix(in srgb, var(--ok) 55%, var(--txt));
 }
 
