@@ -350,8 +350,7 @@ def _save_state(state: dict) -> None:
 def _invalidate_catalog_cache() -> None:
     from hub import catalog
 
-    catalog._list_cache["t"] = 0
-    catalog._list_cache["items"] = None
+    catalog.invalidate_listing()
 
 
 # ── read side used by hub.catalog ─────────────────────────────────────────────
