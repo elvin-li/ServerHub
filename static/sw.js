@@ -1,23 +1,9 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-<<<<<<< HEAD
-<<<<<<< HEAD
-const CACHE_NAME = 'serverhub-aeaa0a5ff26fc9cd'
+const CACHE_NAME = 'serverhub-2ceabc6b81fc2ecc'
 // Vite replaces the placeholder with the first-paint assets (entry + vendor
 // chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Account-CluPFLrS.css","/assets/Apps-BI_w3wk_.css","/assets/Backups-BEOshE04.css","/assets/Bookmarks-98hgDb9V.css","/assets/Compose-tGpqNYkb.css","/assets/Dashboard-trSRxblX.css","/assets/Files-CbvlMxdJ.css","/assets/LineChart-C9QjqmJ2.css","/assets/LoadFailure-s5h3k7m_.css","/assets/Login-CFDh25vf.css","/assets/Logs-D_9imYBW.css","/assets/MacSwitch-C40cgBYQ.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-DQ5e18g-.css","/assets/Ollama-BMTbco9T.css","/assets/PhotosHub-C2aCGpGj.css","/assets/Pool-DTlhNm3P.css","/assets/ScheduleJobForm-D3lKEA8a.css","/assets/Services-CCV-PspL.css","/assets/Settings-D-3PQ5t2.css","/assets/Shares-C6PFuXQz.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-Df3z8Wvf.css","/assets/Tools-CW0BWsxF.css","/assets/Users-B5nHCP39.css","/assets/VMs-BRtVRGlK.css","/assets/WireGuard-kCaq5qxB.css","/assets/en-CfspKV4b.js","/assets/index-B06fv20m.css","/assets/index-DFy-bR6R.js","/assets/vendor-4S_DzOps.js"]
-=======
-const CACHE_NAME = 'serverhub-e502cd25ee57adca'
-// Vite replaces the placeholder with the first-paint assets (entry + vendor
-// chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Account-CluPFLrS.css","/assets/Apps-BI_w3wk_.css","/assets/Backups-BHMUWORG.css","/assets/Bookmarks-98hgDb9V.css","/assets/Compose-tGpqNYkb.css","/assets/Dashboard-trSRxblX.css","/assets/Files-CbvlMxdJ.css","/assets/LineChart-C9QjqmJ2.css","/assets/LoadFailure-s5h3k7m_.css","/assets/Login-DtJK_R2w.css","/assets/Logs-D_9imYBW.css","/assets/MacSwitch-BQD7pHJq.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-DZdsirR2.css","/assets/Ollama-BDY0kcf4.css","/assets/PhotosHub-FsSFntRg.css","/assets/Pool-DTlhNm3P.css","/assets/ScheduleJobForm-Qht-yzhv.css","/assets/Services-CCV-PspL.css","/assets/Settings-BfCtZ79R.css","/assets/Shares-C6PFuXQz.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-Df3z8Wvf.css","/assets/Tools-BU-JuSCN.css","/assets/Users-B5nHCP39.css","/assets/VMs-BRtVRGlK.css","/assets/WireGuard-kCaq5qxB.css","/assets/en-BfTplZQe.js","/assets/index-BAHG7gQe.js","/assets/index-Bgs3E1Mg.css","/assets/vendor-4S_DzOps.js"]
->>>>>>> origin/cursor/review-optimize-serverhub-fable-5d82
-=======
-const CACHE_NAME = 'serverhub-d602be8715d9636b'
-// Vite replaces the placeholder with the first-paint assets (entry + vendor
-// chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Account-BQ8889N_.css","/assets/Apps-DmX91bfK.css","/assets/Backups-y7om_4XT.css","/assets/Bookmarks-CrBJ0fZy.css","/assets/Compose-BRPztoSv.css","/assets/Dashboard-BuFmF6ck.css","/assets/Files-B1Ug4xWc.css","/assets/LineChart-BSS7lcXb.css","/assets/LoadFailure-s5h3k7m_.css","/assets/Login-CzCVd8Pl.css","/assets/Logs-BXN4DIwr.css","/assets/MacSwitch-BQD7pHJq.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-CC1UNkrB.css","/assets/Ollama-BDY0kcf4.css","/assets/PhotosHub-BCIayVtu.css","/assets/Pool-BZDZ_UnA.css","/assets/ScheduleJobForm-Qht-yzhv.css","/assets/Services-zKwZ9_4Y.css","/assets/Settings-rvkjJqEW.css","/assets/Shares-K_iOO62a.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-ChNLfQFA.css","/assets/Tools-B0sK-YNu.css","/assets/Users-Bs90Lvi6.css","/assets/VMs-BRtVRGlK.css","/assets/WireGuard-DYQYqxOe.css","/assets/en-D0f0SnT8.js","/assets/index-CZVUK7v4.js","/assets/index-Jr0ZFR41.css","/assets/vendor-4S_DzOps.js"]
->>>>>>> origin/cursor/review-optimize-serverhub-5ddf
+const PRECACHE_ASSETS = ["/assets/Account-CluPFLrS.css","/assets/Apps-Bh0w1MhA.css","/assets/Backups-XWbsQfh0.css","/assets/Bookmarks-98hgDb9V.css","/assets/Compose-tGpqNYkb.css","/assets/Dashboard-trSRxblX.css","/assets/Files-CbvlMxdJ.css","/assets/LineChart-BSS7lcXb.css","/assets/LoadFailure-s5h3k7m_.css","/assets/Login-CFDh25vf.css","/assets/Logs-D_9imYBW.css","/assets/MacSwitch-C40cgBYQ.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-DQ5e18g-.css","/assets/Ollama-BMTbco9T.css","/assets/PhotosHub-C2aCGpGj.css","/assets/Pool-DTlhNm3P.css","/assets/ScheduleJobForm-D3lKEA8a.css","/assets/Services-CCV-PspL.css","/assets/Settings-BmCmO2vt.css","/assets/Shares-C6PFuXQz.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-Df3z8Wvf.css","/assets/Tools-CW0BWsxF.css","/assets/Users-B5nHCP39.css","/assets/VMs-BRtVRGlK.css","/assets/WireGuard-kCaq5qxB.css","/assets/en-k3T8HOUj.js","/assets/index-B06fv20m.css","/assets/index-oWcxm564.js","/assets/vendor-4S_DzOps.js"]
 const SHELL_ASSETS = [
   '/',
   '/index.html',
