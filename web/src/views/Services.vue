@@ -60,19 +60,19 @@
 
     <!-- State chips: status shortcuts, kept as their own visual row -->
     <div class="state-chips">
-      <button type="button" class="chip" :class="{ active: stateF === '' }" @click="stateF = ''">
+      <button type="button" class="chip" :class="{ active: stateF === '' }" :aria-pressed="stateF === ''" @click="stateF = ''">
         {{ t('common.all') }} {{ flat.length }}
       </button>
-      <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" @click="stateF = stateF === 'ok' ? '' : 'ok'">
+      <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" :aria-pressed="stateF === 'ok'" @click="stateF = stateF === 'ok' ? '' : 'ok'">
         {{ t('services.state_ok') }} {{ finiteN(status?.counts?.ok, 0) }}
       </button>
-      <button type="button" class="chip chip-warn" :class="{ active: stateF === 'warn' }" @click="stateF = stateF === 'warn' ? '' : 'warn'">
+      <button type="button" class="chip chip-warn" :class="{ active: stateF === 'warn' }" :aria-pressed="stateF === 'warn'" @click="stateF = stateF === 'warn' ? '' : 'warn'">
         {{ t('services.state_warn') }} {{ finiteN(status?.counts?.warn, 0) }}
       </button>
-      <button type="button" class="chip chip-down" :class="{ active: stateF === 'down' }" @click="stateF = stateF === 'down' ? '' : 'down'">
+      <button type="button" class="chip chip-down" :class="{ active: stateF === 'down' }" :aria-pressed="stateF === 'down'" @click="stateF = stateF === 'down' ? '' : 'down'">
         {{ t('services.state_down') }} {{ finiteN(status?.counts?.down, 0) }}
       </button>
-      <button type="button" class="chip chip-muted" :class="{ active: stateF === 'stopped' }" @click="stateF = stateF === 'stopped' ? '' : 'stopped'">
+      <button type="button" class="chip chip-muted" :class="{ active: stateF === 'stopped' }" :aria-pressed="stateF === 'stopped'" @click="stateF = stateF === 'stopped' ? '' : 'stopped'">
         {{ t('services.state_stopped') }} {{ finiteN(status?.counts?.stopped, 0) }}
       </button>
     </div>

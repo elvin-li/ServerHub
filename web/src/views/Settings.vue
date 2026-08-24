@@ -12,6 +12,7 @@
             v-for="l in locales"
             :key="l.id"
             :class="{ active: locale === l.id }"
+            :aria-pressed="locale === l.id"
             @click="pickLocale(l.id)"
           >{{ finiteText(l.native) }}</button>
         </div>

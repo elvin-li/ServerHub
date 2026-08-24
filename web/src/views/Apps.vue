@@ -41,6 +41,7 @@
           type="button"
           class="cat-pill"
           :class="{ active: cat === c.id }"
+          :aria-pressed="cat === c.id"
           @click="cat = c.id"
         >{{ catLabel(c.id) }}{{ countLabel(c.id) }}</button>
       </div>
