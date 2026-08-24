@@ -206,11 +206,23 @@ class FileBrowserLogPathTests(unittest.TestCase):
     """
 
     def test_the_log_is_not_in_a_shared_temp_directory(self):
+        """Checked by mode, not by a "/tmp/" string prefix.
+
+        The attack needs a world-writable (sticky) directory the attacker can
+        pre-create the log name in -- the literal /tmp and /var/tmp.  A path
+        prefix test also condemned any private 0700 tree that merely lives
+        under /tmp, such as the suite's own hermetic HOME, while missing
+        other shared locations entirely.
+        """
+        probe = Path(files_svc.FB_LOG).parent
+        # The log directory may not exist yet; judge the nearest ancestor
+        # that does (for /tmp/filebrowser-hub.log that is /tmp itself).
+        while not probe.exists():
+            probe = probe.parent
         self.assertFalse(
-            str(files_svc.FB_LOG).startswith("/tmp/"),
-            f"{files_svc.FB_LOG} is in a world-writable directory",
+            probe.stat().st_mode & 0o002,
+            f"{files_svc.FB_LOG} is reachable through world-writable {probe}",
         )
-        self.assertFalse(str(files_svc.FB_LOG).startswith("/var/tmp/"))
 
     def test_the_log_lives_under_the_users_own_home(self):
         self.assertTrue(

@@ -118,6 +118,28 @@ class HostMutationTests(unittest.TestCase):
                 "`python -m unittest discover -s tests -t . -q` (note -t .).",
             )
 
+    def test_home_derived_state_is_redirected_off_the_real_home(self):
+        """hub.backups mkdirs ~/Services/backups at import; other modules
+        derive ~/Services/* and ~/.cloudflared from Path.home() the same way.
+        tests/__init__.py points HOME into the per-run temp directory so a
+        suite run cannot create directories in the invoking user's home."""
+        import os
+        import pwd
+
+        if "SERVERHUB_TESTS_KEEP_HOME" in os.environ:
+            self.skipTest("HOME redirection explicitly disabled for this run")
+        from hub import backups
+
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        backup_root = Path(backups.BACKUP_ROOT).resolve()
+        self.assertFalse(
+            backup_root == real_home or real_home in backup_root.parents,
+            f"hub.backups.BACKUP_ROOT ({backup_root}) resolved inside the real "
+            f"home ({real_home}); importing hub.backups mkdirs it, so the "
+            "suite mutated the host. tests/__init__.py redirects HOME -- run "
+            "discovery with -t . so the tests package is imported.",
+        )
+
     def test_the_detector_catches_the_shape_it_exists_for(self):
         """The first block is the version that spawned real brew commands."""
         unsealed = ast.parse(
