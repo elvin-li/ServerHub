@@ -24,7 +24,7 @@
      so in every theme, so the tints stay as saturated as legibility allows.
      Declared once here on :root: substitution happens where the var is *used*,
      so each theme's own --ok/--warn/--down/--txt feed the same three mixes.
-     Keep using the raw tokens for backgrounds, borders, bars and icons. */
+     Keep using the raw tokens for backgrounds, borders, bars and icons.
      The percentages are sized against the worst surface each tint actually
      lands on, not against --card: --down-text is the label of a Destroy or
      Prune button, so it has to clear on --btn as well, and --btn is the
