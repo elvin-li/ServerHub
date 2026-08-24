@@ -292,6 +292,22 @@ describe('which page the nav says you are on', () => {
     wrapper.unmount()
   })
 
+  it('does not let a query-tab child and its group both claim the page', async () => {
+    // RouterLink's own aria-current ignores the query string, so at
+    // /settings?tab=network it marked the Settings group as the current
+    // page while the section nav marked the tab as the current page too.
+    route.path = '/settings'
+    route.query = { tab: 'network' }
+    admin()
+    const wrapper = mountShell()
+    const groups = currentOf(wrapper.findAll('nav.top-nav a'))
+    expect(groups).toEqual([['nav.settings', 'true']])
+    expect(currentOf(wrapper.findAll('.subchrome a'))).toEqual([
+      ['settings.tab_network', 'page'],
+    ])
+    wrapper.unmount()
+  })
+
   it('follows the reader to another page', async () => {
     route.path = '/'
     admin()

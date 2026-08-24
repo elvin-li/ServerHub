@@ -479,11 +479,14 @@ function isActive(item) {
 }
 
 function navCurrent(item) {
-  // `class="active"` is a purely visual cue: tabbing the nav announced every
-  // destination identically, with nothing to say which one you were already
-  // on.  A group whose child is showing in the section nav is an *ancestor*
-  // of the current page rather than the page itself, so it takes `true` and
-  // leaves `page` for the child that is actually open.
+  // The top-level highlight is ours (`isActive` spans a whole section), and
+  // RouterLink's own aria-current only follows its exact match, so the two
+  // disagreed in both directions: on /pool the highlighted Storage tab said
+  // nothing at all, while on /storage and /settings?tab=network the group
+  // and its child both claimed `page` -- announcing the reader as being on
+  // two pages at once.  A group whose child is showing in the section nav is
+  // an *ancestor* of the open page, so it takes `true` and leaves `page` to
+  // the child.
   if (!isActive(item)) return undefined
   return (item.children || []).some(isChildActive) ? 'true' : 'page'
 }
