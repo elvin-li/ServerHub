@@ -2405,6 +2405,43 @@ html[data-theme="macos-dark"] .range-btns .btn.primary {
   background: #636366;
   color: var(--header-txt);
 }
+/* Settings → Display pickers.
+   `[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch)
+   :not(.hamburger)` is specificity 0-5-1 and repaints every plain button white,
+   so it beat `.lang-row button.active` / `.density-row button.active` (0-2-1)
+   and `.theme-card.active` (0-2-0). Under the two macOS themes — the default
+   pair — the selected language, density and theme rendered exactly like the
+   unselected ones, so the page never showed what was actually in effect.
+   `.tabs button.active` above already needed this same re-assertion. */
+html[data-theme="macos"] .lang-row button.active,
+html[data-theme="macos"] .lang-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos"] .density-row button.active,
+html[data-theme="macos"] .density-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .lang-row button.active,
+html[data-theme="macos-dark"] .lang-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .density-row button.active,
+html[data-theme="macos-dark"] .density-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12);
+}
+html[data-theme="macos"] .theme-card,
+html[data-theme="macos"] .theme-card:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .theme-card,
+html[data-theme="macos-dark"] .theme-card:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  text-align: left;
+}
+html[data-theme="macos"] .theme-card.active,
+html[data-theme="macos"] .theme-card.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .theme-card.active,
+html[data-theme="macos-dark"] .theme-card.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
 @media (max-width: 640px) {
   html[data-theme="macos"] .tabs,
   html[data-theme="macos-dark"] .tabs {
