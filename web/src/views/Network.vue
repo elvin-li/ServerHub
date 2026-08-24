@@ -158,7 +158,7 @@
               </td>
             </tr>
             <tr v-if="!orderList.length && !loadError">
-              <td colspan="6" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="6" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -367,7 +367,7 @@
               </td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="8" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="8" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -402,7 +402,7 @@
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="4" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="4" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -1223,9 +1223,6 @@ useDismissable(connectNet, () => { connectNet.value = null }, connectPanel)
 </script>
 
 <style scoped>
-/* var(--down) is the vibrant indicator red; as 12px body text on the card it is
-   3.5:1. Mixed toward --txt it still reads as the failure colour and clears AA. */
-.status-down { color: color-mix(in srgb, var(--down) 70%, var(--txt)); }
 .net-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
