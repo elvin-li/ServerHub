@@ -292,6 +292,51 @@ class TtlMemoContractTests(unittest.TestCase):
             t.join()
         self.assertEqual(peak, 4, "per-key reads stopped overlapping")
 
+    def test_a_varying_key_does_not_grow_the_cache_for_ever(self):
+        """The constraint that made containers_svc take no arguments.
+
+        Entries only ever left on invalidate(), so a memo keyed on anything
+        that changes -- a ps table, a container-name tuple -- kept one dead
+        entry per key seen since boot.  Expired entries are swept on a miss
+        now, so what is held is roughly one TTL's worth of keys.
+        """
+        memo = ttl_memo(0.2)(lambda key: key)
+
+        for i in range(400):
+            memo(f"k{i}")
+        self.assertEqual(len(memo._cache), 400, "sanity: they were all cached")
+
+        time.sleep(0.25)
+        for i in range(400, 440):
+            memo(f"k{i}")
+        self.assertEqual(
+            len(memo._cache), 40,
+            "the 400 expired entries were still held after their TTL lapsed",
+        )
+
+    def test_a_live_entry_is_never_swept(self):
+        """The sweep must only drop what could no longer be served anyway."""
+        memo = ttl_memo(30)(lambda key: key)
+        for i in range(100):
+            memo(f"k{i}")
+        reads = []
+        counting = ttl_memo(30)(lambda key: (reads.append(key), key)[1])
+        for i in range(100):
+            counting(f"k{i}")
+        for i in range(100):
+            counting(f"k{i}")
+        self.assertEqual(len(reads), 100, "a sweep dropped entries that were still fresh")
+        self.assertEqual(len(memo._cache), 100)
+
+    def test_the_per_key_locks_are_released_with_the_key(self):
+        memo = ttl_memo(0.2)(lambda key: key)
+        for i in range(200):
+            memo(f"k{i}")
+        self.assertEqual(
+            len(memo._refresh_locks), 0,
+            "a lock was kept for every key ever refreshed",
+        )
+
     def test_an_invalidate_during_a_read_is_not_undone_by_that_read(self):
         """Same property as the snapshot helper, and the same reason it matters."""
         world = {"state": "attached"}

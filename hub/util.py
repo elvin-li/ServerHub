@@ -23,6 +23,11 @@ log = logging.getLogger("serverhub.util")
 T = TypeVar("T")
 
 
+#: Below this a sweep would walk more entries than it could ever free, and the
+#: memos that take no arguments -- most of them -- never reach it at all.
+_MEMO_SWEEP_AT = 32
+
+
 def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """Cache a read for *ttl* seconds, and let only one caller compute it.
 
@@ -44,12 +49,19 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
         fn.cache_clear()  alias, matching functools.lru_cache's name
 
     Arguments are part of the cache key, so a per-device or per-service read works
-    without a separate memo per caller.  Keys must be hashable.
+    without a separate memo per caller.  Keys must be hashable.  Entries past
+    their TTL are swept on a miss, so keying on something that varies is safe:
+    the memo holds roughly the keys seen within one TTL rather than every key
+    seen since the process started.
     """
     def decorate(fn: Callable[..., T]) -> Callable[..., T]:
         cache: dict[Any, tuple[float, T]] = {}
         guard = threading.Lock()
-        refresh_locks: dict[Any, threading.Lock] = {}
+        #: key -> [lock, waiters].  Ref-counted rather than kept forever: the
+        #: lock for a key nobody is refreshing has no reader to protect, and
+        #: leaving it behind grows this dict for the life of the process
+        #: alongside the cache it guards.
+        refresh_locks: dict[Any, list] = {}
         #: Bumped by invalidate().  A refresh already running at that moment has
         #: read the pre-action state, so publishing its result afterwards would
         #: quietly undo the invalidate and pin the stale answer for a full TTL.
@@ -62,6 +74,22 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
         def key_for(args: tuple, kwargs: dict) -> Any:
             return (args, tuple(sorted(kwargs.items()))) if kwargs else args
 
+        def drop_expired(now: float) -> None:
+            """Forget entries past their TTL.  Call with `guard` held.
+
+            An expired entry can never be served, so dropping it is invisible
+            to callers -- but without this the cache only ever shrank on
+            invalidate(), and a memo keyed on something that keeps changing
+            grew one dead entry per distinct key for the life of the process.
+            Callers had to work around that by not keying on anything varied,
+            which is a constraint the helper should not impose.  Swept on a
+            miss and only past the threshold, so the single-key memos that
+            make up most callers never walk anything.
+            """
+            for key, (stamp, _) in list(cache.items()):
+                if now - stamp >= ttl:
+                    del cache[key]
+
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> T:
             key = key_for(args, kwargs)
@@ -70,24 +98,39 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
                 hit = cache.get(key)
                 if hit is not None and now - hit[0] < ttl:
                     return hit[1]
+                if len(cache) > _MEMO_SWEEP_AT:
+                    drop_expired(now)
                 # Per key, not global: two different devices must still be read
                 # concurrently — serialising them would defeat the fan-out that
                 # made this helper necessary.
-                lock = refresh_locks.setdefault(key, threading.Lock())
+                entry = refresh_locks.get(key)
+                if entry is None:
+                    entry = refresh_locks[key] = [threading.Lock(), 0]
+                entry[1] += 1
+                lock = entry[0]
 
-            with lock:
+            try:
+                with lock:
+                    with guard:
+                        hit = cache.get(key)
+                        if hit is not None and time.time() - hit[0] < ttl:
+                            return hit[1]
+                        began = epoch
+                    value = fn(*args, **kwargs)
+                    with guard:
+                        if epoch == began:
+                            cache[key] = (time.time(), value)
+                    # Returned either way: this caller asked before the
+                    # invalidate, and re-running the probe on its behalf buys
+                    # nothing.
+                    return value
+            finally:
                 with guard:
-                    hit = cache.get(key)
-                    if hit is not None and time.time() - hit[0] < ttl:
-                        return hit[1]
-                    began = epoch
-                value = fn(*args, **kwargs)
-                with guard:
-                    if epoch == began:
-                        cache[key] = (time.time(), value)
-                # Returned either way: this caller asked before the invalidate,
-                # and re-running the probe on its behalf buys nothing.
-                return value
+                    entry[1] -= 1
+                    # Nobody else holds or waits on it, so this key is not
+                    # being refreshed and the lock has nothing left to guard.
+                    if entry[1] <= 0:
+                        refresh_locks.pop(key, None)
 
         def invalidate() -> None:
             nonlocal epoch
@@ -96,6 +139,8 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
                 cache.clear()
 
         wrapper.invalidate = invalidate       # type: ignore[attr-defined]
+        wrapper._cache = cache                # type: ignore[attr-defined]
+        wrapper._refresh_locks = refresh_locks  # type: ignore[attr-defined]
         wrapper.cache_clear = invalidate      # type: ignore[attr-defined]
         return wrapper
 

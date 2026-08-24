@@ -213,10 +213,9 @@ def _stats_cached() -> dict:
     """Stats for whatever is currently running.
 
     Deliberately zero-argument.  Keying this by the running-name tuple would look
-    tidier but would leave one cache entry per distinct set of running containers,
-    and ``ttl_memo`` only drops entries on invalidate -- so a host whose containers
-    come and go would accumulate them for the life of the process.  One entry on a
-    15s TTL is also exactly what the dict this replaces did.
+    tidier but would buy nothing: every caller wants the current set, so a second
+    key can only ever be a set that is already out of date.  One entry on a 15s
+    TTL is also exactly what the dict this replaces did.
     """
     engine_ok, items = _container_list_cached()
     if not engine_ok:
