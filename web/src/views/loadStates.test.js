@@ -216,4 +216,26 @@ describe('a failed first load explains itself', () => {
     expect(html, 'blamed the engine for an API failure').not.toContain('docker.engine_off')
     release(wrapper)
   })
+
+  it('Alerts does not call an API failure a filter mismatch', async () => {
+    // The `alerts.empty` placeholder was already guarded, but the failed branch
+    // fell through to the level tabs and a table whose only row said "no alerts
+    // match this filter" — a filter excuse for a request that never came back.
+    const wrapper = await mountFailing(() => import('./Alerts.vue'), ['getAlerts'])
+    const html = wrapper.html()
+    expect(html, 'no failure banner').toContain('load-failure')
+    expect(html, 'called an API failure a filter mismatch').not.toContain('alerts.filter_empty')
+    release(wrapper)
+  })
+
+  it('Audit does not call an API failure an empty audit trail', async () => {
+    // Same shape as Alerts: the guarded placeholder was skipped, but the table
+    // rendered anyway with a "None" row — on the page whose whole job is to
+    // prove whether events were recorded.
+    const wrapper = await mountFailing(() => import('./Audit.vue'), ['getAuthAudit'])
+    const html = wrapper.html()
+    expect(html, 'no failure banner').toContain('load-failure')
+    expect(html, 'called an API failure an empty audit trail').not.toContain('common.none')
+    release(wrapper)
+  })
 })
