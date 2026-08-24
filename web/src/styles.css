@@ -38,6 +38,12 @@
   --accent-fill: var(--accent);
   --accent-fill-hover: var(--accent-hover);
   --on-accent: #2b1400;
+  /* The accent as *text* -- active tabs, active nav links, accent badges. Even
+     --accent-hover, which is already the darker step, is 2.7-4.2:1 on --bg in
+     most themes. Same trick as the status tints; the macOS themes opt out
+     because their hover blue already clears AA and a deeper one would stop
+     reading as system blue. */
+  --accent-text: color-mix(in srgb, var(--accent-hover) 65%, var(--txt));
   --btn: #f5f5f5;
   --btn-border: #d0d0d0;
   --radius: 3px;
@@ -46,7 +52,6 @@
   --table-alt: #fafafa;
   --table-hover: #fff8f0;
   --bar-track: #e8e8e8;
-  --chip: #fff3e0;
   --logo-grad: linear-gradient(135deg, #ff8c2f, #e65100);
   --header-active-bg: rgba(255,140,47,.1);
   --glass-blur: 0px;
@@ -73,7 +78,6 @@
     --table-alt: #161616;
     --table-hover: #241a10;
     --bar-track: #333;
-    --chip: #3b2410;
   }
 }
 
@@ -100,7 +104,6 @@
   --table-alt: #161616;
   --table-hover: #241a10;
   --bar-track: #333;
-  --chip: #3b2410;
   --logo-grad: linear-gradient(135deg, #ff8c2f, #ea580c);
   --header-active-bg: rgba(255,140,47,.12);
 }
@@ -130,7 +133,6 @@
   --table-alt: #f5faf5;
   --table-hover: #e8f5e9;
   --bar-track: #d5e5d5;
-  --chip: #dcedc8;
   --logo-grad: linear-gradient(135deg, #5cb85c, #2e7d32);
   --header-active-bg: rgba(92,184,92,.15);
 }
@@ -144,7 +146,9 @@
   --nav-hover: #16324d;
   --card: #ffffff;
   --txt: #0d2137;
-  --sub: #5a738c;
+  /* One step down the slate ramp: #5a738c was 4.10:1 on the table head and
+     4.44:1 on the page, i.e. every secondary line in the theme just missed. */
+  --sub: #516b84;
   --line: #c5d5e5;
   --ok: #2e9e5b;
   --warn: #e0a800;
@@ -160,7 +164,6 @@
   --table-alt: #f4f8fc;
   --table-hover: #e3f2fd;
   --bar-track: #d0e3f5;
-  --chip: #bbdefb;
   --logo-grad: linear-gradient(135deg, #2496ed, #0d47a1);
   --header-active-bg: rgba(36,150,237,.15);
 }
@@ -174,7 +177,10 @@
   --nav-hover: #3b4252;
   --card: #3b4252;
   --txt: #eceff4;
-  --sub: #a0aec0;
+  /* Snow-storm side of Nord's muted grey. #a0aec0 was 4.46:1 on --card and
+     3.82:1 on the table head, so the entire theme's secondary text -- table
+     headers, chart titles, every .sub line -- sat just under the floor. */
+  --sub: #c2ccd8;
   --line: #4c566a;
   --ok: #a3be8c;
   --warn: #ebcb8b;
@@ -182,6 +188,9 @@
   --accent: #88c0d0;
   --accent-hover: #81a1c1;
   --on-accent: #2e3440;
+  /* Frost on polar night is pale to begin with: the shared 65% tint is 3.96:1,
+     so Nord's accent text has to sit closer to the snow-storm end. */
+  --accent-text: color-mix(in srgb, var(--accent-hover) 45%, var(--txt));
   /* Nord's aurora red is the one status colour no global mix can rescue: on
      polar-night #3b4252 the shared 70% tint is 3.3:1, and only 40% clears 4.5.
      A dusty rose is still unmistakably the error colour here, and it is the
@@ -195,7 +204,6 @@
   --table-alt: #353b49;
   --table-hover: #4c566a;
   --bar-track: #4c566a;
-  --chip: #5e81ac;
   --logo-grad: linear-gradient(135deg, #88c0d0, #5e81ac);
   --header-active-bg: rgba(136,192,208,.12);
 }
@@ -209,7 +217,9 @@
   --nav-hover: rgba(148, 163, 184, 0.12);
   --card: rgba(30, 41, 59, 0.72);
   --txt: #f1f5f9;
-  --sub: #94a3b8;
+  /* One step up the slate ramp: #94a3b8 was 4.04-4.22:1 on the button and table
+     surfaces, so bold 10.5px table headers missed the floor. */
+  --sub: #a1b2c6;
   --line: rgba(148, 163, 184, 0.22);
   --ok: #34d399;
   --warn: #fbbf24;
@@ -225,7 +235,6 @@
   --table-alt: rgba(15, 23, 42, 0.35);
   --table-hover: rgba(167, 139, 250, 0.12);
   --bar-track: rgba(148, 163, 184, 0.25);
-  --chip: rgba(167, 139, 250, 0.25);
   --logo-grad: linear-gradient(135deg, #a78bfa, #6366f1);
   --header-active-bg: rgba(167, 139, 250, 0.15);
   --glass-blur: 12px;
@@ -257,7 +266,6 @@
   --table-alt: #f7f7f7;
   --table-hover: #eee;
   --bar-track: #ddd;
-  --chip: #e8e8e8;
   --logo-grad: linear-gradient(135deg, #333, #000);
   --header-active-bg: rgba(255,255,255,.08);
 }
@@ -289,6 +297,7 @@
   --accent-fill: color-mix(in srgb, var(--accent) 85%, #000);
   --accent-fill-hover: var(--accent);
   --on-accent: #ffffff;
+  --accent-text: var(--accent-hover);
   --btn: #ffffff;
   --btn-border: #d2d2d7;
   --radius-sm: 6px;
@@ -301,7 +310,6 @@
   --table-alt: #F5F5F7;
   --table-hover: #e8f1fc;
   --bar-track: #e5e5ea;
-  --chip: #e8f1fc;
   --logo-grad: #007aff;
   --header-active-bg: transparent;
   --glass-blur: 0px;
@@ -338,6 +346,7 @@
   --accent-fill: color-mix(in srgb, var(--accent) 85%, #000);
   --accent-fill-hover: var(--accent);
   --on-accent: #ffffff;
+  --accent-text: var(--accent-hover);
   --btn: #3a3a3c;
   --btn-border: #48484a;
   --radius-sm: 6px;
@@ -350,7 +359,6 @@
   --table-alt: #232325;
   --table-hover: #3a3a3c;
   --bar-track: #3a3a3c;
-  --chip: rgba(10, 132, 255, 0.18);
   --logo-grad: #0a84ff;
   --header-active-bg: transparent;
   --glass-blur: 0px;
@@ -1125,9 +1133,14 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
 .detail { color: var(--sub); font-size: 11px; margin: 4px 0 8px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btns { display: flex; gap: 4px; flex-wrap: wrap; }
+/* --sub is picked to read at 11-12px on --card; a badge is 10px on --btn, one
+   step closer to the text colour, and that combination is 3.95:1 in macOS dark
+   and 4.04:1 in Glass. Nudge the muted tone toward --txt rather than making
+   --sub itself darker everywhere. */
 .badge {
   display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 3px;
-  background: var(--btn); color: var(--sub); font-weight: 600;
+  background: var(--btn); color: color-mix(in srgb, var(--sub) 70%, var(--txt));
+  font-weight: 600;
   letter-spacing: .2px;
 }
 .badge.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); }
@@ -1136,8 +1149,15 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
    colours had to be darkened for 10px text; --warn-text does it per theme, so
    the badge no longer reads as brown on the dark palettes. */
 .badge.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn-text); }
-.badge.stopped { background: color-mix(in srgb, #888 14%, transparent); color: #777; }
-.badge.accent { background: var(--chip); color: var(--accent-hover); }
+/* The literal #777 was 3.85:1 on its own tint in the light themes and 2.57:1 in
+   the dark ones, where it is a dark grey on a dark grey. */
+.badge.stopped {
+  background: color-mix(in srgb, #888 14%, transparent);
+  color: color-mix(in srgb, var(--sub) 70%, var(--txt));
+}
+/* A tint of the accent, like every other badge above. --chip was a per-theme
+   literal, and Nord's was the mid-blue #5e81ac: accent text on it was 1.49:1. */
+.badge.accent { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-text); }
 
 .tabs { display: flex; gap: 0; flex-wrap: wrap; margin-bottom: 12px; border-bottom: 2px solid var(--line); }
 .tabs button {
@@ -1146,7 +1166,7 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
   font-size: 12px; margin-bottom: -2px; transition: color .12s, border-color .12s;
 }
 .tabs button:hover { color: var(--txt); }
-.tabs button.active { color: var(--accent-hover); border-bottom-color: var(--accent); }
+.tabs button.active { color: var(--accent-text); border-bottom-color: var(--accent); }
 .toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
 
 .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
@@ -1917,7 +1937,7 @@ img[loading="lazy"][complete] {
   border-bottom-color: transparent;
   border-left: none;
 }
-/* --accent-hover, not --accent: this is 12-12.5px label text, and the plain
+/* --accent-text, not --accent: this is 12-12.5px label text, and the plain
    system blue is 3.7:1 on the header. The 2px underline below keeps --accent,
    so the tint the eye reads as "selected" is unchanged. Same reasoning as
    .tabs button.active and .badge.accent in the base stylesheet. */
@@ -1925,7 +1945,7 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .subchrome-inner a.active,
 [data-theme="macos-dark"] .top-nav a.active,
 [data-theme="macos-dark"] .subchrome-inner a.active {
-  color: var(--accent-hover);
+  color: var(--accent-text);
   background: transparent;
   border-bottom-color: transparent;
 }
