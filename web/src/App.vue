@@ -808,6 +808,16 @@ const cmdFlat = computed(() => {
   }
   return items
 })
+// Arrowing down and then narrowing the query used to strand the highlight
+// past the end of the shortened list: no row looked selected, and Enter ran
+// cmdGo() on an index that no longer existed, so the palette did nothing at
+// all.  Only fires when the cursor is actually out of range, so a result
+// list that grows underneath (the assistant catalogue arrives async) does
+// not yank the reader back to the top.
+watch(cmdFlat, (items) => {
+  if (cmdIdx.value > items.length - 1) cmdIdx.value = 0
+})
+
 function openAssistant(seed = '', action = '') {
   assistSeed.value = seed
   assistAction.value = action
