@@ -184,7 +184,7 @@ class ComposeExtraFieldsTests(unittest.TestCase):
         body = SimpleNamespace(check=True, content="services: {}\n", model_extra="validate")
         with mock.patch.object(
             modules_api.compose_svc, "save_compose", return_value={"ok": True}
-        ) as save:
+        ) as save, mock.patch.object(modules_api.audit, "record"):
             out = modules_api.compose_put("demo", body)
         self.assertTrue(out["ok"])
         save.assert_called_once_with("demo", "services: {}\n", validate=True)
@@ -279,6 +279,13 @@ class CatalogCredentialLeftoverTests(unittest.TestCase):
                 catalog_router.service_credentials, "store",
                 return_value={"service_id": "x"},
             ),
+            # The save is audited; the fake request cannot resolve an
+            # identity, and the trail must not collect fixture noise.
+            mock.patch.object(catalog_router.audit, "record"),
+            mock.patch.object(catalog_router.auth, "request_username",
+                              lambda r: "admin"),
+            mock.patch.object(catalog_router.auth, "request_client_id",
+                              lambda r: "127.0.0.1"),
         ):
             out = catalog_router.save_app_credential(body, SimpleNamespace())
         json.dumps(out, ensure_ascii=False, allow_nan=False).encode("utf-8")

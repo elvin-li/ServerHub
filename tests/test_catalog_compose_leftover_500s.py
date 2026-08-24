@@ -964,6 +964,8 @@ class CatalogCredentialSaveLeftoverTests(unittest.TestCase):
                 catalog_router.service_credentials, "store",
                 return_value={"service_id": "jellyfin"},
             ),
+            # The save is audited; keep fixture lines out of the real trail.
+            mock.patch.object(catalog_router.audit, "record"),
         ):
             return catalog_router.save_app_credential(body, mock.Mock())
 

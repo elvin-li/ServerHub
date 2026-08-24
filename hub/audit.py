@@ -159,6 +159,35 @@ CONTAINER_NETWORK_CHANGED = "container.network.changed"
 CONTAINER_PRUNED = "container.pruned"
 CONTAINER_CONFIG_CHANGED = "container.config.changed"
 
+#: App-store and managed-app mutations (hub/routers/catalog.py).  Installing
+#: a template materialises a compose stack or brew formula on the host,
+#: uninstalling can delete its data, the credential store writes to the
+#: keychain (the password itself is never passed to record()), and the
+#: autostart console changes what comes up at boot.
+APP_INSTALLED = "app.installed"
+APP_UNINSTALLED = "app.uninstalled"
+APP_ACTION = "app.action"
+APP_CREDENTIAL_SAVED = "app.credential.saved"
+APP_CREDENTIAL_DELETED = "app.credential.deleted"
+APP_AUTOSTART_CHANGED = "app.autostart.changed"
+
+#: Cloudflare Tunnel lifecycle (hub/routers/cloudflared_api.py).  A tunnel
+#: exposes this panel to the public internet, and route-dns points a public
+#: hostname at it — exactly the changes to reconstruct after an exposure
+#: question.  The connector token is never passed to record().
+TUNNEL_CHANGED = "cloudflared.changed"
+
+#: Compose editor, brew services and system nginx (hub/routers/modules_api.py).
+#: A compose save is arbitrary container config awaiting the next stack run.
+COMPOSE_CHANGED = "compose.changed"
+NGINX_RELOADED = "nginx.reloaded"
+
+#: File manager writes and the FileBrowser sidecar (hub/routers/files_api.py).
+FILES_CHANGED = "files.changed"
+
+#: Menu-bar launcher and panel self-management (hub/routers/launcher_api.py).
+LAUNCHER_CHANGED = "launcher.changed"
+
 #: Any field whose name contains one of these is replaced wholesale.  Substring
 #: matching rather than exact names, so ``current_password``, ``new_password``
 #: and ``setup_token`` are all covered without enumerating every variant a

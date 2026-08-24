@@ -3,12 +3,30 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from hub import cloudflared_svc
+from hub import audit, auth, cloudflared_svc
 
 router = APIRouter(tags=["cloudflared"])
+
+
+def _audit_change(request: Request | None, action: str, **fields) -> None:
+    """One line per tunnel mutation — a tunnel exposes this panel to the
+    public internet, and route-dns points a public hostname at it.
+
+    Called after the service call returned, so a failed cloudflared
+    invocation that raised leaves no record.  FastAPI always injects
+    `request`; the None guard only keeps direct in-process calls (tests,
+    tooling) working.
+    """
+    audit.record(
+        audit.TUNNEL_CHANGED,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        action=action,
+        **fields,
+    )
 
 
 @router.get("/api/cloudflared/status")
@@ -17,8 +35,10 @@ def cf_status():
 
 
 @router.post("/api/cloudflared/login")
-def cf_login():
-    return cloudflared_svc.login_start()
+def cf_login(request: Request = None):
+    result = cloudflared_svc.login_start()
+    _audit_change(request, "login_started")
+    return result
 
 
 @router.get("/api/cloudflared/login/poll")
@@ -31,8 +51,10 @@ class CreateBody(BaseModel):
 
 
 @router.post("/api/cloudflared/create")
-def cf_create(body: CreateBody):
-    return cloudflared_svc.create_tunnel(body.name)
+def cf_create(body: CreateBody, request: Request = None):
+    result = cloudflared_svc.create_tunnel(body.name)
+    _audit_change(request, "create", tunnel=body.name)
+    return result
 
 
 class StartTunnelBody(BaseModel):
@@ -40,8 +62,10 @@ class StartTunnelBody(BaseModel):
 
 
 @router.post("/api/cloudflared/start")
-def cf_start_tunnel(body: StartTunnelBody):
-    return cloudflared_svc.start_with_tunnel(body.tunnel)
+def cf_start_tunnel(body: StartTunnelBody, request: Request = None):
+    result = cloudflared_svc.start_with_tunnel(body.tunnel)
+    _audit_change(request, "start", tunnel=body.tunnel)
+    return result
 
 
 class StartTokenBody(BaseModel):
@@ -50,18 +74,25 @@ class StartTokenBody(BaseModel):
 
 
 @router.post("/api/cloudflared/start-token")
-def cf_start_token(body: StartTokenBody):
-    return cloudflared_svc.start_with_token(body.token, label=body.label)
+def cf_start_token(body: StartTokenBody, request: Request = None):
+    result = cloudflared_svc.start_with_token(body.token, label=body.label)
+    # The connector token is a credential and is never passed to record().
+    _audit_change(request, "start_token", label=body.label or "")
+    return result
 
 
 @router.post("/api/cloudflared/stop")
-def cf_stop():
-    return cloudflared_svc.stop()
+def cf_stop(request: Request = None):
+    result = cloudflared_svc.stop()
+    _audit_change(request, "stop")
+    return result
 
 
 @router.post("/api/cloudflared/restart")
-def cf_restart():
-    return cloudflared_svc.restart()
+def cf_restart(request: Request = None):
+    result = cloudflared_svc.restart()
+    _audit_change(request, "restart")
+    return result
 
 
 class RouteBody(BaseModel):
@@ -70,8 +101,10 @@ class RouteBody(BaseModel):
 
 
 @router.post("/api/cloudflared/route-dns")
-def cf_route(body: RouteBody):
-    return cloudflared_svc.route_dns(body.tunnel, body.hostname)
+def cf_route(body: RouteBody, request: Request = None):
+    result = cloudflared_svc.route_dns(body.tunnel, body.hostname)
+    _audit_change(request, "route_dns", tunnel=body.tunnel, hostname=body.hostname)
+    return result
 
 
 @router.get("/api/cloudflared/logs")
@@ -80,5 +113,7 @@ def cf_logs(lines: int = 120):
 
 
 @router.post("/api/cloudflared/uninstall-service")
-def cf_uninstall_service():
-    return cloudflared_svc.uninstall_service()
+def cf_uninstall_service(request: Request = None):
+    result = cloudflared_svc.uninstall_service()
+    _audit_change(request, "uninstall_service")
+    return result

@@ -5,7 +5,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from hub import apps_manage_svc, auth, autostart_svc, catalog, catalog_remote, service_credentials
+from hub import apps_manage_svc, audit, auth, autostart_svc, catalog, catalog_remote, service_credentials
 
 from ..errors import api_error
 
@@ -110,17 +110,36 @@ class UninstallBody(BaseModel):
 
 
 @router.post("/api/catalog/{template_id}/install")
-def install(template_id: str, body: InstallBody):
-    return catalog.install_template(template_id, body.variables or {})
+def install(template_id: str, body: InstallBody, request: Request = None):
+    result = catalog.install_template(template_id, body.variables or {})
+    # Template variables are deliberately not recorded: they carry the
+    # passwords and API keys the template prompts for.
+    audit.record(
+        audit.APP_INSTALLED,
+        # FastAPI always injects `request`; the None default only keeps
+        # direct in-process calls (tests, tooling) working.
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        template=template_id,
+    )
+    return result
 
 
 @router.post("/api/catalog/{template_id}/uninstall")
-def uninstall(template_id: str, body: UninstallBody):
-    return catalog.uninstall_template(
+def uninstall(template_id: str, body: UninstallBody, request: Request = None):
+    result = catalog.uninstall_template(
         template_id,
         remove_data=body.remove_data,
         confirm=body.confirm,
     )
+    audit.record(
+        audit.APP_UNINSTALLED,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        template=template_id,
+        remove_data=bool(body.remove_data),
+    )
+    return result
 
 
 # ─── Unified managed apps (Docker / native / VM)
@@ -176,13 +195,30 @@ def save_app_credential(body: CredentialSaveBody, request: Request):
         adapter=adapter,
         applied=applied,
     )
+    # The stored account name is an audit fact; the password never reaches
+    # record() (and its redaction would blank it anyway).
+    audit.record(
+        audit.APP_CREDENTIAL_SAVED,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        service=body.service_id,
+        account=body.username,
+        applied=applied,
+    )
     return {"ok": True, "message": message, "credential": item}
 
 
 @router.delete("/api/apps/credentials")
 def delete_app_credential(request: Request, id: str):
     _require_browser_session(request)
-    return service_credentials.delete(id)
+    result = service_credentials.delete(id)
+    audit.record(
+        audit.APP_CREDENTIAL_DELETED,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        service=id,
+    )
+    return result
 
 
 @router.get("/api/apps/managed/logs")
@@ -211,11 +247,20 @@ def apps_managed_action(body: ManagedActionBody, request: Request):
         sid = body.id.partition(":")[2] or body.id
         if not auth.browser_authenticated(request):
             raise api_error("services.uninstall_browser_session_required", id=sid)
-    return apps_manage_svc.action(
+    result = apps_manage_svc.action(
         body.id,
         body.action,
         remove_data=body.remove_data,
     )
+    audit.record(
+        audit.APP_ACTION,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        target=body.id,
+        action=body.action,
+        remove_data=bool(body.remove_data),
+    )
+    return result
 
 
 # ─── Boot / login autostart console ──────────────────────────────────────────
@@ -232,8 +277,17 @@ class AutostartBody(BaseModel):
 
 
 @router.post("/api/apps/autostart")
-def apps_autostart_set(body: AutostartBody):
-    return autostart_svc.set_autostart(body.id, body.enabled, policy=body.policy)
+def apps_autostart_set(body: AutostartBody, request: Request = None):
+    result = autostart_svc.set_autostart(body.id, body.enabled, policy=body.policy)
+    audit.record(
+        audit.APP_AUTOSTART_CHANGED,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        target=body.id,
+        enabled=bool(body.enabled),
+        policy=body.policy or "",
+    )
+    return result
 
 
 class DockerPolicyBody(BaseModel):
@@ -242,10 +296,26 @@ class DockerPolicyBody(BaseModel):
 
 
 @router.post("/api/apps/autostart/docker-policy")
-def apps_autostart_docker_policy(body: DockerPolicyBody):
-    return autostart_svc.set_docker_policy(body.name, body.policy)
+def apps_autostart_docker_policy(body: DockerPolicyBody, request: Request = None):
+    result = autostart_svc.set_docker_policy(body.name, body.policy)
+    audit.record(
+        audit.APP_AUTOSTART_CHANGED,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        target=body.name,
+        policy=body.policy,
+    )
+    return result
 
 
 @router.post("/api/apps/autostart/run-now")
-def apps_autostart_run_now():
-    return autostart_svc.run_autostart_now()
+def apps_autostart_run_now(request: Request = None):
+    result = autostart_svc.run_autostart_now()
+    audit.record(
+        audit.APP_AUTOSTART_CHANGED,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        target="all",
+        action="run_now",
+    )
+    return result

@@ -188,6 +188,8 @@ class AuthHardeningTests(unittest.TestCase):
             patch(
                 "hub.routers.catalog.apps_manage_svc.action", return_value={"ok": True},
             ) as dispatched,
+            # The action is audited; keep the fixture line out of the real trail.
+            patch("hub.routers.catalog.audit.record"),
         ):
             self.assertEqual(apps_managed_action(body, req), {"ok": True})
         dispatched.assert_called_once_with(
@@ -202,6 +204,7 @@ class AuthHardeningTests(unittest.TestCase):
             patch(
                 "hub.routers.catalog.apps_manage_svc.action", return_value={"ok": True},
             ) as dispatched,
+            patch("hub.routers.catalog.audit.record"),
         ):
             for action in ("start", "stop", "restart"):
                 with self.subTest(action=action):
