@@ -793,6 +793,74 @@ class PhotosHubThumbnailRoute(unittest.TestCase):
         self.assertEqual(raised.exception.detail["code"], "photoshub.thumb_failed")
 
 
+class PhotosHubConfigPatchRoute(unittest.TestCase):
+    """PATCH /api/photoshub/config leaves an audit record naming who and where.
+
+    This route registers with the one mutating verb the audit-coverage scan
+    in test_mutating_routes_audited.py did not know, so nothing pinned its
+    trail while every POST around it was covered.  The scan now includes
+    PATCH; these assert the behaviour itself — the record carries the
+    operator (``username``, the field Audit.vue renders) and the caller's IP
+    (``client``) — so a regression cannot hide behind the static check's
+    loose "mentions audit" match.
+    """
+
+    def test_the_route_is_registered_for_patch(self):
+        from hub.routers import photoshub_api
+
+        routes = {
+            (getattr(r, "path", ""), tuple(sorted(getattr(r, "methods", ()) or ())))
+            for r in photoshub_api.router.routes
+        }
+        self.assertIn(("/api/photoshub/config", ("PATCH",)), routes)
+
+    def test_a_config_patch_records_operator_and_client(self):
+        from hub.routers import photoshub_api
+
+        body = photoshub_api.ConfigPatch(
+            panel=photoshub_api.PanelPatch(url="http://127.0.0.1:8283/"),
+        )
+        with (
+            mock.patch.object(
+                photoshub_api.photoshub_svc, "update_config",
+                return_value={"panel": {"url": "http://127.0.0.1:8283/"}},
+            ),
+            mock.patch.object(
+                photoshub_api, "request_username", return_value="admin",
+            ),
+            mock.patch.object(
+                photoshub_api, "request_client_id", return_value="192.0.2.7",
+            ),
+            mock.patch.object(photoshub_api.audit, "record") as record,
+        ):
+            photoshub_api.patch_config(body, mock.Mock())
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[0], "photoshub.config")
+        kwargs = record.call_args.kwargs
+        self.assertEqual(kwargs["username"], "admin")
+        self.assertEqual(kwargs["client"], "192.0.2.7")
+        self.assertIn("panel", kwargs["detail"])
+
+    def test_a_refused_patch_writes_no_record(self):
+        """The trail is what happened, not what was asked for."""
+        from hub.errors import api_error
+        from hub.routers import photoshub_api
+
+        body = photoshub_api.ConfigPatch(
+            immich=photoshub_api.ImmichPatch(base_url="https://immich.example.com"),
+        )
+        with (
+            mock.patch.object(
+                photoshub_api.photoshub_svc, "update_config",
+                side_effect=api_error("photoshub.bad_immich_url"),
+            ),
+            mock.patch.object(photoshub_api.audit, "record") as record,
+        ):
+            with self.assertRaises(HTTPException):
+                photoshub_api.patch_config(body, mock.Mock())
+        record.assert_not_called()
+
+
 class PhotosHubAlbumJson(unittest.TestCase):
     def test_pending_album_id_tolerates_an_object_payload(self):
         with mock.patch.object(

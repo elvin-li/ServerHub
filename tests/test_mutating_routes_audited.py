@@ -3,10 +3,15 @@
 The trail grew router by router — auth first, then power, NFS/RAID,
 WireGuard, scheduler, notify, and finally the service/container/app/file
 sweeps — and each pass found endpoints the previous one missed.  This pins
-the property itself: a new POST/PUT/DELETE handler either references the
-audit module (directly, or through a helper in the same file that calls
+the property itself: a new POST/PUT/DELETE/PATCH handler either references
+the audit module (directly, or through a helper in the same file that calls
 audit.record) or is added to the exception list below with a reason a
 reviewer can weigh.
+
+PATCH is in the verb set because it was not, once: the scan knew only
+POST/PUT/DELETE, so PATCH /api/photoshub/config sat outside the property
+entirely — audited by luck, not by pin — and the next PATCH handler could
+have shipped without a trail and without tripping anything here.
 """
 from __future__ import annotations
 
@@ -77,11 +82,26 @@ def _audit_helper_names(text: str) -> set[str]:
     return names
 
 
-_MUTATING = {"post", "put", "delete"}
+_MUTATING = {"post", "put", "delete", "patch"}
+
+
+def _route_path(dec: ast.Call):
+    """The literal path a route decorator registers, positional or ``path=``."""
+    if dec.args and isinstance(dec.args[0], ast.Constant):
+        return dec.args[0].value
+    for kw in dec.keywords:
+        if kw.arg == "path" and isinstance(kw.value, ast.Constant):
+            return kw.value.value
+    return None
 
 
 def _routes(text: str):
-    """(verb, path, handler source) for each mutating route in *text*."""
+    """(verb, path, handler source) for each mutating route in *text*.
+
+    Any ``<name>.<verb>("/path")`` decorator counts, not just the literal
+    spelling ``router.<verb>`` — renaming the APIRouter variable must not
+    quietly move a file's routes out from under this scan.
+    """
     for node in ast.walk(ast.parse(text)):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -89,13 +109,13 @@ def _routes(text: str):
             if not (isinstance(dec, ast.Call)
                     and isinstance(dec.func, ast.Attribute)
                     and isinstance(dec.func.value, ast.Name)
-                    and dec.func.value.id == "router"
-                    and dec.func.attr in _MUTATING
-                    and dec.args
-                    and isinstance(dec.args[0], ast.Constant)):
+                    and dec.func.attr in _MUTATING):
+                continue
+            route = _route_path(dec)
+            if route is None:
                 continue
             body = ast.get_source_segment(text, node) or ""
-            yield dec.func.attr, dec.args[0].value, body
+            yield dec.func.attr, route, body
 
 
 def _is_audited(body: str, helpers: set[str]) -> bool:
@@ -133,6 +153,30 @@ class MutatingRoutesAuditedTests(unittest.TestCase):
         self.assertEqual(
             stale, [],
             f"exceptions for routes that no longer exist: {stale}",
+        )
+
+    def test_no_mutating_route_hides_outside_the_routers_package(self):
+        """The scans above read hub/routers/*.py and nothing else.
+
+        That scope is only sound while it is the whole truth: a POST handler
+        registered from hub/app_factory.py or a service module would carry
+        the same privileges and none of these pins.  Keep every mutating
+        route where the audit property is enforced.
+        """
+        hub_dir = BASE / "hub"
+        strays = []
+        for path in sorted(hub_dir.rglob("*.py")):
+            if ROUTERS in path.parents:
+                continue
+            for verb, route, _body in _routes(path.read_text()):
+                strays.append(
+                    f"{path.relative_to(BASE)}: {verb.upper()} {route}"
+                )
+        self.assertEqual(
+            strays,
+            [],
+            "mutating routes outside hub/routers escape the audit scan; "
+            "move them into a router module:\n" + "\n".join(strays),
         )
 
     def test_exceptions_are_not_also_audited(self):
