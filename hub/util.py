@@ -568,6 +568,10 @@ def read_bytes_capped(path, max_bytes: int) -> bytes:
 _TIMEOUT_LOG_GAP = 300.0
 _noisy_log_lock = threading.Lock()
 _noisy_log_at: dict[tuple[str, tuple[str, ...]], float] = {}
+#: Sweep the gap table once it holds more argvs than this.  A healthy host
+#: keeps a handful of entries -- one per command that is actually broken --
+#: so passing this means argv is carrying identifiers rather than repeating.
+_NOISY_SWEEP_AT = 256
 
 
 def _cmd_key(cmd) -> tuple[str, ...]:
@@ -583,6 +587,15 @@ def _log_once(kind: str, cmd, message: str) -> None:
         last = _noisy_log_at.get(key, 0.0)
         if now - last < _TIMEOUT_LOG_GAP:
             return
+        # The whole argv is the key, and argv carries identifiers: container
+        # IDs, device paths, tunnel names.  Every one that ever failed used
+        # to stay here for the life of the process.  An entry past the gap
+        # is already spent -- the next failure logs regardless -- so
+        # forgetting it costs nothing and bounds the table.
+        if len(_noisy_log_at) > _NOISY_SWEEP_AT:
+            for spent, at in list(_noisy_log_at.items()):
+                if now - at >= _TIMEOUT_LOG_GAP:
+                    del _noisy_log_at[spent]
         _noisy_log_at[key] = now
     log.warning(message, cmd)
 
