@@ -486,6 +486,16 @@ describe('selected state', () => {
     )
     expect(found).toBeGreaterThan(20)
   })
+
+  it('announces the bulk-selection count on Services', () => {
+    // Checking a row updates "{n} selected" inside a bar that only exists
+    // while something is selected; without a live region a screen-reader
+    // user hears nothing change as they select or deselect services.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /<span role="status">\{\{ t\('services\.selected_n'/,
+    )
+  })
 })
 
 describe('macos switch controls', () => {

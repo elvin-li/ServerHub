@@ -135,7 +135,10 @@
         </table>
       </div>
       <div v-if="selected.size" class="bulk-bar">
-        <span>{{ t('services.selected_n', { n: selected.size }) }}</span>
+        <!-- role=status: checking rows gives no audible feedback otherwise —
+             the count lives in a bar that only exists while something is
+             selected, so a screen-reader user heard nothing change. -->
+        <span role="status">{{ t('services.selected_n', { n: selected.size }) }}</span>
         <button type="button" class="tiny primary" :disabled="busy" @click="bulkAction([...selected], 'start')">{{ t('services.act_start') }}</button>
         <button type="button" class="tiny" :disabled="busy" @click="bulkAction([...selected], 'restart')">{{ t('services.act_restart') }}</button>
         <button type="button" class="tiny danger" :disabled="busy" @click="bulkAction([...selected], 'stop')">{{ t('services.act_stop') }}</button>
