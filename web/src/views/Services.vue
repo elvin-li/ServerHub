@@ -686,8 +686,11 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .toolbar-toggles { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
 /* Size and colour come from the global .meta-count. */
 .meta-count { font-weight: 600; }
+/* Flat --down on the page canvas is 3.25:1 at this size; mixing toward --txt
+   keeps it unmistakably the alarm red while clearing AA, same as button.danger. */
 .warn-tag {
-  margin-left: 8px; color: var(--down); font-weight: 600; font-size: 12px;
+  margin-left: 8px; color: color-mix(in srgb, var(--down) 65%, var(--txt));
+  font-weight: 600; font-size: 12px;
 }
 .problems-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;

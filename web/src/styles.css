@@ -2338,7 +2338,10 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .chip.active,
 [data-theme="macos-dark"] .chip.active {
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
-  color: var(--accent);
+  /* The three state variants below already mix their status colour toward --txt
+     to clear AA on the 12% fill; this base rule was the one left on a flat
+     --accent and read 3.43:1. */
+  color: color-mix(in srgb, var(--accent) 70%, var(--txt));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
 }
 [data-theme="macos"] .chip-ok.active,
