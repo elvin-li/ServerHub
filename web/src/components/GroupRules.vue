@@ -17,7 +17,7 @@
           <tr>
             <th>{{ t('grules.group') }}</th>
             <th class="col-hide-m">{{ t('grules.match') }}</th>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.actions') }}</span></th>
           </tr>
         </thead>
         <tbody>

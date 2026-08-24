@@ -124,6 +124,14 @@ function fingerprintServiceWorker() {
 export default defineConfig({
   plugins: [vue(), enforceEntryChunkBudget(), fingerprintServiceWorker()],
   base: '/',
+  // `build.target` below is esnext because noVNC 1.7 ships top-level await, but
+  // dependency pre-bundling has its own esbuild target that defaults to the
+  // browser-compat list. Left unset, `npm run dev` dies on startup with
+  // "Top-level await is not available in the configured target environment"
+  // the first time it optimizes @novnc/novnc. Keep the two targets in step.
+  optimizeDeps: {
+    esbuildOptions: { target: 'esnext' },
+  },
   // Vitest runs the same resolver/plugin chain as the build, so a test that
   // imports a .vue file exercises the real single-file-component pipeline.
   test: {
@@ -161,7 +169,19 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8086',
+      '/api': {
+        target: 'http://localhost:8086',
+        // The panel refuses a write whose Origin does not match its Host
+        // (hub/app_factory.py's cross-site guard). Vite's string shorthand
+        // rewrites Host to the proxy target, so every POST/PUT/DELETE from
+        // the dev server arrived as Origin 127.0.0.1:5173 against Host
+        // localhost:8086 and came back 403 — first-run setup and sign-in
+        // included. Forward the browser's own Host so dev stays same-origin.
+        changeOrigin: false,
+        // /api/terminal/ws and /api/vms/*/console are WebSockets; without
+        // this the upgrade is proxied as a plain request and never connects.
+        ws: true,
+      },
     },
   },
 })

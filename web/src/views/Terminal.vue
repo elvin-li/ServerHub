@@ -23,7 +23,7 @@
           <input v-else v-model="container" type="text" :disabled="connected" :placeholder="t('terminal.container_ph')"  :aria-label="t('terminal.container_ph')"/>
           <!-- Only when discovery actually failed. An empty list with no error is
                simply "no running containers" and needs no explanation. -->
-          <span v-if="containerListError" class="sub" style="color:var(--warn)">{{ finiteText(containerListError) }}</span>
+          <span v-if="containerListError" class="sub" style="color:var(--warn-text)">{{ finiteText(containerListError) }}</span>
         </label>
 
         <label v-if="target === 'container'" class="tsel">

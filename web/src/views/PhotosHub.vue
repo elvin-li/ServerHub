@@ -94,8 +94,8 @@
             {{ t('photoshub.remove_selected') }} ({{ selected.length }})
           </button>
         </div>
-        <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down)" role="alert">{{ finiteText(pendingError) }}</p>
-        <p class="meta" v-if="pending?.gated || data?.gates?.allow_delete_channel === false" style="color:var(--warn)">
+        <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down-text)" role="alert">{{ finiteText(pendingError) }}</p>
+        <p class="meta" v-if="pending?.gated || data?.gates?.allow_delete_channel === false" style="color:var(--warn-text)">
           {{ t('photoshub.gated_warn') }}
         </p>
         <p v-if="(pending?.assets || []).length" class="meta select-all">
@@ -138,7 +138,7 @@
       </div>
 
       <div v-else-if="tab === 'settings'" class="settings-grid" data-test="photoshub-settings">
-        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down)">{{ finiteText(settingsError) }}</p>
+        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down-text)">{{ finiteText(settingsError) }}</p>
         <div class="card-block">
           <div class="section-head">
             <h2>{{ t('photoshub.people_title') }}</h2>
@@ -663,10 +663,10 @@ onUnmounted(() => {
 
 <style scoped>
 .card-block {
-  background: var(--card, var(--panel, #fff));
+  background: var(--card);
   border-radius: 12px;
   padding: 14px 16px;
-  border: 1px solid var(--border, rgba(0,0,0,.06));
+  border: 1px solid var(--line);
 }
 .absent h2 { margin: 0 0 8px; font-size: 1.1rem; }
 .section-head {
@@ -711,7 +711,7 @@ onUnmounted(() => {
   align-items: center;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--line);
   text-decoration: none;
   color: inherit;
   font-size: 13px;
@@ -732,7 +732,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 4px;
   padding: 6px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--line);
   border-radius: 10px;
   cursor: pointer;
 }

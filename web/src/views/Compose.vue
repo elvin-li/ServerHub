@@ -7,7 +7,7 @@
 
     <div class="two-col" style="align-items:start">
       <div class="tile">
-        <h3>{{ t('compose.stacks') }}</h3>
+        <h2>{{ t('compose.stacks') }}</h2>
         <div class="toolbar">
           <button class="tiny primary" @click="loadStacks">{{ t('common.refresh') }}</button>
           <button class="tiny" @click="showCreate=true">{{ t('compose.new_stack') }}</button>
@@ -17,7 +17,7 @@
         <div v-else class="table-wrap">
           <table class="dense fit-m">
             <thead>
-              <tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th></th></tr>
+              <tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr>
             </thead>
             <tbody>
               <tr
@@ -47,10 +47,10 @@
       </div>
 
       <div class="tile">
-        <h3>
+        <h2>
           {{ t('compose.yaml_editor') }}
           <span v-if="compose" class="sub" style="text-transform:none">{{ finiteText(compose.compose_path) }}</span>
-        </h3>
+        </h2>
         <div v-if="!compose" class="placeholder" style="padding:24px">{{ t('compose.pick_stack') }}</div>
         <template v-else>
           <textarea

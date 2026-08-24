@@ -1,5 +1,7 @@
 <template>
   <div>
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('network.title') }}</h1>
     <div class="tabs">
       <button :class="{ active: tab==='switch' }" :aria-pressed="tab === 'switch'" @click="tab='switch'">{{ t('network.tab_switch') }}</button>
       <button :class="{ active: tab==='ifaces' }" :aria-pressed="tab === 'ifaces'" @click="tab='ifaces'">{{ t('network.tab_ifaces') }}</button>
@@ -51,7 +53,7 @@
     <!-- Switch profile + multi-IP bindings -->
     <template v-if="tab==='switch'">
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-        <h3 style="margin:0 0 6px">{{ t('network.switch_title') }}</h3>
+        <h2 style="margin:0 0 6px">{{ t('network.switch_title') }}</h2>
         <p style="margin:0;font-size:12px;color:var(--sub);line-height:1.55">
           {{ t('network.wifi_switch_hint1') }}
           <code>networksetup</code> {{ t('network.wifi_switch_hint2') }}
@@ -70,7 +72,7 @@
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--ok)">
         <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('network.failover_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('network.failover_title') }}</h2>
           <span class="badge" :class="data?.network_failover?.state?.mode === 'wired' ? 'ok' : 'warn'">
             {{ failoverModeLabel }}
           </span>
@@ -94,7 +96,7 @@
         v-if="data?.wstunnel?.configured || data?.wstunnel?.running"
       >
         <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('network.wstunnel_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('network.wstunnel_title') }}</h2>
           <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
             {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
           </span>
@@ -155,6 +157,9 @@
                 </template>
               </td>
             </tr>
+            <tr v-if="!orderList.length && !loadError">
+              <td colspan="6" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -190,7 +195,7 @@
             <strong class="mono" v-if="data.alias_auto.preferred">
               {{ finiteText(data.alias_auto.preferred.device) }}
             </strong>
-            <span v-else style="color:var(--down)">{{ t('network.no_network') }}</span>
+            <span v-else style="color:var(--down-text)">{{ t('network.no_network') }}</span>
             <span v-if="data.alias_auto.preferred" style="color:var(--sub)">
               · {{ finiteText(data.alias_auto.preferred.service) }}
               · {{ t('network.primary_ip_is', { ip: finiteText(data.alias_auto.preferred.primary_ip) }) }}
@@ -257,6 +262,9 @@
                 <td></td>
               </tr>
             </template>
+            <tr v-if="!(data?.interface_addresses||[]).length && !loadError">
+              <td colspan="6" style="color:var(--sub)">{{ t('network.no_bindings') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -289,7 +297,7 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">IPv6</th><th class="col-hide-m">MAC</th><th class="col-hide-m">MTU</th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">IPv6</th><th class="col-hide-m">MAC</th><th class="col-hide-m">MTU</th>
             </tr>
           </thead>
           <tbody>
@@ -311,6 +319,9 @@
               <td class="mono col-hide-m" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="mono col-hide-m">{{ finiteText(i.mac) }}</td>
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
+            </tr>
+            <tr v-if="!(data?.interfaces||[]).length && !loadError">
+              <td colspan="8" style="color:var(--sub)">{{ t('network.no_interfaces') }}</td>
             </tr>
           </tbody>
         </table>
@@ -379,7 +390,7 @@
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
       <div class="table-wrap">
         <table class="dense fit-m">
-          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th></th></tr></thead>
+          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
           <tbody>
             <tr v-for="s in data?.services || []" :key="s.name">
               <td>
@@ -389,6 +400,9 @@
               <td class="mono">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') || t('network.system_default') }}</td>
               <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
+            </tr>
+            <tr v-if="!(data?.services||[]).length && !loadError">
+              <td colspan="4" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -414,6 +428,9 @@
               <td class="mono col-hide-m">{{ finiteText(p.address) }}</td>
               <td class="mono">{{ finiteN(p.port) }}</td>
             </tr>
+            <tr v-if="!filteredListen.length && !loadError">
+              <td colspan="5" style="color:var(--sub)">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -434,6 +451,9 @@
               <td class="mono col-hide-m">{{ finiteText(r.flags) }}</td>
               <td>{{ finiteText(r.netif) }}</td>
             </tr>
+            <tr v-if="!(data?.routes||[]).length && !loadError">
+              <td colspan="4" style="color:var(--sub)">{{ t('network.no_routes') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -451,7 +471,7 @@
         <div class="table-wrap" style="margin-bottom:14px">
           <table class="dense fit-m">
             <thead>
-              <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th></th></tr>
+              <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr>
             </thead>
             <tbody>
               <tr v-for="(p,i) in filteredDockerPorts" :key="i">
@@ -555,7 +575,7 @@
           <span id="net-port-title" class="name">{{ t('network.port_map') }} · {{ finiteText(portEdit) }}</span>
           <button class="tiny" @click="portEdit=null">{{ t('common.close') }}</button>
         </div>
-        <p style="font-size:12px;color:var(--down);line-height:1.45;margin-bottom:8px">
+        <p style="font-size:12px;color:var(--down-text);line-height:1.45;margin-bottom:8px">
           {{ t('network.recreate_hint') }}
         </p>
         <label style="font-size:12px;color:var(--sub)">{{ t('network.map_list') }}</label>

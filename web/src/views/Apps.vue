@@ -18,7 +18,7 @@
     <template v-if="tab === 'catalog'">
       <div class="toolbar apps-toolbar">
         <input v-model="q" type="text" class="search" :placeholder="t('apps.search_ph')"  :aria-label="t('apps.search_ph')"/>
-        <select v-model="cat" class="cat-select">
+        <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
           <option v-for="c in categories" :key="c.id" :value="c.id">
             {{ catLabel(c.id) }}{{ countLabel(c.id) }}
           </option>
@@ -41,6 +41,7 @@
           type="button"
           class="cat-pill"
           :class="{ active: cat === c.id }"
+          :aria-pressed="cat === c.id"
           @click="cat = c.id"
         >{{ catLabel(c.id) }}{{ countLabel(c.id) }}</button>
       </div>
@@ -143,7 +144,7 @@
     <template v-else-if="tab === 'managed'">
       <div class="toolbar apps-toolbar">
         <input v-model="mq" type="text" class="search" :placeholder="t('apps.managed_search')"  :aria-label="t('apps.managed_search')"/>
-        <select v-model="mkind" class="cat-select">
+        <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
           <option value="docker">{{ t('apps.kind_docker') }}</option>
@@ -186,7 +187,12 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
+            <!-- No role="button" on the row: it replaces the implicit row role,
+                 so every <td> stops being exposed as a cell and the whole row
+                 collapses into one button label, and it nests the per-row
+                 buttons and switches inside a widget. The row keeps tabindex
+                 and the key handlers, so keyboard activation is unchanged. -->
+            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
               <td>
                 <strong>{{ finiteText(it.name) }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
@@ -723,7 +729,7 @@
         <section v-if="(remoteInfo?.overrides || []).length">
           <h4 class="modal-title" style="font-size:14px;margin:8px 0">{{ t('catalog_remote.overrides_title') }}</h4>
           <table class="mini-table">
-            <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th></th></tr></thead>
+            <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
             <tbody>
               <tr v-for="o in remoteInfo.overrides" :key="o.id">
                 <td class="mono">{{ finiteText(o.id) }}</td>
@@ -2285,10 +2291,12 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   color: var(--txt);
 }
 
+/* Mixed toward --txt like .chip-docker's #1a6fb0 and .chip-launchd's #b45309:
+   the raw --ok on its own 16% tint is ~2:1 for this 10px text. */
 .chip-native {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
 }
 
 .chip-docker {
@@ -2318,7 +2326,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .chip-ok {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
 }
 
 .chip-muted {
@@ -2503,7 +2511,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
    louder tone than ordinary install notes. */
 .tpl-danger {
   font-size: 12px;
-  color: var(--down);
+  color: var(--down-text);
   background: color-mix(in srgb, var(--down) 10%, var(--card));
   border-left: 3px solid var(--down);
   padding: 8px 10px;
@@ -2642,15 +2650,15 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 }
 
 .act-btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
 }
 
 .act-btn.danger {
   background: color-mix(in srgb, var(--down) 12%, var(--card));
   border-color: color-mix(in srgb, var(--down) 45%, var(--line));
-  color: var(--down);
+  color: var(--down-text);
   font-weight: 700;
 }
 

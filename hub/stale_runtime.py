@@ -68,6 +68,15 @@ _kick_lock = threading.Lock()
 _EXE_TTL = 30.0
 _EXE_CACHE_MAX = 256
 _exe_cache: dict[int, tuple[float, str | None]] = {}
+#: Bumped by :func:`invalidate_exe_cache`.  The probe below runs outside
+#: ``_exe_lock`` -- it spawns ``ps`` and ``lsof`` -- so a kickstart wave can
+#: land between reading the path and storing it, and storing it then would put
+#: the pre-kickstart answer back for a full TTL.  That is the case the
+#: invalidate exists for: ``kick_stale`` restarts the agent precisely because
+#: its interpreter is gone, and the next ``scan()`` must not be told the dead
+#: pid is still on the deleted Cellar path.  A probe from a superseded
+#: generation returns its value to its own caller and publishes nothing.
+_exe_generation = 0
 _exe_lock = threading.Lock()
 
 try:
@@ -110,7 +119,9 @@ def _exe_from_lsof(pid: int) -> str | None:
 
 def invalidate_exe_cache() -> None:
     """Drop cached ``proc_pidpath`` / lsof answers (after a kickstart wave)."""
+    global _exe_generation
     with _exe_lock:
+        _exe_generation += 1
         _exe_cache.clear()
 
 
@@ -137,8 +148,15 @@ def pid_exe_path(pid) -> str | None:
         hit = _exe_cache.get(n)
         if hit is not None and now - hit[0] < _EXE_TTL:
             return hit[1]
+        began = _exe_generation
     path = _pid_exe_path_uncached(n)
     with _exe_lock:
+        if began != _exe_generation:
+            # A kickstart wave landed while we shelled out.  Answer this
+            # caller -- it asked before the wave, and re-probing on its behalf
+            # buys nothing -- but leave the cache empty so the next reader
+            # sees the world the kickstart made.
+            return path
         if len(_exe_cache) >= _EXE_CACHE_MAX:
             cutoff = now - _EXE_TTL
             for key, (stamp, _) in list(_exe_cache.items()):

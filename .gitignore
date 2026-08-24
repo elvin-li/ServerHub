@@ -10,6 +10,23 @@ web/dist/
 .build/
 .perf-audit-dist/
 
+# ---- Everything the running panel writes under data/ ----
+#
+# data/ is pure per-machine runtime state: nothing in it is tracked, and the
+# rules below have been escaped four times already by a file the code writes
+# under a name nobody thought to enumerate -- a rotator suffix, a staging copy,
+# a store added with a feature. Four were still stageable when this rule went
+# in: api-keys.json (sha256 of every bearer key, written 0600 like twofa.json),
+# exports.staged (a verbatim /etc/exports: real share paths and the client
+# addresses allowed to mount them), smart-tests.json, docker-update-status.json.
+#
+# So the directory is excluded wholesale and the named rules below stay as the
+# record of *which* file carries *what* -- they are documentation now, not the
+# thing standing between a secret and `git add`. Note that git does not descend
+# into an excluded directory, so re-including a path under data/ needs this
+# rule relaxed rather than a `!` line.
+data/
+
 # ---- Secrets: session signing key, local client token, per-service
 #      credentials. Never commit. ----
 data/.session-secret

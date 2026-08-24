@@ -66,11 +66,64 @@ ROUTE_GUARDS = (
     "_guard(",
     "browser_authenticated",
     "_require_admin",
+    # twofa_api's own helper: setup-required, then session, then username.
+    "_require_session_user",
+    # The setup-token route's guard: unclaimed install, and a browser that is
+    # physically on this Mac rather than one hop behind a tunnel.
+    "is_direct_loopback",
 )
+
+#: Routers create_app() mounts *outside* the global require_auth dependency,
+#: keyed by the file that defines them.  Mirrored from create_app deliberately,
+#: like LOCAL_TOKEN_ALLOWED above: adding a router here is the moment to notice
+#: that everything in it is reachable by anyone who can reach the port.
+SELF_GUARDED_ROUTERS = {
+    "auth_api.py": "auth_router",
+    "twofa_api.py": "twofa_router",
+    "api_keys_api.py": "api_keys_router",
+    "accounts_api.py": "accounts_router",
+}
+
+#: Routes in those routers that answer without a session on purpose, because
+#: they are the steps *of* signing in.  PUBLIC covers the password step; the
+#: TOTP challenge is the second one, and its authority is the single-use
+#: pending token minted by /api/auth/login rather than a cookie.
+SELF_GUARDED_PUBLIC = PUBLIC | {("POST", "/api/auth/totp/verify")}
 
 
 def _is_delegated(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in DELEGATED_PREFIXES)
+
+
+def handlers(filename: str, methods: set[str] | None = None):
+    """Yield (route, methods, source) for each @router handler in *filename*.
+
+    Source text rather than a call graph: the guards are plain calls at the top
+    of the body, and a substring check cannot be fooled into passing by an
+    import that the handler never reaches.
+    """
+    import ast
+
+    path = BASE / "hub" / "routers" / filename
+    source = path.read_text()
+    lines = source.splitlines()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        found = []
+        route = ""
+        for dec in node.decorator_list:
+            if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
+                if getattr(dec.func.value, "id", "") == "router":
+                    found.append(dec.func.attr.upper())
+                    if dec.args and isinstance(dec.args[0], ast.Constant):
+                        route = str(dec.args[0].value)
+        if not found:
+            continue
+        if methods is not None and not (set(found) & methods):
+            continue
+        body = "\n".join(lines[node.lineno - 1: node.end_lineno or node.lineno])
+        yield route, sorted(set(found)), body
 
 
 def routes() -> list[tuple[str, str]]:
@@ -258,26 +311,7 @@ class DelegatedNamespaceTests(unittest.TestCase):
     """
 
     def _mutating_handlers(self, filename: str):
-        import ast
-
-        path = BASE / "hub" / "routers" / filename
-        source = path.read_text()
-        lines = source.splitlines()
-        for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            methods = []
-            route = ""
-            for dec in node.decorator_list:
-                if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
-                    if getattr(dec.func.value, "id", "") == "router":
-                        methods.append(dec.func.attr.upper())
-                        if dec.args and isinstance(dec.args[0], ast.Constant):
-                            route = str(dec.args[0].value)
-            if not methods or not (set(methods) & MUTATING):
-                continue
-            body = "\n".join(lines[node.lineno - 1: node.end_lineno or node.lineno])
-            yield route, sorted(set(methods)), body
+        return handlers(filename, MUTATING)
 
     def test_every_delegated_mutation_checks_for_itself(self):
         gaps = []
@@ -318,6 +352,79 @@ class DelegatedNamespaceTests(unittest.TestCase):
             set(DELEGATED_PREFIXES),
             "auth._route_has_own_admin_guard covers namespaces this test does not "
             "know about; every one of them needs its own route-level check",
+        )
+
+
+class SelfGuardedRouterTests(unittest.TestCase):
+    """The other half of the delegation, and the larger one.
+
+    Four routers are mounted before `require_auth` is attached, so the global
+    dependency never runs for anything in them -- not "runs and waves through"
+    as with the delegated namespaces, but never runs at all. Every route in
+    them is therefore reachable by anybody who can reach the port, and the only
+    thing standing in the way is the guard call the handler makes itself. Miss
+    it on a new route and account creation, key minting or 2FA removal is open
+    to an unauthenticated request, with no failure anywhere to notice.
+    """
+
+    def test_every_self_guarded_route_checks_for_itself(self):
+        gaps = []
+        for filename in SELF_GUARDED_ROUTERS:
+            for route, methods, body in handlers(filename):
+                if any(marker in body for marker in ROUTE_GUARDS):
+                    continue
+                if all((method, route) in SELF_GUARDED_PUBLIC for method in methods):
+                    continue
+                gaps.append(f"{filename} {','.join(methods)} {route}")
+        self.assertEqual(
+            gaps,
+            [],
+            "these routes are mounted outside require_auth and perform no check "
+            "of their own, so an unauthenticated request reaches them:\n"
+            + "\n".join(gaps),
+        )
+
+    def test_the_analysis_sees_the_handlers(self):
+        # Same guard as the delegated case: a parsing change that stopped
+        # finding handlers would make the check above pass on an empty set.
+        found = sum(1 for filename in SELF_GUARDED_ROUTERS for _ in handlers(filename))
+        self.assertGreaterEqual(
+            found, 20, "self-guarded handler discovery found too few"
+        )
+
+    def test_the_router_list_matches_create_app(self):
+        """Mount a fifth router unguarded and this test is what says so."""
+        import ast
+
+        source = (BASE / "hub" / "app_factory.py").read_text()
+        tree = ast.parse(source)
+        modules = {
+            alias.asname or alias.name: node.module.rsplit(".", 1)[-1] + ".py"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "hub.routers"
+            )
+            for alias in node.names
+        }
+        unguarded = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr != "include_router":
+                continue
+            if getattr(func.value, "id", "") != "app":
+                continue
+            if any(kw.arg == "dependencies" for kw in node.keywords):
+                continue
+            name = getattr(node.args[0], "id", "") if node.args else ""
+            unguarded.add((modules.get(name, "?"), name))
+        self.assertEqual(
+            unguarded,
+            set(SELF_GUARDED_ROUTERS.items()),
+            "create_app mounts a different set of routers outside require_auth "
+            "than this test knows about; every route in a new one needs its own "
+            "guard, because nothing else will check",
         )
 
 

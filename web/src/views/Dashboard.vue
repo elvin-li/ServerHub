@@ -1,5 +1,9 @@
 <template>
   <div class="dash">
+    <!-- The page has no visible title -- the host card is the heading the eye
+         uses -- but a document with no h1 leaves a screen reader without the
+         one landmark that names where it landed. -->
+    <h1 class="sr-only">{{ t('nav.dashboard') }}</h1>
     <!-- A failed load must not read as "still loading". The banner stays up while
          the failure persists and clears on the next successful poll, so stale
          tiles below it are never presented as current. -->
@@ -159,8 +163,15 @@
         <span class="pill">{{ finiteText(sensors?.ts, '') || finiteText(status?.ts, '…') }}</span>
        <button class="tiny" @click="refreshAll" :disabled="loading">{{ t('common.refresh') }}</button>
       <span id="remote" class="pwr-group">
+         <!-- Screen Sharing is off => no href, and an <a> without href has no
+              implicit role, which makes aria-label a prohibited attribute that
+              assistive tech drops. This control is icon-only, so dropping the
+              label left it announced as nothing at all. State the role and
+              carry the off state in aria-disabled instead. -->
          <a class="tiny primary"
+           role="link"
            :class="{ disabled: !ss.running }"
+           :aria-disabled="!ss.running"
            :href="ss.running ? finiteText(ss.vnc_url, '') : undefined"
            :title="ss.running ? t('power.connect') : t('power.off')"
            :aria-label="ss.running ? t('power.connect') : t('power.off')"
@@ -201,7 +212,7 @@
       </div>
       <!-- ===== CPU + Load ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.cpu') }}
           <span class="tile-tools">
             <span class="badge" data-test="cpu-badge" :class="cpuBadge">{{ cpuBadgeText }}</span>
@@ -216,7 +227,7 @@
               <span v-if="gpuMemLabel" data-test="gpu-mem">{{ gpuMemLabel }}</span>
             </span>
           </span>
-        </h3>
+        </h2>
         <!-- CPU left, GPU right — taller twin plots than Memory/Disk. -->
         <div v-if="isMacSurface" class="cpu-charts am-cpu">
           <LineChart
@@ -288,12 +299,12 @@
 
       <!-- ===== Memory ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.memory') }}
           <span class="tile-tools">
             <span class="badge" :class="memBadge">{{ t('dashboard.pressure_pct', { p: finiteN(memUsedPct) }) }}</span>
           </span>
-        </h3>
+        </h2>
         <!-- chart-first keeps non-mac stacked order (chart then stats); mac
              surface CSS still places stats left / chart right. -->
         <div class="am-monitor am-mem chart-first">
@@ -345,13 +356,13 @@
 
       <!-- ===== Disk + SMART ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.disk_smart') }}
           <span class="tile-tools">
             <span class="badge" :class="barClass(diskPct) || ''">{{ withUnit(diskPct, '%') }}</span>
             <span class="badge" :class="smartSummaryClass" :title="smartSummaryTitle" :aria-label="smartSummaryTitle">{{ smartSummary }}</span>
           </span>
-        </h3>
+        </h2>
         <div class="am-monitor am-disk">
           <div class="am-monitor-stats">
             <div class="res-head disk-head">
@@ -405,7 +416,7 @@
 
       <!-- ===== Network + processes ===== -->
       <div class="tile span-4">
-        <h3>{{ t('dashboard.net_proc') }}</h3>
+        <h2>{{ t('dashboard.net_proc') }}</h2>
         <div class="net-stats">
           <div class="ns">
             <div class="k">↓ RX</div>
@@ -420,7 +431,7 @@
             <div class="v2">{{ finiteN(cpu.proc_total) }} <small class="sub">run {{ finiteN(cpu.proc_running) }}</small></div>
           </div>
         </div>
-        <h2 class="section-title top-cpu-head">
+        <h3 class="section-title top-cpu-head">
           <span>{{ t('dashboard.top_cpu') }}</span>
           <span class="ollama-api-wrap">
             <router-link
@@ -442,7 +453,7 @@
               @click="copyOllamaApi"
             ><Copy :size="12" /></button>
           </span>
-        </h2>
+        </h3>
         <div class="table-wrap">
           <table class="dense top-cpu fit-m">
             <colgroup>
@@ -499,7 +510,7 @@
               <th class="col-hide-m">{{ t('dashboard.col_capacity') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_used') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_free') }}</th>
-              <th></th>
+              <th>{{ t('main_extra.th_pct') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -538,12 +549,12 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('dashboard.col_name') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_status') }}</th>
               <th class="num">{{ t('dashboard.col_cpu') }}</th>
               <th class="num">{{ t('dashboard.col_mem') }}</th>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>
@@ -1841,7 +1852,7 @@ onUnmounted(() => {
 .am-surface .disk-primary,
 .am-surface .disk-primary-meta { white-space: nowrap; }
 .am-surface .disk-primary strong { font-size: 12px; font-weight: 500; }
-.res-card > h3 { margin-bottom: 8px; }
+.res-card > h2 { margin-bottom: 8px; }
 .cpu-loadline { margin-top: 8px; }
 .tile .mem-footnote {
   margin-top: 6px;
@@ -1892,9 +1903,9 @@ onUnmounted(() => {
   cursor: default;
 }
 .host-ups .ups-pct { font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
-.host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: transparent; }
-.host-ups.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
-.host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+.host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn-text); border-color: transparent; }
+.host-ups.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); border-color: transparent; }
+.host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); border-color: transparent; }
 a.host-ollama { text-decoration: none; }
 button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .host-meta { color: var(--sub); font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1904,8 +1915,8 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   background: var(--btn); border: 1px solid var(--line);
   color: var(--txt); padding: 4px 10px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600;
 }
-.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
-.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); border-color: transparent; }
+.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); border-color: transparent; }
 
 .res-card .big {
   font-size: 28px; font-weight: 800; line-height: 1.1;
@@ -1950,7 +1961,7 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .mb .k { font-size: 9px; color: var(--sub); text-transform: uppercase; letter-spacing: .3px; }
 .mb .v { font-size: 13px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
 
-.temp-warn { color: var(--warn) !important; }
+.temp-warn { color: var(--warn-text) !important; }
 .disk-head { align-items: end; }
 .disk-head .sub { margin: 0; white-space: nowrap; }
 .disk-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
@@ -1965,7 +1976,9 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .disk-temp { color: var(--txt); font-weight: 700; font-family: ui-monospace, Menlo, monospace; }
 .disk-unavailable, .disk-empty { margin-top: 2px; color: var(--sub); font-size: 10px; line-height: 1.25; }
 
-.top-cpu-head { justify-content: space-between; margin-top: 10px; }
+/* Now an h3 inside an h2-headed tile, so `.tile h3` claims margin-bottom where
+   `.section-title` used to.  Pinned here so the level change is invisible. */
+.top-cpu-head { justify-content: space-between; margin: 10px 0 8px; }
 .ollama-api-wrap { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 .ollama-api {
   display: inline-flex; align-items: center; gap: 5px;
@@ -2033,7 +2046,7 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 .pwr-group .tiny { font-size: 12px; padding: 2px 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .pwr-group a.tiny.disabled { opacity: .4; pointer-events: none; cursor: not-allowed; }
 .hint-line { margin-top: 8px; font-size: 11px; color: var(--sub); line-height: 1.5; }
-.ok-msg { color: var(--ok); font-weight: 600; padding: 8px 0; }
+.ok-msg { color: var(--ok-text); font-weight: 600; padding: 8px 0; }
 
 .health-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
@@ -2044,9 +2057,9 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 }
 .hg .n { font-size: 24px; font-weight: 800; }
 .hg .l { font-size: 9px; color: var(--sub); text-transform: uppercase; margin-top: 3px; letter-spacing: .3px; }
-.hg.ok .n { color: var(--ok); }
-.hg.warn .n { color: var(--warn); }
-.hg.err .n { color: var(--down); }
+.hg.ok .n { color: var(--ok-text); }
+.hg.warn .n { color: var(--warn-text); }
+.hg.err .n { color: var(--down-text); }
 .failed-checks { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
 
 /* Bookmark health — equal cards, aligned grid */
@@ -2086,7 +2099,7 @@ table.top-cpu .mini-bar { margin-left: 6px; }
   min-width: 0;
   color: var(--accent);
 }
-.bm-card.down .bm-name { color: var(--down); }
+.bm-card.down .bm-name { color: var(--down-text); }
 .bm-card.stopped .bm-name { color: var(--sub); }
 .bm-meta {
   grid-column: 2;

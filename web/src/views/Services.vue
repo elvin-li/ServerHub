@@ -1,5 +1,7 @@
 <template>
   <div class="svc-page">
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('services.title') }}</h1>
     <!-- Problems banner -->
     <div v-if="(status?.problems || []).length" class="problems-bar">
       <strong>{{ t('services.problems') }}</strong>
@@ -24,15 +26,15 @@
     <div class="toolbar svc-toolbar">
       <button class="primary" type="button" :disabled="loading" @click="refresh(true)">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" class="search" :placeholder="t('services.filter_ph')"  :aria-label="t('services.filter_ph')"/>
-      <select v-model="kindF" class="cat-select">
+      <select v-model="kindF" class="cat-select" :aria-label="t('services.filter_kind')">
         <option value="">{{ t('services.kind_all') }}</option>
         <option v-for="k in kindOptions" :key="k" :value="k">{{ kindLabel(k) }}</option>
       </select>
-      <select v-model="groupF" class="cat-select">
+      <select v-model="groupF" class="cat-select" :aria-label="t('services.filter_group')">
         <option value="">{{ t('services.group_all') }}</option>
         <option v-for="g in groupOptions" :key="g" :value="g">{{ displayGroup(g) }}</option>
       </select>
-      <select v-model="sortBy" class="cat-select">
+      <select v-model="sortBy" class="cat-select" :aria-label="t('common.sort_by')">
         <option value="group">{{ t('services.sort_group') }}</option>
         <option value="name">{{ t('services.sort_name') }}</option>
         <option value="state">{{ t('services.sort_state') }}</option>
@@ -58,19 +60,19 @@
 
     <!-- State chips: status shortcuts, kept as their own visual row -->
     <div class="state-chips">
-      <button type="button" class="chip" :class="{ active: stateF === '' }" @click="stateF = ''">
+      <button type="button" class="chip" :class="{ active: stateF === '' }" :aria-pressed="stateF === ''" @click="stateF = ''">
         {{ t('common.all') }} {{ flat.length }}
       </button>
-      <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" @click="stateF = stateF === 'ok' ? '' : 'ok'">
+      <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" :aria-pressed="stateF === 'ok'" @click="stateF = stateF === 'ok' ? '' : 'ok'">
         {{ t('services.state_ok') }} {{ finiteN(status?.counts?.ok, 0) }}
       </button>
-      <button type="button" class="chip chip-warn" :class="{ active: stateF === 'warn' }" @click="stateF = stateF === 'warn' ? '' : 'warn'">
+      <button type="button" class="chip chip-warn" :class="{ active: stateF === 'warn' }" :aria-pressed="stateF === 'warn'" @click="stateF = stateF === 'warn' ? '' : 'warn'">
         {{ t('services.state_warn') }} {{ finiteN(status?.counts?.warn, 0) }}
       </button>
-      <button type="button" class="chip chip-down" :class="{ active: stateF === 'down' }" @click="stateF = stateF === 'down' ? '' : 'down'">
+      <button type="button" class="chip chip-down" :class="{ active: stateF === 'down' }" :aria-pressed="stateF === 'down'" @click="stateF = stateF === 'down' ? '' : 'down'">
         {{ t('services.state_down') }} {{ finiteN(status?.counts?.down, 0) }}
       </button>
-      <button type="button" class="chip chip-muted" :class="{ active: stateF === 'stopped' }" @click="stateF = stateF === 'stopped' ? '' : 'stopped'">
+      <button type="button" class="chip chip-muted" :class="{ active: stateF === 'stopped' }" :aria-pressed="stateF === 'stopped'" @click="stateF = stateF === 'stopped' ? '' : 'stopped'">
         {{ t('services.state_stopped') }} {{ finiteN(status?.counts?.stopped, 0) }}
       </button>
     </div>
@@ -88,8 +90,8 @@
         <table class="dense svc-table fit-m">
           <thead>
             <tr>
-              <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
-              <th></th>
+              <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" :aria-label="t('common.select_all')" @change="toggleSelectAll" /></th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('common.name') }}</th>
               <th class="col-hide-m">{{ t('services.group') }}</th>
               <th class="col-hide-m">{{ t('services.kind') }}</th>
@@ -103,10 +105,10 @@
               v-for="s in filtered"
               :key="s.id"
               :class="{ selected: selected.has(s.id), bad: s.state === 'down' || s.state === 'warn' }"
-              @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
+              @click="openDetail(s)" tabindex="0" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
             >
               <td v-if="canManage" class="col-check" @click.stop>
-                <input type="checkbox" :checked="selected.has(s.id)" @change="toggleSelect(s.id)" />
+                <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row')" @change="toggleSelect(s.id)" />
               </td>
               <td><span class="led" :class="ledOf(s.state)"></span></td>
               <td>
@@ -687,7 +689,7 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 /* Size and colour come from the global .meta-count. */
 .meta-count { font-weight: 600; }
 .warn-tag {
-  margin-left: 8px; color: var(--down); font-weight: 600; font-size: 12px;
+  margin-left: 8px; color: var(--down-text); font-weight: 600; font-size: 12px;
 }
 .problems-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
@@ -740,8 +742,8 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 :global([data-theme="macos-dark"] .svc-table tr.selected td),
 :global([data-theme="macos-dark"] .svc-table tr.selected:hover),
 :global([data-theme="macos-dark"] .svc-table tr.selected:hover td) {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 :global([data-theme="macos"] .svc-table tr.selected .sub-id),

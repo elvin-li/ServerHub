@@ -3,7 +3,7 @@
     <h2 class="section-title" style="margin-top:0">{{ t('notifych.title') }}</h2>
     <p class="hint" style="margin-top:0">{{ t('notifych.hint') }}</p>
 
-    <div v-if="loadError" class="sub" style="color:var(--down)" role="alert">{{ finiteText(loadError) }}</div>
+    <div v-if="loadError" class="sub" style="color:var(--down-text)" role="alert">{{ finiteText(loadError) }}</div>
     <div class="table-wrap" v-else-if="channels.length">
     <table class="dense fit-m">
       <thead>
@@ -12,7 +12,7 @@
           <th class="col-hide-m">{{ t('common.type') }}</th>
           <th class="col-hide-m">{{ t('notifych.min_level') }}</th>
           <th>{{ t('common.status') }}</th>
-          <th></th>
+          <th><span class="sr-only">{{ t('common.actions') }}</span></th>
         </tr>
       </thead>
       <tbody>
