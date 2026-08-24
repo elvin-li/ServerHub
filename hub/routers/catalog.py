@@ -81,19 +81,22 @@ def catalog_remote_status():
 @router.put("/api/catalog/remote")
 def catalog_remote_configure(body: RemoteSourceBody, request: Request):
     username = _require_admin_browser(request)
-    return catalog_remote.set_source_url(body.url, operator=username)
+    return catalog_remote.set_source_url(
+        body.url, operator=username, client=auth.request_client_id(request))
 
 
 @router.post("/api/catalog/remote/check")
 def catalog_remote_check(request: Request):
     username = _require_admin_browser(request)
-    return catalog_remote.check_updates(operator=username)
+    return catalog_remote.check_updates(
+        operator=username, client=auth.request_client_id(request))
 
 
 @router.post("/api/catalog/remote/restore")
 def catalog_remote_restore(body: RemoteRestoreBody, request: Request):
     username = _require_admin_browser(request)
-    return catalog_remote.restore_builtin(body.id, operator=username)
+    return catalog_remote.restore_builtin(
+        body.id, operator=username, client=auth.request_client_id(request))
 
 
 class InstallBody(BaseModel):
