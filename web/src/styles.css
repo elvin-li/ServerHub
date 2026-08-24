@@ -373,6 +373,11 @@
   --fs-sm: 11px;
   --fs-md: 12px;
   --fs-lg: 13px;
+
+  /* Decorative icons drawn by CSS rather than by a component, kept here so they
+     stay on the lucide stroke language the .vue files import. Used as a mask, so
+     the stroke colour in the payload is irrelevant — only its alpha is read. */
+  --icon-inbox: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-6l-2 3h-4l-2-3H2'/%3E%3Cpath d='M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'/%3E%3C/svg%3E");
 }
 
 /* density */
@@ -1514,10 +1519,19 @@ img[loading="lazy"][complete] {
   align-items: center;
   gap: 12px;
 }
+/* Lucide `inbox`, masked so it takes --sub from the theme rather than shipping a
+   colour of its own. This was a 📭 emoji, which rendered as a full-colour glyph
+   next to the line icons everywhere else (Shares uses lucide FolderOpen for the
+   same job), drifted with the platform emoji font, and got announced by name by
+   screen readers even though it is decoration. */
 .placeholder::before {
-  content: '📭';
-  font-size: 32px;
-  opacity: .6;
+  content: '';
+  width: 30px;
+  height: 30px;
+  background: currentColor;
+  opacity: .45;
+  -webkit-mask: var(--icon-inbox) center / contain no-repeat;
+  mask: var(--icon-inbox) center / contain no-repeat;
 }
 .placeholder .retry-btn {
   margin-top: 4px;
