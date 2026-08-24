@@ -634,7 +634,11 @@ function formatLegend(v) {
 }
 .lc.quiet .plot-body { border-left: none; }
 
-/* Y labels in real HTML — fixed aspect, no SVG stretch */
+/* Y labels in real HTML — fixed aspect, no SVG stretch.
+   Axis labels take --sub at full strength: they are 10px, and the extra
+   opacity: .8 they used to carry pushed the effective colour to #8b8b8f on
+   white, i.e. 3.4:1, under the AA floor for text that small. --sub is already
+   the muted tone each theme picked, so dimming it twice was the bug. */
 .y-axis {
   position: relative;
   width: 34px;
@@ -653,7 +657,6 @@ function formatLegend(v) {
   font-weight: 500;
   white-space: nowrap;
   user-select: none;
-  opacity: .8;
 }
 
 .plot-body {
@@ -697,7 +700,6 @@ function formatLegend(v) {
   white-space: pre;
   text-align: center;
   user-select: none;
-  opacity: .8;
 }
 .x-lbl.first { transform: none; text-align: left; }
 .x-lbl.last { transform: translateX(-100%); text-align: right; }

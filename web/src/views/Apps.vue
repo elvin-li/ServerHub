@@ -2290,10 +2290,12 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   color: var(--txt);
 }
 
+/* Mixed toward --txt like .chip-docker's #1a6fb0 and .chip-launchd's #b45309:
+   the raw --ok on its own 16% tint is ~2:1 for this 10px text. */
 .chip-native {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
 }
 
 .chip-docker {
@@ -2323,7 +2325,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .chip-ok {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
 }
 
 .chip-muted {

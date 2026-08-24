@@ -1874,11 +1874,15 @@ img[loading="lazy"][complete] {
   border-bottom-color: transparent;
   border-left: none;
 }
+/* --accent-hover, not --accent: this is 12-12.5px label text, and the plain
+   system blue is 3.7:1 on the header. The 2px underline below keeps --accent,
+   so the tint the eye reads as "selected" is unchanged. Same reasoning as
+   .tabs button.active and .badge.accent in the base stylesheet. */
 [data-theme="macos"] .top-nav a.active,
 [data-theme="macos"] .subchrome-inner a.active,
 [data-theme="macos-dark"] .top-nav a.active,
 [data-theme="macos-dark"] .subchrome-inner a.active {
-  color: var(--accent);
+  color: var(--accent-hover);
   background: transparent;
   border-bottom-color: transparent;
 }
@@ -1938,17 +1942,19 @@ img[loading="lazy"][complete] {
   background: #e8e8ed;
   color: var(--header-txt);
 }
+/* Foregrounds are a shade darker than the matching system colour so 11px text
+   clears 4.5:1 on these tints; the tints themselves are unchanged. */
 [data-theme="macos"] .pill.ok {
   background: #d8f5e2;
-  color: #248a3d;
+  color: #1d7433;
 }
 [data-theme="macos"] .pill.warn {
   background: #ffe8c8;
-  color: #c93400;
+  color: #b83000;
 }
 [data-theme="macos"] .pill.down {
   background: #ffd4d1;
-  color: #d70015;
+  color: #bf000e;
 }
 [data-theme="macos-dark"] .pill {
   background: #3a3a3c;
@@ -2246,22 +2252,25 @@ img[loading="lazy"][complete] {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
+/* The `%, var(--txt)` share is what makes these legible: badge text is 10px, so
+   the system colour on its own tint sits around 2:1. 55% is the lightest mix
+   that clears 4.5:1 in the light themes (dark ones pass either way). */
 [data-theme="macos"] .badge.ok,
 [data-theme="macos-dark"] .badge.ok {
   background: color-mix(in srgb, var(--ok) 12%, var(--card));
-  color: color-mix(in srgb, var(--ok) 68%, var(--txt));
+  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
   border: 1px solid color-mix(in srgb, var(--ok) 18%, var(--line));
 }
 [data-theme="macos"] .badge.warn,
 [data-theme="macos-dark"] .badge.warn {
   background: color-mix(in srgb, var(--warn) 10%, var(--card));
-  color: color-mix(in srgb, var(--warn) 62%, var(--txt));
+  color: color-mix(in srgb, var(--warn) 55%, var(--txt));
   border: 1px solid color-mix(in srgb, var(--warn) 20%, var(--line));
 }
 [data-theme="macos"] .badge.accent,
 [data-theme="macos-dark"] .badge.accent {
   background: color-mix(in srgb, var(--accent) 10%, var(--card));
-  color: var(--accent);
+  color: color-mix(in srgb, var(--accent) 70%, var(--txt));
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
 }
 [data-theme="macos"] .badge.down,
