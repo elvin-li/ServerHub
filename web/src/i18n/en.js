@@ -188,6 +188,10 @@ export default {
     load_failed: 'Could not load this page',
     actions: 'Actions',
     status: 'Status',
+    // Name of the narrow first column that draws a status LED and nothing else.
+    // Distinct from `status` because several of these tables carry a written
+    // status column too, and two columns announced "Status" is not navigable.
+    status_led: 'Status indicator',
     time: 'Time',
     name: 'Name',
     type: 'Type',

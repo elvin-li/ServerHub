@@ -291,7 +291,7 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">IPv6</th><th class="col-hide-m">MAC</th><th class="col-hide-m">MTU</th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">IPv6</th><th class="col-hide-m">MAC</th><th class="col-hide-m">MTU</th>
             </tr>
           </thead>
           <tbody>
@@ -381,7 +381,7 @@
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
       <div class="table-wrap">
         <table class="dense fit-m">
-          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th></th></tr></thead>
+          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
           <tbody>
             <tr v-for="s in data?.services || []" :key="s.name">
               <td>
@@ -453,7 +453,7 @@
         <div class="table-wrap" style="margin-bottom:14px">
           <table class="dense fit-m">
             <thead>
-              <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th></th></tr>
+              <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr>
             </thead>
             <tbody>
               <tr v-for="(p,i) in filteredDockerPorts" :key="i">

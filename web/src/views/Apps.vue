@@ -728,7 +728,7 @@
         <section v-if="(remoteInfo?.overrides || []).length">
           <h4 class="modal-title" style="font-size:14px;margin:8px 0">{{ t('catalog_remote.overrides_title') }}</h4>
           <table class="mini-table">
-            <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th></th></tr></thead>
+            <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
             <tbody>
               <tr v-for="o in remoteInfo.overrides" :key="o.id">
                 <td class="mono">{{ finiteText(o.id) }}</td>

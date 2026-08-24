@@ -17,7 +17,7 @@
         <div v-else class="table-wrap">
           <table class="dense fit-m">
             <thead>
-              <tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th></th></tr>
+              <tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr>
             </thead>
             <tbody>
               <tr

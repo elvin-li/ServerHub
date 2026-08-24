@@ -57,7 +57,9 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <!-- Status LED. The column is drawn as a dot, so its name has to be
+                 spoken rather than shown or the row starts with a blank cell. -->
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th class="col-hide-m">{{ t('main_extra.role') }}</th>
             <th>{{ t('dashboard.col_mount') }}</th>
             <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
@@ -108,7 +110,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('common.name') }}</th>
             <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
@@ -159,7 +161,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('common.name') }}</th>
             <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
@@ -277,7 +279,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('main_extra.model') }}</th>
             <th class="col-hide-m">{{ t('main_extra.protocol') }}</th>

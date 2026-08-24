@@ -60,7 +60,7 @@
               <th>{{ t('users.role') }}</th>
               <th class="col-hide-m">2FA</th>
               <th class="col-hide-m">{{ t('accounts.resources') }}</th>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>
@@ -181,7 +181,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('users.username') }}</th>
             <th class="col-hide-m">{{ t('users.display') }}</th>
             <th>UID</th>

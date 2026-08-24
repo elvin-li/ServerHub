@@ -337,7 +337,7 @@
               <th class="col-hide-m">{{ t('apikeys.created') }}</th>
               <th class="col-hide-m">{{ t('apikeys.last_used') }}</th>
               <th class="col-hide-m">{{ t('apikeys.expires') }}</th>
-              <th class="ops"></th>
+              <th class="ops"><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>

@@ -49,7 +49,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th style="width:36px"></th>
+            <th style="width:36px"><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('health.check') }}</th>
             <th>{{ t('health.level') }}</th>
             <th class="col-hide-m">{{ t('health.detail') }}</th>

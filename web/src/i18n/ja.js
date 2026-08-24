@@ -188,6 +188,7 @@ export default {
     load_failed: 'このページを読み込めませんでした',
     actions: '操作',
     status: '状態',
+    status_led: 'ステータスインジケーター',
     time: '時刻',
     name: '名前',
     type: '種類',

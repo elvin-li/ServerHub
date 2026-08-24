@@ -91,7 +91,7 @@
           <thead>
             <tr>
               <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" :aria-label="t('common.select_all')" @change="toggleSelectAll" /></th>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('common.name') }}</th>
               <th class="col-hide-m">{{ t('services.group') }}</th>
               <th class="col-hide-m">{{ t('services.kind') }}</th>

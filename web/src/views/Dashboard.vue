@@ -510,7 +510,7 @@
               <th class="col-hide-m">{{ t('dashboard.col_capacity') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_used') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_free') }}</th>
-              <th></th>
+              <th>{{ t('main_extra.th_pct') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -549,12 +549,12 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('dashboard.col_name') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_status') }}</th>
               <th class="num">{{ t('dashboard.col_cpu') }}</th>
               <th class="num">{{ t('dashboard.col_mem') }}</th>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>

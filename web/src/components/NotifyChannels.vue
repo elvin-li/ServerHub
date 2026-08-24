@@ -12,7 +12,7 @@
           <th class="col-hide-m">{{ t('common.type') }}</th>
           <th class="col-hide-m">{{ t('notifych.min_level') }}</th>
           <th>{{ t('common.status') }}</th>
-          <th></th>
+          <th><span class="sr-only">{{ t('common.actions') }}</span></th>
         </tr>
       </thead>
       <tbody>

@@ -14,7 +14,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('brew.service') }}</th>
             <th>{{ t('common.status') }}</th>
             <th class="col-hide-m">{{ t('brew.user') }}</th>
