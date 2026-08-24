@@ -74,6 +74,44 @@ function commentFaults({ file, css, lineOffset }) {
 
 const ALL = sheets()
 
+/** Custom properties nothing in CSS declares because JavaScript sets them. */
+const RUNTIME_TOKENS = new Set([
+  // App.vue measures the fixed header and publishes its height.
+  '--topchrome-h',
+])
+
+function strip(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, ' ')
+}
+
+/** Every custom property the tree declares, in CSS or in an inline style. */
+function declaredTokens() {
+  const names = new Set(RUNTIME_TOKENS)
+  for (const file of walk(SRC)) {
+    for (const m of strip(readFileSync(file, 'utf8')).matchAll(/(--[\w-]+)\s*:/g)) {
+      names.add(m[1])
+    }
+  }
+  return names
+}
+
+/**
+ * `var(--x)` references with no fallback, which is where an absent token turns
+ * into an absent declaration.  `var(--x, something)` is left alone: a fallback
+ * is a deliberate "this may not exist" and still paints.
+ */
+function unfallbackedRefs() {
+  const refs = []
+  for (const file of walk(SRC)) {
+    const text = strip(readFileSync(file, 'utf8'))
+    for (const m of text.matchAll(/var\(\s*(--[\w-]+)\s*([,)])/g)) {
+      if (m[2] === ',') continue
+      refs.push({ token: m[1], file: relative(SRC, file), index: m.index })
+    }
+  }
+  return refs
+}
+
 describe('stylesheet syntax', () => {
   it('reads every stylesheet in the tree', () => {
     expect(ALL.length).toBeGreaterThan(20)
@@ -101,5 +139,31 @@ describe('stylesheet syntax', () => {
         `${token} does not start a declaration — something above it is unterminated`,
       ).toBe(true)
     }
+  })
+})
+
+/**
+ * A `var()` naming a token that was never declared is not a no-op: the whole
+ * declaration becomes invalid at computed-value time, so the property lands on
+ * its inherited or initial value.  `border: 1px solid <invalid>` is no border
+ * at all, and `background: color-mix(..., var(--up), ...)` is transparent.
+ *
+ * Five of these had accumulated -- `--up`, `--fg`, `--hover`, `--bg2`,
+ * `--err` and friends read like tokens from a palette this sheet never had.
+ * The visible result was the login page's setup-token card and Settings'
+ * "copy this key now" panel rendering flat and borderless, in every theme.
+ */
+describe('custom property references', () => {
+  const declared = declaredTokens()
+
+  it('finds the references to check', () => {
+    expect(unfallbackedRefs().length).toBeGreaterThan(100)
+  })
+
+  it('never names a token nothing declares', () => {
+    const orphans = unfallbackedRefs()
+      .filter((ref) => !declared.has(ref.token))
+      .map((ref) => `${ref.file}: var(${ref.token})`)
+    expect([...new Set(orphans)]).toEqual([])
   })
 })

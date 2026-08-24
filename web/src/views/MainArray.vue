@@ -558,7 +558,7 @@
                   </td>
                 </tr>
                 <tr v-if="smartExpanded.has(m.id) && m.smart?.attrs?.length">
-                  <td :colspan="9" style="padding:0;background:var(--bg2,#f6f6f6)">
+                  <td :colspan="9" style="padding:0;background:var(--table-alt)">
                     <div style="padding:6px 10px;max-height:300px;overflow:auto">
                       <table class="dense fit-m" style="width:100%">
                         <thead>

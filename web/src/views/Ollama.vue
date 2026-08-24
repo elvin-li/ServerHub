@@ -803,10 +803,10 @@ onUnmounted(() => {
 
 <style scoped>
 .card-block {
-  background: var(--card, var(--panel, #fff));
+  background: var(--card);
   border-radius: 12px;
   padding: 14px 16px;
-  border: 1px solid var(--border, rgba(0, 0, 0, .06));
+  border: 1px solid var(--line);
 }
 .section-head {
   display: flex;
@@ -868,7 +868,7 @@ onUnmounted(() => {
   align-items: center;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--line);
   text-decoration: none;
   color: inherit;
   font-size: 13px;

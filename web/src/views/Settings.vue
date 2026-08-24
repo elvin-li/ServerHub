@@ -2421,8 +2421,8 @@ onUnmounted(() => {
 .twofa-qr :deep(svg) { display: block; width: 100%; height: 100%; }
 .twofa-recovery, .apikey-created {
   margin: 12px 0; padding: 12px; border-radius: 8px;
-  background: color-mix(in srgb, var(--up) 8%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--up) 25%, transparent);
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--ok) 25%, transparent);
 }
 .twofa-recovery-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
