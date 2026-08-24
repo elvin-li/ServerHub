@@ -30,3 +30,17 @@ jobs:
         run: |
           npm --prefix web ci
           npm --prefix web test
+      - name: Dead code
+        run: npm --prefix web run check:dead-code
+      # `static/` is the panel that actually ships: the backend serves it off
+      # disk and it is committed to the repo. Nothing here built it, so a
+      # change to `web/` merged green while the served panel stayed on the
+      # previous build. Vite's output is content-hashed and reproducible from
+      # the lockfile, so rebuilding and diffing is an exact check.
+      - name: Built panel matches web/
+        run: |
+          npm --prefix web run build
+          git diff --exit-code --stat static/ || {
+            echo "::error::static/ is out of date — run 'npm --prefix web run build' and commit the result"
+            exit 1
+          }
