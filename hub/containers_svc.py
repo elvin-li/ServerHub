@@ -1069,11 +1069,26 @@ def inspect_container(name: str) -> dict:
     }
 
 
+def _list_failed(kind: str):
+    """Classify a failed listing: a stopped engine is not a panel fault.
+
+    ``container.list_failed`` is a 500, which is right for a listing that broke
+    with the engine running and wrong for the common case where OrbStack is
+    simply off — GET /api/containers degrades cleanly there, so the Containers
+    page reported an internal error beside a tab that did not.  The engine probe
+    runs only on the failure path, so a successful listing still costs one
+    ``docker`` call rather than two.
+    """
+    if not engine_up():
+        return api_error("container.engine_down")
+    return api_error("container.list_failed", kind=kind)
+
+
 def list_images() -> list:
     data, rc, err = docker_json(
         ["images", "--format", "{{json .}}"], timeout=15)
     if rc != 0:
-        raise api_error("container.list_failed", kind="images")
+        raise _list_failed("images")
     if isinstance(data, dict):
         data = [data]
     elif not isinstance(data, list):
@@ -1084,7 +1099,7 @@ def list_images() -> list:
 def list_volumes() -> list:
     rc, out, err = docker("volume", "ls", "--format", "{{.Name}}\t{{.Driver}}\t{{.Mountpoint}}", timeout=12)
     if rc != 0:
-        raise api_error("container.list_failed", kind="volumes")
+        raise _list_failed("volumes")
     items = []
     for line in _as_text(out).splitlines():
         p = line.split("\t")
@@ -1096,7 +1111,7 @@ def list_volumes() -> list:
 def list_networks() -> list:
     rc, out, err = docker("network", "ls", "--format", "{{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}", timeout=12)
     if rc != 0:
-        raise api_error("container.list_failed", kind="networks")
+        raise _list_failed("networks")
     items = []
     for line in _as_text(out).splitlines():
         p = line.split("\t")
