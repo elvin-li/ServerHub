@@ -187,7 +187,9 @@ class SessionCookieSecureFlagTests(unittest.TestCase):
         """delete_cookie must repeat the Secure flag or HTTPS sessions survive logout."""
         response = Response()
         req = request(scheme="https")
-        with mock.patch.object(auth, "request_username", return_value="admin"):
+        # Logout is audited; keep the fixture line out of the real trail.
+        with mock.patch.object(auth, "request_username", return_value="admin"), \
+             mock.patch.object(auth_api.audit, "record"):
             auth_api.auth_logout(req, response)
         header = response.headers.get("set-cookie", "")
         self.assertIn("serverhub_session=", header.lower())

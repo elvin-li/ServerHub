@@ -230,6 +230,9 @@ class CatalogRemoteStateLeftoverTests(unittest.TestCase):
             mock.patch.object(catalog_remote, "REMOTE_DIR", self.remote),
             mock.patch.object(catalog_remote, "STATE_PATH", self.remote / "state.json"),
             mock.patch.object(catalog_remote, "source_url", return_value="https://x.example/index.json"),
+            # check_updates()/sync audit each run; keep fixture noise out of
+            # the real trail (see AuditIsolatedInTestsTests).
+            mock.patch.object(catalog_remote.audit, "record"),
         ]
         for p in self.patches:
             p.start()
