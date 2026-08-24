@@ -127,3 +127,60 @@ describe('creating a scheduled backup task', () => {
     vi.unstubAllGlobals()
   })
 })
+
+const { getBackups } = await import('../api/client')
+
+/** Mount under fake timers so the 7s running-poll can be driven by the test. */
+async function renderWithFakeTimers(jobs) {
+  await setLocale('en')
+  getSchedulerJobs.mockResolvedValue({ jobs })
+  vi.useFakeTimers()
+  const wrapper = mount(Backups, {
+    global: {
+      provide: { toast: () => {} },
+      stubs: { SkeletonLoader: true, LoadFailure: true, RouterLink: true },
+    },
+  })
+  await vi.advanceTimersByTimeAsync(0)
+  return wrapper
+}
+
+describe('running-task polling', () => {
+  it('re-reads jobs while one runs, refreshes artefacts when it finishes, and stops on leave', async () => {
+    const wrapper = await renderWithFakeTimers([{ ...RSYNC_JOB, running: true }])
+    try {
+      expect(getSchedulerJobs).toHaveBeenCalledTimes(1)
+      getBackups.mockClear()
+
+      // First armed tick: still running -> another jobs read, no artefact refresh.
+      await vi.advanceTimersByTimeAsync(7100)
+      expect(getSchedulerJobs).toHaveBeenCalledTimes(2)
+      expect(getBackups).not.toHaveBeenCalled()
+
+      // Second tick: the run has finished -> the artefact table refreshes itself.
+      getSchedulerJobs.mockResolvedValue({ jobs: [{ ...RSYNC_JOB, running: false, last: { status: 'ok' } }] })
+      await vi.advanceTimersByTimeAsync(7100)
+      expect(getSchedulerJobs).toHaveBeenCalledTimes(3)
+      expect(getBackups).toHaveBeenCalledTimes(1)
+
+      // Idle now: no timer is armed any more.
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(getSchedulerJobs).toHaveBeenCalledTimes(3)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not keep polling after the page is left mid-run', async () => {
+    const wrapper = await renderWithFakeTimers([{ ...RSYNC_JOB, running: true }])
+    try {
+      expect(getSchedulerJobs).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(getSchedulerJobs).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

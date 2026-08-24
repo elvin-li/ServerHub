@@ -374,11 +374,15 @@ async function refresh() {
 
 async function loadJobs() {
   const generation = ++jobsGeneration
+  const wasRunning = jobs.value.some((j) => j.running)
   try {
     const d = await getSchedulerJobs()
     if (generation !== jobsGeneration || !pageAlive) return
     jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
     jobsError.value = ''
+    // A finished run leaves new artefacts behind; pick them up without asking
+    // the operator to press "Refresh list" to see the backup they just made.
+    if (wasRunning && !jobs.value.some((j) => j.running)) void refresh()
   } catch (e) {
     if (generation !== jobsGeneration || !pageAlive) return
     jobsError.value = finiteText(e.message || String(e), '')
@@ -386,6 +390,23 @@ async function loadJobs() {
   } finally {
     if (generation === jobsGeneration) jobsLoaded.value = true
   }
+  scheduleJobsPoll()
+}
+
+// While a backup task is running, re-read the job list every few seconds so
+// the "Running…" badge and last-run status resolve on their own — the same
+// loop the Scheduler page uses for the same jobs.  An idle page arms no timer,
+// and a hidden tab keeps the loop armed without asking the host for status.
+let jobsPollTimer = null
+function scheduleJobsPoll() {
+  if (!pageAlive || jobsPollTimer) return
+  if (!jobs.value.some((j) => j.running)) return
+  jobsPollTimer = setTimeout(() => {
+    jobsPollTimer = null
+    if (!pageAlive) return
+    if (typeof document !== 'undefined' && document.hidden) scheduleJobsPoll()
+    else void loadJobs()
+  }, 7000)
 }
 
 async function loadBinary() {
@@ -535,6 +556,8 @@ onUnmounted(() => {
   pageAlive = false
   backupsGeneration += 1
   jobsGeneration += 1
+  if (jobsPollTimer) clearTimeout(jobsPollTimer)
+  jobsPollTimer = null
 })
 </script>
 

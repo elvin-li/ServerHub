@@ -85,6 +85,13 @@ RAID_CHANGED = "raid.changed"
 SNAPSHOT_CHANGED = "snapshots.changed"
 SMART_TEST_STARTED = "smart.test.started"
 SPOTLIGHT_CHANGED = "spotlight.changed"
+#: Shutdown / restart / sleep takes every service on the machine down at
+#: once.  "Why did the server go dark at 02:14, and who told it to" is the
+#: canonical audit-trail question, so the scheduled action and the operator
+#: are recorded before the box goes away.  Wake-on-LAN decides whether the
+#: machine can be brought back remotely, so flipping it is recorded too.
+POWER_ACTION = "power.action"
+POWER_WOL_CHANGED = "power.wol.changed"
 #: Scheduled jobs run arbitrary shell commands and move data around, so every
 #: definition change and manual trigger names the operator.  The command text
 #: of a shell job is part of the record: "what exactly did the panel run at
@@ -100,6 +107,11 @@ NOTIFY_CHANNEL_CREATED = "notify.channel.created"
 NOTIFY_CHANNEL_UPDATED = "notify.channel.updated"
 NOTIFY_CHANNEL_DELETED = "notify.channel.deleted"
 NOTIFY_CHANNEL_TESTED = "notify.channel.tested"
+#: The legacy Home Assistant notify config (including its token) is edited
+#: through PUT /api/settings rather than the channel CRUD, so without this
+#: event a credential swap left no trace while the equivalent channel edit
+#: did.  Only the changed field *names* are recorded, never values.
+NOTIFY_SETTINGS_CHANGED = "notify.settings.changed"
 #: A WireGuard peer is a credential granting network access, so issuing and
 #: revoking one is recorded with the operator who did it.
 WIREGUARD_PEER_ADDED = "wireguard.peer.added"

@@ -5,7 +5,7 @@
       <span class="meta">{{ t('alerts.meta') }}</span>
     </div>
     <div class="toolbar">
-      <button class="primary" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
+      <button class="primary" :disabled="busy" @click="refresh(true)">{{ t('common.refresh') }}</button>
       <button :disabled="busy" @click="check">{{ t('alerts.check_now') }}</button>
       <button class="hide-m" :disabled="busy" @click="test">{{ t('alerts.test_notify') }}</button>
       <router-link class="btn" to="/settings">{{ t('alerts.notify_settings') }}</router-link>
@@ -13,7 +13,16 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
     <div v-else-if="!alerts.length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
-    <div v-else class="table-wrap">
+    <template v-else>
+    <!-- Same level tabs the Health page uses: with 100 mixed rows, finding the
+         one that is red should not require scanning past every resolved ok. -->
+    <div class="tabs">
+      <button :class="{ active: filter==='all' }" :aria-pressed="filter === 'all'" @click="filter='all'">{{ t('common.all') }}</button>
+      <button :class="{ active: filter==='issues' }" :aria-pressed="filter === 'issues'" @click="filter='issues'">{{ t('alerts.only_issues') }}</button>
+      <button :class="{ active: filter==='down' }" :aria-pressed="filter === 'down'" @click="filter='down'">{{ t('alerts.only_down') }}</button>
+      <button :class="{ active: filter==='warn' }" :aria-pressed="filter === 'warn'" @click="filter='warn'">{{ t('alerts.only_warn') }}</button>
+    </div>
+    <div class="table-wrap">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -25,7 +34,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(a,i) in alerts" :key="i">
+          <tr v-for="(a,i) in filtered" :key="i">
             <td class="mono col-hide-m">{{ fmt(a.t) }}</td>
             <!-- Keyed on `level` alone, deliberately: a disk that is dying has to
                  read as urgently as a service that is down, so `smart` + `down`
@@ -42,17 +51,22 @@
             <td class="col-hide-m">{{ finiteText(a.event) }}</td>
             <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(a.message) }}</td>
           </tr>
+          <tr v-if="!filtered.length">
+            <td colspan="5" style="color:var(--sub)">{{ t('alerts.filter_empty') }}</td>
+          </tr>
         </tbody>
       </table>
     </div>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
 import { finiteN, finiteText, fmtTs } from '../lib/finite'
+import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -64,6 +78,17 @@ const busy = ref(false)
 // response lands is the most misleading possible placeholder.
 const loaded = ref(false)
 const loadError = ref('')
+// Level tabs, mirroring the Health page: all | issues (anything not ok) |
+// down | warn.  'ok' rows are resolutions, useful context but never urgent.
+const filter = ref('all')
+const filtered = computed(() => {
+  const rows = alerts.value
+  if (filter.value === 'issues') return rows.filter((a) => a?.level !== 'ok')
+  if (filter.value === 'down' || filter.value === 'warn') {
+    return rows.filter((a) => a?.level === filter.value)
+  }
+  return rows
+})
 let pageAlive = true
 let loadGeneration = 0
 
@@ -83,7 +108,7 @@ function kindLabel(a) {
   return leaf ? t(`alerts.${leaf}`) : ''
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   if (busy.value) return
   const generation = ++loadGeneration
   busy.value = true
@@ -93,9 +118,13 @@ async function refresh() {
     alerts.value = Array.isArray(d.alerts) ? d.alerts : []
     loadError.value = ''
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // A background tick that fails must not re-toast every interval while the
+    // panel is unreachable — LoadFailure already marks the state on screen.
+    // The `false` return is lib/poll's opt-in sentinel for backoff.
+    if (manual) toast('❌ ' + finiteText(e.message))
+    return false
   } finally {
     if (generation === loadGeneration && pageAlive) {
       busy.value = false
@@ -139,12 +168,21 @@ async function test() {
   }
 }
 
+let stopPoll = null
+
 onMounted(() => {
   pageAlive = true
-  void refresh()
+  void refresh(true)
+  // Alert state changes on the server's own check cadence; without a poll the
+  // page showed whatever was true when it was opened until a manual refresh.
+  // Visibility-aware like every other polling page, silent on background
+  // failures, with lib/poll backoff while the panel is unreachable.
+  stopPoll = startVisibleInterval(refresh, 30000)
 })
 onUnmounted(() => {
   pageAlive = false
   loadGeneration += 1
+  if (typeof stopPoll === 'function') stopPoll()
+  stopPoll = null
 })
 </script>

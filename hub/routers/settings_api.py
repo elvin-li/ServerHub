@@ -3,11 +3,11 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from hub import __version__, alerts, backups, metrics, metrics_rollup, ollama_svc
-from hub.auth import auth_enabled
+from hub import __version__, alerts, audit, backups, metrics, metrics_rollup, ollama_svc
+from hub.auth import auth_enabled, request_client_id, request_username
 from hub.config import _YAML_CAP, cfg, settings_section, update_settings
 from hub.errors import api_error
 from hub.host_address import configured_host, host_ip
@@ -325,7 +325,7 @@ def get_settings():
 
 
 @router.put("/api/settings")
-def put_settings(body: SettingsPatch):
+def put_settings(body: SettingsPatch, request: Request = None):
     patch: dict[str, Any] = {}
     if body.host_ip is not None:
         patch["host_ip"] = body.host_ip.strip()
@@ -405,6 +405,18 @@ def put_settings(body: SettingsPatch):
     if not patch:
         raise api_error("settings.empty_patch")
     update_settings(patch)
+    if "notify" in patch:
+        # The HA notify config carries a credential (ha_token); a swap through
+        # this endpoint must leave the same trail a channel edit does.  Field
+        # names only — record() redaction would drop the values anyway.
+        audit.record(
+            audit.NOTIFY_SETTINGS_CHANGED,
+            # FastAPI always injects `request`; the None default only keeps
+            # direct in-process calls (tests, tooling) working.
+            username=request_username(request) if request is not None else "",
+            client=request_client_id(request),
+            fields=",".join(sorted(patch["notify"].keys())),
+        )
     if "ollama" in patch:
         ollama_svc.status.invalidate()
     if "resource_mode" in patch:

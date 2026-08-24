@@ -210,13 +210,16 @@ def source_url() -> str:
     return str(section.get("url") or "").strip()
 
 
-def set_source_url(url: str, operator: str = "") -> dict:
+def set_source_url(url: str, operator: str = "", client: str = "") -> dict:
     from hub.config import update_settings
 
     clean = validate_source_url(url)
     update_settings({"catalog_remote": {"url": clean}})
-    # `username=` is the field the Audit page renders as the operator.
-    audit.record(EVENT_SOURCE_CHANGED, username=operator, url=clean or "(cleared)")
+    # `username=` is the field the Audit page renders as the operator, and
+    # `client=` its Source column.  Both arrive from the router; these three
+    # entry points are explicit admin actions, never background jobs.
+    audit.record(EVENT_SOURCE_CHANGED, username=operator, client=client,
+                 url=clean or "(cleared)")
     return {"ok": True, "url": clean}
 
 
@@ -602,7 +605,7 @@ def _entry_url(index_url: str, entry: dict) -> str:
 # ── sync ──────────────────────────────────────────────────────────────────────
 
 
-def check_updates(url: str | None = None, operator: str = "") -> dict:
+def check_updates(url: str | None = None, operator: str = "", client: str = "") -> dict:
     """Fetch the manifest and swap in every template that passes validation.
 
     Explicit admin action only — there is deliberately no background poll.
@@ -751,6 +754,7 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
     audit.record(
         EVENT_SYNC,
         username=operator,
+        client=client,
         url=index_url,
         added=len(added),
         updated=len(updated),
@@ -763,7 +767,7 @@ def check_updates(url: str | None = None, operator: str = "") -> dict:
     return cleaned if isinstance(cleaned, dict) else {"ok": False, "rejected": []}
 
 
-def restore_builtin(template_id: str, operator: str = "") -> dict:
+def restore_builtin(template_id: str, operator: str = "", client: str = "") -> dict:
     """Delete the remote override so the built-in template shows again."""
     tid = str(template_id or "")
     if not _ID_RE.match(tid):
@@ -785,7 +789,7 @@ def restore_builtin(template_id: str, operator: str = "") -> dict:
         templates.pop(tid, None)
         _save_state(state)
     _invalidate_catalog_cache()
-    audit.record(EVENT_RESTORED, username=operator, template=tid)
+    audit.record(EVENT_RESTORED, username=operator, client=client, template=tid)
     from hub import catalog
 
     builtin = any(
