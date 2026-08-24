@@ -2400,7 +2400,12 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .chip-sig,
 [data-theme="macos-dark"] .chip-sig {
   background: var(--btn);
-  color: var(--sub);
+  /* Same nudge, and for the same reason, as .badge above: --sub is sized for
+     11-12px on --card, and this chip is 10px on --btn -- 3.95:1 in macOS
+     dark.  The signature chip is the one label on a service row that says
+     *what* the service is, so it is the last thing that should be hard to
+     read. */
+  color: color-mix(in srgb, var(--sub) 70%, var(--txt));
   border-color: var(--line);
 }
 [data-theme="macos"] .toast,
