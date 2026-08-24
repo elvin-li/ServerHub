@@ -43,6 +43,14 @@ class CiWorkflowInvariants(unittest.TestCase):
         dev = pkg.get("devDependencies") or {}
         self.assertIn("rollup", dev, "knip treats rollup/parseAst as unlisted without this")
 
+    def test_ci_uses_linux_python_and_node_versions_the_suite_targets(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('python-version: "3.12"', text)
+        self.assertIn('node-version: "22"', text)
+        self.assertIn("python -m unittest discover -s tests -q", text)
+        self.assertIn("npm --prefix web test", text)
+        self.assertIn("grep -vE '^(rumps|pyobjc)'", text)
+
 
 if __name__ == "__main__":
     unittest.main()
