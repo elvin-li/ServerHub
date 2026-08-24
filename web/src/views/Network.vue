@@ -155,6 +155,9 @@
                 </template>
               </td>
             </tr>
+            <tr v-if="!orderList.length">
+              <td colspan="6" class="empty-row">{{ t('network.empty_services') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -257,6 +260,9 @@
                 <td></td>
               </tr>
             </template>
+            <tr v-if="!(data?.interface_addresses || []).length">
+              <td colspan="6" class="empty-row">{{ t('network.empty_ifaces') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -312,6 +318,9 @@
               <td class="mono col-hide-m">{{ finiteText(i.mac) }}</td>
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
             </tr>
+            <tr v-if="!(data?.interfaces || []).length">
+              <td colspan="8" class="empty-row">{{ t('network.empty_ifaces') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -356,7 +365,7 @@
               </td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="8" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="8" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -390,6 +399,9 @@
               <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
+            <tr v-if="!(data?.services || []).length">
+              <td colspan="4" class="empty-row">{{ t('network.empty_services') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -414,6 +426,9 @@
               <td class="mono col-hide-m">{{ finiteText(p.address) }}</td>
               <td class="mono">{{ finiteN(p.port) }}</td>
             </tr>
+            <tr v-if="!filteredListen.length">
+              <td colspan="5" class="empty-row">{{ t('common.no_match') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -433,6 +448,9 @@
               <td class="mono">{{ finiteText(r.gateway) }}</td>
               <td class="mono col-hide-m">{{ finiteText(r.flags) }}</td>
               <td>{{ finiteText(r.netif) }}</td>
+            </tr>
+            <tr v-if="!(data?.routes || []).length">
+              <td colspan="4" class="empty-row">{{ t('network.empty_routes') }}</td>
             </tr>
           </tbody>
         </table>
@@ -469,7 +487,7 @@
                 </td>
               </tr>
               <tr v-if="!filteredDockerPorts.length && !loadError">
-                <td colspan="7" style="color:var(--sub)">{{ t('network.no_published') }}</td>
+                <td colspan="7" class="empty-row">{{ t('network.no_published') }}</td>
               </tr>
             </tbody>
           </table>
@@ -501,6 +519,9 @@
                   <button class="tiny" :disabled="busy || n.builtin" @click="openConnect(n)">{{ t('network.connect') }}</button>
                   <button class="tiny" :disabled="busy || n.builtin" @click="openDisconnect(n)">{{ t('network.disconnect') }}</button>
                 </td>
+              </tr>
+              <tr v-if="!(data?.docker_networks || []).length">
+                <td colspan="6" class="empty-row">{{ t('network.empty_docker_nets') }}</td>
               </tr>
             </tbody>
           </table>

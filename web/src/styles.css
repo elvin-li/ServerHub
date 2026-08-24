@@ -1079,6 +1079,24 @@ table.dense td.mono, .mono {
 table.dense .ops { white-space: nowrap; }
 table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-bottom: 2px; }
 
+/* A table with nothing in it renders as a header bar above a void, which reads
+   as "this broke" rather than as "there is nothing here". One centred muted row
+   is the panel's existing answer — Services, Apps and Files each grew a private
+   copy of this rule — so it lives here once and every table can use it.
+
+   The row is not a record and does not open anything, so it opts out of the
+   tbody hover treatment above; keeping the accent bar would advertise a click
+   that does nothing. */
+table.dense td.empty-row {
+  text-align: center;
+  color: var(--sub);
+  padding: 24px 10px;
+}
+table.dense tbody tr:has(> td.empty-row):hover {
+  background: inherit;
+  box-shadow: none;
+}
+
 .row { display: flex; align-items: center; gap: 8px; }
 .dot {
   width: 9px; height: 9px; border-radius: 50%; flex: none;
