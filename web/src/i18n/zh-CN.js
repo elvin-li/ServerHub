@@ -1555,8 +1555,6 @@ export default {
     sort_name: '按名称',
     sort_state: '按状态',
     sort_kind: '按类型',
-    filter_kind: '按类型筛选',
-    filter_group: '按分组筛选',
     sort_by: '排序方式',
     select_all: '全选服务',
     state_ok: '正常',
