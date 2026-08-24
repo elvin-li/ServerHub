@@ -659,6 +659,36 @@ class InvalidationDuringBuildTests(unittest.TestCase):
                 "after",
             )
 
+    def test_lan_detection_drops_a_probe_that_invalidate_superseded(self):
+        """`network_svc._bust()` calls this right after changing the address."""
+        from hub import host_address
+
+        host_address.invalidate_routing()
+        self.addCleanup(host_address.invalidate_routing)
+
+        world = {"state": "10.0.0.1"}
+        build, reading, release = self._racing_build(world)
+
+        with (
+            mock.patch.object(host_address, "default_interface",
+                              lambda force=False: "en0"),
+            mock.patch.object(host_address, "interface_address",
+                              lambda iface, force=False: build()),
+            mock.patch.object(host_address, "_usable_address", bool),
+        ):
+            slow = threading.Thread(target=host_address.detect_lan_ip)
+            slow.start()
+            self.assertTrue(reading.wait(2), "the probe never started")
+            world["state"] = "192.168.1.5"
+            host_address.invalidate_routing()
+            release.set()
+            slow.join(timeout=2)
+            self.assertEqual(
+                host_address.detect_lan_ip(),
+                "192.168.1.5",
+                "the pre-change address was republished over the invalidate",
+            )
+
     def test_health_still_serves_the_last_snapshot_after_an_invalidate(self):
         """invalidate_status expires the snapshot without discarding it.
 
