@@ -1439,6 +1439,7 @@ export default {
     prio_title: 'サービス優先度（ドラッグできない場合は矢印を使用）',
     th_status: '状態',
     th_mode_ip: 'モード / IP',
+    empty_docker_nets: 'Docker ネットワークなし',
     badge_wired: '有線',
     badge_wifi: 'Wi‑Fi',
     act_enable: '有効化',

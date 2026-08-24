@@ -1443,6 +1443,7 @@ export default {
     prio_title: 'Service priority (use the arrows if dragging does not work)',
     th_status: 'Status',
     th_mode_ip: 'Mode / IP',
+    empty_docker_nets: 'No Docker networks',
     badge_wired: 'Wired',
     badge_wifi: 'Wi‑Fi',
     act_enable: 'Enable',

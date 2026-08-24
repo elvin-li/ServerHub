@@ -171,8 +171,8 @@
          <a class="tiny primary"
            role="link"
            :class="{ disabled: !ss.running }"
-           :aria-disabled="!ss.running"
            :href="ss.running ? finiteText(ss.vnc_url, '') : undefined"
+           :aria-disabled="ss.running ? undefined : 'true'"
            :title="ss.running ? t('power.connect') : t('power.off')"
            :aria-label="ss.running ? t('power.connect') : t('power.off')"
          ><Monitor :size="14" /></a>

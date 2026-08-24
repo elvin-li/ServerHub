@@ -436,6 +436,11 @@
   --fs-sm: 11px;
   --fs-md: 12px;
   --fs-lg: 13px;
+
+  /* Decorative icons drawn by CSS rather than by a component, kept here so they
+     stay on the lucide stroke language the .vue files import. Used as a mask, so
+     the stroke colour in the payload is irrelevant — only its alpha is read. */
+  --icon-inbox: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-6l-2 3h-4l-2-3H2'/%3E%3Cpath d='M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'/%3E%3C/svg%3E");
 }
 
 /* density */
@@ -1165,6 +1170,24 @@ table.dense td.mono, .mono {
 table.dense .ops { white-space: nowrap; }
 table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-bottom: 2px; }
 
+/* A table with nothing in it renders as a header bar above a void, which reads
+   as "this broke" rather than as "there is nothing here". One centred muted row
+   is the panel's existing answer — Services, Apps and Files each grew a private
+   copy of this rule — so it lives here once and every table can use it.
+
+   The row is not a record and does not open anything, so it opts out of the
+   tbody hover treatment above; keeping the accent bar would advertise a click
+   that does nothing. */
+table.dense td.empty-row {
+  text-align: center;
+  color: var(--sub);
+  padding: 24px 10px;
+}
+table.dense tbody tr:has(> td.empty-row):hover {
+  background: inherit;
+  box-shadow: none;
+}
+
 .row { display: flex; align-items: center; gap: 8px; }
 .dot {
   width: 9px; height: 9px; border-radius: 50%; flex: none;
@@ -1623,10 +1646,19 @@ img[loading="lazy"][complete] {
   align-items: center;
   gap: 12px;
 }
+/* Lucide `inbox`, masked so it takes --sub from the theme rather than shipping a
+   colour of its own. This was a 📭 emoji, which rendered as a full-colour glyph
+   next to the line icons everywhere else (Shares uses lucide FolderOpen for the
+   same job), drifted with the platform emoji font, and got announced by name by
+   screen readers even though it is decoration. */
 .placeholder::before {
-  content: '📭';
-  font-size: 32px;
-  opacity: .6;
+  content: '';
+  width: 30px;
+  height: 30px;
+  background: currentColor;
+  opacity: .45;
+  -webkit-mask: var(--icon-inbox) center / contain no-repeat;
+  mask: var(--icon-inbox) center / contain no-repeat;
 }
 .placeholder .retry-btn {
   margin-top: 4px;
@@ -2117,6 +2149,10 @@ img[loading="lazy"][complete] {
   border-radius: var(--radius-sm);
   padding: 1px 7px;
   font-weight: 500;
+  /* The neutral badge inherits --sub on --btn, which is 4:1 on the dark
+     palette's gray fill — under AA at this 10px size. Mixing toward --txt fixes
+     dark without inverting the muted intent on light. */
+  color: color-mix(in srgb, var(--sub) 70%, var(--txt));
 }
 [data-theme="macos"] .modal,
 [data-theme="macos-dark"] .modal {
@@ -2265,9 +2301,15 @@ img[loading="lazy"][complete] {
   border-color: var(--accent-fill);
   color: var(--on-accent);
 }
-[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+/* `.chip` is carved out for the same reason `.mac-switch` and `.hamburger` are:
+   it is a button element that is not meant to look like a button, and it has a
+   full set of macOS rules of its own further down. Without the guard this rule
+   scored (0,5,1) against those rules' (0,3,0) and painted over all of them, so
+   the Services status filter rendered its selected chip identically to the
+   unselected ones. */
+[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos"] .btn:not(.primary):not(.danger),
-[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
   /* White (elevated) fill on gray canvas — gray-on-gray --btn looked inert. */
   background: #fff;
@@ -2275,7 +2317,7 @@ img[loading="lazy"][complete] {
   color: var(--txt);
   box-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.06);
 }
-[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
   background: #3a3a3c;
   border-color: #48484a;
@@ -2400,7 +2442,10 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .chip.active,
 [data-theme="macos-dark"] .chip.active {
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
-  color: var(--accent);
+  /* The three state variants below already mix their status colour toward --txt
+     to clear AA on the 12% fill; this base rule was the one left on a flat
+     --accent and read 3.43:1. */
+  color: color-mix(in srgb, var(--accent) 70%, var(--txt));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
 }
 [data-theme="macos"] .chip-ok.active,
