@@ -10,6 +10,8 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
@@ -17,7 +19,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from hub import __version__
 from hub.auth import require_auth
 from hub.config import cfg
-from hub.errors import error_payload
+from hub.errors import error_payload, jsonable_error_detail
 from hub.macos_admin import use_admin_password
 from hub.paths import LEGACY_INDEX, STATIC_DIR
 from hub.routers import router
@@ -363,6 +365,23 @@ def create_app() -> FastAPI:
             return resp
         finally:
             request_id_var.reset(request_id_token)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        """Keep a 422 body renderable by Starlette's allow_nan=False encoder.
+
+        FastAPI's stock handler echoes the rejected value back in
+        ``detail[].input``.  ``json.loads`` accepts ``Infinity``/``NaN`` and
+        turns plain RFC ``1e999`` into ``inf``, so a body like
+        ``{"name": Infinity}`` made ``json.dumps`` raise *inside* the handler.
+        Every route taking a JSON body then answered a bare 500 instead of 422
+        — POST /api/auth/login included, i.e. before any authentication.
+        """
+        try:
+            detail = jsonable_encoder(exc.errors())
+        except Exception:
+            detail = exc.errors()
+        return JSONResponse({"detail": jsonable_error_detail(detail)}, status_code=422)
 
     @app.get("/api/health")
     def public_liveness():
