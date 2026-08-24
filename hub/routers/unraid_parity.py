@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from hub import docker_info_svc, health_svc, identity_svc, system_settings_svc, users_svc
+from hub import audit, auth, docker_info_svc, health_svc, identity_svc, system_settings_svc, users_svc
 from hub.tools_svc import launchd_timers
 
 router = APIRouter(tags=["unraid-parity"])
@@ -35,12 +35,23 @@ class IdentityBody(BaseModel):
 
 
 @router.put("/api/identity")
-def api_identity_put(body: IdentityBody):
-    return identity_svc.set_identity(
+def api_identity_put(body: IdentityBody, request: Request = None):
+    result = identity_svc.set_identity(
         computer_name=body.computer_name,
         comment=body.comment,
         host_ip=body.host_ip,
     )
+    # Renaming the machine changes what every Bonjour/SMB client sees.
+    audit.record(
+        audit.IDENTITY_CHANGED,
+        # FastAPI always injects `request`; the None default only keeps
+        # direct in-process calls (tests, tooling) working.
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        computer_name=body.computer_name or "",
+        host_ip=body.host_ip or "",
+    )
+    return result
 
 
 @router.get("/api/docker/info")
@@ -81,8 +92,20 @@ class PowerPrefBody(BaseModel):
 
 
 @router.post("/api/settings/power")
-def api_settings_power_set(body: PowerPrefBody):
-    return system_settings_svc.set_power_pref(body.key, body.value)
+def api_settings_power_set(body: PowerPrefBody, request: Request = None):
+    result = system_settings_svc.set_power_pref(body.key, body.value)
+    # pmset changes decide whether the host sleeps under its workloads.
+    audit.record(
+        audit.SETTINGS_POWER_CHANGED,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        # "key" is the pmset preference name (sleep, displaysleep, ...) but
+        # the redactor drops any field literally named key, so it travels
+        # under a name that survives.
+        pref=body.key,
+        value=body.value,
+    )
+    return result
 
 
 @router.get("/api/settings/disk")

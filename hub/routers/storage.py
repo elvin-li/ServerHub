@@ -2,11 +2,24 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from hub import disk_manage_svc, disk_power_svc, storage_pool_svc, storage_svc
+from hub import audit, auth, disk_manage_svc, disk_power_svc, storage_pool_svc, storage_svc
 from hub.util import LazyPool
+
+
+def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
+    """One audit line for a disk or pool mutation — eraseDisk is the most
+    destructive action in the panel.  Called after the service call returned,
+    so a rejected action that raised leaves no record.  FastAPI always injects
+    `request`; the None guard only keeps direct in-process calls working."""
+    audit.record(
+        event,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        **fields,
+    )
 
 
 def _as_text(value) -> str:
@@ -84,9 +97,12 @@ class DiskPowerBody(BaseModel):
 
 
 @router.post("/api/storage/disks/{disk_id}/power")
-def storage_disk_power(disk_id: str, body: DiskPowerBody):
+def storage_disk_power(disk_id: str, body: DiskPowerBody, request: Request = None):
     try:
-        return disk_power_svc.disk_power_action(disk_id, body.action)
+        result = disk_power_svc.disk_power_action(disk_id, body.action)
+        _audit_disk_change(audit.DISK_CHANGED, request,
+                           action=body.action, disk=disk_id)
+        return result
     finally:
         # Sleeping, ejecting or waking a disk changes whether it answers SMART at
         # all.  The service already drops its own caches; the SMART snapshot lives
@@ -105,9 +121,9 @@ class DiskManageBody(BaseModel):
 
 
 @router.post("/api/storage/manage/{device_id}")
-def storage_manage_action(device_id: str, body: DiskManageBody):
+def storage_manage_action(device_id: str, body: DiskManageBody, request: Request = None):
     try:
-        return disk_manage_svc.disk_action(
+        result = disk_manage_svc.disk_action(
             device_id,
             body.action,
             name=body.name,
@@ -115,6 +131,10 @@ def storage_manage_action(device_id: str, body: DiskManageBody):
             confirm=body.confirm,
             confirm_name=body.confirm_name,
         )
+        _audit_disk_change(audit.DISK_CHANGED, request,
+                           action=body.action, disk=device_id,
+                           fs=body.fs or "")
+        return result
     finally:
         # Manage actions mutate the same mount/presence state the power panel
         # renders.  This module may import both services without the cycle a
@@ -164,21 +184,27 @@ class PoolSaveBody(PoolPlanBody):
 
 
 @router.post("/api/storage/pool/save")
-def storage_pool_save(body: PoolSaveBody):
+def storage_pool_save(body: PoolSaveBody, request: Request = None):
     """Persist which mounts form the pool, and the placement policy.
 
     Writes panel configuration only.  No partition table, filesystem, mount or
     file is touched, and dropping a member never removes data from that disk.
     """
-    return storage_pool_svc.save_pool(
+    result = storage_pool_svc.save_pool(
         body.mounts,
         policy=body.policy,
         name=body.name,
         min_free_gb=body.min_free_gb,
     )
+    _audit_disk_change(audit.POOL_CHANGED, request,
+                       action="save", mounts=",".join(body.mounts or []),
+                       policy=body.policy)
+    return result
 
 
 @router.post("/api/storage/pool/clear")
-def storage_pool_clear():
+def storage_pool_clear(request: Request = None):
     """Forget the pool definition.  Member disks keep every file and stay mounted."""
-    return storage_pool_svc.clear_pool()
+    result = storage_pool_svc.clear_pool()
+    _audit_disk_change(audit.POOL_CHANGED, request, action="clear")
+    return result

@@ -7,13 +7,28 @@ from urllib.parse import quote
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from hub import auth, network_svc, tools_svc, vm_console, vms_svc
+from hub import audit, auth, network_svc, tools_svc, vm_console, vms_svc
 from hub.docker_cli import engine_up, peek_engine
 from hub.errors import api_error
 from hub.resource_mode import is_high
 from hub.host_address import default_interface, host_ip, interface_address
 from hub.paths import DOCKER, ORB
 from hub.util import LazyPool, cached_snapshot, fan_out, sh
+
+
+def _audit_host_change(event: str, request: Request | None, **fields) -> None:
+    """One audit line for a host-level mutation.
+
+    Called after the service call returned, so a rejected action that raised
+    leaves no record.  FastAPI always injects `request`; the None guard only
+    keeps direct in-process calls (tests, tooling) working.
+    """
+    audit.record(
+        event,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        **fields,
+    )
 
 
 def _as_text(value) -> str:
@@ -72,15 +87,21 @@ class VmCreateBody(BaseModel):
 
 
 @router.post("/api/vms/create")
-def vm_create(body: VmCreateBody):
+def vm_create(body: VmCreateBody, request: Request = None):
     """Create OrbStack Linux machine (UTM create is GUI-only)."""
-    return vms_svc.create_orb_machine(body.distro, body.name, body.arch)
+    result = vms_svc.create_orb_machine(body.distro, body.name, body.arch)
+    _audit_host_change(audit.VM_CHANGED, request,
+                       action="create", distro=body.distro, name=body.name or "")
+    return result
 
 
 @router.post("/api/vms/{vm_id}/action")
-def vm_action(vm_id: str, body: VmActionBody):
+def vm_action(vm_id: str, body: VmActionBody, request: Request = None):
     # path may contain orb:name — FastAPI decodes
-    return vms_svc.vm_action(vm_id, body.action, name=body.name, force=body.force)
+    result = vms_svc.vm_action(vm_id, body.action, name=body.name, force=body.force)
+    _audit_host_change(audit.VM_CHANGED, request,
+                       action=body.action, target=vm_id)
+    return result
 
 
 @router.post("/api/vms/{console_id}/console/session")
@@ -108,6 +129,9 @@ def vm_console_session(console_id: str, request: Request):
         raise api_error("vm_console.too_many_sessions")
 
     issued = vm_console.issue_ticket(target, user=user, session_token=session_token)
+    # A console ticket is a raw framebuffer into the guest — the record here
+    # is the only trace, because the WebSocket upgrade it buys is not audited.
+    _audit_host_change(audit.VM_CONSOLE_OPENED, request, target=console_id)
     return {
         # Relative path only: the browser derives ws:// or wss:// from its own
         # origin, so a redirected or proxied host cannot retarget the socket.
@@ -239,25 +263,38 @@ def network_services():
 
 
 @router.post("/api/system/network/services/{service_name}/dhcp")
-def network_set_dhcp(service_name: str):
-    return network_svc.set_service_dhcp(service_name)
+def network_set_dhcp(service_name: str, request: Request = None):
+    result = network_svc.set_service_dhcp(service_name)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="dhcp", service=service_name)
+    return result
 
 
 @router.post("/api/system/network/services/{service_name}/manual")
-def network_set_manual(service_name: str, body: NetManualBody):
-    return network_svc.set_service_manual(service_name, body.ip, body.subnet, body.router)
+def network_set_manual(service_name: str, body: NetManualBody, request: Request = None):
+    result = network_svc.set_service_manual(service_name, body.ip, body.subnet, body.router)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="manual", service=service_name, ip=body.ip)
+    return result
 
 
 @router.post("/api/system/network/services/{service_name}/dns")
-def network_set_dns(service_name: str, body: NetDnsBody):
-    return network_svc.set_service_dns(service_name, body.servers)
+def network_set_dns(service_name: str, body: NetDnsBody, request: Request = None):
+    result = network_svc.set_service_dns(service_name, body.servers)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="dns", service=service_name,
+                       servers=",".join(body.servers or []))
+    return result
 
 
 @router.post("/api/system/network/wifi/{state}")
-def network_wifi(state: str):
+def network_wifi(state: str, request: Request = None):
     if state not in ("on", "off"):
         raise api_error("network.bad_wifi_state")
-    return network_svc.set_wifi_power(state == "on")
+    result = network_svc.set_wifi_power(state == "on")
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="wifi_power", enabled=state == "on")
+    return result
 
 
 class NetEnableBody(BaseModel):
@@ -279,19 +316,29 @@ class NetAliasBody(BaseModel):
 
 
 @router.post("/api/system/network/services/{service_name}/enabled")
-def network_service_enabled(service_name: str, body: NetEnableBody):
-    return network_svc.set_service_enabled(service_name, body.enabled)
+def network_service_enabled(service_name: str, body: NetEnableBody, request: Request = None):
+    result = network_svc.set_service_enabled(service_name, body.enabled)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="service_enabled", service=service_name,
+                       enabled=bool(body.enabled))
+    return result
 
 
 @router.post("/api/system/network/order")
-def network_set_order(body: NetOrderBody):
-    return network_svc.set_service_order(body.services)
+def network_set_order(body: NetOrderBody, request: Request = None):
+    result = network_svc.set_service_order(body.services)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="order", services=",".join(body.services or []))
+    return result
 
 
 @router.post("/api/system/network/profile")
-def network_switch_profile(body: NetProfileBody):
+def network_switch_profile(body: NetProfileBody, request: Request = None):
     """Quick switch between Wi‑Fi / wired preference."""
-    return network_svc.switch_profile(body.profile)
+    result = network_svc.switch_profile(body.profile)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="profile", profile=body.profile)
+    return result
 
 
 @router.get("/api/system/network/addresses")
@@ -300,13 +347,19 @@ def network_addresses():
 
 
 @router.post("/api/system/network/alias/add")
-def network_alias_add(body: NetAliasBody):
-    return network_svc.add_ip_alias(body.device, body.ip, body.netmask)
+def network_alias_add(body: NetAliasBody, request: Request = None):
+    result = network_svc.add_ip_alias(body.device, body.ip, body.netmask)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="alias_add", device=body.device, ip=body.ip)
+    return result
 
 
 @router.post("/api/system/network/alias/remove")
-def network_alias_remove(body: NetAliasBody):
-    return network_svc.remove_ip_alias(body.device, body.ip)
+def network_alias_remove(body: NetAliasBody, request: Request = None):
+    result = network_svc.remove_ip_alias(body.device, body.ip)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="alias_remove", device=body.device, ip=body.ip)
+    return result
 
 
 class NetAliasAutoConfig(BaseModel):
@@ -323,20 +376,26 @@ def network_alias_auto_status():
 
 
 @router.post("/api/system/network/alias/auto/run")
-def network_alias_auto_run():
+def network_alias_auto_run(request: Request = None):
     """Immediately rebind managed aliases onto preferred active NIC."""
-    return network_svc.ensure_aliases_on_preferred(force=True)
+    result = network_svc.ensure_aliases_on_preferred(force=True)
+    _audit_host_change(audit.NETWORK_CHANGED, request, action="alias_auto_run")
+    return result
 
 
 @router.put("/api/system/network/alias/auto")
-def network_alias_auto_config(body: NetAliasAutoConfig):
+def network_alias_auto_config(body: NetAliasAutoConfig, request: Request = None):
     """Update auto-bind settings (settings.ip_aliases)."""
-    return network_svc.update_alias_auto_config(
+    result = network_svc.update_alias_auto_config(
         auto_bind=body.auto_bind,
         ips=body.ips,
         netmask=body.netmask,
         interval=body.interval,
     )
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="alias_auto_config",
+                       ips=",".join(body.ips or []))
+    return result
 
 
 @router.get("/api/system/network/failover")
@@ -345,11 +404,12 @@ def network_failover_status():
 
 
 @router.post("/api/system/network/failover/run")
-def network_failover_run():
+def network_failover_run(request: Request = None):
     """Probe wired connectivity and immediately enforce the failover policy."""
     result = network_svc.network_failover_tick(force=True)
     if result.get("action"):
         result["alias_rebind"] = network_svc.ensure_aliases_on_preferred(force=True)
+    _audit_host_change(audit.NETWORK_CHANGED, request, action="failover_run")
     return result
 
 
@@ -374,19 +434,31 @@ def network_docker_ports():
 
 
 @router.post("/api/system/network/docker/connect")
-def network_docker_connect(body: DockerNetBody):
-    return network_svc.docker_network_connect(body.network, body.container)
+def network_docker_connect(body: DockerNetBody, request: Request = None):
+    result = network_svc.docker_network_connect(body.network, body.container)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="docker_connect", network=body.network,
+                       container=body.container)
+    return result
 
 
 @router.post("/api/system/network/docker/disconnect")
-def network_docker_disconnect(body: DockerNetBody):
-    return network_svc.docker_network_disconnect(body.network, body.container, force=body.force)
+def network_docker_disconnect(body: DockerNetBody, request: Request = None):
+    result = network_svc.docker_network_disconnect(body.network, body.container, force=body.force)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="docker_disconnect", network=body.network,
+                       container=body.container)
+    return result
 
 
 @router.post("/api/system/network/docker/ports/{container}")
-def network_docker_set_ports(container: str, body: DockerPortsBody):
+def network_docker_set_ports(container: str, body: DockerPortsBody, request: Request = None):
     """Recreate container with new host port mappings."""
-    return network_svc.docker_update_ports(container, body.ports)
+    result = network_svc.docker_update_ports(container, body.ports)
+    _audit_host_change(audit.NETWORK_CHANGED, request,
+                       action="docker_ports", container=container,
+                       ports=",".join(body.ports or []))
+    return result
 
 
 @router.get("/api/system/processes")
@@ -454,8 +526,12 @@ class ApplyUpdateBody(BaseModel):
 
 
 @router.post("/api/tools/updates/apply")
-def tools_apply_update(body: ApplyUpdateBody):
-    return tools_svc.apply_github_update(confirm=body.confirm, stash=body.stash)
+def tools_apply_update(body: ApplyUpdateBody, request: Request = None):
+    result = tools_svc.apply_github_update(confirm=body.confirm, stash=body.stash)
+    # Recorded even for the unconfirmed dry-run form: both spawn git.
+    _audit_host_change(audit.UPDATES_APPLIED, request,
+                       kind="github", confirm=bool(body.confirm))
+    return result
 
 
 class BrewUpgradeBody(BaseModel):
@@ -463,8 +539,11 @@ class BrewUpgradeBody(BaseModel):
 
 
 @router.post("/api/tools/updates/brew")
-def tools_brew_upgrade(body: BrewUpgradeBody):
-    return tools_svc.apply_brew_upgrade(confirm=body.confirm)
+def tools_brew_upgrade(body: BrewUpgradeBody, request: Request = None):
+    result = tools_svc.apply_brew_upgrade(confirm=body.confirm)
+    _audit_host_change(audit.UPDATES_APPLIED, request,
+                       kind="brew", confirm=bool(body.confirm))
+    return result
 
 
 @router.get("/api/tools/about")
@@ -488,8 +567,11 @@ class DockerPruneBody(BaseModel):
 
 
 @router.post("/api/tools/docker/prune")
-def tools_docker_prune(body: DockerPruneBody):
-    return tools_svc.docker_prune(what=body.what, confirm=body.confirm)
+def tools_docker_prune(body: DockerPruneBody, request: Request = None):
+    result = tools_svc.docker_prune(what=body.what, confirm=body.confirm)
+    _audit_host_change(audit.CONTAINER_PRUNED, request,
+                       kind=body.what, confirm=bool(body.confirm))
+    return result
 
 
 class NetPingBody(BaseModel):
@@ -516,5 +598,7 @@ def tools_net_dns(body: NetDnsLookupBody):
 
 
 @router.post("/api/tools/net/flush-dns")
-def tools_flush_dns():
-    return tools_svc.flush_dns()
+def tools_flush_dns(request: Request = None):
+    result = tools_svc.flush_dns()
+    _audit_host_change(audit.NETWORK_CHANGED, request, action="flush_dns")
+    return result

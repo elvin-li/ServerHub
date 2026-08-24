@@ -587,16 +587,34 @@ def get_backups():
     }
 
 
+def _audit_backup_run(kind: str, request: Request | None, result) -> None:
+    # A backup reads every byte it protects and writes it somewhere else;
+    # "who kicked off the postgres dump at 03:12" must be answerable.
+    audit.record(
+        audit.BACKUP_RUN,
+        username=request_username(request) if request is not None else "",
+        client=request_client_id(request),
+        kind=kind,
+        ok=bool(result.get("ok")) if isinstance(result, dict) else None,
+    )
+
+
 @router.post("/api/backups/postgres")
-def do_pg_backup():
-    return backups.backup_postgres()
+def do_pg_backup(request: Request = None):
+    result = backups.backup_postgres()
+    _audit_backup_run("postgres", request, result)
+    return result
 
 
 @router.post("/api/backups/immich")
-def do_immich_backup():
-    return backups.backup_immich()
+def do_immich_backup(request: Request = None):
+    result = backups.backup_immich()
+    _audit_backup_run("immich", request, result)
+    return result
 
 
 @router.post("/api/backups/configs")
-def do_cfg_backup():
-    return backups.backup_configs()
+def do_cfg_backup(request: Request = None):
+    result = backups.backup_configs()
+    _audit_backup_run("configs", request, result)
+    return result

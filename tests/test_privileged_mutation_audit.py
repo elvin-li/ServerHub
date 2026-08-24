@@ -23,6 +23,9 @@ sys.path.insert(0, str(BASE))
 from hub import audit  # noqa: E402
 from hub.routers import catalog as catalog_router  # noqa: E402
 from hub.routers import cloudflared_api, files_api, launcher_api, modules_api  # noqa: E402
+from hub.routers import nas_storage, settings_api, wireguard_api  # noqa: E402
+from hub.routers import storage as storage_router  # noqa: E402
+from hub.routers import system_extra, unraid_parity  # noqa: E402
 
 
 class _AuditSandbox(unittest.TestCase):
@@ -222,6 +225,216 @@ class LauncherAuditTests(_AuditSandbox):
         self.assertEqual(event, audit.LAUNCHER_CHANGED)
         self.assert_operator(fields)
         self.assertEqual(fields["action"], "stop")
+
+
+class VmAuditTests(_AuditSandbox):
+    module = system_extra
+
+    def test_vm_action_records_target_and_action(self):
+        with mock.patch.object(system_extra.vms_svc, "vm_action",
+                               return_value={"ok": True}):
+            system_extra.vm_action(
+                "utm:debian",
+                system_extra.VmActionBody(action="stop"),
+                request=mock.Mock(),
+            )
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.VM_CHANGED)
+        self.assert_operator(fields)
+        self.assertEqual(fields["action"], "stop")
+        self.assertEqual(fields["target"], "utm:debian")
+
+
+class StorageAuditTests(_AuditSandbox):
+    module = storage_router
+
+    def test_pool_save_records_members_and_policy(self):
+        with mock.patch.object(storage_router.storage_pool_svc, "save_pool",
+                               return_value={"ok": True}):
+            storage_router.storage_pool_save(
+                storage_router.PoolSaveBody(
+                    mounts=["/Volumes/a", "/Volumes/b"], policy="most-free"
+                ),
+                request=mock.Mock(),
+            )
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.POOL_CHANGED)
+        self.assert_operator(fields)
+        self.assertEqual(fields["action"], "save")
+        self.assertEqual(fields["mounts"], "/Volumes/a,/Volumes/b")
+        self.assertEqual(fields["policy"], "most-free")
+
+
+class IdentityAuditTests(_AuditSandbox):
+    module = unraid_parity
+
+    def test_rename_records_the_new_name(self):
+        with mock.patch.object(unraid_parity.identity_svc, "set_identity",
+                               return_value={"ok": True}):
+            unraid_parity.api_identity_put(
+                unraid_parity.IdentityBody(computer_name="atlas"),
+                request=mock.Mock(),
+            )
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.IDENTITY_CHANGED)
+        self.assert_operator(fields)
+        self.assertEqual(fields["computer_name"], "atlas")
+
+    def test_power_pref_travels_under_a_name_redaction_keeps(self):
+        with mock.patch.object(unraid_parity.system_settings_svc,
+                               "set_power_pref", return_value={"ok": True}):
+            unraid_parity.api_settings_power_set(
+                unraid_parity.PowerPrefBody(key="displaysleep", value=15),
+                request=mock.Mock(),
+            )
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.SETTINGS_POWER_CHANGED)
+        self.assert_operator(fields)
+        # A field literally named "key" would be dropped by the redactor.
+        self.assertNotIn("key", fields)
+        self.assertEqual(fields["pref"], "displaysleep")
+        self.assertEqual(fields["value"], 15)
+
+
+class _NasCommonSandbox(unittest.TestCase):
+    """Routers built on nas_common resolve the operator through
+    require_admin_browser / client_host instead of the auth module."""
+
+    module = None  # set by subclasses
+
+    def setUp(self):
+        self.calls: list = []
+
+        def _record(event, **fields):
+            self.calls.append((event, fields))
+
+        for patched in (
+            mock.patch.object(self.module.audit, "record", _record),
+            mock.patch.object(self.module, "require_admin_browser",
+                              lambda request: "admin"),
+            mock.patch.object(self.module, "client_host",
+                              lambda request: "10.0.0.9"),
+        ):
+            patched.start()
+            self.addCleanup(patched.stop)
+
+    def only_call(self):
+        self.assertEqual(len(self.calls), 1, self.calls)
+        return self.calls[0]
+
+    def assert_operator(self, fields):
+        self.assertEqual(fields["username"], "admin")
+        self.assertEqual(fields["client"], "10.0.0.9")
+
+
+class SmartAuditTests(_NasCommonSandbox):
+    module = nas_storage
+
+    def test_abort_records_the_device(self):
+        with mock.patch.object(nas_storage.smart_test_svc, "abort_test",
+                               return_value={"ok": True}):
+            nas_storage.api_smart_abort(
+                nas_storage.SmartAbortBody(device="disk0"), request=mock.Mock()
+            )
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.SMART_TEST_ABORTED)
+        self.assert_operator(fields)
+        self.assertEqual(fields["device"], "disk0")
+        self.assertTrue(fields["ok"])
+
+    def test_schedule_change_records_interval_kind_and_devices(self):
+        with mock.patch.object(nas_storage.smart_test_svc, "set_schedule",
+                               return_value={"ok": True}):
+            nas_storage.api_smart_schedule(
+                nas_storage.SmartScheduleBody(
+                    interval="weekly", kind="short", devices=["disk0", "disk2"]
+                ),
+                request=mock.Mock(),
+            )
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.SMART_SCHEDULE_CHANGED)
+        self.assert_operator(fields)
+        self.assertEqual(fields["interval"], "weekly")
+        self.assertEqual(fields["kind"], "short")
+        self.assertEqual(fields["devices"], "disk0,disk2")
+
+
+class WireguardSettingsAuditTests(_NasCommonSandbox):
+    module = wireguard_api
+
+    def setUp(self):
+        super().setUp()
+        patched = mock.patch.object(
+            wireguard_api.wireguard_svc, "installation",
+            return_value={"installed": True},
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def test_settings_put_records_changed_keys_but_never_values(self):
+        with mock.patch.object(wireguard_api.wireguard_svc, "save_settings",
+                               return_value={"endpoint": "vpn.example.com"}):
+            wireguard_api.api_wireguard_settings_put(
+                wireguard_api.WgSettingsBody(
+                    endpoint="vpn.example.com", lan_cidr="192.168.7.0/24"
+                ),
+                request=mock.Mock(),
+            )
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.WIREGUARD_SETTINGS_CHANGED)
+        self.assert_operator(fields)
+        self.assertEqual(fields["fields"], "endpoint,lan_cidr")
+        # The values map the network for whoever reads the trail later.
+        self.assertNotIn("vpn.example.com", str(fields))
+        self.assertNotIn("192.168.7.0/24", str(fields))
+
+    def test_sync_records_the_reload_even_when_it_fails(self):
+        with mock.patch.object(wireguard_api.wireguard_svc, "apply_live",
+                               return_value={"ok": False}):
+            with self.assertRaises(Exception):
+                wireguard_api.api_wireguard_sync(request=mock.Mock())
+        event, fields = self.only_call()
+        self.assertEqual(event, audit.WIREGUARD_INTERFACE)
+        self.assert_operator(fields)
+        self.assertEqual(fields["action"], "sync")
+        self.assertFalse(fields["ok"])
+
+
+class BackupRunAuditTests(unittest.TestCase):
+    def setUp(self):
+        self.calls: list = []
+
+        def _record(event, **fields):
+            self.calls.append((event, fields))
+
+        for patched in (
+            mock.patch.object(settings_api.audit, "record", _record),
+            mock.patch.object(settings_api, "request_username",
+                              lambda r: "admin"),
+            mock.patch.object(settings_api, "request_client_id",
+                              lambda r: "10.0.0.9"),
+        ):
+            patched.start()
+            self.addCleanup(patched.stop)
+
+    def test_each_backup_kind_is_recorded_with_its_outcome(self):
+        for kind, route, svc in (
+            ("postgres", settings_api.do_pg_backup, "backup_postgres"),
+            ("immich", settings_api.do_immich_backup, "backup_immich"),
+            ("configs", settings_api.do_cfg_backup, "backup_configs"),
+        ):
+            with self.subTest(kind=kind):
+                self.calls.clear()
+                with mock.patch.object(settings_api.backups, svc,
+                                       return_value={"ok": True}):
+                    route(request=mock.Mock())
+                self.assertEqual(len(self.calls), 1, self.calls)
+                event, fields = self.calls[0]
+                self.assertEqual(event, audit.BACKUP_RUN)
+                self.assertEqual(fields["username"], "admin")
+                self.assertEqual(fields["client"], "10.0.0.9")
+                self.assertEqual(fields["kind"], kind)
+                self.assertTrue(fields["ok"])
 
 
 if __name__ == "__main__":

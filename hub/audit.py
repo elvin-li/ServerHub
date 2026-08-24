@@ -84,6 +84,11 @@ NFS_CHANGED = "nfs.changed"
 RAID_CHANGED = "raid.changed"
 SNAPSHOT_CHANGED = "snapshots.changed"
 SMART_TEST_STARTED = "smart.test.started"
+SMART_TEST_ABORTED = "smart.test.aborted"
+SMART_SCHEDULE_CHANGED = "smart.schedule.changed"
+#: A backup run reads every byte of the data it protects and writes it
+#: somewhere else, so a manual trigger names who asked for it.
+BACKUP_RUN = "backup.run"
 SPOTLIGHT_CHANGED = "spotlight.changed"
 #: Shutdown / restart / sleep takes every service on the machine down at
 #: once.  "Why did the server go dark at 02:14, and who told it to" is the
@@ -118,6 +123,9 @@ WIREGUARD_PEER_ADDED = "wireguard.peer.added"
 WIREGUARD_PEER_REMOVED = "wireguard.peer.removed"
 WIREGUARD_PEER_CHANGED = "wireguard.peer.changed"
 WIREGUARD_INTERFACE = "wireguard.interface"
+#: Server-side tunnel settings (endpoint, subnet, DNS, wstunnel wrap) shape
+#: what every issued credential can reach, so edits record the changed keys.
+WIREGUARD_SETTINGS_CHANGED = "wireguard.settings.changed"
 #: UPS safe-shutdown policy (hub/ups_policy.py).  The policy stops and starts
 #: real workloads on its own, with nobody at the keyboard, so the trail must
 #: answer "why is this stack down / who told it to do that" afterwards: every
@@ -187,6 +195,22 @@ FILES_CHANGED = "files.changed"
 
 #: Menu-bar launcher and panel self-management (hub/routers/launcher_api.py).
 LAUNCHER_CHANGED = "launcher.changed"
+
+#: Host-level mutations (hub/routers/system_extra.py, storage.py,
+#: unraid_parity.py, services_api.py).  Network reconfiguration can cut the
+#: panel off from the network it is administered over, a VM console ticket is
+#: a raw framebuffer into a guest, eraseDisk is the most destructive action
+#: in the panel, a saved service script is arbitrary code run by the next
+#: start/stop, and a self-update replaces the panel's own code.
+VM_CHANGED = "vm.changed"
+VM_CONSOLE_OPENED = "vm.console.opened"
+NETWORK_CHANGED = "network.changed"
+UPDATES_APPLIED = "updates.applied"
+DISK_CHANGED = "disk.changed"
+POOL_CHANGED = "storage.pool.changed"
+IDENTITY_CHANGED = "identity.changed"
+SETTINGS_POWER_CHANGED = "settings.power.changed"
+SERVICE_CONFIG_CHANGED = "service.config.changed"
 
 #: Any field whose name contains one of these is replaced wholesale.  Substring
 #: matching rather than exact names, so ``current_password``, ``new_password``
