@@ -1,5 +1,7 @@
 <template>
   <div class="tools-page">
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('tools.title') }}</h1>
     <div class="tabs">
       <button
         v-for="tb in tabs"

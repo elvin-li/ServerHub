@@ -1,5 +1,9 @@
 <template>
   <div class="dash">
+    <!-- The page has no visible title -- the host card is the heading the eye
+         uses -- but a document with no h1 leaves a screen reader without the
+         one landmark that names where it landed. -->
+    <h1 class="sr-only">{{ t('nav.dashboard') }}</h1>
     <!-- A failed load must not read as "still loading". The banner stays up while
          the failure persists and clears on the next successful poll, so stale
          tiles below it are never presented as current. -->

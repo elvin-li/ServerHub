@@ -1,5 +1,7 @@
 <template>
   <div>
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('settings.title') }}</h1>
     <!-- Appearance & Language -->
     <div v-if="tab==='appearance'">
       <div class="card" style="margin-bottom:12px">

@@ -1,5 +1,7 @@
 <template>
   <div class="svc-page">
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('services.title') }}</h1>
     <!-- Problems banner -->
     <div v-if="(status?.problems || []).length" class="problems-bar">
       <strong>{{ t('services.problems') }}</strong>
