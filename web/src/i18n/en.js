@@ -184,7 +184,7 @@ export default {
     section_nav: 'Section navigation',
     sort_by: 'Sort by',
     select_all: 'Select all rows',
-    select_row: 'Select this row',
+    select_row_name: 'Select {name}',
     retry: 'Retry',
     load_failed: 'Could not load this page',
     actions: 'Actions',

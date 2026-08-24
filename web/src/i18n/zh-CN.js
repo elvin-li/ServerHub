@@ -185,7 +185,7 @@ export default {
     section_nav: '栏目导航',
     sort_by: '排序方式',
     select_all: '全选所有行',
-    select_row: '选择此行',
+    select_row_name: '选择 {name}',
     retry: '重试',
     load_failed: '无法加载此页面',
     actions: '操作',

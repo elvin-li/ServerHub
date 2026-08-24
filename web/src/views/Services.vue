@@ -108,7 +108,10 @@
               @click="openDetail(s)" tabindex="0" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
             >
               <td v-if="canManage" class="col-check" @click.stop>
-                <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row')" @change="toggleSelect(s.id)" />
+                <!-- Named per row, like the Files list: thirty checkboxes all
+                     called "Select this row" cannot be told apart in a screen
+                     reader's form-controls listing. -->
+                <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row_name', { name: finiteText(s.name, '') || finiteText(s.id) })" @change="toggleSelect(s.id)" />
               </td>
               <td><span class="led" :class="ledOf(s.state)"></span></td>
               <td>

@@ -496,6 +496,20 @@ describe('selected state', () => {
       /<span role="status">\{\{ t\('services\.selected_n'/,
     )
   })
+
+  it('names each Services row checkbox after its service', () => {
+    // Thirty checkboxes all called "Select this row" cannot be told apart in
+    // a screen reader's form-controls listing; the Files list already names
+    // its per-row checkboxes after the item, so the pattern is established.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /:aria-label="t\('common\.select_row_name',\s*\{\s*name:/,
+    )
+    for (const [name, source] of vueFiles()) {
+      expect(source, `${name} uses the anonymous row-checkbox label`)
+        .not.toContain("t('common.select_row')")
+    }
+  })
 })
 
 describe('macos switch controls', () => {

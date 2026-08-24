@@ -184,7 +184,7 @@ export default {
     section_nav: 'セクションナビゲーション',
     sort_by: '並べ替え',
     select_all: 'すべての行を選択',
-    select_row: 'この行を選択',
+    select_row_name: '{name} を選択',
     retry: '再試行',
     load_failed: 'このページを読み込めませんでした',
     actions: '操作',
