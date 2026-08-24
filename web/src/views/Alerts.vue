@@ -13,7 +13,12 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
     <div v-else-if="!alerts.length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
-    <template v-else>
+    <!-- Rows are the gate, not "else": with nothing fetched and the read failed,
+         the else-branch rendered the level tabs and a table whose only row said
+         "no alerts match this filter" — a filter excuse for an API failure. The
+         banner above is the whole story; stale rows still render when a re-poll
+         fails, which is the LoadFailure contract. -->
+    <template v-else-if="alerts.length">
     <!-- Same level tabs the Health page uses: with 100 mixed rows, finding the
          one that is red should not require scanning past every resolved ok. -->
     <div class="tabs">

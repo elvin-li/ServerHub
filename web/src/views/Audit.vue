@@ -14,7 +14,12 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="6" :rows="8" />
     <div v-else-if="!entries.length && !loadError" class="placeholder">{{ t('audit.empty') }}</div>
-    <template v-else>
+    <!-- Rows are the gate, not "else": with nothing fetched and the read failed,
+         the else-branch rendered a table whose only row said "None" — an empty
+         claim for an API failure. The banner above is the whole story; stale
+         rows still render when a re-poll fails, which is the LoadFailure
+         contract. -->
+    <template v-else-if="entries.length">
       <div class="table-wrap">
         <table class="dense fit-m">
           <thead>

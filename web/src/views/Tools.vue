@@ -261,6 +261,14 @@
         </table>
       </div>
       <h2 class="section-title">{{ t('tools.agents') }}</h2>
+      <!-- Same pending/failure gate as the timers table above. This section used
+           to render unconditionally, so while the sched load was in flight the
+           timers slot showed a skeleton but this one already claimed "no agents"
+           — and after a failure it kept a bare set of column headings under the
+           timers' LoadFailure banner. That banner covers both tables (one load
+           fills both), so the failed branch here renders nothing extra. -->
+      <SkeletonLoader v-if="!tabLoaded.sched" :cols="5" :rows="4" />
+      <template v-else-if="!tabError.sched">
       <p class="hint" style="margin-top:0">{{ finiteText(agents.hint) }} · {{ finiteN(agents.count, 0) }}</p>
       <div class="table-wrap">
         <table class="dense fit-m">
@@ -285,12 +293,13 @@
               <td class="mono">{{ finiteN(a.interval_sec, null) ? withUnit(a.interval_sec, 's') : (a.calendar ? 'cal' : '—') }}</td>
               <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(a.program)">{{ finiteText(a.program) }}</td>
             </tr>
-            <tr v-if="!(agents.agents||[]).length && !tabError.sched">
+            <tr v-if="!(agents.agents||[]).length">
               <td colspan="5" class="empty-row">{{ t('tools.no_agents') }}</td>
             </tr>
           </tbody>
         </table>
       </div>
+      </template>
     </template>
 
     <!-- Hardware -->
