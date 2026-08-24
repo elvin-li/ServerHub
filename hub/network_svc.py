@@ -1742,6 +1742,11 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
     container = cli_args.require_positional(container, label="container name")
     rc, out, err = docker("inspect", container, timeout=15)
     if rc != 0:
+        # The engine_up() gate above trusts a 5s memo, so an engine that dies
+        # inside the TTL still reaches this inspect — classify the failure
+        # with a forced probe instead of claiming the container vanished.
+        if not engine_up(force=True):
+            raise api_error("container.engine_down")
         raise api_error("network.container_not_found", name=container)
     data = inspect_object(out)
     if data is None:
