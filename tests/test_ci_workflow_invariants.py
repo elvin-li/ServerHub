@@ -56,6 +56,11 @@ class CiWorkflowInvariants(unittest.TestCase):
         self.assertIn("TZ: UTC", text)
         self.assertIn("LC_ALL: C", text)
 
+    def test_ci_cancels_superseded_runs_on_the_same_ref(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("cancel-in-progress: true", text)
+        self.assertIn("github.workflow", text)
+
 
 if __name__ == "__main__":
     unittest.main()
