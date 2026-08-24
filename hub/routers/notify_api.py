@@ -205,6 +205,7 @@ def test_channel(cid: str, request: Request):
         channel_id=cid,
     )
     audit.record(audit.NOTIFY_CHANNEL_TESTED,
-                 username=request_username(request), ok=bool(result.get("ok")),
+                 username=request_username(request),
+                 client=request_client_id(request), ok=bool(result.get("ok")),
                  **_audit_fields(channel))
     return result
