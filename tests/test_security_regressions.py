@@ -902,7 +902,7 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             [
                 'views/Account.vue: <div class="twofa-qr" v-html="enrollment.qrSvg"></div>',
                 'views/Settings.vue: <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>',
-                'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>',
+                'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" aria-hidden="true" v-html="qrSvg"></div>',
             ],
             "the v-html sinks changed; each one needs its own argument for why "
             "the value cannot contain markup:\n" + "\n".join(sinks),
