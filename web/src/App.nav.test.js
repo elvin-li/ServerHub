@@ -235,6 +235,20 @@ describe('mobile shell chrome', () => {
     expect(wrapper.find('nav.top-nav').classes()).toContain('open')
     wrapper.unmount()
   })
+
+  it('hides the click-away nav scrim from assistive technology', () => {
+    // The scrim is mouse-only (no tabindex, no name); Escape and the hamburger
+    // are the accessible ways out, so AT must not land on an anonymous div.
+    applyAuthStatus({
+      authenticated: true, username: 'admin', role: 'admin',
+      resources: [], can_manage: true,
+    })
+    const wrapper = mountShell()
+    const scrim = wrapper.find('.nav-overlay')
+    expect(scrim.attributes('role')).toBe('presentation')
+    expect(scrim.attributes('aria-hidden')).toBe('true')
+    wrapper.unmount()
+  })
 })
 
 describe('which page the nav says you are on', () => {
