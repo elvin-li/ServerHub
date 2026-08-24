@@ -413,6 +413,10 @@
     <template v-else-if="tab==='ports'">
       <div class="toolbar">
         <input v-model="portQ" type="text" :placeholder="t('network.filter_port')" style="min-width:160px"  :aria-label="t('network.filter_port')"/>
+        <!-- role=status: the count is the only feedback the filter box gives,
+             and it changed silently for a screen reader. Same pattern as the
+             Services filter count. -->
+        <span class="meta-count" role="status">{{ filteredListen.length }} / {{ (data?.listening || []).length }}</span>
       </div>
       <div class="table-wrap">
         <table class="dense fit-m">
@@ -466,6 +470,10 @@
         <h2 class="section-title">{{ t('network.port_maps') }}</h2>
         <div class="toolbar">
           <input v-model="dockerPortQ" type="text" :placeholder="t('network.filter_ctr')" style="min-width:160px"  :aria-label="t('network.filter_ctr')"/>
+          <!-- role=status: the count is the only feedback the filter box gives,
+               and it changed silently for a screen reader. Same pattern as the
+               Services filter count. -->
+          <span class="meta-count" role="status">{{ filteredDockerPorts.length }} / {{ (data?.docker_ports || []).length }}</span>
           <button @click="openPortEdit()" :disabled="busy">{{ t('network.edit_map') }}</button>
         </div>
         <div class="table-wrap" style="margin-bottom:14px">

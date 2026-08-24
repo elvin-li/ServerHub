@@ -18,6 +18,10 @@
     <template v-if="tab === 'catalog'">
       <div class="toolbar apps-toolbar">
         <input v-model="q" type="text" class="search" :placeholder="t('apps.search_ph')"  :aria-label="t('apps.search_ph')"/>
+        <!-- role=status: the count is the only feedback the search box, category
+             select and toggles give, and it changed silently for a screen
+             reader. Same pattern as the Services filter count. -->
+        <span class="meta-count" role="status">{{ filtered.length }} / {{ catalog.length }}</span>
         <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
           <option v-for="c in categories" :key="c.id" :value="c.id">
             {{ catLabel(c.id) }}{{ countLabel(c.id) }}
@@ -144,6 +148,10 @@
     <template v-else-if="tab === 'managed'">
       <div class="toolbar apps-toolbar">
         <input v-model="mq" type="text" class="search" :placeholder="t('apps.managed_search')"  :aria-label="t('apps.managed_search')"/>
+        <!-- role=status: the count is the only feedback the search box and kind
+             select give, and it changed silently for a screen reader. Same
+             pattern as the Services filter count. -->
+        <span class="meta-count" role="status">{{ filteredManaged.length }} / {{ (managed.items || []).length }}</span>
         <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
