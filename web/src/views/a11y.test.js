@@ -515,8 +515,11 @@ describe('selected state', () => {
       /:aria-label="t\('common\.select_row_name',\s*\{\s*name:/,
     )
     for (const [name, source] of vueFiles()) {
+      // A regex, not the literal call text: the backend's i18n contract test
+      // scans every source for translation-key references and would otherwise
+      // count this guard as a use of the removed key.
       expect(source, `${name} uses the anonymous row-checkbox label`)
-        .not.toContain("t('common.select_row')")
+        .not.toMatch(/t\('common\.select_row'\)/)
     }
   })
 })
