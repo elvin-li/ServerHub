@@ -124,6 +124,14 @@ function fingerprintServiceWorker() {
 export default defineConfig({
   plugins: [vue(), enforceEntryChunkBudget(), fingerprintServiceWorker()],
   base: '/',
+  // `build.target` below is esnext because noVNC 1.7 ships top-level await, but
+  // dependency pre-bundling has its own esbuild target that defaults to the
+  // browser-compat list. Left unset, `npm run dev` dies on startup with
+  // "Top-level await is not available in the configured target environment"
+  // the first time it optimizes @novnc/novnc. Keep the two targets in step.
+  optimizeDeps: {
+    esbuildOptions: { target: 'esnext' },
+  },
   // Vitest runs the same resolver/plugin chain as the build, so a test that
   // imports a .vue file exercises the real single-file-component pipeline.
   test: {
