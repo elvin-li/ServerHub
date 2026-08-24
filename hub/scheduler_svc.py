@@ -350,8 +350,25 @@ def new_job_id() -> str:
     return f"job-{uuid.uuid4().hex[:8]}"
 
 
-def save_job(record: dict) -> None:
-    """Insert or replace one job record under the cross-process config lock."""
+class _NoChange(Exception):
+    """Raised inside a mutate() body to abort without rewriting the file."""
+
+
+def save_job(record: dict, *, mode: str = "upsert") -> bool:
+    """Insert or replace one job record under the cross-process config lock.
+
+    ``mode`` decides what happens when the id's existence disagrees with the
+    caller's intent, *checked under the same lock as the write*:
+
+    * ``"upsert"`` — insert or replace, always succeeds (the historic shape).
+    * ``"create"`` — insert only; returns False when the id already exists.
+    * ``"update"`` — replace only; returns False when the id is gone.
+
+    The create/update modes exist because the router used to pre-check with
+    :func:`get_job` and then call this unconditionally: two concurrent creates
+    with the same id both passed the check and the second silently overwrote
+    the first, and an update racing a delete re-created the deleted job.
+    """
     def apply(data: dict) -> None:
         jobs = data.get("schedules")
         if not isinstance(jobs, list):
@@ -359,11 +376,19 @@ def save_job(record: dict) -> None:
             data["schedules"] = jobs
         for i, j in enumerate(jobs):
             if isinstance(j, dict) and j.get("id") == record["id"]:
+                if mode == "create":
+                    raise _NoChange
                 jobs[i] = record
                 return
+        if mode == "update":
+            raise _NoChange
         jobs.append(record)
 
-    mutate(apply)
+    try:
+        mutate(apply)
+    except _NoChange:
+        return False
+    return True
 
 
 def delete_job(job_id: str) -> bool:
@@ -380,12 +405,32 @@ def delete_job(job_id: str) -> bool:
 
 
 def set_enabled(job_id: str, enabled: bool) -> dict | None:
-    job = get_job(job_id)
-    if job is None:
+    """Flip one job's ``enabled`` flag in place, under the write lock.
+
+    The read and the write must share one lock.  The previous
+    ``get_job()`` → ``save_job()`` pair took its snapshot outside the
+    cross-process lock and wrote the *whole* stale record back, so a
+    concurrent PUT /api/scheduler/jobs/{id} landing in between was silently
+    reverted by the toggle — the exact lost-update shape config.save_full's
+    docstring warns about.
+    """
+    hit: dict = {}
+
+    def apply(data: dict) -> None:
+        jobs = data.get("schedules")
+        rows = jobs if isinstance(jobs, list) else []
+        for j in rows:
+            if isinstance(j, dict) and j.get("id") == job_id:
+                j["enabled"] = bool(enabled)
+                hit.update(j)
+                return
+        raise _NoChange
+
+    try:
+        mutate(apply)
+    except _NoChange:
         return None
-    job["enabled"] = bool(enabled)
-    save_job(job)
-    return job
+    return dict(hit)
 
 
 # ── run history journal ──────────────────────────────────────────────────────

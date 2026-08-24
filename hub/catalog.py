@@ -824,23 +824,40 @@ def render_template(body: str, values: dict[str, str]) -> str:
     return VAR_RE.sub(repl, body)
 
 
-def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
-    """Append to services.yaml stacks if missing."""
-    try:
-        from hub.config import cfg, save_full
+class _StacksUnchanged(Exception):
+    """Raised inside a mutate() body to abort without rewriting the file."""
 
-        data = copy.deepcopy(cfg())
-        stacks = data.setdefault("stacks", [])
-        for s in stacks:
-            if s.get("id") == template_id or s.get("path") == str(dest_dir):
-                return
-        stacks.append({
-            "id": template_id,
-            "name": name,
-            "path": str(dest_dir),
-            "compose_file": "docker-compose.yml",
-        })
-        save_full(data)
+
+def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
+    """Append to services.yaml stacks if missing.
+
+    Through config.mutate, not save_full(deepcopy(cfg())): the snapshot form
+    read the mtime-cached config outside the write lock and wrote the whole
+    file back from it, so a concurrent install (two app-store tabs) or a
+    settings save landing in between was silently overwritten — the exact
+    lost-update save_full's own docstring warns about.
+    """
+    try:
+        from hub.config import mutate
+
+        def apply(data: dict) -> None:
+            stacks = data.get("stacks")
+            if not isinstance(stacks, list):
+                stacks = []
+                data["stacks"] = stacks
+            for s in stacks:
+                if isinstance(s, dict) and (
+                    s.get("id") == template_id or s.get("path") == str(dest_dir)
+                ):
+                    raise _StacksUnchanged
+            stacks.append({
+                "id": template_id,
+                "name": name,
+                "path": str(dest_dir),
+                "compose_file": "docker-compose.yml",
+            })
+
+        mutate(apply)
     except Exception:
         pass
 
@@ -1343,19 +1360,31 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
 
 
 def _unregister_stack(template_id: str, dest_dir: Path | None = None) -> None:
-    try:
-        from hub.config import cfg, save_full
+    """Drop the stack row, read-modify-write under the config write lock.
 
-        data = copy.deepcopy(cfg())
-        stacks = data.get("stacks") or []
+    Same lost-update shape as :func:`_register_stack` before the fix: an
+    uninstall racing another install or a settings save wrote a stale
+    snapshot of the whole file back and took the concurrent change with it.
+    """
+    try:
+        from hub.config import mutate
+
         dest_s = str(dest_dir) if dest_dir else None
-        new_stacks = [
-            s for s in stacks
-            if s.get("id") != template_id and (not dest_s or s.get("path") != dest_s)
-        ]
-        if len(new_stacks) != len(stacks):
-            data["stacks"] = new_stacks
-            save_full(data)
+
+        def apply(data: dict) -> None:
+            stacks = data.get("stacks")
+            rows = stacks if isinstance(stacks, list) else []
+            kept = [
+                s for s in rows
+                if not isinstance(s, dict)
+                or (s.get("id") != template_id
+                    and (not dest_s or s.get("path") != dest_s))
+            ]
+            if len(kept) == len(rows):
+                raise _StacksUnchanged
+            data["stacks"] = kept
+
+        mutate(apply)
     except Exception:
         pass
 
