@@ -195,6 +195,26 @@ function mix(a, b, weight) {
 //: large-text exemption never applies to it.
 const AA = 4.5
 
+/**
+ * `[name, css]` for the base stylesheet and every `<style>` block in the
+ * view and component trees -- the same set the token tests walk, because a
+ * colour pairing that regresses does so in whichever sheet is handiest.
+ */
+function allSheets() {
+  const sheets = [['styles.css', CSS]]
+  for (const dir of ['views', 'components']) {
+    const abs = resolve(__dirname, '..', dir)
+    for (const file of readdirSync(abs)) {
+      if (!file.endsWith('.vue')) continue
+      const source = readFileSync(resolve(abs, file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+      for (const [, style] of source.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
+        sheets.push([`${dir}/${file}`, style])
+      }
+    }
+  }
+  return sheets
+}
+
 describe('theme contrast', () => {
   const themes = themeBlocks()
 
@@ -299,9 +319,15 @@ describe('theme contrast', () => {
       const onAccent = resolveColor(vars, vars['--on-accent'])
       const fill = resolveColor(vars, vars['--accent-fill'])
       if (onAccent && fill) {
-        checked += 1
-        const ratio = contrast(onAccent, over(fill, onCard))
-        if (ratio < AA) offenders.push(`${theme} --on-accent on --accent-fill: ${ratio.toFixed(2)}:1`)
+        // Over both spots: primary buttons sit on cards, but the skip-nav
+        // link floats over the bare page.
+        for (const [surfaceName, surface] of Object.entries(spots)) {
+          checked += 1
+          const ratio = contrast(onAccent, over(fill, surface))
+          if (ratio < AA) {
+            offenders.push(`${theme} --on-accent on --accent-fill over ${surfaceName}: ${ratio.toFixed(2)}:1`)
+          }
+        }
       }
       const wash = resolveColor(vars, vars['--accent-wash'])
       const onWash = resolveColor(vars, vars['--on-accent-wash'])
@@ -329,19 +355,8 @@ describe('theme contrast', () => {
     // Borders, fills, accent-color and icon strokes may keep the raw token;
     // `color:` declarations may not, except in selectors that only style svg
     // icons (non-text, so the 3:1 graphics floor applies, not 4.5:1).
-    const sheets = [['styles.css', CSS]]
-    for (const dir of ['views', 'components']) {
-      const abs = resolve(__dirname, '..', dir)
-      for (const file of readdirSync(abs)) {
-        if (!file.endsWith('.vue')) continue
-        const source = readFileSync(resolve(abs, file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
-        for (const [, style] of source.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
-          sheets.push([`${dir}/${file}`, style])
-        }
-      }
-    }
     const offenders = []
-    for (const [name, sheet] of sheets) {
+    for (const [name, sheet] of allSheets()) {
       for (const [, selector, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
         if (!/(?:^|[^-\w])color\s*:\s*var\(--accent\)\s*(?:!important)?\s*(?:;|$)/.test(body)) continue
         // Selectors targeting svg elements colour an icon, not text.
@@ -350,5 +365,59 @@ describe('theme contrast', () => {
       }
     }
     expect(offenders, 'use --accent-text for ink; the raw accent is a fill colour').toEqual([])
+  })
+
+  it('never pairs a raw-accent fill with literal white ink', () => {
+    // White on the raw accent is 2.32:1 on Unraid orange and 4.02:1 on macOS
+    // system blue -- which is exactly why --accent-fill/--on-accent exist as
+    // a pair.  The skip-nav link and the Shares icon wells both shipped with
+    // `background: var(--accent); color: #fff` anyway, and looked fine in the
+    // dark themes they were written against.  Pin the measurement first, so
+    // the source scan below cannot outlive the problem it guards.
+    const white = { r: 255, g: 255, b: 255, a: 1 }
+    const paper = { r: 255, g: 255, b: 255, a: 1 }
+    const failing = []
+    for (const [theme, vars] of themes) {
+      const accent = resolveColor(vars, vars['--accent'])
+      if (!accent) continue
+      if (contrast(white, over(accent, paper)) < AA) failing.push(theme)
+    }
+    expect(failing).toContain('unraid')
+    expect(failing).toContain('macos')
+    const offenders = []
+    for (const [name, sheet] of allSheets()) {
+      for (const [, selector, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const accentFill = /background(?:-color)?\s*:\s*var\(--accent\)\s*(?:!important)?\s*(?:;|$)/.test(body)
+        const whiteInk = /(?:^|[^-\w])color\s*:\s*(?:#fff\b|#ffffff\b|white\b)/i.test(body)
+        if (accentFill && whiteInk) {
+          offenders.push(`${name}: ${selector.trim().split('\n').pop().trim()}`)
+        }
+      }
+    }
+    expect(offenders, 'a raw-accent fill takes var(--on-accent) ink via --accent-fill').toEqual([])
+  })
+
+  it('keeps the selected-row ink on --on-accent, not a literal', () => {
+    // The macOS selected row paints --accent-fill under its text; the row
+    // itself takes var(--on-accent), but the sub-line overrides (.sub,
+    // .sub-id, .detail-cell, .name-text) shipped as literal #fff in three
+    // sheets.  White happens to equal --on-accent in both macOS palettes
+    // today, so nothing looked wrong -- but a literal silently detaches from
+    // the fill/label pair the measurement above keeps AA-safe.
+    const offenders = []
+    let rules = 0
+    for (const [name, sheet] of allSheets()) {
+      for (const [, selector, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!selector.includes('.selected')) continue
+        rules += 1
+        if (/(?:^|[^-\w])color\s*:\s*(?:#[0-9a-f]{3,8}\b|white\b)/i.test(body)) {
+          offenders.push(`${name}: ${selector.trim().split('\n').pop().trim()}`)
+        }
+      }
+    }
+    // Guards the scan: the selected-state rules live in styles.css,
+    // Services.vue and Files.vue, so fewer than this means it stopped seeing.
+    expect(rules).toBeGreaterThan(5)
+    expect(offenders, 'selected-row ink rides var(--on-accent) with the --accent-fill under it').toEqual([])
   })
 })

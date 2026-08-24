@@ -608,7 +608,11 @@ onUnmounted(() => {
 .host-overview { display:grid; grid-template-columns:minmax(220px,1fr) auto auto; align-items:center; gap:20px; margin-bottom:14px; }
 .host-identity { display:flex; align-items:center; gap:12px; min-width:0; }
 .host-icon,.folder-icon,.service-icon { display:grid; place-items:center; flex:0 0 auto; color:#fff; }
-.host-icon { width:42px; height:42px; border-radius:var(--radius); background:var(--accent); }
+/* The accent wells take the fill/label pair, not raw accent + white: a white
+   glyph on Unraid orange is 2.32:1, under even the 3:1 graphics floor. The
+   fixed service-icon literals keep white -- their darkest well clears 3:1. */
+.host-icon,.folder-icon { background:var(--accent-fill); color:var(--on-accent); }
+.host-icon { width:42px; height:42px; border-radius:var(--radius); }
 .host-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
 .host-copy .section-title { margin:0; }
 .host-copy strong { overflow:hidden; font-size:15px; text-overflow:ellipsis; white-space:nowrap; }
@@ -661,7 +665,7 @@ onUnmounted(() => {
 :global([data-theme="macos-dark"] .service-row + .service-row::after) {
   right: 58px;
 }
-.folder-icon { width:34px; height:34px; border-radius:var(--radius); background:var(--accent); }
+.folder-icon { width:34px; height:34px; border-radius:var(--radius); }
 .share-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
 .share-copy strong { font-size:13px; }
 .share-copy .path { overflow:hidden; color:var(--sub); font-size:10.5px; text-overflow:ellipsis; white-space:nowrap; }
@@ -690,8 +694,10 @@ onUnmounted(() => {
 :global([data-theme="macos"] .folder-icon),
 :global([data-theme="macos-dark"] .host-icon),
 :global([data-theme="macos-dark"] .folder-icon) {
-  background: var(--accent);
-  color: #fff;
+  /* --accent-fill is the System Settings well: the 15%-deepened blue both
+     macOS palettes already use for button.primary, with its white label. */
+  background: var(--accent-fill);
+  color: var(--on-accent);
 }
 :global([data-theme="macos"] .service-icon),
 :global([data-theme="macos"] .service-icon[class*="service-"]),

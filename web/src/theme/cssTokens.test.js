@@ -122,7 +122,7 @@ describe('stylesheet syntax', () => {
     expect(ALL.flatMap(commentFaults)).toEqual([])
   })
 
-  it('declares the status text tints it tells everyone to use', () => {
+  it('declares the status and accent tokens it tells everyone to use', () => {
     // Split `:root` the way the parser recovers from a bad declaration: on
     // semicolons. A swallowed token is still *present* in the file, so a plain
     // text search would pass; what it is not is the head of its own statement.
@@ -133,7 +133,13 @@ describe('stylesheet syntax', () => {
     const open = css.indexOf('{', css.indexOf(':root'))
     const body = css.slice(open + 1, css.indexOf('\n}', open))
     const heads = body.split(';').map((part) => part.trim())
-    for (const token of ['--ok-text', '--warn-text', '--down-text']) {
+    // The accent trio joins the status tints: the skip link, the selected
+    // rows and the Shares icon wells all lean on --accent-fill/--on-accent
+    // now, so a swallowed declaration would strip their fills everywhere.
+    for (const token of [
+      '--ok-text', '--warn-text', '--down-text',
+      '--accent-text', '--accent-fill', '--on-accent',
+    ]) {
       expect(
         heads.some((head) => head.startsWith(`${token}:`)),
         `${token} does not start a declaration — something above it is unterminated`,

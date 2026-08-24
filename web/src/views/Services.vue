@@ -762,7 +762,8 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 :global([data-theme="macos"] .svc-table tr.selected .detail-cell),
 :global([data-theme="macos-dark"] .svc-table tr.selected .sub-id),
 :global([data-theme="macos-dark"] .svc-table tr.selected .detail-cell) {
-  color: #fff;
+  /* The row's fill is --accent-fill; its ink has to be the paired token. */
+  color: var(--on-accent);
 }
 .svc-table tr.bad { box-shadow: inset 3px 0 0 var(--down); }
 .col-check { width: 32px; }
