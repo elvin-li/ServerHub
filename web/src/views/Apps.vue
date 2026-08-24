@@ -18,7 +18,7 @@
     <template v-if="tab === 'catalog'">
       <div class="toolbar apps-toolbar">
         <input v-model="q" type="text" class="search" :placeholder="t('apps.search_ph')"  :aria-label="t('apps.search_ph')"/>
-        <select v-model="cat" class="cat-select">
+        <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
           <option v-for="c in categories" :key="c.id" :value="c.id">
             {{ catLabel(c.id) }}{{ countLabel(c.id) }}
           </option>
@@ -143,7 +143,7 @@
     <template v-else-if="tab === 'managed'">
       <div class="toolbar apps-toolbar">
         <input v-model="mq" type="text" class="search" :placeholder="t('apps.managed_search')"  :aria-label="t('apps.managed_search')"/>
-        <select v-model="mkind" class="cat-select">
+        <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
           <option value="docker">{{ t('apps.kind_docker') }}</option>
