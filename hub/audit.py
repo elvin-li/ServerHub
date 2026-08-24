@@ -51,6 +51,13 @@ _TRIM_SOFT_BYTES = MAX_LINES * 192
 #: Sync handlers run on uvicorn's thread pool, so two operators (or one
 #: operator plus the dashboard poll) hitting mutating routes concurrently is
 #: the normal case, not a corner — and the loss would be a security event.
+#:
+#: This lock is per-interpreter only.  The deployment hub/config.py grew its
+#: services.yaml flock for — a packaged ServerHub.app and the LaunchAgent
+#: panel sharing one ``data/`` — writes this trail from two processes, so
+#: record() additionally takes secure_io.file_lock (a kernel flock) around
+#: the same window; without it a trim in one process discarded entries the
+#: other had just appended to the pre-swap inode.
 _WRITE_LOCK = threading.Lock()
 
 #: Event names.  Kept as constants so a typo in a caller is an AttributeError
@@ -416,10 +423,11 @@ def record(event: str, /, **fields: Any) -> dict:
         # config._bootstrap() destroyed a populated services.yaml on every test
         # run, and here the loss would be the security history specifically.
         #
-        # The lock covers append *and* trim: without it, an entry appended by
-        # another thread between _trim's tail-read and its atomic rename is
-        # dropped with the swap.
-        with _WRITE_LOCK:
+        # The locks cover append *and* trim: without them, an entry appended
+        # by another thread — or another panel process sharing data/ —
+        # between _trim's tail-read and its atomic rename is dropped with
+        # the swap.
+        with _WRITE_LOCK, secure_io.file_lock(AUDIT_PATH):
             secure_io.create_secret_text(AUDIT_PATH, "")
             # O_NOFOLLOW: open("a") would follow a replacement symlink onto
             # another file this process can write.

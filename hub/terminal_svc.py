@@ -307,9 +307,12 @@ def _audit(entry: dict[str, Any]) -> None:
         # operator typed into a root-capable shell, which is the one thing in it
         # that cannot be un-leaked.  Create-if-absent rather than write, because
         # write_secret_text opens with O_TRUNC and would empty the trail.
-        # The lock covers append *and* trim: without it, a line appended by a
-        # concurrent request between the tail-read and the rename was lost.
-        with _AUDIT_LOCK:
+        # The locks cover append *and* trim: without them, a line appended by
+        # a concurrent request between the tail-read and the rename was lost.
+        # The flock matters beyond this interpreter: the packaged .app and
+        # the LaunchAgent panel share one data/, and a trim in one process
+        # used to swap away a command line the other had just appended.
+        with _AUDIT_LOCK, secure_io.file_lock(AUDIT_PATH):
             secure_io.create_secret_text(AUDIT_PATH, "")
             secure_io.append_text(
                 AUDIT_PATH,

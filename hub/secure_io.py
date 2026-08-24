@@ -15,8 +15,10 @@ atomic replace-an-existing-file case that O_EXCL alone cannot express.
 from __future__ import annotations
 
 import errno
+import fcntl
 import os
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 
 from hub.util import read_bytes_capped
@@ -237,6 +239,55 @@ def append_text(
     with os.fdopen(fd, "a", encoding=encoding) as fh:
         fh.write(content)
     return p
+
+
+def _lock_fd(lock_path: Path) -> int | None:
+    """flock fd, or None when a leftover node / EIO blocks creating it."""
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            st = os.lstat(lock_path)
+        except FileNotFoundError:
+            st = None
+        if st is not None and not stat.S_ISREG(st.st_mode):
+            try:
+                if stat.S_ISDIR(st.st_mode):
+                    os.rmdir(lock_path)
+                else:
+                    os.unlink(lock_path)
+            except OSError:
+                return None
+        return os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+
+
+@contextmanager
+def file_lock(path: Path | str):
+    """Exclusive cross-process flock for read-modify-write of *path*.
+
+    The same arrangement config, twofa_svc and api_keys each grew by hand: a
+    sibling ``<name>.lock`` file rather than the target itself, because the
+    atomic tmp+replace writers in this module swap the target's inode and a
+    lock held on the old inode silently stops excluding anybody.
+
+    A leftover directory named ``<name>.lock``, or EIO creating it, must not
+    break the caller — the context simply runs unlocked in that case, which is
+    exactly the in-process-lock-only behaviour callers had before.
+    """
+    p = Path(path)
+    fd = _lock_fd(p.with_name(p.name + ".lock"))
+    if fd is None:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def make_secret_dir(path: Path | str) -> Path:
