@@ -682,8 +682,17 @@ class ContentSecurityPolicyTests(unittest.TestCase):
     def setUpClass(cls):
         from fastapi.testclient import TestClient
 
+        from hub import app_factory
         from hub.app_factory import create_app
 
+        # These assertions are about the shell that is on disk right now, so
+        # take the reading against a cold cache.  The policy is memoised for
+        # 30s process-wide, and any neighbour that served a request with
+        # STATIC_DIR patched elsewhere would otherwise hand this class its
+        # leftovers -- and be blamed for it only when the run was fast
+        # enough to land inside the window.
+        app_factory._csp_header.invalidate()
+        cls.addClassCleanup(app_factory._csp_header.invalidate)
         response = TestClient(create_app()).get("/api/auth/status")
         cls.csp = response.headers.get("content-security-policy", "")
         cls.headers = response.headers
