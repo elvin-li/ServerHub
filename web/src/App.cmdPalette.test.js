@@ -192,6 +192,31 @@ describe('the command palette highlight', () => {
     wrapper.unmount()
   })
 
+  it('leaves IME composition alone', async () => {
+    // While composing Japanese or Chinese, Enter commits the composed text
+    // and the arrows walk the candidate list.  The palette used to treat
+    // both as its own: Enter navigated away mid-word, and the arrows'
+    // preventDefault broke candidate selection.
+    const wrapper = await openPalette()
+    const input = wrapper.get('.cmd-palette input')
+
+    await input.trigger('keydown', { key: 'ArrowDown', isComposing: true })
+    expect(highlighted(wrapper)).toBe(0)
+
+    await input.trigger('keydown', { key: 'Enter', isComposing: true })
+    expect(push).not.toHaveBeenCalled()
+    expect(wrapper.find('.cmd-palette').exists()).toBe(true)
+
+    // The legacy signal some engines send instead: keyCode 229.
+    await input.trigger('keydown', { key: 'Enter', keyCode: 229 })
+    expect(push).not.toHaveBeenCalled()
+
+    // Composition over: the same keys work again.
+    await input.trigger('keydown', { key: 'Enter' })
+    expect(push).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('leaves the cursor alone when the list only grows', async () => {
     // A result set that lengthens (the assistant catalogue arriving) must not
     // yank the reader back to the top of a list they had already walked.
