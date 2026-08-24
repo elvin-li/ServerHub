@@ -696,8 +696,24 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         self.assertTrue(self.csp, "no Content-Security-Policy header was sent")
 
     def test_script_src_forbids_inline(self):
+        """`'self'` plus per-script hashes, and nothing else.
+
+        A hash authorises one exact block of bytes.  ``'unsafe-inline'`` is the
+        keyword that would re-enable ``javascript:`` URLs, so hashes leave the
+        property this class exists to protect untouched -- and are what lets
+        the shell keep its pre-paint theme script.
+        """
         script_src = self._directive("script-src")
-        self.assertEqual(script_src, "'self'", f"script-src is {script_src!r}")
+        tokens = script_src.split()
+        self.assertIn("'self'", tokens, f"script-src is {script_src!r}")
+        unexpected = [
+            token for token in tokens
+            if token != "'self'" and not re.fullmatch(r"'sha(?:256|384|512)-[A-Za-z0-9+/=]+'", token)
+        ]
+        self.assertEqual(
+            unexpected, [],
+            f"only 'self' and hashes belong in script-src; found {unexpected}",
+        )
         self.assertNotIn(
             "unsafe-inline",
             script_src,
@@ -705,6 +721,102 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             "SPA binds :href directly to URLs from config and Docker labels",
         )
         self.assertNotIn("unsafe-eval", script_src)
+
+    def test_every_hash_matches_an_inline_script_in_the_shell(self):
+        """A hash nobody can point at is a hash nobody is checking.
+
+        Hashes are derived from ``static/index.html`` at import, so a rebuild
+        that changes the shell changes them.  This recomputes them from the
+        file on disk and requires the header to agree -- if the two ever drift,
+        the theme script silently stops running again and the panel goes back
+        to flashing the light theme on every load.
+        """
+        import base64
+        import hashlib
+
+        from hub.paths import STATIC_DIR
+
+        shell = STATIC_DIR / "index.html"
+        if not shell.exists():
+            self.skipTest("no built shell on disk")
+
+        text = shell.read_text(encoding="utf-8")
+        bodies = re.findall(
+            r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", text, re.DOTALL | re.IGNORECASE
+        )
+        expected = {
+            "'sha256-%s'" % base64.b64encode(
+                hashlib.sha256(body.encode("utf-8")).digest()
+            ).decode("ascii")
+            for body in bodies if body.strip()
+        }
+        sent = {t for t in self._directive("script-src").split() if t.startswith("'sha256-")}
+        self.assertEqual(
+            sent, expected,
+            "the hashes in script-src do not match the inline scripts the shell ships",
+        )
+
+    def test_a_rebuilt_shell_gets_its_own_hash(self):
+        """`static/` is served off disk, so the policy has to follow it there.
+
+        A policy pinned at import would keep authorising the previous build's
+        theme script after a rebuild, and the flash would be back until
+        somebody restarted the process.
+        """
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from hub import app_factory
+
+        first = Path(tempfile.mkdtemp())
+        (first / "index.html").write_text("<script>var a = 1</script>")
+        second = Path(tempfile.mkdtemp())
+        (second / "index.html").write_text("<script>var a = 2</script>")
+
+        app_factory._csp_header.invalidate()
+        self.addCleanup(app_factory._csp_header.invalidate)
+        with mock.patch.object(app_factory, "STATIC_DIR", first):
+            before = app_factory._csp_header()
+        app_factory._csp_header.invalidate()
+        with mock.patch.object(app_factory, "STATIC_DIR", second):
+            after = app_factory._csp_header()
+        self.assertNotEqual(before, after, "the policy did not follow the shell")
+
+    def test_an_unusable_shell_leaves_the_policy_alone(self):
+        """No hash is the old behaviour; a broken read must not widen anything."""
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from hub import app_factory
+
+        empty = Path(tempfile.mkdtemp())
+        huge = Path(tempfile.mkdtemp())
+        (huge / "index.html").write_bytes(b"<script>x</script>" + b"a" * (3 * 1024 * 1024))
+        binary = Path(tempfile.mkdtemp())
+        (binary / "index.html").write_bytes(b"<script>\xff\xfe</script>")
+
+        self.addCleanup(app_factory._csp_header.invalidate)
+        for label, directory in (("missing", empty), ("oversized", huge), ("undecodable", binary)):
+            with self.subTest(shell=label):
+                app_factory._csp_header.invalidate()
+                with mock.patch.object(app_factory, "STATIC_DIR", directory):
+                    policy = app_factory._csp_header()
+                self.assertIn("script-src 'self';", policy, f"{label} shell changed script-src")
+                self.assertNotIn("unsafe-inline; ", policy.split("script-src")[1])
+
+    def test_the_shell_still_has_a_script_worth_hashing(self):
+        """Guards the test above from passing on an empty set."""
+        from hub.paths import STATIC_DIR
+
+        shell = STATIC_DIR / "index.html"
+        if not shell.exists():
+            self.skipTest("no built shell on disk")
+        self.assertIn(
+            "serverhub.theme", shell.read_text(encoding="utf-8"),
+            "the pre-paint theme bootstrap is gone from the shell",
+        )
 
     def test_the_other_containment_directives_hold(self):
         self.assertEqual(self._directive("object-src"), "'none'")
