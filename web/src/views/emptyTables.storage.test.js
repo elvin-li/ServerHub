@@ -141,4 +141,31 @@ describe('storage empty tables', () => {
     expect(wrapper.text()).toContain('main_extra.empty_volumes')
     wrapper.unmount()
   })
+
+  it('does not call a failed tick empty storage, containers, ports or alerts', async () => {
+    // The host read is the tick's liveness probe; when it fails alongside the
+    // secondary tiles, every placeholder has to say the load failed. Storage
+    // and Docker used to say "Loading" forever, and Ports / Recent alerts
+    // fabricated an empty array and claimed "None" as if it were verified.
+    const dead = () => Promise.reject(new Error('backend unreachable'))
+    api.getHost.mockImplementation(dead)
+    api.getStorage.mockImplementation(dead)
+    api.getContainers.mockImplementation(dead)
+    api.getListeningPorts.mockImplementation(dead)
+    api.getAlerts.mockImplementation(dead)
+    const wrapper = mount(Dashboard, MOUNT)
+    await flushPromises()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text, 'a dead backend must not read as a slow one').not.toContain('common.loading')
+    expect(text).not.toContain('main_extra.empty_volumes')
+    expect(text).not.toContain('dashboard.no_containers')
+    expect(text, 'the failed placeholders say so').toContain('common.load_failed')
+    // The Ports tile (the one empty-row with colspan 3) must not assert
+    // "None"; its only claim-free state is the load_failed placeholder.
+    // (Top CPU may legitimately say "None" here: its sensors read succeeded.)
+    const portsRow = wrapper.element.querySelector('td.empty-row[colspan="3"]')
+    expect(portsRow?.textContent.trim()).toBe('common.load_failed')
+    wrapper.unmount()
+  })
 })

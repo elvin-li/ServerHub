@@ -395,7 +395,7 @@
                 </div>
                 <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
               </div>
-              <div v-if="!storage" class="disk-empty">{{ t('common.loading') }}</div>
+              <div v-if="!storage" class="disk-empty">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
               <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
             </div>
           </div>
@@ -534,7 +534,7 @@
             <!-- Column headings above nothing read as "still loading"; say
                  which of the two states this actually is. -->
             <tr v-if="!(storage?.volumes || []).length">
-              <td colspan="6" class="empty-row">{{ storage ? t('main_extra.empty_volumes') : t('common.loading') }}</td>
+              <td colspan="6" class="empty-row">{{ storage ? t('main_extra.empty_volumes') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
             </tr>
           </tbody>
         </table>
@@ -587,7 +587,7 @@
               <td colspan="6" class="empty-row">{{ t('dashboard.no_containers') }}</td>
             </tr>
             <tr v-else-if="!containers">
-              <td colspan="6" class="empty-row">{{ t('common.loading') }}</td>
+              <td colspan="6" class="empty-row">{{ loadError ? t('common.load_failed') : t('common.loading') }}</td>
             </tr>
           </tbody>
         </table>
@@ -621,7 +621,7 @@
           </div>
         </div>
         <h3 style="margin-top:12px">{{ t('dashboard.recent_alerts') }}</h3>
-        <div v-if="!alerts" class="sub">{{ t('common.loading') }}</div>
+        <div v-if="!alerts" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
         <div v-else-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
         <div v-for="(a,i) in (alerts || []).slice(0,5)" :key="i" class="alert-item">
           <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')"></span>
@@ -650,7 +650,7 @@
               <td class="mono">{{ finiteN(p.port) }}</td>
               <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.address) }}</td>
             </tr>
-            <tr v-if="!ports"><td colspan="3" class="empty-row">{{ t('common.loading') }}</td></tr>
+            <tr v-if="!ports"><td colspan="3" class="empty-row">{{ loadError ? t('common.load_failed') : t('common.loading') }}</td></tr>
             <tr v-else-if="!ports.length"><td colspan="3" class="empty-row">{{ t('common.none') }}</td></tr>
           </tbody>
         </table>
@@ -1519,8 +1519,13 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
       loadError.value = finiteText(e.message || String(e), '')
       hostOk = false
     }),
-    getAlerts(12).then(a => { if (stillHere()) alerts.value = a.alerts || [] }).catch(() => { if (stillHere() && !alerts.value) alerts.value = [] }),
-    getListeningPorts(40).then(p => { if (stillHere()) ports.value = p.ports || [] }).catch(() => { if (stillHere() && !ports.value) ports.value = [] }),
+    // Failures leave these null rather than fabricating []: an empty array is
+    // the tile's "fetched, and none" claim, and a dead backend used to make
+    // Ports say "None" and Recent alerts say "None" as if that were verified.
+    // Null keeps the placeholder row, which reads load_failed once loadError
+    // (the host probe, the canonical liveness signal) reports the tick failed.
+    getAlerts(12).then(a => { if (stillHere()) alerts.value = a.alerts || [] }).catch(() => {}),
+    getListeningPorts(40).then(p => { if (stillHere()) ports.value = p.ports || [] }).catch(() => {}),
     getUps().then(u => { if (stillHere()) ups.value = u }).catch(() => {}),
     getOllamaStatus().then(o => { if (stillHere()) ollama.value = o }).catch(() => {}),
     loadPower(),
