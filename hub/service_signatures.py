@@ -184,6 +184,22 @@ _RUNTIMES = {
     "java": "Java", "ruby": "Ruby", "php": "PHP",
 }
 
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 #: lsof/ps encode a space in COMMAND as ``\x20`` (hex) or ``\040`` (octal)
 #: because the field is whitespace-delimited.  Leaving those sequences literal
 #: is what made the Services list show ``Plex\x20M`` instead of ``Plex M``.
@@ -329,10 +345,15 @@ def parse_signature(raw) -> dict | None:
     if not slug:
         return None
     raw_procs = raw.get("procs")
+    # _utf8_text: a JSON ``"\ud800"`` proc/name/category used to reach the
+    # stored row and 500 PUT /api/services/signatures on the response encode.
     procs = tuple(
-        str(p).strip().lower()
-        for p in (raw_procs if isinstance(raw_procs, list) else [])
-        if str(p).strip()
+        p
+        for p in (
+            _utf8_text(item).strip().lower()
+            for item in (raw_procs if isinstance(raw_procs, list) else [])
+        )
+        if p
     )
     ports: list[int] = []
     raw_ports = raw.get("ports")
@@ -355,8 +376,8 @@ def parse_signature(raw) -> dict | None:
         brew = ""
     return {
         "slug": slug,
-        "name": str(raw.get("name") or slug).strip() or slug,
-        "category": str(raw.get("category") or "Custom").strip() or "Custom",
+        "name": _utf8_text(raw.get("name") or slug).strip() or slug,
+        "category": _utf8_text(raw.get("category") or "Custom").strip() or "Custom",
         "procs": procs,
         "ports": tuple(ports),
         "http": http,

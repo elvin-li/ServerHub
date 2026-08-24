@@ -609,15 +609,17 @@ def batch_action(names: list[str], action: str) -> dict:
     results = []
     ok_n = 0
     for n in names:
+        # _as_text: a JSON ``"\ud800"`` name echoed back as ``id`` used to
+        # 500 POST /api/containers/batch on Starlette's UTF-8 encode.
         try:
             r = container_action(n, action)
-            results.append({"id": n, **r})
+            results.append({"id": _as_text(n), **r})
             if r.get("ok"):
                 ok_n += 1
         except HTTPException as e:
-            results.append({"id": n, "ok": False, "message": _as_text(e.detail)})
+            results.append({"id": _as_text(n), "ok": False, "message": _as_text(e.detail)})
         except Exception as e:
-            results.append({"id": n, "ok": False, "message": _as_text(e)})
+            results.append({"id": _as_text(n), "ok": False, "message": _as_text(e)})
     return {"ok": ok_n == len(names), "done": ok_n, "total": len(names), "results": results}
 
 
