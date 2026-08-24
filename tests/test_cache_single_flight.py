@@ -778,6 +778,21 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
         "hub/tools_svc.py":
             "three separate refresh locks, one per read, so a slow syslog tail does "
             "not block the hardware profile",
+        "hub/catalog.py":
+            "keys on a signature of the template files and install dirs, not on a "
+            "TTL alone, and deep-copies per caller because catalog_overview() "
+            "edits the rows it is handed",
+    }
+
+    #: The two hand-written caches that hold their *access* lock across the
+    #: refresh itself.  An invalidation cannot interleave with a publish there,
+    #: because it has to wait for the publish first -- so they are correct
+    #: without a generation counter, at the cost of blocking readers during a
+    #: probe.  Both probes are a single short subprocess, which is why the
+    #: trade is acceptable in these two and not in the others.
+    NO_GENERATION_NEEDED = {
+        "hub/docker_cli.py": "_engine_lock is held across `docker info`",
+        "hub/cloudflared_svc.py": "_tunnels_lock is held across `cloudflared tunnel list`",
     }
 
     def _payload_cache_modules(self) -> list[str]:
@@ -793,7 +808,8 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
                 value = getattr(node, "value", None)
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(value, ast.Dict):
                     keys = {k.value for k in value.keys if isinstance(k, ast.Constant)}
-                    if keys and keys <= {"t", "v", "value", "ts", "data", "compose", "nginx"}:
+                    if keys and keys <= {"t", "v", "value", "ts", "data",
+                                         "compose", "nginx", "sig", "items"}:
                         out.append(path.relative_to(BASE).as_posix())
                         break
         return out
@@ -819,6 +835,61 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
             "whole-payload read or hub.util.ttl_memo for a per-key one; both are "
             "single-flight and publish atomically, which every hand-written copy in "
             "this tree got wrong:\n  " + "\n  ".join(offenders),
+        )
+
+    def test_every_invalidatable_hand_written_cache_has_a_generation(self):
+        """A cache you can invalidate needs to be able to lose a stale publish.
+
+        Otherwise the refresh that was already running when the operator acted
+        writes the pre-action answer back and stamps it fresh, and the panel
+        reports the state the action just replaced for a whole TTL. Modules
+        that hold their access lock across the refresh are exempt above with
+        the reason; everything else needs the counter.
+        """
+        gaps = []
+        for module in sorted(self.EXEMPT):
+            if module in self.NO_GENERATION_NEEDED:
+                continue
+            tree = ast.parse((BASE / module).read_text())
+            invalidates = any(
+                isinstance(node, ast.FunctionDef)
+                and (node.name.startswith("invalidate") or node.name.endswith("_bust"))
+                for node in tree.body
+            )
+            if not invalidates:
+                continue
+            has_counter = any(
+                "generation" in target.id.lower()
+                for node in tree.body
+                if isinstance(node, ast.Assign)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            )
+            if not has_counter:
+                gaps.append(module)
+        self.assertEqual(
+            gaps,
+            [],
+            "these expose an invalidation but cannot tell a refresh that began "
+            "before it from one that began after, so the invalidate can be "
+            "silently undone:\n  " + "\n  ".join(gaps),
+        )
+
+    def test_the_generation_scan_sees_the_counters_it_expects(self):
+        """Guards the test above against a detector that finds nothing."""
+        found = [
+            module
+            for module in sorted(self.EXEMPT)
+            if any(
+                "generation" in target.id.lower()
+                for node in ast.parse((BASE / module).read_text()).body
+                if isinstance(node, ast.Assign)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            )
+        ]
+        self.assertGreaterEqual(
+            len(found), 6, f"the generation-counter scan only matched {found}"
         )
 
     def test_the_shared_helpers_are_actually_used(self):
