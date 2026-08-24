@@ -95,6 +95,27 @@ class HostMutationTests(unittest.TestCase):
             + "\n".join(offenders),
         )
 
+    def test_mutable_state_is_redirected_out_of_the_checkout(self):
+        """tests/__init__.py must win the race with the first ``hub`` import.
+
+        hub.paths freezes STATE_ROOT / DATA_DIR / CONFIG_FILE at import time.
+        Without the package-level SERVERHUB_STATE_DIR redirection a full run
+        bootstraps services.yaml in the repo root and fills data/ with alert
+        state, metrics journals, services.yaml.bak.* and lock files -- host
+        mutations that .gitignore keeps invisible to `git status --porcelain`.
+        """
+        from hub import paths
+
+        for name in ("STATE_ROOT", "DATA_DIR", "CONFIG_FILE"):
+            value = Path(getattr(paths, name))
+            self.assertFalse(
+                value == BASE or BASE in value.parents,
+                f"hub.paths.{name} ({value}) resolved inside the checkout "
+                f"({BASE}); the suite would write panel state into the "
+                "working tree. tests/__init__.py sets SERVERHUB_STATE_DIR "
+                "before hub is imported -- something imported hub first.",
+            )
+
     def test_the_detector_catches_the_shape_it_exists_for(self):
         """The first block is the version that spawned real brew commands."""
         unsealed = ast.parse(
