@@ -8,6 +8,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Keep the suite off the runner's local timezone/locale so a date
+      # format or collate order cannot pass here and fail on another image.
+      TZ: UTC
+      LC_ALL: C
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

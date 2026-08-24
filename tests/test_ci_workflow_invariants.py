@@ -51,6 +51,11 @@ class CiWorkflowInvariants(unittest.TestCase):
         self.assertIn("npm --prefix web test", text)
         self.assertIn("grep -vE '^(rumps|pyobjc)'", text)
 
+    def test_ci_pins_utc_and_c_locale(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("TZ: UTC", text)
+        self.assertIn("LC_ALL: C", text)
+
 
 if __name__ == "__main__":
     unittest.main()
