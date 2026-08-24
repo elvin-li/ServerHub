@@ -1083,9 +1083,14 @@ def _raise_list_failure(kind: str):
     dependency that is off.
 
     ``engine_up`` is consulted only after a failure, so the healthy path
-    does not pay for an extra ``docker info`` (and it is cached anyway).
+    does not pay for an extra ``docker info``.  The probe is *forced*:
+    the memoised value has a 5s TTL, so for the first seconds after the
+    engine stops the cache still says "up" and the failure this function
+    exists to classify would be misreported as ``container.list_failed``
+    (500).  A fresh probe on the failure path is cheap -- failures are
+    rare -- and is the one moment the cached answer must not be trusted.
     """
-    if not engine_up():
+    if not engine_up(force=True):
         raise api_error("container.engine_down")
     raise api_error("container.list_failed", kind=kind)
 
