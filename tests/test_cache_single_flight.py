@@ -550,6 +550,133 @@ class AdaptiveScanCacheTests(unittest.TestCase):
         self.assertEqual(peak, 2, "the compose and nginx scans stopped overlapping")
 
 
+class InvalidationDuringBuildTests(unittest.TestCase):
+    """The three page caches that stayed hand-written need the property too.
+
+    They are on the shortest path between an action and the row it changes:
+    stopping a container ends in ``invalidate_status``, which cascades into the
+    container discovery cache, and saving a pool ends in ``invalidate_pool``.
+    Each is polled by the page the operator is looking at, so the build that
+    loses this race is the one that started a moment before the click, and the
+    symptom is the action appearing not to have happened.
+    """
+
+    def _racing_build(self, world, key="state"):
+        """A builder that samples *world* on entry and publishes much later."""
+        reading = threading.Event()
+        release = threading.Event()
+
+        def build(*args, **kwargs):
+            observed = world[key]
+            if not reading.is_set():
+                reading.set()
+                release.wait(2)
+            return observed
+
+        return build, reading, release
+
+    def _assert_invalidate_wins(self, world, read, invalidate, expected):
+        slow = threading.Thread(target=read)
+        slow.start()
+        self.assertTrue(world["reading"].wait(2), "the build never started")
+        world["state"] = "after"
+        invalidate()
+        world["release"].set()
+        slow.join(timeout=2)
+        self.assertEqual(read(), expected, "the stale build published anyway")
+
+    def test_full_status_drops_a_build_that_invalidate_superseded(self):
+        from hub import status
+
+        with status._lock:
+            status._status_cache.update(t=0.0, v=None)
+        self.addCleanup(
+            lambda: status._status_cache.update(t=0.0, v=None)
+        )
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+        world["reading"], world["release"] = reading, release
+
+        with (
+            mock.patch.object(status, "_build_status",
+                              lambda: {"marker": build()}),
+            mock.patch.object(status, "_stamp_locale", lambda v: v),
+        ):
+            self._assert_invalidate_wins(
+                world,
+                lambda: status.full_status().get("marker"),
+                # The real invalidate_status also reaches into the discovery
+                # caches; those imports are cheap and their absence would be
+                # the more surprising thing to mock away.
+                status.invalidate_status,
+                "after",
+            )
+
+    def test_container_discovery_drops_a_superseded_docker_ps(self):
+        from hub.discovery import containers
+
+        containers.invalidate_containers()
+        self.addCleanup(containers.invalidate_containers)
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+        world["reading"], world["release"] = reading, release
+
+        def fake_sh(cmd, timeout=None):
+            return 0, f"web\trunning\tUp ({build()})\tnginx\t", ""
+
+        def detail():
+            items, _up = containers.discover_containers()
+            return items[0]["detail"] if items else ""
+
+        with (
+            mock.patch.object(containers, "sh", fake_sh),
+            mock.patch.object(containers, "override", lambda name: None),
+            mock.patch.object(containers, "configured_signatures", list),
+            mock.patch.object(containers, "configured_group_rules", list),
+        ):
+            self._assert_invalidate_wins(
+                world, detail, containers.invalidate_containers, "Up (after)"
+            )
+
+    def test_pool_overview_drops_a_build_that_invalidate_superseded(self):
+        from hub import storage_pool_svc
+
+        storage_pool_svc.invalidate_pool()
+        self.addCleanup(storage_pool_svc.invalidate_pool)
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+        world["reading"], world["release"] = reading, release
+
+        with mock.patch.object(storage_pool_svc, "_build",
+                               lambda: {"marker": build()}):
+            self._assert_invalidate_wins(
+                world,
+                lambda: storage_pool_svc.pool_overview().get("marker"),
+                storage_pool_svc.invalidate_pool,
+                "after",
+            )
+
+    def test_health_still_serves_the_last_snapshot_after_an_invalidate(self):
+        """invalidate_status expires the snapshot without discarding it.
+
+        /api/health reads it through cached_status() and never builds, so
+        dropping the payload would make a liveness probe answer "no data"
+        every time a container was restarted.
+        """
+        from hub import status
+
+        with status._lock:
+            status._status_cache.update(t=time.time(), v={"ok": True})
+        self.addCleanup(
+            lambda: status._status_cache.update(t=0.0, v=None)
+        )
+        status.invalidate_status()
+        self.assertEqual(status.cached_status(), {"ok": True})
+
+
 class NoHandWrittenPayloadCacheTests(unittest.TestCase):
     """A new endpoint cache must use a shared helper, not another local copy.
 

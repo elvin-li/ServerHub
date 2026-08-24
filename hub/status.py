@@ -33,6 +33,12 @@ _status_cache = {"t": 0.0, "v": None}
 _lock = threading.Lock()
 # Single-flight: only one full refresh at a time; waiters reuse the result.
 _refresh_lock = threading.Lock()
+# Bumped by invalidate_status().  Every container mutation calls that, and the
+# dashboard is polling throughout, so a build that started just before the click
+# is the ordinary case — and it read the pre-action host.  Publishing it stamps
+# the old snapshot fresh and the stopped container keeps showing as running for
+# another TTL. A build from a superseded generation is dropped instead.
+_status_generation = 0
 # Adaptive filesystem scans change rarely — cache longer.
 _adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
 _ADAPTIVE_TTL = 60.0
@@ -140,7 +146,12 @@ def peek_status() -> dict | None:
 
 def invalidate_status():
     """Bust status cache (and short-lived discovery caches)."""
+    global _status_generation
     with _lock:
+        _status_generation += 1
+        # `v` is kept: /api/health serves it through cached_status() without
+        # triggering a build, and a liveness probe must not start returning
+        # "no snapshot" because a container was restarted.
         _status_cache["t"] = 0
     # Related discovery caches so next full_status sees fresh data
     try:
@@ -476,6 +487,7 @@ def full_status(force=False):
         with _lock:
             if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
                 return _stamp_locale(_status_cache["v"])
+            began = _status_generation
         try:
             v = _build_status()
         except Exception:
@@ -485,7 +497,9 @@ def full_status(force=False):
                     return _stamp_locale(_status_cache["v"])
             raise
         with _lock:
-            _status_cache.update(t=time.time(), v=v)
+            if _status_generation == began:
+                _status_cache.update(t=time.time(), v=v)
+        # Returned either way: this caller asked before the invalidate landed.
         return _stamp_locale(v)
 
 
