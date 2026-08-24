@@ -98,7 +98,10 @@ def _append_alert(alert: dict):
         line = json.dumps(alert, ensure_ascii=False, allow_nan=False) + "\n"
     except (TypeError, ValueError, OverflowError, RecursionError):
         return
-    with _lock:
+    # file_lock as well as _lock: two panel processes sharing data/ (packaged
+    # .app + LaunchAgent) both run this sweep, and a trim in one used to swap
+    # away an alert row the other had just appended to the pre-replace inode.
+    with _lock, secure_io.file_lock(ALERTS_FILE):
         secure_io.append_text(
             ALERTS_FILE,
             line,

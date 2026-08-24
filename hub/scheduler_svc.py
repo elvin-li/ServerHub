@@ -444,7 +444,10 @@ def _record_run(entry: dict) -> None:
     :data:`_TRIM_INTERVAL`, whatever the append rate.
     """
     global _last_trim
-    with _runs_lock:
+    # file_lock as well as _runs_lock: two panel processes sharing data/ can
+    # both journal runs, and a trim in one used to swap away a record the
+    # other had just appended to the pre-replace inode.
+    with _runs_lock, secure_io.file_lock(RUNS_PATH):
         try:
             RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
             payload = _jsonable(entry) if isinstance(entry, dict) else None

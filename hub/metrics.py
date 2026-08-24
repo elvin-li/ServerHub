@@ -173,25 +173,29 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
     METRICS_FILE.parent.mkdir(exist_ok=True)
     chunk = "".join(_write_buf)
     _write_buf = []
-    secure_io.append_text(METRICS_FILE, chunk)
-    _last_flush = time.time()
-    now = time.time()
-    if force_trim or now - _last_trim >= _TRIM_INTERVAL:
-        _last_trim = now
-        try:
-            # errors="replace": a torn/binary write raised UnicodeDecodeError
-            # past the OSError guard below, which disabled the ring-buffer
-            # trim forever and let the file grow without bound.
-            lines = tail_file_lines(
-                METRICS_FILE, MAX_POINTS + _TRIM_SLACK + 1, max_bytes=4 * 1024 * 1024
-            )
-            if len(lines) > MAX_POINTS + _TRIM_SLACK:
-                # Atomic ring-buffer rewrite: partial write_text left a short
-                # or empty history and the next sampler grew a second full copy.
-                payload = "\n".join(lines[-MAX_POINTS:]) + "\n"
-                secure_io.replace_bytes(METRICS_FILE, payload.encode("utf-8"))
-        except OSError:
-            pass
+    # file_lock as well as _lock: both panel processes sharing data/ run a
+    # sampler, and a ring-buffer rewrite in one used to swap away samples the
+    # other had just appended to the pre-replace inode.
+    with secure_io.file_lock(METRICS_FILE):
+        secure_io.append_text(METRICS_FILE, chunk)
+        _last_flush = time.time()
+        now = time.time()
+        if force_trim or now - _last_trim >= _TRIM_INTERVAL:
+            _last_trim = now
+            try:
+                # errors="replace": a torn/binary write raised UnicodeDecodeError
+                # past the OSError guard below, which disabled the ring-buffer
+                # trim forever and let the file grow without bound.
+                lines = tail_file_lines(
+                    METRICS_FILE, MAX_POINTS + _TRIM_SLACK + 1, max_bytes=4 * 1024 * 1024
+                )
+                if len(lines) > MAX_POINTS + _TRIM_SLACK:
+                    # Atomic ring-buffer rewrite: partial write_text left a short
+                    # or empty history and the next sampler grew a second full copy.
+                    payload = "\n".join(lines[-MAX_POINTS:]) + "\n"
+                    secure_io.replace_bytes(METRICS_FILE, payload.encode("utf-8"))
+            except OSError:
+                pass
 
 
 def flush_metrics() -> None:
