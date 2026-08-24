@@ -126,6 +126,38 @@ SECRET_PATHS = [
         "data/twofa.json.lock",
         "the 2FA write mutex; runtime state that must not travel with a clone",
     ),
+    (
+        "data/api-keys.json",
+        "the bearer API key store: a sha256 per key plus its role and label.  "
+        "It is written 0600 through secure_io exactly like data/twofa.json, "
+        "which was listed here, while this one was not -- the rules named the "
+        "files a reviewer remembered rather than the directory they all live in",
+    ),
+    (
+        "data/exports.staged",
+        "the /etc/exports the NFS panel is about to install, copied verbatim: "
+        "the real export paths and the client addresses allowed to mount them.  "
+        "Same class as data/pf.conf.staged, which was covered",
+    ),
+    (
+        "data/smart-tests.json",
+        "SMART self-test history keyed by this machine's device nodes",
+    ),
+    (
+        "data/docker-update-status.json",
+        "the image-update scan result: every image and tag this host runs",
+    ),
+    (
+        "data/ups-policy-state.json",
+        "UPS shutdown-policy state; per-machine runtime state",
+    ),
+    (
+        "data/anything-a-future-feature-writes.json",
+        "the point of the data/ rule: this directory is per-machine runtime "
+        "state end to end, so a store added by a later feature must be "
+        "unstageable before anyone thinks to name it here.  Four files had "
+        "already escaped the per-name rules by the time this was written",
+    ),
 ]
 
 
