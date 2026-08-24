@@ -460,7 +460,13 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
 
     if not isinstance(new_name, str) or not new_name.strip():
         raise api_error("vms.name_required")
-    new_name = new_name.strip()
+    # _as_text: a JSON ``"\ud800"`` name (a lone surrogate — json.loads accepts
+    # the escape, Starlette's UTF-8 response encode does not) used to be stored
+    # verbatim in the override and echoed back, so the rename was already
+    # applied when the response render raised a bare 500.
+    new_name = _as_text(new_name).strip()
+    if not new_name:
+        raise api_error("vms.name_required")
     backend, name = _parse_id(vm_id)
     name = (name or "").strip()
     if not name:
