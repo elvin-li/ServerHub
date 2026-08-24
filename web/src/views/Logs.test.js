@@ -132,4 +132,28 @@ describe('Logs keyboard and announcements', () => {
     expect(status.text()).toContain('logs.matched 0')
     wrapper.unmount()
   })
+
+  it('announces an empty tail through a live region, not a silent blank pane', async () => {
+    api.getLogTail.mockResolvedValue({
+      path: '/tmp/panel.log',
+      size: 0,
+      lines: 0,
+      log: '',
+    })
+    const { wrapper } = await mountPage()
+    const pane = wrapper.get('.log-viewer')
+    expect(pane.text()).toBe('logs.empty')
+    expect(pane.attributes('role')).toBe('status')
+    wrapper.unmount()
+  })
+
+  it('announces loading through a polite live region before the first tail', async () => {
+    api.getLogTail.mockImplementation(() => new Promise(() => {}))
+    const { wrapper } = await mountPage()
+    const pane = wrapper.get('.log-viewer')
+    expect(pane.text()).toBe('common.loading')
+    expect(pane.attributes('role')).toBe('status')
+    expect(pane.attributes('aria-live')).toBe('polite')
+    wrapper.unmount()
+  })
 })
