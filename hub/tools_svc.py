@@ -9,7 +9,6 @@ Inspired by Cockpit (logs/services), OMV (SMART/updates), CasaOS (simple tiles).
 from __future__ import annotations
 
 import glob
-import json
 import math
 import os
 import platform
