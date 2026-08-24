@@ -56,10 +56,10 @@
           </div>
         </div>
       </template>
-      <div v-if="!status && !loadError" class="tile" style="color:var(--sub)">
+      <div v-if="!status && !loadError" class="tile sub" role="status">
         {{ t('common.loading') }}
       </div>
-      <div v-else-if="!(status?.groups || []).length && !loadError" class="tile" style="color:var(--sub)">
+      <div v-else-if="!(status?.groups || []).length && !loadError" class="tile sub">
         {{ t('dashboard.member_empty') }}
       </div>
     </template>

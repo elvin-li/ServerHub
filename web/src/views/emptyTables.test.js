@@ -173,5 +173,12 @@ describe('empty-row class', () => {
     }
     expect(offenders, 'empty cells should use class="empty-row"').toEqual([])
   })
+
+  it('styles Dashboard member empty/loading tiles through .sub, not inline --sub', () => {
+    const src = readFileSync(resolve(__dirname, 'Dashboard.vue'), 'utf8')
+    const template = src.slice(0, src.search(/<script\b/) >>> 0)
+    expect(template).not.toMatch(/class="tile"[^>]*style="color:var\(--sub\)"/)
+    expect(template).toMatch(/class="tile sub"/)
+  })
 })
 
