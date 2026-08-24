@@ -40,7 +40,14 @@ jobs:
       - name: Built panel matches web/
         run: |
           npm --prefix web run build
-          git diff --exit-code --stat static/ || {
+          # `git status --porcelain`, not `git diff`: the build empties
+          # static/ and re-emits, so a chunk or public asset that exists in
+          # web/ but was never committed comes back as an *untracked* file,
+          # which `git diff` does not report — the check passed while the
+          # shipped panel was missing a file.
+          drift="$(git status --porcelain static/)"
+          if [ -n "$drift" ]; then
+            echo "$drift"
             echo "::error::static/ is out of date — run 'npm --prefix web run build' and commit the result"
             exit 1
-          }
+          fi
