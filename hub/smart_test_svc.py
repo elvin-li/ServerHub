@@ -29,7 +29,7 @@ from pathlib import Path
 from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
-from hub.secure_io import replace_bytes
+from hub.secure_io import file_lock, replace_bytes
 from hub.util import cached_snapshot, fan_out, read_text_capped, safe_json_loads, sh, strftime_now
 
 HISTORY_PATH = DATA_DIR / "smart-tests.json"
@@ -461,7 +461,10 @@ def _load_history() -> list[dict]:
 
 
 def _append_history(record: dict) -> None:
-    with _history_lock:
+    # file_lock as well as _history_lock: both panel processes sharing data/
+    # journal test results, and this is a whole-file load→append→replace, so
+    # a write from a stale snapshot dropped the row the other just recorded.
+    with _history_lock, file_lock(HISTORY_PATH):
         history = _load_history()
         history.append(_jsonable(record) if isinstance(record, dict) else {})
         # Bounded so a daily schedule cannot grow the file without limit.

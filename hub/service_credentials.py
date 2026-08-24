@@ -264,7 +264,10 @@ def store(
         raise api_error("credentials.password_too_short", min=8)
 
     keychain_service = _keychain_service(service_id)
-    with _lock:
+    # file_lock as well as _lock: two panel processes sharing data/ both
+    # edit this index, and a save from a stale snapshot used to erase the
+    # other process's entry — or resurrect one a concurrent delete removed.
+    with _lock, secure_io.file_lock(INDEX_FILE):
         items = _load()
         old = items.get(service_id) or {}
         old_user = str(old.get("username") or "")
@@ -383,7 +386,7 @@ def public_item(item: dict) -> dict:
 
 def delete(service_id: str) -> dict:
     service_id = _valid_id(service_id)
-    with _lock:
+    with _lock, secure_io.file_lock(INDEX_FILE):
         items = _load()
         item = items.pop(service_id, None)
         if not item:

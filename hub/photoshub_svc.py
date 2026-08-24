@@ -631,7 +631,10 @@ def update_config(patch: dict) -> dict:
         raise api_error("photoshub.not_installed")
     if not isinstance(patch, dict):
         raise api_error("photoshub.bad_config")
-    with _CFG_LOCK:
+    # file_lock as well as _CFG_LOCK: two panel processes sharing the tree
+    # both merge into config.json, and a write from a stale snapshot used to
+    # erase the field the other process had just saved.
+    with _CFG_LOCK, secure_io.file_lock(CFG_PATH):
         cfg = _cfg_strict()
         _apply_config_patch(cfg, patch)
         _write_cfg(cfg)

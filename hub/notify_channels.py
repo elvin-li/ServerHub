@@ -366,7 +366,11 @@ def set_channel_secrets(cid: str, values: dict) -> None:
     full request URL — token included — in the exception text, which then
     lands verbatim in a 0644 error log.  No legitimate secret contains one.
     """
-    with _secrets_lock:
+    # file_lock as well as _secrets_lock: the two panel processes sharing
+    # data/ (packaged .app + LaunchAgent) both edit this file, and a write
+    # from a stale snapshot used to erase the other process's change — or
+    # resurrect credentials a concurrent delete had just removed.
+    with _secrets_lock, secure_io.file_lock(SECRETS_FILE):
         data = _load_secrets()
         cur = _secret_map(data, cid)
         for key, value in (values or {}).items():
@@ -392,7 +396,7 @@ def set_channel_secrets(cid: str, values: dict) -> None:
 
 
 def drop_channel_secrets(cid: str) -> None:
-    with _secrets_lock:
+    with _secrets_lock, secure_io.file_lock(SECRETS_FILE):
         data = _load_secrets()
         if cid in data:
             del data[cid]
