@@ -958,7 +958,7 @@ function kindBadge(d) {
   return 'accent'
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   const mySeq = ++loadSeq
   loading.value = true
   try {
@@ -969,7 +969,10 @@ async function refresh() {
   } catch (e) {
     if (mySeq !== loadSeq || !pageAlive) return
     loadError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // Background 45s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // The retry button passes its click event as `manual`, so it still toasts.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   } finally {

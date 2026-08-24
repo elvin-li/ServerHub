@@ -254,7 +254,7 @@ function requireOk(result) {
 let pageAlive = true
 let loadGeneration = 0
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = ++loadGeneration
   try {
     const next = await getVms()
@@ -264,7 +264,10 @@ async function refresh() {
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // Background 15s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // The retry button passes its click event as `manual`, so it still toasts.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   } finally {

@@ -411,9 +411,12 @@ async function refresh(force = false) {
   } catch (e) {
     if (!pageAlive) return false
     loadError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message || e))
+    // The 15s tick passes force=false, so background failures stay silent —
+    // LoadFailure already marks the state on screen, and a toast per interval
+    // while the panel is down is pure noise. Manual paths pass force=true.
+    if (force) toast('❌ ' + finiteText(e.message || e))
     // Tell the 15s poller the tick failed so lib/poll.js backs off while the
-    // server stays unreachable (and the toast above stops firing every 15s).
+    // server stays unreachable.
     return false
   } finally {
     if (pageAlive) {

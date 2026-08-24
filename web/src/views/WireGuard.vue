@@ -766,7 +766,7 @@ let poll = null
 // one and overwriting fresher state.
 let loadGeneration = 0
 
-async function load() {
+async function load(manual = false) {
   const generation = ++loadGeneration
   loading.value = true
   try {
@@ -793,7 +793,10 @@ async function load() {
   } catch (e) {
     if (generation !== loadGeneration) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // Background 20s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // The Refresh/retry buttons pass their click event as `manual`.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     // A superseded request (generation moved on) stays neutral: the newer
     // request will report its own outcome.

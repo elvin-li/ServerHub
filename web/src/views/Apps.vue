@@ -1174,7 +1174,10 @@ async function loadManaged(force = false) {
   } catch (e) {
     if (generation !== managedGeneration) return false
     managedError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // The 15s tick passes force=false, so background failures stay silent —
+    // LoadFailure already marks the state on screen, and a toast per interval
+    // while the panel is down is pure noise. Manual paths pass force=true.
+    if (force) toast('❌ ' + finiteText(e.message))
     // The 15s tick returns this promise, so a dead server engages the
     // lib/poll.js failure backoff instead of being polled at full rate.
     return false

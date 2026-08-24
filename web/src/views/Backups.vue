@@ -375,7 +375,7 @@ async function refresh() {
   }
 }
 
-async function loadJobs() {
+async function loadJobs(manual = false) {
   const generation = ++jobsGeneration
   const wasRunning = jobs.value.some((j) => j.running)
   try {
@@ -383,13 +383,19 @@ async function loadJobs() {
     if (generation !== jobsGeneration || !pageAlive) return
     jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
     jobsError.value = ''
+    jobsPollFailures = 0
     // A finished run leaves new artefacts behind; pick them up without asking
     // the operator to press "Refresh list" to see the backup they just made.
     if (wasRunning && !jobs.value.some((j) => j.running)) void refresh()
   } catch (e) {
     if (generation !== jobsGeneration || !pageAlive) return
     jobsError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    jobsPollFailures += 1
+    // The 7s running-job loop calls this without arguments: with the panel
+    // down mid-backup it used to re-toast the same failure every tick.  The
+    // on-screen jobsError banner carries the state; only the retry button
+    // (whose click event lands in `manual`) still toasts.
+    if (manual) toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === jobsGeneration) jobsLoaded.value = true
   }
@@ -401,6 +407,14 @@ async function loadJobs() {
 // loop the Scheduler page uses for the same jobs.  An idle page arms no timer,
 // and a hidden tab keeps the loop armed without asking the host for status.
 let jobsPollTimer = null
+// With the panel dead mid-backup, the stale `running` flag keeps this loop
+// alive forever — back it off like lib/poll.js (1.5^n, capped at 6x) instead
+// of asking a host that is not answering every 7 seconds.
+let jobsPollFailures = 0
+const JOBS_POLL_MS = 7000
+function jobsPollDelay() {
+  return Math.min(JOBS_POLL_MS * Math.pow(1.5, jobsPollFailures), JOBS_POLL_MS * 6)
+}
 function scheduleJobsPoll() {
   if (!pageAlive || jobsPollTimer) return
   if (!jobs.value.some((j) => j.running)) return
@@ -409,7 +423,7 @@ function scheduleJobsPoll() {
     if (!pageAlive) return
     if (typeof document !== 'undefined' && document.hidden) scheduleJobsPoll()
     else void loadJobs()
-  }, 7000)
+  }, jobsPollDelay())
 }
 
 async function loadBinary() {

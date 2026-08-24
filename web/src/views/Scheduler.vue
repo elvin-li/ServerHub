@@ -282,9 +282,11 @@ async function loadJobs() {
     jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
     systemJobs.value = Array.isArray(d?.system) ? d.system : []
     jobsError.value = ''
+    pollFailures = 0
   } catch (e) {
     if (pollStopped) return
     jobsError.value = finiteText(e.message || String(e), '')
+    pollFailures += 1
   } finally {
     if (!pollStopped) {
       jobsBusy.value = false
@@ -298,6 +300,14 @@ async function loadJobs() {
 // and last-run status update themselves; the timer stops as soon as nothing
 // is running, so an idle page polls nothing.
 let pollTimer = null
+// With the panel dead mid-run, the stale `running` flag keeps this loop alive
+// forever — back it off like lib/poll.js (1.5^n, capped at 6x) instead of
+// asking a host that is not answering every 7 seconds.
+let pollFailures = 0
+const POLL_MS = 7000
+function pollDelay() {
+  return Math.min(POLL_MS * Math.pow(1.5, pollFailures), POLL_MS * 6)
+}
 function schedulePoll() {
   if (pollStopped || pollTimer) return
   if (!jobs.value.some(j => j.running)) return
@@ -309,7 +319,7 @@ function schedulePoll() {
     // tab asking the host for job status all night.
     if (typeof document !== 'undefined' && document.hidden) schedulePoll()
     else loadJobs()
-  }, 7000)
+  }, pollDelay())
 }
 
 onBeforeUnmount(() => {

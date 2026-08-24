@@ -590,7 +590,7 @@ function toggleAll(items, ev) {
 
 let listGeneration = 0
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = ++listGeneration
   try {
     const next = await getContainers(true)
@@ -602,7 +602,10 @@ async function refresh() {
     // Without this, a failed list read left `data` null and the page rendered
     // "engine is not running" — blaming Docker for what was an API failure.
     listError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // Background 20s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // Button and retry clicks pass their event as `manual`, so those still toast.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   }
