@@ -168,7 +168,16 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8086',
+      // The panel refuses a write whose Origin does not exactly equal its Host
+      // (hub/app_factory.py, hub/websocket_security.py). Vite's string-shorthand
+      // proxy defaults to changeOrigin: true, which rewrote Host to
+      // localhost:8086 while the browser still sent Origin: localhost:5173 — so
+      // every write from the dev server, sign-in included, came back 403
+      // auth.cross_site_denied. Keeping the Host header makes the pair match.
+      //
+      // ws forwards /api/terminal/ws, which the Terminal view opens against
+      // window.location.host and would otherwise 404 in dev.
+      '/api': { target: 'http://localhost:8086', changeOrigin: false, ws: true },
     },
   },
 })
