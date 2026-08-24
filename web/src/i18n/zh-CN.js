@@ -191,6 +191,7 @@ export default {
     actions: '操作',
     status: '状态',
     status_led: '状态指示灯',
+    table_region: '数据表格',
     time: '时间',
     name: '名称',
     type: '类型',

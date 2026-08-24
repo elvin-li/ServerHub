@@ -1131,6 +1131,13 @@ button.primary.loading::after { color: #fff; }
   background: var(--card);
   box-shadow: var(--card-shadow);
 }
+/* Focusable since lib/tableWrapFocus.js (keyboard scrolling, WCAG 2.1.1).
+   Draw the ring inside the box: the global :focus-visible offset of 2px sits
+   outside it, where tile and drawer overflow clipping can crop it away. */
+.table-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 table.dense {
   width: 100%; border-collapse: collapse; font-size: 12px;
 }
