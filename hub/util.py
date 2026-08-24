@@ -50,6 +50,14 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
         cache: dict[Any, tuple[float, T]] = {}
         guard = threading.Lock()
         refresh_locks: dict[Any, threading.Lock] = {}
+        #: Bumped by invalidate().  A refresh already running at that moment has
+        #: read the pre-action state, so publishing its result afterwards would
+        #: quietly undo the invalidate and pin the stale answer for a full TTL.
+        #: The dashboard polls while the operator acts, so the losing refresh is
+        #: the common case, not the rare one: stop a container and the list keeps
+        #: it running until the TTL lapses, which for smart_devices is ten
+        #: minutes.  A refresh that started in an older epoch is dropped instead.
+        epoch = 0
 
         def key_for(args: tuple, kwargs: dict) -> Any:
             return (args, tuple(sorted(kwargs.items()))) if kwargs else args
@@ -72,13 +80,19 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
                     hit = cache.get(key)
                     if hit is not None and time.time() - hit[0] < ttl:
                         return hit[1]
+                    began = epoch
                 value = fn(*args, **kwargs)
                 with guard:
-                    cache[key] = (time.time(), value)
+                    if epoch == began:
+                        cache[key] = (time.time(), value)
+                # Returned either way: this caller asked before the invalidate,
+                # and re-running the probe on its behalf buys nothing.
                 return value
 
         def invalidate() -> None:
+            nonlocal epoch
             with guard:
+                epoch += 1
                 cache.clear()
 
         wrapper.invalidate = invalidate       # type: ignore[attr-defined]
@@ -243,6 +257,9 @@ def cached_snapshot(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]
         cache: dict[str, Any] = {"t": 0.0, "v": None}
         access = threading.Lock()
         refresh = threading.Lock()
+        #: See ttl_memo: an invalidate that lands mid-build must win over the
+        #: build, or the payload the action was supposed to refresh comes back.
+        epoch = 0
 
         def fresh() -> Any:
             with access:
@@ -264,13 +281,18 @@ def cached_snapshot(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]
                     hit = fresh()
                     if hit is not None:
                         return hit
+                with access:
+                    began = epoch
                 value = build(force) if takes_force else build()
                 with access:
-                    cache.update(t=time.time(), v=value)
+                    if epoch == began:
+                        cache.update(t=time.time(), v=value)
                 return value
 
         def invalidate() -> None:
+            nonlocal epoch
             with access:
+                epoch += 1
                 cache.update(t=0.0, v=None)
 
         wrapper.invalidate = invalidate  # type: ignore[attr-defined]

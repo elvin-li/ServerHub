@@ -45,7 +45,7 @@ from unittest import mock
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from hub.util import cached_snapshot  # noqa: E402
+from hub.util import cached_snapshot, ttl_memo  # noqa: E402
 
 HUB = BASE / "hub"
 
@@ -178,6 +178,56 @@ class CachedSnapshotContractTests(unittest.TestCase):
         self.assertEqual(len(built), 2)
         self.assertIs(read.cache_clear, read.invalidate, "the alias diverged")
 
+    def test_an_invalidate_during_a_build_is_not_undone_by_that_build(self):
+        """The build already read the pre-action world; publishing it loses the action.
+
+        The invalidate calls in this tree all sit on the mutation path -- stop a
+        container, change a share, rotate a key -- and the dashboard is polling
+        the whole time, so an overlapping build is the normal case rather than a
+        narrow window. Without a generation counter the poll that started a
+        moment before the click wins, and the page shows the pre-action state
+        until the TTL lapses.
+        """
+        world = {"state": "running"}
+        reading = threading.Event()
+        release = threading.Event()
+
+        @cached_snapshot(30.0)
+        def read():
+            observed = world["state"]
+            reading.set()
+            release.wait(2)
+            return {"state": observed}
+
+        slow = threading.Thread(target=read)
+        slow.start()
+        self.assertTrue(reading.wait(2), "the build never started")
+
+        world["state"] = "stopped"
+        read.invalidate()
+        release.set()
+        slow.join(timeout=2)
+
+        self.assertEqual(
+            read(),
+            {"state": "stopped"},
+            "a build that began before invalidate() republished the stale payload",
+        )
+
+    def test_a_build_with_no_invalidate_racing_it_still_publishes(self):
+        """The generation check must not turn every refresh into a rebuild."""
+        built = []
+
+        @cached_snapshot(30.0)
+        def read():
+            built.append(1)
+            return {"n": len(built)}
+
+        read()
+        read()
+        read()
+        self.assertEqual(len(built), 1, "the epoch check defeated the cache")
+
     def test_a_raising_builder_is_not_cached(self):
         """Otherwise one transient failure would be served for a whole TTL."""
         calls = []
@@ -191,6 +241,95 @@ class CachedSnapshotContractTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 read()
         self.assertEqual(len(calls), 2, "a failure was cached")
+
+
+class TtlMemoContractTests(unittest.TestCase):
+    """The per-key helper, which the same mutation paths invalidate."""
+
+    def test_concurrent_callers_of_one_key_read_once(self):
+        reads = []
+        lock = threading.Lock()
+
+        @ttl_memo(30.0)
+        def read(device):
+            with lock:
+                reads.append(device)
+            time.sleep(0.05)
+            return device.upper()
+
+        threads = [threading.Thread(target=read, args=("disk0",)) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(reads, ["disk0"], f"eight callers ran {len(reads)} reads")
+
+    def test_two_keys_are_still_read_concurrently(self):
+        """Serialising distinct keys would defeat the fan-out that motivated this."""
+        live = 0
+        peak = 0
+        lock = threading.Lock()
+
+        @ttl_memo(30.0)
+        def read(device):
+            nonlocal live, peak
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.05)
+            with lock:
+                live -= 1
+            return device
+
+        threads = [
+            threading.Thread(target=read, args=(f"disk{n}",)) for n in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(peak, 4, "per-key reads stopped overlapping")
+
+    def test_an_invalidate_during_a_read_is_not_undone_by_that_read(self):
+        """Same property as the snapshot helper, and the same reason it matters."""
+        world = {"state": "attached"}
+        reading = threading.Event()
+        release = threading.Event()
+
+        @ttl_memo(30.0)
+        def read(device):
+            observed = world["state"]
+            reading.set()
+            release.wait(2)
+            return observed
+
+        slow = threading.Thread(target=read, args=("disk0",))
+        slow.start()
+        self.assertTrue(reading.wait(2), "the read never started")
+
+        world["state"] = "detached"
+        read.invalidate()
+        release.set()
+        slow.join(timeout=2)
+
+        self.assertEqual(
+            read("disk0"),
+            "detached",
+            "a read that began before invalidate() republished the stale value",
+        )
+
+    def test_the_epoch_check_does_not_defeat_the_cache(self):
+        reads = []
+
+        @ttl_memo(30.0)
+        def read(device):
+            reads.append(device)
+            return device
+
+        read("disk0")
+        read("disk0")
+        read("disk1")
+        self.assertEqual(reads, ["disk0", "disk1"])
 
 
 class ConvertedSnapshotTests(unittest.TestCase):
