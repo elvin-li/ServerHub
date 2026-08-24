@@ -292,7 +292,18 @@ function syncNarrow() {
 }
 
 useDismissable(menuOpen, closeMenu, navPanel)
-watch(() => route.path, closeMenu)
+// WCAG 2.4.3: clicking a nav link swaps the page body but leaves focus on the
+// link, so the next Tab walks the rest of the 18-stop nav instead of entering
+// the new page — the skip link only helps on the first load. Moving focus to
+// the main region (same target the skip link uses) puts the keyboard and the
+// screen reader at the top of what just changed. Keyed to the path alone:
+// query-tab switches (Settings ?tab=) swap content *inside* the page, and
+// yanking focus off the tab the user just pressed would break arrowing
+// through the rest. The router's scrollBehavior already scrolls to top.
+watch(() => route.path, () => {
+  closeMenu()
+  nextTick(() => { mainEl.value?.focus?.({ preventScroll: true }) })
+})
 
 // Fixed header is out of flow; measure it (primary + optional subchrome, wrap,
 // density) so .layout's padding-top matches. Skip 0-height (jsdom).
