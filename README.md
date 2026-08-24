@@ -104,8 +104,9 @@ The panel's **Settings → Panel** page reports the state of the app, the menu-b
 Run these from the repository root (`~/Services/serverhub`):
 
 ```bash
-# Backend behaviour tests
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+# Backend behaviour tests (-t . lets tests/__init__.py redirect panel
+# state to a temp dir instead of writing services.yaml + data/ here)
+.venv/bin/python -m unittest discover -s tests -t . -p 'test_*.py'
 
 # Frontend tests, dead-code check and production build
 npm --prefix web test

@@ -1,6 +1,6 @@
 """Every test file must be visible to the command that runs the suite.
 
-The gate is `python -m unittest discover -s tests -p 'test_*.py'`, which collects
+The gate is `python -m unittest discover -s tests -t . -p 'test_*.py'`, which collects
 only unittest.TestCase subclasses.  A module written pytest-style -- module-level
 `def test_*` functions -- is collected as zero tests and reported as a clean pass,
 so the assertions inside it never run and nobody notices.

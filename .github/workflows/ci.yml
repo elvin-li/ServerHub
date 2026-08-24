@@ -34,7 +34,12 @@ jobs:
           grep -vE '^(rumps|pyobjc)' requirements.txt > /tmp/requirements-ci.txt
           python -m pip install -r /tmp/requirements-ci.txt
       - name: Backend tests
-        run: python -m unittest discover -s tests -q
+        # -t . makes discovery import the `tests` package, whose __init__.py
+        # points SERVERHUB_STATE_DIR at a temp directory. Without it the
+        # modules load as top-level files, the redirection never runs, and
+        # the suite bootstraps services.yaml and data/ inside the checkout
+        # (gitignored, so the static/ drift check below cannot see it).
+        run: python -m unittest discover -s tests -t . -q
       - name: Frontend tests
         run: |
           npm --prefix web ci
