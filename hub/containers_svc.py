@@ -357,7 +357,7 @@ def _friendly_container(name: str, ov: dict) -> dict:
 
 def _build_container_list() -> tuple[bool, list]:
     """ps + inspect (no stats). ~50–100ms typical."""
-    if not engine_up(force=True):
+    if not engine_up():
         return False, []
     rc, out, err = docker(
         "ps", "-a",
@@ -699,7 +699,7 @@ def check_image_update(image: str) -> dict:
 
 def start_check_updates_job(images: list[str] | None = None) -> dict:
     """Background: check updates for all (or given) images used by containers."""
-    if not engine_up(force=True):
+    if not engine_up():
         raise api_error("container.engine_down")
     if not images:
         images = sorted({
@@ -1209,7 +1209,7 @@ def rename_container(name: str, new_name: str) -> dict:
 def create_run_container(body: dict) -> dict:
     """docker run -d with common options from panel form."""
     import re
-    if not engine_up(force=True):
+    if not engine_up():
         raise api_error("container.engine_down")
     # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
     # used to 500 POST /api/containers/run.
