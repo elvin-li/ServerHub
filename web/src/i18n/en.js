@@ -193,6 +193,9 @@ export default {
     // Distinct from `status` because several of these tables carry a written
     // status column too, and two columns announced "Status" is not navigable.
     status_led: 'Status indicator',
+    // Announced name for a scrollable table region with no preceding heading
+    // to borrow a label from (lib/tableWrapFocus.js).
+    table_region: 'Data table',
     time: 'Time',
     name: 'Name',
     type: 'Type',

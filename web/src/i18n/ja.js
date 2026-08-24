@@ -190,6 +190,7 @@ export default {
     actions: '操作',
     status: '状態',
     status_led: 'ステータスインジケーター',
+    table_region: 'データテーブル',
     time: '時刻',
     name: '名前',
     type: '種類',

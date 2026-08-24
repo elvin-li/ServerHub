@@ -239,6 +239,7 @@ import { ASSISTANT_EVENT, matchCatalog } from './lib/assistant'
 import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
+import { installTableWrapFocus } from './lib/tableWrapFocus'
 import { finiteN, finiteText } from './lib/finite'
 
 const route = useRoute()
@@ -320,6 +321,15 @@ watch(topchromeEl, (el, _was, onCleanup) => {
     ro.disconnect()
     document.documentElement.style.removeProperty('--topchrome-h')
   })
+}, { flush: 'post' })
+
+// Scrollable .table-wrap containers become keyboard-reachable named regions
+// the moment they render (WCAG 2.1.1 — see lib/tableWrapFocus.js). Installed
+// once over the main region so every view, drawer, and modal table it hosts
+// is covered without patching thirty templates.
+watch(mainEl, (el, _was, onCleanup) => {
+  if (!el || typeof MutationObserver !== 'function') return
+  onCleanup(installTableWrapFocus(el))
 }, { flush: 'post' })
 const ptrVisible = ref(false)
 const ptrRefreshing = ref(false)
