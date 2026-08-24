@@ -124,8 +124,10 @@
         </div>
       </div>
     </header>
-    <!-- Mobile nav overlay -->
-    <div class="nav-overlay" :class="{ show: menuOpen }" @click="menuOpen = false"></div>
+    <!-- Mobile nav overlay: click-away scrim only, so hide it from AT the way
+         every other dialog backdrop is hidden (Escape and the hamburger are
+         the accessible ways out; the drawer itself is wired via useDismissable). -->
+    <div class="nav-overlay" :class="{ show: menuOpen }" role="presentation" aria-hidden="true" @click="menuOpen = false"></div>
     <!-- Offline banner -->
     <div v-if="offline" class="offline-banner" role="alert">⚠ {{ t('common.offline_banner') }}</div>
     <main id="main-content" ref="mainEl" class="main" role="main" tabindex="-1">

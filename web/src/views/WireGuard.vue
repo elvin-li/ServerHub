@@ -462,7 +462,10 @@
         <!-- The QR must never be the thing that gets clipped: give it its own
              bounded, centred box with a white quiet zone so a phone camera can
              actually resolve it against a dark theme. -->
-        <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>
+        <!-- aria-hidden: the QR encodes exactly the config shown in the <pre>
+             above and offered by Copy/Download, so for a screen reader it is
+             a duplicate with no name, announced as an anonymous graphic. -->
+        <div v-if="qrSvg" class="wg-qr" aria-hidden="true" v-html="qrSvg"></div>
         <p v-else-if="qrTooLong" style="font-size:11px;color:var(--sub);margin-top:8px">
           {{ t('wg.qr_too_long') }}
         </p>
