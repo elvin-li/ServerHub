@@ -24,15 +24,15 @@
     <div class="toolbar svc-toolbar">
       <button class="primary" type="button" :disabled="loading" @click="refresh(true)">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" class="search" :placeholder="t('services.filter_ph')"  :aria-label="t('services.filter_ph')"/>
-      <select v-model="kindF" class="cat-select">
+      <select v-model="kindF" class="cat-select" :aria-label="t('services.filter_kind')">
         <option value="">{{ t('services.kind_all') }}</option>
         <option v-for="k in kindOptions" :key="k" :value="k">{{ kindLabel(k) }}</option>
       </select>
-      <select v-model="groupF" class="cat-select">
+      <select v-model="groupF" class="cat-select" :aria-label="t('services.filter_group')">
         <option value="">{{ t('services.group_all') }}</option>
         <option v-for="g in groupOptions" :key="g" :value="g">{{ displayGroup(g) }}</option>
       </select>
-      <select v-model="sortBy" class="cat-select">
+      <select v-model="sortBy" class="cat-select" :aria-label="t('services.sort_by')">
         <option value="group">{{ t('services.sort_group') }}</option>
         <option value="name">{{ t('services.sort_name') }}</option>
         <option value="state">{{ t('services.sort_state') }}</option>
@@ -88,7 +88,7 @@
         <table class="dense svc-table fit-m">
           <thead>
             <tr>
-              <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
+              <th v-if="canManage" class="col-check"><input type="checkbox" :aria-label="t('services.select_all')" :checked="allSelected" @change="toggleSelectAll" /></th>
               <th></th>
               <th>{{ t('common.name') }}</th>
               <th class="col-hide-m">{{ t('services.group') }}</th>

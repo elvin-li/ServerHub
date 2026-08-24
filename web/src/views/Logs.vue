@@ -5,12 +5,12 @@
       <span class="meta">{{ t('logs.meta') }}</span>
     </div>
     <div class="toolbar">
-      <select v-model="sourceId" @change="load">
+      <select v-model="sourceId" :aria-label="t('logs.source')" @change="load">
         <option v-for="s in sources" :key="s.id" :value="s.id">
           {{ finiteText(s.name) }}{{ s.exists ? ' · ' + fmtSize(s.size) : t('logs.missing') }}
         </option>
       </select>
-      <select v-model.number="lines" @change="load">
+      <select v-model.number="lines" :aria-label="t('logs.line_count')" @change="load">
         <option :value="100">{{ t('logs.lines_n', { n: 100 }) }}</option>
         <option :value="200">{{ t('logs.lines_n', { n: 200 }) }}</option>
         <option :value="500">{{ t('logs.lines_n', { n: 500 }) }}</option>
