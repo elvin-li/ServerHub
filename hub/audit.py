@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,14 @@ MAX_LINES = 5000
 # typical line is ~150 B; 192 B/line starts checking before a fat-line
 # trail can run far past MAX_LINES.
 _TRIM_SOFT_BYTES = MAX_LINES * 192
+
+#: Serialises append + trim.  The O_APPEND write alone is atomic, but _trim is
+#: a read-tail-then-replace: a record() on another request thread that lands
+#: between the read and the rename is thrown away with the temp-file swap.
+#: Sync handlers run on uvicorn's thread pool, so two operators (or one
+#: operator plus the dashboard poll) hitting mutating routes concurrently is
+#: the normal case, not a corner — and the loss would be a security event.
+_WRITE_LOCK = threading.Lock()
 
 #: Event names.  Kept as constants so a typo in a caller is an AttributeError
 #: rather than a silently unqueryable log line.
@@ -406,20 +415,25 @@ def record(event: str, /, **fields: Any) -> dict:
         # entire audit trail before appending one line to it.  The same shape in
         # config._bootstrap() destroyed a populated services.yaml on every test
         # run, and here the loss would be the security history specifically.
-        secure_io.create_secret_text(AUDIT_PATH, "")
-        # O_NOFOLLOW: open("a") would follow a replacement symlink onto
-        # another file this process can write.
-        secure_io.append_text(
-            AUDIT_PATH,
-            json.dumps(entry, ensure_ascii=False, allow_nan=False, default=str) + "\n",
-            mode=0o600,
-        )
-        # chmod only when the mode drifted.  The create helper already
-        # writes 0600; repeating chmod on every login is a metadata write
-        # against an otherwise append-only file.
-        if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
-            os.chmod(AUDIT_PATH, 0o600)
-        _trim(AUDIT_PATH)
+        #
+        # The lock covers append *and* trim: without it, an entry appended by
+        # another thread between _trim's tail-read and its atomic rename is
+        # dropped with the swap.
+        with _WRITE_LOCK:
+            secure_io.create_secret_text(AUDIT_PATH, "")
+            # O_NOFOLLOW: open("a") would follow a replacement symlink onto
+            # another file this process can write.
+            secure_io.append_text(
+                AUDIT_PATH,
+                json.dumps(entry, ensure_ascii=False, allow_nan=False, default=str) + "\n",
+                mode=0o600,
+            )
+            # chmod only when the mode drifted.  The create helper already
+            # writes 0600; repeating chmod on every login is a metadata write
+            # against an otherwise append-only file.
+            if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
+                os.chmod(AUDIT_PATH, 0o600)
+            _trim(AUDIT_PATH)
     except (OSError, TypeError, ValueError, RecursionError):
         # An unwritable or unencodable log must never turn a valid sign-in
         # into a 500. RecursionError: leftover nested audit row is not ValueError.

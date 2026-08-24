@@ -111,6 +111,49 @@ class AuditAppendTests(unittest.TestCase):
         self.assertEqual(len(lines), audit.MAX_LINES)
 
 
+class ConcurrentRecordTests(unittest.TestCase):
+    """Concurrent record() calls must not throw each other's entries away.
+
+    The O_APPEND write is atomic, but _trim is read-tail-then-rename: an entry
+    appended by another thread inside that window vanished with the temp-file
+    swap.  Sync handlers run on uvicorn's thread pool, so one operator acting
+    while the dashboard polls is enough to open the window.  Forcing the trim
+    on every record (soft cap 0) makes the pre-fix loss near-certain rather
+    than occasional.
+    """
+
+    def test_no_entry_is_lost_to_a_concurrent_trim(self):
+        import threading
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "auth-audit.jsonl"
+        threads_n, per_thread = 8, 40
+        with mock.patch.object(audit, "AUDIT_PATH", path), \
+             mock.patch.object(audit, "_TRIM_SOFT_BYTES", 0), \
+             mock.patch.object(audit, "MAX_LINES", threads_n * per_thread + 100):
+            start = threading.Barrier(threads_n)
+
+            def hammer(worker: int) -> None:
+                start.wait()
+                for i in range(per_thread):
+                    audit.record("auth.login", user=f"w{worker}-{i}")
+
+            workers = [
+                threading.Thread(target=hammer, args=(w,)) for w in range(threads_n)
+            ]
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join()
+        lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+        self.assertEqual(
+            len(lines),
+            threads_n * per_thread,
+            "entries appended during another thread's trim were discarded",
+        )
+
+
 class SourceShapeTests(unittest.TestCase):
     def test_audit_does_not_use_the_truncating_helper(self):
         """Pinned in the source: the O_TRUNC helper must not reach this path."""
