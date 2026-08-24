@@ -515,8 +515,10 @@ describe('theme', () => {
     })
 
     it('selects table rows with solid accent and white text', () => {
+      // --accent-fill, not --accent: the macOS themes deepen the system blue by
+      // 15% behind a white label so 13px text clears AA. Same accent, one knob.
       expect(css).toMatch(
-        /\[data-theme="macos"\] table\.dense tbody tr\.selected[\s\S]*?background:\s*var\(--accent\)/,
+        /\[data-theme="macos"\] table\.dense tbody tr\.selected[\s\S]*?background:\s*var\(--accent-fill\)/,
       )
     })
 
@@ -615,7 +617,7 @@ describe('theme', () => {
         /:global\(\[data-theme="macos"\] \.svc-table tr\.selected\)/,
       )
       expect(services).toMatch(
-        /:global\(\[data-theme="macos"\] \.svc-table tr\.selected td\)[\s\S]*?background:\s*var\(--accent\)/,
+        /:global\(\[data-theme="macos"\] \.svc-table tr\.selected td\)[\s\S]*?background:\s*var\(--accent-fill\)/,
       )
       const files = readFileSync(join(SRC, 'views', 'Files.vue'), 'utf8')
       expect(files).toMatch(

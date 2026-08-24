@@ -740,8 +740,8 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 :global([data-theme="macos-dark"] .svc-table tr.selected td),
 :global([data-theme="macos-dark"] .svc-table tr.selected:hover),
 :global([data-theme="macos-dark"] .svc-table tr.selected:hover td) {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 :global([data-theme="macos"] .svc-table tr.selected .sub-id),

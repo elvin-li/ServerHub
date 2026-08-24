@@ -28,6 +28,16 @@
   --ok-text: color-mix(in srgb, var(--ok) 55%, var(--txt));
   --warn-text: color-mix(in srgb, var(--warn) 50%, var(--txt));
   --down-text: color-mix(in srgb, var(--down) 70%, var(--txt));
+  /* Filled accent controls: the fill, its hover, and the label riding on it.
+     White on a raw --accent is 2.0-4.0:1 in every theme -- 2.32:1 on this
+     orange, 2.0:1 on Nord's frost blue -- because the accents are brand hues
+     chosen for fills, not for carrying a 12px label. Two ways out, and each
+     theme takes the one that keeps its identity: ink the label dark (an orange
+     or a pastel blue reads far better with dark text) or deepen the fill (the
+     macOS blues stay recognisably system blue at 85%). */
+  --accent-fill: var(--accent);
+  --accent-fill-hover: var(--accent-hover);
+  --on-accent: #2b1400;
   --btn: #f5f5f5;
   --btn-border: #d0d0d0;
   --radius: 3px;
@@ -111,6 +121,7 @@
   --down: #c62828;
   --accent: #5cb85c;
   --accent-hover: #449d44;
+  --on-accent: #0f2f10;
   --btn: #e8f0e8;
   --btn-border: #b8ceb8;
   --radius: 6px;
@@ -140,6 +151,7 @@
   --down: #d32f2f;
   --accent: #2496ed;
   --accent-hover: #1b7ac5;
+  --on-accent: #04223c;
   --btn: #e8f1fa;
   --btn-border: #b8cfe5;
   --radius: 8px;
@@ -169,6 +181,7 @@
   --down: #bf616a;
   --accent: #88c0d0;
   --accent-hover: #81a1c1;
+  --on-accent: #2e3440;
   /* Nord's aurora red is the one status colour no global mix can rescue: on
      polar-night #3b4252 the shared 70% tint is 3.3:1, and only 40% clears 4.5.
      A dusty rose is still unmistakably the error colour here, and it is the
@@ -203,6 +216,7 @@
   --down: #f87171;
   --accent: #a78bfa;
   --accent-hover: #8b5cf6;
+  --on-accent: #241a4d;
   --btn: rgba(51, 65, 85, 0.8);
   --btn-border: rgba(148, 163, 184, 0.28);
   --radius: 12px;
@@ -234,6 +248,7 @@
   --down: #000;
   --accent: #111;
   --accent-hover: #000;
+  --on-accent: #ffffff;
   --btn: #f0f0f0;
   --btn-border: #bbb;
   --radius: 0px;
@@ -269,6 +284,11 @@
   --down: #ff3b30;
   --accent: #007aff;
   --accent-hover: #0066d6;
+  /* System blue keeps its white label; the fill takes the 15% it needs so 13px
+     text clears AA, and hovering back to the undimmed blue is the highlight. */
+  --accent-fill: color-mix(in srgb, var(--accent) 85%, #000);
+  --accent-fill-hover: var(--accent);
+  --on-accent: #ffffff;
   --btn: #ffffff;
   --btn-border: #d2d2d7;
   --radius-sm: 6px;
@@ -315,6 +335,9 @@
   --down: #ff453a;
   --accent: #0a84ff;
   --accent-hover: #409cff;
+  --accent-fill: color-mix(in srgb, var(--accent) 85%, #000);
+  --accent-fill-hover: var(--accent);
+  --on-accent: #ffffff;
   --btn: #3a3a3c;
   --btn-border: #48484a;
   --radius-sm: 6px;
@@ -490,10 +513,10 @@ button:hover, .btn:hover { filter: brightness(0.96); border-color: var(--accent)
 button:active { transform: translateY(1px); }
 button:disabled { opacity: .4; cursor: not-allowed; filter: none; }
 button.primary, .btn.primary {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill);
   font-weight: 600;
 }
-button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.primary:hover { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
 button.danger { color: var(--down-text); border-color: color-mix(in srgb, var(--down) 40%, var(--btn-border)); }
 button.danger:hover { background: color-mix(in srgb, var(--down) 8%, var(--btn)); }
 button.tiny, .btn.tiny { padding: 3px 8px; font-size: 11px; }
@@ -1395,13 +1418,13 @@ img[loading="lazy"][complete] {
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
 }
 .density-row button.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill);
 }
 .lang-row {
   display: flex; flex-wrap: wrap; gap: 8px;
 }
 .lang-row button.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill);
 }
 
 /* ===== Unraid-style extras ===== */
@@ -2170,9 +2193,9 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .btn.primary,
 [data-theme="macos-dark"] button.primary,
 [data-theme="macos-dark"] .btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
 }
 [data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
 [data-theme="macos"] .btn:not(.primary):not(.danger),
@@ -2243,8 +2266,8 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] table.dense tbody tr.selected td,
 [data-theme="macos-dark"] table.dense tbody tr.selected:hover,
 [data-theme="macos-dark"] table.dense tbody tr.selected:hover td {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 [data-theme="macos"] table.dense tbody tr.selected .sub,
@@ -2449,9 +2472,9 @@ html[data-theme="macos-dark"] .lang-row button.active,
 html[data-theme="macos-dark"] .lang-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
 html[data-theme="macos-dark"] .density-row button.active,
 html[data-theme="macos-dark"] .density-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
   font-weight: 600;
   box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12);
 }

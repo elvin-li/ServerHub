@@ -595,8 +595,8 @@ onUnmounted(() => {
 :global([data-theme="macos-dark"] .files-table tr.selected td),
 :global([data-theme="macos-dark"] .files-table tr.selected:hover),
 :global([data-theme="macos-dark"] .files-table tr.selected:hover td) {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 :global([data-theme="macos"] .files-table tr.selected .sub),
