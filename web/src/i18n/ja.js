@@ -2992,6 +2992,7 @@ export default {
     },
     vms: {
       name_required: '新しい名前が必要です',
+      bad_id: '仮想マシン ID が正しくありません',
       utm_unavailable: 'utmctl が利用できません。UTM をインストールしてください',
       utm_unsupported_action: 'UTM は操作 {action} に対応していません',
       orb_unavailable: 'orbctl が利用できません',
@@ -3007,6 +3008,9 @@ export default {
       bad_key: '未対応の電源設定です: {key}',
       bad_value: '値は整数である必要があります',
       value_range: '値は 0〜180 の範囲で指定してください',
+    },
+    identity: {
+      bad_name: 'コンピュータ名が正しくありません',
     },
     autostart: {
       self_protected: '{label} は ServerHub パネル自身のログインタスクのため、ここでは無効化できません。設定ページの「ログイン時に起動」スイッチを使用してください。',

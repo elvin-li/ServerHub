@@ -2994,6 +2994,7 @@ export default {
     },
     vms: {
       name_required: '需要新名称',
+      bad_id: '虚拟机 id 无效',
       utm_unavailable: 'utmctl 不可用，请安装 UTM',
       utm_unsupported_action: 'UTM 不支持操作: {action}',
       orb_unavailable: 'orbctl 不可用',
@@ -3009,6 +3010,9 @@ export default {
       bad_key: '不支持的电源设置：{key}',
       bad_value: '值必须是整数',
       value_range: '值必须在 0–180 之间',
+    },
+    identity: {
+      bad_name: '计算机名称无效',
     },
     autostart: {
       self_protected: '{label} 是 ServerHub 面板自身的开机任务，不能从这里关闭；请使用设置页的「登录时启动」开关。',

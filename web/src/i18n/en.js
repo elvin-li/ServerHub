@@ -2993,6 +2993,7 @@ export default {
     },
     vms: {
       name_required: 'a new name is required',
+      bad_id: 'invalid virtual machine id',
       utm_unavailable: 'utmctl is not available; install UTM',
       utm_unsupported_action: 'UTM does not support action: {action}',
       orb_unavailable: 'orbctl is not available',
@@ -3008,6 +3009,9 @@ export default {
       bad_key: 'Unsupported power setting: {key}',
       bad_value: 'Value must be an integer',
       value_range: 'Value is out of range 0–180',
+    },
+    identity: {
+      bad_name: 'Computer name is invalid',
     },
     autostart: {
       self_protected: '{label} is ServerHub\'s own login task and cannot be disabled here; use the \'Start at login\' switch on the Settings page instead',
