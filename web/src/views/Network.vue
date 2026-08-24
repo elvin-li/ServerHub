@@ -158,7 +158,7 @@
               </td>
             </tr>
             <tr v-if="!orderList.length && !loadError">
-              <td colspan="6" class="empty-row" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>            </tr>
+              <td colspan="6" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>            </tr>
           </tbody>
         </table>
       </div>
@@ -261,7 +261,7 @@
               </tr>
             </template>
             <tr v-if="!(data?.interface_addresses||[]).length && !loadError">
-              <td colspan="6" class="empty-row" style="color:var(--sub)">{{ t('network.no_bindings') }}</td>            </tr>
+              <td colspan="6" class="empty-row">{{ t('network.no_bindings') }}</td>            </tr>
           </tbody>
         </table>
       </div>
@@ -318,7 +318,7 @@
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
             </tr>
             <tr v-if="!(data?.interfaces||[]).length && !loadError">
-              <td colspan="8" class="empty-row" style="color:var(--sub)">{{ t('network.no_interfaces') }}</td>            </tr>
+              <td colspan="8" class="empty-row">{{ t('network.no_interfaces') }}</td>            </tr>
           </tbody>
         </table>
       </div>
@@ -398,7 +398,7 @@
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="4" class="empty-row" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>            </tr>
+              <td colspan="4" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>            </tr>
           </tbody>
         </table>
       </div>
@@ -424,7 +424,7 @@
               <td class="mono">{{ finiteN(p.port) }}</td>
             </tr>
             <tr v-if="!filteredListen.length && !loadError">
-              <td colspan="5" class="empty-row" style="color:var(--sub)">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>            </tr>
+              <td colspan="5" class="empty-row">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>            </tr>
           </tbody>
         </table>
       </div>
@@ -446,7 +446,7 @@
               <td>{{ finiteText(r.netif) }}</td>
             </tr>
             <tr v-if="!(data?.routes||[]).length && !loadError">
-              <td colspan="4" class="empty-row" style="color:var(--sub)">{{ t('network.no_routes') }}</td>            </tr>
+              <td colspan="4" class="empty-row">{{ t('network.no_routes') }}</td>            </tr>
           </tbody>
         </table>
       </div>

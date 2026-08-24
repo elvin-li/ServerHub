@@ -167,7 +167,8 @@
               implicit role, which makes aria-label a prohibited attribute that
               assistive tech drops. This control is icon-only, so dropping the
               label left it announced as nothing at all. State the role and
-              carry the off state in aria-disabled instead. -->         <a class="tiny primary"
+              carry the off state in aria-disabled instead. -->
+         <a class="tiny primary"
            role="link"
            :class="{ disabled: !ss.running }"
            :aria-disabled="!ss.running"
@@ -1914,8 +1915,11 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   background: var(--btn); border: 1px solid var(--line);
   color: var(--txt); padding: 4px 10px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600;
 }
+/* The status text tokens (--ok-text/--down-text) exist because flat
+   var(--ok)/var(--down) on their own 12-14% tint read 2.2:1 and 3.0:1 at 11px. */
 .host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); border-color: transparent; }
 .host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); border-color: transparent; }
+
 .res-card .big {
   font-size: 28px; font-weight: 800; line-height: 1.1;
   letter-spacing: -0.5px;
@@ -2044,7 +2048,10 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 .pwr-group .tiny { font-size: 12px; padding: 2px 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .pwr-group a.tiny.disabled { opacity: .4; pointer-events: none; cursor: not-allowed; }
 .hint-line { margin-top: 8px; font-size: 11px; color: var(--sub); line-height: 1.5; }
+/* Flat var(--ok) is a 2.2:1 mint green on the card — the least legible text on
+   the dashboard. --ok-text carries the AA-clearing shade for every palette. */
 .ok-msg { color: var(--ok-text); font-weight: 600; padding: 8px 0; }
+
 .health-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
 }
