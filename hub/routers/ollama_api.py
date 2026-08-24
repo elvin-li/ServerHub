@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import iterate_in_threadpool
 
 from hub import audit, ollama_svc
-from hub.auth import request_username
+from hub.auth import request_client_id, request_username
 from hub.errors import api_error, exc_detail
 
 router = APIRouter(tags=["ollama"])
@@ -66,7 +66,8 @@ def start_pull(body: ModelBody, request: Request):
     state = ollama_svc.start_pull(body.model)
     audit.record(
         "ollama.model.pull",
-        user=request_username(request) or "unknown",
+        username=request_username(request) or "unknown",
+        client=request_client_id(request),
         model=state.get("model"),
     )
     return state
@@ -84,7 +85,8 @@ def delete_model(body: DeleteBody, request: Request):
     result = ollama_svc.delete_model(body.model)
     audit.record(
         "ollama.model.deleted",
-        user=request_username(request) or "unknown",
+        username=request_username(request) or "unknown",
+        client=request_client_id(request),
         model=result.get("model"),
     )
     return result
@@ -95,7 +97,8 @@ def unload_model(body: ModelBody, request: Request):
     result = ollama_svc.unload_model(body.model)
     audit.record(
         "ollama.model.unloaded",
-        user=request_username(request) or "unknown",
+        username=request_username(request) or "unknown",
+        client=request_client_id(request),
         model=result.get("model"),
     )
     return result
