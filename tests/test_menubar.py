@@ -1,27 +1,50 @@
 import copy
+import importlib
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
 _MENUBAR = Path(__file__).resolve().parent.parent / "menubar.py"
 
-try:
-    from menubar import _kickstart_panel, _menu_signature
-except ModuleNotFoundError as exc:
-    if exc.name != "rumps":
-        raise
-    _kickstart_panel = None
-    _menu_signature = None
+
+def _load_menubar():
+    try:
+        import menubar
+    except ModuleNotFoundError as exc:
+        if exc.name != "rumps":
+            raise
+        menubar = None
+    else:
+        bar_cls = getattr(menubar, "ServerHubBar", None)
+        tick = getattr(bar_cls, "tick", None) if isinstance(bar_cls, type) else None
+        if callable(tick) and not isinstance(tick, mock.Mock):
+            return menubar
+
+    # Linux CI has no rumps. MagicMock() as rumps.App makes ServerHubBar
+    # unusable (not a type, no tick); give App a real base so the class
+    # statement in menubar.py still defines tick.
+    class _FakeApp:
+        def __init__(self, *args, **kwargs):
+            self.menu = {}
+            self.title = ""
+
+    fake = mock.MagicMock()
+    fake.App = _FakeApp
+    sys.modules["rumps"] = fake
+    sys.modules["rumps.rumps"] = fake
+    if "menubar" in sys.modules:
+        del sys.modules["menubar"]
+    return importlib.import_module("menubar")
+
+
+_mb = _load_menubar()
+_kickstart_panel = _mb._kickstart_panel
+_menu_signature = _mb._menu_signature
 
 
 class MenuBarSignatureTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        if _menu_signature is None:
-            raise unittest.SkipTest(
-                "rumps is macOS-only and is not installed on this host"
-            )
     def _status(self):
         return {
             "counts": {"ok": 1, "warn": 0, "down": 0},
@@ -70,10 +93,6 @@ class MenuBarKickstartCapTests(unittest.TestCase):
         self.assertIn("timeout=10", kick)
 
     def test_kickstart_discards_child_pipes(self):
-        if _kickstart_panel is None:
-            raise unittest.SkipTest(
-                "rumps is macOS-only and is not installed on this host"
-            )
         completed = subprocess.CompletedProcess(
             args=["/bin/launchctl"], returncode=0, stdout=b"", stderr=b"",
         )
