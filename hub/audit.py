@@ -144,6 +144,21 @@ SERVICE_BULK_ACTION = "service.bulk_action"
 SERVICE_UNINSTALLED = "service.uninstalled"
 MAINTENANCE_RUN = "maintenance.run"
 
+#: Container engine mutations (hub/routers/containers.py).  Creating a
+#: container chooses its mounts and privilege level, exec runs an arbitrary
+#: command inside one (the Terminal's equivalent has always recorded the
+#: command; this trail is 0600 like that one), and removals/prunes destroy
+#: data.  Lifecycle events share one name with a target field, mirroring
+#: service.action.
+CONTAINER_ACTION = "container.action"
+CONTAINER_RUN = "container.run"
+CONTAINER_EXEC = "container.exec"
+CONTAINER_IMAGE_CHANGED = "container.image.changed"
+CONTAINER_VOLUME_CHANGED = "container.volume.changed"
+CONTAINER_NETWORK_CHANGED = "container.network.changed"
+CONTAINER_PRUNED = "container.pruned"
+CONTAINER_CONFIG_CHANGED = "container.config.changed"
+
 #: Any field whose name contains one of these is replaced wholesale.  Substring
 #: matching rather than exact names, so ``current_password``, ``new_password``
 #: and ``setup_token`` are all covered without enumerating every variant a

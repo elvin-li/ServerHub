@@ -276,7 +276,7 @@ class AuthHardeningTests(unittest.TestCase):
         with patch(
             "hub.routers.containers.svc.action_all",
             return_value={"ok": True},
-        ) as action_all:
+        ) as action_all, patch("hub.routers.containers.audit.record"):
             self.assertEqual(
                 containers_all(AllBody(action="pause"), container_req),
                 {"ok": True},
