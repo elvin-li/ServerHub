@@ -172,6 +172,7 @@
            role="link"
            :class="{ disabled: !ss.running }"
            :href="ss.running ? finiteText(ss.vnc_url, '') : undefined"
+           :tabindex="ss.running ? undefined : -1"
            :aria-disabled="ss.running ? undefined : 'true'"
            :title="ss.running ? t('power.connect') : t('power.off')"
            :aria-label="ss.running ? t('power.connect') : t('power.off')"

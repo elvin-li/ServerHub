@@ -1742,6 +1742,12 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/logText\.value \+ finiteText\(chunk, ''\)/)
   })
 
+  it('takes the off Screen Sharing control out of the tab order', () => {
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dash).toMatch(/:tabindex="ss\.running \? undefined : -1"/)
+    expect(dash).toMatch(/:aria-disabled="ss\.running \? undefined : 'true'"/)
+  })
+
   it('Apps leftover catalog counts go through finiteN', () => {
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
     expect(apps).toMatch(/from ['"][^'"]*lib\/finite/)
