@@ -39,6 +39,12 @@ LOCAL_TOKEN_HEADER = "x-serverhub-local-token"
 _login_lock = threading.Lock()
 _setup_lock = threading.Lock()
 _login_attempts: dict[str, list[float]] = {}
+#: How long a failed attempt counts against its bucket.
+_LOGIN_WINDOW = 300.0
+#: Sweep the attempt table once it holds more clients than this.  Well above
+#: any household's device count, so the sweep is only ever paid for by a
+#: caller minting buckets rather than by one using the panel.
+_LOGIN_SWEEP_AT = 512
 
 
 def _auth_cfg() -> dict:
@@ -1292,6 +1298,28 @@ def request_client(request: Request | None) -> str:
     return last_hop[:64] or host
 
 
+def _sweep_login_attempts(now: float) -> None:
+    """Forget buckets whose whole window has passed.  Caller holds the lock.
+
+    :func:`login_allowed` prunes only the bucket it was asked about, so a
+    client that never comes back leaves its entry behind for good.  That is
+    harmless for a household, but the key is the peer address a trusted local
+    proxy reports, and a caller on an IPv6 /64 can spend a fresh address per
+    request: without this the table is a write-only record of every address
+    that ever reached the login form.
+
+    A bucket is dropped only when even its newest attempt has aged out, which
+    is exactly when ``login_allowed`` would have emptied it on the next visit.
+    A clock that stepped backwards makes the age negative, so the sweep keeps
+    the bucket rather than handing back attempts someone is still spending.
+    """
+    if len(_login_attempts) <= _LOGIN_SWEEP_AT:
+        return
+    for client, attempts in list(_login_attempts.items()):
+        if not attempts or now - attempts[-1] >= _LOGIN_WINDOW:
+            del _login_attempts[client]
+
+
 def login_allowed(client: str, *, consume: bool = True) -> tuple[bool, int]:
     """Return whether *client* may try another login.
 
@@ -1303,13 +1331,14 @@ def login_allowed(client: str, *, consume: bool = True) -> tuple[bool, int]:
     """
     now = time.time()
     with _login_lock:
-        attempts = [t for t in _login_attempts.get(client, []) if now - t < 300]
+        _sweep_login_attempts(now)
+        attempts = [t for t in _login_attempts.get(client, []) if now - t < _LOGIN_WINDOW]
         if attempts:
             _login_attempts[client] = attempts
         else:
             _login_attempts.pop(client, None)
         if len(attempts) >= 5:
-            return False, max(1, int(300 - (now - attempts[0])))
+            return False, max(1, int(_LOGIN_WINDOW - (now - attempts[0])))
         if consume:
             _login_attempts.setdefault(client, []).append(now)
         return True, 0
