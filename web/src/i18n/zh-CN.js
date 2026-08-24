@@ -2172,6 +2172,8 @@ export default {
     confirm_autostart_off: '关闭“{name}”的开机自启？登录/重启后将不再自动启动。',
     confirm_docker_policy: '将“{name}”的 Docker 重启策略改为 {policy}？',
     managed_search: '搜索已管理应用…',
+    filter_category: '按分类筛选',
+    filter_kind: '按类型筛选',
     managed_empty: '暂无已管理应用',
     col_kind: '类型',
     col_ports: '端口',

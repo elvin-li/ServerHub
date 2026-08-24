@@ -2170,6 +2170,8 @@ export default {
     confirm_autostart_off: '「{name}」の自動起動を無効にしますか？ログイン/再起動時に起動しなくなります。',
     confirm_docker_policy: '「{name}」の Docker 再起動ポリシーを {policy} にしますか？',
     managed_search: '管理中のアプリを検索…',
+    filter_category: 'カテゴリで絞り込み',
+    filter_kind: '種類で絞り込み',
     managed_empty: '管理中のアプリなし',
     col_kind: '種類',
     col_ports: 'ポート',

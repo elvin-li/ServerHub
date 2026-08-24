@@ -18,7 +18,7 @@
     <template v-if="tab === 'catalog'">
       <div class="toolbar apps-toolbar">
         <input v-model="q" type="text" class="search" :placeholder="t('apps.search_ph')"  :aria-label="t('apps.search_ph')"/>
-        <select v-model="cat" class="cat-select">
+        <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
           <option v-for="c in categories" :key="c.id" :value="c.id">
             {{ catLabel(c.id) }}{{ countLabel(c.id) }}
           </option>
@@ -143,7 +143,7 @@
     <template v-else-if="tab === 'managed'">
       <div class="toolbar apps-toolbar">
         <input v-model="mq" type="text" class="search" :placeholder="t('apps.managed_search')"  :aria-label="t('apps.managed_search')"/>
-        <select v-model="mkind" class="cat-select">
+        <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
           <option value="docker">{{ t('apps.kind_docker') }}</option>
@@ -186,7 +186,13 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
+            <!-- The row keeps its click shortcut, but not role="button"/tabindex:
+                 it holds the autostart switch and the whole action button row, and
+                 a control may not contain other controls (ARIA nested-interactive).
+                 It also duplicated the tab stop the "Detail" button in the actions
+                 cell already provides, which is the keyboard path to the same
+                 openDetail(it). -->
+            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)">
               <td>
                 <strong>{{ finiteText(it.name) }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
@@ -2288,7 +2294,10 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .chip-native {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  /* var(--ok) on its own 16% tint is 1.9:1 — the least legible text in the
+     panel. Mixing toward --txt keeps the green reading as "native" on both
+     palettes while clearing WCAG AA. */
+  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
 }
 
 .chip-docker {
@@ -2318,7 +2327,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .chip-ok {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  color: color-mix(in srgb, var(--ok) 55%, var(--txt));
 }
 
 .chip-muted {
@@ -2650,7 +2659,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 .act-btn.danger {
   background: color-mix(in srgb, var(--down) 12%, var(--card));
   border-color: color-mix(in srgb, var(--down) 45%, var(--line));
-  color: var(--down);
+  color: color-mix(in srgb, var(--down) 70%, var(--txt));
   font-weight: 700;
 }
 

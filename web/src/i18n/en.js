@@ -2171,6 +2171,8 @@ export default {
     confirm_autostart_off: 'Disable autostart for “{name}”? It will no longer start at login/reboot.',
     confirm_docker_policy: 'Set Docker restart policy for “{name}” to {policy}?',
     managed_search: 'Search managed apps…',
+    filter_category: 'Filter by category',
+    filter_kind: 'Filter by kind',
     managed_empty: 'No managed apps',
     col_kind: 'Kind',
     col_ports: 'Ports',
