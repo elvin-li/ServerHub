@@ -83,7 +83,9 @@
             <router-link class="btn" to="/settings">{{ t('nav.settings') }}</router-link>
             <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>
           </div>
-          <p class="hint" v-if="diagMsg" style="margin-top:10px">{{ finiteText(diagMsg) }}</p>
+          <!-- role=status: the saved path (or the save failure) lands here after
+               the click; without a live region it appeared silently. -->
+          <p class="hint" v-if="diagMsg" style="margin-top:10px" role="status">{{ finiteText(diagMsg) }}</p>
         </div>
       </div>
     </template>
@@ -119,6 +121,10 @@
     <template v-else-if="tab==='proc'">
       <div class="toolbar">
         <input v-model="procQ" type="text" :placeholder="t('tools.filter_proc')" style="min-width:180px"  :aria-label="t('tools.filter_proc')"/>
+        <!-- role=status: the count is the only feedback the filter box gives,
+             and it changed silently for a screen reader. Same pattern as the
+             Services filter count. -->
+        <span class="meta-count" role="status">{{ filteredProc.length }} / {{ processes.length }}</span>
       </div>
       <SkeletonLoader v-if="!tabLoaded.proc" :cols="6" :rows="8" />
       <LoadFailure v-else-if="tabError.proc" :detail="tabError.proc" :retry="reload" :busy="loading" />
@@ -138,8 +144,11 @@
               <td class="mono col-hide-m">{{ finiteText(p.time) }}</td>
               <td class="mono" style="max-width:480px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(p.command)">{{ finiteText(p.command) }}</td>
             </tr>
+            <!-- "No match" is only true while a filter is applied; with the box
+                 empty a bare list means the host reported no processes, which is
+                 a different (and stranger) fact worth stating as itself. -->
             <tr v-if="!filteredProc.length">
-              <td colspan="6" class="empty-row">{{ t('common.no_match') }}</td>
+              <td colspan="6" class="empty-row">{{ procQ.trim() ? t('common.no_match') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -188,7 +197,9 @@
         <button :disabled="loading" @click="doPrune('volumes')">{{ t('tools.prune_volumes') }}</button>
         <button :disabled="loading" class="warn" @click="doPrune('all_unused')">{{ t('tools.prune_all') }}</button>
       </div>
-      <p class="hint" v-if="pruneMsg">{{ finiteText(pruneMsg) }}</p>
+      <!-- role=status: how much a prune reclaimed is the answer to the click,
+           and it used to arrive silently for a screen reader. -->
+      <p class="hint" v-if="pruneMsg" role="status">{{ finiteText(pruneMsg) }}</p>
 
       <h2 class="section-title">{{ t('tools.container_size') }}</h2>
       <div v-if="tabLoaded.docker && !tabError.docker" class="table-wrap">
