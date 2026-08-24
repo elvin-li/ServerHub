@@ -47,6 +47,11 @@ def _as_text(value) -> str:
         return ""
 
 
+def _utf8_clean(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    return _as_text(value).encode("utf-8", "replace").decode("utf-8")
+
+
 def _as_int(value):
     """Finite int, or None.  ``int(inf)`` OverflowError is not ValueError."""
     if isinstance(value, bool) or value is None:
@@ -590,14 +595,20 @@ def update_override(sid: str, patch: dict) -> dict:
             if v is None or (isinstance(v, str) and not v.strip()):
                 clean[k] = None  # clear
             else:
+                # _utf8_clean: a JSON ``"\ud800"`` name/group/url used to be
+                # stored verbatim and 500 the echoed override on Starlette's
+                # UTF-8 response encode.
                 clean[k] = (
-                    normalize_local_url(str(v))
+                    normalize_local_url(_utf8_clean(v))
                     if k == "url"
-                    else str(v).strip()
+                    else _utf8_clean(v).strip()
                 )
     cur = set_override(sid, clean)
     invalidate_status()
-    return {"ok": True, "id": sid, "override": cur}
+    # ``cur`` merges the pre-existing override, which a hand-edited
+    # services.yaml can poison (inf port, ``\ud800``); clean the whole echo.
+    cleaned = _jsonable({"ok": True, "id": sid, "override": cur})
+    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": sid}
 
 
 def hide_service(sid: str, hide: bool = True) -> dict:
@@ -647,10 +658,14 @@ def _process_command_path(pid) -> str:
 
 
 def _clean_cmd(value) -> str | None:
-    """A single-line command, or None. Newlines would become extra argv later."""
+    """A single-line command, or None. Newlines would become extra argv later.
+
+    _utf8_clean: a JSON ``"\\ud800"`` start/stop command used to be stored
+    verbatim and 500 the echoed entry on Starlette's UTF-8 response encode.
+    """
     if value is None:
         return None
-    text = str(value).strip()
+    text = _utf8_clean(value).strip()
     if not text or "\n" in text or "\r" in text:
         return None
     return text
@@ -767,13 +782,15 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
         str(patch.get("id") or "").strip() or defaults["id"],
         taken=_taken_service_ids(),
     )
+    # _utf8_clean: a JSON ``"\ud800"`` name/group/url used to be stored
+    # verbatim and 500 the echoed entry on Starlette's UTF-8 response encode.
     entry: dict = {
         "id": new_id,
-        "name": str(patch.get("name") or "").strip() or defaults["name"] or new_id,
-        "group": str(patch.get("group") or "").strip() or defaults["group"],
+        "name": _utf8_clean(patch.get("name") or "").strip() or defaults["name"] or new_id,
+        "group": _utf8_clean(patch.get("group") or "").strip() or defaults["group"],
         "ports": ports,
     }
-    url = str(patch.get("url") or "").strip() or defaults.get("url")
+    url = _utf8_clean(patch.get("url") or "").strip() or defaults.get("url")
     if url:
         entry["url"] = normalize_local_url(url)
     # start/stop: an explicit key (even empty) wins so the operator can
@@ -847,7 +864,10 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
     result = {"ok": True, "id": new_id, "entry": entry}
     if stored_sig:
         result["signature"] = stored_sig
-    return result
+    # Defaults come from discovery (lsof / plists), which can carry leftover
+    # junk of its own; clean the whole echo, not just the operator fields.
+    cleaned = _jsonable(result)
+    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": new_id}
 
 
 def _signature_from_adopt(
@@ -914,16 +934,18 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
         for entry in data.get("scripts") or []:
             if not isinstance(entry, dict) or entry.get("id") != sid:
                 continue
+            # _utf8_clean: a JSON ``"\ud800"`` name/group/url used to be
+            # stored verbatim and 500 the echoed entry on the response encode.
             if "name" in patch:
-                name = str(patch.get("name") or "").strip()
+                name = _utf8_clean(patch.get("name") or "").strip()
                 if name:
                     entry["name"] = name
             if "group" in patch:
-                group = str(patch.get("group") or "").strip()
+                group = _utf8_clean(patch.get("group") or "").strip()
                 if group:
                     entry["group"] = group
             if "url" in patch:
-                url = str(patch.get("url") or "").strip()
+                url = _utf8_clean(patch.get("url") or "").strip()
                 if url:
                     entry["url"] = normalize_local_url(url)
                 else:
@@ -949,7 +971,10 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
     if not updated:
         raise api_error("services.script_not_found", id=sid)
     invalidate_status()
-    return {"ok": True, "id": sid, "entry": updated}
+    # A hand-edited services.yaml entry can carry leftover junk (inf ports,
+    # a lone surrogate); clean the echoed entry, not just the patch fields.
+    cleaned = _jsonable({"ok": True, "id": sid, "entry": updated})
+    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": sid}
 
 
 def forget_script(sid: str) -> dict:
@@ -980,7 +1005,10 @@ def forget_script(sid: str) -> dict:
     if not removed:
         raise api_error("services.script_not_found", id=sid)
     invalidate_status()
-    return {"ok": True, "id": sid, "removed": removed}
+    # The removed row is whatever services.yaml held — clean the echo so a
+    # hand-edited leftover (inf, ``\ud800``) cannot 500 the DELETE response.
+    cleaned = _jsonable({"ok": True, "id": sid, "removed": removed})
+    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": sid}
 
 
 def list_signatures() -> dict:
