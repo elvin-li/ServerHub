@@ -1721,6 +1721,7 @@ export default {
     log_loading: '読み込み中…',
     title: 'メンテナンス',
     meta: '更新 / 掃除 / バックアップ / 再起動',
+    empty_hint: 'メンテナンスタスクは未設定です — 次の場所で定義してください:',
     filter_ph: 'タスク絞り込み…',
     task: 'タスク',
     desc: '説明',

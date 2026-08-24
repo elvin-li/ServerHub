@@ -1723,6 +1723,7 @@ export default {
     log_loading: '加载中…',
     title: '维护',
     meta: '更新 / 清理 / 备份 / 重启',
+    empty_hint: '尚未配置维护任务 — 请在此处定义:',
     filter_ph: '筛选任务…',
     task: '任务',
     desc: '说明',

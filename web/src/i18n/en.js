@@ -1725,6 +1725,7 @@ export default {
     log_loading: 'Loading…',
     title: 'Maintenance',
     meta: 'Update / clean / backup / restart',
+    empty_hint: 'No maintenance tasks configured yet — define them under',
     filter_ph: 'Filter tasks…',
     task: 'Task',
     desc: 'Description',
