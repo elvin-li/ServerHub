@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from hub import auth, power_svc, shares_svc
+from hub import audit, auth, power_svc, shares_svc
 from hub.errors import api_error
 
 router = APIRouter(tags=["power"])
@@ -25,13 +25,31 @@ def power_overview():
 
 
 @router.post("/api/system/power/action")
-def power_action(body: PowerBody):
-    return power_svc.power_action(body.action, confirm=body.confirm)
+def power_action(body: PowerBody, request: Request):
+    # power_svc raises before scheduling on an unknown action or a missing
+    # confirm, so reaching record() means the countdown really started —
+    # this is the last moment the trail can be written before shutdown.
+    result = power_svc.power_action(body.action, confirm=body.confirm)
+    audit.record(
+        audit.POWER_ACTION,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        action=body.action,
+    )
+    return result
 
 
 @router.put("/api/system/power/wol")
-def set_wol(body: WolBody):
-    return power_svc.set_wol(body.enabled)
+def set_wol(body: WolBody, request: Request):
+    result = power_svc.set_wol(body.enabled)
+    audit.record(
+        audit.POWER_WOL_CHANGED,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        action="enable" if body.enabled else "disable",
+        outcome="success" if result.get("ok") else "failure",
+    )
+    return result
 
 
 @router.get("/api/system/screensharing")
@@ -49,6 +67,18 @@ def _require_admin_browser(request: Request) -> None:
 def _set_screen_sharing(request: Request, enabled: bool) -> dict:
     _require_admin_browser(request)
     result = shares_svc.set_system_service("screen_sharing", enabled)
+    # Same event and shape as the shares router's system-service toggle:
+    # Screen Sharing is remote-desktop access to the whole machine, and this
+    # endpoint used to flip it without a trace while /api/system/services/…
+    # recorded the equivalent change.
+    audit.record(
+        audit.SYSTEM_SHARING_CHANGED,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        action="enable" if enabled else "disable",
+        outcome="success" if isinstance(result, dict) and result.get("ok") else "failure",
+        service="screen_sharing",
+    )
     # Leftover None AttributeError'd enable/disable; leftover inf / ``\\ud800``
     # in an ok payload 500'd Starlette's allow_nan=False encoder.
     if not isinstance(result, dict):

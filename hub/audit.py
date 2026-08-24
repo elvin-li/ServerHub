@@ -85,6 +85,13 @@ RAID_CHANGED = "raid.changed"
 SNAPSHOT_CHANGED = "snapshots.changed"
 SMART_TEST_STARTED = "smart.test.started"
 SPOTLIGHT_CHANGED = "spotlight.changed"
+#: Shutdown / restart / sleep takes every service on the machine down at
+#: once.  "Why did the server go dark at 02:14, and who told it to" is the
+#: canonical audit-trail question, so the scheduled action and the operator
+#: are recorded before the box goes away.  Wake-on-LAN decides whether the
+#: machine can be brought back remotely, so flipping it is recorded too.
+POWER_ACTION = "power.action"
+POWER_WOL_CHANGED = "power.wol.changed"
 #: Scheduled jobs run arbitrary shell commands and move data around, so every
 #: definition change and manual trigger names the operator.  The command text
 #: of a shell job is part of the record: "what exactly did the panel run at
