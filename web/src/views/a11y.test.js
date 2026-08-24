@@ -497,6 +497,15 @@ describe('selected state', () => {
     )
   })
 
+  it('announces the Services filter result count', () => {
+    // The "34 / 50" count is the only feedback the filter box and the state
+    // chips give; without a live region it changed silently.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /<span class="meta-count" role="status">\{\{ filtered\.length \}\}/,
+    )
+  })
+
   it('names each Services row checkbox after its service', () => {
     // Thirty checkboxes all called "Select this row" cannot be told apart in
     // a screen reader's form-controls listing; the Files list already names

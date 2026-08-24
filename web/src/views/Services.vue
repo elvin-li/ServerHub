@@ -43,7 +43,9 @@
       <span class="toolbar-toggles">
         <label class="chk"><input type="checkbox" v-model="onlyBad" /> {{ t('services.only_bad') }}</label>
         <label class="chk"><input type="checkbox" v-model="dense" /> {{ t('services.dense') }}</label>
-        <span class="meta-count">{{ filtered.length }} / {{ flat.length }}</span>
+        <!-- role=status: the count is the only feedback the filter box and
+             state chips give, and it changed silently for a screen reader. -->
+        <span class="meta-count" role="status">{{ filtered.length }} / {{ flat.length }}</span>
       </span>
       <span class="meta svc-summary" v-if="status">
         {{ t('services.summary', {
