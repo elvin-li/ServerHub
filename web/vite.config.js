@@ -148,13 +148,6 @@ export default defineConfig({
     },
   },
 
-  // Dependency pre-bundling runs esbuild with its own target, which ignores
-  // build.target. noVNC 1.7 ships top-level await, so the default es2020 target
-  // made `npm run dev` fail to boot at all while `npm run build` was fine.
-  optimizeDeps: {
-    esbuildOptions: { target: 'esnext' },
-  },
-
   build: {
     outDir,
     emptyOutDir: true,

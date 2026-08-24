@@ -2422,6 +2422,8 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .badge.accent,
 [data-theme="macos-dark"] .badge.accent {
   background: color-mix(in srgb, var(--accent) 10%, var(--card));
+  /* Flat var(--accent) sat at 3.5:1 on its own 10% tint; the mix matches the
+     shape of the sibling rules and reads on both palettes. */
   color: color-mix(in srgb, var(--accent) 70%, var(--txt));
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
 }

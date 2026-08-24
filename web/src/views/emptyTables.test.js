@@ -140,4 +140,15 @@ describe('empty tables', () => {
     expect(body).not.toContain('network.no_listening')
     wrapper.unmount()
   })
+
+  it('does not call an API failure an empty Docker network list', async () => {
+    api.getSystemNetwork.mockRejectedValue(new Error('engine listing timed out'))
+    const wrapper = mount(Network, MOUNT)
+    await flushPromises()
+    wrapper.vm.tab = 'docker'
+    await flushPromises()
+    expect(wrapper.text()).toContain('engine listing timed out')
+    expect(wrapper.text()).not.toContain('network.empty_docker_nets')
+    wrapper.unmount()
+  })
 })
