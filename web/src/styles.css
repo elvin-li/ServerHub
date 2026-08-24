@@ -25,9 +25,14 @@
      Declared once here on :root: substitution happens where the var is *used*,
      so each theme's own --ok/--warn/--down/--txt feed the same three mixes.
      Keep using the raw tokens for backgrounds, borders, bars and icons. */
+     The percentages are sized against the worst surface each tint actually
+     lands on, not against --card: --down-text is the label of a Destroy or
+     Prune button, so it has to clear on --btn as well, and --btn is the
+     lightest fill in every dark theme (#3a3a3c on macOS dark, #2a2a2a on
+     Unraid dark). At 70% it measured 4.42 and 4.22 there. */
   --ok-text: color-mix(in srgb, var(--ok) 55%, var(--txt));
   --warn-text: color-mix(in srgb, var(--warn) 50%, var(--txt));
-  --down-text: color-mix(in srgb, var(--down) 70%, var(--txt));
+  --down-text: color-mix(in srgb, var(--down) 60%, var(--txt));
   /* Filled accent controls: the fill, its hover, and the label riding on it.
      White on a raw --accent is 2.0-4.0:1 in every theme -- 2.32:1 on this
      orange, 2.0:1 on Nord's frost blue -- because the accents are brand hues
@@ -44,6 +49,16 @@
      because their hover blue already clears AA and a deeper one would stop
      reading as system blue. */
   --accent-text: color-mix(in srgb, var(--accent-hover) 65%, var(--txt));
+  /* A washed accent surface with accent text on it -- the accent badge, the
+     quieter of two primaries in one toolbar. The pair has to be defined
+     together: --accent-text is sized against --card and --bg, and a 14% wash
+     sits between them, so reusing it here measured 4.51:1 on white (passing by
+     0.01) and 4.19:1 on the grey canvas one panel over (failing). Mixing the
+     label another 12% toward --txt costs nothing visually and puts both
+     surfaces clear of the floor. */
+  --accent-wash: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-wash-hover: color-mix(in srgb, var(--accent) 22%, transparent);
+  --on-accent-wash: color-mix(in srgb, var(--accent-text) 88%, var(--txt));
   --btn: #f5f5f5;
   --btn-border: #d0d0d0;
   --radius: 3px;
@@ -1164,7 +1179,7 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
 }
 /* A tint of the accent, like every other badge above. --chip was a per-theme
    literal, and Nord's was the mid-blue #5e81ac: accent text on it was 1.49:1. */
-.badge.accent { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-text); }
+.badge.accent { background: var(--accent-wash); color: var(--on-accent-wash); }
 
 .tabs { display: flex; gap: 0; flex-wrap: wrap; margin-bottom: 12px; border-bottom: 2px solid var(--line); }
 .tabs button {

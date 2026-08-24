@@ -279,7 +279,7 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th style="width:28px"></th>
+              <th style="width:28px"><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('wg.peer_name') }}</th>
               <th>{{ t('wg.address') }}</th>
               <th class="col-hide-m">{{ t('wg.remote_endpoint') }}</th>
@@ -1075,8 +1075,24 @@ onUnmounted(() => {
 .wg-stop.danger { background: color-mix(in srgb, var(--down) 85%, #000); border-color: var(--down); color: #fff; }
 .wg-stop.danger:hover { background: var(--down); }
 .wg-restart { min-width: 80px; }
-button.subtle { opacity: .65; }
-button.subtle:hover { opacity: 1; }
+/* Start and Refresh are both primaries in this one toolbar, and Refresh is
+   meant to be the quieter of the pair.  `opacity: .65` bought that by fading
+   the whole control, label included: white on the accent fill landed at 2.6:1,
+   under the 4.5 floor, and axe flagged it on both mac themes.  Tint the surface
+   and leave the text at full strength -- the shared --accent-wash pair the
+   accent badge uses, so a de-emphasised control looks the same everywhere.
+
+   Carries `.primary` in the selector so it outranks the per-theme
+   `[data-theme] button.primary` override, which ties on specificity. */
+button.primary.subtle {
+  background: var(--accent-wash);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  color: var(--on-accent-wash);
+}
+button.primary.subtle:hover {
+  background: var(--accent-wash-hover);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
 
 /* A QR code is only useful if the whole symbol is visible and has a light quiet
    zone. The generated SVG is scalable (viewBox, no width/height), so it needs an
