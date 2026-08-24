@@ -395,7 +395,7 @@
                 </div>
                 <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
               </div>
-              <div v-if="!storage" class="disk-empty">{{ t('common.loading') }}</div>
+              <div v-if="!storage" class="disk-empty">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
               <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
             </div>
           </div>

@@ -60,6 +60,12 @@ function headerOnlyTables(wrapper) {
     .map((t) => [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim()).join(' | '))
 }
 
+/** Open the scheduler tab the way a user does, so its loader actually runs. */
+async function openSchedTab(wrapper) {
+  await wrapper.findAll('button').find((b) => b.text() === 'tools.tab_sched').trigger('click')
+  await flushPromises()
+}
+
 beforeEach(() => {
   for (const fn of Object.values(api)) {
     if (typeof fn?.mockReset === 'function') fn.mockResolvedValue({})
@@ -76,8 +82,7 @@ describe('Tools scheduler tab', () => {
   it('explains an empty LaunchAgent list instead of showing a bare header', async () => {
     const wrapper = mount(Tools, MOUNT)
     await flushPromises()
-    wrapper.vm.tab = 'sched'
-    await flushPromises()
+    await openSchedTab(wrapper)
 
     expect(headerOnlyTables(wrapper), 'headings with no rows under them read as still-loading').toEqual([])
     expect(wrapper.text()).toContain('tools.no_agents')
@@ -88,8 +93,7 @@ describe('Tools scheduler tab', () => {
     api.getToolsAgents.mockImplementation(() => new Promise(() => {}))
     const wrapper = mount(Tools, MOUNT)
     await flushPromises()
-    wrapper.vm.tab = 'sched'
-    await flushPromises()
+    await openSchedTab(wrapper)
 
     const text = wrapper.text()
     expect(text).not.toContain('tools.no_agents')
@@ -101,8 +105,7 @@ describe('Tools scheduler tab', () => {
     api.getScheduler.mockRejectedValue(new Error('launchctl listing failed'))
     const wrapper = mount(Tools, MOUNT)
     await flushPromises()
-    wrapper.vm.tab = 'sched'
-    await flushPromises()
+    await openSchedTab(wrapper)
 
     const text = wrapper.text()
     expect(text, 'the failure and its reason must be shown').toContain('launchctl listing failed')
