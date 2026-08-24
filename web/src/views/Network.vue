@@ -190,7 +190,7 @@
             <strong class="mono" v-if="data.alias_auto.preferred">
               {{ finiteText(data.alias_auto.preferred.device) }}
             </strong>
-            <span v-else style="color:var(--down)">{{ t('network.no_network') }}</span>
+            <span v-else class="status-down">{{ t('network.no_network') }}</span>
             <span v-if="data.alias_auto.preferred" style="color:var(--sub)">
               · {{ finiteText(data.alias_auto.preferred.service) }}
               · {{ t('network.primary_ip_is', { ip: finiteText(data.alias_auto.preferred.primary_ip) }) }}
@@ -1200,6 +1200,9 @@ useDismissable(connectNet, () => { connectNet.value = null }, connectPanel)
 </script>
 
 <style scoped>
+/* var(--down) is the vibrant indicator red; as 12px body text on the card it is
+   3.5:1. Mixed toward --txt it still reads as the failure colour and clears AA. */
+.status-down { color: color-mix(in srgb, var(--down) 70%, var(--txt)); }
 .net-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

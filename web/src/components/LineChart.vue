@@ -600,7 +600,9 @@ function formatLegend(v) {
   font-weight: 500;
   white-space: nowrap;
   user-select: none;
-  opacity: .8;
+  /* No extra opacity: --sub is already the muted-text token and clears WCAG AA
+     on the card (5.07:1), but multiplying it by .8 blended it back toward the
+     surface to 3.39:1 — every axis label on every chart failed AA at 10px. */
 }
 
 .plot-body {
@@ -644,7 +646,7 @@ function formatLegend(v) {
   white-space: pre;
   text-align: center;
   user-select: none;
-  opacity: .8;
+  /* No extra opacity, for the same reason as .y-lbl above. */
 }
 .x-lbl.first { transform: none; text-align: left; }
 .x-lbl.last { transform: translateX(-100%); text-align: right; }

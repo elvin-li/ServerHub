@@ -30,7 +30,14 @@
         <h3>{{ t('main.array_status') }}</h3>
         <div
           class="v"
-          :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok)' : 'var(--warn)' }"
+          :style="{
+            fontSize: '16px',
+            /* The vibrant status tokens are indicator colours; as text they sit
+               at 2.2:1 on the tile. Mixing toward --txt keeps the hue. */
+            color: data?.array?.status === 'started'
+              ? 'color-mix(in srgb, var(--ok) 55%, var(--txt))'
+              : 'color-mix(in srgb, var(--warn) 55%, var(--txt))',
+          }"
         >{{ finiteText(data?.array?.status, '') || t('network.unknown') }}</div>
         <div class="sub">{{ finiteN(data?.array?.system_count, 0) }} + {{ finiteN(data?.array?.data_count, 0) }}</div>
       </div>
