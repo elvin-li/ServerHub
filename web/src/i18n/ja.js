@@ -1775,6 +1775,7 @@ export default {
     items: '件',
     empty: '空のフォルダ',
     parent: '上へ',
+    breadcrumbs: '現在のフォルダパス',
     drop_hint: '表にファイルをドロップしてアップロード',
     confirm_delete: '「{name}」を削除しますか？',
     confirm_delete_dir: 'フォルダ「{name}」とその中身をすべて削除しますか？元に戻せません。',

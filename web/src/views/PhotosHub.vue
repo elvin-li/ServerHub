@@ -138,21 +138,27 @@
       </div>
 
       <div v-else-if="tab === 'settings'" class="settings-grid" data-test="photoshub-settings">
-        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down-text)">{{ finiteText(settingsError) }}</p>
+        <!-- role="alert": the config read fails after the tab is already on
+             screen, and unlike pendingError below this one shipped silent. -->
+        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down-text)" role="alert">{{ finiteText(settingsError) }}</p>
         <div class="card-block">
           <div class="section-head">
             <h2>{{ t('photoshub.people_title') }}</h2>
             <span class="meta">{{ t('photoshub.people_hint') }}</span>
           </div>
+          <!-- No aria-label on these: each input already has a for/id label
+               carrying "child · field", and the shorter aria-label overrode it
+               — both birthday inputs were announced identically as "birthday"
+               with nothing saying whose. -->
           <div class="form-grid">
             <label for="ph-yuanbao-name">{{ t('photoshub.child_yuanbao') }} · {{ t('photoshub.person_name') }}</label>
-            <input id="ph-yuanbao-name" v-model="form.yuanbao_name" type="text" maxlength="40" :aria-label="t('photoshub.child_yuanbao')" />
+            <input id="ph-yuanbao-name" v-model="form.yuanbao_name" type="text" maxlength="40" />
             <label for="ph-yuanbao-bday">{{ t('photoshub.child_yuanbao') }} · {{ t('photoshub.birthday') }}</label>
-            <input id="ph-yuanbao-bday" v-model="form.yuanbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" :aria-label="t('photoshub.birthday')" />
+            <input id="ph-yuanbao-bday" v-model="form.yuanbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" />
             <label for="ph-erbao-name">{{ t('photoshub.child_erbao') }} · {{ t('photoshub.person_name') }}</label>
-            <input id="ph-erbao-name" v-model="form.erbao_name" type="text" maxlength="40" :aria-label="t('photoshub.child_erbao')" />
+            <input id="ph-erbao-name" v-model="form.erbao_name" type="text" maxlength="40" />
             <label for="ph-erbao-bday">{{ t('photoshub.child_erbao') }} · {{ t('photoshub.birthday') }}</label>
-            <input id="ph-erbao-bday" v-model="form.erbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" :aria-label="t('photoshub.birthday')" />
+            <input id="ph-erbao-bday" v-model="form.erbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" />
           </div>
         </div>
 

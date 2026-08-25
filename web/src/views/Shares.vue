@@ -264,7 +264,9 @@
             <h3>{{ t('shares.acl_title') }}</h3>
             <p class="acl-hint">{{ t('shares.acl_hint') }}</p>
             <div v-if="aclLoading" class="acl-hint">{{ t('common.loading') }}</div>
-            <div v-else-if="aclError" class="acl-error">{{ finiteText(aclError) }}</div>
+            <!-- role="alert": the ACL read finishes after the sheet already has
+                 focus, so without it the failure text appears silently. -->
+            <div v-else-if="aclError" class="acl-error" role="alert">{{ finiteText(aclError) }}</div>
             <template v-else-if="acl">
               <div v-for="user in acl.users" :key="user.username" class="acl-user-row">
                 <span class="acl-user">

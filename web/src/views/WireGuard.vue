@@ -506,6 +506,7 @@
           v-if="!settingsLoaded"
           class="tile"
           style="margin-bottom:10px;border-left:3px solid var(--down)"
+          role="alert"
         >
           <div>{{ t('wg.settings_load_failed') }}</div>
           <div v-if="settingsError" class="sub mono" style="margin-top:4px">{{ finiteText(settingsError) }}</div>
