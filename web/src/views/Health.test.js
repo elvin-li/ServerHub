@@ -68,6 +68,32 @@ describe('Health level tabs', () => {
   })
 })
 
+describe('Health overall tile', () => {
+  // The issues state used to be a bare "⚠️" — an emoji with no words, no
+  // locale, and at best a "warning sign" announcement.
+  it('spells the state instead of an emoji alone', async () => {
+    api.getHealthChecks.mockResolvedValue({
+      healthy: false,
+      summary: { ok: 1, warn: 0, error: 1, total: 2 },
+      checks: [
+        { id: 'a', name: 'Disk', ok: true, level: 'ok', detail: '' },
+        { id: 'b', name: 'SMART', ok: false, level: 'error', detail: 'failing' },
+      ],
+    })
+    const wrapper = mount(Health, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+
+    const tiles = wrapper.findAll('.dash-grid .tile .v')
+    expect(tiles.at(-1).text()).toBe('⚠️ common.issues')
+    wrapper.unmount()
+  })
+})
+
 describe('Health leave-guards', () => {
   it('does not toast a load that fails after leave', async () => {
     let rejectLoad

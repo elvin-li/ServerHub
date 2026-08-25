@@ -33,7 +33,10 @@
       </div>
       <div class="tile span-3">
         <h2>{{ t('health.overall') }}</h2>
-        <div class="v" style="font-size:16px">{{ data.healthy ? '✅ OK' : '⚠️' }}</div>
+        <!-- Spell the state, not an emoji alone: the issues arm was a bare
+             "⚠️", announced as "warning sign" (or nothing) with no words and
+             no locale parity with the healthy arm. -->
+        <div class="v" style="font-size:16px">{{ data.healthy ? '✅ ' + t('common.healthy') : '⚠️ ' + t('common.issues') }}</div>
       </div>
     </div>
 

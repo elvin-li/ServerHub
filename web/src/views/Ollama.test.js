@@ -250,6 +250,31 @@ describe('loaded page', () => {
     })
     expect(save.attributes('disabled')).toBeUndefined()
   })
+
+  it('latches a failed settings read, blocks Save, and retry re-enables it', async () => {
+    // The old catch was fully silent and left Save enabled: the form had
+    // fallen back to the default URL and an *empty* label, so pressing Save
+    // wiped a configured LaunchAgent label — with a success toast.
+    getOllamaStatus.mockResolvedValue(STATUS)
+    getSettings.mockRejectedValueOnce(new Error('settings read failed'))
+    wrapper = mountPage()
+    await flushPromises()
+
+    const card = wrapper.get('[data-test="ollama-settings"]')
+    const failure = card.get('[data-test="ollama-settings-failed"]')
+    expect(failure.attributes('role')).toBe('alert')
+    expect(failure.text()).toContain('settings read failed')
+    const save = card.findAll('button').find(b => b.text() === 'common.save')
+    expect(save.attributes('disabled')).toBeDefined()
+    expect(putSettings).not.toHaveBeenCalled()
+
+    // Retry: the beforeEach getSettings mock answers this time.
+    await failure.findAll('button').find(b => b.text() === 'common.retry').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="ollama-settings-failed"]').exists()).toBe(false)
+    expect(save.attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('input[aria-label="ollama.settings_label"]').element.value).toBe('com.kiro.ollama')
+  })
 })
 
 describe('degraded states', () => {
