@@ -32,10 +32,26 @@ _HERE = Path(__file__).resolve().parent
 _CATALOG_CAP = 256 * 1024
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number literal is the digit-cap *ValueError*
+    (not JSONDecodeError) for the whole document: one poisoned number in
+    assistant_panels.json used to make :func:`_load_json` return ``None``,
+    which silently wiped the entire panel catalog — find, page and the
+    Cmd+K catalog all answered empty until the file was hand-fixed.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_json(name: str):
     try:
         return safe_json_loads(
-            read_text_capped(_HERE / name, _CATALOG_CAP, encoding="utf-8")
+            read_text_capped(_HERE / name, _CATALOG_CAP, encoding="utf-8"),
+            parse_int=_capped_json_int,
         )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested catalog JSON is not ValueError.
@@ -48,9 +64,14 @@ def _safe_int(raw, default: int = 0) -> int:
     if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
         return default
     try:
-        return int(raw)
+        value = int(raw)
+        # An *already-int* leftover past CPython's int->str digit cap (YAML /
+        # plist hex loads uncapped) passes int() but blows every later str()
+        # — fallback_brief's f-strings and the JSON encoder both 500'd.
+        str(value)
     except (TypeError, ValueError, OverflowError):
         return default
+    return value
 
 
 def _utf8_text(value) -> str:
@@ -83,6 +104,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -231,7 +258,9 @@ def catalog(locale: str | None = None) -> list[dict]:
             "id": pid,
             "path": path,
             "title": _title(panel, loc),
-            "aliases": [str(a) for a in aliases],
+            # ``a is not None``: the parse_int hook maps an over-cap number
+            # literal to None; a "None" alias must not start matching queries.
+            "aliases": [str(a) for a in aliases if a is not None],
         })
     return out
 
@@ -242,7 +271,9 @@ def _score_panel(panel: dict, needle: str, locale: str) -> int:
     title = _title(panel, locale).lower()
     path = str(panel.get("path") or "").lower()
     raw_aliases = panel.get("aliases")
-    aliases = [str(a).lower() for a in raw_aliases] if isinstance(raw_aliases, list) else []
+    aliases = [
+        str(a).lower() for a in raw_aliases if a is not None
+    ] if isinstance(raw_aliases, list) else []
     if needle == title or needle == str(panel.get("id") or "") or needle == path.lstrip("/"):
         return 100
     if needle in aliases:
@@ -341,7 +372,9 @@ def build_snapshot() -> dict:
         problems.append({
             "name": row.get("name") or row.get("id"),
             "state": row.get("state"),
-            "detail": str(row.get("detail") or "")[:80],
+            # _utf8_text, not bare str(): a >4300-digit leftover detail used
+            # to ValueError here and lose the whole snapshot.
+            "detail": _utf8_text(row.get("detail") or "")[:80],
         })
     snap: dict[str, Any] = {
         "load": system.get("load"),
@@ -349,7 +382,9 @@ def build_snapshot() -> dict:
         "mem_used_pct": system.get("mem_used_pct"),
         "mem_total_gb": system.get("mem_total_gb"),
         "disk_root_pct": system.get("disk_pct"),
-        "disk_root": f"{system.get('disk_used_gb')}/{system.get('disk_total_gb')} GB",
+        # _utf8_text, not a bare f-string: a >4300-digit leftover disk size
+        # used to ValueError the int->str here and lose the whole snapshot.
+        "disk_root": f"{_utf8_text(system.get('disk_used_gb'))}/{_utf8_text(system.get('disk_total_gb'))} GB",
         "uptime": system.get("uptime"),
         "engine_up": status.get("engine_up"),
         "counts": {
@@ -415,6 +450,17 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     return out
 
 
+def _brief_cell(value, *, keep_zero: bool = False) -> str:
+    """One brief field as text.  A bare f-string used to ValueError on a
+    >4300-digit leftover int (CPython's int->str digit cap) — inside the
+    router's own error fallback, which is a guaranteed 500."""
+    if value is None:
+        return "—"
+    if not keep_zero and not value:
+        return "—"
+    return _utf8_text(value) or "—"
+
+
 def fallback_brief(snapshot: dict, locale: str | None = None) -> str:
     """English template status when Ollama is down.  The SPA localizes this."""
     del locale  # locale is applied by the drawer; keep the signature stable.
@@ -423,17 +469,17 @@ def fallback_brief(snapshot: dict, locale: str | None = None) -> str:
     raw_problems = snapshot.get("problems")
     problems = [p for p in raw_problems if isinstance(p, dict)] if isinstance(raw_problems, list) else []
     lines = [
-        f"Overview: load {snapshot.get('load') or '—'} (~{snapshot.get('cpu_load_pct') if snapshot.get('cpu_load_pct') is not None else '—'}%)"
-        f" · memory used {snapshot.get('mem_used_pct') if snapshot.get('mem_used_pct') is not None else '—'}%"
-        f" · root disk {snapshot.get('disk_root_pct') if snapshot.get('disk_root_pct') is not None else '—'}%"
-        f" ({snapshot.get('disk_root') or '—'}) · up {snapshot.get('uptime') or '—'}",
-        f"Services: {counts.get('ok', 0)} ok · {counts.get('warn', 0)} warn · {counts.get('down', 0)} down"
-        f" · Docker {engine}",
+        f"Overview: load {_brief_cell(snapshot.get('load'))} (~{_brief_cell(snapshot.get('cpu_load_pct'), keep_zero=True)}%)"
+        f" · memory used {_brief_cell(snapshot.get('mem_used_pct'), keep_zero=True)}%"
+        f" · root disk {_brief_cell(snapshot.get('disk_root_pct'), keep_zero=True)}%"
+        f" ({_brief_cell(snapshot.get('disk_root'))}) · up {_brief_cell(snapshot.get('uptime'))}",
+        f"Services: {_safe_int(counts.get('ok'))} ok · {_safe_int(counts.get('warn'))} warn"
+        f" · {_safe_int(counts.get('down'))} down · Docker {engine}",
     ]
     if problems:
         lines.append("Needs attention:")
         lines.extend(
-            f"- {p.get('name')} · {p.get('state')} · {p.get('detail') or '—'}"
+            f"- {_brief_cell(p.get('name'))} · {_brief_cell(p.get('state'))} · {_brief_cell(p.get('detail'))}"
             for p in problems[:6]
         )
     else:
