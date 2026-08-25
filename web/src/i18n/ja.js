@@ -2843,6 +2843,7 @@ export default {
       exists: '既に存在します',
       fb_no_plist: 'local.filebrowser.plist が見つかりません',
       fb_bad_plist: 'local.filebrowser.plist は有効な LaunchAgent ではありません',
+      fb_missing: 'FileBrowser のバイナリが見つかりません（~/Services/filebrowser）',
       fb_not_installed: 'FileBrowser がインストールされていません（~/Services/filebrowser）',
       fb_start_failed: 'FileBrowser を起動できませんでした',
       file_only: 'ダウンロードできるのはファイルのみです',

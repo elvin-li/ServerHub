@@ -139,6 +139,10 @@ CODES: dict[str, tuple[int, str]] = {
     # ── optional FileBrowser process ────────────────────────────────────────
     "files.fb_not_installed": (404, "FileBrowser is not installed (~/Services/filebrowser)"),
     "files.fb_start_failed": (500, "could not start FileBrowser"),
+    # The FileBrowser binary vanished between the installed gate and the
+    # spawn.  503 like the other tool-absent states (backup.tool_missing,
+    # vms.orb_unavailable, photoshub.ctl_missing).
+    "files.fb_missing": (503, "the FileBrowser binary is missing (~/Services/filebrowser)"),
     # ── storage pool (JBOD union planner) ───────────────────────────────────
     "storage_pool.bad_policy": (400, "unknown placement policy: {policy}"),
     "storage_pool.no_members": (400, "select at least one volume for the pool"),
@@ -499,6 +503,17 @@ def _jsonable_param(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render the
+            # number at all — ``json.dumps`` raises the same ValueError this
+            # guard eats.  A str param is parse-capped before it can become an
+            # int, but YAML/plist hex text loads uncapped (``int(x, 16)`` is a
+            # power-of-two base), so an already-int leftover reached Starlette
+            # untouched and turned the coded 4xx into a 500 while encoding its
+            # own error body — the photoshub/immich ``_jsonable`` drop.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
