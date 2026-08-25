@@ -13,9 +13,9 @@ had already succeeded.  Fixed: an int the encoder cannot render is dropped
 to None, the same rule as its inf float sibling; anything ``str()`` can
 render — a 400-digit int included — still passes.
 
-``audit._jsonable`` is deliberately *not* in this sweep: record()'s own
-guarded ``json.dumps`` drops the whole poisoned line (never half-written)
-and recent() skips such a line at ``json.loads`` — both pinned in
+``audit._jsonable`` has since grown the same probe (an over-cap int used to
+cost record() the whole line; see test_leftover_audit_hexint_flock_500s),
+and recent() skips a poisoned line at ``json.loads`` — pinned in
 test_leftover_logs_journal_audit_digit_500s — so no encoder-facing audit
 path carries an over-cap int.
 
