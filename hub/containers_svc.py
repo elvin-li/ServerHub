@@ -15,7 +15,11 @@ from fastapi import HTTPException
 from hub import cli_args
 from hub.config import cfg, maintenance_env, override
 from hub.errors import api_error, soft_fail
-from hub.docker_cli import _as_text, _jsonable, docker, docker_json, engine_up, inspect_object, looks_engine_down, redact_env
+from hub.docker_cli import (
+    _as_text, _jsonable, cli_on_disk, docker, docker_json, engine_up,
+    inspect_object, looks_cli_vanished, looks_engine_down, parse_int_capped,
+    redact_env,
+)
 from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.host_address import resolve_value
 from hub.secure_io import replace_bytes
@@ -296,7 +300,15 @@ def _load_update_status() -> dict:
         # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/containers.
         if not UPDATE_STATUS_PATH.exists():
             return {}
-        data = safe_json_loads(read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP))
+        # parse_int_capped: a leftover >4300-digit number made ``json.loads``
+        # itself raise ValueError (not JSONDecodeError), so this whole read
+        # fell to {} and the next _save_update_status silently wiped every
+        # other image's journal entry.  The hook loads the huge literal as
+        # None and the siblings survive.
+        data = safe_json_loads(
+            read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP),
+            parse_int=parse_int_capped,
+        )
         if not isinstance(data, dict):
             return {}
         cleaned = _jsonable(data)
@@ -515,7 +527,10 @@ def _build_container_list() -> tuple[bool, list]:
         rc2, jout, _ = docker("inspect", *names, timeout=15)
         if rc2 == 0:
             try:
-                arr = safe_json_loads(jout)
+                # parse_int_capped: one leftover >4300-digit number anywhere
+                # in the batch inspect used to ValueError the decode and drop
+                # every row's enrichment (network/mounts/autostart) at once.
+                arr = safe_json_loads(jout, parse_int=parse_int_capped)
             except (TypeError, ValueError, RecursionError):
                 # RecursionError: leftover deeply-nested inspect JSON is not ValueError.
                 arr = []
@@ -945,8 +960,21 @@ def _raise_if_engine_down(*chunks) -> None:
     TTL, and the seconds right after the engine stops are exactly when a
     stale "up" would misclassify the failure.  Output that merely looks
     engine-down while the engine answers "up" keeps its original mapping.
+
+    The docker CLI *itself* vanishing mid-request (OrbStack uninstalled, a
+    dying mount) is the same operator-facing state, but ``sh`` reports it as
+    the two-word sentinel ``"not found"`` — which ``looks_engine_down``
+    never matches, so every mutation here used to hand that raw sentinel
+    back as an uncoded ``ok: false``.  Classified on the same two-gate shape
+    as the compose/actions/tools twins: the sentinel must match AND a fresh
+    on-disk probe must confirm the binary is actually gone (``cli_on_disk``
+    — the sentinel alone is any FileNotFoundError spawn).  Both probes run
+    only on this failure path; timeouts (``"timeout"``) and real CLI exits
+    keep their original shape.
     """
-    if not looks_engine_down("\n".join(_as_text(c) for c in chunks if c)):
+    texts = [_as_text(c) for c in chunks if c]
+    vanished = any(looks_cli_vanished(t) for t in texts) and not cli_on_disk()
+    if not (looks_engine_down("\n".join(texts)) or vanished):
         return
     if not engine_up(force=True):
         raise api_error("container.engine_down")
@@ -1483,9 +1511,12 @@ def _stack_paths() -> list[dict]:
                             break
                     except (OSError, ValueError):
                         continue
-            sid = s.get("id")
-            if not isinstance(sid, str) or not sid:
-                sid = p.name
+            # _field_text probe, not an isinstance(str) gate: YAML ``id: 42``
+            # loads as an int, and the gate silently renamed the stack to its
+            # directory name — POST /api/stacks/42/run then 404'd a stack the
+            # operator could see.  A huge hex int past the digit cap still
+            # falls back (the probe eats its str() ValueError).
+            sid = _field_text(s.get("id")) or p.name
             stacks.append({
                 "id": _field_text(sid) or "stack",
                 "name": _field_text(s.get("name")) or _field_text(p.name) or "stack",
@@ -1501,14 +1532,14 @@ def _stack_paths() -> list[dict]:
                 # Path.resolve() raises RuntimeError on a leftover symlink loop.
                 seen.add(str(p))
         elif s.get("containers"):
-            sid = s.get("id")
-            if not isinstance(sid, str) or not sid:
-                continue
-            # Same _field_text pass as the path branch above: YAML double
-            # quotes load ``id: "\ud800"`` as a *lone surrogate* str, which
-            # this branch used to hand to Starlette raw — its UTF-8 encode
-            # then 500'd GET /api/stacks for every stack.
-            sid = _field_text(sid)
+            # One _field_text probe does both jobs: it scrubs the lone
+            # surrogate a YAML ``id: "\ud800"`` loads as (its raw form used
+            # to 500 GET /api/stacks on Starlette's UTF-8 encode), and it
+            # renders a numeric YAML ``id: 42`` — the isinstance(str) gate
+            # that stood here silently dropped that stack from the listing.
+            # Only genuinely unrenderable ids (huge hex ints past the digit
+            # cap, mappings) still skip the entry.
+            sid = _field_text(s.get("id"))
             if not sid:
                 continue
             stacks.append({

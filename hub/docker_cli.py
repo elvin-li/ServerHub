@@ -174,6 +174,24 @@ def cli_on_disk() -> bool:
         return False
 
 
+def parse_int_capped(digits: str):
+    """``json.loads`` *parse_int* hook that survives >4300-digit literals.
+
+    CPython's int(str) digit cap makes the decoder itself raise ValueError —
+    not JSONDecodeError — on a leftover huge number, so callers that catch
+    "corrupt JSON" dropped the *whole* document: one poisoned entry in
+    docker-update-status.json wiped every sibling image's state on the next
+    save, and one huge number anywhere in ``docker inspect`` output turned
+    an existing container into a coded 404.  A number past the cap cannot be
+    rendered by any JSON encoder anyway, so it loads as None — the same drop
+    ``_jsonable`` applies to an already-int leftover.
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def inspect_object(out: str) -> dict | None:
     """First object from ``docker inspect`` JSON, or None if unusable.
 
@@ -182,7 +200,7 @@ def inspect_object(out: str) -> dict | None:
     and 500 the inspect and recreate routes.
     """
     try:
-        parsed = safe_json_loads(out)
+        parsed = safe_json_loads(out, parse_int=parse_int_capped)
     except (TypeError, ValueError, RecursionError):
         return None
     if isinstance(parsed, list):
@@ -210,7 +228,7 @@ def docker_json(args: list[str], timeout=30) -> Any:
                 objs: list[dict] = []
                 for ln in lines:
                     try:
-                        parsed = safe_json_loads(ln)
+                        parsed = safe_json_loads(ln, parse_int=parse_int_capped)
                     except (TypeError, ValueError, RecursionError):
                         # RecursionError: leftover nested NDJSON row is not
                         # ValueError; skip it so siblings still list.
@@ -222,7 +240,7 @@ def docker_json(args: list[str], timeout=30) -> Any:
                     elif isinstance(parsed, dict):
                         objs.append(_jsonable(parsed))
                 return [x for x in objs if isinstance(x, dict)], 0, ""
-        parsed = safe_json_loads(out)
+        parsed = safe_json_loads(out, parse_int=parse_int_capped)
         if isinstance(parsed, list):
             return [
                 x for x in (_jsonable(row) for row in parsed if isinstance(row, dict))
