@@ -374,11 +374,33 @@ def _jsonable_state(value, depth: int = 0):
         return None
 
 
+def _json_int(digits: str) -> int | None:
+    """``json.loads`` int hook: null the one number the encoder cannot hold.
+
+    Past CPython's ~4300-digit int<->str cap the decoder's own ``int()``
+    conversion raises *bare ValueError* — not JSONDecodeError — and the
+    except-ValueError fallback in :func:`_load_state` read that as a corrupt
+    document.  One over-cap counter written by an operator script silently
+    wiped the whole serverhub-state.json to ``{}``: GET /api/cloudflared/status
+    (and the Apps page) lost ``active_tunnel`` / ``mode``, restart reported
+    "Nothing to restart", and the next read-modify-write (start / uninstall)
+    persisted the wipe to disk.  A ``str()``-probe-style guard, not an
+    isinstance gate: every renderable numeric id still parses as an int.
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _load_state() -> dict:
     _ensure_dirs()
     if _path_is_file(STATE_FILE):
         try:
-            data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP) or "{}")
+            data = safe_json_loads(
+                read_text_capped(STATE_FILE, _STATE_CAP) or "{}",
+                parse_int=_json_int,
+            )
         except (OSError, ValueError, RecursionError):
             # RecursionError: leftover deeply-nested tunnel state is not ValueError.
             return {}
@@ -736,6 +758,15 @@ def _list_tunnels_uncached() -> list[dict] | None:
 def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required") -> str:
     """Tunnel name/UUID that cannot be read as a cloudflared option."""
     # Nested non-strings in serverhub-state.json used to raise ``.strip``.
+    if isinstance(value, int) and not isinstance(value, bool):
+        # ``tunnel_name: 123`` written unquoted by an operator script parses
+        # as an int; the plain isinstance gate below silently refused to
+        # restart tunnel "123".  str() probe, so an over-cap leftover stays a
+        # coded 400 (ValueError under the digit cap) instead of a 500.
+        try:
+            value = str(value)
+        except ValueError:
+            raise api_error("cloudflared.invalid_name")
     if not isinstance(value, str):
         if value in (None, ""):
             raise api_error(empty_code)
