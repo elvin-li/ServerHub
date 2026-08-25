@@ -25,7 +25,8 @@ from fastapi import HTTPException
 from hub import catalog_remote
 from hub import cli_args
 from hub import secure_io
-from hub.errors import CODES, api_error
+from hub.docker_cli import engine_up, looks_engine_down
+from hub.errors import CODES, api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER, user_home
 from hub.util import fan_out, read_text_capped, run_capped
@@ -1311,6 +1312,33 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         )
         msg = (_plain_str(msg) or f"exit {rc}").strip()
         if rc != 0:
+            if looks_engine_down(msg) and not engine_up(force=True):
+                # Same shape as the missing-CLI branch just above: the compose
+                # file and registration are good, only the engine is off, so
+                # rolling everything back (and discarding the operator's
+                # filled-in variables and generated passwords) points away
+                # from the real remedy.  Keep the stack startable from
+                # "Apps -> Managed" and answer with the code the SPA can
+                # translate.  The probe is forced -- the memoised answer has a
+                # 5s TTL, and an engine that just stopped is exactly when a
+                # stale "up" would misclassify this as a failed install.
+                fail = soft_fail("container.engine_down")
+                return {
+                    "ok": False,
+                    "code": fail["code"],
+                    "path": str(dest_dir),
+                    "message": (
+                        f"{fail['message']}.\n"
+                        f"Wrote {dest}; the stack is registered and can be started "
+                        f"from Apps once the engine is running.\n"
+                        f"Run manually: docker compose -f {dest} up -d"
+                    ),
+                    "variables": values,
+                    "url": url,
+                    "notes": notes,
+                    "first_run_credentials": _plain_str(meta.get("first_run_credentials")),
+                    "stack_id": template_id,
+                }
             raise _InstallFailed(msg)
         if remapped:
             # The app is not on the port the template advertises, so say so here
@@ -1428,6 +1456,18 @@ def uninstall_template(
     except Exception as e:
         logs.append(_plain_str(e) or "error")
         down_ok = False
+
+    if not down_ok and looks_engine_down("\n".join(logs)) and not engine_up(force=True):
+        # ``down`` did nothing: the containers, networks and volumes this
+        # uninstall promises to remove still exist inside the stopped engine.
+        # Proceeding used to rmtree the compose directory anyway and then --
+        # because ``ok`` falls back to "the compose file is gone" -- report a
+        # *successful* uninstall that had removed only the files, leaving
+        # orphaned containers to restart against a deleted tree when the
+        # engine came back.  Refuse with the coded 503 instead; the operator
+        # retries once the engine is running.  Probe forced, failure path
+        # only, same convention as the rest of this sweep.
+        raise api_error("container.engine_down")
 
     removed_path = False
     if remove_data:
