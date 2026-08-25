@@ -1114,6 +1114,7 @@ export default {
     builtin: '組み込み',
     no_images: 'イメージなし',
     no_volumes: 'ボリュームなし',
+    no_containers: 'コンテナなし',
     engine_off: 'OrbStack エンジン停止中',
     job_log: 'ジョブログ',
     app: 'アプリ',

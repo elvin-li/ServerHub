@@ -1120,6 +1120,7 @@ export default {
     builtin: 'Built-in',
     no_images: 'No images',
     no_volumes: 'No volumes',
+    no_containers: 'No containers',
     engine_off: 'OrbStack engine is down',
     job_log: 'Job log',
     app: 'App',

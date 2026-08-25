@@ -1116,6 +1116,7 @@ export default {
     builtin: '内置',
     no_images: '无镜像',
     no_volumes: '无卷',
+    no_containers: '无容器',
     engine_off: 'OrbStack 引擎未运行',
     job_log: '任务日志',
     app: '应用',
