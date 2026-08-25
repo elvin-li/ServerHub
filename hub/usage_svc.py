@@ -110,10 +110,20 @@ def _as_text(value) -> str:
 
 
 def _safe_bytes(value) -> int:
-    """Clamp a ``stat.st_size`` so ``inf``/None cannot 500 the JSON encoder."""
+    """Clamp a ``stat.st_size`` so ``inf``/None cannot 500 the JSON encoder.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_size`` that is already a >4300-digit int passed through untouched,
+    and CPython's int->str digit limit then ValueError'd Starlette's
+    ``json.dumps`` — 500ing GET /api/storage/usage/tree, /largest and
+    /duplicates after the walk had already finished.  ``float()`` rejects
+    anything beyond float range, the same junk test files_svc._finite_int
+    and logs_svc._stat_size apply to their stat numbers.
+    """
     try:
         n = int(value)
-    except (TypeError, ValueError, OverflowError):
+        float(n)
+    except (TypeError, ValueError, OverflowError, OSError):
         return 0
     return n if n > 0 else 0
 

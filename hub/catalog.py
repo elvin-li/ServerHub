@@ -507,6 +507,26 @@ _list_refresh_lock = threading.Lock()
 _list_generation = 0
 
 
+def _sig_int(value) -> int:
+    """A stat number the signature f-string can render, or 0.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_size`` that is already a >4300-digit int passed through untouched,
+    and CPython's int->str digit limit then ValueError'd the ``f"{...}"``
+    below — outside the ``except OSError`` — 500ing GET /api/catalog and
+    /api/catalog/templates before a single template was parsed.  ``float()``
+    rejects anything beyond float range, the same junk test
+    files_svc._finite_int and logs_svc._stat_size apply to their stat
+    numbers.
+    """
+    try:
+        value = int(value)
+        float(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0
+    return value
+
+
 def _templates_sig() -> str:
     """Cheap change detector for template dir + remote overrides + install dirs."""
     if not _is_dir(TEMPLATES):
@@ -516,11 +536,7 @@ def _templates_sig() -> str:
         for p in sorted(TEMPLATES.iterdir()):
             if p.suffix in (".yml", ".yaml"):
                 st = p.stat()
-                try:
-                    mtime = int(st.st_mtime)
-                except (TypeError, ValueError, OverflowError):
-                    mtime = 0
-                parts.append(f"{p.name}:{mtime}:{st.st_size}")
+                parts.append(f"{p.name}:{_sig_int(st.st_mtime)}:{_sig_int(st.st_size)}")
     except OSError:
         return "err"
     # Remote overrides change the merged listing without touching templates/,
@@ -529,11 +545,7 @@ def _templates_sig() -> str:
     try:
         for p in catalog_remote.remote_template_files():
             st = p.stat()
-            try:
-                mtime = int(st.st_mtime)
-            except (TypeError, ValueError, OverflowError):
-                mtime = 0
-            parts.append(f"r:{p.name}:{mtime}:{st.st_size}")
+            parts.append(f"r:{p.name}:{_sig_int(st.st_mtime)}:{_sig_int(st.st_size)}")
     except OSError:
         pass
     # installed flags change when ~/Services/<id>/docker-compose.yml appears
