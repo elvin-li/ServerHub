@@ -387,6 +387,42 @@ describe('dashboard and storage surface leftovers', () => {
     expect(chip[0]).toMatch(/:aria-pressed="metricRange === r"/)
   })
 
+  it('spells the Dashboard standalone LED states, not just their colour', () => {
+    // Four LEDs sit outside any table, so the sr-only status_led column-header
+    // convention cannot cover them: the member service cards (the sub line
+    // prefers free-text detail over the state word), the attention list
+    // (warn vs down), the recent alerts (severity), and the failed health
+    // checks (error vs warn). Same fix as the WireGuard ping rows: hide the
+    // paint, put the word beside it. ledText reuses the Services state keys,
+    // so no new locale strings.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/function ledText\(state\)[\s\S]*t\('services\.state_ok'\)[\s\S]*t\('services\.state_down'\)/)
+    const spelled = dashboard.match(/class="led" :class="led\((?:s\.state|c\.state)\)" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ ledText\(/g) || []
+    expect(spelled.length, 'member card + attention list LEDs carry sr-only state text').toBe(2)
+    expect(dashboard).toMatch(/a\.level === 'ok' \? 'on' : \(a\.level === 'warn' \? 'warn' : 'err'\)" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ a\.level === 'ok' \? t\('common\.ok'\) : \(a\.level === 'warn' \? t\('common\.warn'\) : t\('common\.error'\)\) \}\}/)
+    expect(dashboard).toMatch(/c\.level === 'error' \? 'err' : 'warn'" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ c\.level === 'error' \? t\('common\.error'\) : t\('common\.warn'\) \}\}/)
+    // The bookmark-card LED only repeats bmLabel's up/stopped/down text in
+    // colour, so it is decoration — same treatment as the Bookmarks page.
+    expect(dashboard).toMatch(/class="led" :class="bmLed\(b\)" aria-hidden="true"/)
+  })
+
+  it('keeps the Dashboard attention tile from reading unloaded as healthy-empty', () => {
+    // Before status resolves, attention is [] because nothing was read, not
+    // because everything is healthy: the status-gated ok branch fell through
+    // to an empty .alert-list that said nothing at all — silent load
+    // presented as empty, the same gap the ports/volumes rows already close.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/<div v-if="!status" class="sub">\{\{ loadError \? t\('common\.load_failed'\) : t\('common\.loading'\) \}\}<\/div>\s*<div v-else-if="!attention\.length" class="sub ok-msg">\{\{ t\('dashboard\.all_ok'\) \}\}<\/div>/)
+    expect(dashboard).not.toMatch(/v-if="status && !attention\.length"/)
+  })
+
+  it('announces the Files item count as a live region', () => {
+    // The count is the answer to Refresh / navigation / delete and changed
+    // silently for a screen reader — same treatment as the Modules count.
+    const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(listing\.count\) \}\} \{\{ t\('files\.items'\) \}\}/)
+  })
+
   it('names the MainArray SMART attribute expander and carries its open state', () => {
     // The visible face is a glyph and a count ("▼ 12"), which is also what a
     // screen reader announced — nothing said what expands, and nothing said

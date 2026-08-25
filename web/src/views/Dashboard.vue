@@ -45,7 +45,13 @@
         <div class="dash-grid">
           <div v-for="s in g.services || []" :key="s.id" class="tile span-4 member-svc">
             <div class="row">
-              <span class="led" :class="led(s.state)"></span>
+              <!-- The LED is colour alone, and the sub line below prefers the
+                   free-text detail over the state word, so a screen reader
+                   heard "Plex · port 32400 responding" with nothing saying
+                   whether that is up or down. Same treatment as the WireGuard
+                   ping rows: hide the paint, spell the state. -->
+              <span class="led" :class="led(s.state)" aria-hidden="true"></span>
+              <span class="sr-only">{{ ledText(s.state) }}</span>
               <span class="name">{{ finiteText(s.name) }}</span>
             </div>
             <div class="sub" style="margin-top:4px">{{ finiteText(s.detail, '') || finiteText(s.state) }}</div>
@@ -610,10 +616,16 @@
             {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
           </span>
         </h3>
-        <div v-if="status && !attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
+        <!-- Before status resolves, attention is [] because nothing was read,
+             not because everything is healthy: the old status-gated ok branch
+             fell through to an empty list that said nothing at all. -->
+        <div v-if="!status" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
+        <div v-else-if="!attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
         <div v-else class="alert-list">
           <div v-for="s in attention.slice(0, 10)" :key="s.id" class="alert-item">
-            <span class="led" :class="led(s.state)"></span>
+            <!-- warn vs down was carried by the LED colour alone. -->
+            <span class="led" :class="led(s.state)" aria-hidden="true"></span>
+            <span class="sr-only">{{ ledText(s.state) }}</span>
             <div style="flex:1;min-width:0">
               <div class="name">{{ finiteText(s.name) }}</div>
               <div class="detail" style="margin:0">{{ finiteText(s.group) }} · {{ finiteText(s.detail) }}</div>
@@ -631,7 +643,10 @@
         <div v-if="!alerts" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
         <div v-else-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
         <div v-for="(a,i) in (alerts || []).slice(0,5)" :key="i" class="alert-item">
-          <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')"></span>
+          <!-- The alert's severity was its LED colour alone; the message text
+               does not necessarily repeat it. -->
+          <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')" aria-hidden="true"></span>
+          <span class="sr-only">{{ a.level === 'ok' ? t('common.ok') : (a.level === 'warn' ? t('common.warn') : t('common.error')) }}</span>
           <div style="flex:1">
             <div class="name">{{ finiteText(a.name) }}</div>
             <div class="detail" style="margin:0">{{ fmt(a.t) }} · {{ finiteText(a.message) }}</div>
@@ -678,7 +693,9 @@
         </div>
         <div class="failed-checks" v-if="failedChecks.length">
           <div v-for="c in failedChecks.slice(0, 3)" :key="c.id" class="alert-item">
-            <span class="led" :class="c.level === 'error' ? 'err' : 'warn'"></span>
+            <!-- error vs warn was the LED colour alone. -->
+            <span class="led" :class="c.level === 'error' ? 'err' : 'warn'" aria-hidden="true"></span>
+            <span class="sr-only">{{ c.level === 'error' ? t('common.error') : t('common.warn') }}</span>
             <div style="flex:1">
               <div class="name">{{ finiteText(c.name) }}</div>
               <div class="detail" style="margin:0">{{ finiteText(errText(c.detail)) }}</div>
@@ -705,7 +722,10 @@
             rel="noopener"
             :title="finiteText(b.url)"
           >
-            <span class="led" :class="bmLed(b)"></span>
+            <!-- Decoration: .bm-meta below already spells up/stopped/down
+                 (bmLabel), so the LED only repeats it in colour — same
+                 treatment as the Bookmarks page cards. -->
+            <span class="led" :class="bmLed(b)" aria-hidden="true"></span>
             <span class="bm-name">{{ finiteText(b.name) }}</span>
             <span class="bm-meta">{{ bmLabel(b) }}</span>
           </a>
@@ -1399,6 +1419,15 @@ function led(state) {
   if (state === 'warn') return 'warn'
   if (state === 'stopped') return 'off'
   return 'err'
+}
+// Spelled-out twin of led() for the standalone LEDs (member cards, attention
+// list): colour reaches a sighted reader and nobody else. Reuses the Services
+// state words, so no new locale strings.
+function ledText(state) {
+  if (state === 'ok') return t('services.state_ok')
+  if (state === 'warn') return t('services.state_warn')
+  if (state === 'stopped') return t('services.state_stopped')
+  return t('services.state_down')
 }
 function fmt(ts) {
   return fmtTs(ts, '')

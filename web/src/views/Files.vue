@@ -31,7 +31,9 @@
         <button type="button" class="danger" :disabled="busy || !selected.length" @click="doDeleteSelected">
           {{ t('files.delete') }}
         </button>
-        <span class="meta-count" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
+        <!-- The count is the answer to Refresh / navigation / delete and used
+             to change silently for a screen reader (Modules count treatment). -->
+        <span class="meta-count" role="status" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
         <div class="toolbar-spacer"></div>
         <button type="button" :disabled="busy" @click="openFullFB">{{ t('files.open_full') }}</button>
         <button
