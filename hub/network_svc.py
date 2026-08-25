@@ -808,9 +808,17 @@ def _alias_settings() -> dict:
     # sanitize
     clean = []
     for ip in ips:
-        if _valid_ip(str(ip)):
-            clean.append(str(ip).strip())
-    netmask = s.get("netmask") or "255.255.255.255"
+        # `_as_text` is the str() probe: a YAML hex/octal int past CPython's
+        # 4300-digit cap raises ValueError from bare ``str(ip)`` and used to
+        # 500 GET /api/system/network/alias/auto (and silently skip every
+        # autobind pass).  Bytes (`!!binary`) decode instead of becoming
+        # "b'…'" junk, and lone surrogates are scrubbed the same way.
+        text = _as_text(ip).strip()
+        if _valid_ip(text):
+            clean.append(text)
+    # `_valid_ip` accepts bytes, so a YAML ``!!binary`` netmask used to ride
+    # through here *as bytes* and TypeError the JSON encoder on the same GETs.
+    netmask = _as_text(s.get("netmask")).strip()
     if not _valid_ip(netmask):
         netmask = "255.255.255.255"
     return {
@@ -1363,10 +1371,12 @@ def update_alias_auto_config(
     if auto_bind is not None:
         cur["auto_bind"] = bool(auto_bind)
     if ips is not None:
-        clean = [str(x).strip() for x in ips if _valid_ip(str(x).strip())]
-        cur["ips"] = clean
+        # Same str() probe as `_alias_settings`: a caller-supplied over-cap
+        # int must not ValueError the write path's bare ``str(x)``.
+        candidates = (_as_text(x).strip() for x in ips)
+        cur["ips"] = [x for x in candidates if _valid_ip(x)]
     if netmask is not None and _valid_ip(netmask):
-        cur["netmask"] = netmask
+        cur["netmask"] = _as_text(netmask).strip()
     if interval is not None:
         cur["interval"] = max(30, min(600, _coerce_int(interval, 60)))
     update_settings({"ip_aliases": cur})
