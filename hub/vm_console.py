@@ -108,10 +108,32 @@ def _allowlist() -> dict[str, Any]:
     return allowlist if isinstance(allowlist, dict) else {}
 
 
+def _probe_text(value) -> str:
+    """Comparable text for an allowlist key / protocol field.
+
+    A ``str()`` probe, not an ``isinstance(x, str)`` gate: a numeric YAML key
+    still compares as its decimal text instead of being silently dropped.  A
+    leftover YAML hex key/value (``0x…`` dodges CPython's int(str) digit cap,
+    so the *already-int* blows bare ``str()`` at 4300+ digits) used to
+    ValueError out of ``_entry_for`` / ``resolve_target`` — a 500 on the
+    console session mint, and an empty UTM listing via ``capability()``.
+    ``!!binary`` keys decode instead of comparing as ``"b'…'"``.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    try:
+        return str(value)
+    except Exception:
+        return ""
+
+
 def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
     allowlist = _allowlist()
+    wanted = _probe_text(vm_uuid).strip().lower()
     for key, value in allowlist.items():
-        if str(key).strip().lower() == str(vm_uuid).strip().lower():
+        if _probe_text(key).strip().lower() == wanted:
             return value if isinstance(value, dict) else None
     return None
 
@@ -174,7 +196,7 @@ def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTar
     entry = _entry_for(uuid)
     if not entry or not entry.get("enabled"):
         return None
-    protocol = str(entry.get("protocol") or "vnc").strip().lower()
+    protocol = _probe_text(entry.get("protocol") or "vnc").strip().lower()
     if protocol != "vnc":
         return None
     raw_host = entry.get("host")
