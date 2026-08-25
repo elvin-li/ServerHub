@@ -414,9 +414,17 @@ def _immich_key() -> str:
 def _public_href(raw: Any) -> str:
     """Operator-facing link: http(s) only, never javascript: or file:."""
     text = _as_text(raw).strip()
-    parts = urlsplit(text)
-    if parts.scheme in ("http", "https") and parts.hostname:
-        return text
+    try:
+        parts = urlsplit(text)
+        if parts.scheme in ("http", "https") and parts.hostname:
+            return text
+    except ValueError:
+        # ``urlsplit("http://[torn")`` raises "Invalid IPv6 URL" on 3.12
+        # (the http_guard ``_url_parts`` precedent).  A torn paste in a
+        # PATCH body used to 500 the save past the coded bad_link_url
+        # check, and the same leftover in config.json 500'd every GET
+        # /api/photoshub/status and /config until hand-edited out.
+        pass
     return ""
 
 
