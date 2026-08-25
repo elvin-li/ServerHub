@@ -185,6 +185,49 @@ describe('Alerts page', () => {
     w.unmount()
   })
 
+  it('shows the load failure above stale rows when a re-poll fails', async () => {
+    // Stays-immune pin: rows from the last good poll keep rendering under the
+    // failure banner (the LoadFailure contract) — never a filter excuse, and
+    // never a silently frozen table.
+    api.getAlerts
+      .mockResolvedValueOnce({
+        alerts: [{ t: 1, name: 'svc-stale', level: 'down', event: 'problem', kind: 'service' }],
+      })
+      .mockRejectedValue(new Error('panel down'))
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+    expect(w.text()).toContain('svc-stale')
+    await w.findAll('button').find((b) => b.text() === 'common.refresh').trigger('click')
+    await flushPromises()
+    const html = w.html()
+    expect(html).toContain('load-failure-stub')
+    expect(w.text()).toContain('svc-stale')
+    expect(html.indexOf('load-failure-stub')).toBeLessThan(html.indexOf('<table'))
+    w.unmount()
+  })
+
+  it('does not claim "no alerts" when the first load failed', async () => {
+    // Stays-immune pin: an API failure with nothing fetched is an error
+    // state, not the good-news empty placeholder and not a filter miss.
+    api.getAlerts.mockRejectedValue(new Error('panel down'))
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+    expect(w.html()).toContain('load-failure-stub')
+    expect(w.text()).not.toContain('alerts.empty')
+    expect(w.text()).not.toContain('alerts.filter_empty')
+    w.unmount()
+  })
+
   it('polls while mounted and stops the poller on leave', async () => {
     api.getAlerts.mockResolvedValue({ alerts: [] })
     const w = mount(Alerts, {
