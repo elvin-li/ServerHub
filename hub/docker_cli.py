@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from hub.paths import DOCKER
@@ -151,6 +152,26 @@ def looks_cli_vanished(text) -> bool:
     failure mapping.
     """
     return _as_text(text).strip() == "not found"
+
+
+def cli_on_disk() -> bool:
+    """True when the DOCKER binary is still present on disk.
+
+    ``run_capped``/``sh`` collapse *every* FileNotFoundError spawn into the
+    same ``(-1, "not found")`` sentinel — a cwd that vanished between the
+    caller's own mkdir/exists gate and the spawn (a stack directory deleted
+    mid-request) raises exactly like a vanished binary.  Classifiers that
+    map the sentinel to ``container.engine_down`` must therefore confirm
+    the CLI actually left the disk first: with the binary still present and
+    the engine merely off, the 503 told the operator to start the engine
+    when the real problem was the missing directory.  A stat that raises
+    (EIO/ESTALE under a dying mount holding the binary) counts as gone —
+    the CLI is unreachable either way.
+    """
+    try:
+        return Path(DOCKER).exists()
+    except (OSError, ValueError):
+        return False
 
 
 def inspect_object(out: str) -> dict | None:

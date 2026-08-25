@@ -365,10 +365,15 @@ class ComposeValidateCliVanishedTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
 
-    def _validate(self, run_result, probe):
+    def _validate(self, run_result, probe, on_disk=False):
+        # cli_on_disk is stubbed so the verdict never depends on whether the
+        # machine running the suite happens to have a docker binary: the
+        # sentinel only reads as a vanished CLI once the binary is confirmed
+        # gone from disk (a vanished *cwd* raises the same FileNotFoundError).
         with (
             mock.patch.object(compose_svc, "run_capped", return_value=run_result),
             mock.patch.object(compose_svc, "engine_up", probe),
+            mock.patch.object(compose_svc, "cli_on_disk", return_value=on_disk),
         ):
             return compose_svc.validate_compose_text(
                 self.CONTENT, cwd=self._tmp.name,
@@ -380,6 +385,18 @@ class ComposeValidateCliVanishedTests(unittest.TestCase):
         self.assertEqual(result["ok"], False)
         self.assertEqual(result["code"], "container.engine_down")
         probe.assert_called_once_with(force=True)
+
+    def test_sentinel_with_the_binary_still_on_disk_is_not_a_missing_cli(self):
+        """The FileNotFoundError was the stack directory, not the CLI: a
+        coded engine_down here (503) sent the operator to start an engine
+        that was not the problem."""
+        probe = mock.Mock(return_value=False)
+        result = self._validate(MISSING, probe, on_disk=True)
+        self.assertEqual(result["ok"], False)
+        self.assertNotIn("code", result)
+        self.assertEqual(result["message"], "not found")
+        # The message-pattern gate fails first, so no probe is spawned.
+        probe.assert_not_called()
 
     def test_sentinel_with_a_live_engine_keeps_the_raw_message(self):
         probe = mock.Mock(return_value=True)

@@ -335,7 +335,16 @@ def _field_text(value, fallback: str = "") -> str:
             return fallback
         return str(value)
     if isinstance(value, int):
-        return str(value)
+        try:
+            return str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap ``str()`` is itself the
+            # conversion that fails.  YAML hex/octal ints load *uncapped*
+            # (``int(x, 16)`` is a power-of-two base), so a leftover
+            # ``name: 0xfff…`` in services.yaml stacks/overrides used to
+            # raise here and 500 GET /api/stacks, GET /api/containers and
+            # GET /api/compose/{id}.
+            return fallback
     if isinstance(value, str):
         text = value
     elif isinstance(value, (bytes, bytearray)):
@@ -1494,6 +1503,13 @@ def _stack_paths() -> list[dict]:
         elif s.get("containers"):
             sid = s.get("id")
             if not isinstance(sid, str) or not sid:
+                continue
+            # Same _field_text pass as the path branch above: YAML double
+            # quotes load ``id: "\ud800"`` as a *lone surrogate* str, which
+            # this branch used to hand to Starlette raw — its UTF-8 encode
+            # then 500'd GET /api/stacks for every stack.
+            sid = _field_text(sid)
+            if not sid:
                 continue
             stacks.append({
                 "id": sid,
