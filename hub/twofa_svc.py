@@ -314,15 +314,27 @@ def _new_recovery_codes() -> list[str]:
     return out
 
 
+def _stored_recovery(rec) -> list[str]:
+    """The digest rows a recovery spend can actually compare against.
+
+    One filter shared by :func:`status` and :func:`use_recovery_code`: a
+    leftover non-string row (a huge JSON int literal degraded to ``None`` by
+    the digit-cap hook, a number, a nested object) can never satisfy
+    ``_digest_eq``, so counting it in ``recovery_remaining`` overstated the
+    codes the operator still holds — the count is their cue to regenerate
+    before running out, and junk rows silently inflated it.
+    """
+    return [h for h in rec if isinstance(h, str)] if isinstance(rec, list) else []
+
+
 def status(username: str) -> dict:
     """API-safe view: never contains the secret or any code material."""
     with _lock:
         entry = _user_entry(_load(), username)
-    rec = entry.get("recovery")
     return {
         "enabled": bool(entry.get("enabled")),
         "pending": bool(entry.get("pending_secret")) and not entry.get("enabled"),
-        "recovery_remaining": len(rec) if isinstance(rec, list) else 0,
+        "recovery_remaining": len(_stored_recovery(entry.get("recovery"))),
         "confirmed_at": _as_int(entry.get("confirmed_at"), default=None),
     }
 
@@ -416,8 +428,7 @@ def use_recovery_code(username: str, code: str) -> bool:
         entry = _user_entry(data, username)
         if not entry.get("enabled"):
             return False
-        rec = entry.get("recovery")
-        stored = [h for h in rec if isinstance(h, str)] if isinstance(rec, list) else []
+        stored = _stored_recovery(entry.get("recovery"))
         # Compare against every stored digest so the duration does not say
         # which position (if any) matched.  Wrong-type leftovers (plaintext
         # codes, numbers) used to raise ValueError on length mismatch and
