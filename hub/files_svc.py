@@ -739,8 +739,14 @@ def download(path: str, root_id: str | None = None) -> StreamingResponse:
     # Open the last component ourselves. FileResponse would re-open the
     # path after this check, and a symlink planted in that window would
     # be followed into STATE_ROOT secrets. O_NOFOLLOW is one syscall.
+    # O_NONBLOCK: a leftover FIFO at this path parked the plain open until a
+    # writer appeared — never, for a leftover — so GET /api/files/download
+    # held its worker thread forever instead of answering.  With O_NONBLOCK
+    # the FIFO opens immediately and the S_ISREG check below refuses it as
+    # the coded 400; regular-file reads are unaffected (the same guard as
+    # hub.util.read_bytes_capped).
     try:
-        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
     except OSError as exc:
         if exc.errno in {errno.ELOOP, errno.ENOENT, errno.EISDIR}:
             raise api_error("files.file_only")
@@ -965,9 +971,16 @@ def ensure_filebrowser() -> dict:
             # O_NOFOLLOW refuses to follow a symlink planted at this exact path,
             # so a pre-existing link fails the start instead of redirecting the
             # child's stdout into whatever it points at.
+            # O_NONBLOCK: a leftover FIFO at the log path parked the plain
+            # write-open until a reader appeared, holding POST
+            # /api/files/filebrowser/ensure forever; with it the open fails
+            # ENXIO instead, which the except arm below maps to the coded
+            # start failure.  Writes to a regular log file never block, so
+            # the flag is inert on the happy path.
             log_fd = os.open(
                 FB_LOG,
-                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+                | getattr(os, "O_NONBLOCK", 0),
                 0o600,
             )
             with os.fdopen(log_fd, "ab") as log:
