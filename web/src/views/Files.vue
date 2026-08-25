@@ -26,12 +26,20 @@
         <button type="button" :disabled="busy" @click="doMkdir">{{ t('files.mkdir') }}</button>
         <label class="upload-btn">
           {{ t('files.upload') }}
-          <input type="file" multiple hidden @change="onUpload" />
+          <!-- sr-only, not the hidden attribute: hidden removed the input from
+               the tab order and the accessibility tree, so a keyboard or
+               screen-reader user had no way to upload at all (drag-drop is
+               mouse-only). The wrapping label still names it; the ring is
+               drawn on the visible button below. -->
+          <input type="file" multiple class="sr-only" @change="onUpload" />
         </label>
         <button type="button" class="danger" :disabled="busy || !selected.length" @click="doDeleteSelected">
           {{ t('files.delete') }}
         </button>
-        <span class="meta-count" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
+        <!-- role=status: navigation, uploads and deletes change this count and
+             it changed silently for a screen reader. Same pattern as the
+             Services filter count. -->
+        <span class="meta-count" role="status" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
         <div class="toolbar-spacer"></div>
         <button type="button" :disabled="busy" @click="openFullFB">{{ t('files.open_full') }}</button>
         <button
@@ -563,6 +571,10 @@ onUnmounted(() => {
   background: var(--card); cursor: pointer;
 }
 .upload-btn:hover { border-color: var(--accent); }
+/* The file input inside is sr-only (kept focusable for keyboard upload), and
+   the global sheet suppresses input:focus-visible outlines — so the keyboard
+   ring has to be drawn on the visible button the input lives in. */
+.upload-btn:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .crumbs {
   display: flex; flex-wrap: wrap; align-items: center; gap: 2px;
