@@ -171,6 +171,25 @@ def _as_text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def _finite_int(value, default: int = 0) -> int:
+    """A stat number JSON and headers can carry, or *default*.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_size`` that is already a >4300-digit int passes through untouched,
+    and CPython's int->str digit limit then ValueError'd Starlette's
+    ``json.dumps`` — 500ing GET /api/files/list after the listing had
+    already been built — and the ``str(length)`` Content-Length header on
+    GET /api/files/download.  ``float()`` rejects anything beyond float
+    range, the same junk test hub/backups.py applies to its stat numbers.
+    """
+    try:
+        value = int(value)
+        float(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return default
+    return value
+
+
 def _try_resolve(value) -> Path | None:
     """Resolve *value*, or None on a leftover path the kernel will not follow.
 
@@ -337,20 +356,14 @@ def _entry(p: Path, root: Path) -> dict:
         # follow only for size of regular files
         size = 0
         if p.is_file():
-            try:
-                size = int(st.st_size)
-            except (TypeError, ValueError, OverflowError, OSError):
-                size = 0
+            size = _finite_int(st.st_size)
             if size < 0:
                 size = 0
         try:
             rel = str(p.relative_to(root)) if p != root else ""
         except ValueError:
             rel = p.name
-        try:
-            mtime = int(st.st_mtime)
-        except (TypeError, ValueError, OverflowError):
-            mtime = 0
+        mtime = _finite_int(st.st_mtime)
         try:
             mode = stat.filemode(int(st.st_mode))
         except (TypeError, ValueError, OverflowError):
@@ -708,10 +721,7 @@ def download(path: str, root_id: str | None = None) -> StreamingResponse:
             raise api_error("files.file_only")
         _reject_opened_outside(fd, root_id)
         media = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
-        try:
-            length = int(st.st_size)
-        except (TypeError, ValueError, OverflowError):
-            length = 0
+        length = _finite_int(st.st_size)
         if length < 0:
             length = 0
         headers = {
