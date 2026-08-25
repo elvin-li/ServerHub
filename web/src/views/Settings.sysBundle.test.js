@@ -6,7 +6,9 @@
  * `v-if="sysBundle?.section"`. When that read failed the error went to a toast
  * — gone in four seconds — and the tab settled as headings with nothing under
  * them: indistinguishable from "still loading", with no way to retry. (The VMs,
- * Power and Disk tabs already print sysBundleError; these five did not.)
+ * Power and Disk tabs printed sysBundleError as a colored line in their second
+ * card — no retry, never announced — so they were upgraded to the same banner
+ * in a later sweep and joined the every-tab assertion below.)
  *
  * Mounted rather than pattern-matched, because what matters is what renders:
  * the failure banner, the pending placeholder, and the loaded grid must be
@@ -158,10 +160,33 @@ describe('Settings system-bundle tabs', () => {
   it('surfaces the failure on every bundle-backed tab, not just one', async () => {
     api.getSystemSettings.mockRejectedValue(new Error('bundle probe failed'))
     const wrapper = await mountSettings()
-    for (const tab of ['datetime', 'network', 'shares', 'scheduler', 'access']) {
+    for (const tab of ['datetime', 'network', 'shares', 'scheduler', 'access', 'power', 'disk', 'vms']) {
       await selectTab(tab)
       expect(wrapper.html(), `${tab}: failed read renders no explanation`).toContain('load-failure')
+      expect(wrapper.html(), `${tab}: no way to retry`).toContain('common.retry')
     }
+    wrapper.unmount()
+  })
+
+  it('recovers the VMs tab through the banner retry button', async () => {
+    // VMs is one of the three tabs upgraded from the colored second-card line;
+    // exercise its retry path, not just the banner's presence.
+    api.getSystemSettings.mockRejectedValue(new Error('bundle probe failed'))
+    const wrapper = await mountSettings()
+    await selectTab('vms')
+    expect(wrapper.html()).toContain('load-failure')
+
+    api.getSystemSettings.mockResolvedValue({
+      vms: { utm_available: true, orb_available: false, total: 2, running: 1, items: [] },
+    })
+    const retry = wrapper.findAll('button').find((b) => b.text() === 'common.retry')
+    expect(retry, 'retry button').toBeTruthy()
+    await retry.trigger('click')
+    await flushPromises()
+
+    const html = wrapper.html()
+    expect(html).not.toContain('load-failure')
+    expect(html).toContain('settings.vm_total')
     wrapper.unmount()
   })
 })

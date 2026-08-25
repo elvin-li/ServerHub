@@ -122,6 +122,10 @@
                     <strong>{{ t('accounts.reset_password') }}</strong>
                     <p class="hint" style="margin:4px 0 6px">{{ t('accounts.reset_password_hint') }}</p>
                     <div class="btns">
+                      <!-- Named after the visible "New password" placeholder,
+                           not the action: the old aria-label repeated the
+                           button beside it, so the input and the button were
+                           announced identically. -->
                       <input
                         v-model="resetPassword"
                         type="password"
@@ -129,7 +133,7 @@
                         maxlength="256"
                         autocomplete="new-password"
                         :placeholder="t('settings.new_password')"
-                        :aria-label="t('accounts.reset_password')"
+                        :aria-label="t('settings.new_password')"
                         style="max-width:240px"
                       />
                       <button :disabled="accountsBusy || resetPassword.length < 10" @click="doResetPassword(acct)">

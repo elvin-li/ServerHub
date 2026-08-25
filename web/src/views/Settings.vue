@@ -306,7 +306,12 @@
           <p class="hint" style="margin-top:0">{{ t('twofa.admin_reset_hint') }}</p>
           <div class="form-grid">
             <label>{{ t('settings.username') }}</label>
-            <input v-model.trim="twofaResetUser" maxlength="64" :aria-label="t('twofa.admin_reset')" />
+            <!-- The old aria-label repeated the section heading ("Rescue
+                 another account"), so a speech-input user saying the visible
+                 "Username" label could not reach the field. The name keeps the
+                 rescue context so the form-controls listing can still tell it
+                 apart from the password card's username input. -->
+            <input v-model.trim="twofaResetUser" maxlength="64" :aria-label="t('twofa.admin_reset_user')" />
           </div>
           <div class="btns" style="margin-top:10px">
             <button class="danger" :disabled="twofaBusy || !twofaResetUser" @click="adminResetTwofa">{{ t('twofa.admin_reset_button') }}</button>
@@ -521,7 +526,10 @@
               </select>
               <div v-if="upsForm.shutdown.stacksMode === 'custom'" style="margin-top:6px">
                 <div v-for="(row, i) in upsStackRows" :key="row.id" class="ups-pick-row">
-                  <input type="checkbox" v-model="row.selected" :aria-label="finiteText(row.id)" />
+                  <!-- Named after the visible display name, not the raw stack
+                       id: a screen reader hearing "stack:immich" cannot match
+                       it to the "Immich" the row shows. -->
+                  <input type="checkbox" v-model="row.selected" :aria-label="finiteText(row.name, '') || finiteText(row.id)" />
                   <span class="mono">
                     {{ finiteText(row.name) }}
                     <span class="sub" v-if="row.missing">· {{ t('settings.ups_shutdown_stack_missing') }}</span>
@@ -537,7 +545,9 @@
             <label v-if="upsScriptChoices.length">{{ t('settings.ups_shutdown_scripts') }}</label>
             <div v-if="upsScriptChoices.length">
               <div v-for="s in upsScriptChoices" :key="s.id" class="ups-pick-row">
-                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(s.id)" />
+                <!-- Same rule as the stack rows: the checkbox must carry the
+                     name the row displays, not the machine id. -->
+                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(s.name, '') || finiteText(s.id)" />
                 <span class="mono">{{ finiteText(s.name) }}</span>
               </div>
             </div>
@@ -640,6 +650,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_manager') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.vm_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab: the
+             colored line in the list card names the failure but offers no
+             retry and is never announced. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.vms">
           <label>UTM</label>
           <div>
@@ -725,6 +740,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.power') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.power_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab: the
+             colored line in the assertions card names the failure but offers
+             no retry and is never announced. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.power">
           <label>{{ t('settings.sleep') }}</label>
           <div class="row" style="gap:8px">
@@ -799,6 +819,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.disk_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab: the
+             colored line in the disk-power card names the failure but offers
+             no retry and is never announced. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.disk">
           <label>disksleep</label>
           <div>{{ finiteN(sysBundle.disk.disksleep_minutes) }} {{ t('settings.minutes') }}</div>
