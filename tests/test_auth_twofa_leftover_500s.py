@@ -10,6 +10,14 @@ Follow-up leftovers: inf/NaN/bytes extra fields and a leftover list-vs-dict
 store or ``.lock`` directory (and EIO replacing it) 500'd enroll and key
 create; pwd ``pw_gecos`` bytes / ``\\ud800`` and getpwall EIO 500'd GET
 ``/api/users``; leftover ``\\ud800`` account resources 500'd create/update.
+
+Digit-cap leftovers: YAML hex (``0x…``) loads through ``int(x, 16)``, which
+CPython's 4300-digit str<->int cap does not bound, so a leftover huge int in
+``settings.auth`` used to ValueError ``str()`` (every login attempt via
+``accounts()``, the unclaimed status via ``suggested_setup_username``), the
+f-string in ``account_session_version`` (login's ``create_session`` and the
+pending-TOTP token), and ``yaml.safe_dump`` on every auth write that carried
+``session_epochs`` along (setup, password change, the TOTP epoch bump).
 """
 from __future__ import annotations
 
@@ -25,12 +33,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+import yaml
 from fastapi import HTTPException, Request
 
 from hub import api_keys, auth, totp, twofa_svc, users_svc
 from hub.routers import accounts_api, api_keys_api, auth_api
 
 NOW = 1_700_000_000
+
+#: What a leftover ``0xF…`` (5000 hex digits) in services.yaml loads as.
+#: ``int(x, 16)`` is exempt from CPython's str<->int digit cap, so the
+#: value parses fine and only explodes later, at ``str()`` / dump time.
+HUGE_INT = int("F" * 5000, 16)
 
 
 def _request() -> Request:
@@ -626,6 +640,160 @@ class ApiKeysLeftoverStoreTests(unittest.TestCase):
             hit = api_keys.verify(token)
         self.assertIsNotNone(hit)
         _starlette_json(hit)
+
+
+class DigitCapLeftoverCfgTests(unittest.TestCase):
+    """Leftover YAML hex ints past the digit cap on the login path."""
+
+    def test_huge_legacy_fields_do_not_500_accounts_or_login(self):
+        cfg = {"username": HUGE_INT, "password": HUGE_INT, "password_hash": HUGE_INT}
+        with mock.patch.object(auth, "_auth_cfg", return_value=cfg):
+            names = list(auth.accounts())
+            self.assertFalse(auth.verify_password("wrong-password"))
+            self.assertFalse(auth.verify_account_password("admin", "wrong-password"))
+            self.assertEqual(auth.suggested_setup_username(), "admin")
+            self.assertEqual(auth.setup_token_mode(), "auto")
+        _starlette_json({"accounts": names})
+
+    def test_huge_account_row_is_dropped_not_500(self):
+        cfg = {
+            "username": "admin",
+            "password_hash": "hash-admin",
+            "accounts": [
+                {
+                    "username": HUGE_INT,
+                    "password_hash": HUGE_INT,
+                    "role": HUGE_INT,
+                    "resources": [HUGE_INT],
+                },
+                {
+                    "username": "mom",
+                    "password_hash": "hash-mom",
+                    "role": "member",
+                    "resources": ["jellyfin", HUGE_INT],
+                },
+            ],
+        }
+        with mock.patch.object(auth, "_auth_cfg", return_value=cfg):
+            names = auth.accounts()
+            resources = auth.allowed_resources("mom")
+        _starlette_json({"accounts": list(names), "resources": resources})
+        self.assertIn("mom", names)
+        self.assertEqual(resources, ["jellyfin"])
+
+    def test_huge_unclaimed_fields_do_not_500_status(self):
+        cfg = {"username": HUGE_INT, "setup_token_mode": HUGE_INT}
+        with mock.patch.object(auth, "_auth_cfg", return_value=cfg):
+            body = auth_api.auth_status(_request())
+        _starlette_json(body)
+        self.assertEqual(body["username"], "admin")
+        self.assertEqual(body["setup_token_mode"], "auto")
+        self.assertTrue(body["setup_required"])
+
+    def test_huge_session_epoch_does_not_500_login_tokens(self):
+        """The f-string in account_session_version used to 500 create_session."""
+        cfg = {
+            "username": "admin",
+            "password_hash": "hash-admin",
+            "session_epochs": {"admin": HUGE_INT},
+        }
+        with (
+            mock.patch.object(auth, "_auth_cfg", return_value=cfg),
+            mock.patch.object(auth, "_secret", return_value=b"x" * 32),
+        ):
+            token = auth.create_session("admin")
+            self.assertTrue(auth.verify_session(token))
+            pending = auth.create_pending_totp_token("admin")
+            self.assertEqual(auth.pending_totp_username(pending), "admin")
+
+    def test_corrupt_window_sessions_die_on_bump(self):
+        """A session minted while the epoch was huge reads as epoch 1; the
+        bump lands on 2, so that session must stop verifying."""
+        cfg = {
+            "username": "admin",
+            "password_hash": "hash-admin",
+            "session_epochs": {"admin": HUGE_INT},
+        }
+        with (
+            mock.patch.object(auth, "_auth_cfg", return_value=cfg),
+            mock.patch.object(auth, "_secret", return_value=b"x" * 32),
+        ):
+            token = auth.create_session("admin")
+            self.assertTrue(auth.verify_session(token))
+        bumped = dict(cfg, session_epochs={"admin": 2})
+        with (
+            mock.patch.object(auth, "_auth_cfg", return_value=bumped),
+            mock.patch.object(auth, "_secret", return_value=b"x" * 32),
+        ):
+            self.assertFalse(auth.verify_session(token))
+
+    def test_huge_epoch_bump_dumps_and_lands_past_the_corrupt_window(self):
+        """yaml.safe_dump of the huge epoch used to 500 TOTP confirm/disable."""
+        written: dict = {}
+
+        def fake_mutate(fn):
+            data = {"settings": {"auth": {"session_epochs": {
+                "admin": HUGE_INT, "kid": HUGE_INT, HUGE_INT: 3,
+            }}}}
+            fn(data)
+            yaml.safe_dump(data)  # what config.mutate does on save
+            written.update(data["settings"]["auth"]["session_epochs"])
+
+        with mock.patch.object(auth, "config_mutate", side_effect=fake_mutate):
+            auth.bump_session_epoch("admin")
+        # 2, not 1: sessions minted while the leftover read back as 1 must die.
+        self.assertEqual(written["admin"], 2)
+        # The sibling keeps the value _session_epoch reads for it, so its
+        # pre-logout tokens stay revoked rather than resetting to epoch 0.
+        self.assertEqual(written["kid"], 1)
+        self.assertNotIn(HUGE_INT, written)
+
+    def test_setup_write_cleans_leftover_epochs(self):
+        """set_password rode the huge epoch into yaml.safe_dump and 500'd setup."""
+        dumped: dict = {}
+
+        def fake_mutate(fn):
+            data = {"settings": {"auth": {"session_epochs": {"kid": HUGE_INT}}}}
+            fn(data)
+            yaml.safe_dump(data)
+            dumped.update(data["settings"]["auth"])
+
+        with mock.patch.object(auth, "config_mutate", side_effect=fake_mutate):
+            self.assertTrue(auth.set_password("correct-horse-battery", "admin"))
+        self.assertTrue(str(dumped["password_hash"]).startswith("scrypt$"))
+        self.assertEqual(dumped["session_epochs"], {"kid": 1})
+
+    def test_delete_account_cleans_leftover_epochs(self):
+        dumped: dict = {}
+
+        def fake_mutate(fn):
+            data = {"settings": {"auth": {
+                "accounts": [{"username": "mom", "password_hash": "x", "role": "member"}],
+                "session_epochs": {"mom": 4, "kid": HUGE_INT},
+            }}}
+            fn(data)
+            yaml.safe_dump(data)
+            dumped.update(data["settings"]["auth"])
+
+        with (
+            mock.patch.object(
+                auth, "account",
+                return_value={"username": "mom", "role": auth.ROLE_MEMBER},
+            ),
+            mock.patch.object(auth, "config_mutate", side_effect=fake_mutate),
+        ):
+            auth.delete_account("mom")
+        self.assertEqual(dumped["accounts"], [])
+        self.assertEqual(dumped["session_epochs"], {"kid": 1})
+
+    def test_unrenderable_config_dump_is_coded_not_500(self):
+        """A huge int anywhere else in the config degrades to a coded error."""
+        from hub import config as hub_config
+
+        with self.assertRaises(HTTPException) as ctx:
+            hub_config._dump({"overrides": {"x": HUGE_INT}})
+        _starlette_json(ctx.exception.detail)
+        self.assertEqual(ctx.exception.detail["code"], "settings.save_failed")
 
 
 _Pw = namedtuple("Pw", "pw_name pw_passwd pw_uid pw_gid pw_gecos pw_dir pw_shell")

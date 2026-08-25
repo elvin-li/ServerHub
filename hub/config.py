@@ -381,6 +381,11 @@ def _dump(data: dict) -> str:
     except RecursionError:
         # Leftover deeply nested services.yaml used to RecursionError PUT /api/settings.
         raise api_error("settings.save_failed")
+    except ValueError:
+        # A leftover YAML hex int past CPython's int->str digit cap loads fine
+        # (``int(x, 16)`` is uncapped) but cannot be re-dumped; any mutate that
+        # carried it along -- auth setup, password change -- used to 500.
+        raise api_error("settings.save_failed")
 
 
 def save_full(data: dict) -> None:
