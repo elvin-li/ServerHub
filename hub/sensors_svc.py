@@ -101,7 +101,15 @@ def _sysctl_int(value) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     text = _as_text(value).strip()
-    return int(text) if text.isdigit() else None
+    if not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # ``isdigit()`` does not bound length: a >4300-digit thermal level is
+        # ValueError (CPython's str->int cap) and used to drop the whole
+        # thermal leg from GET /api/system/sensors through _thermal's pool.
+        return None
 
 
 def _finite_float(value) -> float | None:
@@ -599,8 +607,11 @@ def _thermal() -> dict | None:
     elif "no thermal warning" in text:
         pressure = "normal"
     else:
-        level = re.search(r"thermal warning level\D+(\d+)", text)
-        pressure = "warning" if level and int(level.group(1)) > 0 else "normal"
+        m = re.search(r"thermal warning level\D+(\d+)", text)
+        # _sysctl_int, not bare int(): a >4300-digit pmset level ValueError'd
+        # here and nulled the whole thermal leg of GET /api/system/sensors.
+        level_n = _sysctl_int(m.group(1)) if m else None
+        pressure = "warning" if level_n is not None and level_n > 0 else "normal"
     return {
         "cpu_temp_c": temp_c,
         "temp_source": source,

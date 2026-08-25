@@ -91,7 +91,15 @@ def _sysctl_int(value) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     text = _as_text(value).strip()
-    return int(text) if text.isdigit() else None
+    if not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # ``isdigit()`` does not bound length: ``int()`` of a >4300-digit
+        # leftover is ValueError (CPython's str->int cap), the same class the
+        # sibling parsers in sensors_svc / macos_sysctl now absorb.
+        return None
 
 
 def _after_colon(line: str) -> str | None:
