@@ -900,10 +900,12 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         self.assertEqual(
             sorted(sinks),
             [
-                'views/Account.vue: <div class="twofa-qr" v-html="enrollment.qrSvg"></div>',
-                'views/Settings.vue: <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>',
                 # aria-hidden carries no markup; it hides the QR from AT
-                # because the same config is already in the <pre> above it.
+                # because the same secret is already in the manual-entry field.
+                'views/Account.vue: <div class="twofa-qr" aria-hidden="true" '
+                'v-html="enrollment.qrSvg"></div>',
+                'views/Settings.vue: <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>',
+                # Same AT treatment as Account: the peer config is in the <pre>.
                 'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" '
                 'aria-hidden="true" v-html="qrSvg"></div>',
             ],
