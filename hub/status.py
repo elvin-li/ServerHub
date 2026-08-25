@@ -65,6 +65,23 @@ def _utf8_text(value) -> str:
     return text.encode("utf-8", "replace").decode("utf-8")
 
 
+def _name_text(raw) -> str:
+    """Order / resource / state text via a ``str()`` probe; ``""`` drops it.
+
+    YAML numeric values (``groups_order: [2024, Media]``, a member
+    ``resources: [8080]``) load as int.  The ``isinstance(g, str)`` gate on
+    ``groups_order`` silently lost the numeric group's configured position,
+    and the bare ``str()`` calls in ``filter_status_for_resources`` raised
+    CPython's int->str digit-cap ValueError on an over-cap hex leftover —
+    500ing the member GET /api/status this module exists to serve.  The
+    jobs._task_id rule: a renderable value coerces, an over-cap leftover
+    drops only itself, bool never becomes ``"True"``.
+    """
+    if raw is None or isinstance(raw, bool):
+        return ""
+    return _utf8_text(raw)
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
 
@@ -340,9 +357,14 @@ def _build_status() -> dict:
             counts[st] = 0
         counts[st] += 1
     raw_order = cfg().get("groups_order")
-    # Names only.  ``_as_config`` leaves this list unfiltered (it is not a
-    # list of mappings); a nested dict used to TypeError on ``g in groups``.
-    order = [g for g in raw_order if isinstance(g, str)] if isinstance(raw_order, list) else []
+    # Names via the str() probe.  ``_as_config`` leaves this list unfiltered
+    # (it is not a list of mappings); a nested dict used to TypeError on
+    # ``g in groups``, and the old ``isinstance(g, str)`` gate silently lost
+    # a numeric YAML group name's configured position.
+    if isinstance(raw_order, list):
+        order = [name for name in (_name_text(g) for g in raw_order) if name]
+    else:
+        order = []
     # ensure adaptive groups appear near end unless ordered
     for extra in ("Gateway", "Auto-discovered", "Homebrew Services"):
         if extra not in order:
@@ -429,7 +451,13 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
         status = {}
     if not isinstance(resources, (list, tuple, set, frozenset)):
         resources = []
-    allowed = {str(resource) for resource in resources if str(resource).strip()}
+    # _name_text, not bare str(): an over-cap hex-YAML resource id raised the
+    # digit-cap ValueError here and 500'd the member GET /api/status; a
+    # numeric YAML id still coerces and matches its row.
+    allowed = {
+        text for text in (_name_text(resource) for resource in resources)
+        if text.strip()
+    }
     groups: list[dict] = []
     services: list[dict] = []
     groups_raw = status.get("groups")
@@ -444,7 +472,8 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
         visible = [
             member_service_summary(service)
             for service in raw_svcs
-            if isinstance(service, dict) and str(service.get("id") or "") in allowed
+            if isinstance(service, dict)
+            and _name_text(service.get("id") or "") in allowed
         ]
         if visible:
             groups.append({"group": group.get("group"), "services": visible})
@@ -452,7 +481,8 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
 
     counts = {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
     for service in services:
-        state = str(service.get("state") or "unknown")
+        # _name_text: a planted over-cap int state used to ValueError here.
+        state = _name_text(service.get("state") or "unknown") or "unknown"
         counts[state] = counts.get(state, 0) + 1
 
     return _jsonable({
