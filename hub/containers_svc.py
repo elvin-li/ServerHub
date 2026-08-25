@@ -197,6 +197,8 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
             if p.poll() is None:
                 try:
                     p.wait(timeout=2)
+                    # After stdout EOF the child is usually exiting; this wait
+                    # is the reap, not a second blocking read of the pipe.
                 except subprocess.TimeoutExpired:
                     _reap()
         return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
