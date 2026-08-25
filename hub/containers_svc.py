@@ -189,7 +189,16 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
                     total -= len(j["log"].pop(0))
         finally:
             watchdog.cancel()
-            _reap()
+            # stdout EOF usually means the child is done, but it may not have
+            # been reaped yet. Killing the group immediately is a SIGTERM race
+            # (rc -15) against a just-finished ``echo`` — leftover flake in
+            # test_leftover_surrogate_env_is_not_500 on loaded CI. Wait first;
+            # only reap if it is actually still running.
+            if p.poll() is None:
+                try:
+                    p.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    _reap()
         return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
 
 

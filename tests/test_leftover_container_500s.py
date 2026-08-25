@@ -589,6 +589,11 @@ class StreamJobCommandPopenLeftoverTests(unittest.TestCase):
         self.assertTrue(any("invalid argv" in line for line in job["log"]))
 
     def test_leftover_surrogate_env_is_not_500(self):
+        """Surrogate env values must not UnicodeEncodeError ``Popen``.
+
+        The child is ``/bin/echo`` so rc must be 0, not a leftover SIGTERM
+        from reaping the process group before wait (rc -15).
+        """
         job = {"log": []}
         rc = containers_svc._stream_job_command(
             ["/bin/echo", "ok"],
