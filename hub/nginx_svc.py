@@ -48,6 +48,42 @@ def _sh_message(err, out, fallback: str = "") -> str:
     return (_as_text(err) or _as_text(out) or fallback).strip()
 
 
+def _pid_text(value) -> str | None:
+    """Pid shapes that dodge ``Listing``'s coercion must not poison the payload.
+
+    ``overview()`` does not own the listing object, so a patched or odd one
+    (the same class ``_sh_message`` guards for ``sh``) can answer shapes the
+    production ``Listing`` never does:
+
+    * an *already-int* over-cap pid — YAML/plist hex loads uncapped, and
+      ``str()`` of it is CPython's 4300-digit ValueError, which used to ride
+      to Starlette's own ``json.dumps`` and 500 GET /api/nginx.  A str()
+      probe, not a strict ``isinstance(pid, str)`` gate: a finite numeric
+      pid must keep reporting running;
+    * ``True`` — bool is int's subclass, and ``true`` in JSON made the
+      SPA's ``Number(true)`` render the lie "pid 1";
+    * digit runs past pid_t (signed 32-bit) are no real process — the same
+      bound cloudflared_svc applies before ``os.kill``.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        try:
+            value = str(value)
+        except ValueError:
+            return None
+    text = _as_text(value).strip()
+    if not text.isascii() or not text.isdigit():
+        return None
+    try:
+        n = int(text)
+    except ValueError:
+        return None
+    if n < 1 or n > 2**31 - 1:
+        return None
+    return text
+
+
 def _nginx_present() -> bool:
     """``os.path.isfile`` re-raises EIO/ESTALE; that must not 500 Test/Reload."""
     try:
@@ -90,14 +126,18 @@ def overview() -> dict:
     # test that would have matched a different job whose label merely contains
     # `local.system-nginx`.
     try:
-        pid = launchd_listing().pid_for(LABEL)
+        pid = _pid_text(launchd_listing().pid_for(LABEL))
     except Exception:
         pid = None
     running = pid is not None
+    # ``str(path)`` verbatim used to 500 the encode: these two derive from
+    # ``Path.home()``, and a HOME whose on-disk name is undecodable arrives
+    # through os.environ's surrogateescape as a str carrying a lone
+    # ``\udcff`` — every sibling field here is scrubbed, the conf paths were not.
     return {
         "label": LABEL,
-        "conf": str(NGINX_CONF),
-        "conf_d": str(CONF_D),
+        "conf": _as_text(NGINX_CONF),
+        "conf_d": _as_text(CONF_D),
         "running": running,
         "pid": pid,
         "sites": sites,
