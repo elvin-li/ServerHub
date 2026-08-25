@@ -47,6 +47,16 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render the
+            # number at all (YAML/plist hex loads uncapped through
+            # ``int(x, 16)``, so an over-cap leftover arrives already-int) —
+            # json.dumps raises this same ValueError inside Starlette and
+            # 500'd the privileged ok payload.  Same drop as its inf float
+            # sibling, matching power_svc / system_settings_svc / status.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
