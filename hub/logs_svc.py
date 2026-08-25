@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from hub import cli_args, files_svc
+from hub import files_svc
 from hub.config import cfg
 from hub.errors import api_error
 from hub.paths import user_home
@@ -67,6 +67,32 @@ def _config_text(value) -> str | None:
         return str(value)
     except ValueError:
         return None
+
+
+def _lookup_id(value) -> str | None:
+    """The tail lookup key, or None when nothing listed could match it.
+
+    A source id is only ever a dict key here — the tail is a plain file
+    read, so nothing about it lands in a subprocess argv.  The
+    ``require_positional`` argv gate a security sweep bolted onto
+    ``tail_log`` therefore refused values that are perfectly legal ids:
+    a configured ``id: 日志`` (the panel defaults to zh-CN) or ``id: my
+    log`` was listed by GET /api/logs yet 400'd its own tail — on the
+    Logs page and in the Services script-log fallback that feeds
+    ``log_sources`` ids straight back into ``tail_log``.
+
+    The listing scrubbed its keys through :func:`_utf8_text`, so the raw
+    value is scrubbed the same way *before* the dict lookup — a leftover
+    lone surrogate must compare against the replace-encoded key it was
+    listed under.  Non-str callers follow the ``_config_text`` rule: a
+    renderable int coerces (matching the ``"42"`` the listing publishes
+    for ``id: 0x2A``), bool and over-cap ints match nothing.
+    """
+    if not isinstance(value, str):
+        value = _config_text(value)
+        if value is None:
+            return None
+    return _utf8_text(value)
 
 
 def _log_path_allowed(path: Path) -> bool:
@@ -136,11 +162,20 @@ def _clamp_lines(raw, default: int = 200) -> int:
 
 
 def tail_log(source_id: str, lines: int = 200) -> dict:
-    source_id = cli_args.require_positional(source_id, label="log source")
+    source_id = _lookup_id(source_id)
+    if source_id is None:
+        raise api_error("logs.unknown_source")
     sources = {s["id"]: s for s in log_sources()}
     if source_id not in sources:
         raise api_error("logs.unknown_source")
     meta = sources[source_id]
+    name = meta.get("name") if isinstance(meta.get("name"), str) else source_id
+    name = _utf8_text(name)
+
+    def _missing(path: Path) -> dict:
+        return {"id": _utf8_text(source_id), "name": name, "path": _utf8_text(path),
+                "exists": False, "size": 0, "log": "(file does not exist)", "lines": 0}
+
     try:
         p = Path(str(meta.get("path") or ""))
     except (OSError, ValueError, TypeError):
@@ -149,21 +184,29 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
         raise api_error("logs.protected")
     try:
         p = p.resolve()
-    except (OSError, RuntimeError, ValueError):
+    except ValueError:
+        # Embedded NUL: such a path can never name an on-disk file.  The
+        # listing already reports it as ``exists: false``, but the tail
+        # used to answer the same source with a coded 500 (logs.read_failed)
+        # although no read was ever attempted.  Give the same answer the
+        # listing gives.
+        return _missing(p)
+    except (OSError, RuntimeError):
         raise api_error("logs.read_failed")
     if not _log_path_allowed(p):
         raise api_error("logs.protected")
     try:
         is_file = p.is_file()
-    except (OSError, ValueError):
-        # Dying FUSE mounts raise EIO; a NUL leftover raises ValueError.
+    except ValueError:
+        # A NUL that survived resolve() is still "no such file", not a
+        # failed read.
+        return _missing(p)
+    except OSError:
+        # Dying FUSE mounts raise EIO.
         raise api_error("logs.read_failed")
-    name = meta.get("name") if isinstance(meta.get("name"), str) else source_id
-    name = _utf8_text(name)
     path_s = _utf8_text(p)
     if not is_file:
-        return {"id": _utf8_text(source_id), "name": name, "path": path_s,
-                "exists": False, "size": 0, "log": "(file does not exist)", "lines": 0}
+        return _missing(p)
     lines = _clamp_lines(lines)
     try:
         file_size = _stat_size(p)
