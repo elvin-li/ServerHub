@@ -73,9 +73,10 @@ def _jsonable(value, depth: int = 0):
     in ``quick_links`` are ``datetime`` objects — both 500 GET /api/status.
     A leftover ``\\ud800`` in a name or key still 500'd the same encoder
     (``ensure_ascii=False`` then UTF-8) on GET /api/status and status peek.
-    A >4300-digit leftover int (YAML hex/octal loads uncapped) still passed
-    through untouched: CPython's int->str digit limit then ValueError'd
-    ``json.dumps`` itself.
+    A >4300-digit leftover int (YAML/plist hex/octal loads uncapped) still
+    passed through untouched: CPython's int->str digit limit then
+    ValueError'd ``json.dumps`` itself, 500ing GET /api/status,
+    GET /api/services and GET /api/services/{id}/detail.
     """
     if depth > 32:
         return None

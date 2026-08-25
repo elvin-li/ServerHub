@@ -101,10 +101,25 @@ def collect_scripts():
     def _ports(s):
         raw = s.get("ports")
         if isinstance(raw, list):
-            return raw
-        if isinstance(raw, int):
-            return [raw]
-        return []
+            rows = raw
+        elif isinstance(raw, int) and not isinstance(raw, bool):
+            rows = [raw]
+        else:
+            return []
+        out = []
+        for p in rows:
+            if isinstance(p, int) and not isinstance(p, bool):
+                try:
+                    str(p)
+                except ValueError:
+                    # A hand-edited hex leftover (``ports: [0xfff…]`` parses
+                    # uncapped) can never be listened on, and the
+                    # partially-running detail's ``str(p)`` used to raise the
+                    # int->str digit-cap ValueError and kill the whole
+                    # collector — every script row vanished from /api/status.
+                    continue
+            out.append(p)
+        return out
 
     checks = [(i, port) for i, s in enumerate(scripts) for port in _ports(s)]
     states = list(fan_out(_probe_port, [port for _, port in checks]))

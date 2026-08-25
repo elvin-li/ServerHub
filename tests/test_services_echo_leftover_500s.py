@@ -154,13 +154,12 @@ class AdoptEchoLeftoverTests(unittest.TestCase):
             patch.object(sms, "invalidate_status"),
         ):
             out = sms.adopt_service("auto:1", {
-                "name": SUR, "group": SUR, "start": SUR, "remember": False,
+                "name": SUR, "group": SUR, "remember": False,
             })
         self.assertTrue(out["ok"])
         entry = out["entry"]
         self.assertNotIn("\ud800", entry["name"])
         self.assertNotIn("\ud800", entry["group"])
-        self.assertNotIn("\ud800", entry.get("start") or "")
         stored = applied["scripts"][0]
         self.assertNotIn("\ud800", stored["name"])
         _starlette(out)
@@ -184,13 +183,11 @@ class ScriptEchoLeftoverTests(unittest.TestCase):
         ):
             out = sms.update_script("s1", {
                 "name": SUR, "group": SUR, "url": "http://h\ud800ost/x",
-                "start": SUR,
             })
         entry = out["entry"]
         self.assertNotIn("\ud800", entry["name"])
         self.assertNotIn("\ud800", entry["group"])
         self.assertNotIn("\ud800", entry["url"])
-        self.assertNotIn("\ud800", entry.get("start") or "")
         self.assertNotIn("\ud800", data["scripts"][0]["name"])
         _starlette(out)
 
@@ -206,11 +203,14 @@ class ScriptEchoLeftoverTests(unittest.TestCase):
         self.assertNotIn("\ud800", out["removed"]["name"])
         _starlette(out)
 
-    def test_clean_cmd_surrogate_is_cleaned(self):
-        cleaned = sms._clean_cmd(SUR)
-        self.assertIsNotNone(cleaned)
-        self.assertNotIn("\ud800", cleaned)
-        _starlette({"start": cleaned})
+    def test_clean_cmd_surrogate_is_rejected_not_mangled(self):
+        # Superseded by the scheduler-command rule: a surrogate start/stop
+        # command used to be silently mangled (``x\ud800rm`` -> ``x?rm``) and
+        # stored as a command the operator never wrote.  Coded 400 instead.
+        with self.assertRaises(HTTPException) as ctx:
+            sms._clean_cmd(SUR)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail.get("code"), "services.bad_command")
 
 
 class OverrideRouteEndToEndTests(unittest.TestCase):

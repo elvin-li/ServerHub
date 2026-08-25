@@ -5,8 +5,13 @@
     <!-- Problems banner -->
     <div v-if="(status?.problems || []).length" class="problems-bar">
       <strong>{{ t('services.problems') }}</strong>
+      <!-- LEDs: warn vs down reached a sighted reader in colour alone, so
+           hide the paint and spell the state — same treatment as the
+           Containers rows and Dashboard cards. ledText reuses the state-chip
+           words, so no new locale strings. -->
       <span v-for="p in (status.problems || []).slice(0, 8)" :key="p.id" class="prob-chip" @click="openDetail(p)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
-        <span class="led" :class="ledOf(p.state)"></span>
+        <span class="led" :class="ledOf(p.state)" aria-hidden="true"></span>
+        <span class="sr-only">{{ ledText(p.state) }}</span>
         {{ finiteText(p.name) }}
       </span>
       <button v-if="canManage" type="button" class="tiny primary" :disabled="busy || !downIds.length" @click="bulkAction(downIds, 'start')">
@@ -86,9 +91,14 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="() => refresh(true)" :busy="loading" />
     <SkeletonLoader v-if="!loaded" :variant="dense ? 'table' : 'cards'" :cols="8" :rows="8" />
 
-    <!-- Dense table -->
+    <!-- Dense table.  On a failed *first* load nothing was fetched, so the
+         banner stands alone: the table used to render its column headers
+         above nothing (the empty-row is loadError-suppressed), claiming a
+         listing that never arrived.  When a 15s re-poll fails the stale rows
+         stay on screen under the banner instead (the LoadFailure contract —
+         same as Containers and the Users accounts table). -->
     <template v-else-if="dense">
-      <div class="table-wrap">
+      <div v-if="flat.length || !loadError" class="table-wrap">
         <table class="dense svc-table fit-m">
           <thead>
             <tr>
@@ -115,7 +125,12 @@
                      reader's form-controls listing. -->
                 <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row_name', { name: finiteText(s.name, '') || finiteText(s.id) })" @change="toggleSelect(s.id)" />
               </td>
-              <td><span class="led" :class="ledOf(s.state)"></span></td>
+              <!-- The sr-only column header names the column, but the cell
+                   itself was empty: colour alone said whether the row runs. -->
+              <td>
+                <span class="led" :class="ledOf(s.state)" aria-hidden="true"></span>
+                <span class="sr-only">{{ ledText(s.state) }}</span>
+              </td>
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
                 <span v-if="signatureOf(s)" class="chip chip-sig chip-inline" :title="signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?`">
@@ -134,7 +149,9 @@
               </td>
             </tr>
             <tr v-if="!filtered.length && !loadError">
-              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ t('services.empty') }}</td>
+              <!-- A filter that misses and a host with nothing discovered are
+                   different answers (Tools/Network/Containers pattern). -->
+              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ flat.length ? t('common.no_match') : t('services.empty') }}</td>
             </tr>
           </tbody>
         </table>
@@ -162,7 +179,8 @@
                Compose stack list. @click stays on the card for mouse users. -->
           <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)">
             <div class="row">
-              <span class="led" :class="ledOf(s.state)"></span>
+              <span class="led" :class="ledOf(s.state)" aria-hidden="true"></span>
+              <span class="sr-only">{{ ledText(s.state) }}</span>
               <span class="name" :title="finiteText(s.id)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">{{ finiteText(s.name) }}</span>
               <span class="badge">{{ kindLabel(s.kind) }}</span>
               <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?`">
@@ -174,7 +192,7 @@
           </article>
         </div>
       </template>
-      <div v-if="!filtered.length && !loadError" class="placeholder">{{ t('services.empty') }}</div>
+      <div v-if="!filtered.length && !loadError" class="placeholder">{{ flat.length ? t('common.no_match') : t('services.empty') }}</div>
     </template>
 
     <!-- Detail drawer -->
@@ -279,6 +297,16 @@ const { actLabel, kindLabel } = serviceLabels(t)
 function displayGroup(name) {
   const key = groupI18nKey(name)
   return key ? t(key) : finiteText(name)
+}
+
+// Spelled-out twin of ledOf() for the LEDs (problems bar, table rows, cards):
+// colour reaches a sighted reader and nobody else. Reuses the state-chip
+// words, so no new locale strings (Dashboard/Containers pattern).
+function ledText(state) {
+  if (state === 'ok') return t('services.state_ok')
+  if (state === 'warn') return t('services.state_warn')
+  if (state === 'stopped') return t('services.state_stopped')
+  return t('services.state_down')
 }
 
 // Members get a read-only page: mutating controls (bulk actions, hide,
