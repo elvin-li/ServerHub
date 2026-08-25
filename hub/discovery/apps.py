@@ -15,6 +15,32 @@ from hub.util import fan_out, port_open, sh
 # overlap safely.
 
 
+def _entry_id(raw) -> str:
+    """Row id as text; ``""`` drops the entry (the jobs._task_id rule).
+
+    YAML numeric ids (``id: 8080``) load as int; the rows here used to emit
+    them raw while ``actions.registry()`` gated on ``isinstance(sid, str)``,
+    so the dashboard rendered start/stop buttons on a target POST /api/action
+    could never find.  A renderable int coerces through the ``str()`` probe;
+    an over-cap hex leftover (``id: 0xfff…`` loads uncapped and its ``str()``
+    raises the digit-cap ValueError ``json.dumps`` would) drops only its
+    entry instead of rendering a ghost row whose id nulls out in JSON.  bool
+    passes ``isinstance(int)`` and must not become ``"True"``.  The scrub
+    matches ``actions._as_text`` so the id a row serves is byte-for-byte the
+    registry key that can act on it.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", "replace")
+    if isinstance(raw, str):
+        return raw.encode("utf-8", "replace").decode("utf-8").strip()
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
+
+
 def _probe_app(entry):
     """``(running, port_state)`` for one app.  Never raises.
 
@@ -37,10 +63,13 @@ def collect_apps(engine_up):
     plans: list[dict] = []
     for raw in cfg().get("apps") or []:
         a = resolve_value(raw)
-        if not isinstance(a, dict) or not a.get("id"):
+        if not isinstance(a, dict):
+            continue
+        sid = _entry_id(a.get("id"))
+        if not sid:
             continue
         if a.get("container_engine") or a.get("docker_engine"):
-            plans.append({"kind": "engine", "app": a})
+            plans.append({"kind": "engine", "app": a, "id": sid})
             continue
         # `process` sits in a bare positional slot, so a value starting with "-"
         # would be read by pgrep as a flag rather than as a pattern.  A missing
@@ -49,7 +78,7 @@ def collect_apps(engine_up):
         process = str(a.get("process") or "").strip()
         if not process or not cli_args.is_safe_positional(process):
             continue
-        plans.append({"kind": "app", "app": a, "process": process})
+        plans.append({"kind": "app", "app": a, "id": sid, "process": process})
 
     probed = [p for p in plans if p["kind"] == "app"]
     for plan, result in zip(
@@ -62,8 +91,9 @@ def collect_apps(engine_up):
     rules = configured_group_rules()
     for plan in plans:
         a = plan["app"]
+        sid = plan["id"]
         if plan["kind"] == "engine":
-            items.append({"id": a["id"], "kind": "app-engine", "name": a.get("name", "OrbStack"),
+            items.append({"id": sid, "kind": "app-engine", "name": a.get("name", "OrbStack"),
                           "state": "ok" if engine_up else "down",
                           "detail": "OrbStack engine running" if engine_up else "OrbStack engine not running",
                           "url": a.get("url"),
@@ -73,7 +103,7 @@ def collect_apps(engine_up):
         running, p = plan["result"]
         state = "ok" if running and p in (None, True) else ("warn" if running else "down")
         detail = (f"Running · :{a['port']}" if p else "Running") if running else "Stopped"
-        items.append({"id": a["id"], "kind": "app", "name": a.get("name", a["id"]),
+        items.append({"id": sid, "kind": "app", "name": a.get("name", sid),
                       "state": state, "detail": detail, "url": a.get("url"),
                       "group": resolve_yaml_entry_group(a, fallback="Apps", rules=rules),
                       "actions": ["restart", "stop"] if running else ["start"]})
@@ -159,7 +189,7 @@ def collect_scripts():
             acts = (["restart"] if has_start and has_stop else []) + (["stop"] if has_stop else [])
         else:
             acts = ["start"] if has_start else []
-        sid = s.get("id")
+        sid = _entry_id(s.get("id"))
         if not sid:
             continue
         items.append({"id": sid, "kind": "script", "name": s.get("name", sid),

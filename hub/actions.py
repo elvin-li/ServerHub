@@ -180,15 +180,38 @@ def _set_plist_disabled(path: str, disabled: bool) -> None:
     secure_io.replace_bytes(path, plistlib.dumps(pl))
 
 
+def _registry_id(raw) -> str:
+    """Registry key text for a configured id; ``""`` drops the entry.
+
+    YAML numeric ids (``id: 8080``) load as int and the strict
+    ``isinstance(sid, str)`` gate silently hid the entry from this registry
+    while ``collect_apps`` / ``collect_scripts`` still rendered its row with
+    start/stop buttons — POST /api/action answered ``actions.unknown_target``
+    for a service the dashboard itself offered.  The jobs._task_id rule: a
+    renderable int coerces through the ``str()`` probe; an over-cap hex
+    leftover (``id: 0xfff…`` loads uncapped; its ``str()`` raises the same
+    digit-cap ValueError ``json.dumps`` would) drops only its entry; bool
+    passes ``isinstance(int)`` and must not become ``"True"``.  Matches
+    ``discovery.apps._entry_id`` so the id a row serves is the key here.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", "replace")
+    if isinstance(raw, str):
+        return _as_text(raw).strip()
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
+
+
 def registry():
     reg = {}
     for a in cfg().get("apps") or []:
         if not isinstance(a, dict):
             continue
-        sid = a.get("id")
-        if not isinstance(sid, str) or not sid:
-            continue
-        sid = _as_text(sid).strip()
+        sid = _registry_id(a.get("id"))
         if not sid:
             continue
         if a.get("container_engine") or a.get("docker_engine"):
@@ -198,10 +221,7 @@ def registry():
     for s in cfg().get("scripts") or []:
         if not isinstance(s, dict):
             continue
-        sid = s.get("id")
-        if not isinstance(sid, str) or not sid:
-            continue
-        sid = _as_text(sid).strip()
+        sid = _registry_id(s.get("id"))
         if not sid:
             continue
         reg[sid] = ("script", s)
