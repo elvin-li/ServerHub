@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from hub.docker_cli import _jsonable, docker, engine_up
+from hub.docker_cli import _jsonable, docker, engine_up, parse_int_capped
 from hub.paths import DOCKER, ORB
 from hub.util import fan_out, safe_json_loads, sh
 
@@ -37,7 +37,9 @@ def _slim_info() -> dict:
     text = _as_text(out).strip()
     if rc == 0 and text:
         try:
-            parsed = safe_json_loads(text)
+            # parse_int_capped: one leftover >4300-digit number used to
+            # ValueError the decode and collapse every field into "raw".
+            parsed = safe_json_loads(text, parse_int=parse_int_capped)
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
             info = {"raw": text[:2000]}
@@ -74,7 +76,7 @@ def _version() -> dict:
     text = _as_text(ver).strip()
     if rc == 0 and text:
         try:
-            parsed = safe_json_loads(text)
+            parsed = safe_json_loads(text, parse_int=parse_int_capped)
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
