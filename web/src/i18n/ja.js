@@ -2773,6 +2773,7 @@ export default {
       empty_content: 'Compose ファイルの内容が空です',
       path_forbidden: 'Compose パスは ~/Services 配下である必要があります',
       invalid: 'Compose ファイルが不正です: {detail}',
+      save_failed: 'Compose ファイルを保存できませんでした: {detail}',
       exists: 'スタックは既に存在します: {path}',
       file_missing: 'Compose ファイルが見つかりません: {path}',
     },
