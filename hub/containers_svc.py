@@ -1620,8 +1620,21 @@ def list_stacks() -> list:
     return stacks
 
 
+#: The four compose verbs POST /api/stacks/{id}/run accepts.
+_STACK_ACTIONS = frozenset({"update", "up", "down", "pull"})
+
+
 def start_stack_job(stack_id: str, action: str = "update") -> dict:
     """action: update (pull+up), up, down, pull"""
+    if action not in _STACK_ACTIONS:
+        # The body ``action`` used to be embedded raw in the job id
+        # (``stack-<id>-<action>-<epoch>``) and the job dict: anything unknown
+        # silently fell to the update branch, and a leftover lone-surrogate
+        # action 500'd the run response on Starlette's UTF-8 encode — and,
+        # because the poisoned job dict outlives the request, every later
+        # GET /api/stacks and GET /api/stacks/jobs/{id} until the panel
+        # restarted.  Same allowed-set gate as container_action / prune.
+        raise api_error("container.bad_action", action=action)
     stacks = {s["id"]: s for s in _stack_paths()}
     stack = stacks.get(stack_id)
     if not stack:
@@ -1677,6 +1690,18 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
     return {"ok": True, "job_id": tid, "message": "job started"}
 
 
+def _job_field(value) -> str | None:
+    """A job-dict string echoed to clients, surrogate-scrubbed.
+
+    Job dicts outlive the request that created them, so one poisoned field
+    (a leftover lone surrogate, a non-str shape) used to 500 every later
+    GET /api/stacks render until the panel restarted.  The entry gates now
+    keep such values out of new jobs; this funnel keeps a dict poisoned any
+    other way from taking the listing routes down with it.
+    """
+    return _as_text(value) if isinstance(value, str) else None
+
+
 def stack_job_log(job_id: str) -> dict:
     if not isinstance(job_id, str):
         return {"running": False, "rc": None, "log": "(not started yet)", "job_id": ""}
@@ -1692,15 +1717,18 @@ def stack_job_log(job_id: str) -> dict:
                 job_id = k
                 break
     if not isinstance(j, dict):
-        return {"running": False, "rc": None, "log": "(not started yet)", "job_id": job_id}
+        return {"running": False, "rc": None, "log": "(not started yet)",
+                "job_id": _as_text(job_id)}
     raw_log = j.get("log") if isinstance(j.get("log"), list) else []
     return {"running": j.get("running"), "rc": j.get("rc"), "started": j.get("started"),
             "finished": j.get("finished"),
             "log": "\n".join(_as_text(x) for x in raw_log) or "(waiting for output…)",
-            "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action"),
+            "job_id": _as_text(job_id),
+            "stack_id": _job_field(j.get("stack_id")),
+            "action": _job_field(j.get("action")),
             # machine-readable failure class (container.engine_down) so the
             # SPA can translate instead of rendering raw daemon stderr
-            "code": j.get("code") if isinstance(j.get("code"), str) else None}
+            "code": _job_field(j.get("code"))}
 
 
 def latest_stack_jobs() -> list:
@@ -1718,6 +1746,8 @@ def latest_stack_jobs() -> list:
 def job_public(jid, j):
     if not isinstance(j, dict):
         j = {}
-    return {"job_id": jid, "stack_id": j.get("stack_id"), "action": j.get("action"),
+    return {"job_id": _as_text(jid),
+            "stack_id": _job_field(j.get("stack_id")),
+            "action": _job_field(j.get("action")),
             "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished"),
-            "code": j.get("code") if isinstance(j.get("code"), str) else None}
+            "code": _job_field(j.get("code"))}
