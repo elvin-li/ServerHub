@@ -848,12 +848,29 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
     return True
 
 
+def _raise_inspect_failure():
+    """Fail a per-container ``docker inspect`` as 503 when the engine is off.
+
+    ``inspect_container`` and ``start_update_container_job`` mapped *any*
+    non-zero exit to ``container.not_found`` (404), so with the engine
+    stopped the panel claimed a container that exists had vanished, and the
+    SPA offered no path to the real remedy (start the engine).  Same
+    classification as ``_raise_list_failure``: the probe is *forced* because
+    the memoised ``engine_up`` answer has a 5s TTL, and the seconds right
+    after the engine stops are exactly when the stale "up" would misreport
+    the failure as a missing container.
+    """
+    if not engine_up(force=True):
+        raise api_error("container.engine_down")
+    raise api_error("container.not_found")
+
+
 def start_update_container_job(name: str) -> dict:
     """Pull image and recreate container (docker compose style recreate via force)."""
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
-        raise api_error("container.not_found")
+        _raise_inspect_failure()
     data = inspect_object(out)
     if data is None:
         raise api_error("container.not_found")
@@ -1009,7 +1026,7 @@ def inspect_container(name: str) -> dict:
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
-        raise api_error("container.not_found")
+        _raise_inspect_failure()
     data = inspect_object(out)
     if data is None:
         raise api_error("container.not_found")
