@@ -1748,6 +1748,7 @@ export default {
     title: 'モジュール',
     meta: '機能マップ',
     enabled: '有効',
+    count_n: '{n} モジュール',
   },
   brew: {
     title: 'Homebrew サービス',
