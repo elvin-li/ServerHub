@@ -148,7 +148,9 @@ def _resolve_cwd(requested: str | None) -> str:
     command against a directory that has since been deleted.
     """
     for candidate in (requested, _terminal_cfg().get("cwd"), _home_dir()):
-        value = str(candidate or "").strip()
+        # _config_text: a leftover hex-int cwd from YAML used to ValueError
+        # the bare str() here (POST /api/terminal/run and the PTY handshake).
+        value = _config_text(candidate or "").strip()
         if not value:
             continue
         try:
@@ -166,6 +168,26 @@ def _terminal_cfg() -> dict:
     return dict(settings_section("terminal"))
 
 
+def _config_text(value) -> str:
+    """``str(value)`` for a config scalar, or "" when it cannot be rendered.
+
+    YAML ``0xFFF…`` loads as an int past CPython's 4300-digit str cap (hex
+    parsing has no digit limit), so a bare ``str()`` on a leftover
+    ``settings.terminal.cwd``/``shell`` raised ValueError before any sanitizer
+    ran — a 500 on GET /api/terminal and POST /api/terminal/run.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return str(value)
+    except Exception:
+        # ValueError past the digit cap; RecursionError from a leftover
+        # self-referencing __str__.  Either way the scalar is unusable.
+        return ""
+
+
 def host_enabled() -> bool:
     """True when the operator has explicitly switched the host shell on."""
     return bool(_terminal_cfg().get("host_enabled", False))
@@ -174,11 +196,14 @@ def host_enabled() -> bool:
 def status() -> dict:
     """What the Terminal page needs to render its target picker."""
     tc = _terminal_cfg()
-    cwd = tc.get("cwd")
+    # _config_text: a leftover YAML ``cwd: 0xFFF…`` is an int past the 4300
+    # digit str cap — the bare str() 500'd GET /api/terminal before the
+    # payload ever reached the sanitizer.  Unrenderable values fall back.
+    cwd = _config_text(tc.get("cwd") or "")
     payload = {
         "host_enabled": host_enabled(),
-        "shell": str(tc.get("shell") or _default_shell()),
-        "cwd": str(cwd) if cwd else _home_dir(),
+        "shell": _config_text(tc.get("shell") or "") or _default_shell(),
+        "cwd": cwd or _home_dir(),
         "default_timeout": DEFAULT_TIMEOUT,
         "max_timeout": MAX_TIMEOUT,
         # Advertised so the UI can explain *why* the host tab is locked without
@@ -271,6 +296,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -528,7 +559,9 @@ def run_host(
     cmd = _check_command(command)
     secs = _clamp_timeout(timeout)
     tc = _terminal_cfg()
-    shell = str(tc.get("shell") or _default_shell())
+    # _config_text: a leftover hex-int shell from YAML used to ValueError the
+    # bare str() here, 500'ing the run before the command ever started.
+    shell = _config_text(tc.get("shell") or "") or _default_shell()
     start_cwd = _resolve_cwd(cwd)
 
     result = _run([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd)
@@ -577,7 +610,9 @@ def run_container(
     name = cli_args.require_positional(name, label="container name")
     cmd = _check_command(command)
     secs = _clamp_timeout(timeout)
-    sh = (shell or "/bin/sh").strip() or "/bin/sh"
+    # ``container`` and ``target`` already tolerate leftover non-str values;
+    # a non-str shell used to AttributeError on .strip() here.
+    sh = (shell if isinstance(shell, str) else "").strip() or "/bin/sh"
     # A container path cannot be validated from the host, so pass it through and
     # let the shell fall back to its own default if the directory is gone.
     start_cwd = str(cwd or "").strip()
