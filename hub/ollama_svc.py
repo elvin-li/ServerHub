@@ -31,6 +31,7 @@ Mutations are deliberately narrow:
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import plistlib
@@ -359,6 +360,60 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
     if not isinstance(parsed, dict):
         raise ValueError("response is not an object")
     return parsed
+
+
+#: Connection-level errnos that mean "nothing is accepting on that port".
+_DOWN_ERRNOS = frozenset({
+    errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+    errno.EHOSTUNREACH, errno.EHOSTDOWN, errno.ENETUNREACH, errno.ENETDOWN,
+})
+
+
+def _looks_engine_down(exc) -> bool:
+    """True for connection-level failures — the daemon is not accepting at all.
+
+    Timeouts (``socket.timeout`` is ``TimeoutError``) and HTTP answers from a
+    live daemon (including auth failures) are NOT this shape: they keep their
+    original coded error.  URLError wraps the socket error in ``reason``.
+    """
+    for _ in range(4):
+        if isinstance(exc, urllib.error.HTTPError):
+            return False
+        if isinstance(exc, urllib.error.URLError):
+            exc = exc.reason
+            continue
+        break
+    if isinstance(exc, TimeoutError):
+        return False
+    if isinstance(exc, ConnectionError):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _DOWN_ERRNOS
+
+
+def _engine_confirmed_down() -> bool:
+    """Fresh /api/version probe; runs only on a failure path, never on success."""
+    try:
+        _api("/api/version")
+        return False
+    except Exception:
+        return True
+
+
+def _daemon_error(exc, fallback_code: str):
+    """The coded error for a failed daemon request.
+
+    unload/test/chat used to map a stopped daemon to their generic 502
+    (``unload_failed``/``generate_failed``/``chat_failed``) — the coded 503
+    ``ollama.unreachable`` was defined and translated but never raised.  Same
+    rule as the vanished-CLI 503 in :func:`delete_model` and docker's
+    ``engine_up(force=True)``: the reclassification fires only after a fresh
+    probe on this failure path confirms the daemon is down.  Timeouts, a
+    connection dropped by a daemon that is still answering, and HTTP-level
+    failures (auth included) keep *fallback_code*'s original shape.
+    """
+    if _looks_engine_down(exc) and _engine_confirmed_down():
+        return api_error("ollama.unreachable", error=exc_detail(exc))
+    return api_error(fallback_code, error=exc_detail(exc))
 
 
 # ── parsing (pure, unit-tested against captured payloads) ────────────────────
@@ -742,7 +797,7 @@ def unload_model(name: str) -> dict:
     try:
         _api("/api/generate", {"model": name, "keep_alive": 0}, timeout=UNLOAD_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.unload_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.unload_failed")
     status.invalidate()
     return {"ok": True, "model": name}
 
@@ -766,7 +821,7 @@ def quick_test(name: str, prompt: str, num_predict: int = 128) -> dict:
     try:
         resp = _api("/api/generate", payload, timeout=GENERATE_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.generate_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.generate_failed")
     elapsed = time.monotonic() - t0
     eval_count = _safe_int(resp.get("eval_count"))
     return _jsonable({
@@ -863,7 +918,7 @@ def chat(name: str, messages: list, num_predict: int = 128) -> dict:
     try:
         resp = _api("/api/chat", payload, timeout=GENERATE_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.chat_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.chat_failed")
     msg = resp.get("message") if isinstance(resp.get("message"), dict) else {}
     eval_count = _safe_int(resp.get("eval_count"))
     return _jsonable({
@@ -903,7 +958,7 @@ def _open_chat_http(payload: dict):
             err = exc_detail(e)
         raise api_error("ollama.chat_failed", error=(err or exc_detail(e))[:200])
     except Exception as e:
-        raise api_error("ollama.chat_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.chat_failed")
 
 
 def start_chat_stream(name: str, messages: list, num_predict: int = 128):
