@@ -198,7 +198,9 @@
         </div>
         <div class="tile span-3">
           <h2>{{ t('wg.keepalive_missing') }}</h2>
-          <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn)' : 'var(--ok)' }">
+          <!-- -text tints, not the raw hues: --warn / --ok are fill colours
+               and fail AA as ink (contrast.test.js pins the binding shape). -->
+          <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn-text)' : 'var(--ok-text)' }">
             {{ finiteN(data.keepalive_missing) }}
           </div>
         </div>

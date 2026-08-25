@@ -474,6 +474,12 @@ describe('theme contrast', () => {
     }
     // Inline template styles are the other place the same mistake lands
     // (the Backups and ScheduleJobForm warn notes shipped there).
+    // Dynamic `:style` bindings are the third: the raw hue hides inside a JS
+    // string (`{ color: cond ? 'var(--down)' : … }`), which the static scan
+    // above never sees — the Dashboard volume percent and the WireGuard
+    // keepalive stat both shipped through that hole.
+    const BOUND_INK = /(?:^|[^-\w])color\s*:/
+    const RAW_HUE_LITERAL = /'var\(--(?:ok|warn|down|accent-hover|accent)\)'/
     for (const dir of ['views', 'components']) {
       const abs = resolve(__dirname, '..', dir)
       for (const file of readdirSync(abs)) {
@@ -485,9 +491,31 @@ describe('theme contrast', () => {
             offenders.push(`${dir}/${file}: style="${m[1]}"`)
           }
         }
+        for (const m of template.matchAll(/:style="([^"]*)"/g)) {
+          if (BOUND_INK.test(m[1]) && RAW_HUE_LITERAL.test(m[1])) {
+            offenders.push(`${dir}/${file}: :style="${m[1]}"`)
+          }
+        }
       }
     }
     expect(offenders, 'status hues are fills; their ink is the matching --*-text token').toEqual([])
+  })
+
+  it('keeps the PhotosHub originals ink on the -text tints', () => {
+    // The binding scan above cannot follow `:style="{ color: originalsColor }"`
+    // into the script, and a blanket ban on raw-hue string literals in
+    // scripts would outlaw the chart stroke colours that legitimately use
+    // them (Dashboard's LineChart series). So the one computed that feeds a
+    // colour *ink* binding is pinned by name: it must return only the
+    // AA-safe -text tints, never the raw fill hues it shipped with.
+    const photoshub = readFileSync(resolve(__dirname, '../views/PhotosHub.vue'), 'utf8')
+    const rule = photoshub.match(/const originalsColor = computed\(\(\) => \{([\s\S]*?)\n\}\)/)
+    expect(rule, 'originalsColor computed').toBeTruthy()
+    const returns = [...rule[1].matchAll(/return\s+'([^']+)'/g)].map((m) => m[1])
+    expect(returns.length).toBeGreaterThan(2)
+    for (const value of returns) {
+      expect(value).toMatch(/^var\(--(?:ok|warn|down)-text\)$/)
+    }
   })
 
   it('keeps the selected-row ink on --on-accent, not a literal', () => {

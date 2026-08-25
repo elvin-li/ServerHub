@@ -42,6 +42,12 @@
       <button :class="{ active: filter==='issues' }" :aria-pressed="filter === 'issues'" @click="filter='issues'">{{ t('health.only_issues') }}</button>
       <button :class="{ active: filter==='error' }" :aria-pressed="filter === 'error'" @click="filter='error'">{{ t('health.errors') }}</button>
       <button :class="{ active: filter==='warn' }" :aria-pressed="filter === 'warn'" @click="filter='warn'">{{ t('health.warnings') }}</button>
+      <!-- The tabs shrink the table below; announce the result like the text
+           filters do (filterCounts.test.js) — a sighted user watches rows
+           disappear, a screen-reader user otherwise hears nothing at all. -->
+      <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
+        {{ filtered.length }} / {{ (data?.checks || []).length }}
+      </span>
     </div>
 
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="7" :label="t('common.scanning')" />
