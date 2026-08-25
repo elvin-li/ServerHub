@@ -1239,9 +1239,14 @@ def _run_argv(argv: list[str], *, timeout: int, cap: int = 4000) -> tuple[int, s
         return -1, "", _as_text(e)
 
 
-def _engine_up() -> bool:
+def _engine_up(force: bool = False) -> bool:
     from hub.docker_cli import engine_up
-    return engine_up()
+    return engine_up(force=force)
+
+
+def _looks_engine_down(text) -> bool:
+    from hub.docker_cli import looks_engine_down
+    return looks_engine_down(text)
 
 
 def _find_stack(stack_id: str) -> dict | None:
@@ -1469,6 +1474,14 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
 
     binds, volumes, mounts_err = _stack_mounts(compose_path, stack.get("path"))
     if mounts_err:
+        # The _engine_up() gate above trusts a 5s memo, so an engine that dies
+        # inside the TTL still reaches `compose config` — classify with a
+        # forced probe instead of blaming the compose file.  A failure while
+        # the engine answers "up" keeps compose_config_failed and its message.
+        if _looks_engine_down(mounts_err) and not _engine_up(force=True):
+            log.append("!! the Docker engine is not running")
+            return {"ok": False, "error": "engine_down",
+                    "message": "the Docker engine is not running"}
         log.append(f"!! {mounts_err}")
         return {"ok": False, "error": "compose_config_failed", "message": mounts_err}
 
@@ -1514,8 +1527,15 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
                 timeout=1800,
             )
             if rc != 0:
-                error = "volume_export_failed"
-                message = f"volume export failed for {name}: {(err or out).strip()[:200]}"
+                text = (err or out).strip()
+                if _looks_engine_down(text) and not _engine_up(force=True):
+                    # The engine died mid-job: the coded state, not the raw
+                    # daemon stderr, is what the scheduler log should carry.
+                    error = "engine_down"
+                    message = "the Docker engine is not running"
+                else:
+                    error = "volume_export_failed"
+                    message = f"volume export failed for {name}: {text[:200]}"
                 log.append(f"!! {message}")
                 break
 

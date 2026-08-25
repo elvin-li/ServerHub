@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hub import cli_args, config
 from hub.config import cfg, override, set_override
+from hub.docker_cli import engine_up, looks_engine_down
 from hub.errors import api_error
 from hub.group_rules import match_group
 from hub.host_address import host_ip, normalize_local_url, resolve_value
@@ -456,6 +457,15 @@ def service_logs(sid: str, lines: int = 150) -> dict:
         if not DOCKER:
             raise api_error("services.docker_unavailable")
         rc, out, err = sh([DOCKER, "logs", "--tail", str(lines), sid], timeout=30)
+        if (
+            rc != 0
+            and looks_engine_down(_as_text(err) or _as_text(out))
+            and not engine_up(force=True)
+        ):
+            # A dead daemon used to hand its raw untranslated stderr back as
+            # the container's "log".  Coded 503 like the Containers page; the
+            # probe is forced (5s memo) and only runs on this failure path.
+            raise api_error("container.engine_down")
         log = (_as_text(out) or _as_text(err)).strip() or f"(no output · exit {rc})"
         source = f"docker logs {sid}"
         kind = kind or "container"
