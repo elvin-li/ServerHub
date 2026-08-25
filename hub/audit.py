@@ -348,13 +348,24 @@ def _jsonable(value, depth: int = 0):
 
 
 def _is_secret_key(key: str) -> bool:
-    lowered = str(key).lower()
+    try:
+        # str() probe, not an isinstance gate: numeric YAML ids are legitimate
+        # keys and must still be classified.  The one shape that cannot be
+        # rendered is a >4300-digit int (hex/octal YAML loads uncapped), whose
+        # str() raises the digit-cap ValueError — and redact() runs *before*
+        # record()'s swallow-all, so that raise used to turn the failed
+        # sign-in being logged into a 500 of its own.  An unrenderable key
+        # carries no name to match a hint against, and _jsonable drops it
+        # before disk regardless, so "not secret" is the safe answer.
+        lowered = str(key).lower()
+    except Exception:
+        return False
     if any(allowed in lowered for allowed in _PUBLIC_EXCEPTIONS):
         return False
     return any(hint in lowered for hint in _SECRET_HINTS)
 
 
-def redact(value: Any) -> Any:
+def redact(value: Any, _depth: int = 0) -> Any:
     """Drop secret-looking fields anywhere in a nested structure.
 
     Recurses into dicts and lists so a password nested inside a body dump is
@@ -367,13 +378,22 @@ def redact(value: Any) -> Any:
     the event, and a placeholder invites a later reader to treat the key as
     safe-by-construction and start logging a "shortened" or "hashed" variant of
     it.  An absent key cannot leak anything.
+
+    Depth-capped like ``_jsonable``: this runs before record()'s swallow-all,
+    so a leftover deeply-nested (or self-referential) detail dict used to
+    RecursionError out of record() and 500 the request being audited.  The
+    subtree past the cap is dropped, never passed through unredacted.
     """
+    if _depth > 32:
+        return None
     if isinstance(value, dict):
         return {
-            k: redact(v) for k, v in value.items() if not _is_secret_key(k)
+            k: redact(v, _depth + 1)
+            for k, v in value.items()
+            if not _is_secret_key(k)
         }
     if isinstance(value, (list, tuple)):
-        return [redact(v) for v in value]
+        return [redact(v, _depth + 1) for v in value]
     return value
 
 
@@ -407,18 +427,25 @@ def record(event: str, /, **fields: Any) -> dict:
     The returned dict is the redacted record, so a caller (or a test) can assert
     on exactly what reached disk rather than on what was passed in.
     """
-    extra = redact(fields)
-    if not isinstance(extra, dict):
-        extra = {}
-    # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
-    # clobber the stamp or the event name the trail is queried by.
-    extra.pop("ts", None)
-    extra.pop("event", None)
-    entry = _jsonable({
-        "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
-        "event": _utf8_text(event),
-        **extra,
-    })
+    try:
+        extra = redact(fields)
+        if not isinstance(extra, dict):
+            extra = {}
+        # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
+        # clobber the stamp or the event name the trail is queried by.
+        extra.pop("ts", None)
+        extra.pop("event", None)
+        entry = _jsonable({
+            "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
+            "event": _utf8_text(event),
+            **extra,
+        })
+    except (ValueError, TypeError, RecursionError):
+        # Shaping runs before the swallow-all below, so a poisoned field
+        # shape it cannot handle must degrade to a minimal line — losing the
+        # detail is acceptable, raising into (or losing) the sign-in being
+        # audited is not.
+        entry = None
     if not isinstance(entry, dict):
         entry = {
             "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
