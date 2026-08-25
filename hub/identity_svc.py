@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+from pathlib import Path
 
 from hub.config import cfg, update_settings
 from hub.errors import api_error
@@ -9,6 +10,30 @@ from hub.host_address import configured_host, host_ip as effective_host_ip
 from hub.util import LazyPool, sh, ttl_memo
 
 _pool = LazyPool(7, "hub-identity")
+
+#: The one binary :func:`set_identity` spawns.  Module-level so the
+#: vanished-CLI probe re-checks the exact path the spawn used.
+SCUTIL = "/usr/sbin/scutil"
+
+
+def _scutil_missing(rc, err) -> bool:
+    """Whether an ``sh()`` result means scutil itself is gone.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real scutil exit.  The sentinel alone must not classify:
+    rc -1 is also what a timeout or a signal-killed run reports, so the disk
+    is re-probed *on this failure path only* (the vms ``_cli_missing`` /
+    docker ``cli_on_disk`` rule — a successful spawn never pays the stat).
+    Timeouts keep their own sentinel and are deliberately not classified;
+    an authorization failure is a real scutil exit and never matches.
+    """
+    if rc != -1 or _as_text(err).strip() != "not found":
+        return False
+    try:
+        return not Path(SCUTIL).is_file()
+    except (OSError, ValueError):
+        # An unreadable /usr/sbin must not upgrade the failure to a 503.
+        return False
 
 
 def shutdown_executor() -> None:
@@ -32,6 +57,16 @@ def _as_text(value) -> str:
         except Exception:
             return ""
     return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _encodable(text: str) -> bool:
+    """False for a lone surrogate — no encoder (scutil argv, Bonjour, JSON)
+    can carry it, so it is a bad name, not a spawn-time ValueError."""
+    try:
+        text.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
 
 
 @ttl_memo(300.0)
@@ -132,9 +167,13 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
     patch = {}
     msgs = []
     if comment is not None:
-        patch["server_comment"] = comment
+        # Scrubbed before it becomes YAML/JSON: a lone ``\ud800`` in the body
+        # used to be persisted raw into services.yaml, where every consumer
+        # had to re-scrub it forever (and the patch dict itself could never
+        # be JSON-encoded again).
+        patch["server_comment"] = _as_text(comment)
     if host_ip is not None:
-        patch["host_ip"] = str(host_ip).strip()
+        patch["host_ip"] = _as_text(host_ip).strip()
     if patch:
         update_settings(patch)
         msgs.append("Panel settings updated")
@@ -145,11 +184,17 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             or len(name) > 63
             or name.startswith("-")
             or any(ord(c) < 0x20 or ord(c) == 0x7F for c in name)
+            or not _encodable(name)
         ):
             raise api_error("identity.bad_name")
         # Try without sudo first
-        rc, out, err = sh(["/usr/sbin/scutil", "--set", "ComputerName", name], timeout=5)
+        rc, out, err = sh([SCUTIL, "--set", "ComputerName", name], timeout=5)
         if rc != 0:
+            if _scutil_missing(rc, err):
+                # A vanished scutil used to answer ok:true with a message
+                # blaming administrator privileges — the rename was silently
+                # lost.  Coded so the panel can say what actually happened.
+                raise api_error("identity.scutil_missing")
             # Leftover ``\ud800`` in scutil stderr used to 500 PUT /api/identity.
             msgs.append(
                 "Setting ComputerName needs administrator privileges: "
@@ -157,7 +202,7 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             )
         else:
             msgs.append("ComputerName set")
-            sh(["/usr/sbin/scutil", "--set", "LocalHostName", name.replace(" ", "-")[:63]], timeout=5)
+            sh([SCUTIL, "--set", "LocalHostName", name.replace(" ", "-")[:63]], timeout=5)
     try:
         identity = get_identity()
     except Exception:

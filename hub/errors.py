@@ -404,6 +404,12 @@ CODES: dict[str, tuple[int, str]] = {
     "power.bad_value": (400, "value must be an integer"),
     "power.value_range": (400, "value is out of range 0–180"),
     "identity.bad_name": (400, "computer name is invalid"),
+    # scutil vanished from disk between boot and the rename (confirmed by a
+    # fresh on-disk probe on the failure path).  503 like the other
+    # tool-absent states (raid.diskutil_missing, vms.utm_unavailable) — the
+    # old shape was an ok:true answer whose message blamed missing
+    # administrator privileges, so the lost rename surfaced nowhere.
+    "identity.scutil_missing": (503, "scutil is missing on this host"),
     "vms.name_required": (400, 'a new name is required'),
     "vms.bad_id": (400, "invalid virtual machine id"),
     "vms.utm_unavailable": (503, 'utmctl is not available; install UTM'),
