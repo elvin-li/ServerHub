@@ -2316,6 +2316,7 @@ export default {
     cf_select_ph: '选择隧道…',
     cf_connected: '已连接',
     cf_no_tunnels: '未找到隧道。可在下方或 Zero Trust 中新建。',
+    cf_tunnels_failed: '无法从 Cloudflare 获取隧道列表。',
     cf_login_to_list: '登录后即可列出 Cloudflare 隧道。',
     cf_new_tunnel: '新建隧道',
     cf_new_name_ph: '隧道名称',

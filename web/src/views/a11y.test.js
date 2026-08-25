@@ -2715,6 +2715,22 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).toMatch(/v-if="cfStatus\.login_url" class="notes" role="status"/)
   })
 
+  it('Apps cloudflared tunnel picker tells error apart from empty', () => {
+    // The status API reports tunnels_error when the Cloudflare fetch failed;
+    // rendering "No tunnels found" for that case silently hid the failure.
+    // The message is a live region and the error detail goes through
+    // finiteText so a leftover value cannot render as junk.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/class="field-help" v-if="!\(cfStatus\.tunnels \|\| \[\]\)\.length" role="status"/)
+    expect(apps).toMatch(/cfStatus\.logged_in && finiteText\(cfStatus\.tunnels_error, ''\)/)
+    expect(apps).toMatch(/t\('apps\.cf_tunnels_failed'\)/)
+    expect(apps).not.toMatch(/\{\{\s*cfStatus\.tunnels_error\s*\}\}/)
+    for (const locale of ['en', 'ja', 'zh-CN']) {
+      const dict = readFileSync(resolve(SRC, `i18n/${locale}.js`), 'utf8')
+      expect(dict).toMatch(/cf_tunnels_failed/)
+    }
+  })
+
   it('Dashboard leftover volumes/ports/rss go through finite helpers', () => {
     const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
     expect(dash).toMatch(/function fmt\(ts\)[\s\S]*fmtTs/)

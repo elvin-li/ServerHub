@@ -505,8 +505,11 @@
                   {{ finiteText(tn.name) }} ({{ String(finiteText(tn.id)).slice(0, 8) }}…){{ tn.active ? ` · ${t('apps.cf_connected')}` : '' }}
                 </option>
               </select>
-              <div class="field-help" v-if="!(cfStatus.tunnels || []).length">
-                {{ cfStatus.logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}
+              <!-- Error vs empty: a failed tunnel-list fetch used to render as
+                   "No tunnels found", silently hiding the failure. -->
+              <div class="field-help" v-if="!(cfStatus.tunnels || []).length" role="status">
+                <template v-if="cfStatus.logged_in && finiteText(cfStatus.tunnels_error, '')">{{ t('apps.cf_tunnels_failed') }} {{ finiteText(cfStatus.tunnels_error, '') }}</template>
+                <template v-else>{{ cfStatus.logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}</template>
               </div>
             </div>
             <label class="form-label">{{ t('apps.cf_new_tunnel') }}</label>

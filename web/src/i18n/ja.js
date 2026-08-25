@@ -2314,6 +2314,7 @@ export default {
     cf_select_ph: 'トンネルを選択…',
     cf_connected: '接続中',
     cf_no_tunnels: 'トンネルがありません。下記または Zero Trust で作成してください。',
+    cf_tunnels_failed: 'Cloudflare からトンネル一覧を取得できませんでした。',
     cf_login_to_list: 'ログインすると Cloudflare トンネルの一覧を取得できます。',
     cf_new_tunnel: '新しいトンネル',
     cf_new_name_ph: 'トンネル名',

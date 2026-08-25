@@ -2320,6 +2320,7 @@ export default {
     cf_select_ph: 'Select a tunnel…',
     cf_connected: 'connected',
     cf_no_tunnels: 'No tunnels found. Create one below or in Zero Trust.',
+    cf_tunnels_failed: 'Could not load the tunnel list from Cloudflare.',
     cf_login_to_list: 'Sign in to list your Cloudflare tunnels.',
     cf_new_tunnel: 'New tunnel',
     cf_new_name_ph: 'Tunnel name',
