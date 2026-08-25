@@ -3052,6 +3052,7 @@ export default {
     },
     identity: {
       bad_name: 'Computer name is invalid',
+      scutil_missing: 'scutil is missing on this host',
     },
     autostart: {
       self_protected: '{label} is ServerHub\'s own login task and cannot be disabled here; use the \'Start at login\' switch on the Settings page instead',

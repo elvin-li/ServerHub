@@ -3046,6 +3046,7 @@ export default {
     },
     identity: {
       bad_name: 'コンピュータ名が正しくありません',
+      scutil_missing: 'このホストには scutil がありません',
     },
     autostart: {
       self_protected: '{label} は ServerHub パネル自身のログインタスクのため、ここでは無効化できません。設定ページの「ログイン時に起動」スイッチを使用してください。',
