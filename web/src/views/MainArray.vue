@@ -9,7 +9,7 @@
         {{ t('main_extra.summary_counts', { disks: (data?.power_disks || []).length, vols: data?.volumes?.length || 0 }) }}
       </span>
       <span v-if="data?.array" class="badge" :class="data.array.status === 'started' ? 'ok' : 'warn'">
-        Array {{ finiteText(data.array.status) }}
+        {{ t('main_extra.array_state', { state: finiteText(data.array.status) }) }}
       </span>
     </div>
 

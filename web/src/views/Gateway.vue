@@ -20,7 +20,7 @@
           <strong>{{ data.running ? t('gateway.running') : t('gateway.stopped') }}</strong>
           <span v-if="finiteN(data.pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(data.pid) }}</span>
         </div>
-        <div class="sub" style="margin-top:8px">Label: {{ finiteText(data.label) }}</div>
+        <div class="sub" style="margin-top:8px">{{ t('gateway.label_is', { label: finiteText(data.label) }) }}</div>
         <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(data.conf) }}</div>
       </div>
       <div class="tile span-8">

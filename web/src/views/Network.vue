@@ -84,7 +84,7 @@
         </p>
         <div style="font-size:12px;line-height:1.6" v-if="data?.network_failover">
           <span>{{ t('network.policy_is', { state: data.network_failover.config?.enabled ? t('network.enabled_state') : t('network.disabled_state') }) }}</span>
-          <span> · Wi‑Fi：{{ failoverWifiLabel }}</span>
+          <span> · {{ t('network.wifi_is', { state: failoverWifiLabel }) }}</span>
           <span v-if="finiteText(data.network_failover.state?.last_check_at, '')"> · {{ t('network.last_check', { at: finiteText(data.network_failover.state.last_check_at) }) }}</span>
           <span v-if="finiteText(data.network_failover.state?.last_action, '')"> · {{ t('network.last_action', { action: finiteText(data.network_failover.state.last_action) }) }}</span>
         </div>
