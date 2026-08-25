@@ -566,12 +566,19 @@ def export_services_yaml():
     try:
         from hub.util import read_text_capped
 
-        data = yaml.safe_load(
+        # load_yaml_int_capped, not yaml.safe_load: PyYAML raises bare
+        # ValueError — not YAMLError — building a >4300-digit decimal int,
+        # and the corrupt-config refusal below is a 500.  The hex/octal
+        # spelling of the same leftover already exports fine (it parses
+        # uncapped and _renderable_tree drops it below); the decimal
+        # spelling used to block the whole backup download instead.
+        from hub.config import _renderable_tree, load_yaml_int_capped
+
+        data = load_yaml_int_capped(
             read_text_capped(CONFIG_FILE, _YAML_CAP, encoding="utf-8")
         ) or {}
         if not isinstance(data, dict):
             raise api_error("system_settings.export_failed")
-        from hub.config import _renderable_tree
 
         # An already-parsed over-cap int (YAML hex loads uncapped through
         # ``int(x, 16)``) fails only the re-dump, after parse and redaction
