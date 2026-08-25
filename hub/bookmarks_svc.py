@@ -188,16 +188,45 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         return {"ok": False, "status": None, "ms": ms, "error": exc_detail(e, 120)}
 
 
+def _key_text(key) -> str | None:
+    """Backend-index key in its scrubbed str form; ``None`` for a non-key.
+
+    Both halves of the contract broke separately:
+
+    * mapping keys must be scrubbed before they become lookup keys: the
+      inventories publish names scrubbed (``vms_svc._as_text`` encode-replaces
+      a lone surrogate away) while the YAML side stayed raw
+      (``service: "cam\\ud800"`` — PyYAML accepts the escape), so the two
+      sides of the index keyed by different forms, never matched, and the
+      stopped VM's bookmark was probed red instead of reported gray;
+    * a numeric YAML id that is *already* an int (``id: 0xfff…`` — hex/octal
+      dodge the int(str) digit cap) must coerce via a str() probe, not a
+      strict ``isinstance(id, str)`` gate: str() of a >4300-digit int raises
+      CPython's digit-cap ValueError, which 500'd GET /api/bookmarks out of
+      :func:`_index_lookup` and silently wiped the rest of
+      :func:`_backend_index`'s rows out of ``put()``.  ``id: 8080`` still
+      keys as ``"8080"``.
+    """
+    if isinstance(key, bool) or not isinstance(key, (str, int)):
+        return None
+    if isinstance(key, int):
+        try:
+            return str(key)
+        except ValueError:
+            return None
+    return _utf8_text(key) or None
+
+
 def _backend_index() -> dict:
     """Map id / name / url → backend runtime info for expected-state checks."""
     idx: dict[str, dict] = {}
 
-    def put(key: str | None, info: dict):
-        if not key:
+    def put(key, info: dict):
+        s = _key_text(key)
+        if not s:
             return
-        idx[str(key)] = info
+        idx[s] = info
         # also strip common prefixes
-        s = str(key)
         if s.startswith("orb:"):
             idx[s[4:]] = info
 
@@ -256,8 +285,9 @@ def _backend_index() -> dict:
             put(v.get("uuid"), info)
             put(v.get("orb_name"), info)
             put(v.get("name"), info)
-            if v.get("url"):
-                put(f"url:{v['url'].rstrip('/')}", info)
+            u = _key_text(v.get("url"))
+            if u:
+                put(f"url:{u.rstrip('/')}", info)
     except Exception:
         pass
 
@@ -272,8 +302,9 @@ def _backend_index() -> dict:
             }
             put(c.get("id"), info)
             put(c.get("name"), info)
-            if c.get("url"):
-                put(f"url:{c['url'].rstrip('/')}", info)
+            u = _key_text(c.get("url"))
+            if u:
+                put(f"url:{u.rstrip('/')}", info)
     except Exception:
         pass
 
@@ -298,19 +329,22 @@ def _backend_index() -> dict:
                 "id": sid,
             }
             put(sid, info)
-            if ov.get("url"):
-                put(f"url:{str(ov['url']).rstrip('/')}", info)
+            u = _key_text(ov.get("url"))
+            if u:
+                put(f"url:{u.rstrip('/')}", info)
 
     return idx
 
 
 def _index_lookup(idx: dict, key) -> dict | None:
-    """Look up a backend row. YAML leftovers like ``service: [nginx]`` are unhashable."""
+    """Look up a backend row. YAML leftovers like ``service: [nginx]`` are unhashable.
+
+    The key goes through :func:`_key_text` — the same coercion ``put()``
+    used — so both sides of the index key by one form.
+    """
     if not isinstance(idx, dict):
         return None
-    if isinstance(key, bool) or not isinstance(key, (str, int)):
-        return None
-    s = key if isinstance(key, str) else str(key)
+    s = _key_text(key)
     if not s:
         return None
     row = idx.get(s)
@@ -330,7 +364,7 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
         hit = _index_lookup(idx, key)
         if hit is not None:
             return hit
-    url = str(link.get("url") or "").rstrip("/")
+    url = (_key_text(link.get("url")) or "").rstrip("/")
     if url:
         hit = _index_lookup(idx, f"url:{url}")
         if hit is not None:
@@ -344,7 +378,7 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
             continue
         if not isinstance(ov, dict):
             continue
-        ou = str(ov.get("url") or "").rstrip("/")
+        ou = (_key_text(ov.get("url")) or "").rstrip("/")
         if ou and ou == url:
             hit = _index_lookup(idx, sid)
             if hit is not None:
@@ -463,6 +497,13 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        # str() is the probe: YAML hex/octal (``id: 0xfff…``) dodges the
+        # int(str) digit cap, and json.dumps of the already-int leftover
+        # raises the same digit-cap ValueError inside Starlette's encoder.
+        try:
+            str(value)
+        except ValueError:
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
