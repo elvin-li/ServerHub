@@ -143,7 +143,10 @@ def _alert_ts(raw) -> int | None:
         if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
             try:
                 return int(text)
-            except OverflowError:
+            except (ValueError, OverflowError):
+                # ValueError: a >4300-digit leftover ``t`` (CPython's str->int
+                # cap) — and non-ASCII digits that pass isdigit() — used to
+                # 500 GET /api/alerts through list_alerts.
                 return None
         return None
     return None
