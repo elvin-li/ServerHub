@@ -166,6 +166,63 @@ describe('AssistantDrawer', () => {
     wrapper.unmount()
   })
 
+  it('renders a template brief with leftover Infinity/NaN as dashes, not the words', async () => {
+    // A >4300-digit backend leftover arrives as Infinity after JSON.parse;
+    // every sink already routes through finiteText/finiteN — pin it.
+    askAssistant.mockResolvedValue({
+      ok: true,
+      kind: 'brief',
+      text: '',
+      used_llm: false,
+      snapshot: {
+        load: Infinity,
+        cpu_load_pct: NaN,
+        mem_used_pct: 10,
+        disk_root_pct: 20,
+        disk_root: '1/2 GB',
+        uptime: '1.0 hours',
+        engine_up: true,
+        counts: { ok: Infinity, warn: 1, down: 0 },
+        problems: [{ name: Infinity, state: 'down', detail: NaN }],
+      },
+      panels: [{ id: 'x', path: '/health', title: Infinity }],
+    })
+    const wrapper = mountDrawer()
+    await wrapper.get('[data-test="assistant-brief"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Infinity')
+    expect(wrapper.text()).not.toContain('NaN')
+    expect(wrapper.text()).toContain('—')
+    wrapper.unmount()
+  })
+
+  it('keeps the log a polite live region and distinguishes empty from a reply', async () => {
+    const wrapper = mountDrawer()
+    expect(wrapper.get('.assist-log').attributes('aria-live')).toBeUndefined()
+    expect(wrapper.text()).toContain('assistant.empty')
+    await wrapper.get('[data-test="assistant-brief"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.assist-log').attributes('aria-live')).toBe('polite')
+    expect(wrapper.text()).not.toContain('assistant.empty')
+    wrapper.unmount()
+  })
+
+  it('shows the no-match message for a find miss instead of an empty reply', async () => {
+    askAssistant.mockResolvedValue({
+      ok: true,
+      kind: 'find',
+      text: 'No panel matches',
+      panels: [],
+      used_llm: false,
+    })
+    const wrapper = mountDrawer()
+    await wrapper.get('#assist-input').setValue('no-such-panel')
+    await wrapper.get('form.assist-form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('assistant.find_none')
+    wrapper.unmount()
+  })
+
   it('stops an in-flight ask', async () => {
     askAssistant.mockImplementation((_query, opts) => new Promise((_resolve, reject) => {
       opts.signal.addEventListener('abort', () => {
