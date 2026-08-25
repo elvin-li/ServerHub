@@ -156,10 +156,14 @@
       <template v-for="g in filteredGroups" :key="g.group">
         <h2 class="section-title">{{ displayGroup(g.group) }} <span class="meta-count">{{ g.services.length }}</span></h2>
         <div class="grid svc-grid">
-          <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">
+          <!-- The button role sits on the name, not the <article>: the card also
+               holds the ServiceActions buttons and a control may not contain
+               other controls (ARIA nested-interactive) — same split as the
+               Compose stack list. @click stays on the card for mouse users. -->
+          <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)">
             <div class="row">
               <span class="led" :class="ledOf(s.state)"></span>
-              <span class="name" :title="finiteText(s.id)">{{ finiteText(s.name) }}</span>
+              <span class="name" :title="finiteText(s.id)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">{{ finiteText(s.name) }}</span>
               <span class="badge">{{ kindLabel(s.kind) }}</span>
               <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?`">
                 {{ signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?` }}

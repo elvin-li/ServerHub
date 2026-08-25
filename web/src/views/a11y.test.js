@@ -166,11 +166,16 @@ describe('control names', () => {
     // variable inputs and autostart policy select, the Containers select-all /
     // per-row / privileged checkboxes, and the Tools syslog level and range
     // selects all sat beside unassociated labels (or none at all).
+    // The services/maintenance surfaces (Services toolbar + uninstall dialog,
+    // Scheduler job table + job form, Maintenance/Brew/Audit filters) close the
+    // sweep: their form grids use the same label-without-for layout, so a
+    // control added to any of them cannot ship nameless.
     const FILES = [
       'views/Login.vue', 'views/Account.vue', 'views/Users.vue', 'views/Settings.vue',
       'views/Shares.vue', 'views/Files.vue', 'views/PhotosHub.vue', 'views/WireGuard.vue',
       'views/Compose.vue', 'views/Apps.vue', 'views/Containers.vue', 'views/Network.vue',
-      'views/Tools.vue',
+      'views/Tools.vue', 'views/Services.vue', 'views/Scheduler.vue', 'views/Maintenance.vue',
+      'views/Brew.vue', 'views/Audit.vue', 'components/ScheduleJobForm.vue',
     ]
     const TAG = /<\/?([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)\/?>/g
     const offenders = []
@@ -316,6 +321,53 @@ describe('sharing surface control names', () => {
       }
     }
     expect(offenders, 'nav landmarks need aria-label to be told apart').toEqual([])
+  })
+})
+
+describe('services and scheduler surface leftovers', () => {
+  it('names the Scheduler enable toggles after their job', () => {
+    // A column of checkboxes all announced as "Enabled" cannot be told apart
+    // in a screen reader's form-controls listing — same fix as the Services
+    // and Containers row checkboxes. The single checkbox inside the job form
+    // keeps the plain label; only the per-row table copy needs the job name.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/:aria-label="t\('sched\.enable_name',\s*\{\s*name:/)
+    expect(scheduler).not.toMatch(/:aria-label="t\('sched\.enabled'\)"/)
+  })
+
+  it('announces the Scheduler run-history load failure inside its dialog', () => {
+    // The history loads after the dialog already holds focus, so the
+    // panel-focus read never covers it — same as the Shares ACL error.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/v-if="runsError"[^>]*role="alert"/)
+  })
+
+  it('announces the job form stack-list load failure instead of swallowing it', () => {
+    // A failed stack read was swallowed into `stacks = []`, leaving an empty
+    // select and a disabled Save with no stated reason — the same silent hole
+    // the WireGuard settings dialog had.
+    const form = readFileSync(resolve(SRC, 'components/ScheduleJobForm.vue'), 'utf8')
+    expect(form).toMatch(/v-if="stacksError"[^>]*role="alert"/)
+    expect(form).toMatch(/stacksError\.value = finiteText/)
+  })
+
+  it('keeps the Services card grid keyboard-operable without nesting controls', () => {
+    // Same rule that moved the Compose row role to the name cell: the card
+    // holds the ServiceActions buttons, and a control may not contain other
+    // controls (ARIA nested-interactive). The name span carries the role and
+    // the keyboard path; @click stays on the card for mouse users.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).not.toMatch(/<article[^>]*role="button"/)
+    expect(services).toMatch(/class="name"[^>]*role="button"[^>]*@keydown\.enter\.prevent="openDetail\(s\)"/)
+  })
+
+  it('renders the Maintenance load failure as the standard retryable banner', () => {
+    // The old inline placeholder only rendered once the table had rows, so a
+    // failed *first* read fell into the empty-table row with no retry and no
+    // role=alert. The behavioural half lives in loadStates.test.js.
+    const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+    expect(maintenance).toMatch(/<LoadFailure v-if="loadError"[^>]*:retry="refresh"/)
+    expect(maintenance).toMatch(/v-if="!filtered\.length && !loadError"/)
   })
 })
 
@@ -2569,7 +2621,9 @@ describe('leftover Infinity interpolations', () => {
     expect(maintenance).not.toMatch(/\{\{\s*task\.name\s*\}\}/)
     expect(maintenance).toMatch(/finiteText\(task\.name\)/)
     expect(maintenance).not.toMatch(/\{\{\s*loadError\s*\}\}/)
-    expect(maintenance).toMatch(/finiteText\(loadError/)
+    // loadError is no longer interpolated inline: it feeds the LoadFailure
+    // banner, whose detail line applies finiteText internally.
+    expect(maintenance).toMatch(/:detail="loadError"/)
     expect(maintenance).not.toMatch(/loadError \|\| \(loaded/)
     expect(maintenance).not.toMatch(/\{\{\s*logTitle\s*\}\}/)
     expect(maintenance).toMatch(/finiteText\(logTitle\)/)

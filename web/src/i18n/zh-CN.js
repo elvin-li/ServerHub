@@ -989,6 +989,7 @@ export default {
     type: '类型',
     cron: 'Cron',
     enabled: '启用',
+    enable_name: '启用 {name}',
     disabled: '未启用',
     timeout_s: '超时(秒)',
     next_run: '下次触发',

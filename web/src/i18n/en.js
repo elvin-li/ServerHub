@@ -993,6 +993,7 @@ export default {
     type: 'Type',
     cron: 'Cron',
     enabled: 'Enabled',
+    enable_name: 'Enable {name}',
     disabled: 'Off',
     timeout_s: 'Timeout (seconds)',
     next_run: 'Next run',

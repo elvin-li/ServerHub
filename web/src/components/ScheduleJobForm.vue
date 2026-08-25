@@ -103,6 +103,12 @@
         <div class="k">{{ t('sched.stack_retain') }}</div>
         <input v-model.number="retain" type="number" min="1" max="365" :aria-label="t('sched.stack_retain')" />
       </div>
+      <!-- role=alert: a failed stack read used to be swallowed, leaving an
+           empty select and a disabled Save with no stated reason. The form
+           loads after the dialog holds focus, so the panel read misses it. -->
+      <div v-if="stacksError" class="meta" role="alert" style="color:var(--down-text);font-size:12px;margin-bottom:8px">
+        {{ t('common.load_failed') }} · {{ finiteText(stacksError) }}
+      </div>
       <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.stack_hint') }}</p>
     </template>
 
@@ -156,6 +162,7 @@ const bwlimit = ref(p.bwlimit_kbps || null)
 const stackId = ref(p.stack_id || '')
 const retain = ref(p.retain || 14)
 const stacks = ref([])
+const stacksError = ref('')
 
 const previewing = ref(false)
 const preview = ref(null)
@@ -267,10 +274,12 @@ onMounted(async () => {
     const d = await getStacks()
     if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = Array.isArray(d?.stacks) ? d.stacks : []
+    stacksError.value = ''
     if (!stackId.value && stacks.value.length) stackId.value = stacks.value[0].id
-  } catch {
+  } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = []
+    stacksError.value = finiteText(e.message || String(e), '')
   }
 })
 onUnmounted(() => {
