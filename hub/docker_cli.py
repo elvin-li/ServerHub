@@ -100,6 +100,30 @@ def docker(*args, timeout=30) -> tuple[int, str, str]:
     return rc, _as_text(out), _as_text(err)
 
 
+#: What the docker CLI / compose plugin print when the daemon is unreachable.
+#: One definition for every engine-down classifier (compose validate, the
+#: Apps-page compose wrapper, catalog install/uninstall, the stack jobs), so
+#: a new phrasing only ever needs adding here.
+ENGINE_DOWN_RE = re.compile(
+    r"cannot connect to the docker daemon"
+    r"|is the docker daemon running"
+    r"|error during connect"
+    r"|docker daemon is not running",
+    re.I,
+)
+
+
+def looks_engine_down(text) -> bool:
+    """True when CLI output *text* reads like the daemon socket is gone.
+
+    Purely a message-pattern gate: callers must still confirm with a forced
+    ``engine_up`` probe before classifying, so output that merely quotes these
+    strings (a container's own log, say) cannot flip a real failure into
+    ``container.engine_down``.
+    """
+    return bool(ENGINE_DOWN_RE.search(_as_text(text)))
+
+
 def inspect_object(out: str) -> dict | None:
     """First object from ``docker inspect`` JSON, or None if unusable.
 

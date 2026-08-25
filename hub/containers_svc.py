@@ -14,8 +14,8 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.config import cfg, maintenance_env, override
-from hub.errors import api_error
-from hub.docker_cli import _as_text, _jsonable, docker, docker_json, engine_up, inspect_object, redact_env
+from hub.errors import api_error, soft_fail
+from hub.docker_cli import _as_text, _jsonable, docker, docker_json, engine_up, inspect_object, looks_engine_down, redact_env
 from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.host_address import resolve_value
 from hub.secure_io import replace_bytes
@@ -179,6 +179,41 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
             watchdog.cancel()
             _reap()
         return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
+
+
+#: How much of a failed job's log tail the engine-down classifier reads.
+#: The daemon-unreachable line is what the CLI printed last before exiting,
+#: so a short window is enough -- and a container's own (attacker-writable)
+#: log lines scrolled hundreds of entries earlier cannot reach the matcher.
+_JOB_CLASSIFY_TAIL = 20
+
+
+def _classify_job_failure(j: dict) -> None:
+    """Stamp a failed compose/pull job with the coded reason it failed.
+
+    A stack up/down/pull job that failed because the daemon socket was gone
+    used to finish as a bare non-zero ``rc`` with the raw untranslated CLI
+    error buried in the log -- the SPA rendered "!! failed exit 1" plus daemon
+    stderr and pointed away from the real remedy (start the engine).  The job
+    dict gains ``code: container.engine_down`` (surfaced by ``stack_job_log``
+    and ``job_public``) plus one coded log line, on the same two conditions as
+    every other classifier in this sweep: the failure output must *look* like
+    the daemon is unreachable, and a forced ``engine_up`` probe must confirm
+    it.  The probe is forced because the memoised answer has a 5s TTL, and
+    the seconds right after the engine stops are exactly when a stale "up"
+    would misclassify this.  Healthy jobs never reach here, so the success
+    path stays probe-free.
+    """
+    raw_log = j.get("log") if isinstance(j.get("log"), list) else []
+    tail = "\n".join(_as_text(x) for x in raw_log[-_JOB_CLASSIFY_TAIL:])
+    if not looks_engine_down(tail):
+        return
+    if engine_up(force=True):
+        return
+    fail = soft_fail("container.engine_down")
+    j["code"] = fail["code"]
+    if isinstance(j.get("log"), list):
+        j["log"].append(f"!! {fail['message']} ({fail['code']})")
 
 
 UPDATE_STATUS_PATH = DATA_DIR / "docker-update-status.json"
@@ -971,6 +1006,8 @@ def start_update_container_job(name: str) -> dict:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
+            if j.get("rc") not in (0, None):
+                _classify_job_failure(j)
             j["running"] = False
             j["finished"] = strftime_now("%H:%M:%S")
             invalidate_status()
@@ -1499,6 +1536,8 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
+            if j.get("rc") not in (0, None):
+                _classify_job_failure(j)
             j["running"] = False
             j["finished"] = strftime_now("%H:%M:%S")
             invalidate_status()
@@ -1527,7 +1566,10 @@ def stack_job_log(job_id: str) -> dict:
     return {"running": j.get("running"), "rc": j.get("rc"), "started": j.get("started"),
             "finished": j.get("finished"),
             "log": "\n".join(_as_text(x) for x in raw_log) or "(waiting for output…)",
-            "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action")}
+            "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action"),
+            # machine-readable failure class (container.engine_down) so the
+            # SPA can translate instead of rendering raw daemon stderr
+            "code": j.get("code") if isinstance(j.get("code"), str) else None}
 
 
 def latest_stack_jobs() -> list:
@@ -1546,4 +1588,5 @@ def job_public(jid, j):
     if not isinstance(j, dict):
         j = {}
     return {"job_id": jid, "stack_id": j.get("stack_id"), "action": j.get("action"),
-            "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished")}
+            "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished"),
+            "code": j.get("code") if isinstance(j.get("code"), str) else None}
