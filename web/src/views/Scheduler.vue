@@ -19,7 +19,10 @@
       <div class="toolbar">
         <button class="primary" @click="openCreate">{{ t('sched.new_job') }}</button>
         <button :disabled="jobsBusy" @click="loadJobs">{{ t('common.refresh') }}</button>
-        <span class="meta" style="color:var(--sub)" v-if="jobsLoaded">{{ jobs.length }} {{ t('sched.jobs_count') }}</span>
+        <!-- role=status: the count is Refresh's (and the running-jobs poll's)
+             only summary and changed silently for a screen reader — same
+             treatment as the VMs title-meta and Users/Apps toolbar counts. -->
+        <span class="meta" role="status" style="color:var(--sub)" v-if="jobsLoaded">{{ jobs.length }} {{ t('sched.jobs_count') }}</span>
       </div>
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
@@ -112,7 +115,9 @@
     <div v-else>
       <div class="toolbar">
         <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
-        <span class="meta" style="color:var(--sub)" v-if="data">{{ finiteN(data.count) }} {{ t('scheduler.timers') }}</span>
+        <!-- role=status: the timer count is Refresh's only summary on this
+             tab and changed silently — same rule as the panel-jobs count. -->
+        <span class="meta" role="status" style="color:var(--sub)" v-if="data">{{ finiteN(data.count) }} {{ t('scheduler.timers') }}</span>
       </div>
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
@@ -216,7 +221,11 @@
              pattern as the Shares ACL read error. -->
         <div v-if="runsError" class="meta" role="alert" style="color:var(--down-text)">{{ finiteText(runsError) }}</div>
         <div v-else-if="!runsLoaded" class="meta">{{ t('common.loading') }}</div>
-        <div v-else-if="!runs.length" class="meta">{{ t('sched.runs_empty') }}</div>
+        <!-- role=status: the loading -> "no runs" flip is the whole outcome
+             of an empty history and lands after the dialog already holds
+             focus, so the panel-focus read never covers it — same as the
+             PhotosHub empty pending state. -->
+        <div v-else-if="!runs.length" class="meta" role="status">{{ t('sched.runs_empty') }}</div>
         <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
           <div style="font-size:12px;margin-bottom:4px">
             <span class="badge" :class="run.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${run.status}`) }}</span>

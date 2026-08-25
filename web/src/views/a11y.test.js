@@ -363,6 +363,23 @@ describe('services and scheduler surface leftovers', () => {
     expect(scheduler).toMatch(/v-if="runsError"[^>]*role="alert"/)
   })
 
+  it('announces the Scheduler job and timer counts as status regions', () => {
+    // Each toolbar count is Refresh's (and, for panel jobs, the running-jobs
+    // poll's) only summary, and it changed silently for a screen reader —
+    // same treatment as the VMs title-meta and Users/Apps toolbar counts.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/<span class="meta" role="status"[^>]*v-if="jobsLoaded">\{\{ jobs\.length \}\}/)
+    expect(scheduler).toMatch(/<span class="meta" role="status"[^>]*v-if="data">\{\{ finiteN\(data\.count\) \}\}/)
+  })
+
+  it('announces the Scheduler run-history empty state inside its dialog', () => {
+    // The loading -> "no runs recorded" flip is the whole outcome of an empty
+    // history and lands after the dialog already holds focus, so it was
+    // paint-only — same as the PhotosHub empty pending state.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/v-else-if="!runs\.length" class="meta" role="status">\{\{ t\('sched\.runs_empty'\) \}\}/)
+  })
+
   it('announces the job form stack-list load failure instead of swallowing it', () => {
     // A failed stack read was swallowed into `stacks = []`, leaving an empty
     // select and a disabled Save with no stated reason — the same silent hole
