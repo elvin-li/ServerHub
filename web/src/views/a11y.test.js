@@ -694,6 +694,28 @@ describe('bookmarks and modules surface leftovers', () => {
   })
 })
 
+describe('files surface leftovers', () => {
+  const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+
+  it('announces the Files item count', () => {
+    // The count is the toolbar's answer to every navigation, upload and
+    // delete, and it changed silently for a screen reader — the same
+    // role=status every sibling list page already carries on .meta-count.
+    // The behavioural half lives in Files.test.js.
+    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(listing\.count\) \}\}/)
+  })
+
+  it('keeps the upload input reachable by keyboard', () => {
+    // hidden removed the file input from the tab order and the accessibility
+    // tree, so a keyboard or screen-reader user had no way to upload at all —
+    // drag-drop is mouse-only. sr-only keeps it focusable and the wrapping
+    // label keeps naming it; the ring is drawn on the visible button.
+    expect(files).toMatch(/<input type="file" multiple class="sr-only" @change="onUpload" \/>/)
+    expect(files).not.toMatch(/<input type="file"[^>]*\bhidden\b/)
+    expect(files).toMatch(/\.upload-btn:has\(input:focus-visible\)/)
+  })
+})
+
 describe('logs and tools surface leftovers', () => {
   const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
 

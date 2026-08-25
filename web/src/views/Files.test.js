@@ -90,6 +90,28 @@ describe('Files failed reads', () => {
   })
 })
 
+describe('Files toolbar a11y', () => {
+  it('announces the item count as a live region', async () => {
+    // The count is the toolbar's answer to every navigation, upload and
+    // delete; without role=status it changed silently for a screen reader.
+    const wrapper = await mountFiles()
+    const count = wrapper.find('.meta-count[role="status"]')
+    expect(count.exists(), 'live item count').toBe(true)
+    expect(count.text()).toBe('1 files.items')
+    wrapper.unmount()
+  })
+
+  it('keeps the upload input focusable instead of hidden', async () => {
+    // The hidden attribute removed the input from the tab order and the
+    // accessibility tree — keyboard and screen-reader users could not upload.
+    const wrapper = await mountFiles()
+    const input = wrapper.get('input[type="file"]')
+    expect(input.attributes('hidden')).toBeUndefined()
+    expect(input.classes()).toContain('sr-only')
+    wrapper.unmount()
+  })
+})
+
 describe('Files leave-guards', () => {
   it('does not toast a mkdir that returns after leave', async () => {
     const toast = vi.fn()
