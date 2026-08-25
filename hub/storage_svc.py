@@ -307,7 +307,13 @@ def _volume_row(raw) -> dict | None:
         disk_id != disk_id or disk_id in (float("inf"), float("-inf"))
     ):
         row["disk_id"] = None
-    elif isinstance(disk_id, str):
+    else:
+        # A numeric YAML/plist id that is already-int must coerce via the
+        # str() probe in _as_text, not ride through an isinstance(str) gate:
+        # volumes kept the raw int while aggregate_capacity stringified its
+        # group key, so the shared-pool lookup (and the UI badge behind it)
+        # silently missed.  A >4300-digit leftover int fails the probe and
+        # drops to None like its inf float sibling.
         row["disk_id"] = _as_text(disk_id) or None
     for key in ("total_gb", "used_gb", "avail_gb"):
         val = row.get(key)
