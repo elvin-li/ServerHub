@@ -456,9 +456,13 @@ class TestCodedErrors(unittest.TestCase):
             compose_svc.create_stack("bad.id", None, "services: {}\n")
         self.assertEqual(raised.exception.detail["code"], "compose.bad_stack_id")
 
+        # A log source id is only ever a dict key (the tail is a plain file
+        # read, no argv), so an option-like id that matches nothing is an
+        # honest 404 rather than the argv-injection 400 — the strict gate
+        # also 400'd legal configured ids like ``id: 日志``.
         with self.assertRaises(HTTPException) as raised:
             logs_svc.tail_log("--all")
-        self.assertEqual(raised.exception.detail["code"], "cli.invalid_value")
+        self.assertEqual(raised.exception.detail["code"], "logs.unknown_source")
 
         with self.assertRaises(HTTPException) as raised:
             logs_svc.tail_log("definitely-missing-source")
