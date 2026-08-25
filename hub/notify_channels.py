@@ -295,7 +295,14 @@ def delete_channel(cid: str) -> bool:
 
 
 def _min_rank(ch: dict) -> int:
-    return LEVELS.get(str(ch.get("min_level") or "warn"), LEVELS["warn"])
+    # _utf8_text, not bare str(): YAML hex/octal loads uncapped, so a
+    # hand-edited ``min_level: 0xFF…`` arrives already-int and ``str()`` on it
+    # is the digit-cap ValueError.  That raised out of _channel_wants inside
+    # dispatch() — killing the alert thread's sweep despite the never-raises
+    # contract — and out of effective_settings, whose caller fell back to the
+    # raw legacy flags and silently stopped notifying for every explicit
+    # channel.  An unrenderable level falls back to the "warn" default.
+    return LEVELS.get(_utf8_text(ch.get("min_level") or "warn"), LEVELS["warn"])
 
 
 def effective_settings(raw: dict) -> dict:
@@ -581,7 +588,10 @@ def public_channel(ch: dict) -> dict:
         "type": _json_safe(ch.get("type")),
         "name": name,
         "enabled": bool(ch.get("enabled", True)),
-        "min_level": _utf8_text(str(ch.get("min_level") or "warn")),
+        # _utf8_text directly, not around a bare str(): a hex-YAML over-cap
+        # ``min_level`` made the inner str() raise the digit-cap ValueError
+        # before _utf8_text ever ran, 500ing GET /api/alerts/channels.
+        "min_level": _utf8_text(ch.get("min_level") or "warn") or "warn",
         "notify_resolve": bool(ch.get("notify_resolve", True)),
         "config": {},
         "has": {s: bool(stored.get(s)) for s in spec["secrets"]},
