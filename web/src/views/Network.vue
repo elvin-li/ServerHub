@@ -309,7 +309,12 @@
           </thead>
           <tbody>
             <tr v-for="i in data?.interfaces || []" :key="i.name">
-              <td><span class="led" :class="i.up ? 'on' : 'off'"></span></td>
+              <!-- The Status column next to it spells the state in text, so
+                   the LED is decoration here; without aria-hidden a screen
+                   reader met a column named "status LED" whose cells said
+                   nothing (the bindings table pairs its LED with sr-only text
+                   because there the LED is the whole status column). -->
+              <td><span class="led" :class="i.up ? 'on' : 'off'" aria-hidden="true"></span></td>
               <td>
                 <strong>{{ finiteText(i.name) }}</strong>
                 <div class="show-m sub mono">{{ finiteText(i.mac) }}{{ finiteN(i.mtu, null) != null ? ' · MTU ' + finiteN(i.mtu) : '' }}</div>
@@ -504,7 +509,10 @@
                 </td>
               </tr>
               <tr v-if="!filteredDockerPorts.length && !loadError">
-                <td colspan="7" class="empty-row">{{ t('network.no_published') }}</td>
+                <!-- A filter miss and a host with no published ports are
+                     different states; the listening tab already tells them
+                     apart the same way. -->
+                <td colspan="7" class="empty-row">{{ dockerPortQ.trim() ? t('common.no_match') : t('network.no_published') }}</td>
               </tr>
             </tbody>
           </table>

@@ -351,18 +351,24 @@ def settings() -> dict:
         merged["interface"] = DEFAULTS["interface"]
     if _usable_network(merged["subnet"]) is None:
         merged["subnet"] = DEFAULTS["subnet"]
-    try:
-        merged["listen_port"] = int(merged["listen_port"])
-    except (TypeError, ValueError, OverflowError):
-        merged["listen_port"] = DEFAULTS["listen_port"]
-    try:
-        merged["mtu"] = int(merged["mtu"])
-    except (TypeError, ValueError, OverflowError):
-        merged["mtu"] = DEFAULTS["mtu"]
-    try:
-        merged["keepalive"] = int(merged["keepalive"])
-    except (TypeError, ValueError, OverflowError):
-        merged["keepalive"] = DEFAULTS["keepalive"]
+    # Same ranges save_settings enforces.  services.yaml is hand-editable and
+    # a YAML hex/octal int skips CPython's str->int digit cap (base 16/8 are
+    # exempt), so ``listen_port: 0x<4300+ digits>`` parsed here as an over-cap
+    # int and then ValueError'd ``json.dumps`` itself — GET /api/wireguard,
+    # GET /api/wireguard/settings and the Network overview's wstunnel snapshot
+    # all 500'd on a value the write path would have rejected.
+    for key, low, high in (
+        ("listen_port", 1, 65535),
+        ("mtu", 576, 1500),
+        ("keepalive", 0, 3600),
+    ):
+        try:
+            number = int(merged[key])
+            if not (low <= number <= high):
+                number = DEFAULTS[key]
+        except (TypeError, ValueError, OverflowError):
+            number = DEFAULTS[key]
+        merged[key] = number
     for key, value in merged.items():
         if isinstance(value, str):
             merged[key] = _as_text(value)
@@ -508,8 +514,18 @@ def _cli_missing(rc, err) -> bool:
     truthful answer is the same coded 503 the guard raises.  A timeout keeps
     its own sentinel and stays ``keygen_failed``: a slow wg is not a missing
     one.
+
+    The sentinel alone is not proof (the docker_cli.looks_cli_vanished
+    convention: pattern-match, then confirm).  A spawn can FileNotFoundError
+    for reasons other than the binary — and answering "wireguard-tools is not
+    installed" while ``installation()`` on the same page shows a version
+    string sends the operator at the wrong repair.  Confirm on the filesystem
+    before claiming the 503; a wg that is still on disk keeps the original
+    ``keygen_failed`` mapping.
     """
-    return rc == -1 and _as_text(err).strip() == "not found"
+    if rc != -1 or _as_text(err).strip() != "not found":
+        return False
+    return not _path_exists(WG)
 
 
 def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
