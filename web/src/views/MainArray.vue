@@ -427,8 +427,12 @@
               <span v-if="!(v.actions||[]).length" class="sub">{{ t('main_extra.locked') }}</span>
             </td>
           </tr>
+          <!-- "No volumes" is a diagnosis; hiding system volumes is a filter.
+               With the toggle off and only system volumes present, the table
+               claimed the disk had no volumes at all — say the filter missed
+               instead, like every other filtered table. -->
           <tr v-if="!managedVols.length && !loadError && !pendingFull">
-            <td colspan="6" class="empty-row">{{ t('main_extra.no_vols') }}</td>
+            <td colspan="6" class="empty-row">{{ (data?.managed?.volumes || []).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
       </table>
@@ -505,7 +509,10 @@
           </template>
           <span v-else-if="smartError" style="color:var(--down-text)">{{ finiteText(smartError) }}</span>
         </div>
-        <div v-if="smartLoading" style="text-align:center;padding:20px;color:var(--sub)">{{ t('main_extra.scanning') }}</div>
+        <!-- role=status: the scan runs after the dialog already holds focus,
+             so without a live region a screen reader hears nothing between
+             opening the modal and the table appearing. -->
+        <div v-if="smartLoading" role="status" style="text-align:center;padding:20px;color:var(--sub)">{{ t('main_extra.scanning') }}</div>
         <div v-else>
           <!-- The overview loads after the dialog already holds focus, so the
                panel-focus read never covers a failure — same as the Scheduler
