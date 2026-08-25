@@ -237,7 +237,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('twofa.title') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('twofa.hint') }}</p>
-        <div v-if="twofaError" class="hint bad">
+        <!-- role=alert, like the identical block on Account.vue: without it a
+             failed 2FA status load appears silently for AT users. -->
+        <div v-if="twofaError" class="hint bad" role="alert">
           {{ finiteText(twofaError) }}
           <button class="tiny" type="button" :disabled="twofaBusy" @click="loadTwofa">{{ t('common.retry') }}</button>
         </div>
@@ -360,7 +362,7 @@
           </tbody>
         </table>
         </div>
-        <p v-else-if="apiKeysError" class="hint" style="color:var(--down-text)">{{ finiteText(apiKeysError) }}</p>
+        <p v-else-if="apiKeysError" class="hint" style="color:var(--down-text)" role="alert">{{ finiteText(apiKeysError) }}</p>
         <p v-else-if="apiKeys" class="hint">{{ t('apikeys.empty') }}</p>
         <p v-else class="hint">{{ t('common.loading') }}</p>
 
@@ -405,12 +407,15 @@
         <h2 class="section-title" style="margin-top:0">{{ t('settings.notify') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.notify_legacy_hint') }}</p>
         <div class="form-grid">
+          <!-- The grid <label>s are not associated with their controls (no
+               for/id), so every checkbox needs its own aria-label; the text
+               inputs below already carry theirs. -->
           <label>{{ t('settings.notify_enable') }}</label>
-          <input type="checkbox" v-model="form.notify.enabled" />
+          <input type="checkbox" v-model="form.notify.enabled" :aria-label="t('settings.notify_enable')" />
           <label>{{ t('settings.include_warn') }}</label>
-          <input type="checkbox" v-model="form.notify.include_warn" />
+          <input type="checkbox" v-model="form.notify.include_warn" :aria-label="t('settings.include_warn')" />
           <label>{{ t('settings.notify_resolve') }}</label>
-          <input type="checkbox" v-model="form.notify.notify_resolve" />
+          <input type="checkbox" v-model="form.notify.notify_resolve" :aria-label="t('settings.notify_resolve')" />
           <label>{{ t('notifych.f_ha_url') }}</label>
           <input v-model="form.notify.ha_url" type="text" :aria-label="t('notifych.f_ha_url')" />
           <label>{{ t('notifych.f_ha_service') }}</label>
@@ -430,7 +435,7 @@
         <p class="hint" style="margin-top:0">{{ t('settings.thresholds_hint') }}</p>
         <div class="form-grid">
           <label>{{ t('settings.th_enable') }}</label>
-          <input type="checkbox" v-model="form.thresholds.enabled" />
+          <input type="checkbox" v-model="form.thresholds.enabled" :aria-label="t('settings.th_enable')" />
           <label>{{ t('settings.th_cpu') }}</label>
           <input v-model.number="form.thresholds.cpu_pct" type="number" min="50" max="100" :aria-label="t('settings.th_cpu')" />
           <label>{{ t('settings.th_mem') }}</label>
@@ -741,7 +746,7 @@
           </div>
           <label>WoL</label>
           <div class="row" style="gap:8px">
-            <select v-model.number="powerForm.womp" style="width:100px">
+            <select v-model.number="powerForm.womp" style="width:100px" aria-label="WoL">
               <option :value="1">{{ t('common.on') }}</option>
               <option :value="0">{{ t('common.off') }}</option>
             </select>
@@ -985,12 +990,14 @@
         <h2 class="section-title" style="margin-top:0">{{ t('settings.advanced') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.advanced_hint') }}</p>
         <div class="form-grid">
+          <!-- Same as the notify tab: the grid <label>s carry no for/id, so
+               each checkbox names itself. -->
           <label>{{ t('settings.adaptive') }}</label>
-          <input type="checkbox" v-model="form.adaptive" />
+          <input type="checkbox" v-model="form.adaptive" :aria-label="t('settings.adaptive')" />
           <label>{{ t('settings.alias_auto') }}</label>
-          <input type="checkbox" v-model="form.ip_aliases.auto_bind" />
+          <input type="checkbox" v-model="form.ip_aliases.auto_bind" :aria-label="t('settings.alias_auto')" />
           <label>{{ t('settings.prefer_wired') }}</label>
-          <input type="checkbox" v-model="form.ip_aliases.prefer_wired" />
+          <input type="checkbox" v-model="form.ip_aliases.prefer_wired" :aria-label="t('settings.prefer_wired')" />
           <label>{{ t('settings.alias_interval') }}</label>
           <!-- Backend is IpAliasesPatch.interval = Field(ge=30, le=600); a lower
                bound of 15 here made the whole Advanced save 422 silently. -->
@@ -1016,7 +1023,7 @@
         <p class="hint" style="margin-top:0">{{ t('settings.terminal_hint') }}</p>
         <div class="form-grid">
           <label>{{ t('settings.terminal_host_enabled') }}</label>
-          <input type="checkbox" v-model="form.terminal.host_enabled" />
+          <input type="checkbox" v-model="form.terminal.host_enabled" :aria-label="t('settings.terminal_host_enabled')" />
         </div>
         <p class="hint danger-hint">⚠ {{ t('settings.terminal_warning') }}</p>
         <div class="btns" style="margin-top:12px">

@@ -151,6 +151,68 @@ describe('control names', () => {
       'aria-label must name the control, not repeat its example value',
     ).toEqual([])
   })
+
+  it('names every form control on the account and settings surfaces', () => {
+    // The form-grid layout puts a <label> next to its control without for/id,
+    // so the label text counts for nothing: the text inputs all carried
+    // aria-label while nine checkboxes/selects on Settings (notify, thresholds,
+    // WoL, advanced, terminal) shipped with no accessible name at all.
+    // Accepted name sources: aria-label / aria-labelledby (static or bound),
+    // a wrapping <label>, or a for= that targets the control's id.
+    const FILES = ['views/Login.vue', 'views/Account.vue', 'views/Users.vue', 'views/Settings.vue']
+    const TAG = /<\/?([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)\/?>/g
+    const offenders = []
+    for (const name of FILES) {
+      const src = readFileSync(resolve(SRC, name), 'utf8')
+      const template = src
+        .slice(0, src.search(/<script\b/) >>> 0)
+        // Prose comments mention tags ("the grid <label>s…"); they must not
+        // confuse the nesting walker below.
+        .replace(/<!--[\s\S]*?-->/g, '')
+      let labelDepth = 0
+      for (const m of template.matchAll(TAG)) {
+        const [raw, tag, attrs] = m
+        if (tag === 'label') {
+          labelDepth += raw.startsWith('</') ? -1 : 1
+          continue
+        }
+        if (raw.startsWith('</')) continue
+        if (!['input', 'select', 'textarea'].includes(tag)) continue
+        if (labelDepth > 0) continue
+        if (/\baria-label(?:ledby)?=/.test(attrs)) continue
+        const id = attrs.match(/\sid="([^"]+)"/)
+        if (id && template.includes(`for="${id[1]}"`)) continue
+        offenders.push(`${name}: ${raw.replace(/\s+/g, ' ').slice(0, 90)}`)
+      }
+    }
+    expect(
+      offenders,
+      'a form control next to an unassociated <label> has no accessible name',
+    ).toEqual([])
+  })
+})
+
+describe('account surface load-failure alerts', () => {
+  // These fetch failures render inline (no toast, no LoadFailure banner), so
+  // without role="alert" they appear silently for assistive technology.
+  it('announces the Settings 2FA and API-key load failures', () => {
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    // Account.vue carried role="alert" on its copy of the 2FA block from the
+    // start; the Settings copy shipped without it.
+    expect(settings).toMatch(/v-if="twofaError"[^>]*role="alert"/)
+    expect(settings).toMatch(/v-else-if="apiKeysError"[^>]*role="alert"/)
+    const account = readFileSync(resolve(SRC, 'views/Account.vue'), 'utf8')
+    expect(account).toMatch(/v-if="twofaError"[^>]*role="alert"/)
+  })
+
+  it('announces the Users service-picker and accounts-table load failures', () => {
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    // Both copies of the resource picker (create form + row editor).
+    const pickers = users.match(/v-if="serviceOptionsError"[^>]*role="alert"/g) || []
+    expect(pickers.length).toBe(2)
+    // The empty-row error text, but not its loading/none siblings, is live.
+    expect(users).toMatch(/v-if="accountsError"[^>]*role="alert"/)
+  })
 })
 
 describe('service uninstall UI', () => {
@@ -2365,7 +2427,9 @@ describe('leftover Infinity interpolations', () => {
     expect(users).not.toMatch(/acct\.resources\.join\(', '\)/)
     expect(users).toMatch(/function resourceList\([\s\S]*finiteText/)
     expect(users).toMatch(/finiteText\(serviceOptionsError\)/)
-    expect(users).toMatch(/finiteText\(accountsError, ''\)/)
+    // The error now renders inside its own v-if="accountsError" alert span,
+    // so the '' fallback that used to pick the loading/none branch is gone.
+    expect(users).toMatch(/finiteText\(accountsError\)/)
     expect(users).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(users).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
   })

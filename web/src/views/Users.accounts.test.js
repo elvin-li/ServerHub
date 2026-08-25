@@ -138,6 +138,22 @@ describe('panel accounts section', () => {
     wrapper.unmount()
   })
 
+  it('announces a failed accounts fetch instead of a silent empty row', async () => {
+    // loadAccounts() does not toast, so the empty-row cell is the only place
+    // the failure surfaces; the error text must sit in a live region while the
+    // loading/none states stay out of it.
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.listPanelAccounts.mockRejectedValue(new Error('accounts backend gone'))
+    const wrapper = mountUsers()
+    await flushPromises()
+
+    const alert = wrapper.find('.empty-row [role="alert"]')
+    expect(alert.exists(), 'error rendered as a live region').toBe(true)
+    expect(alert.text()).toBe('accounts backend gone')
+    expect(wrapper.text()).not.toContain('common.loading')
+    wrapper.unmount()
+  })
+
   it('does not throw when a member row omits resources', async () => {
     applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
     api.listPanelAccounts.mockResolvedValue({
