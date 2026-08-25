@@ -135,6 +135,37 @@ describe('Logs keyboard and announcements', () => {
     wrapper.unmount()
   })
 
+  it('splits a filter miss from a genuinely empty log', async () => {
+    // Pre-fix both states rendered logs.empty — "(empty)" — telling the
+    // operator the file has no lines while it is full of lines the filter
+    // simply did not match. Brew/Health pinned the common.no_match split.
+    const { wrapper } = await mountPage()
+    await wrapper.get('input[type="text"]').setValue('no-such-line')
+    const pane = wrapper.get('.log-viewer')
+    expect(pane.text()).toBe('common.no_match')
+    expect(pane.text()).not.toContain('logs.empty')
+    expect(pane.attributes('role')).toBe('status')
+
+    await wrapper.get('input[type="text"]').setValue('')
+    expect(wrapper.get('.log-viewer').text()).toContain('hello')
+    wrapper.unmount()
+  })
+
+  it('keeps logs.empty for an empty tail even while a filter is typed', async () => {
+    // No lines exist at all, so "no match" would imply there was something
+    // to match; the empty-file message stays the honest one.
+    api.getLogTail.mockResolvedValue({
+      path: '/tmp/panel.log',
+      size: 0,
+      lines: 0,
+      log: '',
+    })
+    const { wrapper } = await mountPage()
+    await wrapper.get('input[type="text"]').setValue('anything')
+    expect(wrapper.get('.log-viewer').text()).toBe('logs.empty')
+    wrapper.unmount()
+  })
+
   it('announces an empty tail through a live region, not a silent blank pane', async () => {
     api.getLogTail.mockResolvedValue({
       path: '/tmp/panel.log',
