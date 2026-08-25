@@ -57,6 +57,30 @@ describe('NotifyChannels', () => {
     w.unmount()
   })
 
+  it('keeps the last known rows visible under a failed refresh', async () => {
+    const w = mountCard()
+    await flushPromises()
+    expect(w.text()).toContain('Home')
+    api.getNotifyChannels.mockRejectedValue(new Error('backend gone'))
+    await w.findAll('button').find((b) => b.text() === 'common.refresh').trigger('click')
+    await flushPromises()
+    // Error banner above the stale rows, not instead of them.
+    expect(w.find('[role="alert"]').text()).toContain('backend gone')
+    expect(w.text()).toContain('Home')
+    expect(w.text()).toContain('email-1')
+    expect(w.text()).not.toContain('notifych.empty')
+    w.unmount()
+  })
+
+  it('a first-load failure is the error state, not "no channels"', async () => {
+    api.getNotifyChannels.mockRejectedValue(new Error('backend gone'))
+    const w = mountCard()
+    await flushPromises()
+    expect(w.find('[role="alert"]').text()).toContain('backend gone')
+    expect(w.text()).not.toContain('notifych.empty')
+    w.unmount()
+  })
+
   it('does not toast a late failure after unmount', async () => {
     const toast = vi.fn()
     let rejectLoad
