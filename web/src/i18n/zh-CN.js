@@ -1758,6 +1758,7 @@ export default {
     service: '服务',
     user: '用户',
     empty: '未找到 Homebrew 服务',
+    action_running: '正在执行：{action} · {name}',
     confirm_stop: '停止「{name}」？这也会关闭其登录自启。',
     confirm_restart: '重启「{name}」？服务会短暂不可用。',
   },

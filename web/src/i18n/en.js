@@ -1762,6 +1762,7 @@ export default {
     service: 'Service',
     user: 'User',
     empty: 'No Homebrew services found',
+    action_running: 'Running: {action} · {name}',
     confirm_stop: 'Stop “{name}”? This also disables its login autostart.',
     confirm_restart: 'Restart “{name}”? The service will be briefly unavailable.',
   },
