@@ -48,7 +48,14 @@ def _path_is_file(path) -> bool:
 
 def _app_process_name(name: str) -> str:
     """Refuse osascript interpolation of an option-shaped or quoted process name."""
-    value = str(name or "").strip()
+    try:
+        value = str(name or "").strip()
+    except ValueError:
+        # A hand-edited hex leftover (``process: 0xfff…`` loads uncapped
+        # through YAML) raised the int->str digit-cap ValueError here and
+        # 500'd POST /api/action; it can never name a real process, so it
+        # gets the same coded 400 as an option-shaped name.
+        raise api_error("actions.bad_process_name")
     if not _PROCESS_NAME_RE.fullmatch(value):
         raise api_error("actions.bad_process_name")
     return value
@@ -58,7 +65,16 @@ def _script_argv(command) -> list[str]:
     if isinstance(command, (list, tuple)):
         # ``str()`` not ``_as_text``: leftover ``!!binary`` ``b'--all'`` must
         # stay ``"b'--all'"``, not decode into a real ``--all`` option.
-        argv = [str(part) for part in command]
+        argv = []
+        for part in command:
+            try:
+                argv.append(str(part))
+            except ValueError:
+                # A hand-edited hex leftover (``start: [cmd, 0xfff…]`` loads
+                # uncapped through YAML) raised the int->str digit-cap
+                # ValueError here and 500'd POST /api/action; the scalar path
+                # already collapses the same leftover into this coded 400.
+                raise api_error("actions.empty_script")
     else:
         try:
             argv = shlex.split(str(command))
