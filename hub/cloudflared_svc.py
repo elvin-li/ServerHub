@@ -12,6 +12,7 @@ import os
 import plistlib
 import re
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -154,6 +155,43 @@ def _path_is_dir(path: Path) -> bool:
         return False
 
 
+#: login.url holds one short https URL; anything longer is junk.
+_LOGIN_URL_CAP = 4096
+
+
+def _read_login_url() -> str | None:
+    """Login URL from ``LOGIN_URL_FILE`` without ever blocking the request.
+
+    ``open()`` of a FIFO planted at login.url parks the caller until a writer
+    appears, and ``read()`` parks it while the writer stays silent, so a swap
+    between the ``is_file`` check and the open hung GET /api/cloudflared/status
+    (and login poll) forever.  ``O_NONBLOCK`` makes the FIFO open return at
+    once, ``fstat`` rejects anything that is not a regular file, ``O_NOFOLLOW``
+    refuses a planted symlink, and the read itself is capped.
+    """
+    if not _path_is_file(LOGIN_URL_FILE):
+        return None
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(LOGIN_URL_FILE), flags)
+    except (OSError, ValueError, TypeError):
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, _LOGIN_URL_CAP)
+    except OSError:
+        return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return data.decode("utf-8", "replace").strip() or None
+
+
 #: Cloudflare's documented tunnel edge range (198.41.192.0/20).  A subset is
 #: pinned when DNS is untrustworthy — see _edge_workaround_args().
 EDGE_NETWORK = "198.41.192.0/20"
@@ -256,6 +294,26 @@ def _bin() -> str:
     raise api_error("cloudflared.not_installed")
 
 
+def _cli_vanished(rc, err, binary) -> bool:
+    """Whether an ``sh()`` result means cloudflared itself vanished mid-request.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real cloudflared exit.  ``_bin()`` probes before the
+    spawn, so an uninstall in between used to answer POST /token as a 400
+    blaming the pasted token and POST /create / /route-dns as an uncoded
+    ``{ok: false, message: "not found"}`` the SPA cannot map, instead of the
+    same coded 503 the up-front probe raises.  A timeout keeps its own
+    sentinel and is deliberately not classified: a slow CLI is not a missing
+    one.  rc -1 is also what a signal-killed run reports, so the disk
+    re-check confirms the binary is actually gone before classifying — a
+    *still-present* cloudflared that printed exactly ``not found`` and died
+    keeps its raw result.  The re-check runs only on this failure path.
+    """
+    if rc != -1 or _as_text(err).strip() != "not found":
+        return False
+    return not _path_is_file(Path(_as_text(binary)))
+
+
 def _jsonable_state(value, depth: int = 0):
     """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
 
@@ -269,6 +327,14 @@ def _jsonable_state(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Over the int→str digit cap (sys.get_int_max_str_digits):
+            # json.dumps of such a leftover ValueError'd, which silently
+            # dropped the whole _save_state write and would 500 any
+            # encoder the value reached.  Drop it like non-finite floats.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -687,7 +753,10 @@ def fetch_token(tunnel: str) -> str:
     tunnel = _tunnel_argv(tunnel)
     if not _logged_in():
         raise api_error("cloudflared.not_logged_in")
-    rc, out, err = sh([_bin(), "tunnel", "token", tunnel], timeout=45)
+    bin_path = _bin()
+    rc, out, err = sh([bin_path, "tunnel", "token", tunnel], timeout=45)
+    if _cli_vanished(rc, err, bin_path):
+        raise api_error("cloudflared.not_installed")
     token = _as_text(out).strip().splitlines()
     token = _normalize_token(token[-1] if token else "")
     if rc != 0 or not token_looks_valid(token):
@@ -926,13 +995,9 @@ def status() -> dict:
         lambda probe: probe(), [_is_running, _tunnels], max_workers=2
     )
 
-    login_url = None
-    if _path_is_file(LOGIN_URL_FILE):
-        try:
-            with open(LOGIN_URL_FILE, encoding="utf-8", errors="replace") as fh:
-                login_url = fh.read(4096).strip() or None
-        except Exception:
-            login_url = None
+    # Never a plain open()+read(): a FIFO planted at login.url used to park
+    # this poll endpoint forever (see _read_login_url).
+    login_url = _read_login_url()
     # Reap a login child that exited between polls instead of retaining a zombie.
     login_pending = _login_process_pending()
 
@@ -1134,13 +1199,9 @@ def login_poll() -> dict:
             "logged_in": True,
             "message": "Login successful" if stopped else "Login successful, but cleaning up the login process failed; try again later",
         }
-    url = None
-    try:
-        if _path_is_file(LOGIN_URL_FILE):
-            with open(LOGIN_URL_FILE, encoding="utf-8", errors="replace") as fh:
-                url = fh.read(4096).strip() or None
-    except (OSError, UnicodeDecodeError, ValueError):
-        url = None
+    # Never a plain open()+read(): a FIFO planted at login.url used to park
+    # this poll endpoint forever (see _read_login_url).
+    url = _read_login_url()
     return {
         "ok": True,
         "logged_in": False,
@@ -1158,7 +1219,10 @@ def create_tunnel(name: str) -> dict:
         raise api_error("cloudflared.invalid_name")
     if not _logged_in():
         raise api_error("cloudflared.login_required")
-    rc, out, err = sh([_bin(), "tunnel", "create", name], timeout=60)
+    bin_path = _bin()
+    rc, out, err = sh([bin_path, "tunnel", "create", name], timeout=60)
+    if _cli_vanished(rc, err, bin_path):
+        raise api_error("cloudflared.not_installed")
     # The account list just changed; do not let the page show the old one.
     invalidate_tunnels()
     ok = rc == 0
@@ -1258,10 +1322,13 @@ def route_dns(tunnel: str, hostname: str) -> dict:
         raise api_error("cloudflared.route_args_required")
     if not _logged_in():
         raise api_error("cloudflared.login_required")
+    bin_path = _bin()
     rc, out, err = sh(
-        [_bin(), "tunnel", "route", "dns", tunnel, hostname],
+        [bin_path, "tunnel", "route", "dns", tunnel, hostname],
         timeout=60,
     )
+    if _cli_vanished(rc, err, bin_path):
+        raise api_error("cloudflared.not_installed")
     msg = (_as_text(out) + "\n" + _as_text(err)).strip()
     return {"ok": rc == 0, "message": msg[-2000:]}
 
