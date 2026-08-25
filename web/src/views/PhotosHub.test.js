@@ -289,7 +289,7 @@ describe('PhotosHub page', () => {
     const note = wrapper.find('.toolbar [role="status"]')
     expect(note.exists(), 'busy note is a live region').toBe(true)
     expect(note.attributes('aria-live')).toBe('polite')
-    expect(note.text()).toContain('photoshub.act_sync')
+    expect(note.text()).toContain('photoshub.action_running')
 
     finish({ action: 'sync', ok: true, status_after: INSTALLED })
     await flushPromises()
