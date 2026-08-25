@@ -61,6 +61,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all (YAML/plist hex loads uncapped, so an
+            # over-cap int arrives already-int) — same drop as its inf
+            # float sibling.  It used to leak through this sanitizer and
+            # 500 POST /api/system/screensharing/enable's ok payload.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
