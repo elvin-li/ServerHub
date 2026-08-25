@@ -181,21 +181,30 @@ def service_action(name: str, action: str) -> dict:
             [BREW, "services", action, name],
             timeout=120, env=_brew_env(), cap=2000,
         )
-        # The shared `brew services list --json` snapshot has a 6s TTL, so
-        # without this the UI re-reads the pre-action state right after a
-        # start/stop and shows the service back in its old state until the TTL
-        # lapses.  Drop it here, next to invalidate_status(), so the refresh
-        # that follows the action is truthful.
-        invalidate_brew_services()
-        invalidate_status()
-        # run_capped is str; a bytes leftover from a stub (or a future
-        # binary-capped helper) used to TypeError Starlette's encoder.
-        text = _as_text(msg).strip()
-        return {
-            "ok": rc == 0,
-            "message": text or f"exit {rc}",
-        }
     except Exception as e:
         # Leftover ``\ud800`` in a raised message used to 500 the action
         # JSON the same way a leftover brew-list name 500'd the list.
         return {"ok": False, "message": _as_text(e)}
+    if rc == -1 and _as_text(msg).strip() == "not found":
+        # run_capped reports a FileNotFoundError spawn as (-1, "not found") —
+        # a sentinel, never a real brew exit.  Homebrew vanished between the
+        # _brew_present() check and the spawn, so answer with the same coded
+        # 503 that check raises instead of an uncoded {ok: false,
+        # message: "not found"} the SPA cannot translate.  (This must sit
+        # outside the try above: the broad except used to swallow the raise
+        # into exactly that uncoded shape.)
+        raise api_error("brew.not_found")
+    # The shared `brew services list --json` snapshot has a 6s TTL, so
+    # without this the UI re-reads the pre-action state right after a
+    # start/stop and shows the service back in its old state until the TTL
+    # lapses.  Drop it here, next to invalidate_status(), so the refresh
+    # that follows the action is truthful.
+    invalidate_brew_services()
+    invalidate_status()
+    # run_capped is str; a bytes leftover from a stub (or a future
+    # binary-capped helper) used to TypeError Starlette's encoder.
+    text = _as_text(msg).strip()
+    return {
+        "ok": rc == 0,
+        "message": text or f"exit {rc}",
+    }
