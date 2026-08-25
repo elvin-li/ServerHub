@@ -513,13 +513,16 @@ class TestCodedErrors(unittest.TestCase):
                 nginx_svc.test_config()
         self.assertEqual(raised.exception.detail["code"], "nginx.conf_missing")
 
+        # A vanished nginx binary is the coded 503, disk-confirmed — the raw
+        # sh sentinel {ok: false, message: "not found"} was untranslatable.
         with (
             patch.object(nginx_svc, "NGINX_CONF", RealPath(__file__)),
             patch.object(nginx_svc, "NGINX_BIN", "/no/such/nginx-binary"),
         ):
-            result = nginx_svc.test_config()
-        self.assertFalse(result["ok"])
-        self.assertIn("not found", result["message"])
+            with self.assertRaises(HTTPException) as raised:
+                nginx_svc.test_config()
+        self.assertEqual(raised.exception.detail["code"], "nginx.not_found")
+        self.assertEqual(raised.exception.status_code, 503)
 
         with patch.object(autostart_svc.Path, "home", return_value=RealPath("/tmp/opt50h-no-home")):
             with self.assertRaises(HTTPException) as raised:

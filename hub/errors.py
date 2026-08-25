@@ -375,6 +375,7 @@ CODES: dict[str, tuple[int, str]] = {
     "autostart.bad_plist": (400, "the LaunchAgent plist for {label} is unreadable or has no Label"),
     "autostart.script_missing": (404, "autostart.sh not found"),
     "nginx.conf_missing": (404, "nginx.conf is missing"),
+    "nginx.not_found": (503, "nginx is not installed"),
     "power.unknown_action": (400, 'unknown power action: {action} (choose one of {choices})'),
     "power.confirm_required": (400, 'power actions require confirm=true'),
     "power.bad_key": (400, "unsupported power setting: {key}"),

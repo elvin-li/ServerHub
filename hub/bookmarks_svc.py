@@ -188,18 +188,51 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         return {"ok": False, "status": None, "ms": ms, "error": exc_detail(e, 120)}
 
 
+def _key_text(value) -> str | None:
+    """Coerce a YAML/backend leftover into a scrubbed lookup key, or None.
+
+    Two leftovers used to break the id → backend mapping here:
+
+    * YAML hex/octal integers load uncapped (``int(x, 16)`` is exempt from
+      CPython's 4300-digit conversion limit), so a leftover ``service:
+      0xFF…`` arrived *already-int* and the bare ``str(key)`` raised the
+      digit-cap ValueError — a 500 on GET /api/bookmarks from the lookup,
+      and a silently-empty backend index from ``put``.  The probe is a
+      str() attempt, not an ``isinstance(key, str)`` gate: a finite
+      numeric id (``id: 8080``) must keep matching its backend row.
+    * link values pass ``resolve_value``, which scrubs lone surrogates to
+      U+FFFD — but the index keys were never scrubbed, so a bookmark id
+      carrying a leftover ``\\ud800`` could never resolve the backend row
+      listed under the same id: the deliberately-stopped VM probed red
+      instead of reading gray "stopped".  Keys are scrubbed on both the
+      put and the lookup side so either shape still meets its match.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    try:
+        s = value if isinstance(value, str) else str(value)
+    except ValueError:
+        return None
+    return _utf8_text(s) or None
+
+
 def _backend_index() -> dict:
     """Map id / name / url → backend runtime info for expected-state checks."""
     idx: dict[str, dict] = {}
 
-    def put(key: str | None, info: dict):
-        if not key:
+    def put(key, info: dict):
+        s = _key_text(key)
+        if not s:
             return
-        idx[str(key)] = info
+        idx[s] = info
         # also strip common prefixes
-        s = str(key)
         if s.startswith("orb:"):
             idx[s[4:]] = info
+
+    def put_url(url, info: dict):
+        u = _key_text(url)
+        if u:
+            put("url:" + u.rstrip("/"), info)
 
     # Three unrelated inventories -- UTM, OrbStack and the container engine -- and
     # none of them reads another's answer, yet this waited out their sum: measured at
@@ -256,8 +289,7 @@ def _backend_index() -> dict:
             put(v.get("uuid"), info)
             put(v.get("orb_name"), info)
             put(v.get("name"), info)
-            if v.get("url"):
-                put(f"url:{v['url'].rstrip('/')}", info)
+            put_url(v.get("url"), info)
     except Exception:
         pass
 
@@ -272,8 +304,7 @@ def _backend_index() -> dict:
             }
             put(c.get("id"), info)
             put(c.get("name"), info)
-            if c.get("url"):
-                put(f"url:{c['url'].rstrip('/')}", info)
+            put_url(c.get("url"), info)
     except Exception:
         pass
 
@@ -286,7 +317,8 @@ def _backend_index() -> dict:
             continue
         if not isinstance(ov, dict):
             continue
-        if sid in idx:
+        key = _key_text(sid)
+        if not key or key in idx:
             continue
         # only mark intentionally hidden/disabled as stopped if flag set
         if ov.get("expected") == "stopped" or ov.get("disabled") is True:
@@ -294,23 +326,25 @@ def _backend_index() -> dict:
                 "state": "stopped",
                 "status": "disabled",
                 "kind": "override",
-                "name": ov.get("name") or sid,
-                "id": sid,
+                "name": ov.get("name") or key,
+                "id": key,
             }
-            put(sid, info)
-            if ov.get("url"):
-                put(f"url:{str(ov['url']).rstrip('/')}", info)
+            put(key, info)
+            put_url(ov.get("url"), info)
 
     return idx
 
 
 def _index_lookup(idx: dict, key) -> dict | None:
-    """Look up a backend row. YAML leftovers like ``service: [nginx]`` are unhashable."""
+    """Look up a backend row. YAML leftovers like ``service: [nginx]`` are unhashable.
+
+    The key goes through the same probe + scrub as the index side
+    (:func:`_key_text`): a hex-YAML over-cap int used to ValueError the
+    bare ``str(key)`` here — a 500 on GET /api/bookmarks.
+    """
     if not isinstance(idx, dict):
         return None
-    if isinstance(key, bool) or not isinstance(key, (str, int)):
-        return None
-    s = key if isinstance(key, str) else str(key)
+    s = _key_text(key)
     if not s:
         return None
     row = idx.get(s)
@@ -330,7 +364,7 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
         hit = _index_lookup(idx, key)
         if hit is not None:
             return hit
-    url = str(link.get("url") or "").rstrip("/")
+    url = (_key_text(link.get("url")) or "").rstrip("/")
     if url:
         hit = _index_lookup(idx, f"url:{url}")
         if hit is not None:
@@ -344,7 +378,7 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
             continue
         if not isinstance(ov, dict):
             continue
-        ou = str(ov.get("url") or "").rstrip("/")
+        ou = (_key_text(ov.get("url")) or "").rstrip("/")
         if ou and ou == url:
             hit = _index_lookup(idx, sid)
             if hit is not None:
@@ -463,6 +497,14 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # YAML hex/octal leftovers dodge CPython's str->int digit cap,
+            # so an over-cap link field arrived here already-int and
+            # Starlette's own json.dumps raised the int->str digit-cap
+            # ValueError — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
