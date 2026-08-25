@@ -178,6 +178,21 @@ def _mem_gb(rc, memsize):
     return gb
 
 
+def _ncpu_int(rc, ncpu):
+    """``hw.ncpu`` as int, or None.
+
+    ``isdigit()`` does not bound length: ``int()`` of a >4300-digit leftover
+    is ValueError (CPython's str->int cap), which used to 500
+    GET /api/system/host — one line below the already-guarded ``_mem_gb``.
+    """
+    try:
+        if rc != 0 or not ncpu.isdigit():
+            return None
+        return int(ncpu)
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return None
+
+
 @cached_snapshot(_HOST_TTL)
 def _host_snapshot() -> dict:
     # The dashboard re-reads this on every heavy tick and Settings on every open.
@@ -226,7 +241,7 @@ def _host_snapshot() -> dict:
         "arch": _as_text(platform.machine()),
         "python": _as_text(platform.python_version()),
         "cpu": model if rc3 == 0 else "",
-        "ncpu": int(ncpu) if rc4 == 0 and ncpu.isdigit() else None,
+        "ncpu": _ncpu_int(rc4, ncpu),
         "mem_total_gb": _mem_gb(rc_m, memsize),
         "host_ip": ip,
         "lan_ip": ip,
