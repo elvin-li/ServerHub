@@ -89,6 +89,11 @@ describe('poll callbacks report a dead server to lib/poll.js', () => {
     { name: 'VMs', load: () => import('./VMs.vue'), pollers: 1 },
     { name: 'WireGuard', load: () => import('./WireGuard.vue'), pollers: 1 },
     { name: 'MainArray', load: () => import('./MainArray.vue'), pollers: 1 },
+    // The later sweep: Ollama (10s status), Alerts and Audit (30s each) poll
+    // through lib/poll too, and their ticks owe it the same false sentinel.
+    { name: 'Ollama', load: () => import('./Ollama.vue'), pollers: 1 },
+    { name: 'Alerts', load: () => import('./Alerts.vue'), pollers: 1 },
+    { name: 'Audit', load: () => import('./Audit.vue'), pollers: 1 },
   ]
 
   let wrapper

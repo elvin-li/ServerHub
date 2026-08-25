@@ -693,7 +693,9 @@ describe('operations polling and submission guards', () => {
   })
 
   it('does not refresh a failed backup into the successful list', () => {
-    expect(backups).toContain('if (r.ok) await refresh()')
+    // refresh(true): these re-reads follow a user-initiated backup, so their
+    // failure may toast (jobFinishRefresh.test.js pins the background chain).
+    expect(backups).toContain('if (r.ok) await refresh(true)')
   })
 
   it('tears down action timers on Services and Apps job polls', () => {
@@ -1179,7 +1181,7 @@ describe('operations polling and submission guards', () => {
     expect(apps).toMatch(/async function checkRemoteUpdates\(\)[\s\S]*await loadRemote\(\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
     expect(apps).toMatch(/async function toggleManagedAutostart\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
     expect(apps).toMatch(/async function doManagedAction\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
-    expect(compose).toMatch(/async function create\(\)[\s\S]*await loadStacks\(\)[\s\S]*if \(!pageAlive\) return[\s\S]*selected\.value = j\.id/)
+    expect(compose).toMatch(/async function create\(\)[\s\S]*await loadStacks\(true\)[\s\S]*if \(!pageAlive\) return[\s\S]*selected\.value = j\.id/)
     expect(photoshub).toMatch(/await getPhotosHubStatus\(\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value =/)
     expect(photoshub).toMatch(/await getPhotosHubStatus\(\)\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value = after/)
     expect(wireguard).not.toMatch(/pingResult\.value = await pingWireguardPeers/)

@@ -397,6 +397,99 @@ describe('theme contrast', () => {
     expect(offenders, 'a raw-accent fill takes var(--on-accent) ink via --accent-fill').toEqual([])
   })
 
+  it('keeps the branded chip inks above AA on their own tints', () => {
+    // Apps' kind chips pair a brand hue's tint with a brand-hue ink, outside
+    // the --*-text token system, so the token measurements above never see
+    // them. They shipped with literal inks darkened for light cards only
+    // (#1a6fb0 / #b45309 / #7c4fe0): 1.7-3.0:1 on the dark themes, patched
+    // for one chip by a per-theme override that also fired in *light* system
+    // mode at 1.7:1 on white. The fix mixes each hue toward --txt like the
+    // tokens do; this measures that the mixes clear AA on the chip's own
+    // tint with every theme's own inputs.
+    const apps = readFileSync(resolve(__dirname, '../views/Apps.vue'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+    const chips = {}
+    for (const name of ['chip-docker', 'chip-launchd', 'chip-remote', 'chip-feat', 'chip-native', 'chip-ok']) {
+      const rule = apps.match(new RegExp(`\\.${name}\\s*\\{([^}]*)\\}`))
+      const background = rule?.[1].match(/background:\s*([^;]+);/)
+      const ink = rule?.[1].match(/(?:^|[^-\w])color:\s*([^;]+);/)
+      if (background && ink) chips[name] = { background: background[1], ink: ink[1] }
+    }
+    // The Containers k8s badge is the same shape, spelled inline.
+    const containers = readFileSync(resolve(__dirname, '../views/Containers.vue'), 'utf8')
+    const k8s = containers.match(/style="background:([^;"]+);color:([^"]+)">k8s</)
+    if (k8s) chips['k8s badge'] = { background: k8s[1], ink: k8s[2] }
+    // Guards the parser: a rule that stops matching would pass vacuously.
+    expect(Object.keys(chips).sort()).toEqual(
+      ['chip-docker', 'chip-feat', 'chip-launchd', 'chip-native', 'chip-ok', 'chip-remote', 'k8s badge'],
+    )
+
+    const paper = { r: 255, g: 255, b: 255, a: 1 }
+    const offenders = []
+    let checked = 0
+    for (const [theme, vars] of themes) {
+      const bg = resolveColor(vars, vars['--bg'])
+      const card = resolveColor(vars, vars['--card'])
+      if (!bg || !card) continue
+      const onCard = over(card, over(bg, paper))
+      for (const [name, { background, ink }] of Object.entries(chips)) {
+        const tint = resolveColor(vars, background)
+        const front = resolveColor(vars, ink)
+        if (!tint || !front) {
+          offenders.push(`${theme} ${name}: unresolvable (${background} / ${ink})`)
+          continue
+        }
+        checked += 1
+        const ratio = contrast(front, over(tint, onCard))
+        if (ratio < AA) offenders.push(`${theme} ${name}: ${ratio.toFixed(2)}:1`)
+      }
+    }
+    expect(checked).toBeGreaterThan(70)
+    expect(offenders, 'a chip ink below AA on its own tint is decoration, not a label').toEqual([])
+
+    // The measurement only means something if the literals it replaced really
+    // fail it: the old k8s ink on its own wash, on the default light card.
+    const unraid = themes.get('unraid')
+    const wash = resolveColor(unraid, 'color-mix(in srgb, #6366f1 20%, transparent)')
+    const onCard = over(resolveColor(unraid, unraid['--card']), over(resolveColor(unraid, unraid['--bg']), paper))
+    expect(contrast(parseColor('#818cf8'), over(wash, onCard))).toBeLessThan(AA)
+  })
+
+  it('never uses a raw status hue or the accent hover as text ink', () => {
+    // Same reasoning as the raw-accent ban above, for the other fill hues:
+    // --ok / --warn / --down are picked as fills and strokes and measure
+    // 2.0-4.1:1 as text on most cards; --accent-hover is 2.7-4.2:1 in most
+    // themes, which is exactly why --accent-text mixes it further. Each of
+    // these crept back in as ink -- the Ollama chat error, the Backups rsync
+    // note, the Apps detail link -- and each has a --*-text token that was
+    // built for the job. Borders, fills and icon strokes keep the raw hues.
+    const INK = /(?:^|[^-\w])color\s*:\s*var\(--(?:ok|warn|down|accent-hover)\s*[,)]/
+    const offenders = []
+    for (const [name, sheet] of allSheets()) {
+      for (const [, selector, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!INK.test(body)) continue
+        if (/(?:^|[\s>+~(])svg\b/.test(selector)) continue
+        offenders.push(`${name}: ${selector.trim().split('\n').pop().trim()}`)
+      }
+    }
+    // Inline template styles are the other place the same mistake lands
+    // (the Backups and ScheduleJobForm warn notes shipped there).
+    for (const dir of ['views', 'components']) {
+      const abs = resolve(__dirname, '..', dir)
+      for (const file of readdirSync(abs)) {
+        if (!file.endsWith('.vue')) continue
+        const source = readFileSync(resolve(abs, file), 'utf8')
+        const template = source.slice(0, source.search(/<script\b/) >>> 0)
+        for (const m of template.matchAll(/style="([^"]*)"/g)) {
+          if (INK.test(m[1]) || /(?:^|[^-\w])color\s*:\s*var\(--accent\s*[,)]/.test(m[1])) {
+            offenders.push(`${dir}/${file}: style="${m[1]}"`)
+          }
+        }
+      }
+    }
+    expect(offenders, 'status hues are fills; their ink is the matching --*-text token').toEqual([])
+  })
+
   it('keeps the selected-row ink on --on-accent, not a literal', () => {
     // The macOS selected row paints --accent-fill under its text; the row
     // itself takes var(--on-accent), but the sub-line overrides (.sub,

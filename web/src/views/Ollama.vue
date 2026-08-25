@@ -924,7 +924,9 @@ onUnmounted(() => {
 .chat-error {
   margin-top: 6px;
   font-size: 12px;
-  color: var(--down, #c00);
+  /* --down-text, not the raw hue: --down is a fill colour and measures
+     2.2-3.8:1 as text on the dark themes' cards. */
+  color: var(--down-text);
 }
 .chat-input {
   flex: 1;
