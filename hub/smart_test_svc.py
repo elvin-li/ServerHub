@@ -96,6 +96,22 @@ SCHEDULE_INTERVALS = {
     "monthly": 30 * 86400,
 }
 
+
+def _parsed_int(text) -> int | None:
+    """int() of a regex-captured digit run, or None past CPython's str->int cap.
+
+    ``(\\d+)`` bounds the charset but not the length: ``int()`` of a >4300-digit
+    smartctl leftover is ValueError (CPython's str->int cap).  A polling time
+    past the cap used to raise out of ``_capabilities`` and 500
+    POST /api/smart/test through ``start_test``, and a self-test log row's
+    index/hours past it cost the whole disk row (``probe_failed``) on
+    GET /api/smart through ``_device_report``.
+    """
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
 _history_lock = threading.Lock()
 _scheduler_stop: threading.Event | None = None
 _scheduler_thread: threading.Thread | None = None
@@ -278,8 +294,11 @@ def _capabilities(
     minutes: dict[str, int] = {}
     for kind, label in _POLLING_LABELS.items():
         m = re.search(_polling_time_pattern(label), text, re.IGNORECASE | re.DOTALL)
-        if m:
-            minutes[kind] = int(m.group(1))
+        # An unparseable duration falls back to _KIND_HINT_MINUTES below,
+        # exactly like a drive that reports no polling time at all.
+        n = _parsed_int(m.group(1)) if m else None
+        if n is not None:
+            minutes[kind] = n
 
     if no_access:
         reason = "no_smart_passthrough"
@@ -321,13 +340,15 @@ def _selftest_log(device: str, selftest: tuple[int, str, str] | None = None) -> 
         m = _SELFTEST_ROW.match(stripped.strip())
         if m:
             num, kind, status, remaining, hours, lba = m.groups()
+            # 0 on an over-cap number, matching the NVMe rows below: the row's
+            # status text still renders rather than costing the whole disk.
             rows.append({
-                "index": int(num),
+                "index": _parsed_int(num) or 0,
                 "kind": kind.strip(),
                 "status": status.strip(),
                 "passed": "without error" in status.lower() or "completed" == status.strip().lower(),
                 "remaining": remaining,
-                "power_on_hours": int(hours),
+                "power_on_hours": _parsed_int(hours) or 0,
                 "failing_lba": lba.strip() or "",
             })
             continue
@@ -362,7 +383,12 @@ def _in_progress(device: str, caps_raw: tuple[int, str, str] | None = None) -> d
         if not m2:
             return {"running": False, "percent_remaining": None}
         m = m2
-    remaining = int(m.group(1))
+    remaining = _parsed_int(m.group(1))
+    if remaining is None or not 0 <= remaining <= 100:
+        # smartctl said a test is in progress; an over-cap or out-of-range
+        # percentage must not raise (or report a negative percent_done),
+        # only leave the progress figure unknown.
+        return {"running": True, "percent_remaining": None, "percent_done": None}
     return {"running": True, "percent_remaining": remaining, "percent_done": 100 - remaining}
 
 

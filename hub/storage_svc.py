@@ -572,13 +572,22 @@ def _probe_disk_uncached(dev: str, info: dict) -> dict:
                     continue
                 parts = stripped.split()
                 if len(parts) >= 10 and parts[0].isdigit():
+                    try:
+                        attr_id = int(parts[0])
+                    except ValueError:
+                        # ``isdigit()`` does not bound length: ``int()`` of a
+                        # >4300-digit ID column is ValueError (CPython's
+                        # str->int cap), which used to raise out of
+                        # _probe_disk_uncached and degrade the whole disk to
+                        # an error row on GET /api/storage.
+                        continue
                     # If parts[8] is "-", raw is parts[9:]; else raw is parts[8:]
                     if parts[8] == "-":
                         raw_val = " ".join(parts[9:]) if len(parts) > 9 else "-"
                     else:
                         raw_val = " ".join(parts[8:])
                     attrs.append({
-                        "id": int(parts[0]),
+                        "id": attr_id,
                         "name": parts[1],
                         "value": parts[3],
                         "worst": parts[4],
