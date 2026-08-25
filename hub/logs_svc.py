@@ -28,9 +28,18 @@ def _utf8_text(value) -> str:
 
 
 def _stat_size(path: Path) -> int:
-    """``st_size`` can be inf/nan from a FUSE stub; Starlette rejects those."""
+    """``st_size`` can be inf/nan from a FUSE stub; Starlette rejects those.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover ``st_size``
+    that is already a >4300-digit int passes through untouched, and CPython's
+    int->str digit limit then ValueError'd Starlette's ``json.dumps`` —
+    500ing GET /api/logs and GET /api/logs/{id} after the tail had already
+    been read.  ``float()`` rejects anything beyond float range, the same
+    junk test hub/files_svc.py's ``_finite_int`` applies to its stat numbers.
+    """
     try:
         size = int(path.stat().st_size)
+        float(size)
     except (OSError, TypeError, ValueError, OverflowError):
         return 0
     return size if size >= 0 else 0
