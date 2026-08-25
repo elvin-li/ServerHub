@@ -479,7 +479,7 @@
             <button type="button" :disabled="busy || cfBusy" @click="openManagedLogs(detail)">{{ t('apps.logs') }}</button>
           </div>
 
-          <div v-if="cfStatus.login_url" class="notes" style="margin-bottom:10px;word-break:break-all">
+          <div v-if="cfStatus.login_url" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
             {{ t('apps.cf_open_link') }}
             <a :href="finiteText(cfStatus.login_url, '')" target="_blank" rel="noopener">{{ finiteText(cfStatus.login_url) }}</a>
             <div class="sub-line" style="margin-top:6px">{{ t('apps.cf_after_auth') }}</div>
