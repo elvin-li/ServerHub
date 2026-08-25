@@ -16,7 +16,9 @@
       <div class="tile span-4">
         <h2>{{ t('gateway.status') }}</h2>
         <div class="row">
-          <span class="led" :class="data.running ? 'on' : 'err'"></span>
+          <!-- aria-hidden: the LED only repeats the Running/Stopped text
+               beside it in colour (same as the VMs and Network inline LEDs). -->
+          <span class="led" :class="data.running ? 'on' : 'err'" aria-hidden="true"></span>
           <strong>{{ data.running ? t('gateway.running') : t('gateway.stopped') }}</strong>
           <span v-if="finiteN(data.pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(data.pid) }}</span>
         </div>

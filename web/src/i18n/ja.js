@@ -1756,6 +1756,7 @@ export default {
     service: 'サービス',
     user: 'ユーザー',
     empty: 'Homebrew サービスがありません',
+    action_running: '実行中: {action} · {name}',
     confirm_stop: '「{name}」を停止しますか？ログイン時の自動起動も無効になります。',
     confirm_restart: '「{name}」を再起動しますか？サービスは一時的に利用できなくなります。',
   },

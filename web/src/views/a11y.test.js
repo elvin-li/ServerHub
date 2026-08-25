@@ -170,12 +170,16 @@ describe('control names', () => {
     // Scheduler job table + job form, Maintenance/Brew/Audit filters) close the
     // sweep: their form grids use the same label-without-for layout, so a
     // control added to any of them cannot ship nameless.
+    // Logs and Gateway joined last: the Logs toolbar's source/lines selects and
+    // highlight filter were labeled but never pinned, and Gateway ships no form
+    // control today — both are listed so one cannot be added nameless.
     const FILES = [
       'views/Login.vue', 'views/Account.vue', 'views/Users.vue', 'views/Settings.vue',
       'views/Shares.vue', 'views/Files.vue', 'views/PhotosHub.vue', 'views/WireGuard.vue',
       'views/Compose.vue', 'views/Apps.vue', 'views/Containers.vue', 'views/Network.vue',
       'views/Tools.vue', 'views/Services.vue', 'views/Scheduler.vue', 'views/Maintenance.vue',
-      'views/Brew.vue', 'views/Audit.vue', 'components/ScheduleJobForm.vue',
+      'views/Brew.vue', 'views/Audit.vue', 'views/Logs.vue', 'views/Gateway.vue',
+      'components/ScheduleJobForm.vue',
     ]
     const TAG = /<\/?([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)\/?>/g
     const offenders = []
@@ -606,6 +610,27 @@ describe('llm, photos, vpn and health surface leftovers', () => {
     const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
     expect(health).toMatch(/data\.healthy \? '✅ ' \+ t\('common\.healthy'\) : '⚠️ ' \+ t\('common\.issues'\)/)
     expect(health).not.toMatch(/\{\{ data\.healthy \? '✅ OK' : '⚠️' \}\}/)
+  })
+})
+
+describe('brew and gateway surface leftovers', () => {
+  it('announces the Brew action-running note', () => {
+    // brew services start/stop/restart runs for seconds (the list call alone
+    // is allowed 20s) and act() greys out every button for the duration;
+    // before the note that state was paint only — a screen-reader user heard
+    // nothing between the click and the finish toast. Same shape as the
+    // PhotosHub/Shares busy notes; the behavioural half lives in Brew.test.js.
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(brew).toMatch(/v-if="busy"[^>]*role="status"[^>]*aria-live="polite"/)
+    expect(brew).toContain("t('brew.action_running'")
+  })
+
+  it('hides the Gateway status LED from the accessibility tree', () => {
+    // The LED only repeats the Running/Stopped text beside it in colour, so
+    // it is decoration — same treatment as the VMs and Network inline LEDs.
+    // (Table-cell LEDs are covered by their sr-only column header instead.)
+    const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
+    expect(gateway).toMatch(/class="led" :class="data\.running \? 'on' : 'err'" aria-hidden="true"/)
   })
 })
 
@@ -1321,7 +1346,9 @@ describe('operations polling and submission guards', () => {
     expect(users).toMatch(/async function removeAccount\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(users).toMatch(/async function removeAccount\([\s\S]*finally \{[\s\S]*if \(pageAlive\) accountsBusy\.value = false/)
     expect(brew).toMatch(/async function act\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
-    expect(brew).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    // Block form since the busy note: the same pageAlive gate also clears the
+    // note's action/name so a leave mid-action cannot resurrect the region.
+    expect(brew).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) \{[\s\S]{0,80}busy\.value = false/)
     expect(brew).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
   })
 
