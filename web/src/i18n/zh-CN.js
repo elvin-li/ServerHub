@@ -2845,6 +2845,7 @@ export default {
       exists: '已存在',
       fb_no_plist: '未找到 local.filebrowser.plist',
       fb_bad_plist: 'local.filebrowser.plist 不是有效的 LaunchAgent',
+      fb_missing: 'FileBrowser 可执行文件缺失（~/Services/filebrowser）',
       fb_not_installed: '未安装 FileBrowser（~/Services/filebrowser）',
       fb_start_failed: '无法启动 FileBrowser',
       file_only: '只能下载文件',
