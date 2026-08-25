@@ -953,6 +953,21 @@ describe('logs and tools surface leftovers', () => {
     expect(tools).not.toMatch(/<span class="meta">\{\{ finiteN\(ports\.count, 0\) \}\}<\/span>/)
   })
 
+  it('announces the Tools scheduler timer count like its syslog/ports siblings', () => {
+    // The count is the answer to the Refresh click and it changed silently
+    // for a screen reader — the last refresh-driven count on this page
+    // without a live region.
+    expect(tools).toMatch(/role="status">\{\{ t\('tools\.tasks_n', \{ n: timers\.length \}\) \}\}<\/span>/)
+  })
+
+  it('tells engine-off apart from an empty container-size list', () => {
+    // With the engine (or its vanished CLI, now classified by the backend)
+    // down, the size list is empty because docker is unreachable — "no data"
+    // under a df table saying "engine down" contradicted it. Same split the
+    // df table already makes; behavioural half in Tools.dockerEngineOff.test.js.
+    expect(tools).toMatch(/df\.engine_up === false \? t\('tools\.engine_off'\) : t\('tools\.no_data'\)[\s\S]{0,2500}df\.engine_up === false \? t\('tools\.engine_off'\) : t\('tools\.no_data'\)/)
+  })
+
   it('keeps the Logs auto-refresh silent on failure but toasts a manual one', () => {
     // Same convention Audit and Alerts pinned: LoadFailure latches the state
     // on screen, and a toast per 6-second tick while the panel is unreachable

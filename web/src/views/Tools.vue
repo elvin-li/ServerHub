@@ -234,8 +234,12 @@
               <td>{{ finiteText(c.status) }}</td>
               <td class="mono">{{ finiteText(c.size) }}</td>
             </tr>
+            <!-- Same engine-off / no-data split as the df table above: with the
+                 engine (or its CLI) gone this list is empty because docker is
+                 unreachable, not because zero containers exist, and "no data"
+                 next to an "engine down" df row contradicted it. -->
             <tr v-if="!sizes.length">
-              <td colspan="4" class="empty-row">{{ t('tools.no_data') }}</td>
+              <td colspan="4" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -247,7 +251,10 @@
       <div class="toolbar">
         <router-link class="btn primary" to="/scheduler">{{ t('tools.open_scheduler') }}</router-link>
         <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>
-        <span class="meta" style="color:var(--sub)">{{ t('tools.tasks_n', { n: timers.length }) }}</span>
+        <!-- role=status: the timer count is the answer to the Refresh click,
+             and it changed silently for a screen reader. Same pattern as the
+             syslog line count and the listening-port count. -->
+        <span class="meta" style="color:var(--sub)" role="status">{{ t('tools.tasks_n', { n: timers.length }) }}</span>
       </div>
       <h2 class="section-title">{{ t('tools.timers') }}</h2>
       <SkeletonLoader v-if="!tabLoaded.sched" :cols="4" :rows="5" />
