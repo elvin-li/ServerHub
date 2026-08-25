@@ -307,6 +307,12 @@ CODES: dict[str, tuple[int, str]] = {
     "compose.empty_content": (400, "compose file content is empty"),
     "compose.path_forbidden": (403, "compose path must be under ~/Services"),
     "compose.invalid": (400, "compose file is invalid: {detail}"),
+    # The live compose write itself failed (disk full, read-only or dying
+    # mount, permissions lost mid-request).  503 like settings.save_failed:
+    # a disk that cannot be written is a dependency state, not a defect in
+    # the operator's YAML — the raw OSError used to escape as HTTP 500
+    # *after* validation had already passed.
+    "compose.save_failed": (503, "the compose file could not be saved: {detail}"),
     "compose.exists": (409, "stack already exists: {path}"),
     "compose.file_missing": (404, "compose file not found: {path}"),
     "logs.unknown_source": (404, "unknown log source"),

@@ -2779,6 +2779,7 @@ export default {
       empty_content: 'Compose file content is empty',
       path_forbidden: 'Compose path must be under ~/Services',
       invalid: 'Compose file is invalid: {detail}',
+      save_failed: 'The compose file could not be saved: {detail}',
       exists: 'Stack already exists: {path}',
       file_missing: 'Compose file not found: {path}',
     },

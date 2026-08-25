@@ -158,7 +158,16 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
         # Leftover multi-MB junk is not worth backing up; still save over it.
         if getattr(exc, "errno", None) != errno.EFBIG:
             raise api_error("container.no_compose_file")
-    secure_io.replace_secret_text(p, content)
+    try:
+        secure_io.replace_secret_text(p, content)
+    except OSError as exc:
+        # The *live* write is the one line the whole request exists for, and
+        # it was the one line left unguarded: ENOSPC / EROFS / a dying FUSE
+        # EIO here escaped as a raw HTTP 500 after validation had already
+        # passed.  The backup above has its own handler; this one carries the
+        # coded 503 so the SPA can point at the real remedy (free the disk /
+        # remount) instead of a generic server error.
+        raise api_error("compose.save_failed", detail=exc_detail(exc, 200))
     inv()
     return {"ok": True, "path": str(p), "message": "Saved", "backup": str(bak)}
 

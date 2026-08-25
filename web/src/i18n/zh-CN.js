@@ -2775,6 +2775,7 @@ export default {
       empty_content: 'Compose 文件内容为空',
       path_forbidden: 'Compose 路径必须在 ~/Services 下',
       invalid: 'Compose 文件无效：{detail}',
+      save_failed: 'Compose 文件无法保存：{detail}',
       exists: '栈已存在：{path}',
       file_missing: '找不到 Compose 文件：{path}',
     },
