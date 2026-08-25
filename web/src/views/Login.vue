@@ -19,6 +19,7 @@
         <label>
           <span>{{ t('auth.totp_code') }}</span>
           <input
+            ref="totpCodeInput"
             v-model.trim="totpCode"
             class="totp-input"
             autocomplete="one-time-code"
@@ -69,7 +70,7 @@
         </label>
         <label>
           <span>{{ setupMode ? t('auth.create_password') : t('auth.password') }}</span>
-          <input v-model="password" type="password" :autocomplete="setupMode ? 'new-password' : 'current-password'" minlength="10" maxlength="256" required />
+          <input ref="passwordInput" v-model="password" type="password" :autocomplete="setupMode ? 'new-password' : 'current-password'" minlength="10" maxlength="256" required />
         </label>
         <label v-if="setupMode">
           <span>{{ t('auth.confirm_password') }}</span>
@@ -97,7 +98,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAuthStatus, getSetupToken, loginAuth, resetAuthLost, setupAuth, verifyTotpLogin } from '../api/client'
 import { applyAuthStatus } from '../lib/authState'
@@ -130,6 +131,18 @@ const error = ref('')
 const totpStep = ref(false)
 const totpPending = ref('')
 const totpCode = ref('')
+const totpCodeInput = ref(null)
+const passwordInput = ref(null)
+
+// Swapping between the password and code forms unmounts the control that held
+// focus (the submit / back button), which drops keyboard focus to <body> --
+// the `autofocus` attribute only applies on initial page load, so a keyboard
+// or screen-reader user is left stranded with no announcement that the step
+// changed. Move focus to the field the user must fill next.
+async function focusStepField(field) {
+  await nextTick()
+  if (pageAlive) field.value?.focus?.()
+}
 
 let pageAlive = true
 let loginGeneration = 0
@@ -233,6 +246,7 @@ async function submit() {
         password.value = ''
         totpStep.value = true
         if (pageAlive) busy.value = false
+        await focusStepField(totpCodeInput)
         return
       }
       rememberSession(result)
@@ -270,6 +284,7 @@ async function submitTotp() {
       totpStep.value = false
       totpPending.value = ''
       totpCode.value = ''
+      await focusStepField(passwordInput)
     }
   } finally {
     if (pageAlive && generation === loginGeneration) busy.value = false
@@ -283,6 +298,7 @@ function leaveTotpStep() {
   totpCode.value = ''
   error.value = ''
   busy.value = false
+  focusStepField(passwordInput)
 }
 </script>
 

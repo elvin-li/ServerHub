@@ -41,7 +41,10 @@
               <span>{{ finiteText(opt.name) }}</span>
               <code class="mono">{{ finiteText(opt.id) }}</code>
             </label>
-            <span v-if="serviceOptionsError" class="hint bad">{{ finiteText(serviceOptionsError) }}</span>
+            <!-- role=alert: the picker is the only place this failure shows,
+                 and without it the empty checkbox list reads like "no
+                 services" to an AT user. -->
+            <span v-if="serviceOptionsError" class="hint bad" role="alert">{{ finiteText(serviceOptionsError) }}</span>
             <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
           </div>
         </div>
@@ -106,7 +109,7 @@
                         <span>{{ finiteText(opt.name) }}</span>
                         <code class="mono">{{ finiteText(opt.id) }}</code>
                       </label>
-                      <span v-if="serviceOptionsError" class="hint bad">{{ finiteText(serviceOptionsError) }}</span>
+                      <span v-if="serviceOptionsError" class="hint bad" role="alert">{{ finiteText(serviceOptionsError) }}</span>
                       <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
                     </div>
                     <div class="btns" style="margin-top:8px">
@@ -150,7 +153,12 @@
             </template>
             <tr v-if="!accounts.length">
               <td colspan="5" class="empty-row">
-                {{ finiteText(accountsError, '') || (accountsLoaded ? t('common.none') : t('common.loading')) }}
+                <!-- The failure text gets its own role=alert span: loadAccounts()
+                     does not toast, so this cell is the only place the error
+                     surfaces — and the loading/none states must stay out of the
+                     live region or they would be announced too. -->
+                <span v-if="accountsError" role="alert">{{ finiteText(accountsError) }}</span>
+                <template v-else>{{ accountsLoaded ? t('common.none') : t('common.loading') }}</template>
               </td>
             </tr>
           </tbody>
