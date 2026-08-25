@@ -489,6 +489,19 @@ describe('dashboard and storage surface leftovers', () => {
     expect(photoshub).toMatch(/data-test="photoshub-pending-empty" role="status"/)
   })
 
+  it('announces the Backups truncation count and keeps the failed list honest', () => {
+    // The truncation note is the only summary of how many backups exist and
+    // appears/updates silently after every finished backup or refresh — the
+    // Ollama model-count / VMs header-count treatment.  And a failed *first*
+    // read must render the banner alone: a header-only table under it read
+    // as an empty backup listing, on the page where "not listed" means
+    // "gone" (the Containers LoadFailure contract).
+    const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+    expect(backups).toMatch(/<p v-if="hiddenCount" class="meta"[^>]*role="status">/)
+    expect(backups).toMatch(/<SkeletonLoader v-if="!loaded && !loadError"/)
+    expect(backups).toMatch(/v-else-if="!loadError \|\| backups\.length" class="table-wrap backups-artefacts"/)
+  })
+
   it('does not shadow the VMs create-dialog labels with placeholder aria-labels', () => {
     // Each input has a for/id <label> ("Version", "Machine name"). The bound
     // aria-labels that used to sit on top overrode them with the placeholder,

@@ -167,9 +167,16 @@
       </div>
     </div>
 
+    <!-- The banner is not part of the chain below: when a background re-read
+         fails, the artefact rows the operator was reading stay on screen
+         under it instead of being replaced wholesale (the LoadFailure
+         contract — same as Containers and the Users accounts table).  Only a
+         failed *first* load, with nothing fetched yet, renders the banner
+         alone — a header-only table under it used to look like an empty
+         backup listing, on the page where "not listed" reads as "gone". -->
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
-    <SkeletonLoader v-if="!loaded" :cols="4" :rows="5" />
-    <div v-else class="table-wrap backups-artefacts">
+    <SkeletonLoader v-if="!loaded && !loadError" :cols="4" :rows="5" />
+    <div v-else-if="!loadError || backups.length" class="table-wrap backups-artefacts">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -205,8 +212,12 @@
       </table>
       <!-- The table is capped, so say so. Without this the older backups look
            deleted rather than merely unlisted, which is the opposite of what a
-           backups page should tell you. -->
-      <p v-if="hiddenCount" class="meta" style="margin-top:8px">
+           backups page should tell you.
+           role=status: this count is the only summary of how many backups
+           exist, and it appears/updates silently after every finished backup
+           or refresh for a screen reader — same treatment as the Ollama
+           model count and the VMs/Health header counts. -->
+      <p v-if="hiddenCount" class="meta" style="margin-top:8px" role="status">
         {{ t('backups.truncated', { shown: backups.length, total: finiteN(total) }) }}
       </p>
     </div>

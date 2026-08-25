@@ -73,6 +73,16 @@ describe('the backups table is honest about its cap', () => {
     expect(text).toContain('137')
   })
 
+  it('announces the truncation count as a status region', async () => {
+    // The note is the only summary of how many backups exist and it
+    // appears/updates silently after every finished backup or refresh for a
+    // screen reader — the Ollama model-count treatment.
+    const wrapper = await render({ backups: rows(40), root: '/b', total: 137 })
+    const note = wrapper.find('.backups-artefacts [role="status"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('137')
+  })
+
   it('treats a missing total as "not truncated" rather than as zero', async () => {
     // An older backend does not send `total`. Claiming everything is hidden
     // would be worse than saying nothing.
@@ -89,6 +99,39 @@ describe('the backups table is honest about its cap', () => {
     const wrapper = await render({ backups: rows(5), root: '/b', total: 5 })
     // Scoped to the artefact table: configured rsync/stack cards own their
     // own <tbody> rows. Empty generic tools collapse into <details>.
+    expect(wrapper.findAll('.backups-artefacts tbody tr')).toHaveLength(5)
+  })
+
+  it('renders the failure banner alone on a failed first load', async () => {
+    // A header-only artefact table under the banner used to read as an empty
+    // backup listing — on the page where "not listed" means "gone".
+    await setLocale('en')
+    getBackups.mockRejectedValueOnce(new Error('backend unreachable'))
+    const wrapper = mount(Backups, {
+      global: {
+        provide: { toast: () => {} },
+        stubs: { SkeletonLoader: true, LoadFailure: true, RouterLink: true },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findComponent({ name: 'LoadFailure' }).exists()).toBe(true)
+    expect(wrapper.find('.backups-artefacts').exists()).toBe(false)
+  })
+
+  it('keeps the stale rows on screen under the banner when a re-read fails', async () => {
+    // The LoadFailure contract (Containers, Users accounts): a failed
+    // refresh raises the banner *above* what the operator was reading, it
+    // does not blank the rows.
+    const wrapper = await render({ backups: rows(5), root: '/b', total: 5 })
+    getBackups.mockRejectedValueOnce(new Error('backend unreachable'))
+    const refreshBtn = wrapper
+      .findAll('.toolbar button')
+      .find((b) => b.text() === 'Refresh list')
+    await refreshBtn.trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findComponent({ name: 'LoadFailure' }).exists()).toBe(true)
     expect(wrapper.findAll('.backups-artefacts tbody tr')).toHaveLength(5)
   })
 
