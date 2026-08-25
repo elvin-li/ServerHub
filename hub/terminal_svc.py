@@ -225,6 +225,22 @@ def _now() -> int:
         return 0
 
 
+def _duration_ms(started, ended) -> int:
+    """Finite non-negative milliseconds between two clock reads.
+
+    Leftover ``time.time() = inf`` made the elapsed time nan/inf here:
+    ``int(nan)`` is ValueError and ``int(inf)`` OverflowError, which used to
+    500 POST /api/terminal/run *after* the command had already executed — and
+    the same math in the PTY / VM-console end audits raised out of a
+    ``finally``, skipping the session release and the socket close.
+    """
+    try:
+        ms = int((ended - started) * 1000)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return ms if ms >= 0 else 0
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
@@ -461,7 +477,7 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
         "stdout": out,
         "stderr": err,
         "truncated": out_clipped or err_clipped,
-        "duration_ms": int((time.time() - started) * 1000),
+        "duration_ms": _duration_ms(started, time.time()),
     }
 
 
