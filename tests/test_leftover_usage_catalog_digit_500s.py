@@ -19,6 +19,16 @@ then ValueErrors far from the stat.  This hunt covered the two survivors:
   raised *outside* the ``except OSError``, 500ing GET /api/catalog and
   /api/catalog/templates before a single template was parsed.  Both stat
   numbers now route through ``catalog._sig_int``, the same helper pattern.
+
+A follow-up hunt over the remaining Path.stat JSON/f-string consumers
+(hub/jobs.py, backups, scheduler, settings export, photoshub) found them all
+either stat-free or already routed through a guarded helper.  The one site
+whose huge-already-int behaviour was still unpinned is ``largest_files``'s
+``st_mtime``: the raw stat value only ever feeds ``time.localtime`` inside a
+try that catches its OverflowError (existing tests covered ``1e20``/nan/str
+mtimes but not this int class), and the JSON carries the rendered stamp, not
+the int.  Pinned below so a refactor cannot quietly move the raw mtime into
+the payload or narrow the except.
 """
 from __future__ import annotations
 
@@ -70,11 +80,12 @@ class UsageSafeBytesDigitPinTests(unittest.TestCase):
 
 
 class _PoisonedEntry:
-    """Delegates to a real DirEntry but reports a chosen ``st_size``."""
+    """Delegates to a real DirEntry but reports chosen stat numbers."""
 
-    def __init__(self, entry, size):
+    def __init__(self, entry, size, mtime=None):
         self._entry = entry
         self._size = size
+        self._mtime = mtime
 
     def __getattr__(self, name):
         return getattr(self._entry, name)
@@ -82,7 +93,9 @@ class _PoisonedEntry:
     def stat(self, follow_symlinks=True):
         st = self._entry.stat(follow_symlinks=follow_symlinks)
         return mock.Mock(
-            st_size=self._size, st_mtime=st.st_mtime, st_mode=st.st_mode
+            st_size=self._size,
+            st_mtime=st.st_mtime if self._mtime is None else self._mtime,
+            st_mode=st.st_mode,
         )
 
 
@@ -123,13 +136,13 @@ class UsageEndpointsHugeStSizePinTests(unittest.TestCase):
             child.unlink()
         self.root.rmdir()
 
-    def _poisoned_scandir(self, size):
+    def _poisoned_scandir(self, size, mtime=None):
         real_scandir = os.scandir
 
         def scandir(path):
             with real_scandir(path) as it:
                 entries = [
-                    _PoisonedEntry(e, size)
+                    _PoisonedEntry(e, size, mtime)
                     if e.is_file(follow_symlinks=False) else e
                     for e in it
                 ]
@@ -152,6 +165,32 @@ class UsageEndpointsHugeStSizePinTests(unittest.TestCase):
         self.assertEqual([i["name"] for i in out["items"]], ["movie.mkv"])
         self.assertEqual(out["items"][0]["bytes"], 0)
         self.assertEqual(out["scanned"], 1)
+        _starlette(out)
+
+    def test_largest_files_renders_with_a_huge_already_int_st_mtime(self):
+        # The raw st_mtime rides the per-worker top tuple untouched; the only
+        # consumer is time.localtime inside a try whose OverflowError catch is
+        # this exact case.  The JSON must carry the "" stamp, never the int —
+        # Starlette's json.dumps int->str digit cap is ValueError.
+        with self._poisoned_scandir(2048, mtime=_HUGE_INT):
+            out = usage_svc.largest_files()
+        self.assertEqual([i["name"] for i in out["items"]], ["movie.mkv"])
+        self.assertEqual(out["items"][0]["bytes"], 2048)
+        self.assertEqual(out["items"][0]["mtime"], "")
+        _starlette(out)
+
+    def test_largest_files_renders_with_a_400_digit_st_mtime_too(self):
+        # Under the digit cap json.dumps would render it, but localtime's
+        # OverflowError already rejects anything past time_t range.
+        with self._poisoned_scandir(2048, mtime=_BIG_INT):
+            out = usage_svc.largest_files()
+        self.assertEqual(out["items"][0]["mtime"], "")
+        _starlette(out)
+
+    def test_largest_files_sane_mtime_still_renders_a_stamp(self):
+        with self._poisoned_scandir(2048, mtime=1_755_000_000):
+            out = usage_svc.largest_files()
+        self.assertRegex(out["items"][0]["mtime"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
         _starlette(out)
 
     def test_duplicates_renders_with_a_huge_st_size(self):
