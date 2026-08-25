@@ -952,6 +952,7 @@ export default {
     level: 'レベル',
     detail: '詳細',
     fix: '修正案',
+    empty: '前回のスキャンではチェック結果がありません。再スキャンしてください。',
   },
   users: {
     empty: 'ユーザーデータなし',
@@ -2949,6 +2950,7 @@ export default {
       unsupported: 'このディスクは SMART セルフテストに対応していません',
       kind_unsupported: 'このディスクはその種類のセルフテストに対応していません',
       bad_interval: 'サポートされていないスケジュール間隔です',
+      smartctl_missing: 'このホストに smartctl がインストールされていません',
     },
     snapshot: {
       bad_token: 'スナップショットの日付が不正です',

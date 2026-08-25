@@ -958,6 +958,7 @@ export default {
     level: 'Level',
     detail: 'Detail',
     fix: 'Suggested fix',
+    empty: 'The last scan produced no checks — rescan.',
   },
   users: {
     empty: 'No user data',
@@ -2955,6 +2956,7 @@ export default {
       unsupported: 'This disk does not offer SMART self-tests',
       kind_unsupported: 'This disk does not offer that self-test type',
       bad_interval: 'Unsupported schedule interval',
+      smartctl_missing: 'smartctl is not installed on this host',
     },
     snapshot: {
       bad_token: 'Invalid snapshot date',
