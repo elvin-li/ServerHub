@@ -137,7 +137,12 @@ class SharesUndecodablePathPinTests(unittest.TestCase):
 
     def test_surrogate_record_name_is_a_coded_admin_failure(self):
         """JSON bodies may carry ``\\ud800``; _NAME_RE accepts it, the spawn
-        refuses it, and POST /api/shares/smb maps the coded failure."""
+        refuses it, and POST /api/shares/smb maps the coded failure.
+
+        ``failed``, not ``unavailable``: the sudo-vanished classification now
+        requires a disk confirm (the vms/rsync rule), and a refused surrogate
+        argv with sudo still on disk is an operation failure — "authorization
+        is unavailable" sent the operator at the wrong repair."""
         with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             folder = Path(tmp) / "Media"
             folder.mkdir()
@@ -150,7 +155,7 @@ class SharesUndecodablePathPinTests(unittest.TestCase):
                     guest=False, readonly=False, encrypted=False,
                 )
         self.assertFalse(result.get("ok"))
-        self.assertEqual(result.get("error"), "unavailable")
+        self.assertEqual(result.get("error"), "failed")
         _starlette(result)
 
 

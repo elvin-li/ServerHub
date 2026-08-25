@@ -105,6 +105,10 @@ def _jsonable(value, depth: int = 0):
                     k = str(k)
                 except Exception:
                     continue
+            # A str *key* skipped the string sanitizer: a leftover lone
+            # surrogate in a settings key used to 500 Starlette's UTF-8
+            # encode of GET /api/ups (the hub.errors._jsonable_param rule).
+            k = k.encode("utf-8", "replace").decode("utf-8")
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
