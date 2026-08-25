@@ -230,7 +230,11 @@
                   <strong>{{ finiteText(iface.device) }}</strong>
                 </td>
                 <td v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
-                  <span class="led" :class="iface.up ? 'on' : 'off'"></span>
+                  <!-- The LED is the whole status column here (the interfaces tab
+                       pairs its LED with a textual badge); colour alone says
+                       nothing to a screen reader, so spell the state. -->
+                  <span class="led" :class="iface.up ? 'on' : 'off'" aria-hidden="true"></span>
+                  <span class="sr-only">{{ iface.up ? t('network.on') : t('network.off') }}</span>
                 </td>
                 <td class="mono">
                   <strong>{{ finiteText(a.ip) }}</strong>
@@ -257,7 +261,10 @@
               </tr>
               <tr v-if="!(iface.addresses||[]).length" :key="iface.device+'-empty'">
                 <td class="mono"><strong>{{ finiteText(iface.device) }}</strong></td>
-                <td><span class="led" :class="iface.up ? 'on' : 'off'"></span></td>
+                <td>
+                  <span class="led" :class="iface.up ? 'on' : 'off'" aria-hidden="true"></span>
+                  <span class="sr-only">{{ iface.up ? t('network.on') : t('network.off') }}</span>
+                </td>
                 <td colspan="3" class="empty-row">{{ t('network.no_ipv4') }}</td>
                 <td></td>
               </tr>

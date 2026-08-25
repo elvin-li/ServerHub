@@ -1,5 +1,6 @@
 /**
- * Terminal loads that finish after leave must not toast.
+ * Terminal loads that finish after leave must not toast, and a failed status
+ * read must explain the disabled Run button instead of only toasting.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -61,5 +62,30 @@ describe('Terminal leave-guards', () => {
     rejectContainers(new Error('docker down'))
     await flushPromises()
     expect(toast).not.toHaveBeenCalled()
+  })
+})
+
+describe('Terminal status load failure', () => {
+  it('shows a retryable banner instead of a silently disabled Run button', async () => {
+    // `status` stays null when the read fails, which disables the host Run
+    // button; the banner is the only durable statement of why (the toast is
+    // gone in four seconds).
+    api.getTerminal.mockRejectedValueOnce(new Error('backend unreachable'))
+    const wrapper = mount(Terminal, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { RouterLink: { template: '<a><slot /></a>' } },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.html()).toContain('load-failure')
+    expect(wrapper.html()).toContain('backend unreachable')
+    expect(wrapper.html()).toContain('common.retry')
+
+    // Retry re-runs load(); a success clears the banner.
+    await wrapper.find('.load-failure button').trigger('click')
+    await flushPromises()
+    expect(wrapper.html()).not.toContain('load-failure')
+    wrapper.unmount()
   })
 })

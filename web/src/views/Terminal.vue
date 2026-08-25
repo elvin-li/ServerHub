@@ -22,8 +22,10 @@
           </select>
           <input v-else v-model="container" type="text" :disabled="connected" :placeholder="t('terminal.container_ph')"  :aria-label="t('terminal.container_ph')"/>
           <!-- Only when discovery actually failed. An empty list with no error is
-               simply "no running containers" and needs no explanation. -->
-          <span v-if="containerListError" class="sub" style="color:var(--warn-text)">{{ finiteText(containerListError) }}</span>
+               simply "no running containers" and needs no explanation.
+               role=alert: this is the only surface the failure reaches (no toast,
+               no banner), so without it the line appeared silently for AT. -->
+          <span v-if="containerListError" class="sub" style="color:var(--warn-text)" role="alert">{{ finiteText(containerListError) }}</span>
         </label>
 
         <label v-if="target === 'container'" class="tsel">
@@ -40,6 +42,11 @@
         </button>
       </div>
 
+      <!-- A failed status read leaves `status` null, which keeps the host Run
+           button disabled — without this banner the only stated reason was a
+           toast that faded in four seconds, leaving a dead control with no
+           explanation and no retry. -->
+      <LoadFailure v-if="statusError" :detail="statusError" :retry="load" />
       <div v-if="target === 'host' && status && !status.host_enabled" class="locked">
         <strong>{{ t('terminal.host_locked_title') }}</strong>
         <p>{{ t('terminal.host_locked_body') }}</p>
@@ -89,11 +96,15 @@ import { getContainers, getTerminal } from '../api/client'
 import { injectI18n } from '../i18n'
 import { finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()
 
 const status = ref(null)
+// Latched when the terminal-status read fails: `status` stays null in that case,
+// which disables the host Run button, and the banner is what says why.
+const statusError = ref('')
 const target = ref('host')
 const container = ref('')
 const shell = ref('/bin/sh')
@@ -142,8 +153,10 @@ async function load() {
     const next = await getTerminal()
     if (!pageAlive) return
     status.value = next
+    statusError.value = ''
   } catch (error) {
     if (!pageAlive) return
+    statusError.value = finiteText(error.message || String(error), '')
     toast?.('❌ ' + finiteText(error.message))
   }
   try {
