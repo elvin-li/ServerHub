@@ -274,6 +274,14 @@ def file_lock(path: Path | str):
     A leftover directory named ``<name>.lock``, or EIO creating it, must not
     break the caller — the context simply runs unlocked in that case, which is
     exactly the in-process-lock-only behaviour callers had before.
+
+    The same fallback covers ``flock`` itself.  ENOLCK/EIO from the lock call
+    (data/ on NFS with lockd down is the classic) used to raise out of the
+    context manager; audit.record()'s logging-never-breaks-the-request except
+    then swallowed it and the sign-in line was silently lost even though the
+    trail was perfectly writable.  Unlock failures after the body are eaten
+    for the same reason: the write already happened, and ``os.close`` releases
+    the lock regardless.
     """
     p = Path(path)
     fd = _lock_fd(p.with_name(p.name + ".lock"))
@@ -281,11 +289,18 @@ def file_lock(path: Path | str):
         yield
         return
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            yield
+            return
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
         os.close(fd)
 

@@ -108,8 +108,12 @@ describe('Audit leave-guards', () => {
     expect(wrapper.text()).toContain('bob')
     expect(wrapper.text()).not.toContain('alice')
 
+    // A filter miss must say "no match", not claim the log is empty: the
+    // empty-row only renders when entries exist and the needle missed.
     await input.setValue('no-such-thing')
-    expect(wrapper.text()).toContain('common.none')
+    expect(wrapper.text()).toContain('common.no_match')
+    expect(wrapper.text()).not.toContain('common.none')
+    expect(wrapper.text()).not.toContain('audit.empty')
     wrapper.unmount()
   })
 

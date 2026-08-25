@@ -24,10 +24,11 @@ This hunt covered what that shape does not:
   row through their ``_jsonable``, which nulls non-finite floats — pinned
   here so a refactor cannot drop the scrub;
 * ``audit.record`` with poisoned caller fields: a leftover inf float is
-  nulled by ``_jsonable`` before the dump, and a >4300-digit int (whose
-  ``json.dumps`` is the int->str ValueError) is swallowed by record()'s
-  logging-never-breaks-the-request try — the sign-in that triggered the
-  record still succeeds and the rest of the trail still renders.
+  nulled by ``_jsonable`` before the dump.  A >4300-digit int used to cost
+  the *whole line* to record()'s logging-never-breaks-the-request try;
+  ``_jsonable`` now probes ``str()`` like terminal_svc's and drops just the
+  field, so the poisoned event itself still lands on disk (the follow-up
+  sweep in test_leftover_audit_hexint_flock_500s covers the hex-YAML source).
 """
 from __future__ import annotations
 
@@ -200,14 +201,21 @@ class AuditRecordPoisonedFieldPinTests(unittest.TestCase):
         _starlette(rows)
 
     def test_huge_digit_int_field_does_not_raise_or_poison_the_trail(self):
-        # json.dumps of a >4300-digit int is the int->str ValueError; it is
-        # swallowed inside record() (the line is dropped, never half-written),
-        # so the sign-in succeeds and the earlier history still renders.
+        # json.dumps of a >4300-digit int is the int->str ValueError.  It used
+        # to be swallowed inside record() with the *whole line*: the poisoned
+        # failed sign-in vanished from the trail.  _jsonable now nulls just the
+        # unrenderable field, so both events land and both still render.
         audit.record("auth.login.ok", username="amy")
         entry = audit.record("auth.login.failed", attempts=_HUGE_INT)
         self.assertIsInstance(entry, dict)
+        self.assertIsNone(entry["attempts"])
+        _starlette(entry)
         rows = audit.recent()
-        self.assertEqual([r["event"] for r in rows], ["auth.login.ok"])
+        self.assertEqual(
+            [r["event"] for r in rows],
+            ["auth.login.ok", "auth.login.failed"],
+        )
+        self.assertIsNone(rows[-1]["attempts"])
         _starlette(rows)
 
 

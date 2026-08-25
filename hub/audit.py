@@ -294,17 +294,24 @@ def _jsonable(value, depth: int = 0):
 
     Infinity in a leftover auth-audit.jsonl field was already dropped; a
     leftover ``\\ud800`` username or key still 500'd GET /api/audit/auth.
-
-    A >4300-digit int deliberately passes through: record()'s own guarded
-    ``json.dumps`` drops the whole line (never half-written — pinned in
-    test_leftover_logs_journal_audit_digit_500s), and recent() skips such a
-    line at ``json.loads``, so no encoder-facing path carries it.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render the
+            # number at all — json.dumps raises the same ValueError.  YAML/plist
+            # hex text loads uncapped (``int(x, 16)`` is a power-of-two base),
+            # so an already-int leftover used to reach record()'s own dump and
+            # cost the *entire* audit line to the logging-never-breaks try: a
+            # poisoned failed sign-in left no trace at all.  Dropping just the
+            # field keeps the event — the same probe as terminal_svc._jsonable
+            # and hub.errors._jsonable_param.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
