@@ -2246,7 +2246,7 @@ export default {
     installed: '導入済',
     deploy: '配備',
     open_stack: 'スタック',
-    empty: '該当なし',
+    empty: 'カタログは空です',
     browse_catalog: 'カタログを見る',
     logs: 'ログ',
     optional: '任意',

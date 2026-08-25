@@ -2252,7 +2252,7 @@ export default {
     installed: 'Installed',
     deploy: 'Deploy',
     open_stack: 'Open stack',
-    empty: 'No matching apps',
+    empty: 'The catalog is empty',
     browse_catalog: 'Browse catalog',
     logs: 'Logs',
     optional: 'optional',

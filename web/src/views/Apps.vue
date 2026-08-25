@@ -50,6 +50,18 @@
         >{{ catLabel(c.id) }}{{ countLabel(c.id) }}</button>
       </div>
 
+      <!-- Above the grid: on a failed refresh the cards below are the *stale*
+           listing, and the failure banner used to render underneath them —
+           off-screen on any populated catalog, so the page looked healthy
+           while showing old data. Same placement the Managed tab uses.
+           role=status on the placeholders: the empty/no-match split is the
+           grid's only answer to a filter change and it changed silently for
+           a screen reader (the same treatment the filter count carries). -->
+      <LoadFailure v-if="catalogError" :detail="catalogError" :retry="loadCatalog" :busy="busy" />
+      <div v-else-if="!catalogLoaded" class="placeholder" role="status">{{ t('common.loading') }}</div>
+      <div v-else-if="!filtered.length" class="placeholder" role="status">
+        {{ catalog.length ? t('common.no_match') : t('apps.empty') }}
+      </div>
       <div class="app-grid">
         <article
           v-for="tpl in filtered"
@@ -139,12 +151,6 @@
           </footer>
         </article>
       </div>
-      <LoadFailure v-if="catalogError" :detail="catalogError" :retry="loadCatalog" :busy="busy" />
-      <div v-else-if="!catalogLoaded" class="placeholder">{{ t('common.loading') }}</div>
-      <!-- A filter miss on a stocked catalog is not an empty store: the single
-           apps.empty string claimed "no apps" while a search or category filter
-           simply matched nothing. Same split as Services/Tools/Brew. -->
-      <div v-else-if="!filtered.length" class="placeholder">{{ catalog.length ? t('common.no_match') : t('apps.empty') }}</div>
     </template>
 
     <!-- Managed inventory: native + docker + launchd + vm -->

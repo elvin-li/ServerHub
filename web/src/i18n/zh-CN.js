@@ -2248,7 +2248,7 @@ export default {
     installed: '已安装',
     deploy: '一键部署',
     open_stack: '查看栈',
-    empty: '无匹配应用',
+    empty: '应用目录为空',
     browse_catalog: '浏览应用目录',
     logs: '日志',
     optional: '可选',
