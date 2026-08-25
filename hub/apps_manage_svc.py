@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 from hub import cli_args
-from hub.docker_cli import _jsonable, docker, engine_up, inspect_object, looks_engine_down
+from hub.docker_cli import _jsonable, docker, engine_up, inspect_object, looks_cli_vanished, looks_engine_down
 from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import DOCKER, user_home
@@ -408,7 +408,14 @@ def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
             cap=4000,
         )
         text = (_as_text(msg) or f"exit {rc}").strip()
-        if rc != 0 and looks_engine_down(text) and not engine_up(force=True):
+        unreachable = looks_engine_down(text) or (
+            # The DOCKER binary vanished between the _exists() gate above and
+            # this spawn: run_capped's exact ``(-1, "not found")`` sentinel,
+            # which used to fall through as an uncoded ``ok: false`` the SPA
+            # cannot translate.
+            rc == -1 and looks_cli_vanished(text)
+        )
+        if rc != 0 and unreachable and not engine_up(force=True):
             # Every Apps-page compose action (up/stop/restart/pull/logs) used
             # to hand the raw untranslated daemon stderr back as ok:false,
             # pointing away from the real remedy (start the engine).  Same

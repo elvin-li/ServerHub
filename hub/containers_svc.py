@@ -133,6 +133,18 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
             # errors="replace": binary junk in CLI output must not kill the read.
             text=True, errors="replace", env=utf8_env(env), start_new_session=True,
         )
+    except FileNotFoundError as exc:
+        # The command's own binary is gone — vanished between the job's entry
+        # gate and this spawn.  Flag the job dict (internal only: job_public /
+        # stack_job_log never surface it) so _classify_job_failure can map the
+        # failure to the coded engine-down state instead of leaving only the
+        # raw locale-dependent strerror in the log.  The filename check keeps
+        # a vanished *cwd* — also ENOENT — out of the flag: that is a missing
+        # stack directory, not a missing docker CLI.
+        j["log"].append(f"!! error: {_as_text(exc)}")
+        if getattr(exc, "filename", None) == argv[0]:
+            j["cli_missing"] = True
+        return -1
     except (OSError, ValueError, TypeError) as exc:
         # Leftover ``\\ud800`` env/cwd UnicodeEncodeError is ValueError, not OSError.
         j["log"].append(f"!! error: {_as_text(exc)}")
@@ -206,7 +218,12 @@ def _classify_job_failure(j: dict) -> None:
     """
     raw_log = j.get("log") if isinstance(j.get("log"), list) else []
     tail = "\n".join(_as_text(x) for x in raw_log[-_JOB_CLASSIFY_TAIL:])
-    if not looks_engine_down(tail):
+    # ``cli_missing``: the docker CLI itself could not be spawned (vanished
+    # mid-job — see _stream_job_command).  Same operator-facing state as the
+    # dead socket, and the forced probe below still rules: it cannot answer
+    # "up" while the CLI is gone, so a job whose output merely reads like
+    # either pattern with a healthy engine keeps its raw failure.
+    if not (looks_engine_down(tail) or j.get("cli_missing")):
         return
     if engine_up(force=True):
         return

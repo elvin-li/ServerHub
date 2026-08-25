@@ -124,6 +124,27 @@ def looks_engine_down(text) -> bool:
     return bool(ENGINE_DOWN_RE.search(_as_text(text)))
 
 
+def looks_cli_vanished(text) -> bool:
+    """True when *text* is ``run_capped``/``sh``'s FileNotFoundError sentinel.
+
+    Both helpers report a binary that could not be spawned as the exact
+    two-word sentinel ``"not found"`` (with rc -1) — never a real CLI exit.
+    A docker CLI that vanished between an up-front presence gate and the
+    spawn (OrbStack uninstalled mid-request, a dying mount) is the same
+    operator-facing state as a stopped engine — docker is unreachable — so
+    the classifiers that already map daemon-socket failures to
+    ``container.engine_down`` treat the two alike (the hub/backups.py
+    ``_docker_vanished`` convention).
+
+    Purely a message-pattern gate like :func:`looks_engine_down`: callers
+    must still confirm with a forced ``engine_up`` probe — which cannot
+    answer "up" while the CLI is gone — so a genuine CLI exit whose output
+    merely reads "not found" while the engine is up keeps its original
+    failure mapping.
+    """
+    return _as_text(text).strip() == "not found"
+
+
 def inspect_object(out: str) -> dict | None:
     """First object from ``docker inspect`` JSON, or None if unusable.
 
