@@ -299,24 +299,6 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
-def _capped_json_int(text):
-    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
-
-    ``int()`` of a >4300-digit decimal is ValueError (not JSONDecodeError)
-    for the *whole* document.  In ``_load_state`` one poisoned number made
-    the load return ``{}`` — every synced override's version, warnings and
-    the last-check stamp silently lost, and the next sync re-downloaded the
-    entire catalog.  In ``check_updates`` the same number in one manifest
-    entry failed the whole sync as ``bad_manifest`` instead of that entry.
-    Dropping just the number matches the ``_jsonable`` rule for an int the
-    encoder cannot render (same hook as smart_test_svc._capped_json_int).
-    """
-    try:
-        return int(text)
-    except ValueError:
-        return None
-
-
 def _is_file(path: Path) -> bool:
     try:
         return path.is_file()
