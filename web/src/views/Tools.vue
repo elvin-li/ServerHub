@@ -106,15 +106,34 @@
           <option :value="1440">24h</option>
         </select>
         <button @click="loadSyslog" :disabled="loading">{{ t('common.refresh') }}</button>
-        <span class="meta">{{ t('tools.lines_n', { n: finiteN(syslog.count, 0) }) }}</span>
+        <!-- role=status: the count is the answer to the level/range selects and
+             the Refresh click, and it changed silently for a screen reader.
+             Same pattern as the filter counts (filterCounts.test.js). -->
+        <span class="meta" role="status">{{ t('tools.lines_n', { n: finiteN(syslog.count, 0) }) }}</span>
       </div>
       <p class="hint">{{ finiteText(syslog.hint, '') || t('tools.syslog_hint') }}</p>
       <SkeletonLoader v-if="!tabLoaded.syslog" :cols="1" :rows="8" />
-      <div class="log-box mono" v-else-if="(syslog.lines||[]).length">
-        <div v-for="(ln,i) in syslog.lines" :key="i">{{ finiteText(ln) }}</div>
-      </div>
-      <LoadFailure v-else-if="tabError.syslog" :detail="tabError.syslog" :retry="reload" :busy="loading" />
-      <div v-else class="placeholder">{{ finiteText(syslog.message, '') || t('tools.no_data') }}</div>
+      <template v-else>
+        <!-- Banner above the content, not behind it: the old v-else-if chain put
+             the lines branch first, so once any lines were on screen a failed
+             re-load (level/range change, Refresh) rendered no banner at all —
+             its only trace was a four-second toast. Stale lines still render
+             below, which is the LoadFailure contract. -->
+        <LoadFailure v-if="tabError.syslog" :detail="tabError.syslog" :retry="reload" :busy="loading" />
+        <!-- tabindex=0: the box caps at 480px and scrolls; a scrollable region a
+             keyboard cannot reach cannot be scrolled by one (WCAG 2.1.1). Same
+             treatment as the Logs viewer. -->
+        <div
+          v-if="(syslog.lines||[]).length"
+          class="log-box mono"
+          tabindex="0"
+          role="region"
+          :aria-label="t('tools.tab_syslog')"
+        >
+          <div v-for="(ln,i) in syslog.lines" :key="i">{{ finiteText(ln) }}</div>
+        </div>
+        <div v-else-if="!tabError.syslog" class="placeholder">{{ finiteText(syslog.message, '') || t('tools.no_data') }}</div>
+      </template>
     </template>
 
     <!-- Processes -->
@@ -307,7 +326,10 @@
       <div class="two-col" v-if="hw">
         <div class="card" v-for="(sec, key) in (hw.sections||{})" :key="key">
           <h2 class="section-title" style="margin-top:0">{{ finiteText(key) }} · {{ finiteText(sec.data_type) }}</h2>
-          <pre class="mono hw-pre">{{ finiteText(sec.text) }}</pre>
+          <!-- tabindex=0: system_profiler output overflows the 240px cap, and a
+               scrollable region a keyboard cannot reach cannot be scrolled by
+               one (WCAG 2.1.1). Named after its own section heading. -->
+          <pre class="mono hw-pre" tabindex="0" role="region" :aria-label="finiteText(key)">{{ finiteText(sec.text) }}</pre>
         </div>
       </div>
       <div class="card" style="margin-top:12px" v-if="(hw?.disks||[]).length">
@@ -450,7 +472,10 @@
         <div class="toolbar">
           <button @click="loadPorts" :disabled="loading">{{ t('common.refresh') }}</button>
           <router-link class="btn" to="/network">{{ t('nav.network') }}</router-link>
-          <span class="meta">{{ finiteN(ports.count, 0) }}</span>
+          <!-- Labeled and live: this was a bare number ("12") that said nothing
+               about what it counted, and Refresh updated it silently for a
+               screen reader. Reuses the Network summary's "{n} ports" key. -->
+          <span class="meta" role="status">{{ t('network.sum_ports_n', { n: finiteN(ports.count, 0) }) }}</span>
         </div>
         <SkeletonLoader v-if="!tabLoaded.net" :cols="4" :rows="5" />
         <LoadFailure v-else-if="tabError.net" :detail="tabError.net" :retry="reload" :busy="loading" />
@@ -611,6 +636,18 @@ function noteTabError(id, e) {
   tabError.value = { ...tabError.value, [id]: finiteText(e.message || String(e), '') }
   toast('❌ ' + finiteText(e.message))
 }
+
+/**
+ * Drop a tab's latched failure after a load that succeeded.
+ *
+ * reload() clears the banner up front, but the syslog and ports loaders are
+ * also wired straight to their toolbar controls (level/range selects, their
+ * own Refresh), which stay clickable above the banner — without this a
+ * direct retry that worked left the failure banner claiming otherwise.
+ */
+function clearTabError(id) {
+  if (tabError.value[id]) tabError.value = { ...tabError.value, [id]: '' }
+}
 const df = ref({})
 const sizes = ref([])
 const timers = ref([])
@@ -763,6 +800,7 @@ async function loadSyslog() {
     const next = await getToolsSyslog(syslogMinutes.value, syslogLevel.value, 100)
     if (generation !== reloadGeneration || !pageAlive) return
     syslog.value = next
+    clearTabError('syslog')
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('syslog', e)
@@ -970,6 +1008,7 @@ async function loadPorts() {
     const next = await getListeningPorts(50)
     if (generation !== reloadGeneration || !pageAlive) return
     ports.value = next
+    clearTabError('net')
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('net', e)

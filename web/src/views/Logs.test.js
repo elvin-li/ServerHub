@@ -25,7 +25,9 @@ vi.mock('../i18n', () => ({
     },
   }),
 }))
-vi.mock('../lib/poll', () => ({ startVisibleInterval: () => () => {} }))
+// Captures the registered tick so tests can fire a background refresh by hand.
+const poll = vi.hoisted(() => ({ startVisibleInterval: vi.fn(() => () => {}) }))
+vi.mock('../lib/poll', () => poll)
 
 import Logs from './Logs.vue'
 
@@ -154,6 +156,28 @@ describe('Logs keyboard and announcements', () => {
     expect(pane.text()).toBe('common.loading')
     expect(pane.attributes('role')).toBe('status')
     expect(pane.attributes('aria-live')).toBe('polite')
+    wrapper.unmount()
+  })
+
+  it('keeps auto-refresh failures silent but toasts a manual refresh failure', async () => {
+    // Same convention Audit and Alerts pinned: LoadFailure latches the state
+    // on screen, so a toast per 6-second tick while the panel is unreachable
+    // is pure noise — it re-interrupts a screen reader on every backoff.
+    api.getLogTail.mockRejectedValue(new Error('panel down'))
+    const { wrapper, toast } = await mountPage()
+    // The mount load is user-initiated navigation: one toast.
+    expect(toast).toHaveBeenCalledTimes(1)
+
+    // A background tick from the auto-refresh poller stays silent.
+    const tick = poll.startVisibleInterval.mock.calls.at(-1)[0]
+    await expect(tick()).resolves.toBe(false) // lib/poll's backoff sentinel
+    await flushPromises()
+    expect(toast).toHaveBeenCalledTimes(1)
+
+    // A manual Refresh click toasts again.
+    await button(wrapper, 'common.refresh').trigger('click')
+    await flushPromises()
+    expect(toast).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 })

@@ -634,6 +634,58 @@ describe('brew and gateway surface leftovers', () => {
   })
 })
 
+describe('logs and tools surface leftovers', () => {
+  const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
+
+  it('keeps the Tools syslog failure banner above stale lines instead of behind them', () => {
+    // The old v-else-if chain put the lines branch first, so once any lines
+    // were on screen a failed re-load (level/range change, Refresh) rendered
+    // no banner at all — its only trace was a four-second toast. The
+    // behavioural half lives in Tools.announcements.test.js.
+    expect(tools).toMatch(/<LoadFailure v-if="tabError\.syslog"[\s\S]{0,600}v-if="\(syslog\.lines\|\|\[\]\)\.length"/)
+    expect(tools).not.toMatch(/<LoadFailure v-else-if="tabError\.syslog"/)
+    // The syslog and ports loaders are wired straight to toolbar controls that
+    // stay clickable above the banner, so a direct retry that worked must also
+    // drop it — reload()'s up-front clear never runs on that path.
+    expect(tools).toMatch(/syslog\.value = next\s*\n\s*clearTabError\('syslog'\)/)
+    expect(tools).toMatch(/ports\.value = next\s*\n\s*clearTabError\('net'\)/)
+  })
+
+  it('announces the Tools syslog line count and names its scrollable log box', () => {
+    // The count is the answer to the level/range selects and the Refresh
+    // click; it changed silently for a screen reader. The box caps at 480px
+    // and scrolls, and a scrollable region a keyboard cannot reach cannot be
+    // scrolled by one (WCAG 2.1.1) — same treatment as the Logs viewer.
+    expect(tools).toMatch(/<span class="meta" role="status">\{\{ t\('tools\.lines_n'/)
+    expect(tools).toMatch(/class="log-box mono"\s+tabindex="0"\s+role="region"\s+:aria-label="t\('tools\.tab_syslog'\)"/)
+  })
+
+  it('keeps the Tools hardware panes keyboard-scrollable and named', () => {
+    // system_profiler output overflows the 240px cap; each pane is named
+    // after its own section heading.
+    expect(tools).toMatch(/class="mono hw-pre" tabindex="0" role="region" :aria-label="finiteText\(key\)"/)
+  })
+
+  it('labels the Tools listening-port count instead of a bare number', () => {
+    // This was a lone "12" that said nothing about what it counted, and its
+    // own Refresh updated it silently. Reuses the Network summary's
+    // "{n} ports" key, so no new locale strings.
+    expect(tools).toMatch(/<span class="meta" role="status">\{\{ t\('network\.sum_ports_n', \{ n: finiteN\(ports\.count, 0\) \}\) \}\}<\/span>/)
+    expect(tools).not.toMatch(/<span class="meta">\{\{ finiteN\(ports\.count, 0\) \}\}<\/span>/)
+  })
+
+  it('keeps the Logs auto-refresh silent on failure but toasts a manual one', () => {
+    // Same convention Audit and Alerts pinned: LoadFailure latches the state
+    // on screen, and a toast per 6-second tick while the panel is unreachable
+    // interrupts a screen reader over and over. The behavioural half lives in
+    // Logs.test.js.
+    const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+    expect(logs).toMatch(/async function load\(manual = false\)/)
+    expect(logs).toMatch(/if \(manual\) toast/)
+    expect(logs).toMatch(/startVisibleInterval\(load, 6000\)/)
+  })
+})
+
 describe('service uninstall UI', () => {
   const src = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
 
