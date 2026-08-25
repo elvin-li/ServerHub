@@ -44,6 +44,25 @@ def _utf8_text(value) -> str:
         return ""
 
 
+def _finite_mtime(value) -> int:
+    """A ``st_mtime`` the JSON body can carry, or 0.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_mtime`` that is already a >4300-digit int passed through untouched,
+    and CPython's int->str digit limit then ValueError'd Starlette's
+    ``json.dumps`` — 500ing GET /api/compose/{id} after the compose had
+    already been read.  ``float()`` rejects anything beyond float range,
+    the same junk test files_svc._finite_int, logs_svc._stat_size,
+    usage_svc._safe_bytes and catalog._sig_int apply to their stat numbers.
+    """
+    try:
+        value = int(value)
+        float(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0
+    return value
+
+
 def _find_stack(stack_id: str) -> dict:
     for s in _stack_paths():
         if s.get("id") == stack_id:
@@ -70,10 +89,10 @@ def get_compose(stack_id: str) -> dict:
         raise api_error("container.no_compose_file")
     # FUSE ``st_mtime = inf`` OverflowError'd GET /api/compose/{id};
     # OverflowError is not ValueError, so it escaped the handler above.
-    try:
-        mtime = int(st.st_mtime)
-    except (TypeError, ValueError, OverflowError):
-        mtime = 0
+    # A huge *already-int* leftover slipped past that ``int(...)`` clamp
+    # the same way it did in catalog/_templates_sig — _finite_mtime adds
+    # the float() junk test.
+    mtime = _finite_mtime(st.st_mtime)
     sid = _utf8_text(s.get("id")) if isinstance(s.get("id"), str) else ""
     if not sid:
         sid = "stack"
