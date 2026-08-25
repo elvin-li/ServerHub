@@ -429,10 +429,14 @@ describe('dashboard and storage surface leftovers', () => {
     // checks (error vs warn). Same fix as the WireGuard ping rows: hide the
     // paint, put the word beside it. ledText reuses the Services state keys,
     // so no new locale strings.
+    // The Docker table LED joined the sweep: it sits under the sr-only
+    // status_led header, but the visible Status column is col-hide-m, so on
+    // a phone the dot is the row's only state — the Containers page rule.
     const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
     expect(dashboard).toMatch(/function ledText\(state\)[\s\S]*t\('services\.state_ok'\)[\s\S]*t\('services\.state_down'\)/)
     const spelled = dashboard.match(/class="led" :class="led\((?:s\.state|c\.state)\)" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ ledText\(/g) || []
-    expect(spelled.length, 'member card + attention list LEDs carry sr-only state text').toBe(2)
+    expect(spelled.length, 'member card + attention list + docker table LEDs carry sr-only state text').toBe(3)
+    expect(dashboard, 'no Dashboard LED ships colour-only').not.toMatch(/class="led" :class="led\([^)]*\)"><\/span>/)
     expect(dashboard).toMatch(/a\.level === 'ok' \? 'on' : \(a\.level === 'warn' \? 'warn' : 'err'\)" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ a\.level === 'ok' \? t\('common\.ok'\) : \(a\.level === 'warn' \? t\('common\.warn'\) : t\('common\.error'\)\) \}\}/)
     expect(dashboard).toMatch(/c\.level === 'error' \? 'err' : 'warn'" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ c\.level === 'error' \? t\('common\.error'\) : t\('common\.warn'\) \}\}/)
     // The bookmark-card LED only repeats bmLabel's up/stopped/down text in
@@ -448,6 +452,30 @@ describe('dashboard and storage surface leftovers', () => {
     const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
     expect(dashboard).toMatch(/<div v-if="!status" class="sub">\{\{ loadError \? t\('common\.load_failed'\) : t\('common\.loading'\) \}\}<\/div>\s*<div v-else-if="!attention\.length" class="sub ok-msg">\{\{ t\('dashboard\.all_ok'\) \}\}<\/div>/)
     expect(dashboard).not.toMatch(/v-if="status && !attention\.length"/)
+  })
+
+  it('announces the Dashboard live service counts as status regions', () => {
+    // Both service_count summaries (member header, attention tile) update
+    // silently on every status poll — the count is the poll's whole answer,
+    // so it gets role=status like the Scheduler/VMs/Users toolbar counts.
+    // The attention tile wraps its badge and count in one region so a poll
+    // that moves both reads as one announcement.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const counts = dashboard.match(/\{\{ t\('dashboard\.services_count'/g) || []
+    expect(counts.length, 'both services_count copies are present').toBe(2)
+    expect(dashboard).toMatch(/<span role="status">\{\{ t\('dashboard\.services_count'/)
+    expect(dashboard).toMatch(/<span role="status">\s*<span class="badge" :class="attention\.length \? 'down' : 'ok'">\{\{ attention\.length \}\}<\/span>/)
+    expect(dashboard, 'no services_count copy ships without a live region').not.toMatch(/<span>\{\{ t\('dashboard\.services_count'/)
+  })
+
+  it('drops the Dashboard skeleton once a failed first load is on record', () => {
+    // The comment above the skeleton promised the loadError gate but the
+    // condition never carried it: a failed first admin load rendered the
+    // failure banner with the placeholder still pulsing beneath it,
+    // presented as if data were on the way. The behavioural half lives in
+    // Dashboard.loadFailure.test.js.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/v-else-if="!host && !sensors && !loadError"/)
   })
 
   it('announces the Files item count as a live region', () => {
