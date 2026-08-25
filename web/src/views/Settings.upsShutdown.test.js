@@ -147,15 +147,17 @@ beforeEach(() => {
 describe('policy form rendering', () => {
   it('lists configured stacks first in saved order, catalog rest unticked', async () => {
     const wrapper = await renderNotifyTab()
-    const rows = wrapper.findAll('input[aria-label="teslamate"], input[aria-label="immich"]')
-    expect(rows.map((r) => r.attributes('aria-label'))).toEqual(['teslamate', 'immich'])
+    // The checkboxes are named by the display name the row shows, not the raw
+    // stack id a screen reader could not match to the visible text.
+    const rows = wrapper.findAll('input[aria-label="TeslaMate"], input[aria-label="Immich"]')
+    expect(rows.map((r) => r.attributes('aria-label'))).toEqual(['TeslaMate', 'Immich'])
     expect(rows[0].element.checked).toBe(true)
     expect(rows[1].element.checked).toBe(false)
   })
 
   it('shows the configured script ticked and the last-trigger record', async () => {
     const wrapper = await renderNotifyTab()
-    const script = wrapper.find('input[aria-label="gravity"]')
+    const script = wrapper.find('input[aria-label="Gravity"]')
     expect(script.element.checked).toBe(true)
     expect(wrapper.find('[data-test="last-run"]').text()).toContain('settings.ups_last_trigger')
   })

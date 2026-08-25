@@ -507,6 +507,55 @@ describe('backup and workload surface leftovers', () => {
   })
 })
 
+describe('settings and users surface leftovers', () => {
+  it('renders every Settings bundle-backed tab failure as the standard retryable banner', () => {
+    // Date & Time, Network, Shares, Scheduler and Access got the LoadFailure
+    // banner in the first sweep; Power, Disk and VMs kept only a colored line
+    // in their *second* card — no role=alert, no retry, and the primary card
+    // rendered bare headings indistinguishable from "still loading". Eight
+    // tabs read from the bundle, so eight banners. The behavioural half lives
+    // in Settings.sysBundle.test.js.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    const banners = settings.match(/<LoadFailure v-if="sysBundleError && !sysBundle"[^>]*:retry="loadSysBundle"/g) || []
+    expect(banners.length, 'every bundle-backed tab carries the retryable banner').toBe(8)
+  })
+
+  it('names the UPS shutdown stack and script checkboxes after their display name', () => {
+    // Both pickers used to name each checkbox with the raw machine id while
+    // the row displayed a human name — a screen reader hearing "stack:immich"
+    // cannot match it to the "Immich" a sighted user is told to tick.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(settings).toMatch(/:aria-label="finiteText\(row\.name, ''\) \|\| finiteText\(row\.id\)"/)
+    expect(settings).toMatch(/:aria-label="finiteText\(s\.name, ''\) \|\| finiteText\(s\.id\)"/)
+    expect(settings).not.toMatch(/:aria-label="finiteText\(row\.id\)"/)
+    expect(settings).not.toMatch(/:aria-label="finiteText\(s\.id\)"/)
+  })
+
+  it('keeps the visible Username label inside the 2FA rescue input name', () => {
+    // The old aria-label repeated the section heading ("Rescue another
+    // account"), so the field's visible "Username" label was nowhere in its
+    // accessible name — a speech-input user saying what they see could not
+    // reach it (WCAG 2.5.3). The dedicated key keeps the rescue context so
+    // the control stays distinguishable from the password card's username.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    const input = settings.match(/<input v-model\.trim="twofaResetUser"[^>]*>/)
+    expect(input, '2FA rescue username input').toBeTruthy()
+    expect(input[0]).toMatch(/:aria-label="t\('twofa\.admin_reset_user'\)"/)
+    expect(input[0]).not.toMatch(/:aria-label="t\('twofa\.admin_reset'\)"/)
+  })
+
+  it('names the Users reset-password input after the password it takes, not the button', () => {
+    // The input's accessible name used to be "Reset password" — identical to
+    // the button beside it and hiding the visible "New password" placeholder,
+    // so the field and its action were announced the same.
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    const input = users.match(/<input\s+v-model="resetPassword"[\s\S]*?>/)
+    expect(input, 'reset-password input').toBeTruthy()
+    expect(input[0]).toMatch(/:aria-label="t\('settings\.new_password'\)"/)
+    expect(input[0]).not.toMatch(/:aria-label="t\('accounts\.reset_password'\)"/)
+  })
+})
+
 describe('service uninstall UI', () => {
   const src = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
 

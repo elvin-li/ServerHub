@@ -69,6 +69,7 @@ export default {
     enabled_toast: '2 段階認証を有効にしました。他のセッションはログアウトされました。',
     disabled_toast: '2 段階認証を無効にしました。',
     admin_reset: '他のアカウントの解除',
+    admin_reset_user: '解除するユーザー名',
     admin_reset_hint: '管理者専用:指定アカウントの 2 段階認証を強制解除し（例:スマホ紛失時）、そのセッションをすべてログアウトします。操作は監査ログに記録されます。',
     admin_reset_button: '強制解除',
     admin_reset_confirm: 'アカウント {name} の 2 段階認証を解除し、すべてのセッションをログアウトしますか？',
