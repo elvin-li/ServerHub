@@ -352,6 +352,26 @@ def _ollama_open(req, timeout):
     return opener.open(req, timeout=timeout)
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document, so one unrenderable literal in a
+    daemon body used to wipe the entire payload: a huge ``size`` in /api/tags
+    emptied the models AND resident lists behind a "response is not json" lie
+    on GET /api/ollama/status, and a huge ``eval_count`` beside a perfectly
+    good generation discarded the whole answer into the 502
+    ``generate_failed``/``chat_failed`` — for unload, *after* the daemon had
+    already dropped the model.  Loading the number as None keeps the payload;
+    ``_safe_int`` / ``_jsonable`` then bound the field (the docker_cli /
+    brew_cache / shares_svc drop).
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT):
     """One request to the daemon; returns the parsed JSON body.
 
@@ -384,7 +404,7 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
     if len(raw) >= MAX_BODY_BYTES:
         raise ValueError("response body exceeds the parse cap")
     try:
-        parsed = safe_json_loads(raw) if raw else {}
+        parsed = safe_json_loads(raw, parse_int=_capped_json_int) if raw else {}
     except (ValueError, RecursionError):
         # RecursionError: leftover deeply-nested daemon JSON is not ValueError.
         raise ValueError("response is not json")
