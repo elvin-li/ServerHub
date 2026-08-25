@@ -87,6 +87,15 @@ def _json_safe(value, depth: int = 0):
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # YAML hex/octal leftovers dodge CPython's str->int digit cap, so
+            # an over-cap int in a snapshot row survived every parse and then
+            # ValueError'd both `_write_disk` (silently skipped) and every
+            # caller that returned the row — same drop as its inf float
+            # sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
