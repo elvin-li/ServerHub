@@ -197,11 +197,32 @@ def _iso_now() -> Any:
     return _jsonable(stamp)
 
 
+def _json_int(digits: str) -> int | None:
+    """``json.loads`` int hook: null the one number the encoder cannot hold.
+
+    Past CPython's ~4300-digit int<->str cap the decoder's own ``int()``
+    conversion raises *bare ValueError* — not JSONDecodeError — and the
+    except-ValueError fallbacks below read that as a corrupt document.  One
+    over-cap counter written by an operator script used to wipe a whole
+    state journal to ``{}`` (``gate_ready: true`` silently read back as
+    False), block every config save with ``photoshub.bad_config``, and 502
+    the pending-delete listing.  A ``str()``-probe-style guard, not an
+    isinstance gate: every renderable numeric id still parses as an int.
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _load_json(path: Path, default: Any = None) -> Any:
     try:
         if not path.exists():
             return default
-        return _jsonable(safe_json_loads(read_text_capped(path, _JSON_CAP, encoding="utf-8")))
+        return _jsonable(safe_json_loads(
+            read_text_capped(path, _JSON_CAP, encoding="utf-8"),
+            parse_int=_json_int,
+        ))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested status JSON is not ValueError.
         return default
@@ -223,7 +244,10 @@ def _cfg_strict() -> dict:
     try:
         if not CFG_PATH.exists():
             return {}
-        data = _jsonable(safe_json_loads(read_text_capped(CFG_PATH, _JSON_CAP, encoding="utf-8")))
+        data = _jsonable(safe_json_loads(
+            read_text_capped(CFG_PATH, _JSON_CAP, encoding="utf-8"),
+            parse_int=_json_int,
+        ))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested config.json is not ValueError.
         raise api_error("photoshub.bad_config")
@@ -466,7 +490,7 @@ def _immich_api(method: str, path: str, body: Any = None) -> Any:
     if len(raw) > _API_MAX:
         raise api_error("photoshub.immich_response", detail="payload too large")
     try:
-        parsed = safe_json_loads(raw, loads=json.loads)
+        parsed = safe_json_loads(raw, loads=json.loads, parse_int=_json_int)
     except (ValueError, RecursionError):
         # RecursionError is leftover deeply-nested Immich JSON — not ValueError
         # (JSONDecodeError).  `_jsonable` depth-caps *after* the parse.

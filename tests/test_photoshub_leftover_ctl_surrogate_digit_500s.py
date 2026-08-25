@@ -111,8 +111,12 @@ class OverCapIntJsonableTests(unittest.TestCase):
 
 
 class OverCapStateFilePinTests(_PhotosHubTree):
-    """Survivor pin: the JSON stores are parse-capped, so a >4300-digit
-    literal makes the whole file fall back to ``{}`` — degraded, never 500."""
+    """A >4300-digit literal raises bare ValueError inside ``json.loads``
+    (the decoder's own ``int()`` conversion, not JSONDecodeError).  That
+    used to make the whole file fall back to ``{}`` — degraded, never 500,
+    but ``gate_ready: true`` silently read back as False.  The decoder's
+    int hook (``_json_int``) now nulls only the unrenderable number; see
+    test_photoshub_leftover_hugeint_journal_wipe.py."""
 
     def test_huge_digit_state_file_does_not_500_status(self):
         (self.hub / "state" / "originals_status.json").write_text(
@@ -120,7 +124,8 @@ class OverCapStateFilePinTests(_PhotosHubTree):
         )
         snap = photoshub_svc.status()
         _starlette(snap)
-        self.assertFalse(snap["gates"]["originals_ready"])
+        self.assertTrue(snap["gates"]["originals_ready"])
+        self.assertIsNone(snap["originals"]["n"])
 
 
 class SurrogateLogPathTests(_PhotosHubTree):
