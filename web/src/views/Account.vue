@@ -21,7 +21,12 @@
           <input v-model="confirmPassword" type="password" autocomplete="new-password" minlength="10" :aria-label="t('settings.confirm_password')" />
         </div>
         <div class="password-footer">
-          <span class="hint" :class="{ bad: !!passwordMessage }">{{ finiteText(passwordMessage, '') || t('settings.password_rule') }}</span>
+          <!-- role=status: the Update button disables with no spoken reason —
+               this hint is where the reason lives, and it changed silently.
+               The text only flips at rule boundaries (empty → too short →
+               mismatch → rule), not per keystroke, so polite announcements
+               stay sparse. -->
+          <span class="hint" :class="{ bad: !!passwordMessage }" role="status">{{ finiteText(passwordMessage, '') || t('settings.password_rule') }}</span>
           <button class="primary" :disabled="savingPassword || !!passwordValidation" @click="savePassword">
             {{ savingPassword ? t('settings.updating_password') : t('settings.update_password') }}
           </button>
@@ -36,7 +41,7 @@
           {{ finiteText(twofaError) }}
           <button class="tiny" type="button" :disabled="busy" @click="loadTwofa">{{ t('common.retry') }}</button>
         </div>
-        <div v-else-if="!twofa" class="hint">{{ t('common.loading') }}</div>
+        <div v-else-if="!twofa" class="hint" role="status">{{ t('common.loading') }}</div>
         <template v-else>
           <div class="form-grid">
             <label>{{ t('common.status') }}</label>
@@ -70,7 +75,11 @@
             </div>
             <div v-else>
               <p class="hint">{{ t('twofa.enroll_hint') }}</p>
-              <div class="twofa-qr" v-html="enrollment.qrSvg"></div>
+              <!-- aria-hidden: the QR encodes exactly the secret shown as
+                   "Manual entry secret" below, so for a screen reader it is a
+                   duplicate with no name, announced as an anonymous graphic
+                   (same as the WireGuard peer QR). -->
+              <div class="twofa-qr" aria-hidden="true" v-html="enrollment.qrSvg"></div>
               <div class="form-grid" style="margin-top:8px">
                 <label>{{ t('twofa.manual_secret') }}</label>
                 <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(enrollment.manual_entry) }}</code>
@@ -274,6 +283,9 @@ async function regenRecovery() {
     recoveryCodes.value = r.recovery_codes || []
     copiedRecovery.value = false
     actionCode.value = ''
+    // Enable and disable both toast; regeneration was the one 2FA write whose
+    // only feedback was a silent DOM swap below the button.
+    toast('✅ ' + t('twofa.regen_toast'))
     await loadTwofa()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

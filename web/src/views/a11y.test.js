@@ -3551,3 +3551,57 @@ describe('leftover Infinity interpolations', () => {
     expect(main).toContain("finiteText(data?.array?.status, '') || t('network.unknown')")
   })
 })
+
+describe('Users and Account leftover a11y', () => {
+  it('keeps both Users resource pickers keyboard-reachable and named', () => {
+    // Both copies (create form + row editor) cap at 220px and scroll; a
+    // scrollable region a keyboard cannot reach cannot be scrolled by one
+    // (WCAG 2.1.1) — the Tools log-box treatment.
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    const pickers = users.match(
+      /class="resource-picker" tabindex="0" role="region" :aria-label="t\('accounts\.resources'\)"/g,
+    ) || []
+    expect(pickers.length).toBe(2)
+  })
+
+  it('renders the Users accounts reload failure above the stale rows with retries', () => {
+    // The empty-row alert only exists while the table is empty; once rows were
+    // on screen a failed re-load surfaced nowhere (loadAccounts never toasts).
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    expect(users).toMatch(/<LoadFailure\s+v-if="accountsError && accounts\.length"/)
+    // Both inline failure spots offer a non-submitting retry.
+    expect(users).toMatch(/v-if="accountsError"[^>]*type="button" @click="loadAccounts"/)
+    const retries = users.match(
+      /v-if="serviceOptionsError"[^>]*type="button" @click="loadServiceOptions"/g,
+    ) || []
+    expect(retries.length).toBe(2)
+  })
+
+  it('labels and announces the Users toolbar counts', () => {
+    // "12 · 3 Admins" left the total unlabeled, and Refresh updated both
+    // numbers silently for a screen reader (Tools ports pattern).
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    expect(users).toMatch(
+      /<span class="meta"[^>]*v-if="data" role="status">\s*\{\{ finiteN\(data\.count\) \}\} \{\{ t\('users\.total'\) \}\}/,
+    )
+  })
+
+  it('marks the Users admin LED as decoration', () => {
+    // The LED repeats the Role badge's Admin/Standard text in colour only
+    // (same as the Gateway and VMs LEDs).
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    expect(users).toMatch(/class="led" :class="u\.admin \? 'on' : 'off'" aria-hidden="true"/)
+  })
+
+  it('hides the Account enrollment QR and voices the password rule', () => {
+    const account = readFileSync(resolve(SRC, 'views/Account.vue'), 'utf8')
+    // A duplicate of the manual-entry secret; an anonymous graphic otherwise
+    // (same as the WireGuard peer QR).
+    expect(account).toMatch(/class="twofa-qr" aria-hidden="true"/)
+    // The Update button disables with no spoken reason; the hint carries it.
+    expect(account).toMatch(/:class="\{ bad: !!passwordMessage \}" role="status"/)
+    // The 2FA card's pending state is a status region, like the Settings
+    // launcher placeholder.
+    expect(account).toMatch(/v-else-if="!twofa" class="hint" role="status"/)
+  })
+})

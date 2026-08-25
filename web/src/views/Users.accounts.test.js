@@ -154,6 +154,67 @@ describe('panel accounts section', () => {
     wrapper.unmount()
   })
 
+  it('shows a failure banner above the stale rows when the accounts reload fails', async () => {
+    // The empty-row alert only exists while the table is empty, so once rows
+    // were on screen a failed *re*-load (after a create/save/delete) surfaced
+    // nowhere at all — loadAccounts() never toasts.
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.setPanelAccountResources.mockResolvedValue({ ok: true, resources: [] })
+    const wrapper = mountUsers()
+    await flushPromises()
+
+    api.listPanelAccounts.mockRejectedValue(new Error('accounts reload failed'))
+    await wrapper.find('td[style*="text-align"] button').trigger('click')
+    await wrapper.find('.account-editor .btns .primary').trigger('click')
+    await flushPromises()
+
+    const banner = wrapper.find('load-failure-stub')
+    expect(banner.exists(), 'failure banner above the stale rows').toBe(true)
+    expect(banner.attributes('detail')).toBe('accounts reload failed')
+    // The rows the operator was reading stay on screen below the banner.
+    expect(wrapper.text()).toContain('mom')
+    wrapper.unmount()
+  })
+
+  it('recovers from a failed first accounts fetch through the empty-row retry', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.listPanelAccounts.mockRejectedValueOnce(new Error('accounts backend gone'))
+    const wrapper = mountUsers()
+    await flushPromises()
+    expect(wrapper.find('.empty-row [role="alert"]').exists()).toBe(true)
+
+    await wrapper.find('.empty-row button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.empty-row [role="alert"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('mom')
+    wrapper.unmount()
+  })
+
+  it('retries the service catalog from the picker failure without submitting the form', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.getServices.mockRejectedValueOnce(new Error('services down'))
+    const wrapper = mountUsers()
+    await flushPromises()
+
+    await wrapper.find('.accounts-head button').trigger('click')
+    const picker = wrapper.find('.resource-picker')
+    // The 220px scroll cap makes the picker a region a keyboard must reach.
+    expect(picker.attributes('tabindex')).toBe('0')
+    expect(picker.attributes('role')).toBe('region')
+    expect(picker.find('[role="alert"]').text()).toBe('services down')
+    expect(picker.find('input[type="checkbox"]').exists()).toBe(false)
+
+    await picker.find('button').trigger('click')
+    await flushPromises()
+
+    expect(api.getServices).toHaveBeenCalledTimes(2)
+    // type=button: the retry lives inside the create <form> and must not submit it.
+    expect(api.createPanelAccount).not.toHaveBeenCalled()
+    expect(wrapper.find('.resource-picker input[value="jellyfin"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('does not throw when a member row omits resources', async () => {
     applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
     api.listPanelAccounts.mockResolvedValue({
