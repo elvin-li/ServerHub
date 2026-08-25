@@ -25,7 +25,7 @@ from fastapi import HTTPException
 from hub import catalog_remote
 from hub import cli_args
 from hub import secure_io
-from hub.docker_cli import engine_up, looks_engine_down
+from hub.docker_cli import engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import CODES, api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER, user_home
@@ -1312,7 +1312,17 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         )
         msg = (_plain_str(msg) or f"exit {rc}").strip()
         if rc != 0:
-            if looks_engine_down(msg) and not engine_up(force=True):
+            # A docker CLI that vanished between the _exists() gate above and
+            # this spawn leaves run_capped's exact ``(-1, "not found")``
+            # sentinel — the same docker-unreachable state as a stopped
+            # engine, and it used to fall through to _InstallFailed: a full
+            # rollback (discarding the operator's filled-in variables and
+            # generated passwords) reported as an uncoded two-word
+            # ``message: "not found"`` the SPA cannot translate.
+            unreachable = looks_engine_down(msg) or (
+                rc == -1 and looks_cli_vanished(msg)
+            )
+            if unreachable and not engine_up(force=True):
                 # Same shape as the missing-CLI branch just above: the compose
                 # file and registration are good, only the engine is off, so
                 # rolling everything back (and discarding the operator's
@@ -1457,7 +1467,12 @@ def uninstall_template(
         logs.append(_plain_str(e) or "error")
         down_ok = False
 
-    if not down_ok and looks_engine_down("\n".join(logs)) and not engine_up(force=True):
+    joined = "\n".join(logs)
+    if (
+        not down_ok
+        and (looks_engine_down(joined) or looks_cli_vanished(joined))
+        and not engine_up(force=True)
+    ):
         # ``down`` did nothing: the containers, networks and volumes this
         # uninstall promises to remove still exist inside the stopped engine.
         # Proceeding used to rmtree the compose directory anyway and then --
@@ -1465,8 +1480,11 @@ def uninstall_template(
         # *successful* uninstall that had removed only the files, leaving
         # orphaned containers to restart against a deleted tree when the
         # engine came back.  Refuse with the coded 503 instead; the operator
-        # retries once the engine is running.  Probe forced, failure path
-        # only, same convention as the rest of this sweep.
+        # retries once the engine is running.  A docker CLI that vanished
+        # before the spawn (run_capped's exact ``"not found"`` sentinel) is
+        # the same did-nothing state and used to take the destructive path
+        # too, reporting the fake success.  Probe forced, failure path only,
+        # same convention as the rest of this sweep.
         raise api_error("container.engine_down")
 
     removed_path = False

@@ -10,7 +10,7 @@ import yaml
 
 from hub import cli_args, secure_io
 from hub.containers_svc import _stack_paths
-from hub.docker_cli import engine_up, looks_engine_down
+from hub.docker_cli import engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import api_error, exc_detail, soft_fail
 from hub.paths import DOCKER, user_home
 from hub.status import invalidate_status as inv
@@ -215,7 +215,14 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
         elif not isinstance(text, str):
             text = "" if text is None else str(text)
         ok = rc == 0
-        if not ok and looks_engine_down(text) and not engine_up(force=True):
+        unreachable = looks_engine_down(text) or (
+            # A vanished DOCKER binary is run_capped's exact ``(-1, "not
+            # found")`` sentinel; it used to fall through and fail the
+            # save/create as ``compose.invalid: not found`` — a 400 blaming
+            # the operator's YAML for a missing CLI.
+            rc == -1 and looks_cli_vanished(text)
+        )
+        if not ok and unreachable and not engine_up(force=True):
             # The compose file may be perfectly valid: the CLI could not reach
             # the daemon.  Reporting that as "compose file is invalid" (400 on
             # save/create) told the operator their YAML was broken and pointed
