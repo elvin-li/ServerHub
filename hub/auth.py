@@ -118,12 +118,70 @@ def _clean_epochs(raw) -> dict:
     return out
 
 
+#: Sentinel for :func:`_renderable`: the row/element carrying the value is
+#: dropped rather than written back as None (a None epoch or resource would
+#: change meaning; a vanished junk row cannot).
+_DROP = object()
+
+
+def _renderable(value, depth: int = 0):
+    """The auth-block subtree with unrenderable-int leftovers dropped.
+
+    ``_clean_epochs`` already pins ``session_epochs``, but a leftover
+    over-cap int *anywhere else* in ``settings.auth`` (a stray hand-edited
+    field, an explicit-key ``? 0x…`` mapping key, junk inside an accounts
+    row) still rode along in every auth write and ValueError'd
+    ``yaml.safe_dump`` inside ``config.mutate``.  ``_dump`` degrades that to
+    a coded 503, which meant: change-password and setup could never succeed
+    again, TOTP confirm enabled 2FA and then *lost the recovery codes* in a
+    503, and logout answered 200 while the epoch bump silently failed — the
+    "revoked" cookie stayed valid for its full 7-day TTL.
+
+    Only ints past CPython's int->str digit cap are dropped: they cannot be
+    re-serialized at all, so keeping them makes every future auth write
+    fail.  Everything else (surrogates included — PyYAML escapes them) is
+    preserved byte-for-byte.
+    """
+    if depth > 32:
+        return value
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            return _DROP
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, int) and not isinstance(k, bool):
+                try:
+                    str(k)
+                except ValueError:
+                    continue
+            cleaned = _renderable(v, depth + 1)
+            if cleaned is _DROP:
+                continue
+            out[k] = cleaned
+        return out
+    if isinstance(value, (list, tuple)):
+        return [c for c in (_renderable(v, depth + 1) for v in value) if c is not _DROP]
+    return value
+
+
 def _auth_block(data: dict) -> tuple[dict, dict]:
     """Ensure ``data['settings']['auth']`` are mappings before a mutate.
 
     ``setdefault("settings", {})`` returns a pre-existing list, and
     ``dict(settings.get("auth") or {})`` raises on ``auth: []``.  Password
     setup and account writes used to 500 in both cases.
+
+    The block is also passed through :func:`_renderable` so an over-cap int
+    leftover cannot poison ``yaml.safe_dump`` for every future auth write.
+    ``_clean_epochs`` runs first: it maps an unrenderable epoch *value* to 1
+    (the account has logged out at least once), which the generic scrub must
+    not pre-empt by dropping the row to 0.
     """
     settings = data.get("settings")
     if not isinstance(settings, dict):
@@ -133,6 +191,9 @@ def _auth_block(data: dict) -> tuple[dict, dict]:
     auth = dict(auth) if isinstance(auth, dict) else {}
     if "session_epochs" in auth:
         auth["session_epochs"] = _clean_epochs(auth.get("session_epochs"))
+    auth = _renderable(auth)
+    if auth is _DROP or not isinstance(auth, dict):
+        auth = {}
     return settings, auth
 
 
@@ -1129,14 +1190,13 @@ def bump_session_epoch(username: str) -> None:
     does.
     """
     def apply(data: dict) -> None:
-        settings = data.get("settings")
-        if not isinstance(settings, dict):
-            settings = {}
-            data["settings"] = settings
-        auth = settings.get("auth")
-        auth = dict(auth) if isinstance(auth, dict) else {}
-        raw_epochs = auth.get("session_epochs")
-        epochs = _clean_epochs(raw_epochs)
+        # _auth_block, not a hand-rolled copy: it pins session_epochs through
+        # _clean_epochs *and* drops over-cap int leftovers elsewhere in the
+        # block, which used to ValueError yaml.safe_dump here — logout
+        # answered 200 while this revocation was silently lost, and TOTP
+        # confirm 503'd after 2FA was already enabled.
+        settings, auth = _auth_block(data)
+        epochs = _clean_epochs(auth.get("session_epochs"))
         # The normalised (str-probed) counter, not raw_epochs.get(username):
         # an int-keyed leftover for a numeric account name was invisible to
         # the strict lookup, so the bump wrote a *lower* string-keyed copy

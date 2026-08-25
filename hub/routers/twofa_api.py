@@ -164,7 +164,16 @@ def totp_confirm(body: TotpCodeBody, request: Request, response: Response):
     # second factor is exactly the moment to revoke them.  The bump changes the
     # signed session version, so this browser gets a fresh cookie in the same
     # response and stays signed in.
-    auth.bump_session_epoch(username)
+    #
+    # Best effort, same posture as logout: 2FA is already enabled in the
+    # store, and this response is the only time the recovery codes exist in
+    # plaintext.  A failing services.yaml save (leftover junk, EIO) raising
+    # here used to turn the enrollment into a 503 that lost the codes for
+    # good — and the revocation had failed either way.
+    try:
+        auth.bump_session_epoch(username)
+    except Exception:
+        pass
     _set_session(response, request, username)
     audit.record(
         audit.TWOFA_ENABLED, username=username, client=client, outcome="success"
@@ -198,8 +207,13 @@ def totp_disable(body: TotpCodeBody, request: Request, response: Response):
         raise api_error("auth.bad_totp")
     twofa_svc.disable(username)
     # Same revocation logic as enabling: the credential requirements changed,
-    # so no session issued under the old ones survives.
-    auth.bump_session_epoch(username)
+    # so no session issued under the old ones survives.  Best effort, same
+    # reasoning as /confirm: the disable already persisted, and a 503 here
+    # would not revoke anything either — it only misreports the outcome.
+    try:
+        auth.bump_session_epoch(username)
+    except Exception:
+        pass
     _set_session(response, request, username)
     audit.record(
         audit.TWOFA_DISABLED,
@@ -254,7 +268,10 @@ def totp_admin_disable(body: TotpAdminDisableBody, request: Request, response: R
     target = body.username.strip()
     if not twofa_svc.disable(target):
         raise api_error("auth.totp_not_enabled")
-    auth.bump_session_epoch(target)
+    try:
+        auth.bump_session_epoch(target)
+    except Exception:
+        pass
     if target == operator:
         # Rescuing one's own account through the admin path still has to keep
         # this browser signed in after its epoch bump.
