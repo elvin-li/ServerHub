@@ -68,6 +68,59 @@ describe('Health level tabs', () => {
   })
 })
 
+describe('Health toolbar summary', () => {
+  // Rescan updates the passed/warnings/errors counts, and without
+  // role=status they changed silently for a screen reader.
+  it('announces the summary counts as a live region', async () => {
+    api.getHealthChecks.mockResolvedValue({
+      healthy: false,
+      summary: { ok: 2, warn: 1, error: 1, total: 4 },
+      checks: [],
+    })
+    const wrapper = mount(Health, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+
+    const summary = wrapper.find('.toolbar .meta[role="status"]')
+    expect(summary.exists(), 'live summary counts').toBe(true)
+    expect(summary.text()).toContain('health.passed 2')
+    expect(summary.text()).toContain('health.warnings 1')
+    expect(summary.text()).toContain('health.errors 1')
+    wrapper.unmount()
+  })
+})
+
+describe('Health check LEDs', () => {
+  // The LED repeats the Level badge's Pass/Warn/Error text in colour only,
+  // so it is decoration — same treatment as the Users admin LED.
+  it('hides the row LEDs from the accessibility tree', async () => {
+    api.getHealthChecks.mockResolvedValue({
+      healthy: false,
+      summary: { ok: 1, warn: 1, error: 0, total: 2 },
+      checks: [
+        { id: 'a', name: 'Disk', ok: true, level: 'ok', detail: '' },
+        { id: 'b', name: 'Firewall', ok: false, level: 'warn', detail: 'off' },
+      ],
+    })
+    const wrapper = mount(Health, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+
+    const leds = wrapper.findAll('tbody .led')
+    expect(leds.length).toBe(2)
+    for (const led of leds) expect(led.attributes('aria-hidden')).toBe('true')
+    wrapper.unmount()
+  })
+})
+
 describe('Health overall tile', () => {
   // The issues state used to be a bare "⚠️" — an emoji with no words, no
   // locale, and at best a "warning sign" announcement.

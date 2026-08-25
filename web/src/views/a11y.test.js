@@ -647,6 +647,22 @@ describe('llm, photos, vpn and health surface leftovers', () => {
     expect(health).toMatch(/data\.healthy \? '✅ ' \+ t\('common\.healthy'\) : '⚠️ ' \+ t\('common\.issues'\)/)
     expect(health).not.toMatch(/\{\{ data\.healthy \? '✅ OK' : '⚠️' \}\}/)
   })
+
+  it('announces the Health toolbar summary counts', () => {
+    // The passed/warnings/errors counts are the toolbar's answer to the
+    // Rescan click beside them, and they updated silently for a screen
+    // reader — the same role=status the Users toolbar count carries. The
+    // behavioural half lives in Health.test.js.
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    expect(health).toMatch(/class="meta hide-m" v-if="data\?\.summary" role="status"/)
+  })
+
+  it('marks the Health check LED as decoration', () => {
+    // The LED repeats the Level badge's Pass/Warn/Error text in colour only
+    // (same as the Users admin LED).
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    expect(health).toMatch(/class="led" :class="led\(c\)" aria-hidden="true"/)
+  })
 })
 
 describe('brew and gateway surface leftovers', () => {

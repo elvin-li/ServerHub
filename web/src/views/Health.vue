@@ -7,7 +7,10 @@
 
     <div class="toolbar">
       <button class="primary" @click="load" :disabled="loading">{{ t('health.rescan') }}</button>
-      <span class="meta hide-m" v-if="data?.summary" style="color:var(--sub)">
+      <!-- role=status: these counts are the toolbar's answer to the Rescan
+           click beside them, and they updated silently for a screen reader
+           (Users toolbar-count pattern). -->
+      <span class="meta hide-m" v-if="data?.summary" role="status" style="color:var(--sub)">
         {{ t('health.passed') }} {{ finiteN(data.summary.ok) }} · {{ t('health.warnings') }} {{ finiteN(data.summary.warn) }} · {{ t('health.errors') }} {{ finiteN(data.summary.error) }}
         · {{ finiteN(data.summary.total) }}
       </span>
@@ -67,7 +70,9 @@
         </thead>
         <tbody>
           <tr v-for="c in filtered" :key="c.id">
-            <td><span class="led" :class="led(c)"></span></td>
+            <!-- aria-hidden: the LED repeats the Level badge's Pass/Warn/Error
+                 text in colour only (same as the Users admin LED). -->
+            <td><span class="led" :class="led(c)" aria-hidden="true"></span></td>
             <td>
               <strong>{{ finiteText(c.name) }}</strong>
               <div v-if="finiteText(errText(c.detail), '')" class="show-m sub">{{ finiteText(errText(c.detail)) }}</div>
