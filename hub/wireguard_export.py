@@ -118,8 +118,13 @@ def _csv(value: str) -> list[str]:
 
 def _mtu(interface: dict) -> int:
     raw = str(interface.get("MTU") or "").strip()
-    if raw.isdigit():
-        return int(raw)
+    try:
+        if raw.isdigit():
+            return int(raw)
+    except ValueError:
+        # isdigit() does not bound length: a >4300-digit MTU is ValueError
+        # (CPython's str->int cap), not a parse miss.
+        pass
     return DEFAULT_MTU
 
 

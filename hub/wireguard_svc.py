@@ -292,8 +292,15 @@ def _valid_endpoint(value: str) -> bool:
     host, port = split_endpoint(value)
     if not host:
         return False
-    if port and not (port.isdigit() and 1 <= int(port) <= 65535):
-        return False
+    if port:
+        try:
+            if not (port.isdigit() and 1 <= int(port) <= 65535):
+                return False
+        except ValueError:
+            # isdigit() bounds neither length (CPython caps str->int at 4300
+            # digits) nor the digit class (``²`` passes isdigit but not int);
+            # the ValueError used to 500 PUT /api/wireguard/settings.
+            return False
     try:
         ipaddress.ip_address(host)
         return True
@@ -1905,7 +1912,17 @@ def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None]:
     except Exception:
         return False, None
     match = re.search(r"time=([\d.]+)\s*ms", _as_text(out))
-    return rc == 0, float(match.group(1)) if match else None
+    if not match:
+        return rc == 0, None
+    try:
+        latency = float(match.group(1))
+    except ValueError:
+        # ``[\d.]+`` also matches ``1.2.3``; the ValueError escaped through
+        # fan_out and 500'd POST /api/wireguard/ping.
+        return rc == 0, None
+    # A >308-digit run parses to inf, which Starlette's allow_nan=False
+    # encoder refuses -- same 500, one layer later.
+    return rc == 0, (None if _nonfinite(latency) else latency)
 
 
 def ping_peers(timeout_ms: int = 800) -> dict:

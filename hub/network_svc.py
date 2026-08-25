@@ -110,6 +110,13 @@ def _interfaces_uncached() -> list:
             name = m.group(1)
             flags = re.search(r"flags=\w+<([^>]+)>", line)
             mtu_m = re.search(r"mtu\s+(\d+)", line)
+            try:
+                # The ``(\d+)`` capture is unbounded and CPython caps str->int
+                # at 4300 digits with ValueError; a garbled mtu column used to
+                # 500 GET /api/system/network/addresses and alias/auto.
+                mtu = int(mtu_m.group(1)) if mtu_m else None
+            except ValueError:
+                mtu = None
             cur = {
                 "name": name,
                 "flags": (flags.group(1).split(",") if flags else []),
@@ -119,7 +126,7 @@ def _interfaces_uncached() -> list:
                 "mac": None,
                 "status": None,
                 "media": None,
-                "mtu": int(mtu_m.group(1)) if mtu_m else None,
+                "mtu": mtu,
             }
             if flags and "UP" in flags.group(1).split(","):
                 cur["up"] = True
@@ -264,7 +271,14 @@ def _network_service_order_uncached() -> list[dict]:
         match = re.search(r"\((\d+)\)\s+(.+)", block)
         if not match:
             continue
-        order, name = int(match.group(1)), match.group(2).strip()
+        try:
+            order = int(match.group(1))
+        except ValueError:
+            # A >4300-digit index is ValueError (CPython's str->int cap).
+            # Skip the garbled block like any other unparsable one instead of
+            # 500ing GET /api/system/network/services.
+            continue
+        name = match.group(2).strip()
         disabled = name.startswith("*")
         if disabled:
             name = name.lstrip("*").strip()
