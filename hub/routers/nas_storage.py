@@ -81,7 +81,10 @@ def api_nfs_save(body: NfsSaveBody, request: Request):
         count=len(body.entries),
         ok=bool(result.get("ok")),
     )
-    return raise_for_admin_result(result)
+    # An nfsd confirmed vanished by a fresh disk probe answers the coded 503,
+    # not the generic 500 "the privileged macOS operation failed" that sends
+    # the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {"nfsd_missing": "nfs.nfsd_missing"})
 
 
 @router.post("/api/nfs/server")
@@ -95,7 +98,11 @@ def api_nfs_server(body: NfsServerActionBody, request: Request):
         action=body.action,
         ok=bool(result.get("ok")),
     )
-    return raise_service_error(result, {"bad_action": "nfs.bad_action"})
+    return raise_service_error(result, {
+        "bad_action": "nfs.bad_action",
+        # Confirmed-vanished nfsd (fresh disk probe on the failure path only).
+        "nfsd_missing": "nfs.nfsd_missing",
+    })
 
 
 # ── AppleRAID ────────────────────────────────────────────────────────────────

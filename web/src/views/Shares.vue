@@ -35,6 +35,17 @@
     </div>
 
     <template v-else>
+      <!-- Banner above the stale sections, not behind them: once data is on
+           screen a failed *re*-load (after a save/remove/toggle, or Refresh)
+           only surfaced as a transient toast. Stale rows still render below,
+           which is the LoadFailure contract (Users / Containers pattern). -->
+      <LoadFailure
+        v-if="loadError"
+        :detail="loadError"
+        :retry="refresh"
+        :busy="loading"
+        style="margin-bottom:12px"
+      />
       <section class="card host-overview" aria-labelledby="sharing-host-title">
         <div class="host-identity">
           <div class="host-icon"><Server :size="22" /></div>

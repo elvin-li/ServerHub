@@ -2675,6 +2675,8 @@ export default {
       acl_read_failed: '无法读取该目录的访问控制列表',
       acl_bad_user: '未知的 macOS 本地用户',
       acl_bad_level: '访问级别只能是 无权限 / 只读 / 读写',
+      sharing_missing: '这台主机上缺少 macOS 共享工具（sharing）',
+      acl_tool_missing: '这台主机上缺少 macOS 的 ACL 工具',
     },
     catalog: {
       no_free_port: '从 {port} 起已没有可用的主机端口',
@@ -2929,6 +2931,7 @@ export default {
       map_conflict: 'maproot 与 mapall 不能同时设置',
       duplicate_path: '{path} 被重复导出',
       bad_action: '不支持的 nfsd 操作：{action}',
+      nfsd_missing: '这台主机上缺少 nfsd',
     },
     raid: {
       bad_device: '设备标识无效：{device}',

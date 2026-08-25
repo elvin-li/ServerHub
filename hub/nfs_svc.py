@@ -85,6 +85,44 @@ def _as_text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def _nfsd_on_disk() -> bool:
+    """Fresh disk probe for the mutation-failure paths only (raid/vms rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /sbin is not confirmably carrying nfsd.
+    """
+    try:
+        return Path(NFSD).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+#: What a spawn of a gone binary reads like through run_admin / sh: the
+#: shell's own refusal (``sh: /sbin/nfsd: command not found`` / ``No such
+#: file or directory``) or sh()'s FileNotFoundError sentinel (``not found``).
+#: Purely a message-pattern gate: classification additionally requires the
+#: fresh :func:`_nfsd_on_disk` probe, and only the generic ``failed`` shape is
+#: eligible — timeouts, cancelled sheets and password failures keep their
+#: original shape.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
+def _classify_admin_failure(result: dict) -> dict:
+    """An nfsd confirmed vanished answers the coded 503, not admin.failed.
+
+    The generic 500 "the privileged macOS operation failed" sends the
+    operator back to a password dialog that cannot help.  The probe runs only
+    on this failure path, never on a successful mutation.
+    """
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "failed"}
+    if not result.get("ok") and (result.get("error") or "failed") == "failed":
+        message = _as_text(result.get("message") or "").lower()
+        if any(marker in message for marker in _VANISH_MARKERS) and not _nfsd_on_disk():
+            return {"ok": False, "error": "nfsd_missing"}
+    return result
+
+
 # ── parsing ──────────────────────────────────────────────────────────────────
 
 def _parse_line(line: str) -> dict | None:
@@ -175,7 +213,15 @@ def read_exports() -> list[dict]:
 
 def _validate_entry(entry: dict) -> dict:
     """Normalize one caller-supplied export, raising NfsConfigError on refusal."""
-    path = str(entry.get("path") or "").strip()
+    try:
+        # A str() probe, not an isinstance gate: a numeric leftover keeps
+        # behaving as its string form, while a >4300-digit *already-int*
+        # (YAML/plist hex loads with int(x, 16), exempt from the int(str)
+        # parse cap) earns the coded refusal instead of the digit-cap
+        # ValueError a bare str() raises past the router.
+        path = str(entry.get("path") or "").strip()
+    except ValueError:
+        raise NfsConfigError("nfs.bad_path")
     # Control characters before Path(): a NUL never reaches the later check,
     # and Path("…\0…") raises ValueError instead of NfsConfigError.
     if (
@@ -226,7 +272,12 @@ def _validate_entry(entry: dict) -> dict:
     clients: list[str] = []
     everyone = False
     for client in clients_raw:
-        value = str(client).strip()
+        try:
+            value = str(client).strip()
+        except ValueError:
+            # An already-int hex leftover past the digit cap can never be a
+            # host spec; refuse it like any other bad client, not a 500.
+            raise NfsConfigError("nfs.bad_client", client="")
         if not value:
             continue
         if value.lower() == "everyone":
@@ -238,8 +289,13 @@ def _validate_entry(entry: dict) -> dict:
     if not clients and not everyone:
         raise NfsConfigError("nfs.no_clients")
 
-    maproot = str(entry.get("maproot") or "").strip()
-    mapall = str(entry.get("mapall") or "").strip()
+    try:
+        maproot = str(entry.get("maproot") or "").strip()
+        mapall = str(entry.get("mapall") or "").strip()
+    except ValueError:
+        # The digit-cap ValueError of a huge already-int leftover; the value
+        # could never match _MAP_RE anyway.
+        raise NfsConfigError("nfs.bad_mapping", field="maproot", value="")
     for label, value in (("maproot", maproot), ("mapall", mapall)):
         if value and not _MAP_RE.match(value):
             raise NfsConfigError("nfs.bad_mapping", field=label, value=value[:60])
@@ -398,7 +454,7 @@ def save_exports(entries: list[dict]) -> dict:
     )
     invalidate()
     if not result.get("ok"):
-        return result
+        return _classify_admin_failure(result)
     check = check_exports()
     return {"ok": True, "count": len(validated), "check": check}
 
@@ -421,7 +477,8 @@ def server_action(action: str) -> dict:
     invalidate()
     if result.get("ok"):
         result["server"] = _nfsd_status()
-    return result
+        return result
+    return _classify_admin_failure(result)
 
 
 def statistics() -> dict:

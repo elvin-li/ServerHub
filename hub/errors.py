@@ -78,11 +78,17 @@ CODES: dict[str, tuple[int, str]] = {
     "shares.verification_failed": (409, "macOS did not report the requested sharing state"),
     "shares.operation_failed": (500, "the macOS sharing operation failed"),
     "shares.settings_open_failed": (500, "System Settings could not be opened on this Mac"),
+    # Confirmed-vanished sharing CLI (fresh disk probe on the failure path
+    # only).  503 like the other tool-absent states (raid.diskutil_missing,
+    # smart.smartctl_missing, usage.mdutil_missing).
+    "shares.sharing_missing": (503, "the macOS sharing tool is missing on this host"),
     # ── per-user share access (filesystem ACLs) ─────────────────────────────
     "shares.acl_not_share": (400, "this directory is not a current SMB share point"),
     "shares.acl_read_failed": (500, "the directory's access control list could not be read"),
     "shares.acl_bad_user": (400, "unknown local macOS user"),
     "shares.acl_bad_level": (400, "the access level must be none, read or readwrite"),
+    # Confirmed-vanished ls/chmod (fresh disk probe on the failure path only).
+    "shares.acl_tool_missing": (503, "the macOS ACL tools are missing on this host"),
     # ── terminal ─────────────────────────────────────────────────────────────
     "terminal.timeout": (504, "command timed out after {seconds} seconds"),
     "terminal.empty_command": (400, "command is empty"),
@@ -173,6 +179,10 @@ CODES: dict[str, tuple[int, str]] = {
     "nfs.map_conflict": (400, "maproot and mapall cannot both be set"),
     "nfs.duplicate_path": (409, "{path} is exported more than once"),
     "nfs.bad_action": (400, "unsupported nfsd action: {action}"),
+    # Confirmed-vanished nfsd (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (raid.diskutil_missing,
+    # smart.smartctl_missing, usage.mdutil_missing).
+    "nfs.nfsd_missing": (503, "nfsd is missing on this host"),
     # ── AppleRAID sets ──────────────────────────────────────────────────────
     "raid.bad_device": (400, "invalid device identifier: {device}"),
     "raid.duplicate_device": (400, "{device} is listed twice"),
