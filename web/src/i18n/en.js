@@ -3120,6 +3120,7 @@ export default {
       order_required: 'the full service order list is required',
       unknown_service: 'unknown network service: {service}',
       services_unreadable: 'could not read network services',
+      networksetup_missing: 'networksetup is missing on this host',
       bad_profile: 'profile must be one of: wifi | ethernet | wifi_only | ethernet_only',
       invalid_device: 'invalid interface name: {device}',
       device_not_found: 'no such interface: {device}',

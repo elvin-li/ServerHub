@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from hub import cli_args
@@ -550,11 +551,33 @@ def set_service_order(services: list[str]) -> dict:
     }
 
 
+def _networksetup_missing() -> bool:
+    """Whether an empty service listing means networksetup itself is gone.
+
+    An empty ``network_services()`` flattens two very different failures: a
+    vanished ``/usr/sbin/networksetup`` (``sh`` answers its spawn sentinel and
+    the parser returns ``[]``) and a readable-but-empty listing.  The disk is
+    probed *on this failure path only* (the identity ``_scutil_missing`` /
+    docker ``cli_on_disk`` rule — a successful listing never pays the stat) so
+    the tool-absent case can answer the coded 503 its siblings do instead of a
+    500 that blames the server.
+    """
+    try:
+        return not Path(NS).is_file()
+    except (OSError, ValueError):
+        # An unreadable /usr/sbin must not upgrade the failure to a 503.
+        return False
+
+
 def switch_profile(profile: str) -> dict:
     """Quick switch: wifi | ethernet (wired preferred) | ethernet_only | wifi_only."""
     profile = (profile or "").strip().lower()
     svcs = network_services()
     if not svcs:
+        if _networksetup_missing():
+            # A vanished networksetup used to answer the services_unreadable
+            # 500 — the panel toasted a server fault for a missing host tool.
+            raise api_error("network.networksetup_missing")
         raise api_error("network.services_unreadable")
 
     def is_wifi(s: dict) -> bool:
