@@ -34,22 +34,46 @@ _appends_since_trim = 0
 _TRIM_EVERY = 50
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one poisoned cooldown stamp used
+    to make :func:`_load_state` return ``{}``, so every sweep saw
+    ``prev={}`` — per-service history, cooldown maps and the pending set all
+    gone at once — and re-announced every still-bad service, disk and
+    resource condition on every pass until the file was hand-fixed.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_state() -> dict:
     try:
         # Path.exists() only swallows ENOENT/ELOOP.  EIO/ESTALE on a dying
         # mount used to raise out of GET /api/alerts and POST /api/alerts/check.
         if not STATE_FILE.exists():
             return {}
-        data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP))
+        data = safe_json_loads(
+            read_text_capped(STATE_FILE, _STATE_CAP), parse_int=_capped_json_int
+        )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested alert_state.json is not ValueError.
         return {}
     # A list/string leftover from a torn write used to raise
     # ``prev.get(...)`` on every sweep and silence the alerter,
     # UPS policy, and stale-runtime kickstarts for good.
-    if isinstance(data, dict):
-        return data
-    return {}
+    if not isinstance(data, dict):
+        return {}
+    # Scrub keys on load, before they become the sweep's lookup keys.
+    # ``json.loads`` produces lone-surrogate keys from escaped ``"\ud800…"``
+    # text; _save_state scrubs at write time, so a raw-loaded key never
+    # matched what the next save wrote — the state "changed" on every sweep
+    # (an SSD rewrite each pass) while the surrogate sat on disk.
+    cleaned = _jsonable_alert(data)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _save_state(st: dict):
