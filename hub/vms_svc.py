@@ -489,6 +489,13 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
     new_name = _as_text(new_name).strip()
     if not new_name:
         raise api_error("vms.name_required")
+    # Bounded because it is *persisted*: the override lands in services.yaml,
+    # and an unbounded name (one 2MB rename was enough) grew the file past
+    # config._YAML_CAP — after which every cfg() read answered {} and the next
+    # mutate() rewrote the config from that emptiness, wiping the admin
+    # account and every sibling key.  64 matches accounts/apikeys/disk names.
+    if len(new_name) > 64:
+        raise api_error("vms.name_too_long")
     backend, name = _parse_id(vm_id)
     name = (name or "").strip()
     if not name:
@@ -521,9 +528,13 @@ def _argv_name(value: str, *, code: str = "vms.bad_id") -> str:
     text = str(value or "").strip()
     if (
         not text
+        or len(text) > 255
         or text.startswith("-")
         or any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
     ):
+        # 255: cli_args.MAX_POSITIONAL_LEN.  No listed machine has a longer
+        # name, and an unbounded one rode into utmctl/orbctl argv (and, via
+        # rename, into the services.yaml override key).
         raise api_error(code)
     try:
         text.encode("utf-8")
@@ -543,12 +554,16 @@ def _parse_id(vm_id: str) -> tuple[str, str]:
         raise api_error("vms.bad_id")
     if raw.startswith("orb:"):
         return "orb", _argv_name(raw[4:])
+    # Refused before the UUID shape, not after it: ``-`` is inside the class,
+    # so a 36-char dash-led id (``-…`` / all dashes) *matched* the uuid branch
+    # and rode into ``utmctl start {ident}`` argv as an option — the exact
+    # injection ``_argv_name`` closes for every non-uuid name.  A real UUID
+    # starts with a hex digit, never a hyphen.
+    if raw.startswith("-"):
+        raise api_error("vms.bad_id")
     # uuid style → utm
     if re.match(r"^[0-9A-Fa-f-]{36}$", raw):
         return "utm", raw
-    # Refuse before ``orbctl list``: ``--help`` is not a machine name.
-    if raw.startswith("-"):
-        raise api_error("vms.bad_id")
     # check orb first by listing
     try:
         machines = list_orb_machines()

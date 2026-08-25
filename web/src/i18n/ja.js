@@ -3027,6 +3027,7 @@ export default {
     },
     vms: {
       name_required: '新しい名前が必要です',
+      name_too_long: '表示名は 1〜64 文字にしてください',
       bad_id: '仮想マシン ID が正しくありません',
       utm_unavailable: 'utmctl が利用できません。UTM をインストールしてください',
       utm_unsupported_action: 'UTM は操作 {action} に対応していません',

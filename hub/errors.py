@@ -417,6 +417,12 @@ CODES: dict[str, tuple[int, str]] = {
     # administrator privileges, so the lost rename surfaced nowhere.
     "identity.scutil_missing": (503, "scutil is missing on this host"),
     "vms.name_required": (400, 'a new name is required'),
+    # The display name is persisted into services.yaml overrides.  Unbounded, a
+    # multi-MB rename wrote a config larger than the 1MB read cap and every
+    # later cfg() answered {} — the admin account and every sibling key
+    # disappeared from the panel's view, and the next mutate() persisted the
+    # wipe.  64 matches the accounts/apikeys/disk name caps.
+    "vms.name_too_long": (400, "the display name must be 1-64 characters"),
     "vms.bad_id": (400, "invalid virtual machine id"),
     "vms.utm_unavailable": (503, 'utmctl is not available; install UTM'),
     "vms.utm_unsupported_action": (400, 'UTM does not support action: {action}'),
