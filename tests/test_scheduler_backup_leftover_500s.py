@@ -214,33 +214,29 @@ class SchedulerYamlInfTests(_Sandbox):
         json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.assertNotIn("\ud800", body["jobs"][0]["name"])
 
-    def test_surrogate_params_command_create_lands_and_echo_is_clean(self):
-        """A JSON ``"\\ud800"`` inside ``params`` must not 500 the create echo.
+    def test_surrogate_params_command_is_refused_with_the_coded_400(self):
+        """A JSON ``"\\ud800"`` inside ``params`` must not 500 — or land.
 
         Pydantic rejects lone surrogates in constrained ``str`` fields
         (``name`` answers a clean 422), so ``params: dict`` is the one field
-        of JobBody a surrogate can still ride through.  The job is saved
-        before the response renders, so an encode failure here would be a
-        bare 500 for a mutation that had in fact landed.
+        of JobBody a surrogate can still ride through.  This used to *store*
+        the command with a clean echo — but a lone surrogate can never be
+        spawned (Popen's argv/env UTF-8 encode refuses it), so the landed job
+        failed every run with the uncoded "invalid argv" sentinel.  It is now
+        refused at the boundary with the same coded 400 its control-character
+        siblings get (the vms/brew surrogate rule); the response must still
+        survive Starlette's encoder settings.
         """
         status, body = self._create(
             id="job-sur-params",
             params={"command": "echo hi\ud800 there"},
         )
-        self.assertEqual(status, 200, body)
-        # Starlette's own encoder settings: the echo has to survive them.
+        self.assertEqual(status, 400, body)
+        self.assertEqual(body["detail"]["code"], "scheduler.bad_params")
         json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        job = body["job"]
-        self.assertEqual(job["id"], "job-sur-params")
-        command = (job.get("params") or {}).get("command") or ""
-        self.assertNotIn("\ud800", command)
-        self.assertIn("echo hi", command)
-        # The mutation must have landed as a runnable command, not been lost.
-        stored = scheduler_svc.get_job("job-sur-params")
-        self.assertIsNotNone(stored)
-        stored_command = (stored.get("params") or {}).get("command") or ""
-        self.assertTrue(stored_command.startswith("echo hi"))
-        # And the list view over the stored record must stay encodable too.
+        # Nothing may be stored by a refused create.
+        self.assertIsNone(scheduler_svc.get_job("job-sur-params"))
+        # And the list view must stay encodable too.
         status, listing = request("GET", "/api/scheduler/jobs")
         self.assertEqual(status, 200, listing)
         json.dumps(listing, ensure_ascii=False, allow_nan=False).encode("utf-8")

@@ -345,6 +345,17 @@ def _kill_group(proc: subprocess.Popen) -> None:
             continue
 
 
+def _binary_on_disk(path) -> bool:
+    """Fresh existence probe for the spawn-failure path only (vms/brew rule)."""
+    if not path:
+        return False
+    try:
+        return Path(path).is_file()
+    except (OSError, ValueError):
+        # Dying FUSE/SMB EIO / leftover NUL: not confirmably present.
+        return False
+
+
 def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
     """Stream one dry-run: bounded memory, group-kill on deadline.
 
@@ -361,15 +372,28 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, errors="replace", env=utf8_env(), start_new_session=True,
         )
-    except FileNotFoundError:
-        # The probe said available, but rsync vanished between that check and
-        # the spawn (a brew uninstall mid-request, a dying mount).  Answer
-        # with the same coded 503 the up-front build_argv check raises
-        # instead of an uncoded ``{ok: false, message: "[Errno 2] ..."}``
-        # the SPA cannot translate — and drop the cached probe so the next
-        # GET /api/backups/rsync/binary and preview are truthful.
-        invalidate()
-        raise api_error("rsync.unavailable")
+    except FileNotFoundError as e:
+        # The probe said available, but the spawn could not find the binary —
+        # usually rsync vanished between that check and the spawn (a brew
+        # uninstall mid-request, a dying mount).  The exception alone must
+        # not classify: execve also ENOENTs for a *still-present* file whose
+        # interpreter/loader is gone, and answering that with "no usable
+        # rsync binary was found on this host" — while dropping a truthful
+        # probe — misdirects the operator.  The vanished-CLI 503 fires only
+        # after a fresh disk probe confirms the recorded binary is gone
+        # (the vms/brew rule); the disk check runs only on this failure
+        # path, never on a successful spawn.
+        if not _binary_on_disk(argv[0] if argv else ""):
+            # Confirmed gone: the same coded 503 the up-front build_argv
+            # check raises instead of an uncoded ``{ok: false, message:
+            # "[Errno 2] ..."}`` the SPA cannot translate — and drop the
+            # cached probe so the next GET /api/backups/rsync/binary and
+            # preview are truthful.
+            invalidate()
+            raise api_error("rsync.unavailable")
+        summary = counter.result()
+        summary.update({"ok": False, "rc": -1, "message": _as_text(e)})
+        return summary
     except (OSError, ValueError, TypeError, RecursionError) as e:
         # UnicodeEncodeError (a ValueError) on leftover ``\ud800`` in argv/env.
         # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.

@@ -597,7 +597,14 @@ def _job_id(job: dict) -> str:
     if isinstance(raw, bool) or raw is None:
         return ""
     if isinstance(raw, int):
-        return str(raw)
+        try:
+            return str(raw)
+        except ValueError:
+            # A YAML hex/octal ``id`` dodges CPython's str->int digit cap on
+            # parse (base 16/8 are exempt), and the int->str cap then
+            # ValueError'd here — 500ing GET /api/scheduler/jobs and aborting
+            # the whole engine tick, so every *other* job's minute was lost.
+            return ""
     if isinstance(raw, float):
         # YAML ``id: .inf``: ``float('inf').is_integer()`` is True and
         # ``int(inf)`` OverflowError used to 500 GET /api/scheduler/jobs.
@@ -626,6 +633,14 @@ def job_enabled(job: dict) -> bool:
     return False
 
 
+def _encodable_utf8(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _command_text(raw) -> str:
     """Shell text for a scheduled command.  Leftover non-str is not argv.
 
@@ -633,6 +648,13 @@ def _command_text(raw) -> str:
     repr, not the payload, but leftover lists of non-str parts were still
     joined into ``bash -c`` and leftover mappings stringified.  Only real
     strings.
+
+    Encodable strings only, the rsync-params rule: a lone surrogate (a JSON
+    ``"\\ud800"`` body, a hand-edited services.yaml escape) can never be
+    spawned — Popen's argv/env UTF-8 encode refuses it — so POST
+    /api/scheduler/jobs used to sail it into mutate()'s YAML dump and answer
+    the misleading coded 503 ``settings.save_failed`` instead of the same
+    400 ``scheduler.bad_params`` its control-character siblings get.
     """
     if isinstance(raw, (list, tuple)):
         parts: list[str] = []
@@ -644,11 +666,15 @@ def _command_text(raw) -> str:
                 continue
             if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
                 return ""
+            if not _encodable_utf8(text):
+                return ""
             parts.append(text)
         return " ".join(parts)
     if not isinstance(raw, str):
         return ""
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
+        return ""
+    if not _encodable_utf8(raw):
         return ""
     return raw.strip()
 
