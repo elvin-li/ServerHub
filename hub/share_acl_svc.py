@@ -96,6 +96,27 @@ class ShareAclError(Exception):
         self.code = code
 
 
+def _tool_on_disk(path: str) -> bool:
+    """Fresh disk probe for the failure paths only (raid/vms rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /bin is not confirmably carrying the tool.
+    """
+    try:
+        return Path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+#: What a spawn of a gone binary reads like through run_admin / sh: the
+#: shell's own refusal (``sh: /bin/chmod: command not found`` / ``No such
+#: file or directory``) or sh()'s FileNotFoundError sentinel (``not found``).
+#: Purely a message-pattern gate: classification additionally requires the
+#: fresh :func:`_tool_on_disk` probe, and only the generic failure shape is
+#: eligible — timeouts and authorization outcomes keep their original shape.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
 def parse_acl_listing(output: str) -> dict:
     """Structured view of one ``ls -lde <dir>`` listing.
 
@@ -171,6 +192,12 @@ def read_acl(path: str) -> dict:
     resolved = _validated_dir(path)
     rc, output, error = sh([LS, "-lde", str(resolved)], timeout=8)
     if rc != 0:
+        # An ls confirmed vanished by a fresh disk probe answers the coded
+        # 503, not the 500 "the ACL could not be read" that blames the
+        # directory.  Probe on this failure path only.
+        lowered = _as_text(error or output).lower()
+        if any(marker in lowered for marker in _VANISH_MARKERS) and not _tool_on_disk(LS):
+            raise ShareAclError("shares.acl_tool_missing")
         raise ShareAclError("shares.acl_read_failed")
     parsed = parse_acl_listing(output)
     try:
@@ -235,7 +262,15 @@ def local_users() -> list[dict]:
 
 
 def _validate_username(username: str) -> str:
-    name = str(username or "").strip()
+    try:
+        # A str() probe, not an isinstance gate: a numeric leftover keeps
+        # behaving as its string form, while a >4300-digit *already-int*
+        # (YAML/plist hex loads with int(x, 16), exempt from the int(str)
+        # parse cap) earns the coded refusal instead of the digit-cap
+        # ValueError a bare str() raises past the router.
+        name = str(username or "").strip()
+    except ValueError as error:
+        raise ShareAclError("shares.acl_bad_user") from error
     if not _USERNAME_RE.match(name):
         raise ShareAclError("shares.acl_bad_user")
     known = {user["username"] for user in local_users()}
@@ -312,7 +347,16 @@ def set_user_access(path: str, username: str, level: str) -> dict:
     else:
         result = macos_admin.run_admin_sequence(commands)
     if not result.get("ok"):
-        return {**result, "error": result.get("error") or "failed"}
+        error = result.get("error") or "failed"
+        # A chmod confirmed vanished by a fresh disk probe answers the coded
+        # 503, not the generic 500 sharing failure.  Only the generic failure
+        # shape is eligible — timeouts and authorization outcomes (cancelled,
+        # password_required, …) keep their original shape.
+        if error == "failed":
+            message = _as_text(result.get("message") or "").lower()
+            if any(marker in message for marker in _VANISH_MARKERS) and not _tool_on_disk(CHMOD):
+                return {"ok": False, "error": "acl_tool_missing"}
+        return {**result, "error": error}
 
     after = read_acl(str(resolved))
     granted = [

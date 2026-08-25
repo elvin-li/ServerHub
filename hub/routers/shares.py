@@ -66,6 +66,11 @@ def _raise_service_error(result: dict, *, service: str = "") -> None:
         "unknown_service": "shares.unknown_service",
         "exists": "shares.exists",
         "not_found": "shares.not_found",
+        # Confirmed-vanished CLIs (fresh disk probe on the failure path only):
+        # a coded 503, not the generic 500 that sends the operator back to a
+        # password dialog that cannot help.
+        "sharing_missing": "shares.sharing_missing",
+        "acl_tool_missing": "shares.acl_tool_missing",
         # Shared admin codes so the SPA's password dialog handles every feature
         # the same way.
         "password_required": "admin.password_required",

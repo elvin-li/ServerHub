@@ -2673,6 +2673,8 @@ export default {
       acl_read_failed: 'このディレクトリのアクセス制御リストを読み取れませんでした',
       acl_bad_user: '不明な macOS ローカルユーザーです',
       acl_bad_level: 'アクセスレベルは なし / 読み取りのみ / 読み書き のいずれかです',
+      sharing_missing: 'このホストには macOS の共有ツール（sharing）がありません',
+      acl_tool_missing: 'このホストには macOS の ACL ツールがありません',
     },
     catalog: {
       no_free_port: '{port} 以上に空きホストポートがありません',
@@ -2927,6 +2929,7 @@ export default {
       map_conflict: 'maproot と mapall は同時に設定できません',
       duplicate_path: '{path} が重複して書き出されています',
       bad_action: 'サポートされていない nfsd 操作：{action}',
+      nfsd_missing: 'このホストには nfsd がありません',
     },
     raid: {
       bad_device: 'デバイス識別子が不正です：{device}',

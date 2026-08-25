@@ -164,9 +164,25 @@ def _flag(value: object) -> bool:
     return bool(value)
 
 
+def _int_capped(digits: str):
+    """``json.loads`` *parse_int* hook that survives >4300-digit literals.
+
+    CPython's int(str) digit cap makes the decoder itself raise ValueError —
+    not JSONDecodeError — on a leftover huge number, so one poisoned field in
+    ``sharing -l -f json`` used to wipe the *whole* SMB listing: the page and
+    the ACL share gate silently lost every share and update/remove answered a
+    404 lie.  A number past the cap cannot be rendered by any JSON encoder
+    anyway, so it loads as None (the docker_cli.parse_int_capped drop).
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _json_shares(output: str) -> list[dict]:
     try:
-        parsed = safe_json_loads(output)
+        parsed = safe_json_loads(output, parse_int=_int_capped)
     except (TypeError, ValueError, RecursionError) as e:
         # RecursionError: leftover deeply-nested ``sharing -l -f json`` is
         # not ValueError; GET /api/shares used to 500.
@@ -226,10 +242,23 @@ _GB = 1_000_000_000  # decimal, matching how macOS reports disk sizes
 
 
 def _plist_first(record: dict, key: str) -> str | None:
-    """First value of a dscl plist attribute (they are always string arrays)."""
+    """First value of a dscl plist attribute (they are always string arrays).
+
+    A str() probe, not an ``isinstance(str)`` gate: a numeric leftover record
+    id must keep behaving as its string form.  XML plists load
+    ``<integer>0x…</integer>`` with ``int(x, 16)`` — exempt from CPython's
+    int(str) digit cap — so a >4300-digit *already-int* leftover reached the
+    bare ``str()`` here, whose digit-cap ValueError escaped the whole record
+    loop: every share's Time Machine attributes were wiped (the live reader
+    swallows Exception into ``{}``) and leftover dscl-dump callers got an
+    untyped raise.  Only the unusable value is dropped; siblings survive.
+    """
     values = record.get(key)
     if isinstance(values, list) and values:
-        return str(values[0])
+        try:
+            return str(values[0])
+        except ValueError:
+            return None
     return None
 
 
@@ -486,7 +515,15 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
 
 
 def _validate_name(value: str) -> str:
-    normalized = str(value or "").strip()
+    try:
+        # A str() probe, not an isinstance gate: a numeric leftover name keeps
+        # behaving as its string form, while a >4300-digit *already-int*
+        # (YAML/plist hex loads with int(x, 16), exempt from the int(str)
+        # parse cap) earns the coded refusal instead of the digit-cap
+        # ValueError this bare str() used to raise past the router.
+        normalized = str(value or "").strip()
+    except ValueError as error:
+        raise ShareValidationError("shares.bad_name") from error
     if not _NAME_RE.fullmatch(normalized):
         raise ShareValidationError("shares.bad_name")
     # Every current call site puts the name in a flag-argument slot (`-n <name>`,
@@ -608,12 +645,43 @@ def _time_machine_commands(
     return commands
 
 
-def _admin_failure(result: dict) -> dict:
-    return {
+def _sharing_on_disk() -> bool:
+    """Fresh disk probe for the mutation-failure paths only (raid/vms rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /usr/sbin is not confirmably carrying it.
+    """
+    try:
+        return Path(SHARING).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+#: What a spawn of a gone binary reads like through run_admin / sh: the
+#: shell's own refusal (``sh: /usr/sbin/sharing: command not found`` / ``No
+#: such file or directory``) or sh()'s FileNotFoundError sentinel (``not
+#: found``).  Purely a message-pattern gate: classification additionally
+#: requires the fresh :func:`_sharing_on_disk` probe to confirm the binary is
+#: really gone, and only the generic ``failed`` shape is eligible — timeouts,
+#: cancelled sheets and password failures keep their original shape.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
+def _admin_failure(result: dict, *, sharing_cli: bool = False) -> dict:
+    failure = {
         "ok": False,
         "error": result.get("error") or "failed",
         "message": result.get("message") or "",
     }
+    # A sharing CLI that vanished between the listing and the spawn used to
+    # surface as the generic 500 "the macOS sharing operation failed", which
+    # sends the operator back to a password dialog that cannot help.  The
+    # coded 503 fires only on this failure path, after a fresh disk probe.
+    if sharing_cli and failure["error"] == "failed":
+        message = _as_text(failure["message"]).lower()
+        if any(marker in message for marker in _VANISH_MARKERS) and not _sharing_on_disk():
+            return {"ok": False, "error": "sharing_missing"}
+    return failure
 
 
 def _verify_share_state(
@@ -657,7 +725,7 @@ def create_smb_share(
     # admin approval as the share creation itself.
     result = run_admin_sequence(commands)
     if not result.get("ok"):
-        return _admin_failure(result)
+        return _admin_failure(result, sharing_cli=True)
     return _verify_share_state(
         record, smb=smb, guest=guest, readonly=readonly, encrypted=encrypted,
         time_machine=time_machine, quota_gb=quota,
@@ -674,6 +742,11 @@ def update_smb_share(
     quota = _validate_quota(time_machine, tm_quota_gb)
     existing = _find_share(record)
     if not existing:
+        # With the sharing CLI gone the listing cannot answer at all, so
+        # "not found" would be a 404 lie.  Fresh probe on this failure path
+        # only, never on a successful lookup.
+        if not _sharing_on_disk():
+            return {"ok": False, "error": "sharing_missing"}
         return {"ok": False, "error": "not_found"}
     current = {
         "time_machine": existing.get("time_machine"),
@@ -692,7 +765,7 @@ def update_smb_share(
     )
     result = run_admin_sequence(commands)
     if not result.get("ok"):
-        return _admin_failure(result)
+        return _admin_failure(result, sharing_cli=True)
     return _verify_share_state(
         record, smb=smb, guest=guest, readonly=readonly, encrypted=encrypted,
         time_machine=time_machine, quota_gb=quota,
@@ -702,10 +775,13 @@ def update_smb_share(
 def remove_smb_share(record_name: str) -> dict:
     record = _validate_name(record_name)
     if not _find_share(record):
+        # Same 404-lie guard as update: a vanished CLI, not a vanished share.
+        if not _sharing_on_disk():
+            return {"ok": False, "error": "sharing_missing"}
         return {"ok": False, "error": "not_found"}
     result = run_admin([SHARING, "-r", record])
     if not result.get("ok"):
-        return _admin_failure(result)
+        return _admin_failure(result, sharing_cli=True)
     if _find_share(record):
         return {"ok": False, "error": "verification_failed"}
     return {"ok": True}

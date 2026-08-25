@@ -2679,6 +2679,8 @@ export default {
       acl_read_failed: "The directory's access control list could not be read",
       acl_bad_user: 'Unknown local macOS user',
       acl_bad_level: 'The access level must be none, read or read & write',
+      sharing_missing: 'The macOS sharing tool is missing on this host',
+      acl_tool_missing: 'The macOS ACL tools are missing on this host',
     },
     catalog: {
       no_free_port: 'No free host port is available at or above {port}',
@@ -2933,6 +2935,7 @@ export default {
       map_conflict: 'maproot and mapall cannot both be set',
       duplicate_path: '{path} is exported more than once',
       bad_action: 'Unsupported nfsd action: {action}',
+      nfsd_missing: 'nfsd is missing on this host',
     },
     raid: {
       bad_device: 'Invalid device identifier: {device}',
