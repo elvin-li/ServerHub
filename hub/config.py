@@ -620,7 +620,17 @@ def panel_locale() -> str:
     settings = cfg().get("settings")
     ui = settings.get("ui") if isinstance(settings, dict) else None
     ui = ui if isinstance(ui, dict) else {}
-    raw = str(ui.get("locale") or DEFAULT_UI_LOCALE).strip()
+    try:
+        # Guarded str(), not a bare one: a hand-edited YAML hex/octal locale
+        # (``locale: 0xF…``) parses uncapped through ``int(x, 16)`` and the
+        # bare ``str()`` raised CPython's 4300-digit ValueError here.  That
+        # 500'd GET /api/status forever on a cold cache (_build_status has no
+        # last-good snapshot to fall back to on first boot) and the member
+        # status/services filters the same way.  A numeric YAML ``locale:
+        # 2023`` still coerces and falls through to the default below.
+        raw = str(ui.get("locale") or DEFAULT_UI_LOCALE).strip()
+    except ValueError:
+        return DEFAULT_UI_LOCALE
     if raw in UI_LOCALES:
         return raw
     low = raw.lower()
