@@ -3706,4 +3706,11 @@ describe('Users and Account leftover a11y', () => {
     // launcher placeholder.
     expect(account).toMatch(/v-else-if="!twofa" class="hint" role="status"/)
   })
+
+  it('voices the Login loading placeholder', () => {
+    const login = readFileSync(resolve(SRC, 'views/Login.vue'), 'utf8')
+    // The auth-status probe decides which form renders; the placeholder
+    // swap was silent for a screen reader (Account 2FA-card pattern).
+    expect(login).toMatch(/v-if="loading" class="login-loading" role="status"/)
+  })
 })
