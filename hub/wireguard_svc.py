@@ -777,11 +777,20 @@ def peer_records() -> list[dict]:
 # adding or revoking a peer edited the file and never reached the live tunnel.
 
 def _sockets() -> list[str]:
-    """Device names of the WireGuard UAPI sockets currently present."""
+    """Device names of the WireGuard UAPI sockets currently present.
+
+    Only names ``wg`` could ever be asked about: a kernel utun or a manageable
+    interface name.  Filenames come back surrogateescape'd, so a leftover
+    socket with undecodable bytes in its name used to flow through
+    :func:`real_interface` / :func:`runtime_state` into
+    GET /api/wireguard/readiness (``runtime.sockets`` / ``real_interface``)
+    and POST /api/wireguard/sync (``device``) and 500 the UTF-8 encode.
+    """
     try:
-        return sorted(p.stem for p in WG_RUN_DIR.glob("*.sock"))
+        stems = sorted(p.stem for p in WG_RUN_DIR.glob("*.sock"))
     except OSError:
         return []
+    return [s for s in stems if _UTUN_RE.match(s) or _IFACE_RE.match(s)]
 
 
 def _recorded_device(name_file: Path) -> str:
@@ -1685,7 +1694,12 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
 
     conf = build_client_conf(
         private_key=private,
-        ip=configured["ip"] or str(meta.get("ip") or ""),
+        # _as_text, not str: a leftover ``\\ud800`` in the registry's ip
+        # (hand-edited, or restored from a backup) leaked into ``content``
+        # whenever the conf block had no AllowedIPs to prefer, and 500'd
+        # peers/config (JSON body), peers/download (PlainTextResponse
+        # encode) and export under Starlette's UTF-8 encode.
+        ip=configured["ip"] or _as_text(meta.get("ip") or "").strip(),
         mode=str(meta.get("mode") or "split"),
         preshared_key=configured["preshared_key"],
         obfuscated=(fmt or "").lower() == "wst",
