@@ -89,7 +89,7 @@
       </div>
       <p class="meta" style="font-size:11px;color:var(--sub);margin:6px 0">
         {{ t('backups.rsync_desc') }}
-        <span v-if="rsyncBinary && !rsyncBinary.available" style="color:var(--warn,#c60)"> {{ t('backups.rsync_missing') }}</span>
+        <span v-if="rsyncBinary && !rsyncBinary.available" style="color:var(--warn-text)"> {{ t('backups.rsync_missing') }}</span>
         <span v-else-if="rsyncBinary" class="mono"> · {{ finiteText(rsyncBinary.variant) }} {{ finiteText(rsyncBinary.version) }}</span>
       </p>
       <SkeletonLoader v-if="!jobsLoaded" :cols="5" :rows="2" />
@@ -352,7 +352,7 @@ async function copyRestore(text) {
   toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = ++backupsGeneration
   try {
     const d = await getBackups()
@@ -369,7 +369,11 @@ async function refresh() {
   } catch (e) {
     if (generation !== backupsGeneration || !pageAlive) return
     loadError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // loadJobs() re-reads the artefact list when a running task ends — that
+    // is background timing, and its failure must not toast over whatever the
+    // operator moved on to; the LoadFailure banner already carries the state.
+    // User-initiated reloads (mount, retry click) pass `manual` and toast.
+    if (manual) toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === backupsGeneration) loaded.value = true
   }
@@ -514,7 +518,7 @@ async function doPg() {
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
     toast(r.ok ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh()
+    if (r.ok) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -533,7 +537,7 @@ async function doImmich() {
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
     toast(r.ok ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh()
+    if (r.ok) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -552,7 +556,7 @@ async function doCfg() {
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)}` : '')
     toast(r.ok ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
-    if (r.ok) await refresh()
+    if (r.ok) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -564,7 +568,9 @@ async function doCfg() {
 
 onMounted(() => {
   pageAlive = true
-  refresh()
+  // The first load counts as user-initiated: nothing is on screen yet, so a
+  // failure toasts as well as raising the LoadFailure banner.
+  refresh(true)
   loadJobs()
   loadBinary()
 })

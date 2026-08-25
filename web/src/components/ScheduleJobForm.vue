@@ -62,7 +62,7 @@
             <input v-model="del" type="checkbox" :aria-label="t('sched.rsync_delete')" />
             {{ t('sched.rsync_delete') }}
           </label>
-          <span v-if="del" class="meta" style="color:var(--warn,#c60);font-size:11px">{{ t('sched.rsync_delete_warn') }}</span>
+          <span v-if="del" class="meta" style="color:var(--warn-text);font-size:11px">{{ t('sched.rsync_delete_warn') }}</span>
           <label style="display:flex;align-items:center;gap:6px">
             <input v-model="compress" type="checkbox" :aria-label="t('sched.rsync_compress')" />
             {{ t('sched.rsync_compress') }}

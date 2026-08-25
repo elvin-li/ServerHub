@@ -1807,7 +1807,7 @@ function countLabel(id) {
   return n ? ` (${n})` : ''
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = appsDataGeneration
   loading.value = true
   try {
@@ -1817,7 +1817,11 @@ async function refresh() {
     jobs.value = d.jobs || []
   } catch (e) {
     if (generation !== appsDataGeneration) return
-    toast('❌ ' + finiteText(e.message))
+    // The job-completion poll calls this in the background (the server, not
+    // the user, decides when a stack job ends); a failure there must not
+    // toast over whatever the operator is doing. User-initiated reloads pass
+    // `manual` and keep their feedback.
+    if (manual) toast('❌ ' + finiteText(e.message))
   }
   if (generation === appsDataGeneration) loading.value = false
 }
@@ -1980,7 +1984,7 @@ async function doInstall() {
     if (r.ok) {
       // Three independent re-reads after a successful install: catalog, managed
       // list and stacks. refresh() was already fire-and-forget here.
-      await Promise.all([loadCatalog(), loadManaged(true), refresh()])
+      await Promise.all([loadCatalog(), loadManaged(true), refresh(true)])
     }
   } catch (e) {
     if (!stillOnApps(generation)) return
@@ -2019,7 +2023,7 @@ async function doUninstall(tpl) {
     // loadManaged too: uninstalling from the catalog left the app still listed
     // under Managed until something else happened to refresh it, so the two
     // uninstall paths disagreed -- doManagedUninstall() already reloads it.
-    await Promise.all([loadCatalog(), refresh(), loadManaged(true)])
+    await Promise.all([loadCatalog(), refresh(true), loadManaged(true)])
   } catch (e) {
     if (!stillOnApps(generation)) return
     toast('❌ ' + finiteText(e.message))
@@ -2037,7 +2041,7 @@ async function run(s, action) {
     if (!stillOnApps(generation)) return
     toast('🚀 ' + (finiteText(r.message, '') || t('common.ok')))
     if (r.job_id) openJob(r.job_id, s.name)
-    refresh()
+    refresh(true)
   } catch (e) {
     if (!stillOnApps(generation)) return
     toast('❌ ' + finiteText(e.message))
@@ -2089,7 +2093,9 @@ onMounted(() => {
   pageAlive = true
   loadManaged()
   loadCatalog()
-  refresh()
+  // The first load counts as user-initiated: with no stacks fetched yet there
+  // is no stale-but-usable list on screen, so the failure must say something.
+  refresh(true)
   // startVisibleInterval also refreshes the moment the tab becomes visible
   // again, so returning to the page does not show up-to-15s-stale data.
   timer = startVisibleInterval(() => {
@@ -2303,7 +2309,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   color: var(--txt);
 }
 
-/* Mixed toward --txt like .chip-docker's #1a6fb0 and .chip-launchd's #b45309:
+/* Mixed toward --txt like the branded chips below:
    the raw --ok on its own 16% tint is ~2:1 for this 10px text. */
 .chip-native {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
@@ -2314,28 +2320,37 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   color: var(--ok-text);
 }
 
+/* Brand-hue inks mixed toward --txt, like the --*-text tokens in styles.css:
+   the literal inks these shipped with (#1a6fb0 / #b45309 / #7c4fe0) were
+   darkened for light cards only — on the dark themes they measured 1.7-3.0:1,
+   and the per-theme #7ec8ff override that patched .chip-docker also applied
+   in *light* system mode (1.7:1 on white). The percentages are the largest
+   that clear 4.5:1 on the chip's own tint in every theme
+   (theme/contrast.test.js measures them). */
 .chip-docker {
   background: color-mix(in srgb, #2496ed 12%, var(--card));
   border-color: color-mix(in srgb, #2496ed 35%, var(--line));
-  color: #1a6fb0;
+  color: color-mix(in srgb, #2496ed 50%, var(--txt));
 }
 
 .chip-launchd {
   background: color-mix(in srgb, #d97706 12%, var(--card));
   border-color: color-mix(in srgb, #d97706 35%, var(--line));
-  color: #b45309;
+  color: color-mix(in srgb, #d97706 50%, var(--txt));
 }
 
 .chip-feat {
   background: color-mix(in srgb, var(--accent) 14%, var(--card));
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
-  color: var(--accent-hover, var(--accent));
+  /* The ink sized for a 14% accent wash; raw --accent-hover is 2.8-4.2:1 on
+     this tint in eight of the eleven palettes. */
+  color: var(--on-accent-wash);
 }
 
 .chip-remote {
   background: color-mix(in srgb, #8b5cf6 14%, var(--card));
   border-color: color-mix(in srgb, #8b5cf6 40%, var(--line));
-  color: #7c4fe0;
+  color: color-mix(in srgb, #8b5cf6 45%, var(--txt));
 }
 
 .chip-ok {
@@ -2348,15 +2363,6 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   background: var(--btn);
   border-color: var(--line);
   color: var(--sub);
-}
-
-[data-theme="nord"] .chip-docker,
-[data-theme="glass"] .chip-docker,
-[data-theme="unraid-dark"] .chip-docker,
-[data-theme="macos-dark"] .chip-docker,
-[data-theme="system"] .chip-docker,
-[data-theme="mono"] .chip-docker {
-  color: #7ec8ff;
 }
 
 .app-meta {
@@ -2678,7 +2684,9 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 }
 
 .act-btn.link {
-  color: var(--accent-hover, var(--accent));
+  /* --accent-text, not the raw hover hue: as ink on --card the hover step is
+     still 2.7-4.2:1 in most themes (styles.css sizes the tint per palette). */
+  color: var(--accent-text);
 }
 
 .act-btn:disabled {

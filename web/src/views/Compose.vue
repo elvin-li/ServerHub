@@ -159,7 +159,7 @@ function closeJobLog() {
   jobLog.value = ''
 }
 
-async function loadStacks() {
+async function loadStacks(manual = false) {
   const generation = ++stacksGeneration
   try {
     const d = await getStacks()
@@ -169,7 +169,10 @@ async function loadStacks() {
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // The job poll re-reads the list when a run ends — background timing, so
+    // a failure there marks `loadError` on screen instead of toasting over
+    // whatever the operator moved on to. User-initiated loads pass `manual`.
+    if (manual) toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === stacksGeneration) loaded.value = true
   }
@@ -246,7 +249,7 @@ async function create() {
     if (generation !== stacksGeneration || !pageAlive) return
     toast('✅ ' + t('compose.created', { id: finiteText(j.id) }))
     showCreate.value = false
-    await loadStacks()
+    await loadStacks(true)
     if (!pageAlive) return
     selected.value = j.id
     await reloadCompose()
@@ -330,7 +333,9 @@ function watchJob(id) {
 
 onMounted(() => {
   pageAlive = true
-  loadStacks()
+  // The first load counts as user-initiated: nothing is on screen yet, so a
+  // failure toasts as well as raising the LoadFailure banner.
+  loadStacks(true)
 })
 onUnmounted(() => {
   pageAlive = false

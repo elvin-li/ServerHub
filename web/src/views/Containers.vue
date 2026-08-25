@@ -99,7 +99,7 @@
                 <td style="max-width:260px">
                   <strong>{{ finiteText(c.name) }}</strong>
                   <span v-if="c.sandbox" class="badge" style="background:var(--bar-track);color:var(--sub)">pause</span>
-                  <span v-else-if="c.system" class="badge" style="background:#6366f133;color:#818cf8">k8s</span>
+                  <span v-else-if="c.system" class="badge" style="background:color-mix(in srgb, #6366f1 20%, transparent);color:color-mix(in srgb, #6366f1 40%, var(--txt))">k8s</span>
                   <div
                     class="mono"
                     style="color:var(--sub);font-size:10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
