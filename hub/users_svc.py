@@ -54,6 +54,13 @@ def list_users() -> list:
             try:
                 uid = int(u.pw_uid)
                 gid = int(u.pw_gid)
+                # An *already-int* id past CPython's int->str digit cap
+                # sails through int() (no string conversion happens) and
+                # only exploded later, at Starlette's json.dumps — one
+                # poisoned Open Directory record 500'd GET /api/users for
+                # every healthy row.  The str() probe reuses this except.
+                str(uid)
+                str(gid)
             except (TypeError, ValueError, OverflowError, AttributeError):
                 continue
             name = _pwd_text(getattr(u, "pw_name", ""))
