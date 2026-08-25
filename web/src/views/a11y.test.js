@@ -267,6 +267,23 @@ describe('sharing surface load-failure alerts', () => {
     const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
     expect(files).toMatch(/class="err-live" role="alert" aria-live="assertive"/)
   })
+
+  it('voices the Shares ACL loading placeholder inside the edit sheet', () => {
+    // The ACL loads after the sheet already holds focus, so the swap from
+    // this placeholder was silent for a screen reader (Login-loading /
+    // Settings launcher-placeholder pattern); its failure sibling above
+    // already carries role=alert.
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(shares).toMatch(/v-if="aclLoading" class="acl-hint" role="status"/)
+  })
+
+  it('announces the Shares page-title count summary', () => {
+    // The shares/services breakdown is Refresh's only answer and it changed
+    // silently for a screen reader, while the same page-title count on Users
+    // and Bookmarks already carried role=status.
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(shares).toMatch(/class="meta" role="status">\s*\{\{ data\s*\? t\('shares\.summary'/)
+  })
 })
 
 describe('sharing surface control names', () => {

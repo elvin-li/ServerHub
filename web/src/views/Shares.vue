@@ -2,7 +2,10 @@
   <div class="sharing-page" :aria-busy="loading || busy">
     <div class="page-title">
       <h1>{{ t('shares.title') }}</h1>
-      <span class="meta">
+      <!-- role=status: this count summary is Refresh's only answer and it
+           changed silently for a screen reader (Users / Bookmarks page-title
+           count pattern). -->
+      <span class="meta" role="status">
         {{ data
           ? t('shares.summary', { shares: shareCount, services: coreServices.length })
           : t('shares.meta') }}
@@ -263,7 +266,11 @@
           <section v-if="editing" class="acl-block">
             <h3>{{ t('shares.acl_title') }}</h3>
             <p class="acl-hint">{{ t('shares.acl_hint') }}</p>
-            <div v-if="aclLoading" class="acl-hint">{{ t('common.loading') }}</div>
+            <!-- role=status: the ACL loads after the sheet already holds
+                 focus, so the swap from this placeholder was silent for a
+                 screen reader (Login-loading / Settings launcher pattern);
+                 the failure sibling below already carries role=alert. -->
+            <div v-if="aclLoading" class="acl-hint" role="status">{{ t('common.loading') }}</div>
             <!-- role="alert": the ACL read finishes after the sheet already has
                  focus, so without it the failure text appears silently. -->
             <div v-else-if="aclError" class="acl-error" role="alert">{{ finiteText(aclError) }}</div>
