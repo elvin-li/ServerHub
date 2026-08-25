@@ -88,6 +88,19 @@ describe('Modules refresh guard', () => {
   })
 })
 
+describe('Modules empty state', () => {
+  it('shows the empty placeholder instead of a blank page', async () => {
+    api.getModules.mockResolvedValue({ modules: [], by_category: {} })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const placeholder = wrapper.get('.placeholder')
+    expect(placeholder.text()).toBe('common.none')
+    expect(wrapper.findAll('.tile').length).toBe(0)
+    wrapper.unmount()
+  })
+})
+
 describe('Modules failure states', () => {
   it('latches the failure banner and toasts once', async () => {
     api.getModules.mockRejectedValue(new Error('registry failed'))
@@ -100,6 +113,29 @@ describe('Modules failure states', () => {
     expect(banner.attributes('detail')).toBe('registry failed')
     expect(toast).toHaveBeenCalledTimes(1)
     expect(toast).toHaveBeenCalledWith('❌ registry failed')
+    wrapper.unmount()
+  })
+
+  it('keeps stale tiles below the failure banner on a failed refresh', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.tile').length).toBe(3)
+
+    api.getModules.mockRejectedValue(new Error('registry failed'))
+    await wrapper.get('.toolbar button').trigger('click')
+    await flushPromises()
+
+    // The banner appears, the stale tiles stay readable under it, and the
+    // empty placeholder must not replace them.
+    const banner = wrapper.findComponent({ name: 'LoadFailure' })
+    expect(banner.exists(), 'failure banner').toBe(true)
+    expect(wrapper.findAll('.tile').length, 'stale tiles kept').toBe(3)
+    expect(wrapper.find('.placeholder').exists(), 'no empty placeholder').toBe(false)
+    const html = wrapper.html()
+    expect(
+      html.indexOf('load-failure'),
+      'banner above the stale rows',
+    ).toBeLessThan(html.indexOf('class="tile"'))
     wrapper.unmount()
   })
 
