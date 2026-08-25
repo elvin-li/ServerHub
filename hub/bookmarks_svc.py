@@ -94,8 +94,14 @@ def _is_private_host(host: str) -> bool:
     # Not a literal address.  A dotless short name is a LAN name in
     # practice ("nas", "pi"); anything with a dot is treated as a real
     # public DNS name and gets verified.  Integer/hex IPs are handled
-    # above so ``134744072`` (8.8.8.8) is not a LAN name.
-    return "." not in name
+    # above so ``134744072`` (8.8.8.8) is not a LAN name — but only up to
+    # the 32-bit dword and CPython's 4300-digit int cap: a digit-only host
+    # past either bound fell through ``_ip_from_host`` and read as a LAN
+    # name, turning TLS verification off for it.  Same rule as
+    # ``http_guard.local_http_origin``: a host with no letter is an
+    # integer IP we failed to classify, not a LAN name, and a torn IPv6
+    # leftover (``fe80:``) is not one either.
+    return "." not in name and ":" not in name and any(c.isalpha() for c in name)
 
 
 class _SchemeSafeRedirects(urllib.request.HTTPRedirectHandler):
