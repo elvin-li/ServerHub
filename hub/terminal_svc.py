@@ -585,6 +585,34 @@ def run_host(
     return _response(result)
 
 
+def _docker_vanished(result: dict) -> bool:
+    """True when the run receipt is ``_run``'s docker spawn sentinel and the
+    CLI is confirmed gone from disk.
+
+    ``_run`` collapses a FileNotFoundError spawn into ``rc 127`` +
+    ``"not found: <argv[0]>"``.  For a container run that argv[0] is the
+    docker CLI, so a binary that vanished between requests (OrbStack
+    uninstalled mid-session, a dying mount) used to come back as the
+    command's *own* output — a raw untranslated receipt the SPA cannot
+    explain, while the Containers page answers the coded 503 for the same
+    state.  The sentinel alone is not proof (a container command can print
+    the same words): confirm on the filesystem, on this failure path only
+    — the docker_cli ``looks_cli_vanished`` convention — and the caller
+    still forces the ``engine_up`` probe, which cannot answer "up" while
+    the CLI is gone.
+    """
+    if result.get("rc") != 127:
+        return False
+    if _config_text(result.get("stderr")).strip() != f"not found: {DOCKER}":
+        return False
+    try:
+        return not Path(DOCKER).exists()
+    except (OSError, ValueError):
+        # exists() raises EIO/ESTALE on a dying mount: the CLI is not
+        # spawnable from there either way.
+        return True
+
+
 def run_container(
     container: str,
     command: str,
@@ -635,7 +663,10 @@ def run_container(
     })
     if (
         result["rc"] != 0
-        and looks_engine_down(f"{result.get('stderr') or ''}\n{result.get('stdout') or ''}")
+        and (
+            looks_engine_down(f"{result.get('stderr') or ''}\n{result.get('stdout') or ''}")
+            or _docker_vanished(result)
+        )
         and not engine_up(force=True)
     ):
         # A dead daemon used to be presented as the command's own output
@@ -643,7 +674,10 @@ def run_container(
         # raised after the audit line so the trail still records the attempt.
         # The probe is forced (5s memo) and only runs on this failure path —
         # a command whose own output quotes these strings while the engine
-        # answers "up" keeps its output verbatim.
+        # answers "up" keeps its output verbatim.  A docker CLI that vanished
+        # before the spawn (``_run``'s rc-127 "not found" sentinel, confirmed
+        # absent on disk) is the same docker-unreachable state and used to be
+        # handed back as the command's own rc-127 receipt.
         raise api_error("container.engine_down")
     result["target"] = "container"
     result["container"] = name
