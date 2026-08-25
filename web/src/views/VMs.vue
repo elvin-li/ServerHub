@@ -2,7 +2,11 @@
   <div>
     <div class="page-title">
       <h1>{{ t('vms.title') }}</h1>
-      <span class="meta">
+      <!-- role=status: the VM count and hypervisor availability marks are
+           Refresh's (and the 15s poll's) only answer, and they changed
+           silently for a screen reader — same treatment as the Users and
+           Apps toolbar counts. -->
+      <span class="meta" role="status">
         {{ t('vms.meta', { utm: data?.utm_available ? '✓' : '—', orb: data?.orb_available ? '✓' : '—', n: finiteN(vms.length) }) }}
       </span>
     </div>

@@ -960,6 +960,13 @@ def port_open(port, host="localhost", timeout=0.6):
         port_n = int(port)
     except (TypeError, ValueError, OverflowError):
         return False
+    if not 0 < port_n <= 65535:
+        # ``int()`` does not catch an *already-int* over-cap value: a YAML
+        # hex/octal leftover (``port: 0xfff…`` dodges the int(str) digit cap)
+        # reached ``create_connection``, whose digit-capped str conversion
+        # raised ValueError past the OSError guard below.  Out of range is
+        # simply "not open".
+        return False
     try:
         with socket.create_connection((host, port_n), timeout=timeout):
             return True

@@ -470,6 +470,14 @@ describe('dashboard and storage surface leftovers', () => {
     expect(input[0]).not.toMatch(/:aria-label="t\('main_extra\.format_type_ph'/)
   })
 
+  it('announces the VMs count and hypervisor availability as a status region', () => {
+    // The title-meta count (and the UTM/Orb ✓/— marks beside it) is the only
+    // feedback Refresh and the 15s poll give, and it changed silently for a
+    // screen reader — same treatment as the Users and Apps toolbar counts.
+    const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+    expect(vms).toMatch(/<span class="meta" role="status">\s*\{\{ t\('vms\.meta'/)
+  })
+
   it('does not shadow the VMs create-dialog labels with placeholder aria-labels', () => {
     // Each input has a for/id <label> ("Version", "Machine name"). The bound
     // aria-labels that used to sit on top overrode them with the placeholder,
