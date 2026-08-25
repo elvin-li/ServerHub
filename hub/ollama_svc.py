@@ -31,6 +31,7 @@ Mutations are deliberately narrow:
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import plistlib
@@ -225,6 +226,32 @@ def _as_text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def settings_text(value) -> str:
+    """A hand-edited settings scalar as sanitized text.
+
+    ``_as_text`` gates on ``isinstance(str)``, which silently dropped numeric
+    YAML values: a hand-edited ``label: 2023`` read back as int, discovery
+    fell through to the plist scan, and Start/Stop targeted a different
+    agent.  A ``str()`` probe keeps the numeric id — guarded, because a YAML
+    hex/octal integer is parsed via ``int(raw, 16)``/``int(raw, 8)`` (exempt
+    from CPython's 4300-digit cap) and an over-cap leftover would otherwise
+    ValueError at ``str()`` time.  bool/inf/NaN and collections stay "".
+    """
+    if isinstance(value, (str, bytes, bytearray)):
+        return _as_text(value)
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    if not isinstance(value, (int, float)):
+        return ""
+    try:
+        text = str(value)
+    except ValueError:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _settings() -> dict:
     # Read through this module's ``cfg`` so tests can patch it.
     # A leftover list/string settings (same shape that 500'd /api/ups) must
@@ -235,8 +262,13 @@ def _settings() -> dict:
 
 
 def configured_url() -> str:
-    """The operator-edited URL, unvalidated."""
-    return _as_text(_settings().get("url")).strip().rstrip("/") or DEFAULT_URL
+    """The operator-edited URL, unvalidated.
+
+    ``settings_text``, not ``_as_text``: a numeric YAML leftover coerces to
+    text and is then *visibly* rejected by :func:`base_url` (url_rejected
+    warns in the UI) instead of silently reading as unconfigured.
+    """
+    return settings_text(_settings().get("url")).strip().rstrip("/") or DEFAULT_URL
 
 
 def base_url() -> str:
@@ -359,6 +391,60 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
     if not isinstance(parsed, dict):
         raise ValueError("response is not an object")
     return parsed
+
+
+#: Connection-level errnos that mean "nothing is accepting on that port".
+_DOWN_ERRNOS = frozenset({
+    errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+    errno.EHOSTUNREACH, errno.EHOSTDOWN, errno.ENETUNREACH, errno.ENETDOWN,
+})
+
+
+def _looks_engine_down(exc) -> bool:
+    """True for connection-level failures — the daemon is not accepting at all.
+
+    Timeouts (``socket.timeout`` is ``TimeoutError``) and HTTP answers from a
+    live daemon (including auth failures) are NOT this shape: they keep their
+    original coded error.  URLError wraps the socket error in ``reason``.
+    """
+    for _ in range(4):
+        if isinstance(exc, urllib.error.HTTPError):
+            return False
+        if isinstance(exc, urllib.error.URLError):
+            exc = exc.reason
+            continue
+        break
+    if isinstance(exc, TimeoutError):
+        return False
+    if isinstance(exc, ConnectionError):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _DOWN_ERRNOS
+
+
+def _engine_confirmed_down() -> bool:
+    """Fresh /api/version probe; runs only on a failure path, never on success."""
+    try:
+        _api("/api/version")
+        return False
+    except Exception:
+        return True
+
+
+def _daemon_error(exc, fallback_code: str):
+    """The coded error for a failed daemon request.
+
+    unload/test/chat used to map a stopped daemon to their generic 502
+    (``unload_failed``/``generate_failed``/``chat_failed``) — the coded 503
+    ``ollama.unreachable`` was defined and translated but never raised.  Same
+    rule as the vanished-CLI 503 in :func:`delete_model` and docker's
+    ``engine_up(force=True)``: the reclassification fires only after a fresh
+    probe on this failure path confirms the daemon is down.  Timeouts, a
+    connection dropped by a daemon that is still answering, and HTTP-level
+    failures (auth included) keep *fallback_code*'s original shape.
+    """
+    if _looks_engine_down(exc) and _engine_confirmed_down():
+        return api_error("ollama.unreachable", error=exc_detail(exc))
+    return api_error(fallback_code, error=exc_detail(exc))
 
 
 # ── parsing (pure, unit-tested against captured payloads) ────────────────────
@@ -525,7 +611,10 @@ def discover_label(
     *loaded* / *running* are injectable so the health path can pass empty sets
     instead of triggering a launchctl spawn.
     """
-    configured = _as_text(_settings().get("label")).strip()
+    # settings_text, not _as_text: a hand-edited numeric YAML label
+    # (``label: 2023``) used to be silently ignored here, so discovery fell
+    # through to the plist scan and Start/Stop targeted a different agent.
+    configured = settings_text(_settings().get("label")).strip()
     if configured:
         return configured
     candidates = _candidate_labels()
@@ -742,7 +831,7 @@ def unload_model(name: str) -> dict:
     try:
         _api("/api/generate", {"model": name, "keep_alive": 0}, timeout=UNLOAD_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.unload_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.unload_failed")
     status.invalidate()
     return {"ok": True, "model": name}
 
@@ -766,7 +855,7 @@ def quick_test(name: str, prompt: str, num_predict: int = 128) -> dict:
     try:
         resp = _api("/api/generate", payload, timeout=GENERATE_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.generate_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.generate_failed")
     elapsed = time.monotonic() - t0
     eval_count = _safe_int(resp.get("eval_count"))
     return _jsonable({
@@ -863,7 +952,7 @@ def chat(name: str, messages: list, num_predict: int = 128) -> dict:
     try:
         resp = _api("/api/chat", payload, timeout=GENERATE_TIMEOUT)
     except Exception as e:
-        raise api_error("ollama.chat_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.chat_failed")
     msg = resp.get("message") if isinstance(resp.get("message"), dict) else {}
     eval_count = _safe_int(resp.get("eval_count"))
     return _jsonable({
@@ -903,7 +992,7 @@ def _open_chat_http(payload: dict):
             err = exc_detail(e)
         raise api_error("ollama.chat_failed", error=(err or exc_detail(e))[:200])
     except Exception as e:
-        raise api_error("ollama.chat_failed", error=exc_detail(e))
+        raise _daemon_error(e, "ollama.chat_failed")
 
 
 def start_chat_stream(name: str, messages: list, num_predict: int = 128):
