@@ -1755,6 +1755,7 @@ export default {
     title: 'Modules',
     meta: 'Capability map',
     enabled: 'On',
+    count_n: '{n} modules',
   },
   brew: {
     title: 'Homebrew services',

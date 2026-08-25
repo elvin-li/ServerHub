@@ -634,6 +634,30 @@ describe('brew and gateway surface leftovers', () => {
   })
 })
 
+describe('bookmarks and modules surface leftovers', () => {
+  const bookmarks = readFileSync(resolve(SRC, 'views/Bookmarks.vue'), 'utf8')
+  const modules = readFileSync(resolve(SRC, 'views/Modules.vue'), 'utf8')
+
+  it('announces the Bookmarks summary and hides the card LEDs', () => {
+    // The up/stopped/down summary is the answer to the Force check click and
+    // changed silently for a screen reader; the LED only repeats the badge
+    // text in colour, so it is decoration — same treatment as the Gateway
+    // LED above. The behavioural half lives in Bookmarks.test.js.
+    expect(bookmarks).toMatch(/<span class="meta" role="status" v-if="data">/)
+    expect(bookmarks).toMatch(/class="led" :class="ledClass\(b\)" aria-hidden="true"/)
+  })
+
+  it('announces the Modules count and disables Refresh while loading', () => {
+    // The count is the answer to the Refresh click (Tools syslog/ports
+    // convention), and Refresh used to stay clickable during a load — each
+    // extra click bumped the generation and threw the earlier answers away.
+    // The behavioural half lives in Modules.test.js.
+    expect(modules).toMatch(/class="meta-count" role="status">\{\{ t\('modules\.count_n'/)
+    expect(modules).toMatch(/@click="load" :disabled="loading"/)
+    expect(modules).toMatch(/<LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" \/>/)
+  })
+})
+
 describe('logs and tools surface leftovers', () => {
   const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
 
@@ -1651,7 +1675,7 @@ describe('operations polling and submission guards', () => {
     expect(form).toContain('let stacksGeneration = 0')
     expect(health).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
     expect(bookmarks).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
-    expect(modules).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\) loaded\.value = true/)
+    expect(modules).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\) \{[\s\S]*loading\.value = false[\s\S]*loaded\.value = true/)
     expect(logs).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
     expect(maintenance).toMatch(/async function pollLog\([\s\S]*if \(!id \|\| generation !== pollGeneration \|\| !pageAlive\) return/)
     expect(maintenance).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === listGeneration && pageAlive\) loaded\.value = true/)

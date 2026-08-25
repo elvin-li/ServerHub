@@ -5,9 +5,13 @@
       <span class="meta">{{ t('modules.meta') }}</span>
     </div>
     <div class="toolbar">
-      <button class="primary" @click="load">{{ t('common.refresh') }}</button>
+      <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
+      <!-- role=status: the count is the answer to the Refresh click and it
+           changed silently for a screen reader — same treatment as the Tools
+           syslog/ports counts (Tools.announcements.test.js). -->
+      <span v-if="loaded" class="meta-count" role="status">{{ t('modules.count_n', { n: moduleCount }) }}</span>
     </div>
-    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" />
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="6" />
     <div v-else-if="!Object.keys(byCat).length && !loadError" class="placeholder">{{ t('common.none') }}</div>
     <div v-for="(list, cat) in byCat" :key="cat" style="margin-bottom:14px">
@@ -31,7 +35,7 @@
 </template>
 
 <script setup>
-import { inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { finiteText } from '../lib/finite'
 import { getModules } from '../api/client'
 import { injectI18n } from '../i18n'
@@ -44,7 +48,17 @@ const byCat = ref({})
 // The page previously rendered nothing at all until the response arrived, and
 // nothing again when the response was empty — indistinguishable from a crash.
 const loaded = ref(false)
+// Refresh used to stay clickable during a load; each extra click bumped the
+// generation and the earlier answers were thrown away — spent requests with
+// no feedback. Disabled while in flight, like every other Refresh button.
+const loading = ref(false)
 const loadError = ref('')
+const moduleCount = computed(() =>
+  Object.values(byCat.value || {}).reduce(
+    (total, list) => total + (Array.isArray(list) ? list.length : 0),
+    0,
+  ),
+)
 let pageAlive = true
 let loadGeneration = 0
 // Category labels come from the backend as stable ids; the visible label is
@@ -57,6 +71,7 @@ function catLabel(cat) {
 
 async function load() {
   const generation = ++loadGeneration
+  loading.value = true
   try {
     // Shared client, not a raw fetch: it checks r.ok, so an expired session
     // fires AUTH_LOST_EVENT instead of writing the 401 body into `byCat`.
@@ -69,7 +84,10 @@ async function load() {
     loadError.value = e.message || String(e)
     toast('❌ ' + finiteText(e.message))
   } finally {
-    if (generation === loadGeneration && pageAlive) loaded.value = true
+    if (generation === loadGeneration && pageAlive) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 onMounted(() => {

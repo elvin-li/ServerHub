@@ -1751,6 +1751,7 @@ export default {
     title: '模块',
     meta: '功能模块一览',
         enabled: '启用',
+    count_n: '{n} 个模块',
   },
   brew: {
     title: 'Homebrew 服务',
