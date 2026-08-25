@@ -196,11 +196,15 @@
     <div class="dash-grid">
       <div class="span-12 monitor-toolbar">
         <span class="range-btns">
+          <!-- The chosen range is signalled by the primary tint alone, which
+               reaches a sighted reader and nobody else — same gap the `active`
+               chips had (the a11y sweep only matched that class name). -->
           <button
             v-for="r in METRIC_RANGES"
             :key="r"
             class="tiny"
             :class="metricRange===r?'primary':''"
+            :aria-pressed="metricRange === r"
             @click="setMetricRange(r)"
           >{{ r }}</button>
         </span>

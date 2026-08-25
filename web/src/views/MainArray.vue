@@ -471,7 +471,10 @@
           <label>{{ t('main_extra.vol_name') }}</label>
           <input v-model="formatName" type="text" :aria-label="t('main_extra.vol_name')" />
           <label>{{ t('main_extra.confirm') }}</label>
-          <input v-model="formatConfirm" type="text" :placeholder="t('main_extra.format_type_ph', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) })"  :aria-label="t('main_extra.format_type_ph', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) })"/>
+          <!-- The aria-label used to repeat the placeholder, so the control was
+               announced as its example value instead of what it is; the grid
+               <label> above carries the real name. -->
+          <input v-model="formatConfirm" type="text" :placeholder="t('main_extra.format_type_ph', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) })" :aria-label="t('main_extra.confirm')"/>
         </div>
         <p style="font-size:11px;color:var(--sub);margin:8px 0 12px">
           {{ t('main_extra.format_confirm_hint', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) }) }}
@@ -504,7 +507,10 @@
         </div>
         <div v-if="smartLoading" style="text-align:center;padding:20px;color:var(--sub)">{{ t('main_extra.scanning') }}</div>
         <div v-else>
-          <div v-if="smartError && !smartData" style="color:var(--down-text)">{{ finiteText(smartError) }}</div>
+          <!-- The overview loads after the dialog already holds focus, so the
+               panel-focus read never covers a failure — same as the Scheduler
+               run-history and Shares ACL errors. -->
+          <div v-if="smartError && !smartData" role="alert" style="color:var(--down-text)">{{ finiteText(smartError) }}</div>
           <div v-else-if="!smartMerged.length" style="color:var(--sub)">{{ t('main_extra.smart_no_devices') }}</div>
           <div v-else class="table-wrap" style="max-height:400px;overflow:auto">
             <table class="dense fit-m">
@@ -550,7 +556,16 @@
                     <div v-if="finiteText(m.lastResult, '')" class="sub" style="font-size:10px">{{ finiteText(m.lastResult) }} · {{ finiteN(m.logCount, 0) }} {{ t('main_extra.smart_logs') }}</div>
                   </td>
                   <td class="ops">
-                    <button v-if="m.smart?.attrs?.length" class="tiny" @click="toggleSmartDetail(m.id)">
+                    <!-- The visible face is a glyph and a count, so the
+                         accessible name was "▼ 12" — nothing says what
+                         expands. aria-expanded carries the open state. -->
+                    <button
+                      v-if="m.smart?.attrs?.length"
+                      class="tiny"
+                      :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(m.id) })"
+                      :aria-expanded="smartExpanded.has(m.id)"
+                      @click="toggleSmartDetail(m.id)"
+                    >
                       {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ m.smart.attrs.length }}
                     </button>
                     <template v-if="m.caps?.supported?.length">

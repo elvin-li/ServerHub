@@ -371,6 +371,64 @@ describe('services and scheduler surface leftovers', () => {
   })
 })
 
+describe('dashboard and storage surface leftovers', () => {
+  it('exposes the Dashboard metric-range selection with aria-pressed', () => {
+    // The chosen range (1h…1y) is signalled by the `primary` tint alone. The
+    // "selected state" sweep above only matches `:class="{ active: … }"`, so
+    // this ternary-class variant slipped through it: paint for a sighted
+    // reader, nothing for anyone else.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const chip = dashboard.match(/<button[^>]*v-for="r in METRIC_RANGES"[\s\S]*?>/)
+    expect(chip, 'metric range chips').toBeTruthy()
+    expect(chip[0]).toMatch(/:aria-pressed="metricRange === r"/)
+  })
+
+  it('names the MainArray SMART attribute expander and carries its open state', () => {
+    // The visible face is a glyph and a count ("▼ 12"), which is also what a
+    // screen reader announced — nothing said what expands, and nothing said
+    // whether it already had.
+    const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    const toggle = mainArray.match(/<button[^>]*v-if="m\.smart\?\.attrs\?\.length"[\s\S]*?>/)
+    expect(toggle, 'SMART attribute expander').toBeTruthy()
+    expect(toggle[0]).toMatch(/:aria-label="t\('main_extra\.smart_attrs_toggle'/)
+    expect(toggle[0]).toMatch(/:aria-expanded="smartExpanded\.has\(m\.id\)"/)
+  })
+
+  it('announces the MainArray SMART overview load failure inside its dialog', () => {
+    // The overview loads after the dialog already holds focus, so the
+    // panel-focus read never covers it — same as the Scheduler run-history
+    // and Shares ACL errors.
+    const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    expect(mainArray).toMatch(/v-if="smartError && !smartData" role="alert"/)
+  })
+
+  it('names the MainArray format-confirm input after its label, not the placeholder', () => {
+    // The bound aria-label used to repeat the "type {name} to confirm"
+    // placeholder, so the control was announced as its example value; the
+    // static-attribute scan in "control names" cannot see bound duplicates.
+    const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    const input = mainArray.match(/<input v-model="formatConfirm"[^>]*>/)
+    expect(input, 'format confirm input').toBeTruthy()
+    expect(input[0]).toMatch(/:aria-label="t\('main_extra\.confirm'\)"/)
+    expect(input[0]).not.toMatch(/:aria-label="t\('main_extra\.format_type_ph'/)
+  })
+
+  it('does not shadow the VMs create-dialog labels with placeholder aria-labels', () => {
+    // Each input has a for/id <label> ("Version", "Machine name"). The bound
+    // aria-labels that used to sit on top overrode them with the placeholder,
+    // so both fields were announced as their example values — same shadowing
+    // the PhotosHub people labels had.
+    const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+    for (const id of ['vm-create-version', 'vm-create-name']) {
+      expect(vms, `${id} must keep its for/id label`).toContain(`for="${id}"`)
+      const input = vms.match(new RegExp(`<input id="${id}"[^>]*>`))
+      expect(input, `input #${id}`).toBeTruthy()
+      expect(input[0], `${id}: aria-label overrides the visible label`)
+        .not.toMatch(/aria-label/)
+    }
+  })
+})
+
 describe('service uninstall UI', () => {
   const src = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
 

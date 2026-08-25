@@ -2122,6 +2122,7 @@ export default {
     written: '書き込み',
     power_on: '通電',
     smart_title: 'SMART 自己診断状態',
+    smart_attrs_toggle: 'SMART 属性 · {id}',
     smart_logs: 'ログ',
     smart_caps: '対応テスト',
     smart_no_devices: 'SMART 読み取り可能なデバイスがありません',
