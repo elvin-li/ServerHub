@@ -1,6 +1,7 @@
 """System nginx reverse proxy management."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from hub.adaptive import nginx_sites
@@ -45,6 +46,31 @@ def _as_text(value) -> str:
 
 def _sh_message(err, out, fallback: str = "") -> str:
     return (_as_text(err) or _as_text(out) or fallback).strip()
+
+
+def _nginx_present() -> bool:
+    """``os.path.isfile`` re-raises EIO/ESTALE; that must not 500 Test/Reload."""
+    try:
+        return os.path.isfile(NGINX_BIN)
+    except OSError:
+        return False
+
+
+def _raise_if_cli_vanished(rc: int, message: str) -> None:
+    """Classify the ``sh`` spawn sentinel as the coded 503, disk-confirmed.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` —
+    a sentinel, never a real nginx exit.  That used to leak to the Gateway
+    card as an uncoded ``{ok: false, message: "not found"}`` (and Reload
+    mislabelled it "Invalid configuration; not reloaded").  Answer with a
+    coded 503 like ``brew.not_found`` instead — but only after confirming
+    against the filesystem, on the failure path only: a signal-killed or
+    vanished-cwd spawn is also rc -1, so an nginx that is still on disk
+    keeps its raw result, and a genuine nginx exit whose stderr merely
+    reads "not found" is never reclassified.
+    """
+    if rc == -1 and message == "not found" and not _nginx_present():
+        raise api_error("nginx.not_found")
 
 
 def overview() -> dict:
@@ -93,7 +119,9 @@ def test_config() -> dict:
     rc, out, err = sh([NGINX_BIN, "-t", "-c", str(NGINX_CONF)], timeout=15)
     # bytes/None from a patched or odd `sh` used to TypeError when Reload
     # concatenated the probe text onto a str prefix.
-    return {"ok": rc == 0, "message": _sh_message(err, out)}
+    message = _sh_message(err, out)
+    _raise_if_cli_vanished(rc, message)
+    return {"ok": rc == 0, "message": message}
 
 
 def reload_nginx() -> dict:
@@ -107,8 +135,10 @@ def reload_nginx() -> dict:
         [NGINX_BIN, "-c", str(NGINX_CONF), "-s", "reload"], timeout=15,
     )
     if rc != 0:
-        import os as _os
-        uid = _os.getuid()
+        # nginx vanished between ``-t`` and ``-s reload``: a coded 503,
+        # not a launchd kickstart aimed at a binary that is gone.
+        _raise_if_cli_vanished(rc, _sh_message(err, out))
+        uid = os.getuid()
         rc2, out2, err2 = sh(
             ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"],
             timeout=30,

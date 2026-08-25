@@ -1750,6 +1750,7 @@ export default {
     cat_network: 'ネットワーク',
     cat_apps: 'アプリ',
     cat_ops: '運用',
+    cat_other: 'その他',
     title: 'モジュール',
     meta: '機能マップ',
     enabled: '有効',
@@ -3049,6 +3050,7 @@ export default {
     },
     nginx: {
       conf_missing: 'nginx.conf がありません',
+      not_found: 'nginx がインストールされていません',
     },
     credentials: {
       bad_service_id: 'サービス ID が不正です',

@@ -1756,6 +1756,7 @@ export default {
     cat_network: 'Network',
     cat_apps: 'Apps',
     cat_ops: 'Operations',
+    cat_other: 'Other',
     title: 'Modules',
     meta: 'Capability map',
     enabled: 'On',
@@ -3055,6 +3056,7 @@ export default {
     },
     nginx: {
       conf_missing: 'nginx.conf is missing',
+      not_found: 'nginx is not installed',
     },
     credentials: {
       bad_service_id: 'invalid service id',

@@ -1752,6 +1752,7 @@ export default {
     cat_network: '网络',
     cat_apps: '应用',
     cat_ops: '运维',
+    cat_other: '其他',
     title: '模块',
     meta: '功能模块一览',
         enabled: '启用',
@@ -3051,6 +3052,7 @@ export default {
     },
     nginx: {
       conf_missing: '缺少 nginx.conf',
+      not_found: '未安装 nginx',
     },
     credentials: {
       bad_service_id: '非法服务 ID',
