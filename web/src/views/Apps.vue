@@ -161,7 +161,10 @@
         </select>
         <button type="button" class="primary" @click="loadManaged(true)" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" @click="tab = 'catalog'">{{ t('apps.browse_catalog') }}</button>
-        <span class="meta-count" v-if="managed.counts">
+        <!-- role=status: the breakdown is Refresh's only answer and it changed
+             silently for a screen reader — the same treatment the filter count
+             beside it (and every sibling .meta-count) already carries. -->
+        <span class="meta-count" role="status" v-if="managed.counts">
           {{ finiteN(managed.counts.total) }} ·
           {{ t('apps.kind_native') }} {{ finiteN(managed.counts.native) }} ·
           Docker {{ finiteN(managed.counts.docker) }} ·
@@ -280,7 +283,10 @@
       <div class="toolbar apps-toolbar">
         <button type="button" class="primary" @click="loadAutostart(true)" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="runAutostartNow">{{ t('apps.run_autostart_now') }}</button>
-        <span class="meta-count" v-if="autostart.counts">
+        <!-- role=status: these counts are Refresh's and Run-now's only answer
+             and changed silently for a screen reader — same treatment as the
+             managed-tab breakdown and every sibling .meta-count. -->
+        <span class="meta-count" role="status" v-if="autostart.counts">
           {{ t('apps.auto_on') }} {{ finiteN(autostart.counts.autostart_on) }} ·
           {{ t('apps.auto_off') }} {{ finiteN(autostart.counts.autostart_off) }} ·
           brew {{ finiteN(autostart.counts.brew) }} ·

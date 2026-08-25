@@ -223,6 +223,16 @@ def _plain_ports(raw) -> list:
         ):
             continue
         if isinstance(port, int):
+            # YAML hex/octal ints dodge CPython's int(str) digit cap, so a
+            # leftover ``ports: [0xfff…]`` arrives as a >4300-digit int that
+            # renders nowhere: ``str(port_spec)`` in the url_hint fallback and
+            # Starlette's json.dumps both ValueError on it — 500ing
+            # GET /api/catalog/templates (and silently emptying the docker
+            # half of GET /api/catalog) after the parse already succeeded.
+            try:
+                str(port)
+            except ValueError:
+                continue
             out.append(port)
         else:
             text = _plain_str(port)
@@ -710,7 +720,13 @@ def _build_listing(now: float, sig: str) -> list:
                     break
         path_out = None
         if dest is not None:
-            path_out = str(dest) if _exists(dest) else None
+            # Through _plain_str: a leftover front-matter id carrying a lone
+            # surrogate (or a Services tree named with surrogateescape bytes)
+            # kept the raw str here while every other field was cleaned, and
+            # Starlette's UTF-8 encode then 500'd GET /api/catalog and
+            # /api/catalog/templates.
+            path_out = _plain_str(str(dest)) if _exists(dest) else None
+            path_out = path_out or None
         items.append({
             "id": _plain_str(tid, p.stem) or _plain_str(p.stem),
             "name": _plain_str(meta.get("name"), tid) or tid,

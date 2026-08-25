@@ -87,7 +87,14 @@ def _field_text(value, fallback: str = "") -> str:
             return fallback
         return str(value)
     if isinstance(value, int):
-        return str(value)
+        # A YAML hex/octal leftover dodges the int(str) digit cap, so an
+        # override ``port: 0xfff…`` arrives as a >4300-digit int whose str()
+        # is ValueError — it used to escape this helper and 500
+        # GET /api/apps/managed/detail (and cost inventory whole sections).
+        try:
+            return str(value)
+        except ValueError:
+            return fallback
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
