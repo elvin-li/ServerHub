@@ -666,6 +666,29 @@ describe('settings and users surface leftovers', () => {
     expect(settings).not.toMatch(/:aria-label="finiteText\(s\.id\)"/)
   })
 
+  it('keeps the UPS load banner over stale data and announces the drill verdict', () => {
+    // The banner was gated on !upsInfo, so a failed *re*-load (tab revisit
+    // with the backend down) was toast-only while the stale form sat there
+    // as if fresh — the Containers/Alerts LoadFailure contract. And the
+    // drill verdict is the whole outcome of the drill button press, landing
+    // silently after it — the Scheduler run-history treatment.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(settings).toMatch(/<LoadFailure v-if="upsError" :detail="upsError" :retry="loadUps" \/>/)
+    expect(settings).not.toMatch(/upsError && !upsInfo/)
+    expect(settings).toMatch(/data-test="drill-result">[\s\S]{0,400}?<p class="hint" role="status"/)
+  })
+
+  it('spells and announces the Dashboard UPS chip state the colour carries', () => {
+    // The red paint (danger class) used to be the only low-battery signal —
+    // nothing at all for a screen reader (the Containers/Network LED rule) —
+    // and mid-outage the poll flipped engaged/restoring silently. The
+    // battery glyph repeats the percent + state word, so it is decoration.
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dash).toMatch(/<span v-if="upsStateLabel" role="status">\{\{ upsStateLabel \}\}<\/span>/)
+    expect(dash).toMatch(/upsLow\.value\) return t\('dashboard\.ups_low'\)/)
+    expect(dash).toMatch(/<component :is="upsIcon" :size="13" aria-hidden="true" \/>/)
+  })
+
   it('keeps the visible Username label inside the 2FA rescue input name', () => {
     // The old aria-label repeated the section heading ("Rescue another
     // account"), so the field's visible "Username" label was nowhere in its

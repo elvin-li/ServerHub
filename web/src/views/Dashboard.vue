@@ -120,9 +120,14 @@
             :title="upsTooltip"
             data-test="ups-indicator"
           >
-            <component :is="upsIcon" :size="13" />
+            <!-- The battery glyph repeats what the percent and state word
+                 already say, so it is decoration for a screen reader. -->
+            <component :is="upsIcon" :size="13" aria-hidden="true" />
             <span v-if="finiteN(ups.battery_percent, null) != null" class="ups-pct">{{ withUnit(ups.battery_percent, '%') }}</span>
-            <span v-if="upsStateLabel">{{ upsStateLabel }}</span>
+            <!-- role=status: mid-outage the poll promotes engaged/restoring/
+                 on-battery/low into this word — the chip's whole signal —
+                 and it used to change silently for a screen reader. -->
+            <span v-if="upsStateLabel" role="status">{{ upsStateLabel }}</span>
           </span>
           <router-link
             v-if="ollamaChipVisible"
@@ -1053,6 +1058,11 @@ const upsIcon = computed(() => {
 const upsStateLabel = computed(() => {
   if (upsPolicyPhase.value === 'engaged') return t('dashboard.ups_policy_engaged')
   if (upsPolicyPhase.value === 'restoring') return t('dashboard.ups_policy_restoring')
+  // The red paint (upsChipClass danger) used to be the *only* low-battery
+  // signal — e.g. recharging under the alert floor after an outage, back on
+  // AC: a red chip with no word for sighted users, nothing at all for a
+  // screen reader. Spell the state, the Containers/Network LED rule.
+  if (upsLow.value) return t('dashboard.ups_low')
   if (ups.value?.on_battery) return t('dashboard.ups_on_battery')
   return ''
 })

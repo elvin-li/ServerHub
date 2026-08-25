@@ -613,6 +613,7 @@ export default {
     open_updates: 'Update',
     ups_title: 'UPS / Power',
     ups_on_battery: 'On battery',
+    ups_low: 'Low battery',
     ups_on_ac: 'On AC power',
     ups_battery: 'Battery',
     ups_remaining: '≈ {m} min remaining',

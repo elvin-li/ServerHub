@@ -608,6 +608,7 @@ export default {
     open_updates: '更新へ',
     ups_title: 'UPS / 電源',
     ups_on_battery: 'バッテリー駆動',
+    ups_low: 'バッテリー低下',
     ups_on_ac: 'AC 電源',
     ups_battery: 'バッテリー',
     ups_remaining: '残り約 {m} 分',
