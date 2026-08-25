@@ -364,6 +364,50 @@ def reload_cfg():
         return cfg()
 
 
+#: Sentinel: a node yaml.safe_dump cannot render (over-cap int); the entry is
+#: dropped rather than failing the whole save.
+_UNRENDERABLE = object()
+
+
+def _renderable_tree(value, depth: int = 0):
+    """Drop over-cap ints so one leftover cannot wedge every save forever.
+
+    A ``str()`` probe, not an isinstance-str gate: the poison is an
+    *already-parsed* int (YAML hex/octal loads through ``int(x, 16)``, which
+    CPython's 4300-digit cap does not bound), and it can sit in a value, a
+    mapping key, a list item or a ``!!set`` member.  Everything else --
+    surrogate strings, dates, normal ints -- passes through untouched.
+    """
+    if depth > 64:
+        return value
+    if isinstance(value, bool) or not isinstance(
+        value, (int, dict, list, tuple, set, frozenset)
+    ):
+        return value
+    if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            return _UNRENDERABLE
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            k2 = _renderable_tree(k, depth + 1)
+            if k2 is _UNRENDERABLE:
+                continue
+            v2 = _renderable_tree(v, depth + 1)
+            if v2 is _UNRENDERABLE:
+                continue
+            out[k2] = v2
+        return out
+    if isinstance(value, (set, frozenset)):
+        cleaned = (_renderable_tree(v, depth + 1) for v in value)
+        return {v for v in cleaned if v is not _UNRENDERABLE}
+    cleaned = [_renderable_tree(v, depth + 1) for v in value]
+    return [v for v in cleaned if v is not _UNRENDERABLE]
+
+
 def _dump(data: dict) -> str:
     # SafeDumper, not Dumper: a leftover tuple in a hand-built patch used to
     # emit ``!!python/tuple`` into services.yaml.  The next yaml.safe_load then
@@ -383,9 +427,24 @@ def _dump(data: dict) -> str:
         raise api_error("settings.save_failed")
     except ValueError:
         # A leftover YAML hex int past CPython's int->str digit cap loads fine
-        # (``int(x, 16)`` is uncapped) but cannot be re-dumped; any mutate that
-        # carried it along -- auth setup, password change -- used to 500.
-        raise api_error("settings.save_failed")
+        # (``int(x, 16)`` is uncapped) but cannot be re-dumped.  The coded 503
+        # alone left every settings save stuck for good: the auth sweep scrubs
+        # its own block, but a huge leftover *outside* it (a stray settings
+        # key, a stack port) rode through every mutate() and PUT /api/settings,
+        # PUT /api/identity, alias/notify saves all 503'd until services.yaml
+        # was hand-edited.  Retry once with only the unrenderable nodes
+        # dropped -- the value cannot be persisted either way; losing the rest
+        # of the save with it bought nothing.
+        try:
+            return yaml.safe_dump(
+                _renderable_tree(data),
+                allow_unicode=True,
+                sort_keys=False,
+                width=120,
+                default_flow_style=False,
+            )
+        except (ValueError, RecursionError, yaml.YAMLError):
+            raise api_error("settings.save_failed")
 
 
 def save_full(data: dict) -> None:
