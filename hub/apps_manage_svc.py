@@ -1141,7 +1141,12 @@ def _launchd_logs(label: str, lines: int = 120) -> dict:
             p = Path(str(logp)).expanduser()
         except (OSError, ValueError, TypeError, RuntimeError):
             # RuntimeError: leftover HOME unset on ``~/Library/Logs/…``.
-            chunks.append(f"===== {logp!s} =====\n(invalid path)")
+            # _as_text, not ``{logp!s}``: an over-cap plist ``<integer>``
+            # (hex spelling dodges the int(str) parse cap) lands here via
+            # the digit-cap ValueError, and formatting it again raised the
+            # same ValueError *inside* the handler — 500ing
+            # GET /api/apps/managed/logs instead of reporting the bad path.
+            chunks.append(f"===== {_as_text(logp) or '(unprintable)'} =====\n(invalid path)")
             continue
         if not _is_file(p):
             chunks.append(f"===== {p} =====\n(missing)")
