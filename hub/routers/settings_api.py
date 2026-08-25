@@ -142,12 +142,20 @@ def _jsonable(value, depth: int = 0):
     theme, and a ``!!set`` groups_order each used to 500 GET /api/settings.
     A leftover ``\\ud800`` username or stack name still 500'd the same
     encoder (``ensure_ascii=False`` then UTF-8).
+    A >4300-digit stack port / groups entry still passed through untouched:
+    CPython's int->str digit limit then ValueError'd ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -194,6 +202,12 @@ def _finite(value, default):
     if isinstance(value, bool) or value is None:
         return default
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # A >4300-digit leftover interval is unrenderable by json.dumps
+            # (CPython's int->str digit cap) — fall back like inf.
+            return default
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -208,6 +222,11 @@ def _epoch(value, default: int = 0) -> int:
     if isinstance(value, bool) or value is None:
         return default
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # A >4300-digit epoch cannot be JSON-encoded (int->str digit cap).
+            return default
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):

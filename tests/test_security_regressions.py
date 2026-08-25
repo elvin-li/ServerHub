@@ -904,7 +904,10 @@ class ContentSecurityPolicyTests(unittest.TestCase):
                 # because the same secret is already in the manual-entry field.
                 'views/Account.vue: <div class="twofa-qr" aria-hidden="true" '
                 'v-html="enrollment.qrSvg"></div>',
-                'views/Settings.vue: <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>',
+                # Same enrollment QR on the admin Settings panel tab; same
+                # AT treatment, the manual-entry secret sits below it.
+                'views/Settings.vue: <div class="twofa-qr" aria-hidden="true" '
+                'v-html="twofaEnroll.qrSvg"></div>',
                 # Same AT treatment as Account: the peer config is in the <pre>.
                 'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" '
                 'aria-hidden="true" v-html="qrSvg"></div>',

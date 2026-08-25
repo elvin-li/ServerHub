@@ -3680,6 +3680,10 @@ describe('Users and Account leftover a11y', () => {
     // A duplicate of the manual-entry secret; an anonymous graphic otherwise
     // (same as the WireGuard peer QR).
     expect(account).toMatch(/class="twofa-qr" aria-hidden="true"/)
+    // The identical enrollment QR on the Settings panel tab gets the same
+    // treatment; its manual-entry secret also sits right below.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(settings).toMatch(/class="twofa-qr" aria-hidden="true"/)
     // The Update button disables with no spoken reason; the hint carries it.
     expect(account).toMatch(/:class="\{ bad: !!passwordMessage \}" role="status"/)
     // The 2FA card's pending state is a status region, like the Settings

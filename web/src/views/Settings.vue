@@ -277,7 +277,11 @@
             </div>
             <div v-else>
               <p class="hint">{{ t('twofa.enroll_hint') }}</p>
-              <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>
+              <!-- aria-hidden: the QR encodes the same secret shown in the
+                   "Manual entry secret" below, so for a screen reader it is a
+                   duplicate with no name, announced as an anonymous graphic
+                   (same as the Account and WireGuard QRs). -->
+              <div class="twofa-qr" aria-hidden="true" v-html="twofaEnroll.qrSvg"></div>
               <div class="form-grid" style="margin-top:8px">
                 <label>{{ t('twofa.manual_secret') }}</label>
                 <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(twofaEnroll.manual_entry) }}</code>
