@@ -244,6 +244,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -396,7 +402,11 @@ def history(minutes: int = 60) -> list:
                     continue
                 try:
                     o = safe_json_loads(line)
-                except (json.JSONDecodeError, RecursionError):
+                except (ValueError, RecursionError):
+                    # ValueError, not just JSONDecodeError: a leftover
+                    # >4300-digit number raises CPython's str->int digit-cap
+                    # ValueError out of json.loads, which used to 500
+                    # GET /api/metrics on that line.
                     continue
                 t = sample_ts(o.get("t") if isinstance(o, dict) else None)
                 if t is not None and t >= cutoff:
@@ -411,7 +421,7 @@ def history(minutes: int = 60) -> list:
         for line in _write_buf:
             try:
                 o = safe_json_loads(line)
-            except (json.JSONDecodeError, RecursionError):
+            except (ValueError, RecursionError):
                 continue
             t = sample_ts(o.get("t") if isinstance(o, dict) else None)
             if t is not None and t >= cutoff:

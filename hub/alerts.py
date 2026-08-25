@@ -190,7 +190,15 @@ def _jsonable_alert(value, depth: int = 0):
         return [_jsonable_alert(v, depth + 1) for v in value]
     if isinstance(value, str):
         return _utf8_text(value)
-    if isinstance(value, (int, bool)) or value is None:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
@@ -225,7 +233,10 @@ def list_alerts(limit: int = 50) -> list:
     for ln in lines:
         try:
             parsed = safe_json_loads(ln)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
+            # ValueError, not just JSONDecodeError: a leftover >4300-digit
+            # number raises CPython's str->int digit-cap ValueError out of
+            # json.loads, which used to 500 GET /api/alerts on that line.
             continue
         if isinstance(parsed, dict):
             row = _jsonable_alert(parsed)

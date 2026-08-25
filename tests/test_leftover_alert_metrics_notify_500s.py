@@ -12,6 +12,13 @@ onto disk from PUT /api/alerts/channels (and 500 under allow_nan=False).
 
 Follow-up 3: a leftover directory occupying notify-credentials.json used to
 IsADirectoryError PUT /api/alerts/channels.
+
+Follow-up 4: CPython's 4300-digit str<->int cap.  ``json.loads`` of a leftover
+>4300-digit number raises the digit-cap *ValueError* (not JSONDecodeError),
+which used to 500 GET /api/alerts, GET /api/metrics and GET /api/metrics?range=
+past the ``(json.JSONDecodeError, RecursionError)`` guards; and an over-cap
+``int`` passed the sanitizers untouched, so Starlette's ``json.dumps`` itself
+raised out of POST /api/alerts/check and GET /api/alerts/channels.
 """
 from __future__ import annotations
 
@@ -25,6 +32,11 @@ from unittest import mock
 
 from hub import alerts, metrics, metrics_rollup, notify_channels
 from hub.routers import settings_api
+
+#: Past CPython's default 4300-digit str<->int conversion limit.
+_HUGE_DIGITS = "9" * 5000
+#: The same class as an already-parsed int (5001 digits).
+_HUGE_INT = 10 ** 5000
 
 
 def _json(payload) -> None:
@@ -98,6 +110,18 @@ class NotifyPublicChannelLeftoverTests(unittest.TestCase):
         _starlette(out)
         self.assertTrue(out["config"].get("to"))
         self.assertNotIn("\ud800", json.dumps(out))
+
+    def test_leftover_over_cap_port_does_not_500(self):
+        """A >4300-digit ``port`` is unrenderable: CPython's int->str digit
+        cap makes ``json.dumps`` itself ValueError; GET /api/alerts/channels
+        used to 500 on it."""
+        out = self._view({
+            "id": "mail", "type": "email",
+            "host": "smtp.example.com", "to": "a@b.com",
+            "port": _HUGE_INT,
+        })
+        _json(out)
+        self.assertIsNone(out["config"].get("port"))
 
 
 class AlertsCheckOnceLeftoverTests(unittest.TestCase):
@@ -207,6 +231,29 @@ class AlertsCheckOnceLeftoverTests(unittest.TestCase):
         self.assertEqual(emitted[3], ["alerts"])
         self.assertIsNone(emitted[4]["ok"])
 
+    def test_leftover_over_cap_helper_int_does_not_500(self):
+        """A helper returning a >4300-digit int used to 500 POST
+        /api/alerts/check: the sanitizer passed it through and Starlette's
+        ``json.dumps`` raised the digit-cap ValueError itself."""
+        with (
+            mock.patch.object(alerts, "full_status", return_value={"groups": []}),
+            mock.patch.object(alerts, "_load_state", return_value={}),
+            mock.patch.object(alerts, "notify_settings", return_value={"enabled": False}),
+            mock.patch.object(alerts, "_check_resource_thresholds", return_value=[
+                {"id": "r", "n": _HUGE_INT}, _HUGE_INT,
+            ]),
+            mock.patch.object(alerts, "_check_smart_health", return_value=[]),
+            mock.patch.object(alerts, "_check_ups", return_value=[]),
+            mock.patch("hub.ups_policy.sweep", return_value=[]),
+            mock.patch("hub.freshness_svc.check_freshness", return_value=[]),
+            mock.patch("hub.stale_runtime.remediate", return_value=[]),
+        ):
+            emitted = alerts.check_once()
+        _starlette({"emitted": emitted})
+        self.assertIsNone(emitted[0]["n"])
+        self.assertEqual(emitted[0]["id"], "r")
+        self.assertIsNone(emitted[1])
+
 
 class AlertsListLeftoverTests(unittest.TestCase):
     def test_leftover_surrogate_field_and_key_do_not_500(self):
@@ -254,6 +301,20 @@ class AlertsListLeftoverTests(unittest.TestCase):
         ]
         self.assertIsNone(rows[0]["t"])
         self.assertIsNone(rows[1]["t"])
+
+    def test_over_cap_digit_alert_line_does_not_500(self):
+        """``json.loads`` of a >4300-digit number is the digit-cap ValueError,
+        not JSONDecodeError; GET /api/alerts used to 500 on the leftover line."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "alerts.jsonl"
+        good = json.dumps({"t": 1, "id": "a", "name": "disk"})
+        path.write_text('{"t": 1, "id": "bad", "n": ' + _HUGE_DIGITS + "}\n" + good + "\n")
+        with mock.patch.object(alerts, "ALERTS_FILE", path):
+            rows = alerts.list_alerts(50)
+        _starlette(rows)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], "a")
 
     def test_deeply_nested_alert_line_does_not_500(self):
         """``json.loads`` RecursionError is not ValueError; GET /api/alerts used to 500."""
@@ -347,6 +408,70 @@ class MetricsHugeIntLeftoverTests(unittest.TestCase):
         _starlette(rows)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["cpu_used_pct"], 1.0)
+
+    def test_over_cap_digit_history_line_does_not_500(self):
+        """``json.loads`` digit-cap ValueError is not JSONDecodeError;
+        GET /api/metrics used to 500 on the leftover line."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "metrics.jsonl"
+        now = int(time.time())
+        good = json.dumps({"t": now - 30, "cpu_used_pct": 1.0})
+        path.write_text(
+            '{"t": ' + str(now - 30) + ', "n": ' + _HUGE_DIGITS + "}\n" + good + "\n"
+        )
+        with mock.patch.object(metrics, "METRICS_FILE", path), mock.patch.object(
+            metrics, "_write_buf", ['{"t": ' + str(now - 20) + ', "n": ' + _HUGE_DIGITS + "}\n"],
+        ):
+            rows = metrics.history(60)
+        _starlette(rows)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cpu_used_pct"], 1.0)
+
+    def test_over_cap_digit_rollup_lines_do_not_500(self):
+        """A >4300-digit head/tail line used to raise the digit-cap ValueError
+        out of ``_rows_since`` / ``_first_row_ts`` / ``_last_row_ts`` and 500
+        GET /api/metrics?range= (and abort the rollup pass)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "metrics-5m.jsonl"
+        huge = '{"t": 1700000000, "n": ' + _HUGE_DIGITS + "}"
+        good = json.dumps({"t": 1_700_000_000, "n": 5, "cpu_used_pct": 1.0})
+        path.write_text(huge + "\n" + good + "\n" + huge + "\n")
+        rows = metrics_rollup._rows_since(path, 1_700_000_000 - 10)
+        _starlette(rows)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["n"], 5)
+        self.assertEqual(metrics_rollup._first_row_ts(path), 1_700_000_000)
+        self.assertEqual(metrics_rollup._last_row_ts(path), 1_700_000_000)
+
+    def test_metrics_range_router_over_cap_head_line_does_not_500(self):
+        """GET /api/metrics?range= probes file heads to pick the tier; a
+        leftover >4300-digit first line used to 500 the route there."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        now = int(time.time())
+        huge = '{"t": ' + str(now - 60) + ', "n": ' + _HUGE_DIGITS + "}"
+        good = json.dumps({"t": now - 30, "cpu_used_pct": 1.0})
+        (root / "metrics.jsonl").write_text(huge + "\n" + good + "\n")
+        with (
+            mock.patch.object(metrics, "METRICS_FILE", root / "metrics.jsonl"),
+            mock.patch.object(metrics, "_write_buf", []),
+            mock.patch.object(metrics_rollup, "FILE_5M", root / "5m.jsonl"),
+            mock.patch.object(metrics_rollup, "FILE_1H", root / "1h.jsonl"),
+            mock.patch.object(metrics_rollup, "STATE_FILE", root / "state.json"),
+        ):
+            out = settings_api.get_metrics(range_="1h")
+        _starlette(out)
+        self.assertIn("points", out)
+        self.assertEqual(len(out["points"]), 1)
+
+    def test_parse_range_over_cap_digits_are_rejected_not_500(self):
+        """The router turns parse_range's ValueError into metrics.bad_range;
+        pin that the digit-cap raise stays a ValueError, not a 500."""
+        with self.assertRaises(ValueError):
+            metrics_rollup.parse_range(_HUGE_DIGITS + "h")
 
     def test_rollup_row_leftover_surrogate_does_not_500(self):
         """Leftover ``\\ud800`` in metrics-5m.jsonl used to 500 GET /api/metrics?range=."""
@@ -480,6 +605,27 @@ class MetricsHugeIntLeftoverTests(unittest.TestCase):
         path.write_text(
             json.dumps({"t": old, "n": 1}) + "\n"
             + '{"k":' * 12000 + "1" + "}" * 12000 + "\n"
+            + json.dumps({"t": keep, "n": 2}) + "\n"
+        )
+        with mock.patch.object(metrics_rollup, "_last_trim", {"5m": 0.0, "1h": 0.0}):
+            metrics_rollup._maybe_trim_locked("5m", path, now=now)
+        rows = [
+            json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()
+        ]
+        self.assertEqual([r["n"] for r in rows], [2])
+
+    def test_over_cap_digit_rollup_trim_line_does_not_raise(self):
+        """A leftover >4300-digit aggregate line used to raise the digit-cap
+        ValueError out of the trim and abort it."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "5m.jsonl"
+        now = 1_800_000_000
+        old = now - metrics_rollup.RETAIN_5M - metrics_rollup._TRIM_SLACK["5m"] - 10
+        keep = now - 60
+        path.write_text(
+            json.dumps({"t": old, "n": 1}) + "\n"
+            + '{"t": ' + str(keep) + ', "n": ' + _HUGE_DIGITS + "}\n"
             + json.dumps({"t": keep, "n": 2}) + "\n"
         )
         with mock.patch.object(metrics_rollup, "_last_trim", {"5m": 0.0, "1h": 0.0}):
@@ -748,6 +894,21 @@ class AlertsMetricsNotifyJsonableLeftoverTests(unittest.TestCase):
             self.assertEqual(out["blob"], "ok")
             self.assertEqual(out["tags"], ["cpu"])
             self.assertIsNone(out["n"])
+
+    def test_over_cap_int_is_dropped_not_500(self):
+        """A >4300-digit int passed the sanitizers untouched, and Starlette's
+        ``json.dumps`` then raised CPython's int->str digit-cap ValueError."""
+        for fn in (
+            alerts._jsonable_alert, metrics._jsonable,
+            metrics_rollup._jsonable, notify_channels._json_safe,
+        ):
+            self.assertIsNone(fn(_HUGE_INT))
+            out = fn({"n": _HUGE_INT, "ok": 7, "f": 1.5, "b": True})
+            _starlette(out)
+            self.assertIsNone(out["n"])
+            self.assertEqual(out["ok"], 7)
+            self.assertEqual(out["f"], 1.5)
+            self.assertIs(out["b"], True)
 
 
 if __name__ == "__main__":
