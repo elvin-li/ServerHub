@@ -1,5 +1,19 @@
 export default {
   brand: 'ServerHub',
+  menubar: {
+    open_panel: 'ServerHub パネルを開く',
+    needs_attention: '⚠️ 要確認（{n}）',
+    summary: '{ok} 正常 · {warnings} 警告 · {down} 障害 · {stopped} 停止',
+    view_logs: '📄 ログを見る',
+    restart: '🔄 再起動',
+    confirm_restart: '{name} を再起動しますか？サービスは一時的に中断します。',
+    start_at_login: 'ログイン時に起動',
+    start_panel: 'ServerHub を起動',
+    stop_panel: 'ServerHub を停止',
+    restart_panel: 'ServerHub を再起動',
+    open_logs_folder: 'ログフォルダを開く',
+    quit: 'メニューバーアプリを終了',
+  },
   lang: {
     zhCN: '简体中文',
     en: 'English',

@@ -1,5 +1,19 @@
 export default {
   brand: 'ServerHub',
+  menubar: {
+    open_panel: 'Open ServerHub Panel',
+    needs_attention: '⚠️ Needs Attention ({n})',
+    summary: '{ok} OK · {warnings} warnings · {down} down · {stopped} stopped',
+    view_logs: '📄 View Logs',
+    restart: '🔄 Restart',
+    confirm_restart: 'Restart {name}? The service will be briefly unavailable.',
+    start_at_login: 'Start at Login',
+    start_panel: 'Start ServerHub',
+    stop_panel: 'Stop ServerHub',
+    restart_panel: 'Restart ServerHub',
+    open_logs_folder: 'Open Logs Folder',
+    quit: 'Quit Menu Bar App',
+  },
   lang: {
     zhCN: '简体中文',
     en: 'English',
