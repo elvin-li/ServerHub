@@ -197,12 +197,28 @@ def normalize_locale(raw: str | None) -> str:
 
 def _title(panel: dict, locale: str) -> str:
     titles = panel.get("title") if isinstance(panel.get("title"), dict) else {}
-    return str(titles.get(locale) or titles.get("en") or panel.get("id") or "")
+    # _utf8_text with fallthrough, not one bare str(): an over-cap already-int
+    # title (>4300 digits — the int->str digit cap) used to ValueError out of
+    # catalog()/match_panels()/resolve_path(), which wiped the whole Cmd+K
+    # catalog to [] and silently degraded find/page turns to the generic brief.
+    for candidate in (titles.get(locale), titles.get("en"), panel.get("id")):
+        if not candidate:
+            continue
+        text = _utf8_text(candidate)
+        if text:
+            return text
+    return ""
 
 
 def _blurb(panel_id: str, locale: str) -> str:
     row = _BLURBS.get(panel_id) or {}
-    return str(row.get(locale) or row.get("en") or "")
+    for candidate in (row.get(locale), row.get("en")):
+        if not candidate:
+            continue
+        text = _utf8_text(candidate)
+        if text:
+            return text
+    return ""
 
 
 def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
@@ -260,7 +276,13 @@ def catalog(locale: str | None = None) -> list[dict]:
             "title": _title(panel, loc),
             # ``a is not None``: the parse_int hook maps an over-cap number
             # literal to None; a "None" alias must not start matching queries.
-            "aliases": [str(a) for a in aliases if a is not None],
+            # _utf8_text, not bare str(): an over-cap *already-int* alias used
+            # to ValueError here and wipe the whole catalog to [] — drop just
+            # the unrenderable alias, like its inf float sibling.
+            "aliases": [
+                text for a in aliases
+                if a is not None and (text := _utf8_text(a))
+            ],
         })
     return out
 
@@ -271,8 +293,11 @@ def _score_panel(panel: dict, needle: str, locale: str) -> int:
     title = _title(panel, locale).lower()
     path = str(panel.get("path") or "").lower()
     raw_aliases = panel.get("aliases")
+    # _utf8_text, not bare str(): an over-cap already-int alias used to
+    # ValueError out of match_panels() and turn every find into the brief.
     aliases = [
-        str(a).lower() for a in raw_aliases if a is not None
+        text.lower() for a in raw_aliases
+        if a is not None and (text := _utf8_text(a))
     ] if isinstance(raw_aliases, list) else []
     if needle == title or needle == str(panel.get("id") or "") or needle == path.lstrip("/"):
         return 100
@@ -571,12 +596,16 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
         return {}
     if not isinstance(result, dict):
         return {}
-    text = str(result.get("content") or "").strip() or str(result.get("thinking") or "").strip()
+    # _utf8_text, not bare str(): bytes content used to answer its Python
+    # repr (``b'...'``), and an over-cap already-int used to ValueError
+    # *outside* the try above — the whole turn then fell to the router's
+    # rebuilt fallback, losing the page context this call already had.
+    text = _utf8_text(result.get("content") or "").strip() or _utf8_text(result.get("thinking") or "").strip()
     if not text:
         return {}
     return {
         "text": text,
-        "thinking": str(result.get("thinking") or ""),
+        "thinking": _utf8_text(result.get("thinking") or ""),
         "model": result.get("model") or model,
         "duration_s": _jsonable(result.get("duration_s")),
     }
