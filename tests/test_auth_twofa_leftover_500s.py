@@ -786,14 +786,20 @@ class DigitCapLeftoverCfgTests(unittest.TestCase):
         self.assertEqual(dumped["accounts"], [])
         self.assertEqual(dumped["session_epochs"], {"kid": 1})
 
-    def test_unrenderable_config_dump_is_coded_not_500(self):
-        """A huge int anywhere else in the config degrades to a coded error."""
+    def test_unrenderable_config_dump_drops_only_the_poison(self):
+        """A huge int anywhere else in the config no longer wedges the save.
+
+        This used to pin a coded 503, which left every settings save stuck
+        for good when the leftover sat outside the auth block.  ``_dump``
+        now retries with only the unrenderable node dropped — the value
+        could never be persisted either way — so the rest of the save lands.
+        """
         from hub import config as hub_config
 
-        with self.assertRaises(HTTPException) as ctx:
-            hub_config._dump({"overrides": {"x": HUGE_INT}})
-        _starlette_json(ctx.exception.detail)
-        self.assertEqual(ctx.exception.detail["code"], "settings.save_failed")
+        text = hub_config._dump({"overrides": {"x": HUGE_INT, "keep": 1}})
+        data = yaml.safe_load(text)
+        self.assertEqual(data["overrides"]["keep"], 1)
+        self.assertNotIn("x", data["overrides"])
 
 
 _Pw = namedtuple("Pw", "pw_name pw_passwd pw_uid pw_gid pw_gecos pw_dir pw_shell")

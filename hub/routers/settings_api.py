@@ -564,7 +564,17 @@ def export_services_yaml():
         ) or {}
         if not isinstance(data, dict):
             raise api_error("system_settings.export_failed")
-        text = yaml.safe_dump(_redact_export(data), allow_unicode=True, sort_keys=False)
+        from hub.config import _renderable_tree
+
+        # An already-parsed over-cap int (YAML hex loads uncapped through
+        # ``int(x, 16)``) fails only the re-dump, after parse and redaction
+        # both succeeded.  Refusing the whole backup for one unrenderable
+        # leftover bought nothing — drop that node like every read sanitizer
+        # does and stream the rest.
+        text = yaml.safe_dump(
+            _renderable_tree(_redact_export(data)),
+            allow_unicode=True, sort_keys=False,
+        )
     except (
         OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
         TypeError, ValueError, AttributeError, KeyError,
