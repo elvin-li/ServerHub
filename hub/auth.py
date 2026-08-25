@@ -55,35 +55,66 @@ def _auth_cfg() -> dict:
     return auth if isinstance(auth, dict) else {}
 
 
-def _renderable(value) -> bool:
-    """False for an int past CPython's int->str digit cap (YAML ``0x…``
-    loads it fine; ``yaml.safe_dump`` then ValueError'd the whole write)."""
-    if isinstance(value, int) and not isinstance(value, bool):
-        try:
-            str(value)
-        except ValueError:
-            return False
-    return True
+def _epoch_key(key) -> str:
+    """A ``session_epochs`` mapping key as the account name it stands for.
+
+    YAML round-trips an all-digit account name (``2024:``) as an *int* key
+    and true/false-ish names as bools, so the strict string ``.get()``
+    missed the row entirely: ``_session_epoch`` read 0 for that account and
+    every pre-logout token kept verifying, ``bump_session_epoch`` wrote a
+    second (string) spelling *below* the real counter, and
+    ``delete_account`` left the stale row behind.  The same ``str()`` probe
+    as :func:`accounts` usernames (``_cfg_text``): an over-cap hex int key
+    reads as "" and is dropped, and a lone-surrogate key is dropped rather
+    than carried into a lookup key nothing can ever match.
+    """
+    text = _cfg_text(key).strip()
+    return text if _utf8_ok(text) else ""
+
+
+def _epoch_count(raw) -> int:
+    """One ``session_epochs`` value as a usable logout counter.
+
+    Bool/None/inf/garbage read as 0.  An int past CPython's int->str digit
+    cap reads as 1, not 0: the account has logged out at least once, so
+    pre-logout tokens (whose version omits the epoch) must stay revoked.
+    """
+    if raw is None or isinstance(raw, bool):
+        return 0
+    try:
+        value = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    try:
+        str(value)
+    except ValueError:
+        return 1
+    return value
 
 
 def _clean_epochs(raw) -> dict:
-    """``session_epochs`` rows that YAML can re-dump.
+    """``session_epochs`` rows that YAML can re-dump, keyed by account name.
 
     A leftover unrenderable-int epoch (or key) rode along untouched in every
     auth write and ValueError'd ``yaml.safe_dump`` inside ``config.mutate`` --
     setup, password changes and the TOTP epoch bump all 500'd on it.
 
-    An unrenderable *value* is pinned to 1, not dropped: ``_session_epoch``
-    reads the leftover as 1, so persisting the same number keeps that
-    account's pre-logout tokens revoked instead of resetting its counter.
+    Keys are normalised through :func:`_epoch_key`, so an int-keyed leftover
+    for a numeric account name folds onto its string spelling; when both
+    spellings exist the *larger* counter wins, so neither copy can quietly
+    un-revoke sessions the other had already revoked.
     """
     if not isinstance(raw, dict):
         return {}
-    out = {}
+    out: dict[str, int] = {}
     for k, v in raw.items():
-        if not _renderable(k):
+        key = _epoch_key(k)
+        if not key:
             continue
-        out[k] = v if _renderable(v) else 1
+        count = _epoch_count(v)
+        if key in out:
+            count = max(count, out[key])
+        out[key] = count
     return out
 
 
@@ -1067,27 +1098,25 @@ def _secret() -> bytes:
 
 def _session_epoch(username: str) -> int:
     """Per-account logout counter.  Bumping it invalidates that account's
-    outstanding tokens without a server-side session store."""
+    outstanding tokens without a server-side session store.
+
+    Matches on the *normalised* key, not ``epochs.get(username)``: a YAML
+    round-trip stores a numeric account name as an int key (``2024: 5``) and
+    the strict string lookup read 0 for it, so logout-everywhere silently
+    stopped revoking that account's tokens.  When both spellings exist the
+    larger counter wins, same rule as :func:`_clean_epochs`.  A leftover
+    hex int past the digit cap reads as 1 via :func:`_epoch_count` — it
+    used to 500 the f-string in ``account_session_version`` on every login
+    and pending-TOTP token.
+    """
     epochs = _auth_cfg().get("session_epochs")
     if not isinstance(epochs, dict):
         return 0
-    try:
-        raw = epochs.get(username)
-        if raw is None or isinstance(raw, bool):
-            return 0
-        value = int(raw)
-    except (TypeError, ValueError, OverflowError):
-        return 0
-    try:
-        str(value)
-    except ValueError:
-        # A leftover YAML hex int past CPython's int->str digit cap cannot be
-        # rendered into the signed version; the f-string in
-        # account_session_version used to 500 every login and pending-TOTP
-        # token.  1, not 0: the account has logged out at least once, so
-        # pre-logout tokens (whose version omits the epoch) must stay revoked.
-        return 1
-    return value
+    target = str(username)
+    matches = [
+        _epoch_count(v) for k, v in epochs.items() if _epoch_key(k) == target
+    ]
+    return max(matches) if matches else 0
 
 
 def bump_session_epoch(username: str) -> None:
@@ -1107,21 +1136,18 @@ def bump_session_epoch(username: str) -> None:
         auth = settings.get("auth")
         auth = dict(auth) if isinstance(auth, dict) else {}
         raw_epochs = auth.get("session_epochs")
-        raw = raw_epochs.get(username) if isinstance(raw_epochs, dict) else None
         epochs = _clean_epochs(raw_epochs)
-        try:
-            if raw is None or isinstance(raw, bool):
-                nxt = 1
-            else:
-                nxt = int(raw) + 1
-        except (TypeError, ValueError, OverflowError):
-            nxt = 1
+        # The normalised (str-probed) counter, not raw_epochs.get(username):
+        # an int-keyed leftover for a numeric account name was invisible to
+        # the strict lookup, so the bump wrote a *lower* string-keyed copy
+        # beside it and the revocation the counter recorded was lost.  An
+        # unrenderable leftover reads back as 1 (_epoch_count), so the bump
+        # lands past it — yaml.safe_dump of the huge int used to 500 TOTP
+        # confirm before _clean_epochs pinned it.
+        nxt = epochs.get(str(username), 0) + 1
         try:
             str(nxt)
         except ValueError:
-            # An unrenderable leftover epoch reads back as 1 (_session_epoch),
-            # so the bump must land past it to keep revoking that window --
-            # and yaml.safe_dump of the huge int used to 500 TOTP confirm.
             nxt = 2
         epochs[username] = nxt
         auth["session_epochs"] = epochs

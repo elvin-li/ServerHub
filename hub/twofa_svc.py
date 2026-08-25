@@ -123,11 +123,37 @@ _RECOVERY_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 _RECOVERY_GROUP = 5
 
 
+def _parse_capped_int(text):
+    """``json.loads`` integer hook for :func:`_load`.
+
+    A >4300-digit number literal is valid JSON, but the default ``int(text)``
+    conversion raises CPython's str->int digit-cap ValueError — a *plain*
+    ValueError, not JSONDecodeError — so ``_load``'s corrupt-document fallback
+    read the whole store as ``{}``: every account's 2FA was silently off (the
+    login form stopped asking for a code) and the next ``_save`` rewrote the
+    file without the enrollments, losing them for good.  The one oversized
+    field degrades to ``inf`` — which :func:`_as_int` and :func:`_json_safe`
+    already coerce — and the rest of the document survives.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return float("inf")
+
+
 def _as_int(raw, default: int | None = 0) -> int | None:
     """Parse last_counter / confirmed_at.  JSON ``1e309`` is inf and must not 500."""
     if raw is None or isinstance(raw, bool):
         return default
     if isinstance(raw, int):
+        try:
+            str(raw)
+        except ValueError:
+            # An already-int leftover past the digit cap (plist/YAML hex loads
+            # uncapped) cannot be JSON-encoded; passing it through used to
+            # ValueError json.dumps — GET /api/auth/totp 500'd on confirmed_at
+            # and _save silently dropped the whole write on last_counter.
+            return default
         return raw
     if isinstance(raw, float):
         if raw != raw or raw in (float("inf"), float("-inf")):
@@ -176,6 +202,14 @@ def _json_safe(value, depth: int = 0):
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past the int->str digit cap json.dumps raises the same
+            # ValueError; one leftover field used to cost the entire save
+            # (_save returns early), so a fresh last_counter never landed
+            # and the just-spent code stayed replayable.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -207,7 +241,10 @@ def _persistable_entry(entry: dict) -> dict:
 
 def _load() -> dict[str, dict]:
     try:
-        raw = safe_json_loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
+        raw = safe_json_loads(
+            read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"),
+            parse_int=_parse_capped_int,
+        )
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); the login path reads this.
