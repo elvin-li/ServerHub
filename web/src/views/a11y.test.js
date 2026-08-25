@@ -556,6 +556,59 @@ describe('settings and users surface leftovers', () => {
   })
 })
 
+describe('llm, photos, vpn and health surface leftovers', () => {
+  it('latches the Ollama settings read failure and blocks Save behind it', () => {
+    // Same hole the WireGuard settings dialog had: the form falls back to
+    // literal defaults on a failed read, Save sends every field, so saving on
+    // top of a failure silently wiped a configured LaunchAgent label — and
+    // the old catch produced no toast and no inline text at all. The
+    // behavioural half lives in Ollama.test.js.
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/v-if="!ollamaSettingsLoaded && ollamaSettingsError"[\s\S]{0,120}role="alert"/)
+    expect(ollama).toMatch(/@click="loadOllamaSettings"/)
+    expect(ollama).toMatch(/:disabled="ollamaSaving \|\| !ollamaSettingsLoaded"/)
+    expect(ollama).toMatch(/async function saveOllamaSettings\(\) \{[\s\S]{0,300}if \(!ollamaSettingsLoaded\.value\)/)
+    expect(ollama).toMatch(/ollamaSettingsError\.value = finiteText/)
+  })
+
+  it('names the two Ollama copy buttons after what they copy', () => {
+    // The service card holds two "Copy" buttons side by side copying
+    // different URLs; announced identically, a form-controls listing cannot
+    // tell them apart. The visible "Copy" stays first in the accessible name
+    // (WCAG 2.5.3 label-in-name).
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/:aria-label="t\('ollama\.copy_name', \{ name: t\('ollama\.api'\) \}\)"/)
+    expect(ollama).toMatch(/:aria-label="t\('ollama\.copy_name', \{ name: t\('ollama\.openai_api'\) \}\)"/)
+  })
+
+  it('spells the WireGuard ping outcome, not just its LED colour', () => {
+    // The ping-result rows carried reachability in the LED class alone —
+    // unlike the peers table there is no textual badge, so a screen reader
+    // heard name and IP with nothing saying whether the ping came back. Same
+    // fix as the Network binding-table interface state.
+    const wireguard = readFileSync(resolve(SRC, 'views/WireGuard.vue'), 'utf8')
+    expect(wireguard).toMatch(
+      /class="sr-only">\{\{ r\.reachable \? t\('wg\.reachable'\) : t\('wg\.unreachable'\) \}\}/,
+    )
+  })
+
+  it('announces the PhotosHub action-running note', () => {
+    // The actions run for seconds and disable the toolbar; the note beside
+    // them was paint only, so a screen-reader user heard nothing between the
+    // click and the finish toast. Same shape as the Shares busy note.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/v-if="busy"[^>]*role="status"[^>]*aria-live="polite"/)
+  })
+
+  it('spells the Health overall tile state instead of an emoji alone', () => {
+    // The issues arm was a bare "⚠️" — announced as "warning sign" at best,
+    // with no words and no locale parity with the healthy arm.
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    expect(health).toMatch(/data\.healthy \? '✅ ' \+ t\('common\.healthy'\) : '⚠️ ' \+ t\('common\.issues'\)/)
+    expect(health).not.toMatch(/\{\{ data\.healthy \? '✅ OK' : '⚠️' \}\}/)
+  })
+})
+
 describe('service uninstall UI', () => {
   const src = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
 

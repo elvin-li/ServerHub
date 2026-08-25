@@ -430,7 +430,14 @@
         <table class="dense fit-m">
           <tbody>
             <tr v-for="r in pingResult.results" :key="r.pubkey">
-              <td style="width:28px"><span class="led" :class="r.reachable ? 'on' : 'err'"></span></td>
+              <!-- Spell the per-row outcome, not just the LED colour: unlike
+                   the peers table there is no textual badge here, so a screen
+                   reader heard name and IP with nothing saying whether the
+                   ping came back (same fix as the Network binding table). -->
+              <td style="width:28px">
+                <span class="led" :class="r.reachable ? 'on' : 'err'"></span>
+                <span class="sr-only">{{ r.reachable ? t('wg.reachable') : t('wg.unreachable') }}</span>
+              </td>
               <td>{{ finiteText(r.name, '') || t('wg.unnamed') }}</td>
               <td class="mono">{{ finiteText(r.ip) }}</td>
               <td class="mono">{{ withUnit(r.latency_ms, ' ms') }}</td>

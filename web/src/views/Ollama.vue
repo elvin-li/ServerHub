@@ -47,14 +47,18 @@
             <div class="meta">{{ t('ollama.api') }}</div>
             <div class="mono api-line">
               <span>{{ finiteText(data.url) }}</span>
-              <button class="tiny" type="button" @click="copyText(data.url)">{{ t('common.copy') }}</button>
+              <!-- Two identical "Copy" buttons sit in this card copying
+                   different URLs; a form-controls listing cannot tell them
+                   apart without the field name. The visible "Copy" text stays
+                   first in the name (WCAG 2.5.3). -->
+              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(data.url)">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.openai_api') }}</div>
             <div class="mono api-line">
               <span>{{ finiteText(openaiCompatUrl) }}</span>
-              <button class="tiny" type="button" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
+              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.openai_api') })" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div v-if="data.service?.pid">
@@ -279,6 +283,23 @@
           <h2>{{ t('ollama.settings_title') }}</h2>
           <span class="meta">{{ t('ollama.settings_hint') }}</span>
         </div>
+        <!-- Latched like the WireGuard settings dialog: the form falls back to
+             literal defaults on a failed read, and Save sends every field, so
+             saving on top of a failure silently wiped a configured LaunchAgent
+             label. The old catch was fully silent — no toast, no inline text —
+             and Save stayed enabled. -->
+        <div
+          v-if="!ollamaSettingsLoaded && ollamaSettingsError"
+          class="notice warn"
+          role="alert"
+          data-test="ollama-settings-failed"
+        >
+          {{ t('ollama.settings_load_failed') }}
+          <div class="mono" style="margin-top:4px;font-size:11px">{{ finiteText(ollamaSettingsError) }}</div>
+          <button class="tiny" type="button" style="margin-top:6px" :disabled="ollamaSaving" @click="loadOllamaSettings">
+            {{ t('common.retry') }}
+          </button>
+        </div>
         <div class="settings-grid">
           <label>{{ t('ollama.settings_url') }}</label>
           <input
@@ -295,7 +316,7 @@
           />
         </div>
         <div class="toolbar" style="margin:10px 0 0">
-          <button class="tiny primary" :disabled="ollamaSaving" @click="saveOllamaSettings">
+          <button class="tiny primary" :disabled="ollamaSaving || !ollamaSettingsLoaded" @click="saveOllamaSettings">
             {{ t('common.save') }}
           </button>
         </div>
@@ -399,6 +420,14 @@ const deletePanel = ref(null)
 
 const ollamaForm = ref({ url: 'http://127.0.0.1:11434', label: '' })
 const ollamaSaving = ref(false)
+// Whether ollamaForm reflects the server's real settings. Save is blocked
+// until it does: on a failed read the form holds fallbacks (default URL, empty
+// label), and saveOllamaSettings sends both fields, so saving on top of a
+// failed load silently cleared a configured LaunchAgent label — with a success
+// toast. Latched rather than toasted because a toast is gone by the time the
+// user reaches the Save button.
+const ollamaSettingsLoaded = ref(false)
+const ollamaSettingsError = ref('')
 
 let statusTimer = null
 let actionTimer = null
@@ -493,8 +522,12 @@ async function loadOllamaSettings() {
       url: s.ollama?.url || data.value?.url || 'http://127.0.0.1:11434',
       label: s.ollama?.label || '',
     }
-  } catch {
+    ollamaSettingsLoaded.value = true
+    ollamaSettingsError.value = ''
+  } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
+    ollamaSettingsLoaded.value = false
+    ollamaSettingsError.value = finiteText(e.message || e, '')
     ollamaForm.value = {
       url: data.value?.url || 'http://127.0.0.1:11434',
       label: ollamaForm.value.label || '',
@@ -503,6 +536,12 @@ async function loadOllamaSettings() {
 }
 
 async function saveOllamaSettings() {
+  // Refuse to write when the current settings were never read back: the PUT
+  // below would consist of this form's fallbacks.
+  if (!ollamaSettingsLoaded.value) {
+    toast('❌ ' + t('ollama.settings_load_failed'))
+    return
+  }
   const generation = loadGeneration
   ollamaSaving.value = true
   try {

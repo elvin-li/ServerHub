@@ -24,7 +24,10 @@
         <a v-if="immichHref" class="btn-link" :href="finiteText(immichHref, '')" target="_blank" rel="noopener">Immich</a>
         <a v-if="panelHref" class="btn-link" :href="finiteText(panelHref, '')" target="_blank" rel="noopener">{{ t('photoshub.status_panel') }}</a>
       </template>
-      <span v-if="busy" class="meta">{{ t('photoshub.action_running', { action: actionLabel(busyAction) }) }}</span>
+      <!-- role=status: the actions run for seconds and disable the toolbar;
+           a sighted user watches this note, a screen-reader user otherwise
+           hears nothing until the finish toast (same as the Shares busy note). -->
+      <span v-if="busy" class="meta" role="status" aria-live="polite">{{ t('photoshub.action_running', { action: actionLabel(busyAction) }) }}</span>
     </div>
 
     <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />

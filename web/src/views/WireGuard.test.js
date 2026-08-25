@@ -224,6 +224,27 @@ describe('WireGuard page', () => {
     expect(wrapper.text()).toContain('wg.foreign_peers_title')
   })
 
+  it('spells each ping outcome for screen readers, not just an LED colour', async () => {
+    // Unlike the peers table there is no textual badge in the ping-result
+    // rows: reachability lived in the LED class alone, invisible to AT.
+    const { wrapper } = await mountView({ running: true })
+    api.pingWireguardPeers.mockResolvedValue({
+      reachable: 1,
+      total: 2,
+      results: [
+        { pubkey: 'A=', name: 'phone', ip: '10.10.0.2', reachable: true, latency_ms: 12 },
+        { pubkey: 'B=', name: 'laptop', ip: '10.10.0.3', reachable: false, latency_ms: null },
+      ],
+    })
+    const pingBtn = wrapper.findAll('button').find((b) => b.text() === 'wg.ping')
+    await pingBtn.trigger('click')
+    await flushPromises()
+
+    const spelled = wrapper.findAll('.sr-only').map((s) => s.text())
+    expect(spelled).toContain('wg.reachable')
+    expect(spelled).toContain('wg.unreachable')
+  })
+
   it('creates a peer and shows its config', async () => {
     const { wrapper } = await mountView()
     api.addWireguardPeer.mockResolvedValue({

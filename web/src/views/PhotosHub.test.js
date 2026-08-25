@@ -274,6 +274,29 @@ describe('PhotosHub page', () => {
     wrap.unmount()
   })
 
+  it('announces a running action through a live status note', async () => {
+    // The note was paint only: the actions run for seconds and disable the
+    // toolbar, and a screen-reader user heard nothing until the finish toast.
+    getPhotosHubStatus.mockResolvedValue(INSTALLED)
+    const { postPhotosHubAction } = await import('../api/client')
+    let finish
+    postPhotosHubAction.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.findAll('button').find((b) => b.text() === 'photoshub.act_sync').trigger('click')
+    const note = wrapper.find('.toolbar [role="status"]')
+    expect(note.exists(), 'busy note is a live region').toBe(true)
+    expect(note.attributes('aria-live')).toBe('polite')
+    expect(note.text()).toContain('photoshub.act_sync')
+
+    finish({ action: 'sync', ok: true, status_after: INSTALLED })
+    await flushPromises()
+    expect(wrapper.find('.toolbar [role="status"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('does not toast a settings save that finishes after leave', async () => {
     getPhotosHubStatus.mockResolvedValue(INSTALLED)
     getPhotosHubConfig.mockResolvedValue(CONFIG)
