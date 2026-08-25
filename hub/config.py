@@ -120,6 +120,50 @@ _LIST_KEYS = (
 )
 
 
+class _CappedIntSafeLoader(yaml.SafeLoader):
+    """SafeLoader whose int constructor survives CPython's digit cap."""
+
+
+def _construct_yaml_int_capped(loader, node):
+    try:
+        return loader.construct_yaml_int(node)
+    except ValueError:
+        # Past CPython's 4300-digit int(str) cap the scalar can neither
+        # become an int nor ever be re-rendered; load it as None — the same
+        # drop docker_cli.parse_int_capped applies to JSON journals — so one
+        # poisoned scalar no longer costs the document it sits in.
+        return None
+
+
+_CappedIntSafeLoader.add_constructor(
+    "tag:yaml.org,2002:int", _construct_yaml_int_capped,
+)
+
+
+def load_yaml_int_capped(text):
+    """``yaml.safe_load`` that survives a >4300-digit decimal int scalar.
+
+    PyYAML builds decimal ints with ``int(str)``, so one over-cap scalar
+    raises *bare ValueError* — not YAMLError — out of ``safe_load``.  The
+    corrupt-document fallback in :func:`_read_disk` then answered ``{}``
+    for the WHOLE config: the admin account read as "setup required", and
+    the next :func:`mutate` (PUT /api/settings, a notify/override save)
+    rewrote services.yaml from that ``{}`` — persisting the wipe of every
+    sibling key.  Retry with a loader whose int constructor drops the
+    unrenderable scalar to None; everything genuinely unparseable
+    (``!!timestamp .inf``, ``2026-13-01``, ``!!bool 2``, 12k-deep nests)
+    still raises to the caller's existing fallback.
+    """
+    try:
+        return yaml.safe_load(text)
+    except ValueError as exc:
+        if isinstance(exc, UnicodeDecodeError):
+            raise
+        # May re-raise ValueError for non-digit-cap corruption (a bad
+        # ``2026-13-01`` date): the caller's corrupt-document path applies.
+        return yaml.load(text, Loader=_CappedIntSafeLoader)
+
+
 def _as_config(data) -> dict:
     """YAML that is not a mapping cannot answer ``.get`` and 500s every route."""
     if not isinstance(data, dict):
@@ -152,7 +196,9 @@ def _read_disk() -> dict:
     now, not onto a snapshot this process may have taken minutes ago.
     """
     try:
-        return _as_config(yaml.safe_load(read_text_capped(YAML_PATH, _YAML_CAP)) or {})
+        return _as_config(
+            load_yaml_int_capped(read_text_capped(YAML_PATH, _YAML_CAP)) or {}
+        )
     except (
         OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
         TypeError, ValueError, AttributeError, KeyError,
@@ -161,8 +207,10 @@ def _read_disk() -> dict:
         # torn write after power loss used to raise out of mutate()/cfg() and
         # 500 every route that touches settings.  RecursionError is leftover
         # deeply nested YAML — not YAMLError.  TypeError/ValueError/AttributeError
-        # /KeyError: leftover ``!!timestamp .inf``, ``2026-13-01``, a 5000-digit
-        # int, or ``!!bool 2`` are not YAMLError.
+        # /KeyError: leftover ``!!timestamp .inf``, ``2026-13-01`` or ``!!bool 2``
+        # are not YAMLError.  A >4300-digit decimal int no longer lands here:
+        # load_yaml_int_capped drops that one scalar so a mutate() on this
+        # snapshot cannot wipe every sibling key from services.yaml.
         return {}
 
 
@@ -255,7 +303,9 @@ def cfg():
             return _cfg["data"]
         if m != _cfg["mtime"]:
             try:
-                data = _as_config(yaml.safe_load(read_text_capped(p, _YAML_CAP)) or {})
+                data = _as_config(
+                    load_yaml_int_capped(read_text_capped(p, _YAML_CAP)) or {}
+                )
             except (
                 OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
                 TypeError, ValueError, AttributeError, KeyError,
