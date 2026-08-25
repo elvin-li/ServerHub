@@ -15,6 +15,8 @@ import threading
 import time
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from hub import secure_io
 from hub.config import cfg
 from hub.errors import CODES, api_error
@@ -270,6 +272,20 @@ def _discard(dest: Path) -> None:
         dest.unlink()
     except OSError:
         pass
+
+
+def _cli_vanished(rc, text) -> bool:
+    """Whether a ``run_capped`` result means the job's own binary is gone.
+
+    ``run_capped`` reports a FileNotFoundError spawn as ``(-1, "not found")``
+    — a sentinel, never a real CLI exit (the vms_svc._cli_missing /
+    brew_svc convention).  A binary that vanished between a job's up-front
+    probe (or its install) and the spawn used to fall through as an uncoded
+    ``{ok: false, message: "not found"}`` the SPA cannot translate.  A
+    timeout keeps its own shape and a genuine non-zero exit keeps its raw
+    output — that message is then the truth.
+    """
+    return rc == -1 and _as_text(text).strip() == "not found"
 
 
 # ── configurable backup targets (services.yaml `backups:`) ───────────────────
@@ -885,16 +901,26 @@ def backup_immich() -> dict:
         return _backup_immich()
 
 
+def _immich_unavailable() -> dict:
+    """The coded refusal the up-front availability gate gives.
+
+    Shared with the vanished-binary path below, so a script that disappears
+    between the ``immich_backup_info()`` probe and the spawn answers exactly
+    like one that was never there.
+    """
+    return {
+        "ok": False,
+        "error": "not_configured",
+        "message": "Immich backup is not available "
+                   "(need ~/Services/immich/backup-db.sh or "
+                   "postgresql@18 plus db.env)",
+    }
+
+
 def _backup_immich() -> dict:
     info = immich_backup_info()
     if not info["available"]:
-        return {
-            "ok": False,
-            "error": "not_configured",
-            "message": "Immich backup is not available "
-                       "(need ~/Services/immich/backup-db.sh or "
-                       "postgresql@18 plus db.env)",
-        }
+        return _immich_unavailable()
     if info["via"] == "script":
         return _backup_immich_script()
     return _backup_immich_native()
@@ -917,6 +943,12 @@ def _backup_immich_script() -> dict:
     except Exception as exc:
         # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 POST /api/backups.
         return {"ok": False, "message": _as_text(exc)[:500]}
+    if _cli_vanished(rc, text):
+        # immich_backup_info() said "script", but it vanished between that
+        # probe and this spawn.  Answer with the same coded refusal the
+        # up-front gate gives instead of the bare "not found" sentinel
+        # run_capped leaves in message.
+        return _immich_unavailable()
     latest = _immich_latest()
     created = latest and latest["name"] not in before
     ok = rc == 0 and bool(created)
@@ -982,10 +1014,22 @@ def _backup_immich_native() -> dict:
     expired = threading.Event()
     try:
         with tempfile.TemporaryFile() as errfile:
-            dump = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=errfile, env=utf8_env(env),
-                start_new_session=True,
-            )
+            try:
+                dump = subprocess.Popen(
+                    argv, stdout=subprocess.PIPE, stderr=errfile, env=utf8_env(env),
+                    start_new_session=True,
+                )
+            except FileNotFoundError:
+                # pg18 vanished between the _pg18_dump() probe and this spawn
+                # (a brew uninstall mid-request, a dying mount).  Answer with
+                # the same message the up-front probe gives instead of an
+                # uncoded "[Errno 2] ..." the SPA cannot translate.  Only the
+                # missing-binary spawn classifies: a PermissionError or any
+                # other OSError keeps the raw message below — that is then
+                # the truth.
+                _discard(dest)
+                return {"ok": False,
+                        "message": "postgresql@18 pg_dump is not installed"}
 
             def _expire() -> None:
                 """Enforce the deadline from outside the read.
@@ -1106,6 +1150,12 @@ def _dump_one_postgres(target: dict) -> dict:
     try:
         rc, text = run_capped(cmd, timeout=600, env=_pg_env(target))
         text = _as_text(text)
+        if _cli_vanished(rc, text):
+            # pg_dump itself could not be spawned — never installed, or
+            # uninstalled while this ran.  The coded 503 instead of the
+            # two-word "not found" the sentinel leaves in message.
+            _discard(dest)
+            raise api_error("backup.tool_missing", tool="pg_dump")
         # Size, not existence: the destination was pre-created 0600 so pg_dump
         # could not publish it, which means it exists even when the dump failed.
         size = _written_bytes(dest)
@@ -1120,6 +1170,10 @@ def _dump_one_postgres(target: dict) -> dict:
             "message": (text or f"exit {rc}")[:500],
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
+    except HTTPException:
+        # The coded refusal above must reach the route, not be flattened
+        # into an uncoded ok:false by the broad catch below.
+        raise
     except RecursionError:
         _discard(dest)
         return {"ok": False, "message": "dump failed"}
@@ -1247,6 +1301,20 @@ def _engine_up(force: bool = False) -> bool:
 def _looks_engine_down(text) -> bool:
     from hub.docker_cli import looks_engine_down
     return looks_engine_down(text)
+
+
+def _docker_vanished(text) -> bool:
+    """True when a stack-backup docker step's failure text is run_capped's
+    FileNotFoundError sentinel: the docker CLI itself could not be spawned
+    (vanished between the entry engine probe and this exec).
+
+    Purely a message-pattern gate like :func:`_looks_engine_down` — callers
+    must still confirm with a forced ``_engine_up`` probe, which cannot
+    answer "up" while the CLI is gone, so a step whose real output happens
+    to read "not found" while the engine answers "up" keeps its original
+    failure mapping.
+    """
+    return _as_text(text).strip() == "not found"
 
 
 def _find_stack(stack_id: str) -> dict | None:
@@ -1476,9 +1544,15 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
     if mounts_err:
         # The _engine_up() gate above trusts a 5s memo, so an engine that dies
         # inside the TTL still reaches `compose config` — classify with a
-        # forced probe instead of blaming the compose file.  A failure while
-        # the engine answers "up" keeps compose_config_failed and its message.
-        if _looks_engine_down(mounts_err) and not _engine_up(force=True):
+        # forced probe instead of blaming the compose file.  A docker CLI
+        # that vanished in the same window is the same operator-facing state
+        # (docker is unreachable) and takes the same coded path.  A failure
+        # while the engine answers "up" keeps compose_config_failed and its
+        # message.
+        if (
+            (_looks_engine_down(mounts_err) or _docker_vanished(mounts_err))
+            and not _engine_up(force=True)
+        ):
             log.append("!! the Docker engine is not running")
             return {"ok": False, "error": "engine_down",
                     "message": "the Docker engine is not running"}
@@ -1528,9 +1602,14 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
             )
             if rc != 0:
                 text = (err or out).strip()
-                if _looks_engine_down(text) and not _engine_up(force=True):
-                    # The engine died mid-job: the coded state, not the raw
-                    # daemon stderr, is what the scheduler log should carry.
+                if (
+                    (_looks_engine_down(text) or _docker_vanished(text))
+                    and not _engine_up(force=True)
+                ):
+                    # The engine died mid-job — or the docker CLI itself
+                    # vanished: the coded state, not the raw daemon stderr or
+                    # the spawn sentinel, is what the scheduler log should
+                    # carry.
                     error = "engine_down"
                     message = "the Docker engine is not running"
                 else:
@@ -1706,6 +1785,11 @@ def _backup_configs() -> dict:
             timeout=120,
         )
         text = _as_text(text)
+        if _cli_vanished(rc, text):
+            # tar itself could not be spawned: the coded 503 instead of the
+            # bare "not found" sentinel in an uncoded ok:false.
+            _discard(dest)
+            raise api_error("backup.tool_missing", tool="/usr/bin/tar")
         # This archive contains services.yaml, so judge success by size: the
         # placeholder always exists after _private_dest.
         size = _written_bytes(dest)
@@ -1720,6 +1804,10 @@ def _backup_configs() -> dict:
             "message": (text or "")[:500] or ("ok" if ok else "fail"),
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
+    except HTTPException:
+        # The coded refusal above must reach the route, not be flattened
+        # into an uncoded ok:false by the broad catch below.
+        raise
     except Exception as e:
         _discard(dest)
         return {"ok": False, "message": _as_text(e)}

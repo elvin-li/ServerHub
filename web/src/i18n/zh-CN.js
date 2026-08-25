@@ -2574,6 +2574,7 @@ export default {
       stack_unknown: '没有名为 {stack} 的 Compose 栈',
       stack_no_compose: '栈 {stack} 没有可备份的 compose 文件',
       engine_down: 'Docker 引擎未运行，无法备份该栈',
+      tool_missing: '主机上没有安装 {tool}',
     },
     scheduler: {
       not_found: '没有 id 为 {id} 的计划任务',

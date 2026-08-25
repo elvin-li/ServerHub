@@ -423,6 +423,10 @@ CODES: dict[str, tuple[int, str]] = {
     "backup.stack_unknown": (404, "no compose stack named {stack}"),
     "backup.stack_no_compose": (400, "stack {stack} has no compose file to back up"),
     "backup.engine_down": (503, "the Docker engine is not running, so the stack cannot be backed up"),
+    # A backup job's own binary (pg_dump, tar) is gone — never installed, or
+    # uninstalled between a probe and the spawn.  503 like the other
+    # tool-absent states (brew.not_found, wg.not_installed, rsync.unavailable).
+    "backup.tool_missing": (503, "{tool} is not installed on this host"),
     # ── notification channels ────────────────────────────────────────────────
     "notify.bad_type": (400, "unsupported channel type: {type}"),
     "notify.bad_id": (400, "channel ids are 1-64 lowercase letters, digits, . _ -"),
