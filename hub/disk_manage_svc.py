@@ -237,6 +237,38 @@ def _text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def _req_text(raw) -> str:
+    """Mutation argument as text via the str() probe (never the digit-cap raise).
+
+    Arguments arrive as str through Pydantic, but the service is also called
+    in-process, and a leftover YAML/plist hex int is *already-int* —
+    ``int(x, 16)`` is exempt from CPython's 4300-digit parse cap — so a bare
+    ``str()`` raises the int->str digit-cap ValueError where every other junk
+    value gets the coded refusal.  A str() probe, not an ``isinstance(str)``
+    gate: a finite numeric leftover keeps behaving as its string form (the
+    raid_svc._req_text convention).  Two deliberate differences from the plist
+    display sanitizer ``_text`` above: a container coerces to "" rather than
+    unwrapping — ``["Backups"]`` must never read as a plausible rename label —
+    and lone surrogates are kept, so the strict validators downstream
+    (``_label_ok``, the anchored ``DISK_RE``, the FS_TYPES lookup) refuse them
+    with the same coded error junk text earns; ``errors.error_payload`` scrubs
+    the refusal's own message and params before Starlette's UTF-8 encode.
+    """
+    if raw is None or isinstance(raw, bool):
+        return ""
+    if isinstance(raw, (list, tuple, dict, set, frozenset)):
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw).decode("utf-8", "replace")
+    if not isinstance(raw, str):
+        try:
+            raw = str(raw)
+        except Exception:
+            # The digit-cap ValueError, or a leftover whose __str__ raises.
+            return ""
+    return raw
+
+
 def _opt_bool(value):
     if isinstance(value, bool):
         return value
@@ -293,11 +325,15 @@ def _label_ok(value: str) -> bool:
 
 
 def _normalize_id(device: str) -> str:
-    if not isinstance(device, str):
-        raise api_error("disk.invalid_device", device=device)
-    d = device.strip().replace("/dev/", "")
+    # _req_text, not an isinstance gate: the route hands the id over as str,
+    # but the service is also called in-process, and a finite numeric leftover
+    # must keep behaving as its string form.  An over-cap already-int
+    # (YAML/plist hex loads uncapped) coerces to "" instead of leaving the
+    # error body's ``{device}`` placeholder unfilled after
+    # errors._jsonable_param drops the raw int.
+    d = _req_text(device).strip().replace("/dev/", "")
     if not DISK_RE.match(d):
-        raise api_error("disk.invalid_device", device=device)
+        raise api_error("disk.invalid_device", device=d[:40])
     return d
 
 
@@ -596,7 +632,10 @@ def disk_action(
     if system:
         raise api_error("disk.system_protected")
 
-    action = (action or "").strip()
+    # _req_text: a leftover non-str action AttributeError'd ``.strip()`` (a
+    # 500 for in-process callers) where ``disk.unknown_action`` is the
+    # contract.
+    action = _req_text(action).strip()
     log: list[str] = []
 
     def run(args: list[str], timeout: int = 120) -> tuple[int, str, str]:
@@ -641,9 +680,10 @@ def disk_action(
         rc, out, err = run(["/usr/sbin/diskutil", "eject", did])
         return {"ok": rc == 0, "action": action, "device": did, "message": out or err, "log": log}
     if action == "rename":
-        if not isinstance(name, str):
-            raise api_error("disk.name_required")
-        new_name = name.strip()
+        # _req_text probe: a finite numeric name keeps its string form; an
+        # over-cap already-int or a container coerces to "" and a surrogate
+        # name fails _label_ok — the coded refusal every unusable name gets.
+        new_name = _req_text(name).strip()
         if not new_name or len(new_name) > 64 or not _label_ok(new_name):
             raise api_error("disk.name_required")
         # diskutil rename /Volumes/Old New  OR  diskutil rename diskXsY New
@@ -656,25 +696,29 @@ def disk_action(
             raise api_error("disk.confirm_required")
         vol_name = _text(info.get("VolumeName") or info.get("MediaName") or did).strip()
         if confirm_name is not None:
-            if not isinstance(confirm_name, str):
+            # _req_text probe, not an isinstance gate: a finite numeric
+            # confirm_name compares as its string form; an over-cap
+            # already-int coerces to "" and mismatches like any other junk.
+            given = _req_text(confirm_name).strip()
+            if given != vol_name and given != did:
                 raise api_error("disk.confirm_name_mismatch", name=vol_name, id=did)
-            if confirm_name.strip() != vol_name and confirm_name.strip() != did:
-                raise api_error("disk.confirm_name_mismatch", name=vol_name, id=did)
-        if fs is not None and not isinstance(fs, str):
-            raise api_error(
-                "disk.unsupported_fs", fs=fs, choices=", ".join(sorted(set(FS_TYPES)))
-            )
-        fs_key = (fs or "ExFAT").strip()
+        # Same probe for fs: the old isinstance gate passed the raw non-str
+        # into the error params, where errors._jsonable_param drops an
+        # over-cap int and the message's ``{fs}`` placeholder stayed
+        # unfilled.  None/"" keeps the ExFAT default; every other shape
+        # coerces and is judged by its string form.
+        fs_key = "ExFAT" if fs in (None, "") else _req_text(fs).strip()
         fs_type = FS_TYPES.get(fs_key) or FS_TYPES.get(fs_key.upper())
         if not fs_type:
             raise api_error(
-            "disk.unsupported_fs", fs=fs, choices=", ".join(sorted(set(FS_TYPES)))
-        )
+                "disk.unsupported_fs", fs=fs_key[:20],
+                choices=", ".join(sorted(set(FS_TYPES))),
+            )
         # ``subprocess.run`` ValueError's a NUL in argv.  Rename already
         # rejected control characters; erase used to 500 POST /api/storage/manage.
-        if name is not None and not isinstance(name, str):
-            raise api_error("disk.name_required")
-        new_label = ((name or vol_name or "UNTITLED").strip()[:32] or "UNTITLED")
+        # _req_text probe: a numeric label keeps its string form, an over-cap
+        # already-int coerces to "" and falls back to the volume's own name.
+        new_label = ((_req_text(name) or vol_name or "UNTITLED").strip()[:32] or "UNTITLED")
         if not _label_ok(new_label):
             raise api_error("disk.name_required")
 

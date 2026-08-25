@@ -643,10 +643,13 @@ def get_schedule() -> dict:
 
 
 def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
-    interval = (interval or "off").strip().lower()
+    # _schedule_text: a leftover non-str interval/kind AttributeError'd
+    # ``.strip()`` (a 500 on PUT /api/smart/schedule for in-process callers)
+    # where the coded refusal below is the contract.
+    interval = (_schedule_text(interval) or "off").strip().lower()
     if interval not in SCHEDULE_INTERVALS:
         return {"ok": False, "error": "bad_interval"}
-    kind = (kind or "short").strip().lower()
+    kind = (_schedule_text(kind) or "short").strip().lower()
     if kind not in TEST_KINDS:
         return {"ok": False, "error": "bad_kind"}
     known = set(_device_nodes())
@@ -785,10 +788,19 @@ def stop_scheduler(timeout: float = 3.0) -> None:
 
 def start_test(device: str, kind: str) -> dict:
     """Begin a self-test on *device* now."""
-    node = str(device or "").strip()
+    # _schedule_text, not str(): the route hands these over as str through
+    # Pydantic, but the service is also called in-process, and a leftover
+    # YAML/plist hex int arrives *already-int* (``int(x, 16)`` is exempt
+    # from CPython's 4300-digit parse cap) — the bare ``str()`` here raised
+    # the int->str digit-cap ValueError out of POST /api/smart/test where
+    # every other junk device earns the coded ``bad_device`` refusal, and a
+    # non-str *kind* AttributeError'd ``.strip()`` the same way.  A finite
+    # numeric keeps behaving as its string form (the raid_svc._req_text
+    # convention).
+    node = _schedule_text(device).strip()
     if not _DEV_RE.match(node) or node not in set(_device_nodes()):
         return {"ok": False, "error": "bad_device"}
-    test = (kind or "").strip().lower()
+    test = _schedule_text(kind).strip().lower()
     if test not in TEST_KINDS:
         return {"ok": False, "error": "bad_kind"}
 
@@ -846,7 +858,9 @@ def start_test(device: str, kind: str) -> dict:
 
 def abort_test(device: str) -> dict:
     """Cancel a running self-test on *device*."""
-    node = str(device or "").strip()
+    # Same probe as start_test: a bare str() of an over-cap already-int
+    # device was the digit-cap ValueError, not the coded ``bad_device``.
+    node = _schedule_text(device).strip()
     if not _DEV_RE.match(node) or node not in set(_device_nodes()):
         return {"ok": False, "error": "bad_device"}
     flags = list(device_type(node))
