@@ -27,7 +27,7 @@ from hub import cli_args
 from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.service_signatures import unescape_proc_name
-from hub.docker_cli import docker, engine_up
+from hub.docker_cli import docker, engine_up, looks_engine_down
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
 from hub.util import LazyPool, fan_out, read_bytes_capped, safe_json_loads, sh, strftime_now, tail_file_lines, ttl_memo
@@ -179,6 +179,13 @@ def docker_disk_usage() -> dict:
     if not engine_up():
         return {"engine_up": False, "raw": "", "lines": []}
     rc, out, err = _docker("system", "df", timeout=30)
+    if rc != 0 and looks_engine_down(err or out) and not engine_up(force=True):
+        # The gate above trusts a 5s memo, so an engine that dies inside the
+        # TTL still reached `docker system df` — and the payload then claimed
+        # engine_up: True with the raw daemon stderr as `raw`.  The probe is
+        # forced (same convention as containers_svc._raise_if_engine_down);
+        # a failure while the engine answers "up" keeps the raw message.
+        return {"engine_up": False, "raw": "", "lines": []}
     lines = []
     for line in out.splitlines():
         if not line.strip() or line.startswith("TYPE"):
@@ -252,6 +259,15 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     # A prune is exactly the event the cached totals describe, so the cached copy is
     # wrong the moment this returns.  Drop it before reporting the new figures.
     docker_disk_usage.invalidate()
+    if rc != 0 and looks_engine_down(err or out) and not engine_up(force=True):
+        # The engine_up() gate at entry trusts a 5s memo; an engine that died
+        # inside the TTL used to surface as an uncoded ok:false carrying the
+        # raw untranslated daemon stderr.  Coded soft-fail (dict contract,
+        # like tools ping/dns) with the fields Tools.vue already renders.
+        fail = soft_fail("container.engine_down")
+        fail["what"] = what
+        fail["df"] = None
+        return fail
     return {
         "ok": rc == 0,
         "what": what,

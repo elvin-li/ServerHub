@@ -28,6 +28,7 @@ from typing import Any
 
 from hub import cli_args, secure_io
 from hub.config import settings_section
+from hub.docker_cli import engine_up, looks_engine_down
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.util import iter_capped_lines, safe_json_loads, tail_file_lines, utf8_env
@@ -581,6 +582,18 @@ def run_container(
         "rc": result["rc"],
         "duration_ms": result["duration_ms"],
     })
+    if (
+        result["rc"] != 0
+        and looks_engine_down(f"{result.get('stderr') or ''}\n{result.get('stdout') or ''}")
+        and not engine_up(force=True)
+    ):
+        # A dead daemon used to be presented as the command's own output
+        # (raw untranslated stderr).  Coded 503 like the Containers page;
+        # raised after the audit line so the trail still records the attempt.
+        # The probe is forced (5s memo) and only runs on this failure path —
+        # a command whose own output quotes these strings while the engine
+        # answers "up" keeps its output verbatim.
+        raise api_error("container.engine_down")
     result["target"] = "container"
     result["container"] = name
     result["cwd"] = end_cwd

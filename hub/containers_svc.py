@@ -635,6 +635,8 @@ def container_action(name: str, action: str) -> dict:
     invalidate_container_lists()
     invalidate_status()
     ok = rc == 0
+    if not ok:
+        _raise_if_engine_down(err, out)
     return {"ok": ok, "message": out if ok else (err or out or f"exit {rc}")}
 
 
@@ -652,7 +654,17 @@ def batch_action(names: list[str], action: str) -> dict:
             if r.get("ok"):
                 ok_n += 1
         except HTTPException as e:
-            results.append({"id": _as_text(n), "ok": False, "message": _as_text(e.detail)})
+            # Carry the code (container.engine_down and friends) so the SPA
+            # can translate per-row failures instead of rendering a dict repr.
+            detail = e.detail if isinstance(e.detail, dict) else {}
+            entry = {
+                "id": _as_text(n),
+                "ok": False,
+                "message": _as_text(detail.get("message") or e.detail),
+            }
+            if detail.get("code"):
+                entry["code"] = _as_text(detail["code"])
+            results.append(entry)
         except Exception as e:
             results.append({"id": _as_text(n), "ok": False, "message": _as_text(e)})
     return {"ok": ok_n == len(names), "done": ok_n, "total": len(names), "results": results}
@@ -883,6 +895,26 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
     return True
 
 
+def _raise_if_engine_down(*chunks) -> None:
+    """Fail a docker CLI mutation as coded 503 when the daemon socket is gone.
+
+    Every mutation in this module (action/exec/prune/rm/pull/rename/run/
+    create) used to hand the raw untranslated daemon stderr back as an
+    uncoded ``ok: false``, pointing away from the real remedy (start the
+    engine).  Called only on failure paths, so the healthy path never spawns
+    a ``docker info``.  The message-pattern gate runs first — a genuine
+    failure whose output does not read engine-down never probes at all — and
+    the probe is *forced* because the memoised ``engine_up`` answer has a 5s
+    TTL, and the seconds right after the engine stops are exactly when a
+    stale "up" would misclassify the failure.  Output that merely looks
+    engine-down while the engine answers "up" keeps its original mapping.
+    """
+    if not looks_engine_down("\n".join(_as_text(c) for c in chunks if c)):
+        return
+    if not engine_up(force=True):
+        raise api_error("container.engine_down")
+
+
 def _raise_inspect_failure():
     """Fail a per-container ``docker inspect`` as 503 when the engine is off.
 
@@ -1037,6 +1069,8 @@ def exec_in_container(name: str, command: str, shell: str = "/bin/sh") -> dict:
         timeout=60,
     )
     out, err = _as_text(out), _as_text(err)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {
         "ok": rc == 0,
         "rc": rc,
@@ -1056,6 +1090,8 @@ def set_restart_policy(name: str, policy: str = "unless-stopped") -> dict:
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("update", f"--restart={policy}", "--", name, timeout=30)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out), "policy": policy}
 
 
@@ -1199,6 +1235,8 @@ def prune(kind: str = "system") -> dict:
     else:
         raise api_error("container.bad_action", action=kind)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out or err}
 
 
@@ -1211,6 +1249,8 @@ def remove_image(image: str, force: bool = False) -> dict:
     args += ["--", image]
     rc, out, err = docker(*args, timeout=120)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1223,6 +1263,8 @@ def remove_volume(name: str, force: bool = False) -> dict:
         args.append("-f")
     args += ["--", name]
     rc, out, err = docker(*args, timeout=60)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1233,6 +1275,8 @@ def remove_network(name: str) -> dict:
     if name in ("bridge", "host", "none"):
         raise api_error("container.builtin_network")
     rc, out, err = docker("network", "rm", "--", name, timeout=30)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1240,6 +1284,8 @@ def pull_image(image: str) -> dict:
     if not image or not re_match_image(image):
         raise api_error("container.bad_image_name")
     rc, out, err = docker("pull", image, timeout=600)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": (_as_text(out) or _as_text(err) or "")[-2000:]}
 
 
@@ -1257,6 +1303,8 @@ def rename_container(name: str, new_name: str) -> dict:
             raise api_error("container.bad_new_name")
     rc, out, err = docker("rename", "--", name, new_name, timeout=30)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1320,6 +1368,10 @@ def create_run_container(body: dict) -> dict:
     rc, out, err = docker(*args, timeout=180)
     invalidate_status()
     out, err = _as_text(out), _as_text(err)
+    if rc != 0:
+        # The engine_up() gate at entry trusts a 5s memo, so an engine that
+        # dies inside the TTL still reaches the docker run.
+        _raise_if_engine_down(err, out)
     return {
         "ok": rc == 0,
         "message": out.strip() if rc == 0 else (err or out),
@@ -1340,6 +1392,8 @@ def create_volume(name: str, driver: str = "local") -> dict:
         args += ["--driver", driver]
     args.append(name)
     rc, out, err = docker(*args, timeout=30)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1357,6 +1411,8 @@ def create_network(name: str, driver: str = "bridge") -> dict:
         args += ["--driver", driver]
     args.append(name)
     rc, out, err = docker(*args, timeout=30)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 

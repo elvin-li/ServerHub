@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.config import cfg
+from hub.docker_cli import engine_up, looks_engine_down
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
@@ -320,8 +321,20 @@ def run_action(target, action):
         # ``docker stop --all``.
         name = cli_args.require_positional(target, label="container name")
         if action == "remove":
-            return sh([DOCKER, "rm", "-f", "--", name], timeout=90)
-        return sh([DOCKER, action, "--", name], timeout=90)
+            rc, out, err = sh([DOCKER, "rm", "-f", "--", name], timeout=90)
+        else:
+            rc, out, err = sh([DOCKER, action, "--", name], timeout=90)
+        if (
+            rc != 0
+            and looks_engine_down(_as_text(err) or _as_text(out))
+            and not engine_up(force=True)
+        ):
+            # POST /api/action and the Services bulk path used to hand the
+            # raw untranslated daemon stderr back as an uncoded ok:false.
+            # Coded 503 like the Containers page; the probe is forced (5s
+            # memo) and only runs on this failure path.
+            raise api_error("container.engine_down")
+        return rc, out, err
     # brew formula services (when not registered as local LaunchAgent)
     if action in ("start", "stop", "restart", "run") and str(target).startswith("homebrew.mxcl."):
         pkg = cli_args.require_positional(
