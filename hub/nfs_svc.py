@@ -207,6 +207,16 @@ def _validate_entry(entry: dict) -> dict:
         real == p or (p != "/" and real.startswith(p + "/")) for p in _PROTECTED_ROOTS if p != "/"
     ):
         raise NfsConfigError("nfs.protected_path", path=real)
+    try:
+        real.encode("utf-8")
+    except UnicodeEncodeError as error:
+        # A directory whose on-disk name holds undecodable bytes arrives as
+        # lone ``\udcXX`` surrogates (os.fsdecode).  The staged exports file
+        # is written — and read back — as strict UTF-8, so such a path cannot
+        # round-trip through the table; the stage write's UnicodeEncodeError
+        # (a ValueError, not the OSError save_exports maps) used to 500
+        # POST /api/nfs/exports after validation had already passed.
+        raise NfsConfigError("nfs.bad_path") from error
 
     clients_raw = entry.get("clients") or []
     if isinstance(clients_raw, str):
@@ -368,8 +378,11 @@ def save_exports(entries: list[dict]) -> dict:
     # admin copy then installed over /etc/exports.
     try:
         replace_secret_text(_STAGE_PATH, body)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         # ENOSPC / EIO on the stage file used to 500 POST /api/nfs/exports.
+        # ValueError is UnicodeEncodeError's base: _validate_entry now refuses
+        # surrogate-bearing paths, and this is the second layer — render_line
+        # is also what the panel displays, so the two must not disagree.
         return {"ok": False, "error": "failed", "message": _as_text(exc)[:200]}
 
     result = run_admin_sequence(
