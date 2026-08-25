@@ -91,6 +91,45 @@ describe('Bookmarks summary announcement', () => {
   })
 })
 
+describe('Bookmarks leftover payloads', () => {
+  it('renders the empty placeholder for a zero-bookmark answer', async () => {
+    api.getBookmarks.mockResolvedValue({ bookmarks: [], up: 0, stopped: 0, down: 0, checked_at: '12:00:00' })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('.bm-page-card').exists()).toBe(false)
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
+  })
+
+  it('never prints Infinity for huge JSON numbers in the payload', async () => {
+    // A >4300-digit YAML hex id/count that slips through as a JSON number
+    // arrives as Infinity out of JSON.parse; the summary and the ms footer
+    // must fall back instead of announcing "Infinity" to the live region.
+    api.getBookmarks.mockResolvedValue({
+      bookmarks: [
+        {
+          id: Infinity, service: 'big', name: 'Big', url: 'http://big.lan',
+          ok: false, health: 'error', status: Infinity, ms: Infinity,
+          error: null, backend: null,
+        },
+      ],
+      up: Infinity,
+      stopped: NaN,
+      down: 1,
+      checked_at: '12:00:00',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Infinity')
+    expect(wrapper.text()).not.toContain('NaN')
+    const summary = wrapper.get('.toolbar [role="status"]')
+    expect(summary.text()).toBe('bookmarks.summary — 0 1 12:00:00')
+    wrapper.unmount()
+  })
+})
+
 describe('Bookmarks failure states', () => {
   it('latches the failure banner and toasts once', async () => {
     api.getBookmarks.mockRejectedValue(new Error('probe sweep failed'))

@@ -200,12 +200,10 @@ def _key_text(value) -> str | None:
       and a silently-empty backend index from ``put``.  The probe is a
       str() attempt, not an ``isinstance(key, str)`` gate: a finite
       numeric id (``id: 8080``) must keep matching its backend row.
-    * link values pass ``resolve_value``, which scrubs lone surrogates to
-      U+FFFD — but the index keys were never scrubbed, so a bookmark id
-      carrying a leftover ``\\ud800`` could never resolve the backend row
-      listed under the same id: the deliberately-stopped VM probed red
-      instead of reading gray "stopped".  Keys are scrubbed on both the
-      put and the lookup side so either shape still meets its match.
+    * inventories publish names scrubbed (``vms_svc._as_text``) while YAML
+      ``service: "cam\\ud800"`` stayed raw, so the two sides of the index
+      keyed by different forms and a stopped VM's bookmark probed red
+      instead of gray.  Keys are scrubbed on both put and lookup.
     """
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return None
