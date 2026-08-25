@@ -3030,6 +3030,7 @@ export default {
     },
     vms: {
       name_required: '需要新名称',
+      name_too_long: '显示名称需为 1–64 个字符',
       bad_id: '虚拟机 id 无效',
       utm_unavailable: 'utmctl 不可用，请安装 UTM',
       utm_unsupported_action: 'UTM 不支持操作: {action}',

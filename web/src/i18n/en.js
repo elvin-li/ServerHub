@@ -3034,6 +3034,7 @@ export default {
     },
     vms: {
       name_required: 'a new name is required',
+      name_too_long: 'the display name must be 1-64 characters',
       bad_id: 'invalid virtual machine id',
       utm_unavailable: 'utmctl is not available; install UTM',
       utm_unsupported_action: 'UTM does not support action: {action}',
