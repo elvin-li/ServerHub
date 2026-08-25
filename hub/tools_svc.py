@@ -33,6 +33,7 @@ from hub.docker_cli import (
     engine_up,
     looks_cli_vanished,
     looks_engine_down,
+    parse_int_capped,
 )
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
@@ -953,7 +954,16 @@ def _github_get_json(path: str):
         except Exception:
             pass
     try:
-        parsed = safe_json_loads(raw.decode("utf-8", "replace") or "null")
+        # parse_int_capped: a leftover >4300-digit numeric literal makes
+        # ``json.loads`` itself raise ValueError (not JSONDecodeError) at
+        # CPython's str->int digit cap, so one unrenderable number (a release
+        # ``id``, say) used to wipe the whole updates card to
+        # "invalid github json" — and the tags fallback with it, since both
+        # routes share this reader.  The hook loads the huge literal as None
+        # and the tag/notes fields the card actually renders survive.
+        parsed = safe_json_loads(
+            raw.decode("utf-8", "replace") or "null", parse_int=parse_int_capped,
+        )
     except (ValueError, TypeError, RecursionError):
         raise RuntimeError("invalid github json")
     return parsed
