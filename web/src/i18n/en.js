@@ -2043,6 +2043,7 @@ export default {
     remove_note: 'Removing changes panel configuration only. Files stay exactly where they are and the disk stays mounted and browsable.',
     empty_members: 'No member disks yet. Add one from the list below.',
     empty_candidates: 'No eligible disks. System volumes and virtual filesystems cannot join.',
+    all_in_pool: 'Every eligible disk is already in the pool.',
     fault_title: 'Single-disk failure impact',
     fault_body: 'This table is the point of the whole design. Under RAID0 or an APFS volume group every row would read "all data lost".',
     fault_caption: 'Data impact when each member disk fails',
@@ -2950,6 +2951,7 @@ export default {
       stripe_not_growable: 'A stripe set cannot gain members',
       member_not_found: 'No member with id {uuid} in this set',
       last_redundant_member: 'Removing this member would leave the mirror unprotected',
+      diskutil_missing: 'diskutil is missing on this host',
     },
     smart: {
       bad_device: 'Unknown disk device',

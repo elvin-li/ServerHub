@@ -179,8 +179,13 @@
               >{{ t('pool.add') }}</button>
             </td>
           </tr>
+          <!-- Two different truths share this row: with every eligible disk
+               already selected, "no eligible disks" would wrongly claim the
+               host lost its disks (the common.no_match split Brew/Tools pin). -->
           <tr v-if="!availableCandidates.length && !loadError">
-            <td colspan="6" class="empty-row">{{ t('pool.empty_candidates') }}</td>
+            <td colspan="6" class="empty-row" role="status">
+              {{ allCandidates.length ? t('pool.all_in_pool') : t('pool.empty_candidates') }}
+            </td>
           </tr>
         </tbody>
       </table>
