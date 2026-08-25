@@ -88,10 +88,13 @@ describe('Maintenance empty state', () => {
     expect(wrapper.text()).toContain('services.yaml → maintenance:')
   })
 
-  it('keeps a filter miss on the plain none row, not the setup hint', async () => {
+  it('says no_match on a filter miss, not none or the setup hint', async () => {
+    // Brew/Health/Services split: tasks exist, the filter hid them — the row
+    // must say the filter missed, not claim the page is empty.
     const { wrapper } = await mountPage()
     await wrapper.find('input[type="text"]').setValue('nothing-matches-this')
-    expect(wrapper.text()).toContain('common.none')
+    expect(wrapper.text()).toContain('common.no_match')
+    expect(wrapper.text()).not.toContain('common.none')
     expect(wrapper.text()).not.toContain('maintenance.empty_hint')
   })
 
