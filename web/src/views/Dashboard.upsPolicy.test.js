@@ -134,6 +134,36 @@ describe('UPS host-strip indicator', () => {
     expect(wrapper.find('[data-test="ups-indicator"]').exists()).toBe(false)
     wrapper.unmount()
   })
+
+  it('spells the low-battery state the red paint used to carry alone', async () => {
+    // Recharging under the alert floor after an outage, back on AC: the chip
+    // turned danger-red with no state word — colour-only for sighted users,
+    // nothing at all for a screen reader (the Containers/Network LED rule).
+    getUps.mockResolvedValue({
+      present: true,
+      name: 'Back-UPS ES 750',
+      on_battery: false,
+      battery_percent: 15,
+      settings: { low_battery_pct: 20, shutdown: { enabled: true } },
+      shutdown_state: { phase: 'idle' },
+    })
+    const wrapper = await render()
+    const chip = wrapper.find('[data-test="ups-indicator"]')
+    expect(chip.classes()).toContain('danger')
+    expect(chip.text()).toContain('dashboard.ups_low')
+    wrapper.unmount()
+  })
+
+  it('announces the state word as a live status region', async () => {
+    // Mid-outage the poll promotes engaged/restoring into this word — the
+    // chip's whole signal — and it used to change silently.
+    getUps.mockResolvedValue(ups({ enabled: true, phase: 'engaged' }))
+    const wrapper = await render()
+    const status = wrapper.find('[data-test="ups-indicator"] [role="status"]')
+    expect(status.exists()).toBe(true)
+    expect(status.text()).toBe('dashboard.ups_policy_engaged')
+    wrapper.unmount()
+  })
 })
 
 describe('icon-only power controls', () => {

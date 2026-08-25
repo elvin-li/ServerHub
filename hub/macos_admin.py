@@ -30,6 +30,7 @@ import tempfile
 from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Iterator
 
 from hub.util import sh, utf8_env
@@ -50,6 +51,21 @@ def _as_text(value) -> str:
 
 
 SUDO = "/usr/bin/sudo"
+
+
+def _sudo_on_disk() -> bool:
+    """Fresh probe for the spawn-failure path only (the vms/rsync rule).
+
+    A failed ``subprocess.run`` alone must not classify sudo as gone: execve
+    also ENOENTs for a *still-present* binary whose loader is broken, and a
+    spawn can fail for reasons that have nothing to do with sudo at all
+    (ENOMEM, EAGAIN).  A stat that raises (EIO under a dying volume) counts
+    as gone: authorization is unreachable either way.
+    """
+    try:
+        return Path(SUDO).is_file()
+    except (OSError, ValueError):
+        return False
 
 # Failure diagnostics only: command argv plus the tool's own stderr tail.  The
 # password is never part of either — it travels on stdin and stays there.
@@ -166,7 +182,16 @@ def _run_with_password(shell_command: str, password: str, timeout: int) -> dict:
         log.warning("sudo timeout: %s", shell_command)
         return {"ok": False, "error": "failed", "message": "sudo timeout"}
     if rc == -1:
-        return {"ok": False, "error": "unavailable", "message": _as_text(error)[:200]}
+        # The spawn itself failed.  ``unavailable`` (the coded 503 "macOS
+        # administrator authorization is unavailable") used to fire on the
+        # exception alone, sending the operator to reinstall an authorization
+        # path that was sitting right there.  The vanished-CLI 503 fires only
+        # after a fresh disk probe confirms sudo is gone (the vms/rsync/
+        # backups rule); with sudo still on disk the raw failure is the truth.
+        # The probe runs only on this failure path, never on a normal run.
+        if not _sudo_on_disk():
+            return {"ok": False, "error": "unavailable", "message": _as_text(error)[:200]}
+        return {"ok": False, "error": "failed", "message": _as_text(error)[:200]}
     if rc == 0:
         return {"ok": True}
     # sudo prints these to stderr when the password does not validate; the
@@ -238,7 +263,11 @@ def prime_sudo_ticket(*, timeout: int = 30) -> dict:
     if rc == -1 and error == "timeout":
         return {"ok": False, "error": "failed", "message": "sudo timeout"}
     if rc == -1:
-        return {"ok": False, "error": "unavailable", "message": _as_text(error)[:200]}
+        # Same disk-confirm rule as _run_with_password: the exception alone
+        # does not prove sudo left the machine.
+        if not _sudo_on_disk():
+            return {"ok": False, "error": "unavailable", "message": _as_text(error)[:200]}
+        return {"ok": False, "error": "failed", "message": _as_text(error)[:200]}
     if rc == 0:
         return {"ok": True}
     lowered = error.lower()

@@ -609,6 +609,7 @@ export default {
     open_updates: '去更新',
     ups_title: 'UPS / 电源',
     ups_on_battery: '电池供电',
+    ups_low: '电量低',
     ups_on_ac: '市电供电',
     ups_battery: '电量',
     ups_remaining: '约剩 {m} 分钟',

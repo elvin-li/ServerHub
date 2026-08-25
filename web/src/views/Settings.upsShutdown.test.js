@@ -218,4 +218,44 @@ describe('drill', () => {
     expect(result.text()).toContain('settings.ups_step_skip')
     expect(putUpsSettings).not.toHaveBeenCalled()
   })
+
+  it('announces the drill verdict as a status region', async () => {
+    // The verdict is the whole outcome of the button press and lands after
+    // it silently — the Scheduler run-history / PhotosHub empty-state rule.
+    runUpsShutdownDrill.mockResolvedValue({
+      would_trigger_now: true, reason: 'battery 18% ≤ 25%', steps: [],
+    })
+    const wrapper = await renderNotifyTab()
+    await buttonByText(wrapper, 'settings.ups_shutdown_drill').trigger('click')
+    await flushPromises()
+    const verdict = wrapper.find('[data-test="drill-result"] [role="status"]')
+    expect(verdict.exists()).toBe(true)
+    expect(verdict.text()).toContain('settings.ups_would_trigger')
+  })
+})
+
+describe('load failure', () => {
+  it('renders the retryable banner alone when the first load fails', async () => {
+    getUps.mockRejectedValue(new Error('ups read failed'))
+    const wrapper = await renderNotifyTab()
+    expect(wrapper.find('load-failure-stub').exists()).toBe(true)
+    expect(wrapper.find('input[aria-label="settings.ups_low_pct"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('common.loading')
+  })
+
+  it('keeps the banner above the stale form on a re-load failure', async () => {
+    // The banner was gated on !upsInfo: a tab revisit with the backend down
+    // was toast-only, leaving the stale form on screen as if fresh — the
+    // Containers/Alerts LoadFailure contract says banner *above* the data.
+    const wrapper = await renderNotifyTab()
+    expect(wrapper.find('load-failure-stub').exists()).toBe(false)
+    getUps.mockRejectedValue(new Error('boom'))
+    route.query = { tab: 'appearance' }
+    await flushPromises()
+    route.query = { tab: 'notify' }
+    await flushPromises()
+    expect(wrapper.find('load-failure-stub').exists()).toBe(true)
+    // The previously fetched form is still the best information available.
+    expect(wrapper.find('input[aria-label="settings.ups_low_pct"]').exists()).toBe(true)
+  })
 })

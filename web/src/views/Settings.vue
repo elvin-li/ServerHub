@@ -481,8 +481,13 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.ups_alerts') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.ups_alerts_hint') }}</p>
-        <LoadFailure v-if="upsError && !upsInfo" :detail="upsError" :retry="loadUps" />
-        <div class="form-grid" v-else-if="upsInfo">
+        <!-- Not gated on !upsInfo: on a *re*-load failure the previously
+             fetched status and form are still the best information available,
+             so the banner renders above them instead of the failure being
+             toast-only — the LoadFailure contract (Containers, Alerts, Users).
+             A failed first load still renders the banner alone. -->
+        <LoadFailure v-if="upsError" :detail="upsError" :retry="loadUps" />
+        <div class="form-grid" v-if="upsInfo">
           <label>{{ t('settings.power_source') }}</label>
           <div>
             <span v-if="upsInfo.present" class="badge" :class="upsInfo.on_battery ? 'warn' : 'ok'">
@@ -501,7 +506,7 @@
           <label>{{ t('settings.ups_low_pct') }}</label>
           <input v-model.number="upsForm.low_battery_pct" type="number" min="5" max="95" :aria-label="t('settings.ups_low_pct')" />
         </div>
-        <div v-else class="sub">{{ t('common.loading') }}</div>
+        <div v-else-if="!upsError" class="sub">{{ t('common.loading') }}</div>
 
         <template v-if="upsInfo">
           <h2 class="section-title">{{ t('settings.ups_shutdown_title') }}</h2>
@@ -565,7 +570,11 @@
           </div>
 
           <div v-if="upsDrill" style="margin-top:10px" data-test="drill-result">
-            <p class="hint" style="margin:0 0 6px">
+            <!-- role=status: this verdict is the whole outcome of the drill
+                 button press and lands silently after it — same treatment as
+                 the Scheduler run-history and PhotosHub empty states. The
+                 step rows below stay browsable rather than read in one go. -->
+            <p class="hint" role="status" style="margin:0 0 6px">
               <template v-if="upsDrill.would_trigger_now">
                 {{ t('settings.ups_would_trigger', { reason: upsDrill.reason }) }}
               </template>
