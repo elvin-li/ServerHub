@@ -536,6 +536,16 @@ def _validate_name(value: str) -> str:
     # character and would reject legitimate non-Latin share names.
     if normalized.startswith("-"):
         raise ShareValidationError("shares.bad_name")
+    try:
+        normalized.encode("utf-8")
+    except UnicodeEncodeError as error:
+        # JSON bodies may carry a lone ``\ud800``; it passes _NAME_RE (a
+        # surrogate is neither a slash nor a control character) but no
+        # filesystem can hold it, and as_argv refuses surrogate argv — so the
+        # create/update used to prompt for the administrator password and
+        # *then* answer the 500 "authorization failed".  Refuse it as the
+        # coded bad input it is, before any password or spawn.
+        raise ShareValidationError("shares.bad_name") from error
     return normalized
 
 
@@ -576,6 +586,15 @@ def validate_share_path(value: str) -> Path:
         for root in _SENSITIVE_ROOTS
     ):
         raise ShareValidationError("shares.protected_path")
+    try:
+        str(resolved).encode("utf-8")
+    except UnicodeEncodeError as error:
+        # A real directory whose on-disk name holds undecodable bytes arrives
+        # from os.fsdecode as lone ``\udcXX`` surrogates.  It resolves and
+        # is_dir()s fine, but as_argv refuses surrogate argv, so the create
+        # used to burn the operator's password prompt and answer the 500
+        # "authorization failed".  Same refusal as nfs_svc._validate_entry.
+        raise ShareValidationError("shares.bad_path") from error
     return resolved
 
 
