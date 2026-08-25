@@ -206,10 +206,20 @@ def _jsonable_alert(value, depth: int = 0):
             return None
         return value
     if isinstance(value, dict):
-        return {
-            _utf8_text(k): _jsonable_alert(v, depth + 1)
-            for k, v in value.items() if isinstance(k, str)
-        }
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                # str() probe, not an isinstance gate: the gate silently
+                # dropped every numeric YAML/plist key (``123: …``) from the
+                # journal and the saved state.  An over-cap hex/octal int key
+                # loads uncapped and its str() *is* the digit-cap ValueError —
+                # drop just that entry, never the dict (or the route).
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            out[_utf8_text(k)] = _jsonable_alert(v, depth + 1)
+        return out
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable_alert(v, depth + 1) for v in value]
     if isinstance(value, str):
@@ -238,6 +248,29 @@ def _jsonable_alert(value, depth: int = 0):
         return _utf8_text(value)
     except Exception:
         return None
+
+
+def _service_id(raw) -> str:
+    """Service id for the sweep, via the str() probe.
+
+    services.yaml is hand-editable, so ``id: 123`` arrives as an *int*.  The
+    strict ``isinstance(id, str)`` gate this replaces silently dropped the
+    row from the sweep: the service could go down without ever alerting, and
+    its saved per-service history vanished from alert_state.json.  YAML hex
+    (``id: 0xFF…``) loads uncapped (``int(x, 16)`` is exempt from CPython's
+    4300-digit conversion limit), so a bare ``str()`` on it *is* the
+    digit-cap ValueError — such a row has no renderable id and is dropped,
+    not the sweep.  Lists/None/bool stay dropped: an unhashable leftover
+    ``id: [foo]`` used to TypeError ``services[sid]``.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
 
 
 def list_alerts(limit: int = 50) -> list:
@@ -672,14 +705,19 @@ def _smart_key(dev: dict) -> str:
     print, and the enumeration id is the last resort so a key always exists.
     """
     smart = dev.get("smart") or {}
-    serial = str(smart.get("serial") or "").strip()
-    model = str(smart.get("model") or dev.get("name") or "").strip()
-    size_bytes = dev.get("size_bytes")
-    disk_id = str(dev.get("id") or "disk").strip() or "disk"
+    # _utf8_text, not bare str(): a leftover over-cap plist/YAML-hex int
+    # serial/model/size (uncapped ``int(x, 16)`` load) made str() raise the
+    # digit-cap ValueError and silently aborted the whole SMART pass — every
+    # disk went unwatched.  Unrenderable fields coerce to "" and the next
+    # fallback identity is used instead.
+    serial = _utf8_text(smart.get("serial") or "").strip()
+    model = _utf8_text(smart.get("model") or dev.get("name") or "").strip()
+    size_text = _utf8_text(dev.get("size_bytes") or "").strip()
+    disk_id = _utf8_text(dev.get("id") or "disk").strip() or "disk"
     if serial:
         raw = serial
-    elif model and size_bytes:
-        raw = f"{model}-{size_bytes}"
+    elif model and size_text:
+        raw = f"{model}-{size_text}"
     else:
         raw = disk_id
     key = _KEY_UNSAFE_RE.sub("-", raw).strip("-")
@@ -704,7 +742,9 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
     # failure thresholds.  Anything that is not PASSED/OK is fatal, including
     # "WARNING" -- smartctl uses that word for a drive that has crossed a vendor
     # threshold, which is a different thing from our own soft warn level below.
-    health = str(smart.get("health") or "").strip()
+    # _utf8_text: a leftover over-cap int verdict must not raise str()'s
+    # digit-cap ValueError out of the pass (it coerces to "" — unknown).
+    health = _utf8_text(smart.get("health") or "").strip()
     if health and health.upper().rstrip("!") not in ("PASSED", "OK"):
         down.append(_smart_reason("health", v=health))
 
@@ -742,8 +782,11 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
         if value is None or thresh is None or thresh <= 0:
             continue
         if value <= thresh:
+            # _utf8_text: an over-cap int attribute name used to raise the
+            # digit-cap ValueError out of str() and abort the SMART pass.
             down.append(_smart_reason(
-                "prefail", name=str(attr.get("name") or attr.get("id") or "?"),
+                "prefail",
+                name=_utf8_text(attr.get("name") or attr.get("id") or "?") or "?",
                 v=value, lim=thresh,
             ))
 
@@ -757,7 +800,7 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
 
     # NVMe critical warning bitmap: any bit set means the controller is reporting a
     # fault (spare exhausted, degraded reliability, read-only mode, over temperature).
-    crit_raw = str(smart.get("critical_warning") or "").strip()
+    crit_raw = _utf8_text(smart.get("critical_warning") or "").strip()
     crit = _smart_num(crit_raw)
     if crit is not None and crit > 0:
         down.append(_smart_reason("critical_warning", v=crit_raw))
@@ -851,8 +894,13 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
         new_state[sid] = level
         old = prev.get(sid)
         last_t = _as_epoch(last_fire.get(key))
-        model = str(smart.get("model") or dev.get("name") or dev.get("id") or key).strip()
-        device = str(dev.get("device") or "").strip()
+        # _utf8_text with the key as last resort: a leftover over-cap int
+        # model/device made bare str() raise the digit-cap ValueError and
+        # silently killed the whole SMART pass (see _smart_key).
+        model = _utf8_text(
+            smart.get("model") or dev.get("name") or dev.get("id") or key
+        ).strip() or key
+        device = _utf8_text(dev.get("device") or "").strip()
         # /dev/diskN is useless as an identity (see _smart_key) but is exactly what
         # an operator needs to find the disk right now, so it belongs in the prose.
         label = f"{model} {device}".strip()
@@ -976,7 +1024,9 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
 
     emitted: list = []
     n = notify_settings()
-    name = str(st.get("name") or "UPS")
+    # _utf8_text: a leftover over-cap int name made bare str() raise the
+    # digit-cap ValueError and silently disabled every UPS alert.
+    name = _utf8_text(st.get("name") or "UPS") or "UPS"
     pct = st.get("battery_percent")
     try:
         pct_f = None if pct is None or isinstance(pct, bool) else float(pct)
@@ -1093,6 +1143,13 @@ def _service_transition_alerts(
         if old is None:
             pending.pop(sid, None)
             continue
+        # The f-strings below run str() on these fields.  A leftover YAML-hex
+        # over-cap int ``name``/``detail`` (uncapped ``int(x, 16)`` load) made
+        # that str() raise the digit-cap ValueError mid-loop, silently
+        # aborting the rest of the service sweep — every service after the
+        # poisoned one lost its alert and its saved state for that pass.
+        name_text = _utf8_text(s.get("name") or sid) or sid
+        detail_text = _utf8_text(s.get("detail") or "")
         if state in ("down", "warn"):
             if old not in ("down", "warn") and sid not in pending:
                 pending[sid] = 1
@@ -1110,7 +1167,7 @@ def _service_transition_alerts(
                 "level": state,
                 "event": "problem",
                 "detail": s.get("detail", ""),
-                "message": f"{s.get('name', sid)} changed to {state}: {s.get('detail', '')}",
+                "message": f"{name_text} changed to {state}: {detail_text}",
             }
             _fire(
                 alert,
@@ -1129,7 +1186,7 @@ def _service_transition_alerts(
                 "level": "ok",
                 "event": "resolved",
                 "detail": s.get("detail", ""),
-                "message": f"{s.get('name', sid)} has recovered",
+                "message": f"{name_text} has recovered",
             }
             _fire(
                 alert,
@@ -1162,8 +1219,13 @@ def check_once(force_status: bool = False) -> list:
             # Status still groups a leftover ``id: [foo]`` / ``id: .inf``.
             # Using that as a dict key TypeError'd POST /api/alerts/check,
             # and an inf id leaked into the emitted JSON (allow_nan=False).
-            sid = s.get("id")
-            if isinstance(s, dict) and isinstance(sid, str) and sid:
+            # _service_id, not an ``isinstance(sid, str)`` gate: a numeric
+            # YAML ``id: 123`` was silently dropped from the sweep — the
+            # service could go down without ever alerting.
+            if not isinstance(s, dict):
+                continue
+            sid = _service_id(s.get("id"))
+            if sid:
                 services[sid] = s
     # ``int(time.time())`` OverflowError on leftover inf used to 500
     # POST /api/alerts/check before any check's try/except ran.
@@ -1256,8 +1318,13 @@ def _loop(interval: int = 90):
             if not isinstance(g, dict):
                 continue
             for s in g.get("services") or []:
-                if isinstance(s, dict) and isinstance(s.get("id"), str):
-                    baseline[s["id"]] = s.get("state")
+                if not isinstance(s, dict):
+                    continue
+                # Same str() probe as check_once: a numeric YAML ``id: 123``
+                # must seed the baseline under the key the sweep will use.
+                sid = _service_id(s.get("id"))
+                if sid:
+                    baseline[sid] = s.get("state")
         # Seed a baseline only on a genuinely fresh install.  Keyed on the state
         # actually loading rather than on STATE_FILE.exists(): a false negative
         # there would replace the operator's saved state with a fresh baseline,
