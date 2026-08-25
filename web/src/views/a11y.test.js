@@ -429,6 +429,84 @@ describe('dashboard and storage surface leftovers', () => {
   })
 })
 
+describe('backup and workload surface leftovers', () => {
+  it('announces the Backups dry-run preview load failure inside its dialog', () => {
+    // The preview loads after the dialog already holds focus, so the
+    // panel-focus read never covers it — same as the Scheduler run-history
+    // and MainArray SMART overview errors.
+    const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+    expect(backups).toMatch(/v-else-if="previewError"[^>]*role="alert"/)
+  })
+
+  it('names each Apps autostart switch after its app', () => {
+    // Three per-row copies (managed table mobile + desktop, autostart tab)
+    // all announced as "Autostart" — indistinguishable in a form-controls
+    // listing, same fix as the Scheduler enable toggles. The detail drawer's
+    // single switch keeps the plain label: the dialog is already named after
+    // the app.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    const named = apps.match(/:aria-label="t\('apps\.autostart_name',\s*\{\s*name:/g) || []
+    expect(named.length, 'per-row autostart switches named after their app').toBe(3)
+    const plain = apps.match(/:aria-label="t\('apps\.col_autostart'\)"/g) || []
+    expect(plain.length, 'only the detail drawer keeps the plain label').toBe(1)
+  })
+
+  it('names each Apps docker restart-policy select after its container', () => {
+    // Same column-of-identical-controls gap as the autostart switches: every
+    // row's select was announced as "Restart policy".
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/:aria-label="t\('apps\.policy_name',\s*\{\s*name:/)
+    expect(apps).not.toMatch(/:aria-label="t\('docker\.restart_policy'\)"/)
+  })
+
+  it('never re-declares a native button as role=button', () => {
+    // The Apps "Detail" button carried tabindex/role/keydown copied from the
+    // non-button hotspots (Services problem chips). Redundant on a <button>,
+    // and the copied @keydown.enter.prevent suppressed the element's native
+    // activation to substitute its own.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      if (/<button[^>]*role="button"/.test(src)) offenders.push(name)
+    }
+    expect(offenders, 'a <button> is already a button; role/tabindex belong on non-button hotspots').toEqual([])
+  })
+
+  it('announces the Apps remote-catalog source load failure inside its modal', () => {
+    // The source config loads after the modal already holds focus, and a
+    // failure used to leave it silently blank — neither "not configured" nor
+    // the overrides table rendered, so a dead read looked like a fresh
+    // install once the toast faded.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/v-if="remoteError"[^>]*role="alert"/)
+    expect(apps).toMatch(/remoteError\.value = finiteText/)
+  })
+
+  it('spells the Network binding-table interface state, not just its LED colour', () => {
+    // The status column of the multi-IP bindings table is the LED alone (the
+    // interfaces tab pairs its LED with a textual badge); colour is invisible
+    // to a screen reader. Both copies: the addressed rows and the
+    // no-IPv4 row.
+    const network = readFileSync(resolve(SRC, 'views/Network.vue'), 'utf8')
+    const spelled = network.match(/class="sr-only">\{\{ iface\.up \? t\('network\.on'\) : t\('network\.off'\) \}\}/g) || []
+    expect(spelled.length, 'both binding-table status cells carry sr-only text').toBe(2)
+  })
+
+  it('announces the Terminal container-discovery failure', () => {
+    // This inline line is the only surface the failure reaches (no toast, no
+    // banner), so without role=alert it appeared silently for AT.
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    expect(terminal).toMatch(/v-if="containerListError"[^>]*role="alert"/)
+  })
+
+  it('renders the Terminal status load failure as the standard retryable banner', () => {
+    // A failed status read leaves `status` null, which keeps the host Run
+    // button disabled; the only stated reason was a toast that faded in four
+    // seconds. The behavioural half lives in Terminal.test.js.
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    expect(terminal).toMatch(/<LoadFailure v-if="statusError"[^>]*:retry="load"/)
+  })
+})
+
 describe('service uninstall UI', () => {
   const src = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
 

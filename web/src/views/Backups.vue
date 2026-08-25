@@ -233,7 +233,10 @@
           <button class="tiny" @click="previewFor = null">{{ t('common.close') }}</button>
         </div>
         <div v-if="previewBusy" class="meta">{{ t('common.loading') }}</div>
-        <div v-else-if="previewError" class="meta" style="color:var(--down-text)">{{ finiteText(previewError) }}</div>
+        <!-- role=alert: the dry-run result loads after the dialog already holds
+             focus, so the panel-focus read never covers a failure — same as the
+             Scheduler run-history and MainArray SMART overview errors. -->
+        <div v-else-if="previewError" class="meta" style="color:var(--down-text)" role="alert">{{ finiteText(previewError) }}</div>
         <template v-else-if="preview">
           <div style="margin-bottom:8px;font-size:12px">
             <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(preview.creates) }) }}</span>

@@ -209,11 +209,14 @@
                 <div v-if="finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
                 <div class="show-m sub-line mono">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend, '') }}</div>
                 <div class="show-m" @click.stop>
+                  <!-- Named after the app: a column of switches all announced as
+                       "Autostart" cannot be told apart in a form-controls
+                       listing — same fix as the Scheduler enable toggles. -->
                   <MacSwitch
                     v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
                     :checked="!!it.autostart"
                     :disabled="busy || it.kind === 'vm'"
-                    :aria-label="t('apps.col_autostart')"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                     :title="finiteText(it.autostart_detail, '')"
                     @click.stop
                     @change="toggleManagedAutostart(it, $event)"
@@ -234,7 +237,7 @@
                   v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
                   :checked="!!it.autostart"
                   :disabled="busy || it.kind === 'vm'"
-                  :aria-label="t('apps.col_autostart')"
+                  :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                   :title="finiteText(it.autostart_detail, '')"
                   @click.stop
                   @change="toggleManagedAutostart(it, $event)"
@@ -244,7 +247,11 @@
               <td class="mono path-cell col-hide-m" :title="finiteText(it.path, '') || finiteText(it.package, '')">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
-                  <button type="button" class="act-btn" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">{{ t('apps.detail') }}</button>
+                  <!-- A native <button> activates on Enter/Space and sits in the
+                       tab order by itself; the copied role/tabindex/keydown set
+                       belongs on the non-button hotspots (Services problem chips),
+                       not here, where it double-declared what the element is. -->
+                  <button type="button" class="act-btn" @click="openDetail(it)">{{ t('apps.detail') }}</button>
                   <button v-if="canAct(it, 'start')" type="button" class="act-btn primary" :disabled="busy" @click="doManagedAction(it, 'start')">{{ t('apps.act_start') }}</button>
                   <button v-if="canAct(it, 'stop')" type="button" class="act-btn" :disabled="busy" @click="doManagedAction(it, 'stop')">{{ t('apps.act_stop') }}</button>
                   <button v-if="canAct(it, 'restart')" type="button" class="act-btn hide-m" :disabled="busy" @click="doManagedAction(it, 'restart')">{{ t('apps.act_restart') }}</button>
@@ -318,7 +325,7 @@
                   <MacSwitch
                     :checked="!!it.autostart"
                     :disabled="busy"
-                    :aria-label="t('apps.col_autostart')"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                     @change="setAutostartItem(it, $event)"
                   />
                 </td>
@@ -329,7 +336,7 @@
                       class="policy-select"
                       :value="finiteText(it.policy, '') || 'no'"
                       :disabled="busy"
-                      :aria-label="t('docker.restart_policy')"
+                      :aria-label="t('apps.policy_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                       @change="setDockerPolicy(it, $event.target.value)"
                     >
                       <option value="no">no</option>
@@ -722,6 +729,14 @@
             {{ remoteBusy ? t('catalog_remote.checking') : t('catalog_remote.check_updates') }}
           </button>
         </div>
+        <!-- role=alert: the source config loads after the modal already holds
+             focus, and a failure used to leave it silently blank — neither the
+             "not configured" line nor the overrides list rendered, so a dead
+             read looked like a fresh install. -->
+        <div v-if="remoteError" class="tpl-danger" role="alert">
+          <div>{{ t('catalog_remote.load_failed') }}</div>
+          <div class="sub mono" style="margin-top:4px">{{ finiteText(remoteError) }}</div>
+        </div>
         <p v-if="remoteInfo && !remoteInfo.configured && !remoteUrl" class="sub-line">
           {{ t('catalog_remote.not_configured') }}
         </p>
@@ -872,6 +887,7 @@ const hideInstalled = ref(false)
 const remoteModal = ref(false)
 const remotePanel = ref(null)
 const remoteInfo = ref(null)
+const remoteError = ref('')
 const remoteUrl = ref('')
 const remoteBusy = ref(false)
 const remoteResult = ref(null)
@@ -1875,9 +1891,14 @@ async function loadRemote() {
     const next = await getCatalogRemote()
     if (generation !== appsDataGeneration) return
     remoteInfo.value = next
+    remoteError.value = ''
     remoteUrl.value = next?.url || ''
   } catch (e) {
     if (generation !== appsDataGeneration) return
+    // Latched, not just toasted: with remoteInfo null the modal renders neither
+    // the "not configured" line nor the overrides table, so after the toast
+    // faded the failure was indistinguishable from an unconfigured source.
+    remoteError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   }
 }
