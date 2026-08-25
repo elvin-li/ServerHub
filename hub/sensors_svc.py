@@ -53,12 +53,23 @@ def _jsonable(value, depth: int = 0):
     Inf CPU / huge RSS were already dropped at parse; leftover ``\\ud800``
     in a process name, leftover bytes, or a leftover inf planted in the
     peek cache still 500'd GET /api/system/sensors?light=1.
+
+    A >4300-digit int (planted in the peek cache, or the sum of per-iface
+    byte counters that each parse under the cap) still passed through
+    untouched: CPython's int->str digit limit then ValueError'd
+    ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
