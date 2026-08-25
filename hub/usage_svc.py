@@ -229,21 +229,28 @@ def scan_roots() -> list[dict]:
     try:
         from hub import shares_svc
 
-        for share in shares_svc.list_smb_shares(include_sizes=False) or []:
-            if not isinstance(share, dict):
-                continue
-            path = share.get("path")
-            # Path() TypeError'd a non-str share path and 500'd the usage page.
-            if not isinstance(path, str) or not path.startswith("/"):
-                continue
-            add(
-                f"share-{(share.get('name') or 'share')}",
-                str(share.get("name") or path),
-                path,
-            )
+        listed = shares_svc.list_smb_shares(include_sizes=False) or []
     except Exception:
         # Share enumeration is a convenience here, never a hard dependency.
-        pass
+        listed = []
+    if not isinstance(listed, (list, tuple)):
+        listed = []
+    for share in listed:
+        if not isinstance(share, dict):
+            continue
+        path = share.get("path")
+        # Path() TypeError'd a non-str share path and 500'd the usage page.
+        if not isinstance(path, str) or not path.startswith("/"):
+            continue
+        # _as_text is a str() probe, not an isinstance gate: a numeric
+        # leftover name keeps behaving as its string form, while a >4300-digit
+        # *already-int* (plist/YAML hex loads with int(x, 16), exempt from the
+        # int(str) parse cap) scrubs to "" and takes the fallback.  The old
+        # bare f-string/str() raised the digit-cap ValueError into the
+        # loop-wide except, which silently dropped every share after it from
+        # the usage roots.
+        name = _as_text(share.get("name"))
+        add(f"share-{name or 'share'}", name or path, path)
 
     return roots
 
