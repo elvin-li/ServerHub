@@ -68,6 +68,7 @@ export default {
     recovery_done: 'I saved them',
     enabled_toast: 'Two-factor authentication is on. Other sessions were signed out.',
     disabled_toast: 'Two-factor authentication is off.',
+    regen_toast: 'Recovery codes regenerated. Previously issued codes no longer work.',
     admin_reset: 'Rescue another account',
     admin_reset_user: 'Username to rescue',
     admin_reset_hint: 'Administrator only: removes two-factor from the named account (lost phone) and signs it out everywhere. The action is recorded in the audit log.',

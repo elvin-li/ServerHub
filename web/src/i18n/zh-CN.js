@@ -68,6 +68,7 @@ export default {
     recovery_done: '我已保存',
     enabled_toast: '两步验证已开启，其他会话已登出。',
     disabled_toast: '两步验证已关闭。',
+    regen_toast: '恢复码已重新生成，之前签发的恢复码已失效。',
     admin_reset: '为其他账户解除',
     admin_reset_user: '要解除的用户名',
     admin_reset_hint: '仅管理员:为指定账户强制解除两步验证（例如手机丢失），并登出其所有会话。该操作会写入审计日志。',
