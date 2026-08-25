@@ -541,6 +541,16 @@ describe('backup and workload surface leftovers', () => {
     expect(spelled.length, 'both binding-table status cells carry sr-only text').toBe(2)
   })
 
+  it('hides the Network interfaces-tab LED that the Status column already spells', () => {
+    // The interfaces tab pairs its LED with a textual status badge, so the
+    // dot is decoration — but it carried no aria-hidden, leaving AT a column
+    // named "status LED" whose cells said nothing. Spelling it there instead
+    // would have duplicated the Status column one cell over.
+    const network = readFileSync(resolve(SRC, 'views/Network.vue'), 'utf8')
+    expect(network).toMatch(/class="led" :class="i\.up \? 'on' : 'off'" aria-hidden="true"/)
+    expect(network).not.toMatch(/class="led" :class="i\.up \? 'on' : 'off'"><\/span>/)
+  })
+
   it('announces the Terminal container-discovery failure', () => {
     // This inline line is the only surface the failure reaches (no toast, no
     // banner), so without role=alert it appeared silently for AT.

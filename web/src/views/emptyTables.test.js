@@ -143,6 +143,43 @@ describe('empty tables', () => {
     wrapper.unmount()
   })
 
+  it('tells a filtered Docker port list apart from an empty one', async () => {
+    // The listening tab already told the two states apart; the Docker
+    // port-maps filter kept claiming "no published ports" on a filter miss,
+    // so a typo in the box read as the host publishing nothing.
+    api.getSystemNetwork.mockResolvedValue(emptyOverview({
+      engine_up: true,
+      docker_ports: [{
+        container: 'immich', cid: 'abc123', status: 'Up 2 days',
+        host_ip: '0.0.0.0', host_port: '2283', container_port: '2283', protocol: 'tcp',
+      }],
+    }))
+    const wrapper = mount(Network, MOUNT)
+    await flushPromises()
+    wrapper.vm.tab = 'docker'
+    await flushPromises()
+    expect(wrapper.find('tbody').text()).toContain('immich')
+
+    wrapper.vm.dockerPortQ = 'no-such-container'
+    await flushPromises()
+    const missed = wrapper.find('tbody').text()
+    expect(missed).toContain('common.no_match')
+    expect(missed).not.toContain('network.no_published')
+    wrapper.unmount()
+  })
+
+  it('reports an empty Docker port list as no published ports, not a filter miss', async () => {
+    api.getSystemNetwork.mockResolvedValue(emptyOverview({ engine_up: true }))
+    const wrapper = mount(Network, MOUNT)
+    await flushPromises()
+    wrapper.vm.tab = 'docker'
+    await flushPromises()
+    const body = wrapper.find('tbody').text()
+    expect(body).toContain('network.no_published')
+    expect(body).not.toContain('common.no_match')
+    wrapper.unmount()
+  })
+
   it('does not call an API failure an empty Docker network list', async () => {
     api.getSystemNetwork.mockRejectedValue(new Error('engine listing timed out'))
     const wrapper = mount(Network, MOUNT)
