@@ -52,8 +52,13 @@
               </td>
               <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
             </tr>
+            <!-- This row only renders on a filter miss: the table itself is
+                 gated on entries.length, so an empty log never reaches here
+                 (it gets the audit.empty placeholder above). "None" claimed
+                 the log was empty when the filter simply missed — the same
+                 filter-miss/no-data split as Tools, Network and Health. -->
             <tr v-if="!filteredRows.length">
-              <td colspan="6" class="empty-row">{{ t('common.none') }}</td>
+              <td colspan="6" class="empty-row">{{ t('common.no_match') }}</td>
             </tr>
           </tbody>
         </table>
