@@ -139,6 +139,26 @@ def _json_safe(value, depth: int = 0):
     return None
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one poisoned ``exit_code`` in
+    `brew services list --json` output used to make
+    :func:`_services_from_output` return None, so :func:`_load` discarded the
+    *fresh* snapshot and republished the stale last-good with a new TTL —
+    every start/stop stayed invisible while brew kept printing that number.
+    The same literal in the on-disk snapshot made :func:`_read_disk_file`
+    treat the whole journal as corrupt.  Dropping just the number keeps the
+    document, same as the docker_cli / notify_channels hooks, and matches
+    the drop ``_json_safe`` applies to an already-int leftover.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _copy_items(items) -> list[dict]:
     if not isinstance(items, list):
         return []
@@ -187,7 +207,9 @@ def _read_disk_file() -> list[dict] | None:
     `[]` as a fresh hit — every brew row vanished for the whole TTL.
     """
     try:
-        parsed = safe_json_loads(read_text_capped(_DISK, _DISK_CAP))
+        parsed = safe_json_loads(
+            read_text_capped(_DISK, _DISK_CAP), parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested cache is not ValueError.
         return None
@@ -270,7 +292,7 @@ def _services_from_output(out) -> list[dict] | None:
         if not text:
             return None
         try:
-            parsed = safe_json_loads(text)
+            parsed = safe_json_loads(text, parse_int=_capped_json_int)
         except (ValueError, RecursionError):
             return None
     if not isinstance(parsed, list):

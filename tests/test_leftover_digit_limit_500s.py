@@ -98,9 +98,21 @@ class DiagnosticsDigitLimitTests(unittest.TestCase):
 
 class BrewDigitLimitPinTests(unittest.TestCase):
     def test_huge_exit_code_json_falls_back_not_500(self):
-        """`brew services list --json` with a >4300-digit int is refused whole."""
+        """`brew services list --json` with a >4300-digit int keeps the rows.
+
+        Refusing the document whole (the previous pin) was itself the
+        silent-loss bug: `_load` discarded the *fresh* snapshot and
+        republished the stale last-good with a new TTL, so a start/stop
+        stayed invisible while brew printed that number.  The parse_int
+        hook now drops just the poisoned number, same as the docker_cli /
+        notify_channels decoders (tests/test_brew_leftover_hugeint_
+        snapshot_loss.py pins the full path).
+        """
         blob = '[{"name": "redis", "status": "started", "exit_code": %s}]' % _HUGE_DIGITS
-        self.assertIsNone(brew_cache._services_from_output(blob))
+        rows = brew_cache._services_from_output(blob)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "redis")
+        self.assertIsNone(rows[0]["exit_code"])
 
     def test_overcap_int_fields_do_not_500_list(self):
         """A hex-minted over-cap int in a row used to 500 GET /api/brew/services.
