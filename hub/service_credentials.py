@@ -85,6 +85,12 @@ def _json_safe(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):

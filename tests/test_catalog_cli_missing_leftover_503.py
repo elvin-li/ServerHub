@@ -27,6 +27,10 @@ uncoded shape or, worse, destructive fake success:
 * ``native_catalog._run_brew`` (native app install/uninstall) returned the
   uncoded sentinel instead of the same ``catalog.brew_missing`` 503 its own
   up-front gate raises
+* ``autostart_svc.set_brew_autostart`` (PUT /api/apps/autostart, brew kind)
+  answered the uncoded ``{ok: false, message: "not found"}`` — the exact
+  leftover ``brew_svc.brew_service_action`` already fixed; this sibling
+  spawn of the very same ``brew services start/stop`` command kept it
 
 ``run_capped``/``sh`` report the FileNotFoundError spawn as the exact
 sentinel ``(-1, "not found")`` — never a real CLI exit.  Deliberately narrow,
@@ -47,7 +51,7 @@ from unittest import mock
 
 from fastapi import HTTPException
 
-from hub import apps_manage_svc, catalog, compose_svc, containers_svc, docker_cli, native_catalog
+from hub import apps_manage_svc, autostart_svc, catalog, compose_svc, containers_svc, docker_cli, native_catalog
 from hub.errors import CODES
 
 #: What hub.util.run_capped returns when the binary is gone (sentinel).
@@ -552,6 +556,68 @@ class NativeBrewCliVanishedTests(unittest.TestCase):
                 native_catalog._install_native(app, app["id"])
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertEqual(_detail(ctx)["code"], "catalog.brew_missing")
+
+
+class AutostartBrewCliVanishedTests(unittest.TestCase):
+    """set_brew_autostart: the Apps page's autostart toggle spawns the same
+    ``brew services start/stop`` as brew_svc.brew_service_action; the vanished
+    brew answer is the same coded 503 its own up-front gate raises."""
+
+    def _toggle(self, run_result, is_file, invalidate=None):
+        with (
+            mock.patch.object(autostart_svc, "run_capped", return_value=run_result),
+            mock.patch.object(autostart_svc, "_is_file", is_file),
+            mock.patch.object(
+                autostart_svc, "invalidate_brew_services",
+                invalidate or mock.Mock(),
+            ),
+        ):
+            return autostart_svc.set_brew_autostart("redis", True)
+
+    def test_vanished_brew_raises_the_coded_503(self):
+        # The up-front gate passes, then the confirmation finds brew gone.
+        gate = mock.Mock(side_effect=[True, False])
+        with self.assertRaises(HTTPException) as ctx:
+            self._toggle(MISSING, gate)
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(_detail(ctx)["code"], "brew.not_found")
+        self.assertEqual(gate.call_count, 2)
+
+    def test_sentinel_while_brew_is_still_present_keeps_the_dict(self):
+        """The filesystem confirmation rules: brew really there, raw result."""
+        gate = mock.Mock(side_effect=[True, True])
+        invalidate = mock.Mock()
+        r = self._toggle(MISSING, gate, invalidate)
+        self.assertEqual(r["ok"], False)
+        self.assertEqual(r["message"], "not found")
+        self.assertIsNone(r["autostart"])
+        invalidate.assert_called_once_with()
+
+    def test_timeout_sentinel_is_not_classified(self):
+        """rc -1 with empty output is run_capped's timeout, not the spawn
+        sentinel: no second filesystem look, the friendly fallback message."""
+        gate = mock.Mock(return_value=True)
+        r = self._toggle((-1, ""), gate)
+        self.assertEqual(r["ok"], False)
+        self.assertEqual(r["message"], "brew services start redis")
+        gate.assert_called_once()
+
+    def test_a_real_brew_exit_reading_not_found_stays_raw(self):
+        """``rc == -1`` is part of the gate: a genuine brew exit whose output
+        happens to read "not found" keeps its own shape."""
+        gate = mock.Mock(return_value=True)
+        r = self._toggle((1, "not found"), gate)
+        self.assertEqual(r["ok"], False)
+        self.assertEqual(r["message"], "not found")
+        gate.assert_called_once()
+
+    def test_a_success_still_reports_the_new_state(self):
+        gate = mock.Mock(return_value=True)
+        invalidate = mock.Mock()
+        r = self._toggle((0, "Successfully started `redis`"), gate, invalidate)
+        self.assertEqual(r["ok"], True)
+        self.assertEqual(r["autostart"], True)
+        invalidate.assert_called_once_with()
 
 
 if __name__ == "__main__":
