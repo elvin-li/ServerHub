@@ -115,12 +115,23 @@ def parse_acl_listing(output: str) -> dict:
         match = _ACL_LINE.match(line)
         if not match:
             continue
+        try:
+            index = int(match.group("index"))
+        except ValueError:
+            # ``(\d+)`` bounds the charset but not the length: ``int()`` of a
+            # >4300-digit index is ValueError (CPython's str->int cap), not
+            # ShareAclError, so it used to raise past the routers' handler and
+            # 500 GET and PUT /api/shares/acl through read_acl.  The index is
+            # load-bearing — removals run ``chmod -a# <index>`` — so a row
+            # whose number is unusable is skipped like any other unparsable
+            # line rather than given a guessed position.
+            continue
         perms = [p for p in match.group("perms").split(",") if p]
         level = None
         if match.group("effect") == "allow":
             level = "readwrite" if any(p in _WRITE_TOKENS for p in perms) else "read"
         entries.append({
-            "index": int(match.group("index")),
+            "index": index,
             "kind": _as_text(match.group("kind")),
             "name": _as_text(match.group("name")),
             "effect": _as_text(match.group("effect")),
