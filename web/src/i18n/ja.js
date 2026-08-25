@@ -2573,6 +2573,7 @@ export default {
       stack_unknown: '{stack} という Compose スタックはありません',
       stack_no_compose: 'スタック {stack} にはバックアップできる compose ファイルがありません',
       engine_down: 'Docker エンジンが起動していないため,スタックをバックアップできません',
+      tool_missing: '{tool} はこのホストにインストールされていません',
     },
     scheduler: {
       not_found: 'id が {id} のスケジュールタスクはありません',

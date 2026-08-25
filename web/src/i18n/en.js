@@ -2579,6 +2579,7 @@ export default {
       stack_unknown: 'No compose stack named {stack}',
       stack_no_compose: 'Stack {stack} has no compose file to back up',
       engine_down: 'The Docker engine is not running, so the stack cannot be backed up',
+      tool_missing: '{tool} is not installed on this host',
     },
     scheduler: {
       not_found: 'No scheduled task with id {id}',
