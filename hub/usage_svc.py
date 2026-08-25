@@ -832,6 +832,26 @@ def spotlight_status() -> list[dict]:
     return out
 
 
+def _mdutil_on_disk() -> bool:
+    """Fresh disk probe for the mutation-failure path only (raid/smart rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /usr/bin is not confirmably carrying it.
+    """
+    try:
+        return Path(MDUTIL).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+#: What a spawn of a gone binary reads like through run_admin: the shell's own
+#: refusal (``sh: /usr/bin/mdutil: command not found`` / ``No such file or
+#: directory``) or sh()'s FileNotFoundError sentinel (``not found``).  Purely a
+#: message-pattern gate: classification additionally requires the fresh
+#: :func:`_mdutil_on_disk` probe to confirm the binary is really gone.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
 def set_spotlight(volume: str, enabled: bool) -> dict:
     """Turn Spotlight indexing on or off for one volume (requires authorization)."""
     from hub.macos_admin import run_admin
@@ -850,6 +870,19 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     if result.get("ok"):
         result["volume"] = target
         result["enabled"] = bool(enabled)
+        return result
+    # An mdutil that vanished (OS update mid-flight, dying system volume) used
+    # to surface as the generic 500 ``admin.failed`` — "the privileged macOS
+    # operation failed" sends the operator to a password dialog that cannot
+    # help.  The coded 503 fires only after a fresh disk probe confirms mdutil
+    # is gone (the raid/smart/vms rule); timeouts and authorization failures
+    # (``password_required`` / ``password_incorrect`` / ``unavailable``) keep
+    # their original shape.  The probe runs only on this failure path, never
+    # on a successful toggle.
+    if result.get("error") == "failed":
+        message = _as_text(result.get("message") or "").lower()
+        if any(marker in message for marker in _VANISH_MARKERS) and not _mdutil_on_disk():
+            return {"ok": False, "error": "mdutil_missing"}
     return result
 
 

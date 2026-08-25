@@ -2966,6 +2966,7 @@ export default {
     },
     usage: {
       bad_volume: '未知的卷',
+      mdutil_missing: '此主机上缺少 mdutil',
     },
     immich: {
       worker_down: '未运行 —— 上传的照片不会生成缩略图/不会转码/不做人脸识别',
