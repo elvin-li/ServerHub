@@ -64,7 +64,10 @@
                 <span v-else class="meta">{{ t('sched.never') }}</span>
               </td>
               <td>
-                <input type="checkbox" :checked="job.enabled" :aria-label="t('sched.enabled')"
+                <!-- Named per row, like the Services and Containers checkboxes:
+                     a column of toggles all announced as "Enabled" cannot be
+                     told apart in a screen reader's form-controls listing. -->
+                <input type="checkbox" :checked="job.enabled" :aria-label="t('sched.enable_name', { name: finiteText(job.name) })"
                        @change="toggle(job, $event.target.checked)" />
               </td>
               <td>
@@ -208,7 +211,10 @@
           <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: finiteText(runsFor.name) }) }}</span>
           <button class="tiny" @click="runsFor = null">{{ t('common.close') }}</button>
         </div>
-        <div v-if="runsError" class="meta" style="color:var(--down-text)">{{ finiteText(runsError) }}</div>
+        <!-- role=alert: the history loads *after* the dialog already holds
+             focus, so the panel-focus read never covers this failure. Same
+             pattern as the Shares ACL read error. -->
+        <div v-if="runsError" class="meta" role="alert" style="color:var(--down-text)">{{ finiteText(runsError) }}</div>
         <div v-else-if="!runsLoaded" class="meta">{{ t('common.loading') }}</div>
         <div v-else-if="!runs.length" class="meta">{{ t('sched.runs_empty') }}</div>
         <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">

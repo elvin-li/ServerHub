@@ -12,13 +12,13 @@
            Services filter count. -->
       <span class="meta-count" role="status">{{ filtered.length }} / {{ tasks.length }}</span>
     </div>
-    <!-- loadError was only rendered inside the empty-table row, so once the table
-         had rows the 15s poll could fail indefinitely while stale task and run
-         state stayed on screen with nothing marking it. Shown here it is visible
-         in both states. -->
-    <div v-if="loadError && tasks.length" class="placeholder" role="alert" style="margin-bottom:10px">
-      {{ finiteText(loadError) }}
-    </div>
+    <!-- The standard failed-load banner every sibling list page uses. The old
+         inline placeholder only rendered once the table had rows, so a failed
+         *first* read fell into the empty-table row: error text with no retry
+         and no role=alert, silently, on the page whose whole job is running
+         host commands. LoadFailure covers both states — first load and a
+         re-poll over stale rows — and offers the retry. -->
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" />
     <div class="table-wrap">
       <table class="dense fit-m">
         <thead>
@@ -48,18 +48,20 @@
               <button class="tiny" @click="openLog(task)">{{ t('maintenance.log') }}</button>
             </td>
           </tr>
-          <tr v-if="!filtered.length">
+          <!-- Gated on !loadError like Brew/Audit/Scheduler: the LoadFailure
+               banner is the whole story for a failed read, and an empty claim
+               under it would be false. -->
+          <tr v-if="!filtered.length && !loadError">
             <td colspan="4" class="empty-row">
+              <template v-if="!loaded">{{ t('common.loading') }}</template>
               <!-- A configured-empty page deserves a pointer to where tasks are
                    defined, not a bare "None": the list only ever fills from the
                    maintenance: section of services.yaml (see the example file). -->
-              <template v-if="!tasks.length && loaded && !loadError">
+              <template v-else-if="!tasks.length">
                 {{ t('maintenance.empty_hint') }}
                 <span class="mono">services.yaml → maintenance:</span>
               </template>
-              <template v-else>
-                {{ tasks.length ? t('common.none') : (finiteText(loadError, '') || t('common.loading')) }}
-              </template>
+              <template v-else>{{ t('common.none') }}</template>
             </td>
           </tr>
         </tbody>
@@ -85,6 +87,7 @@ import { injectI18n } from '../i18n'
 import { finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
+import LoadFailure from '../components/LoadFailure.vue'
 
 const toast = inject('toast')
 const { t } = injectI18n()

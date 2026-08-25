@@ -987,6 +987,7 @@ export default {
     type: '種類',
     cron: 'Cron',
     enabled: '有効',
+    enable_name: '{name} を有効にする',
     disabled: '無効',
     timeout_s: 'タイムアウト(秒)',
     next_run: '次回実行',
