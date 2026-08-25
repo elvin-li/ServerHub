@@ -49,6 +49,28 @@ describe('Gateway leftover payloads', () => {
     failed.unmount()
   })
 
+  it('keeps stale site rows under the failure banner on a re-load failure', async () => {
+    // LoadFailure renders above the content, not instead of it: the rows from
+    // the last good load are the best information available, and the empty
+    // row must not replace them with the false claim "no sites in conf.d".
+    api.getNginx.mockResolvedValue({
+      running: true,
+      pid: '743',
+      sites: [{ file: 'nas.conf', listens: [8080], server_names: [], upstreams: [] }],
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).toContain('nas.conf')
+
+    api.getNginx.mockRejectedValue(new Error('nginx scan failed'))
+    await wrapper.findAll('button').find((b) => b.text() === 'common.refresh').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('load-failure-stub').exists()).toBe(true)
+    expect(wrapper.text()).toContain('nas.conf')
+    expect(wrapper.find('.empty-row').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('never prints Infinity for huge JSON numbers in the payload', async () => {
     // A >4300-digit pid/conf leftover that slips through as a JSON number
     // arrives as Infinity out of JSON.parse; the pid chip must hide and the
