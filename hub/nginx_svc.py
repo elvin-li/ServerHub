@@ -48,6 +48,56 @@ def _sh_message(err, out, fallback: str = "") -> str:
     return (_as_text(err) or _as_text(out) or fallback).strip()
 
 
+def _jsonable(value, depth: int = 0):
+    """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
+
+    ``overview()`` does not own the sites parser: the real
+    ``adaptive.nginx_sites`` scrubs its output, but a patched or odd one (the
+    same class ``_sh_message`` guards for ``sh`` and ``_pid_text`` for the
+    listing) can answer rows the production parser never does.  Every other
+    field of the payload was scrubbed; a lone surrogate in a site key or
+    value rode raw to Starlette's UTF-8 encode, and an already-int over-cap
+    number (YAML/plist hex loads uncapped — ``int(x, 16)`` is exempt from
+    CPython's 4300-digit cap) ValueError'd Starlette's own ``json.dumps`` at
+    int->str time — both used to 500 GET /api/nginx.
+    """
+    if depth > 32:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        try:
+            # A str() probe, never an isinstance(x, str) gate: the finite
+            # numeric listen ports the Gateway table renders must pass
+            # through as ints, only the unrenderable over-cap ones drop.
+            str(value)
+        except ValueError:
+            return None
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, str):
+        return _as_text(value)
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, (str, bytes, bytearray)):
+                try:
+                    k = str(k)
+                except Exception:
+                    # The over-cap int key: the entry drops, not the row.
+                    continue
+            out[_as_text(k)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v, depth + 1) for v in value]
+    return _as_text(value)
+
+
 def _pid_text(value) -> str | None:
     """Pid shapes that dodge ``Listing``'s coercion must not poison the payload.
 
@@ -118,6 +168,11 @@ def overview() -> dict:
         sites = []
     if not isinstance(sites, list):
         sites = []
+    # Field-level scrub of rows overview() does not own (see _jsonable):
+    # surrogate keys/values and already-int over-cap numbers used to 500 the
+    # encode.  Non-dict rows are dropped before site_count counts them — the
+    # SPA keys the table on ``s.file``.
+    sites = [_jsonable(s) for s in sites if isinstance(s, dict)]
     # The shared listing (hub/launchd_cache.py) rather than this module's own
     # `launchctl list`: the health page calls this *and* two other readers of the
     # same listing, so the bundle used to spawn three of them.
