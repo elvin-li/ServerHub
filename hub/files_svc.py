@@ -212,6 +212,26 @@ def _max_upload_mb() -> int:
     return max_mb
 
 
+def _root_label(value) -> str:
+    """Configured root id/name as text, via a ``str()`` probe.
+
+    YAML parses ``id: 2`` / ``name: 2024`` as ints, and the previous
+    ``isinstance(value, str)`` gate silently replaced them with the directory
+    basename.  Two configured roots whose directories share a basename then
+    collapsed onto one id: the SPA's picker showed two identical entries and
+    ``root_id=2`` — the id the YAML author wrote — answered
+    ``files.unknown_root`` (400) with the directory sitting right there.
+    Probe with ``str()`` instead (``_as_text`` already eats the ValueError a
+    leftover over-cap hex int raises past CPython's digit limit, and scrubs
+    lone surrogates before Starlette's UTF-8 encode); only ``None``/bool —
+    YAML's ``id: yes`` footgun, junk everywhere else in this file — fall back
+    to the basename.
+    """
+    if value is None or isinstance(value, bool):
+        return ""
+    return _as_text(value).strip()
+
+
 def _try_resolve(value) -> Path | None:
     """Resolve *value*, or None on a leftover path the kernel will not follow.
 
@@ -268,15 +288,11 @@ def default_roots() -> list[dict]:
                     p = _try_resolve(r["path"])
                     if p is None:
                         continue
-                    rid = r.get("id") or p.name or "root"
-                    rname = r.get("name") or p.name or str(p)
-                    if not isinstance(rid, str) or not rid:
-                        rid = p.name or "root"
-                    if not isinstance(rname, str) or not rname:
-                        rname = p.name or str(p)
+                    rid = _root_label(r.get("id")) or _as_text(p.name) or "root"
+                    rname = _root_label(r.get("name")) or _as_text(p.name or str(p)) or "root"
                     out.append({
-                        "id": _as_text(rid) or "root",
-                        "name": _as_text(rname) or "root",
+                        "id": rid,
+                        "name": rname,
                         "path": _as_text(p),
                     })
             except (OSError, ValueError, TypeError, RuntimeError):
