@@ -542,7 +542,19 @@ def get_thresholds() -> dict:
     s = settings_section("thresholds")
     out = dict(DEFAULT_THRESHOLDS)
     for k, v in s.items():
-        if v is None:
+        # Scrub mapping keys before they become response keys: a leftover
+        # ``\ud800`` YAML key blew up Starlette's UTF-8 encode, and a
+        # >4300-digit int key ValueError'd the encoder's key stringify —
+        # both 500'd GET /api/settings/thresholds.
+        if isinstance(k, (bytes, bytearray)):
+            k = k.decode("utf-8", "replace")
+        elif not isinstance(k, str):
+            try:
+                k = str(k)
+            except Exception:
+                continue
+        k = _utf8_text(k)
+        if not k or v is None:
             continue
         if k in ("enabled", "smart_enabled"):
             if isinstance(v, bool):
