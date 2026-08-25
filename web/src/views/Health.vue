@@ -57,7 +57,12 @@
     </div>
 
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="7" :label="t('common.scanning')" />
-    <div v-else class="table-wrap">
+    <!-- On a failed *first* load nothing was fetched, so the banner stands
+         alone: the table used to render its column headers above nothing
+         (the empty-row is loadError-suppressed), claiming a scan that never
+         arrived.  Stale rows still stay on screen under the banner when a
+         later rescan fails (the LoadFailure contract — Services pattern). -->
+    <div v-else-if="(data?.checks || []).length || !loadError" class="table-wrap">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -85,7 +90,10 @@
             <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? finiteText(errText(c.fix)) : (c.ok ? '—' : '') }}</td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
-            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>
+            <!-- A level tab that misses and a scan that produced no checks
+                 are different answers: "no matching items" on an empty scan
+                 hid that there is nothing to filter (Logs/Services split). -->
+            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : ((data?.checks || []).length ? t('common.no_match') : t('health.empty')) }}</td>
           </tr>
         </tbody>
       </table>
