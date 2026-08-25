@@ -295,16 +295,25 @@ def diagnostics() -> dict:
 
     def probe_ncpu() -> int | None:
         rc, out, _ = _sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
-        return int(out) if rc == 0 and out.isdigit() else None
+        if rc != 0 or not out.isdigit():
+            return None
+        try:
+            # ``isdigit()`` does not bound length: ``int()`` of a >4300-digit
+            # leftover is ValueError (CPython's str->int cap), which used to
+            # 500 GET /api/system/diagnostics through fan_out.
+            return int(out)
+        except (TypeError, ValueError, OverflowError):
+            return None
 
     def probe_mem_gb() -> float | None:
         rc, out, _ = _sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=3)
         if rc != 0 or not out.isdigit():
             return None
-        # A leftover 400-digit ``hw.memsize`` OverflowError'd GET /api/diagnostics.
+        # A leftover 400-digit ``hw.memsize`` OverflowError'd GET
+        # /api/diagnostics; a >4300-digit one ValueError'd ``int()`` itself.
         try:
             gb = round(int(out) / 2**30, 1)
-        except OverflowError:
+        except (TypeError, ValueError, OverflowError):
             return None
         return gb if math.isfinite(gb) else None
 
