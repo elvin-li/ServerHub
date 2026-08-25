@@ -64,6 +64,35 @@ def _text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def _req_text(raw) -> str:
+    """Mutation argument as text via the str() probe (never the digit-cap raise).
+
+    Arguments arrive as str through Pydantic, but the service is also called
+    in-process, and a leftover YAML/plist hex int is *already-int* —
+    ``int(x, 16)`` is exempt from CPython's 4300-digit parse cap — so a bare
+    ``str()`` raises the int->str digit-cap ValueError where every other junk
+    value gets the coded refusal.  A str() probe, not an ``isinstance(str)``
+    gate: a finite numeric leftover keeps behaving as its string form (the
+    raid_svc._req_text convention).  Unlike the plist display sanitizer
+    ``_text`` above, a container coerces to "" rather than unwrapping —
+    ``["disk4"]`` must never read as a real disk id.  Lone surrogates are
+    scrubbed so a refusal's own params cannot 500 the error body.
+    """
+    if raw is None or isinstance(raw, bool):
+        return ""
+    if isinstance(raw, (list, tuple, dict, set, frozenset)):
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw).decode("utf-8", "replace")
+    if not isinstance(raw, str):
+        try:
+            raw = str(raw)
+        except Exception:
+            # The digit-cap ValueError, or a leftover whose __str__ raises.
+            return ""
+    return raw.encode("utf-8", "replace").decode("utf-8")
+
+
 def _dev_exists(node: str) -> bool:
     """``Path.exists()`` raises EIO/ESTALE on a dying mount; pathlib only
     swallows ENOENT/ELOOP.  Wake used to 500 POST /api/storage/disks."""
@@ -468,6 +497,12 @@ def _hint(system, ssd, can_sleep, state) -> str:
 
 def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     """Sleep or eject a disk. mode: sleep | eject"""
+    # _req_text before the regex: the route hands the id over as str, but the
+    # service is also called in-process, and ``DISK_RE.match`` TypeError'd
+    # (a 500) on a leftover non-str id where every junk string earns the
+    # coded refusal.  A finite numeric keeps its string form; an over-cap
+    # already-int coerces to "".
+    disk_id = _req_text(disk_id).strip()
     if not DISK_RE.match(disk_id):
         raise api_error("disk_power.invalid_id")
     disks = {d["id"]: d for d in list_power_disks()}
@@ -553,6 +588,8 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
 
 
 def wake_disk(disk_id: str) -> dict:
+    # Same probe as sleep_disk: a leftover non-str id TypeError'd the regex.
+    disk_id = _req_text(disk_id).strip()
     if not DISK_RE.match(disk_id):
         raise api_error("disk_power.invalid_id")
     node = f"/dev/{disk_id}"
@@ -605,7 +642,11 @@ def wake_disk(disk_id: str) -> dict:
 
 
 def disk_power_action(disk_id: str, action: str) -> dict:
-    action = (action or "").lower()
+    # _req_text, not ``(action or "").lower()``: a leftover non-str action
+    # AttributeError'd (a 500) where ``disk_power.unknown_action`` is the
+    # contract, and an over-cap already-int coerces to "" instead of raising
+    # the digit-cap ValueError.
+    action = _req_text(action).strip().lower()
     if action in ("sleep", "standby", "spindown"):
         return sleep_disk(disk_id, mode="sleep")
     if action in ("eject",):
