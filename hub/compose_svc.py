@@ -10,7 +10,7 @@ import yaml
 
 from hub import cli_args, secure_io
 from hub.containers_svc import _stack_paths
-from hub.docker_cli import engine_up, looks_cli_vanished, looks_engine_down
+from hub.docker_cli import cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import api_error, exc_detail, soft_fail
 from hub.paths import DOCKER, user_home
 from hub.status import invalidate_status as inv
@@ -238,8 +238,13 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
             # A vanished DOCKER binary is run_capped's exact ``(-1, "not
             # found")`` sentinel; it used to fall through and fail the
             # save/create as ``compose.invalid: not found`` — a 400 blaming
-            # the operator's YAML for a missing CLI.
-            rc == -1 and looks_cli_vanished(text)
+            # the operator's YAML for a missing CLI.  But the sentinel is
+            # any FileNotFoundError spawn: a *cwd* that vanished between the
+            # mkdir above and the spawn raises the same way, so the binary
+            # must be confirmed gone from disk before the sentinel reads as
+            # a missing CLI — with the CLI present and the engine merely
+            # off, the coded 503 pointed the operator at the wrong remedy.
+            rc == -1 and looks_cli_vanished(text) and not cli_on_disk()
         )
         if not ok and unreachable and not engine_up(force=True):
             # The compose file may be perfectly valid: the CLI could not reach
