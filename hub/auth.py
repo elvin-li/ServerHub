@@ -55,6 +55,38 @@ def _auth_cfg() -> dict:
     return auth if isinstance(auth, dict) else {}
 
 
+def _renderable(value) -> bool:
+    """False for an int past CPython's int->str digit cap (YAML ``0x…``
+    loads it fine; ``yaml.safe_dump`` then ValueError'd the whole write)."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            str(value)
+        except ValueError:
+            return False
+    return True
+
+
+def _clean_epochs(raw) -> dict:
+    """``session_epochs`` rows that YAML can re-dump.
+
+    A leftover unrenderable-int epoch (or key) rode along untouched in every
+    auth write and ValueError'd ``yaml.safe_dump`` inside ``config.mutate`` --
+    setup, password changes and the TOTP epoch bump all 500'd on it.
+
+    An unrenderable *value* is pinned to 1, not dropped: ``_session_epoch``
+    reads the leftover as 1, so persisting the same number keeps that
+    account's pre-logout tokens revoked instead of resetting its counter.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k, v in raw.items():
+        if not _renderable(k):
+            continue
+        out[k] = v if _renderable(v) else 1
+    return out
+
+
 def _auth_block(data: dict) -> tuple[dict, dict]:
     """Ensure ``data['settings']['auth']`` are mappings before a mutate.
 
@@ -67,7 +99,10 @@ def _auth_block(data: dict) -> tuple[dict, dict]:
         settings = {}
         data["settings"] = settings
     auth = settings.get("auth")
-    return settings, (dict(auth) if isinstance(auth, dict) else {})
+    auth = dict(auth) if isinstance(auth, dict) else {}
+    if "session_epochs" in auth:
+        auth["session_epochs"] = _clean_epochs(auth.get("session_epochs"))
+    return settings, auth
 
 
 def _account_rows(auth_cfg: dict) -> list[dict]:
@@ -78,6 +113,21 @@ def _account_rows(auth_cfg: dict) -> list[dict]:
 def _utf8(text: str) -> bytes:
     """UTF-8 bytes of *text*.  Lone surrogates must not 500 login or setup."""
     return str(text).encode("utf-8", "surrogatepass")
+
+
+def _cfg_text(raw) -> str:
+    """``str()`` of a config value that cannot 500 login / status / setup.
+
+    YAML hex (``0x…``) parses through ``int(x, 16)``, which CPython's
+    str↔int digit cap does not bound, so a leftover >4300-digit integer in
+    ``settings.auth`` loads fine and then ValueError'd ``str()`` — every
+    login attempt (``accounts()``), the unclaimed GET /api/auth/status
+    (``suggested_setup_username``) and ``setup_token_mode`` returned 500.
+    """
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
 
 
 def _utf8_ok(text: str) -> bool:
@@ -138,12 +188,12 @@ def accounts() -> dict[str, dict]:
     a = _auth_cfg()
     out: dict[str, dict] = {}
 
-    legacy_name = str(a.get("username") or "admin").strip() or "admin"
+    legacy_name = _cfg_text(a.get("username") or "admin").strip() or "admin"
     if not _utf8_ok(legacy_name):
         # Lone-surrogate leftover: keep the hash under the default name so
         # setup/status can still JSON-encode a suggested username.
         legacy_name = "admin"
-    legacy_hash = str(a.get("password_hash") or a.get("password") or "")
+    legacy_hash = _cfg_text(a.get("password_hash") or a.get("password") or "")
     if legacy_hash and ":" not in legacy_name:
         out[legacy_name] = {
             "username": legacy_name,
@@ -158,22 +208,22 @@ def accounts() -> dict[str, dict]:
     for raw in rows:
         if not isinstance(raw, dict):
             continue
-        name = str(raw.get("username") or "").strip()
+        name = _cfg_text(raw.get("username") or "").strip()
         if not name or ":" in name or not _utf8_ok(name):
             continue
-        role = str(raw.get("role") or ROLE_MEMBER)
+        role = _cfg_text(raw.get("role") or ROLE_MEMBER)
         if role not in ROLES:
             role = ROLE_MEMBER
         raw_res = raw.get("resources")
         resources = [
-            str(r) for r in raw_res
-            if str(r).strip() and _utf8_ok(str(r))
+            _cfg_text(r) for r in raw_res
+            if _cfg_text(r).strip() and _utf8_ok(_cfg_text(r))
         ] if isinstance(raw_res, list) else []
         # An explicit entry wins over the legacy pair for the same name, so
         # promoting the admin into the accounts list is a safe migration.
         out[name] = {
             "username": name,
-            "password_hash": str(raw.get("password_hash") or ""),
+            "password_hash": _cfg_text(raw.get("password_hash") or ""),
             "role": role,
             "resources": resources,
         }
@@ -237,7 +287,7 @@ def _auth_is_claimed(auth_cfg: dict) -> bool:
         return False
     if auth_cfg.get("password_hash"):
         return True
-    return str(auth_cfg.get("password") or "") not in ("", "change-me")
+    return _cfg_text(auth_cfg.get("password") or "") not in ("", "change-me")
 
 
 def setup_required() -> bool:
@@ -246,7 +296,7 @@ def setup_required() -> bool:
 
 def suggested_setup_username() -> str:
     """First-run username for GET /api/auth/status.  Must be JSON-encodable."""
-    raw = str(_auth_cfg().get("username") or "admin").strip() or "admin"
+    raw = _cfg_text(_auth_cfg().get("username") or "admin").strip() or "admin"
     return raw if _utf8_ok(raw) else "admin"
 
 
@@ -355,7 +405,7 @@ def setup_token() -> str:
 
 
 def setup_token_mode() -> str:
-    mode = str((_auth_cfg() or {}).get("setup_token_mode") or "auto").strip().lower()
+    mode = _cfg_text((_auth_cfg() or {}).get("setup_token_mode") or "auto").strip().lower()
     return mode if mode in SETUP_TOKEN_MODES else "auto"
 
 
@@ -693,10 +743,10 @@ def _verify_scrypt(encoded: str, password: str) -> bool:
 
 def verify_password(password: str) -> bool:
     a = _auth_cfg()
-    encoded = str(a.get("password_hash") or "")
+    encoded = _cfg_text(a.get("password_hash") or "")
     if encoded.startswith("scrypt$"):
         return _verify_scrypt(encoded, password)
-    legacy = str(a.get("password") or "")
+    legacy = _cfg_text(a.get("password") or "")
     return bool(legacy and legacy != "change-me" and constant_time_equals(password, legacy))
 
 
@@ -726,13 +776,13 @@ def verify_account_password(username: str | None, password: str) -> bool:
     if not acct:
         _verify_scrypt(_dummy_hash(), password)
         return False
-    encoded = str(acct.get("password_hash") or "")
+    encoded = _cfg_text(acct.get("password_hash") or "")
     if encoded.startswith("scrypt$"):
         return _verify_scrypt(encoded, password)
     # Only the legacy admin pair may carry a plaintext password from very old
     # configs; accounts-list entries are always created hashed.
     if str(acct.get("role")) == ROLE_ADMIN:
-        legacy = str(_auth_cfg().get("password") or "")
+        legacy = _cfg_text(_auth_cfg().get("password") or "")
         return bool(
             legacy and legacy != "change-me" and constant_time_equals(password, legacy)
         )
@@ -833,8 +883,8 @@ def create_account(
     def apply(data: dict) -> None:
         settings, auth_cfg = _auth_block(data)
         entries = _account_rows(auth_cfg)
-        taken = {str(e.get("username") or "").strip().lower() for e in entries}
-        legacy = str(auth_cfg.get("username") or "").strip().lower()
+        taken = {_cfg_text(e.get("username") or "").strip().lower() for e in entries}
+        legacy = _cfg_text(auth_cfg.get("username") or "").strip().lower()
         if name.lower() in taken or (legacy and name.lower() == legacy):
             raise ValueError("exists")
         if len(entries) >= MAX_ACCOUNTS:
@@ -866,7 +916,7 @@ def set_account_resources(username: str, resources: list[str]) -> list[str]:
         settings, auth_cfg = _auth_block(data)
         entries = _account_rows(auth_cfg)
         for entry in entries:
-            if str(entry.get("username") or "") == name:
+            if _cfg_text(entry.get("username") or "") == name:
                 entry["resources"] = clean
         auth_cfg["accounts"] = entries
         settings["auth"] = auth_cfg
@@ -890,7 +940,7 @@ def set_account_password(username: str, password: str) -> None:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError("password_too_short")
     in_accounts_list = any(
-        str(raw.get("username") or "").strip() == name
+        _cfg_text(raw.get("username") or "").strip() == name
         for raw in _account_rows(_auth_cfg())
     )
     if not in_accounts_list:
@@ -903,7 +953,7 @@ def set_account_password(username: str, password: str) -> None:
         settings, auth_cfg = _auth_block(data)
         entries = _account_rows(auth_cfg)
         for entry in entries:
-            if str(entry.get("username") or "").strip() == name:
+            if _cfg_text(entry.get("username") or "").strip() == name:
                 entry["password_hash"] = digest
         auth_cfg["accounts"] = entries
         settings["auth"] = auth_cfg
@@ -928,13 +978,12 @@ def delete_account(username: str) -> None:
         settings, auth_cfg = _auth_block(data)
         entries = [
             e for e in _account_rows(auth_cfg)
-            if str(e.get("username") or "").strip() != name
+            if _cfg_text(e.get("username") or "").strip() != name
         ]
         auth_cfg["accounts"] = entries
         # Drop the logout counter too: a recreated account with the same name
         # must not inherit a stale epoch that predates it.
-        epochs = auth_cfg.get("session_epochs")
-        epochs = dict(epochs) if isinstance(epochs, dict) else {}
+        epochs = _clean_epochs(auth_cfg.get("session_epochs"))
         epochs.pop(name, None)
         auth_cfg["session_epochs"] = epochs
         settings["auth"] = auth_cfg
@@ -1026,9 +1075,19 @@ def _session_epoch(username: str) -> int:
         raw = epochs.get(username)
         if raw is None or isinstance(raw, bool):
             return 0
-        return int(raw)
+        value = int(raw)
     except (TypeError, ValueError, OverflowError):
         return 0
+    try:
+        str(value)
+    except ValueError:
+        # A leftover YAML hex int past CPython's int->str digit cap cannot be
+        # rendered into the signed version; the f-string in
+        # account_session_version used to 500 every login and pending-TOTP
+        # token.  1, not 0: the account has logged out at least once, so
+        # pre-logout tokens (whose version omits the epoch) must stay revoked.
+        return 1
+    return value
 
 
 def bump_session_epoch(username: str) -> None:
@@ -1047,16 +1106,24 @@ def bump_session_epoch(username: str) -> None:
             data["settings"] = settings
         auth = settings.get("auth")
         auth = dict(auth) if isinstance(auth, dict) else {}
-        epochs = auth.get("session_epochs")
-        epochs = dict(epochs) if isinstance(epochs, dict) else {}
+        raw_epochs = auth.get("session_epochs")
+        raw = raw_epochs.get(username) if isinstance(raw_epochs, dict) else None
+        epochs = _clean_epochs(raw_epochs)
         try:
-            raw = epochs.get(username)
             if raw is None or isinstance(raw, bool):
-                epochs[username] = 1
+                nxt = 1
             else:
-                epochs[username] = int(raw) + 1
+                nxt = int(raw) + 1
         except (TypeError, ValueError, OverflowError):
-            epochs[username] = 1
+            nxt = 1
+        try:
+            str(nxt)
+        except ValueError:
+            # An unrenderable leftover epoch reads back as 1 (_session_epoch),
+            # so the bump must land past it to keep revoking that window --
+            # and yaml.safe_dump of the huge int used to 500 TOTP confirm.
+            nxt = 2
+        epochs[username] = nxt
         auth["session_epochs"] = epochs
         settings["auth"] = auth
 
@@ -1463,7 +1530,7 @@ def require_auth(
         # The configured legacy username is admin even when accounts() has not
         # yet materialised a hash (setup-adjacent tests and a half-written
         # config); is_admin() alone would fail closed in that window.
-        legacy_name = str(_auth_cfg().get("username") or "admin").strip() or "admin"
+        legacy_name = _cfg_text(_auth_cfg().get("username") or "admin").strip() or "admin"
         if verify_account_password(credentials.username, credentials.password) and (
             is_admin(credentials.username)
             or constant_time_equals(credentials.username, legacy_name)
