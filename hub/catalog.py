@@ -666,9 +666,19 @@ def _build_listing(now: float, sig: str) -> list:
         except OSError:
             continue
         tid = meta.get("id") or p.stem
+        if isinstance(tid, int) and not isinstance(tid, bool):
+            # A numeric YAML id (`id: 8080`) must behave like its quoted twin:
+            # coerce via a str() probe, not the strict isinstance gate that
+            # silently renamed the entry to the filename.  Over-cap ints
+            # (hex/octal YAML dodges the digit cap at parse time) make str()
+            # the digit-cap ValueError — those keep the stem fallback.
+            try:
+                tid = str(tid)
+            except ValueError:
+                tid = p.stem
         if not isinstance(tid, str) or not tid or "\x00" in tid:
             tid = p.stem
-            meta["id"] = tid
+        meta["id"] = tid
         is_remote = p.parent != TEMPLATES
         dest = None
         installed = False

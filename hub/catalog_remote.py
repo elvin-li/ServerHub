@@ -333,9 +333,29 @@ def _ensure_dir() -> None:
     )
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one poisoned ``synced`` stamp
+    used to make :func:`_load_state` return ``{}``, and the very next
+    :func:`_save_state` — any sync or set_source — rewrote state.json from
+    that empty snapshot, silently dropping the configured source URL and
+    every synced template's version/sha records.  Dropping just the number
+    keeps the file, same as the notify_channels / smart_test_svc hooks.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_state() -> dict:
     try:
-        data = safe_json_loads(read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"))
+        data = safe_json_loads(
+            read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"),
+            parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested state is not ValueError.
         return {}
@@ -466,14 +486,19 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
         return "front matter is not valid YAML: " + _as_text(exc)
     if not isinstance(meta, dict):
         return "front matter is not a mapping"
-    if not str(meta.get("name") or "").strip():
+    # _as_text, not str(): PyYAML resolves ``0x…`` / ``0o…`` scalars through
+    # int(x, 16) / int(x, 8), which the CPython digit cap does not police, so
+    # a >4300-digit hex int arrives here as a live int object whose str() is
+    # the digit-cap ValueError.  That escaped the sync loop and 500'd the
+    # whole POST /api/catalog/remote/check instead of rejecting one template.
+    if not _as_text(meta.get("name") or "").strip():
         return "front matter lacks a name"
-    if not str(meta.get("desc") or "").strip():
+    if not _as_text(meta.get("desc") or "").strip():
         return "front matter lacks a desc"
     # The listing id comes from the *filename*, but a front-matter `id:` key
     # overrides it in _parse_template().  A template that claims another id
     # would impersonate a different catalog entry, so the two must agree.
-    if expected_id and str(meta.get("id") or expected_id) != expected_id:
+    if expected_id and _as_text(meta.get("id") or expected_id) != expected_id:
         return "front matter id does not match the manifest id"
     body = m.group(2)
     # The same trap tests/test_template_metadata.py pins for shipped templates:

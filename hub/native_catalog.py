@@ -1858,11 +1858,16 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
         }
 
     if method == "brew_formula":
+        # _raise_if_brew_vanished on every spawn, same as the brew_cask branch's
+        # _run_brew: a brew that vanished mid-request used to fall through the
+        # `not _is_installed(app)` fallback — which cannot see a formula while
+        # `brew list` itself is gone — and report a *successful* uninstall of
+        # an app that is still fully installed.
         pkg = app["package"]
         if app.get("service"):
-            r0 = _run([BREW, "services", "stop", pkg], timeout=120)
+            r0 = _raise_if_brew_vanished(_run([BREW, "services", "stop", pkg], timeout=120))
             logs.append(r0["message"])
-        r = _run([BREW, "uninstall", pkg], timeout=300)
+        r = _raise_if_brew_vanished(_run([BREW, "uninstall", pkg], timeout=300))
         logs.append(r["message"])
         return {
             "ok": r["ok"] or not _is_installed(app),
@@ -1876,7 +1881,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
         # which is a no-op, and the return below ignored it anyway.  What the
         # operator asked for is "this app is gone", so that is what gets checked.
         for pkg in reversed(app.get("packages") or []):
-            r = _run([BREW, "uninstall", pkg], timeout=300)
+            r = _raise_if_brew_vanished(_run([BREW, "uninstall", pkg], timeout=300))
             logs.append(f"[{pkg}] {r['message']}")
         return {
             "ok": not _is_installed(app),
