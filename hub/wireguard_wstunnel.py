@@ -300,7 +300,14 @@ def valid_restrict_to(value: str) -> bool:
         port = raw.split(":", 1)[1]
     else:
         return False
-    if not (port.isdigit() and 1 <= int(port) <= 65535):
+    try:
+        if not (port.isdigit() and 1 <= int(port) <= 65535):
+            return False
+    except ValueError:
+        # The port here is split out of the raw value, not a bounded regex
+        # capture: isdigit() passes a >4300-digit run (CPython's str->int cap)
+        # and superscripts, and the ValueError used to 500 PUT
+        # /api/wireguard/settings and POST /api/wireguard/remediate.
         return False
     host = restrict_host(raw)
     if not host:
