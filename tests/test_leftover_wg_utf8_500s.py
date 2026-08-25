@@ -210,9 +210,16 @@ class SocketNameSurrogateTests(unittest.TestCase):
 
 
 class HuntedRegistryDigitPinTests(unittest.TestCase):
-    """A >4300-digit int in the registry degrades to empty, not a 500."""
+    """A >4300-digit int in the registry clamps to 0 instead of wiping it.
 
-    def test_over_cap_created_degrades_to_empty_registry(self):
+    The earlier pin accepted "degrades to empty" as the survival mode; that
+    turned out to be its own silent-loss class (the next peer write persisted
+    the empty view, destroying every retained client key), so the journal is
+    now preserved with the one absurd number clamped.  See
+    tests/test_leftover_wg3_500s.py for the full battery.
+    """
+
+    def test_over_cap_created_keeps_the_journal(self):
         tmp = Path(tempfile.mkdtemp(prefix="wg-reg-"))
         self.addCleanup(
             lambda: __import__("shutil").rmtree(tmp, ignore_errors=True)
@@ -224,7 +231,9 @@ class HuntedRegistryDigitPinTests(unittest.TestCase):
         )
         with mock.patch.object(wireguard_svc, "REGISTRY_PATH", path):
             registry = wireguard_svc._load_registry()
-        self.assertEqual(registry, {"peers": {}})
+        self.assertIn(PUB, registry["peers"])
+        self.assertEqual(registry["peers"][PUB]["name"], "phone")
+        self.assertEqual(registry["peers"][PUB]["created"], 0)
         _starlette(registry)
 
 

@@ -580,6 +580,13 @@ def generate_keypair() -> tuple[str, str]:
         raise WireGuardError("wg.keygen_failed")
     public = _run_with_input([WG, "pubkey"], private + "\n")
     if not _KEY_RE.match(public):
+        # Fresh on-disk probe, failure path only: an uninstall between the
+        # genkey above and this spawn used to report a 500 "could not
+        # generate a key" when the truthful answer is the same coded 503 the
+        # route guard raises.  A timeout or a real conversion failure with
+        # the binary still on disk keeps its original shape.
+        if not _path_exists(WG):
+            raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.keygen_failed")
     return private, public
 
@@ -599,6 +606,15 @@ def public_from_private(private: str) -> str:
         raise WireGuardError("wg.bad_key")
     public = _run_with_input([WG, "pubkey"], str(private).strip() + "\n")
     if not _KEY_RE.match(public):
+        # The stored key already matched _KEY_RE, so an empty answer here is
+        # about the tool, not the key.  `wg` uninstalled between the route
+        # guard and this spawn used to turn GET /api/wireguard/peers/config
+        # and /download into a 400 "invalid WireGuard key" about a key that
+        # is fine.  Coded 503 only after a fresh on-disk probe on this
+        # failure path; a timeout with the binary still present keeps the
+        # original wg.bad_key shape.
+        if not _path_exists(WG):
+            raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.bad_key")
     return public
 
@@ -700,9 +716,27 @@ def server_identity() -> dict:
 
 # ── peer registry ────────────────────────────────────────────────────────────
 
+def _journal_int(text: str) -> int:
+    """JSON integer literal, with CPython's 4300-digit cap absorbed to 0.
+
+    ``json.loads`` converts integer literals via ``int(str)``, so one leftover
+    over-cap number (a hand-edited ``created``, a restored backup) raised
+    ValueError — *not* JSONDecodeError — and :func:`_load_registry` degraded
+    the whole journal to ``{"peers": {}}``.  Every retained client private key
+    then read as gone, and the next peer write persisted that empty view,
+    destroying them for real.  One absurd number must not cost the journal.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return 0
+
+
 def _load_registry() -> dict:
     try:
-        data = safe_json_loads(read_text_capped(REGISTRY_PATH, _REGISTRY_CAP))
+        data = safe_json_loads(
+            read_text_capped(REGISTRY_PATH, _REGISTRY_CAP), parse_int=_journal_int
+        )
     except (OSError, ValueError, RecursionError):
         return {"peers": {}}
     if not isinstance(data, dict) or not isinstance(data.get("peers"), dict):
@@ -727,6 +761,16 @@ def _save_registry(data: dict) -> None:
             return {_as_text(k): _clean(v, depth + 1) for k, v in value.items()}
         if isinstance(value, list):
             return [_clean(v, depth + 1) for v in value]
+        if isinstance(value, int) and not isinstance(value, bool):
+            # str() probe, not an isinstance-str gate: json.dumps renders ints
+            # through int->str, which CPython caps at 4300 digits.  One
+            # leftover over-cap int used to fail the dump below and silently
+            # skip the *whole* journal write for a peer create that reported
+            # success.
+            try:
+                str(value)
+            except ValueError:
+                return 0
         return value
 
     drop_leftover_nonfile(REGISTRY_PATH)

@@ -175,7 +175,12 @@ def read_plist(path: Path | None = None) -> dict[str, str]:
     argv = data.get("ProgramArguments") or []
     if not isinstance(argv, list):
         return {"listen": "", "restrict_to": ""}
-    return parse_argv([str(part) for part in argv])
+    # _as_text, not str(): plistlib parses <integer>0x…</integer> through
+    # int(x, 16), which CPython's 4300-digit cap does not bound, so a leftover
+    # over-cap hex integer in the argv survived plistlib.loads and the bare
+    # str() here ValueError'd GET /api/wireguard, GET /api/wireguard/settings,
+    # GET /api/wireguard/readiness and GET /api/system/network.
+    return parse_argv([_as_text(part) for part in argv])
 
 
 @ttl_memo(6.0)
