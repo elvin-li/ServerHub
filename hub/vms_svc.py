@@ -61,6 +61,19 @@ def _orb_available() -> bool:
     return _bin_present(ORBCTL)
 
 
+def _cli_missing(rc, err) -> bool:
+    """Whether an ``sh()`` result means the hypervisor CLI itself is gone.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real utmctl/orbctl exit.  The availability check runs
+    before the spawn, so an uninstall in between used to answer the action
+    with an uncoded ``{ok: false, message: "not found"}`` instead of the same
+    coded 503 the up-front check raises.  A timeout keeps its own sentinel and
+    is deliberately not classified: a slow CLI is not a missing one.
+    """
+    return rc == -1 and _as_text(err).strip() == "not found"
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/vms cannot UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
@@ -579,6 +592,8 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         rc, out, err = sh(args, timeout=300)
     elif action == "ip":
         rc, out, err = sh([UTMCTL, "ip-address", ident], timeout=15)
+        if _cli_missing(rc, err):
+            raise api_error("vms.utm_unavailable")
         text = _as_text(out)
         ips = [ln.strip() for ln in text.splitlines() if ln.strip()]
         _invalidate()
@@ -593,6 +608,8 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         return {"ok": True, "action": action, "id": ident, "status": st}
     else:
         raise api_error("vms.utm_unsupported_action", action=action)
+    if _cli_missing(rc, err):
+        raise api_error("vms.utm_unavailable")
     _invalidate()
     return {
         "ok": rc == 0, "action": action, "id": ident,
@@ -681,6 +698,8 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         }
     elif action == "info":
         rc, out, err = sh([ORBCTL, "info", ident], timeout=15)
+        if _cli_missing(rc, err):
+            raise api_error("vms.orb_unavailable")
         return {
             "ok": rc == 0, "action": "info", "id": ident,
             "message": _as_text(out) or _as_text(err),
@@ -689,6 +708,8 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         return rename_vm_display(f"orb:{ident}", kwargs.get("name") or "")
     else:
         raise api_error("vms.orb_unsupported_action", action=action)
+    if _cli_missing(rc, err):
+        raise api_error("vms.orb_unavailable")
     _invalidate()
     return {
         "ok": rc == 0, "action": action, "id": ident,
@@ -718,6 +739,8 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
     if arch in ("arm64", "amd64"):
         args += ["--arch", arch]
     rc, out, err = sh(args, timeout=600)
+    if _cli_missing(rc, err):
+        raise api_error("vms.orb_unavailable")
     _invalidate()
     return {
         "ok": rc == 0,

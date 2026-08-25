@@ -491,6 +491,20 @@ def installation() -> dict:
 
 # ── key material ─────────────────────────────────────────────────────────────
 
+def _cli_missing(rc, err) -> bool:
+    """Whether an ``sh()`` result means the ``wg`` binary itself is gone.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real ``wg`` exit.  The route guard checks the binary is
+    on disk before the request runs, so an uninstall in between used to turn
+    peer create / batch / PSK toggle into a 500 ``wg.keygen_failed`` when the
+    truthful answer is the same coded 503 the guard raises.  A timeout keeps
+    its own sentinel and stays ``keygen_failed``: a slow wg is not a missing
+    one.
+    """
+    return rc == -1 and _as_text(err).strip() == "not found"
+
+
 def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
     """Run *argv* feeding *data* on stdin, returning trimmed stdout.
 
@@ -535,9 +549,11 @@ def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
 
 def generate_keypair() -> tuple[str, str]:
     """A fresh (private, public) Curve25519 pair from ``wg genkey`` / ``wg pubkey``."""
-    rc, private, _ = sh([WG, "genkey"], timeout=8)
+    rc, private, err = sh([WG, "genkey"], timeout=8)
     private = _as_text(private).strip()
     if rc != 0 or not _KEY_RE.match(private):
+        if _cli_missing(rc, err):
+            raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.keygen_failed")
     public = _run_with_input([WG, "pubkey"], private + "\n")
     if not _KEY_RE.match(public):
@@ -546,9 +562,11 @@ def generate_keypair() -> tuple[str, str]:
 
 
 def generate_psk() -> str:
-    rc, psk, _ = sh([WG, "genpsk"], timeout=8)
+    rc, psk, err = sh([WG, "genpsk"], timeout=8)
     psk = _as_text(psk).strip()
     if rc != 0 or not _KEY_RE.match(psk):
+        if _cli_missing(rc, err):
+            raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.keygen_failed")
     return psk
 
