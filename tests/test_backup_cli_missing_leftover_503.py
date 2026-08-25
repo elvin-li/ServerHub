@@ -34,6 +34,13 @@ the uncoded ok:false (present-but-unexecutable is not missing), a genuine
 non-zero exit keeps its raw output — that message is then the truth — and a
 stack step whose output merely reads "not found" while the engine answers
 "up" keeps its original failure mapping.
+
+Since the disk-confirm sweep, the sentinel alone no longer classifies:
+``_cli_vanished`` re-probes the disk (the vms ``_cli_missing`` rule), so the
+vanished cases below stub ``_tool_on_disk`` to answer "gone" — this suite
+runs on hosts where pg_dump and /usr/bin/tar really are installed.  The
+still-on-disk direction is pinned by
+test_leftover_backups_hexint_surrogate_vanish_500s.
 """
 from __future__ import annotations
 
@@ -85,6 +92,9 @@ class PostgresDumpCliMissingTests(unittest.TestCase):
         for patched in (
             mock.patch.object(backups, "BACKUP_ROOT", self.backup_root),
             mock.patch.object(backups, "_pg_env", return_value={}),
+            # The disk confirm must answer "gone" for the sentinel to
+            # classify; this host may genuinely have pg_dump installed.
+            mock.patch.object(backups, "_tool_on_disk", return_value=False),
         ):
             patched.start()
             self.addCleanup(patched.stop)
@@ -157,6 +167,9 @@ class ConfigArchiveCliMissingTests(unittest.TestCase):
             mock.patch.object(backups, "DATA_DIR", root / "empty-data"),
             mock.patch.object(backups, "cfg", lambda: {}),
             mock.patch.object(Path, "home", return_value=root / "no-home"),
+            # /usr/bin/tar exists on every host this suite runs on; the
+            # vanished case needs the disk confirm to answer "gone".
+            mock.patch.object(backups, "_tool_on_disk", return_value=False),
         ):
             patched.start()
             self.addCleanup(patched.stop)
@@ -213,11 +226,18 @@ class ImmichCliMissingTests(unittest.TestCase):
         self.assertEqual(list(self.backup_root.iterdir()), [])
 
     def test_probe_to_spawn_race_through_the_job_entry(self):
-        """backup_immich's gate says "script"; the spawn then hits the
-        sentinel — the answer is the same refusal the gate itself gives."""
+        """backup_immich's gate says "script"; the script vanishes before the
+        spawn, which hits the sentinel — the answer is the same refusal the
+        gate itself gives.  The unlink models the race: the disk confirm
+        must find the script really gone, not just trust the sentinel."""
         self.script.write_text("#!/bin/sh\n")
         self.script.chmod(0o755)
-        with mock.patch.object(backups, "run_capped", return_value=MISSING):
+
+        def vanish(argv, **_kwargs):
+            self.script.unlink()
+            return MISSING
+
+        with mock.patch.object(backups, "run_capped", side_effect=vanish):
             result = backups.backup_immich()
         self.assertEqual(result, backups._immich_unavailable())
 
