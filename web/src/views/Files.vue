@@ -45,7 +45,9 @@
         <button type="button" class="tiny" @click="deactivate">{{ t('files.close_panel') }}</button>
       </div>
 
-      <nav class="crumbs" v-if="listing">
+      <!-- App.vue already owns two labelled navigation landmarks; a third one
+           with no name is announced as an anonymous "navigation". -->
+      <nav class="crumbs" v-if="listing" :aria-label="t('files.breadcrumbs')">
         <button type="button" class="crumb" @click="goPath(listing.root)">{{ finiteText(listing.root_id, 'root') }}</button>
         <template v-for="(c, i) in listing.crumbs || []" :key="c.path">
           <span class="sep">/</span>

@@ -1781,6 +1781,7 @@ export default {
     items: 'items',
     empty: 'Empty folder',
     parent: 'Up',
+    breadcrumbs: 'Current folder path',
     drop_hint: 'Drop files onto the table to upload',
     confirm_delete: 'Delete “{name}”?',
     confirm_delete_dir: 'Delete folder “{name}” and everything inside it? This cannot be undone.',

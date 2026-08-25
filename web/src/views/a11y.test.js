@@ -152,14 +152,20 @@ describe('control names', () => {
     ).toEqual([])
   })
 
-  it('names every form control on the account and settings surfaces', () => {
+  it('names every form control on the account, settings and sharing surfaces', () => {
     // The form-grid layout puts a <label> next to its control without for/id,
     // so the label text counts for nothing: the text inputs all carried
     // aria-label while nine checkboxes/selects on Settings (notify, thresholds,
     // WoL, advanced, terminal) shipped with no accessible name at all.
     // Accepted name sources: aria-label / aria-labelledby (static or bound),
     // a wrapping <label>, or a for= that targets the control's id.
-    const FILES = ['views/Login.vue', 'views/Account.vue', 'views/Users.vue', 'views/Settings.vue']
+    // The sharing surfaces (Shares sheet, Files toolbar/table, PhotosHub
+    // settings, WireGuard peer forms + settings dialog) are in the list so a
+    // control added to any of their form grids cannot ship nameless.
+    const FILES = [
+      'views/Login.vue', 'views/Account.vue', 'views/Users.vue', 'views/Settings.vue',
+      'views/Shares.vue', 'views/Files.vue', 'views/PhotosHub.vue', 'views/WireGuard.vue',
+    ]
     const TAG = /<\/?([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)\/?>/g
     const offenders = []
     for (const name of FILES) {
@@ -212,6 +218,74 @@ describe('account surface load-failure alerts', () => {
     expect(pickers.length).toBe(2)
     // The empty-row error text, but not its loading/none siblings, is live.
     expect(users).toMatch(/v-if="accountsError"[^>]*role="alert"/)
+  })
+})
+
+describe('sharing surface load-failure alerts', () => {
+  // Same class of gap as the account surfaces: inline fetch failures with no
+  // toast and no LoadFailure banner, appearing silently for AT.
+  it('announces the Shares ACL read failure inside the edit sheet', () => {
+    // The ACL loads *after* the sheet already holds focus, so the panel-focus
+    // read never covers it.
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(shares).toMatch(/v-else-if="aclError"[^>]*role="alert"/)
+  })
+
+  it('announces the PhotosHub settings-config load failure', () => {
+    // pendingError and logError carried role="alert" from the start; the
+    // settings tab's copy shipped without it.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/v-if="settingsError"[^>]*role="alert"/)
+    expect(photoshub).toMatch(/v-if="pendingError"[^>]*role="alert"/)
+    expect(photoshub).toMatch(/v-if="logError"[^>]*role="alert"/)
+  })
+
+  it('announces the WireGuard settings-dialog load failure', () => {
+    // The tile latches a failed read and blocks Save; without role="alert" a
+    // screen-reader user hears an editable form and a disabled Save button
+    // with no stated reason.
+    const wireguard = readFileSync(resolve(SRC, 'views/WireGuard.vue'), 'utf8')
+    expect(wireguard).toMatch(/v-if="!settingsLoaded"[^>]*role="alert"/)
+  })
+
+  it('keeps the Files listing error bar an assertive live region', () => {
+    const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+    expect(files).toMatch(/class="err-live" role="alert" aria-live="assertive"/)
+  })
+})
+
+describe('sharing surface control names', () => {
+  it('does not shadow the PhotosHub people labels with shorter aria-labels', () => {
+    // Each input has a for/id <label> reading "child · field". The aria-labels
+    // that used to sit on top overrode them with the bare field name, so both
+    // birthday inputs were announced identically as "birthday" with nothing
+    // saying whose.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    for (const id of ['ph-yuanbao-name', 'ph-yuanbao-bday', 'ph-erbao-name', 'ph-erbao-bday']) {
+      expect(photoshub, `${id} must keep its for/id label`).toContain(`for="${id}"`)
+      const input = photoshub.match(new RegExp(`<input id="${id}"[^>]*>`))
+      expect(input, `input #${id}`).toBeTruthy()
+      expect(input[0], `${id}: aria-label overrides the richer visible label`)
+        .not.toMatch(/aria-label/)
+    }
+  })
+
+  it('names every navigation landmark', () => {
+    // App.vue ships two labelled navs (sidebar, section tabs). The Files
+    // breadcrumb trail is a third landmark; unnamed, it is announced as an
+    // anonymous "navigation" indistinguishable from the others.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/<nav\b[^>]*>|role="navigation"[^>]*/g)) {
+        const tag = m[0].startsWith('<nav')
+          ? m[0]
+          // role= can sit mid-tag; re-read the whole element around the match.
+          : template.slice(template.lastIndexOf('<', m.index), template.indexOf('>', m.index) + 1)
+        if (!/:?aria-label(?:ledby)?=/.test(tag)) offenders.push(`${name}: ${tag.replace(/\s+/g, ' ').slice(0, 80)}`)
+      }
+    }
+    expect(offenders, 'nav landmarks need aria-label to be told apart').toEqual([])
   })
 })
 

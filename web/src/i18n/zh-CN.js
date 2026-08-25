@@ -1777,6 +1777,7 @@ export default {
     items: '项',
     empty: '空目录',
     parent: '上级',
+    breadcrumbs: '当前目录路径',
     drop_hint: '可将文件拖放到表格区域上传',
     confirm_delete: '删除「{name}」？',
     confirm_delete_dir: '删除文件夹「{name}」及其全部内容？此操作无法撤销。',
