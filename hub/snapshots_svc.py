@@ -280,7 +280,16 @@ def time_machine_overview() -> dict:
     for entry in raw_dest:
         if not isinstance(entry, dict):
             continue
-        mount_point = str(entry.get("MountPoint") or "")
+        try:
+            mount_point = str(entry.get("MountPoint") or "")
+        except ValueError:
+            # A leftover plist-hex MountPoint arrives *already-int*
+            # (plistlib parses ``<integer>0xF…</integer>`` through
+            # ``int(x, 16)``, exempt from CPython's 4300-digit parse cap),
+            # so the bare str() raised the int->str digit-cap ValueError out
+            # of fan_out and 500'd GET /api/snapshots.  An unrenderable
+            # mount can never name a directory; treat it as unmounted.
+            mount_point = ""
         mounted = False
         if mount_point and "\x00" not in mount_point:
             try:
