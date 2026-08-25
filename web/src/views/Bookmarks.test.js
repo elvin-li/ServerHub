@@ -145,6 +145,29 @@ describe('Bookmarks failure states', () => {
     wrapper.unmount()
   })
 
+  it('keeps stale cards visible below the banner when a re-check fails', async () => {
+    // Force check fails after a good first load: the operator must see the
+    // failure *and* keep the last known rows — banner above, stale grid below,
+    // never a blank page that reads as "no bookmarks".
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.bm-page-card').length).toBe(3)
+
+    api.getBookmarks.mockRejectedValue(new Error('sweep died'))
+    await wrapper.get('.toolbar button.primary').trigger('click')
+    await flushPromises()
+
+    const banner = wrapper.findComponent({ name: 'LoadFailure' })
+    expect(banner.exists(), 'failure banner').toBe(true)
+    expect(wrapper.findAll('.bm-page-card').length, 'stale rows survive').toBe(3)
+    expect(wrapper.find('.placeholder').exists(), 'not the empty state').toBe(false)
+    const html = wrapper.html()
+    expect(html.indexOf('load-failure-stub')).toBeGreaterThan(-1)
+    expect(html.indexOf('load-failure-stub'), 'banner above the grid')
+      .toBeLessThan(html.indexOf('bm-page-grid'))
+    wrapper.unmount()
+  })
+
   it('does not toast a load that fails after leave', async () => {
     let rejectLoad
     api.getBookmarks.mockImplementation(() => new Promise((_, reject) => { rejectLoad = reject }))
