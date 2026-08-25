@@ -2996,6 +2996,7 @@ export default {
       action_failed: 'PhotosHub 操作失败：{detail}',
       bad_log: '未知的 PhotosHub 日志名',
       not_installed: '这台 Mac 尚未安装 PhotosHub',
+      ctl_missing: 'PhotosHub 目录中缺少 {tool}',
       bad_immich_url: 'Immich API 地址必须是内网或本机的 http(s) URL',
       album_missing: '未找到待删除相册',
       key_missing: '缺少 Immich API 密钥',

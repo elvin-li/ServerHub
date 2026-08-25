@@ -2994,6 +2994,7 @@ export default {
       action_failed: 'PhotosHub 操作に失敗しました: {detail}',
       bad_log: '不明な PhotosHub ログ名です',
       not_installed: 'この Mac に PhotosHub はインストールされていません',
+      ctl_missing: 'PhotosHub ツリーに {tool} が見つかりません',
       bad_immich_url: 'Immich API URL はプライベートまたはループバックの http(s) である必要があります',
       album_missing: '削除待ちアルバムが見つかりません',
       key_missing: 'Immich API キーがありません',

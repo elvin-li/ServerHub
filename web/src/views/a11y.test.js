@@ -478,6 +478,17 @@ describe('dashboard and storage surface leftovers', () => {
     expect(vms).toMatch(/<span class="meta" role="status">\s*\{\{ t\('vms\.meta'/)
   })
 
+  it('announces the PhotosHub pending count and empty state as status regions', () => {
+    // "Refresh pending list" and "Remove" answer only through the count and
+    // the tiles (or the scanning -> "no pending" flip on an empty album);
+    // both changed silently for a screen reader — the Files item-count and
+    // Logs empty/loading treatment.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/data-test="photoshub-pending-count"[^>]*>|role="status" data-test="photoshub-pending-count"/)
+    expect(photoshub).toMatch(/<span v-if="pending" class="meta-count" role="status"/)
+    expect(photoshub).toMatch(/data-test="photoshub-pending-empty" role="status"/)
+  })
+
   it('does not shadow the VMs create-dialog labels with placeholder aria-labels', () => {
     // Each input has a for/id <label> ("Version", "Machine name"). The bound
     // aria-labels that used to sit on top overrode them with the placeholder,

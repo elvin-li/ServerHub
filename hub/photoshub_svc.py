@@ -131,6 +131,17 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render the
+            # number at all — ``json.dumps`` raises the same ValueError this
+            # guard eats.  The JSON stores are parse-capped (a >4300-digit
+            # literal already fails ``json.loads``), but hex/octal text loads
+            # uncapped (``int(x, 16)`` is a power-of-two base), so a YAML-fed
+            # or in-memory leftover still reached Starlette untouched — the
+            # same drop backups/jobs ``_jsonable`` already carry.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -237,11 +248,28 @@ def _write_cfg(cfg: dict) -> None:
         pass
 
 
+def _utf8_or_none(text: str) -> str | None:
+    """*text* when it is real UTF-8, None when it carries lone surrogates.
+
+    JSON ``"\\ud800"`` in a PATCH body decodes to a lone surrogate str,
+    which passes ``_NAME`` / ``_ALBUM`` (it is not a control character).
+    Accepted, ``_write_cfg``'s sanitizer then stored a mangled ``?`` in
+    place of the album/person name — a title that can never match an
+    Immich album.  Refuse it like any other bad value instead (the vms
+    ``_argv_name`` precedent).
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return text
+
+
 def _safe_name(raw: Any) -> str:
     text = str(raw or "").strip()
     if not text:
         return ""
-    if not _NAME.fullmatch(text):
+    if not _NAME.fullmatch(text) or _utf8_or_none(text) is None:
         raise api_error("photoshub.bad_name")
     return text
 
@@ -259,7 +287,7 @@ def _safe_album(raw: Any, *, required: bool = False) -> str:
     text = str(raw or "").strip()
     if required and not text:
         raise api_error("photoshub.bad_album")
-    if not _ALBUM.fullmatch(text):
+    if not _ALBUM.fullmatch(text) or (text and _utf8_or_none(text) is None):
         raise api_error("photoshub.bad_album")
     return text
 
@@ -336,9 +364,14 @@ def _handbook_name() -> str:
 
 def _log_relpath(path: Path) -> str:
     try:
-        return str(path.resolve().relative_to(HUB.resolve()))
+        rel = str(path.resolve().relative_to(HUB.resolve()))
     except Exception:
-        return path.name
+        rel = path.name
+    # An on-disk log whose name holds undecodable bytes reaches here as lone
+    # surrogates (os surrogateescape); ``recent_logs`` returns this field raw
+    # — no ``_jsonable`` pass — so GET /api/photoshub/logs/{name} used to
+    # 500 at Starlette's UTF-8 encode while the lines themselves were clean.
+    return _utf8_text(rel)
 
 
 def _immich_key() -> str:
@@ -727,6 +760,24 @@ def remove_from_pending(ids: list[str]) -> dict:
     return {"removed": len(clean), "album_id": album_id}
 
 
+def _ctl_on_disk(binary: Any) -> bool:
+    """True when the just-spawned binary is still present on disk.
+
+    ``run_watchdog`` collapses every failed spawn into rc -1: a vanished
+    binary, a vanished *cwd* (this tree deleted mid-request), and a
+    signal-killed child all report the same way.  Mapping rc -1 to the
+    coded 503 must therefore confirm the binary actually left the disk
+    first (the docker ``cli_on_disk`` / vms ``_cli_missing`` rule) — with
+    photoctl still present, the raw ok:false result is the truth.  A stat
+    that raises (EIO under a dying volume holding the tree) counts as
+    gone: the CLI is unreachable either way.
+    """
+    try:
+        return Path(binary).is_file()
+    except OSError:
+        return False
+
+
 def run_action(action: str, timeout: int = 600) -> dict:
     if action not in ALLOWED_ACTIONS:
         raise api_error("photoshub.bad_action", action=action)
@@ -755,6 +806,13 @@ def run_action(action: str, timeout: int = 600) -> dict:
     started = _iso_now()
     log: list[str] = []
     rc = run_watchdog(cmd, timeout=timeout, log=log, env=env, cwd=str(HUB))
+    if rc == -1 and not _ctl_on_disk(cmd[0]):
+        # The installed()/script gate blessed this binary moments ago;
+        # vanished between the check and the spawn, the answer used to be
+        # HTTP 200 ``{ok: false, exit_code: -1}`` whose stderr leaked the
+        # spawn errno (home path included) — a shape the SPA cannot
+        # translate — instead of a coded 503.
+        raise api_error("photoshub.ctl_missing", tool=Path(cmd[0]).name)
     output = "\n".join(log)
     return _jsonable({
         "ok": rc == 0,

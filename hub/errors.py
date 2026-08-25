@@ -467,6 +467,10 @@ CODES: dict[str, tuple[int, str]] = {
     "photoshub.action_failed": (500, "PhotosHub action failed: {detail}"),
     "photoshub.bad_log": (400, "unknown PhotosHub log name"),
     "photoshub.not_installed": (404, "PhotosHub is not installed on this Mac"),
+    # The photoctl helper (or the people-album python) vanished between the
+    # installed()/script gate and the spawn.  503 like the other tool-absent
+    # states (backup.tool_missing, vms.orb_unavailable, wg.not_installed).
+    "photoshub.ctl_missing": (503, "{tool} is missing from the PhotosHub tree"),
     "photoshub.bad_immich_url": (400, "Immich API URL must be a private or loopback http(s) address"),
     "photoshub.album_missing": (404, "the pending-delete album was not found"),
     "photoshub.key_missing": (503, "the Immich API key is missing"),
