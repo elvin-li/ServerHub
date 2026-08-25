@@ -555,6 +555,15 @@ describe('backup and workload surface leftovers', () => {
     const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
     expect(terminal).toMatch(/<LoadFailure v-if="statusError"[^>]*:retry="load"/)
   })
+
+  it('voices the Terminal dialog connection state', () => {
+    // The status dot's colour was the only connected/disconnected cue, and
+    // the transition was silent for a screen reader — the VNC console beside
+    // it already carries an aria-live status label for the same handshake.
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    expect(terminal).toMatch(/class="status-dot" :class="\{ live: connected \}" aria-hidden="true"/)
+    expect(terminal).toMatch(/class="sr-only" role="status">\{\{ connected \? t\('terminal\.a11y_connected'\) : t\('terminal\.a11y_disconnected'\) \}\}/)
+  })
 })
 
 describe('settings and users surface leftovers', () => {

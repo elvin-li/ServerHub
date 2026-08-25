@@ -3132,6 +3132,8 @@ export default {
     host_locked_cta: 'Open Settings',
     danger_hint: 'Commands run as your macOS user. There is no undo.',
     a11y_output: 'Terminal output',
+    a11y_connected: 'Connected',
+    a11y_disconnected: 'Not connected',
     keys_hint: 'Enter to run · Shift+Enter for a new line · ↑/↓ for history · Ctrl/⌘+L to clear',
     cancel: 'Cancel command',
   },

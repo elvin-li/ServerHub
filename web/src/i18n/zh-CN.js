@@ -3128,6 +3128,8 @@ export default {
     host_locked_cta: '前往设置',
     danger_hint: '命令以你的 macOS 用户身份执行，无法撤销。',
     a11y_output: '终端输出',
+    a11y_connected: '已连接',
+    a11y_disconnected: '未连接',
     keys_hint: 'Enter 执行 · Shift+Enter 换行 · ↑/↓ 浏览历史 · Ctrl/⌘+L 清屏',
     cancel: '取消命令',
   },

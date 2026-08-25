@@ -3126,6 +3126,8 @@ export default {
     host_locked_cta: '設定を開く',
     danger_hint: 'コマンドは macOS ユーザー権限で実行されます。取り消しはできません。',
     a11y_output: 'ターミナル出力',
+    a11y_connected: '接続済み',
+    a11y_disconnected: '未接続',
     keys_hint: 'Enter で実行 · Shift+Enter で改行 · ↑/↓ で履歴 · Ctrl/⌘+L でクリア',
     cancel: 'コマンドを中止',
   },

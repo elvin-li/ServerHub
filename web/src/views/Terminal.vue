@@ -67,7 +67,12 @@
         >
           <header class="terminal-head">
             <div class="terminal-title">
-              <span class="status-dot" :class="{ live: connected }"></span>
+              <span class="status-dot" :class="{ live: connected }" aria-hidden="true"></span>
+              <!-- role=status: the dot's colour is the only connected/disconnected
+                   cue and the transition was silent for a screen reader — the VNC
+                   console's aria-live status-label pattern, kept sr-only here so
+                   the compact terminal header stays unchanged visually. -->
+              <span class="sr-only" role="status">{{ connected ? t('terminal.a11y_connected') : t('terminal.a11y_disconnected') }}</span>
               <strong>{{ finiteText(targetLabel) }}</strong>
               <span v-if="sessionId" class="session-id">{{ finiteText(sessionId) }}</span>
             </div>
