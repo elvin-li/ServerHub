@@ -73,12 +73,22 @@ def _jsonable(value, depth: int = 0):
     in ``quick_links`` are ``datetime`` objects — both 500 GET /api/status.
     A leftover ``\\ud800`` in a name or key still 500'd the same encoder
     (``ensure_ascii=False`` then UTF-8) on GET /api/status and status peek.
+    A >4300-digit int (a services.yaml/plist hex leftover — ``0xfff…`` dodges
+    the int(str) parse cap) still passed through untouched: CPython's
+    int->str digit limit then ValueError'd ``json.dumps`` itself, 500ing
+    GET /api/status, GET /api/services and GET /api/services/{id}/detail.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past the digit cap the encoder cannot render the number at
+            # all — same drop as its inf float sibling (docker_cli rule).
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):

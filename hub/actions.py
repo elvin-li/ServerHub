@@ -14,7 +14,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.config import cfg
-from hub.docker_cli import engine_up, looks_engine_down
+from hub.docker_cli import cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
@@ -324,11 +324,18 @@ def run_action(target, action):
             rc, out, err = sh([DOCKER, "rm", "-f", "--", name], timeout=90)
         else:
             rc, out, err = sh([DOCKER, action, "--", name], timeout=90)
-        if (
-            rc != 0
-            and looks_engine_down(_as_text(err) or _as_text(out))
-            and not engine_up(force=True)
-        ):
+        text = _as_text(err) or _as_text(out)
+        unreachable = looks_engine_down(text) or (
+            # A DOCKER binary that vanished before this spawn is sh()'s exact
+            # ``(-1, "not found")`` sentinel — it used to fall through as an
+            # uncoded ``{ok: false, message: "not found"}`` the SPA cannot
+            # translate.  The sentinel alone is not proof (any
+            # FileNotFoundError spawn collapses into it), so the binary must
+            # be confirmed gone from disk first — the compose_svc /
+            # catalog convention.
+            rc == -1 and looks_cli_vanished(text) and not cli_on_disk()
+        )
+        if rc != 0 and unreachable and not engine_up(force=True):
             # POST /api/action and the Services bulk path used to hand the
             # raw untranslated daemon stderr back as an uncoded ok:false.
             # Coded 503 like the Containers page; the probe is forced (5s

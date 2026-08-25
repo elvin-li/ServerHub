@@ -405,6 +405,7 @@ CODES: dict[str, tuple[int, str]] = {
     "services.not_found": (404, "service not found: {id}"),
     "services.no_logs": (404, "no logs for {id}"),
     "services.bad_port": (400, "port must be an integer"),
+    "services.bad_command": (400, "start/stop command contains characters that cannot be encoded"),
     "jobs.already_running": (409, 'a maintenance task is already running; wait for it to finish'),
     # ── panel scheduler (user-defined cron jobs) ─────────────────────────────
     "scheduler.not_found": (404, "no scheduled job with id {id}"),

@@ -2902,6 +2902,7 @@ export default {
       group_rule_not_found: '{id} というグループ規則はありません',
       no_logs: '{id} のログがありません',
       bad_port: 'ポートは整数である必要があります',
+      bad_command: '開始/停止コマンドにエンコードできない文字が含まれています',
     },
     admin: {
       browser_session_required: 'この管理者操作を行うにはブラウザでサインインしてください',

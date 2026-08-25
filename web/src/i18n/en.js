@@ -2908,6 +2908,7 @@ export default {
       group_rule_not_found: 'No grouping rule named {id}',
       no_logs: 'No logs for {id}',
       bad_port: 'Port must be an integer',
+      bad_command: 'The start/stop command contains characters that cannot be encoded',
     },
     admin: {
       browser_session_required: 'Sign in from a browser to authorize this administrator action',

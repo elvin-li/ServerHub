@@ -181,11 +181,16 @@ def _agent_paths(path: Path) -> tuple[str, str, str]:
     args = data.get("ProgramArguments") or []
     if not isinstance(args, list):
         args = []
-    program = str(args[0]) if args else str(data.get("Program") or "")
+    # _as_text, not str(): a hex plist ``<integer>`` (base 16 dodges the
+    # int(str) parse cap) in Label / ProgramArguments / WorkingDirectory
+    # raised the int->str digit-cap ValueError here and 500'd uninstall
+    # preview — and, via _other_agents_in, the preview of every *other*
+    # agent too, because this parses each sibling plist in AGENTS_DIR.
+    program = _as_text(args[0]) if args else _as_text(data.get("Program") or "")
     return (
-        str(data.get("Label") or path.stem),
+        _as_text(data.get("Label") or path.stem) or path.stem,
         program,
-        str(data.get("WorkingDirectory") or ""),
+        _as_text(data.get("WorkingDirectory") or ""),
     )
 
 

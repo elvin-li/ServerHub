@@ -2904,6 +2904,7 @@ export default {
       group_rule_not_found: '没有名为 {id} 的分组规则',
       no_logs: '{id} 没有日志',
       bad_port: '端口必须是整数',
+      bad_command: '启动/停止命令包含无法编码的字符',
     },
     admin: {
       browser_session_required: '请通过浏览器登录后再执行此管理员操作',
