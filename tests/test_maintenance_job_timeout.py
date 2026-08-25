@@ -40,10 +40,13 @@ class StartJobGuardTests(unittest.TestCase):
         with mock.patch.object(jobs, "cfg", return_value={"maintenance": [
             {"id": "brew-update", "name": "Brew"},
             "junk",
+            # A numeric id coerces via the str() probe (YAML hex/octal loads
+            # already-int; the strict isinstance(str) gate silently hid the
+            # task — see test_leftover_jobs_surrogate_hexid_500s).
             {"id": 12},
         ]}):
             tasks = jobs.maintenance_tasks()
-        self.assertEqual(list(tasks), ["brew-update"])
+        self.assertEqual(list(tasks), ["brew-update", "12"])
 
     def test_leftover_surrogate_name_does_not_500_json(self):
         """YAML ``name: "\\ud800"`` used to 500 GET /api/maintenance."""
