@@ -613,7 +613,10 @@ def get_backups():
     found = backups.scan_backups()
     return {
         "backups": found[:BACKUP_ROWS],
-        "root": str(backups.BACKUP_ROOT),
+        # backup_root_text, not str(): a BACKUP_ROOT under an undecodable
+        # HOME carries lone surrogates, and the bare str() used to 500 the
+        # whole page at Starlette's UTF-8 encode.
+        "root": backups.backup_root_text(),
         "total": len(found),
         "postgres_targets": [
             {"id": t["id"], "db": t["db"], "port": t["port"]}

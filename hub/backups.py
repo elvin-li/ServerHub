@@ -494,7 +494,11 @@ def _pg_password(target_id: str) -> str:
         if not BACKUP_SECRETS_FILE.is_file():
             return ""
         raw = safe_json_loads(
-            read_text_capped(BACKUP_SECRETS_FILE, _SECRETS_CAP, encoding="utf-8")
+            read_text_capped(BACKUP_SECRETS_FILE, _SECRETS_CAP, encoding="utf-8"),
+            # One leftover >4300-digit stamp anywhere in the store used to
+            # ValueError the whole decode, read every password back as ""
+            # and send pg_dump off unauthenticated (see _capped_json_int).
+            parse_int=_capped_json_int,
         )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested credentials is not ValueError.
@@ -608,6 +612,17 @@ def apply_restore_path(hint: str, path: str) -> str:
     if not hint:
         return ""
     return hint.replace("{path}", str(path))
+
+
+def backup_root_text() -> str:
+    """:data:`BACKUP_ROOT` as UTF-8-clean text for the GET /api/backups payload.
+
+    A BACKUP_ROOT under an undecodable HOME carries lone surrogates
+    (os surrogateescape); the route's bare ``str()`` used to 500 the whole
+    Backups page at Starlette's UTF-8 encode while every row it listed was
+    already scrubbed.
+    """
+    return _as_text(BACKUP_ROOT)
 
 
 def scan_backups() -> list:
@@ -781,13 +796,37 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document.  One poisoned number used to
+    wipe whole Backups stores at once: a status counter in
+    panel_status.json / backup_status.json blanked every layer card on the
+    page; a stray stamp beside a target's entry in backup-credentials.json
+    read the *password* back as "" (the dump then ran unauthenticated and
+    failed); a huge label in resolved compose JSON refused the whole stack
+    backup as ``compose_config_failed``; and one in an inflight marker made
+    crash recovery forget which compose file to ``start``.  Dropping just
+    the number keeps the document, same as the notify_channels /
+    smart_test_svc / docker_cli hooks.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _json_object(path: Path) -> dict:
     try:
         # Leftover directory named backup_status.json is IsADirectoryError;
         # a dying FUSE mount re-raises EIO from is_file() itself.
         if not path.is_file():
             return {}
-        raw = safe_json_loads(read_text_capped(path, _JSON_CAP, encoding="utf-8"))
+        raw = safe_json_loads(
+            read_text_capped(path, _JSON_CAP, encoding="utf-8"),
+            parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError:
         # a torn panel_status.json used to 500 the Backups page.
@@ -1187,8 +1226,11 @@ def _backup_immich_native() -> dict:
     _prune("immich_*.sql.gz", retain=IMMICH_RETAIN)
     return {
         "ok": True,
-        "path": str(dest),
-        "message": f"immich backup ok: {dest.name}",
+        # _as_text on both: a BACKUP_ROOT under an undecodable HOME carries
+        # lone surrogates, and raw they 500'd POST /api/backups/immich at
+        # Starlette's UTF-8 encode — on the successful run.
+        "path": _as_text(dest),
+        "message": f"immich backup ok: {_as_text(dest.name)}",
         "size_mb": round(size / 1024 / 1024, 2),
     }
 
@@ -1249,7 +1291,11 @@ def _dump_one_postgres(target: dict) -> dict:
             _prune(f"{target['id']}_*.sql.bak")
         return {
             "ok": ok,
-            "path": str(dest) if ok else None,
+            # _as_text: a BACKUP_ROOT under an undecodable HOME surfaces as
+            # lone surrogates (os surrogateescape); raw, the *successful*
+            # dump used to 500 POST /api/backups/postgres at Starlette's
+            # UTF-8 encode.  _discard/_prune above keep the raw Path.
+            "path": _as_text(dest) if ok else None,
             "message": (text or f"exit {rc}")[:500],
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
@@ -1425,7 +1471,11 @@ def _stack_mounts(compose_path: str, workdir: str | None) -> tuple[list[str], li
     if rc != 0 or not out.strip():
         return [], [], (err or out or f"compose config exit {rc}").strip()[:300]
     try:
-        resolved = safe_json_loads(out, loads=json.loads)
+        # parse_int hook: one leftover >4300-digit number anywhere in the
+        # resolved config (a label, an x- extension) used to ValueError the
+        # decode itself and refuse the whole stack backup as
+        # ``compose_config_failed`` — a number tar never even looks at.
+        resolved = safe_json_loads(out, loads=json.loads, parse_int=_capped_json_int)
     except (TypeError, ValueError, RecursionError) as e:
         # RecursionError: leftover deeply-nested compose JSON is not ValueError.
         return [], [], "unparsable compose config: " + (_as_text(e) or "error")
@@ -1544,7 +1594,12 @@ def recover_interrupted_stack_backups() -> list[dict]:
         return recovered
     for marker in markers:
         try:
-            info = safe_json_loads(read_text_capped(marker, _MARKER_CAP))
+            # parse_int hook: a leftover >4300-digit ``ts`` used to ValueError
+            # the decode, so recovery forgot the recorded compose_path and —
+            # unless the stack was still discoverable — left it stopped.
+            info = safe_json_loads(
+                read_text_capped(marker, _MARKER_CAP), parse_int=_capped_json_int,
+            )
         except (OSError, ValueError, RecursionError):
             info = {}
         if not isinstance(info, dict):
@@ -1743,7 +1798,10 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
         message = f"{message}; STACK DID NOT RESTART — start it manually".strip("; ")
     result = {
         "ok": archive_ok and restarted is not False,
-        "path": str(dest) if archive_ok else None,
+        # _as_text: this result lands in the scheduler journal and its JSON
+        # encoders; a surrogate-HOME dest is the same 500 class as the
+        # postgres/configs paths above.
+        "path": _as_text(dest) if archive_ok else None,
         "size_mb": round(_written_bytes(dest) / 1024 / 1024, 2) if archive_ok and dest else 0,
         "stack": stack_id,
         "stopped": stopped,
@@ -1851,9 +1909,12 @@ def _backup_configs() -> dict:
     if str(CONFIG_FILE) not in existing:
         return {
             "ok": False,
+            # _as_text: CONFIG_FILE under an undecodable HOME carries lone
+            # surrogates; raw, this refusal itself used to 500 the route.
             "message": (
-                f"refusing to write a config backup without {CONFIG_FILE.name}: "
-                f"{CONFIG_FILE} is missing or unreadable"
+                f"refusing to write a config backup without "
+                f"{_as_text(CONFIG_FILE.name)}: "
+                f"{_as_text(CONFIG_FILE)} is missing or unreadable"
             ),
         }
     # Created only now that there is something to archive, so a no-op call does
@@ -1883,7 +1944,8 @@ def _backup_configs() -> dict:
             _prune("configs_*.tgz")
         return {
             "ok": ok,
-            "path": str(dest) if ok else None,
+            # _as_text: same surrogate-HOME rule as the postgres dump above.
+            "path": _as_text(dest) if ok else None,
             "message": (text or "")[:500] or ("ok" if ok else "fail"),
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
