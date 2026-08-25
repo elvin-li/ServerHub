@@ -855,6 +855,7 @@ export default {
     resident_forever: '常駐（無期限）',
     resident_empty: 'ロード中のモデルはありません',
     daemon_unreachable: 'Ollama API が応答しません',
+    list_error: 'デーモンは応答しましたが、モデル一覧を読み取れませんでした（{error}）',
     act_unload: 'アンロード',
     confirm_unload: '{name} をメモリから解放しますか？次のリクエストで再ロードされます（コールドスタート）。',
     unloaded: '{name} をアンロードしました',

@@ -856,6 +856,7 @@ export default {
     resident_forever: '常驻（永不过期）',
     resident_empty: '当前没有已加载的模型',
     daemon_unreachable: 'Ollama API 未响应',
+    list_error: '守护进程已响应，但模型列表读取失败（{error}）',
     act_unload: '卸载',
     confirm_unload: '把 {name} 从内存卸载？下次请求会重新加载（冷启动）。',
     unloaded: '{name} 已卸载',

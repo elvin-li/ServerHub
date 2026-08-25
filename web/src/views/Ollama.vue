@@ -108,7 +108,7 @@
               </tr>
               <tr v-if="!resident.length">
                 <td colspan="5" class="empty-row">
-                  {{ data.reachable ? t('ollama.resident_empty') : t('ollama.daemon_unreachable') }}
+                  {{ emptyListText('ollama.resident_empty') }}
                 </td>
               </tr>
             </tbody>
@@ -120,7 +120,10 @@
       <div class="card-block" style="margin-bottom:14px">
         <div class="section-head">
           <h2>{{ t('ollama.models_title') }}</h2>
-          <span v-if="models.length" class="meta">{{ t('ollama.models_count', { n: finiteN(models.length) }) }}</span>
+          <!-- role=status: the count is the 10s poll's (and a finished
+               pull/delete's) only summary and changed silently for a screen
+               reader — same treatment as the VMs and Health header counts. -->
+          <span v-if="models.length" class="meta" role="status">{{ t('ollama.models_count', { n: finiteN(models.length) }) }}</span>
         </div>
         <div class="table-wrap">
           <table class="dense fit-m">
@@ -156,7 +159,7 @@
               </tr>
               <tr v-if="!models.length">
                 <td colspan="7" class="empty-row">
-                  {{ data.reachable ? t('ollama.models_empty') : t('ollama.daemon_unreachable') }}
+                  {{ emptyListText('ollama.models_empty') }}
                 </td>
               </tr>
             </tbody>
@@ -488,6 +491,18 @@ async function scrollChat() {
 function finiteN(v) {
   const n = Number(v)
   return Number.isFinite(n) ? n : '—'
+}
+
+/** What an empty resident/models table really means.
+ *
+ * The daemon can answer /api/version and still fail /api/tags or /api/ps —
+ * status() keeps reachable=true then and puts the reason in `error`, which
+ * this page never rendered: the tables claimed "no models" over a failed
+ * read (the same false-empty the unreachable branch already avoids). */
+function emptyListText(emptyKey) {
+  if (!data.value?.reachable) return t('ollama.daemon_unreachable')
+  if (data.value?.error) return t('ollama.list_error', { error: finiteText(data.value.error, '') })
+  return t(emptyKey)
 }
 
 function fmtSize(n) {
