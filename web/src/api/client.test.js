@@ -29,11 +29,13 @@ import {
   createShare,
   doAction,
   getLauncherStatus,
+  getMaintenanceLog,
   getManagedAppDetail,
   getShares,
   getStatus,
   loginAuth,
   manageApp,
+  runMaintenance,
   uninstallService,
   openLauncherApp,
   openSharingSettings,
@@ -418,6 +420,25 @@ describe('api client', () => {
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toBe('/api/system/network/docker/ports/web%2F..%2Fdb')
       expect(JSON.parse(options.body)).toEqual({ ports: ['8080:80'] })
+    })
+
+    it('encodes maintenance task ids as one URL path segment', async () => {
+      // Task ids come verbatim from services.yaml, and the backend
+      // deliberately lists the surrogate-scrubbed form ("task-?").  The raw
+      // `${id}` interpolation this pins against turned that `?` into a query
+      // separator: the run/log routes saw a truncated id and answered
+      // maintenance.unknown_task for a task the list offered a Run button on.
+      fetchMock.mockResolvedValue(res(200, { ok: true }))
+
+      await runMaintenance('task-?')
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/maintenance/task-%3F/run')
+      expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+
+      await getMaintenanceLog('up#42/../grade')
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        '/api/maintenance/up%2342%2F..%2Fgrade/log',
+      )
+      expect(fetchMock.mock.calls[1][1].method).toBeUndefined()
     })
 
     it('lets the browser set a multipart boundary for uploads', async () => {

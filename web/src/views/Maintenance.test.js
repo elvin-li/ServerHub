@@ -105,3 +105,32 @@ describe('Maintenance empty state', () => {
     expect(wrapper.text()).not.toContain('maintenance.empty_hint')
   })
 })
+
+describe('Maintenance filter with non-string task fields', () => {
+  it('does not blank the page when name/desc are served as ints', async () => {
+    // The API deliberately serves an under-cap YAML int verbatim
+    // (test_leftover_maintenance_jobs_digit_500s pins desc === 10**400), and
+    // `(row.desc || '').toLowerCase()` threw on it — one keystroke in the
+    // filter box killed the whole render.
+    api.getMaintenance.mockResolvedValue([
+      { id: 'reindex', name: 8080, desc: 12345, running: false },
+      { id: 'brew-up', name: 'Brew upgrade', desc: 'upgrade', running: false },
+    ])
+    const { wrapper } = await mountPage()
+    await wrapper.find('input[type="text"]').setValue('808')
+    expect(wrapper.text()).toContain('8080')
+    expect(wrapper.text()).not.toContain('Brew upgrade')
+    await wrapper.find('input[type="text"]').setValue('brew')
+    expect(wrapper.text()).toContain('Brew upgrade')
+  })
+
+  it('treats a null desc as a filter miss, not a crash', async () => {
+    // A dropped over-cap int arrives as null with the key present.
+    api.getMaintenance.mockResolvedValue([
+      { id: 'ghost', name: 'Ghost', desc: null, running: false },
+    ])
+    const { wrapper } = await mountPage()
+    await wrapper.find('input[type="text"]').setValue('null')
+    expect(wrapper.text()).toContain('common.no_match')
+  })
+})

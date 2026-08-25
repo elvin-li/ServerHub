@@ -118,10 +118,13 @@ const anyRunning = computed(() => tasks.value.some(row => row.running))
 const filtered = computed(() => {
   const qq = q.value.trim().toLowerCase()
   if (!qq) return tasks.value
+  // String(...): the API deliberately serves an under-cap int name/desc
+  // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw
+  // on it — typing one character in the filter box blanked the whole page.
   return tasks.value.filter(row =>
-    (row.name || '').toLowerCase().includes(qq)
-    || (row.id || '').toLowerCase().includes(qq)
-    || (row.desc || '').toLowerCase().includes(qq)
+    String(row.name ?? '').toLowerCase().includes(qq)
+    || String(row.id ?? '').toLowerCase().includes(qq)
+    || String(row.desc ?? '').toLowerCase().includes(qq)
   )
 })
 

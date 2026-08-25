@@ -448,9 +448,14 @@ export const lookupDns = (name) =>
 export const flushDns = () => json('/api/tools/net/flush-dns', { method: 'POST' })
 
 export const getMaintenance = () => json('/api/maintenance')
+// encodeURIComponent like every other id-in-path route: task ids come straight
+// from services.yaml, and the backend deliberately serves scrubbed forms like
+// "task-?" (lone-surrogate ids) — a raw `?` truncated the path into the query
+// string, so a task the list offered a Run button for 404'd as unknown_task.
 export const runMaintenance = (id) =>
-  json(`/api/maintenance/${id}/run`, { method: 'POST' })
-export const getMaintenanceLog = (id) => json(`/api/maintenance/${id}/log`)
+  json(`/api/maintenance/${encodeURIComponent(id)}/run`, { method: 'POST' })
+export const getMaintenanceLog = (id) =>
+  json(`/api/maintenance/${encodeURIComponent(id)}/log`)
 
 // Homebrew services. Service actions can run for up to 120 seconds server-side.
 const BREW_ACTION_TIMEOUT = 130000
