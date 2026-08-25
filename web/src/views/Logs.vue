@@ -46,7 +46,10 @@
       role="region"
       :aria-label="t('logs.title')"
     >{{ finiteText(displayText) }}</pre>
-    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ t('logs.empty') }}</pre>
+    <!-- Filter-miss and empty-file are different answers: "(empty)" on a
+         full log whose filter matched nothing told the operator the file
+         has no lines. Same split Brew/Health pinned (common.no_match). -->
+    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ filter.trim() && text ? t('common.no_match') : t('logs.empty') }}</pre>
   </div>
 </template>
 
