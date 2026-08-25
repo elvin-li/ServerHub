@@ -860,6 +860,7 @@ export default {
     resident_forever: 'resident (never expires)',
     resident_empty: 'No model is loaded right now',
     daemon_unreachable: 'The Ollama API is not answering',
+    list_error: 'The daemon answered but the model list could not be read ({error})',
     act_unload: 'Unload',
     confirm_unload: 'Unload {name} from memory? The next request will reload it (cold start).',
     unloaded: '{name} unloaded',

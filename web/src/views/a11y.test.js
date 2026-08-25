@@ -675,6 +675,25 @@ describe('llm, photos, vpn and health surface leftovers', () => {
     expect(ollama).toMatch(/:aria-label="t\('ollama\.copy_name', \{ name: t\('ollama\.openai_api'\) \}\)"/)
   })
 
+  it('announces the Ollama installed-model count as a live region', () => {
+    // The count is the 10s poll's (and a finished pull/delete's) only
+    // summary of the model list and changed silently for a screen reader —
+    // same treatment as the VMs title-meta and Health summary counts.
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/<span v-if="models\.length" class="meta" role="status">\{\{ t\('ollama\.models_count'/)
+  })
+
+  it('keeps the Ollama tables honest about a failed list read', () => {
+    // reachable=true with `error` set means /api/version answered but
+    // /api/tags//api/ps failed; both empty rows must route through the
+    // helper that says so instead of claiming "no models". The behavioural
+    // half lives in Ollama.test.js.
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/\{\{ emptyListText\('ollama\.resident_empty'\) \}\}/)
+    expect(ollama).toMatch(/\{\{ emptyListText\('ollama\.models_empty'\) \}\}/)
+    expect(ollama).toMatch(/function emptyListText\(emptyKey\)[\s\S]{0,220}t\('ollama\.list_error'/)
+  })
+
   it('spells the WireGuard ping outcome, not just its LED colour', () => {
     // The ping-result rows carried reachability in the LED class alone —
     // unlike the peers table there is no textual badge, so a screen reader
