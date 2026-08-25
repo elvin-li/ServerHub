@@ -27,7 +27,17 @@
                 style="cursor:pointer"
                 @click="select(s)"
               >
-                <td>
+                <!-- The row click is a mouse shortcut; the name cell is the
+                     keyboard path to the same select(s) (Files.vue name-cell
+                     pattern). role="button" cannot sit on the <tr>: it holds
+                     the Up/Update/Down buttons (ARIA nested-interactive). -->
+                <td
+                  tabindex="0"
+                  role="button"
+                  :aria-pressed="selected===s.id ? 'true' : 'false'"
+                  @keydown.enter.prevent="select(s)"
+                  @keydown.space.prevent="select(s)"
+                >
                   <strong>{{ finiteText(s.name) }}</strong>
                   <div class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(s.path) }}</div>
                 </td>
@@ -51,8 +61,13 @@
           {{ t('compose.yaml_editor') }}
           <span v-if="compose" class="sub" style="text-transform:none">{{ finiteText(compose.compose_path) }}</span>
         </h2>
-        <div v-if="!compose" class="placeholder" style="padding:24px">{{ t('compose.pick_stack') }}</div>
-        <template v-else>
+        <!-- A failed read latches here with a retry. It used to fall through to
+             the pick-a-stack placeholder below: the operator had picked one,
+             the load failed, and after the toast faded the page claimed
+             nothing was selected. -->
+        <LoadFailure v-if="composeError" :detail="composeError" :retry="reloadCompose" :busy="busy" />
+        <div v-if="!compose && !composeError" class="placeholder" style="padding:24px">{{ t('compose.pick_stack') }}</div>
+        <template v-else-if="compose">
           <textarea
             v-model="editor"
             spellcheck="false"
@@ -122,6 +137,9 @@ const loaded = ref(false)
 const loadError = ref('')
 const selected = ref(null)
 const compose = ref(null)
+// A failed getCompose read for the selected stack. Latched, not just toasted:
+// the editor tile otherwise falls back to "pick a stack", which is false.
+const composeError = ref('')
 const editor = ref('')
 const busy = ref(false)
 const msg = ref('')
@@ -194,10 +212,12 @@ async function reloadCompose() {
     compose.value = j
     editor.value = j.content
     msg.value = ''
+    composeError.value = ''
   } catch (e) {
     if (generation !== composeGeneration || !pageAlive || selected.value !== id) return
     compose.value = null
     editor.value = ''
+    composeError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === composeGeneration) busy.value = false
