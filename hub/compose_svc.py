@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from hub import cli_args, secure_io
-from hub.containers_svc import _stack_paths
+from hub.containers_svc import _field_text, _stack_paths
 from hub.docker_cli import cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import api_error, exc_detail, soft_fail
 from hub.paths import DOCKER, user_home
@@ -229,10 +229,12 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
         )
         # Leftover bytes used to land in the JSON body; a leftover int
         # AttributeError'd .strip and was only saved by the blanket except.
-        if isinstance(text, (bytes, bytearray)):
-            text = text.decode("utf-8", "replace")
-        elif not isinstance(text, str):
-            text = "" if text is None else str(text)
+        # _utf8_text, not a bare decode/str(): the "message" field goes to
+        # Starlette verbatim on POST /api/compose/validate, so a lone
+        # ``\ud800`` in the CLI text 500'd the UTF-8 encode *outside* this
+        # function's blanket except, and ``str()`` of an already-int
+        # leftover past CPython's digit cap is itself the ValueError.
+        text = _utf8_text(text)
         ok = rc == 0
         unreachable = looks_engine_down(text) or (
             # A vanished DOCKER binary is run_capped's exact ``(-1, "not
@@ -284,6 +286,13 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
     if isinstance(content, (bytes, bytearray)):
         content = content.decode("utf-8", "replace")
     content = _utf8_text(content) if isinstance(content, str) else content
+    # _field_text probe before the name lands in services.yaml: a JSON body
+    # ``{"name": "\ud800"}`` (json.loads accepts the escape) was persisted
+    # verbatim — latent corruption every later reader had to re-scrub — and
+    # a leftover already-int name past CPython's digit cap 503'd the mutate
+    # (settings.save_failed) *after* the stack directory and compose file
+    # were already created.  Unusable names fall back to the stack id.
+    name = _field_text(name) or None
     home = user_home()
     if home is None:
         raise api_error("compose.invalid", detail="home directory is unavailable")
