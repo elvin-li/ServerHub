@@ -86,6 +86,11 @@
       <div v-else-if="tab === 'pending'" class="card-block" style="margin-bottom:14px" data-test="photoshub-pending">
         <div class="section-head">
           <h2>{{ t('photoshub.delete_title') }}</h2>
+          <!-- role=status: the count is Refresh-pending's and Remove's only
+               answer besides the tiles themselves, and it changed silently
+               for a screen reader — same treatment as the Files item count
+               and the Containers/VMs toolbar counts. -->
+          <span v-if="pending" class="meta-count" role="status" data-test="photoshub-pending-count">{{ t('photoshub.pending') }} {{ finiteN(pending.count) }}</span>
           <span class="meta">{{ t('photoshub.delete_hint') }}</span>
         </div>
         <div class="toolbar" style="margin-bottom:8px;flex-wrap:wrap">
@@ -107,7 +112,10 @@
             {{ t('photoshub.select_all') }}
           </label>
         </p>
-        <p v-if="!pendingError && !(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty">
+        <!-- role=status: the scanning -> "no pending deletes" flip is the
+             whole outcome of an empty refresh and was paint-only (the Logs
+             empty/loading treatment). -->
+        <p v-if="!pendingError && !(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty" role="status">
           {{ pendingLoading ? t('common.scanning') : t('photoshub.no_pending') }}
         </p>
         <div v-else class="review-grid" data-test="photoshub-pending-grid">
@@ -362,7 +370,11 @@ const immichHref = computed(() => safeHttpUrl(data.value?.links?.immich))
 const panelHref = computed(() => safeHttpUrl(data.value?.links?.panel))
 const pendingCount = computed(() => {
   const n = finiteN(pending.value?.count, null)
-  return n == null ? null : n
+  if (n != null) return n
+  // The status payload already carries the delete-review count; until the
+  // operator opened the pending tab, the overview tile and the tab label
+  // showed "—" for a number the page had been handed all along.
+  return finiteN(data.value?.delete_review?.pending_count, null)
 })
 const externalIssue = computed(() => {
   const ext = data.value?.external_backup

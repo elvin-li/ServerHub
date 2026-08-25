@@ -2999,6 +2999,7 @@ export default {
       action_failed: 'PhotosHub action failed: {detail}',
       bad_log: 'unknown PhotosHub log name',
       not_installed: 'PhotosHub is not installed on this Mac',
+      ctl_missing: '{tool} is missing from the PhotosHub tree',
       bad_immich_url: 'Immich API URL must be a private or loopback http(s) address',
       album_missing: 'the pending-delete album was not found',
       key_missing: 'the Immich API key is missing',
