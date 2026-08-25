@@ -339,13 +339,25 @@ def start_job(task):
             timeout = _clamp_timeout(task.get("timeout"))
             command = task.get("command")
             if not isinstance(command, str) or not command.strip():
+                # A task with no usable command (missing from services.yaml,
+                # or a junk leftover _jsonable dropped to None) used to finish
+                # rc -1 with an EMPTY log: the modal showed "(waiting for
+                # output…)" under a failure badge with nothing to say why.
+                j["log"].append("!! invalid command")
                 j["rc"] = -1
                 return
             j["rc"] = run_watchdog(
                 ["/bin/bash", "-c", command],
                 timeout=timeout, log=j["log"], env=env,
             )
-        except Exception:
+        except Exception as e:
+            # Same silent loss one layer up: a failure before run_watchdog
+            # (a poisoned maintenance_env read, a junk row) left rc -1 with
+            # no explanation at all.
+            try:
+                j["log"].append(f"!! error: {_utf8_text(e)}")
+            except Exception:
+                pass
             j["rc"] = -1
         finally:
             j["running"] = False
