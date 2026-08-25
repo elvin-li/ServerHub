@@ -687,6 +687,22 @@ describe('brew and gateway surface leftovers', () => {
     expect(brew).toContain("t('brew.action_running'")
   })
 
+  it('marks the Brew status LED as decoration', () => {
+    // The LED repeats the Status badge's started/stopped text in colour only
+    // — same treatment as the Health check LED one table over.
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(brew).toMatch(/class="led" :class="s\.state==='ok'\?'on':\(s\.state==='warn'\?'warn':'err'\)" aria-hidden="true"/)
+  })
+
+  it('tells a filtered-out Brew list apart from an empty one', () => {
+    // "No Homebrew services found" beside a non-empty count misreported the
+    // host whenever the filter simply matched nothing — the same split the
+    // Network ports and Tools process tables already carry. The behavioural
+    // half lives in Brew.test.js.
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(brew).toMatch(/q\.trim\(\) \? t\('common\.no_match'\) : t\('brew\.empty'\)/)
+  })
+
   it('hides the Gateway status LED from the accessibility tree', () => {
     // The LED only repeats the Running/Stopped text beside it in colour, so
     // it is decoration — same treatment as the VMs and Network inline LEDs.
