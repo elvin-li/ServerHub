@@ -43,8 +43,13 @@
       <button @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
     </div>
 
-    <LoadFailure v-if="loadError && !data" :detail="loadError" :retry="load" :busy="loading" />
-    <SkeletonLoader v-else-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="52" />
+    <!-- Above the content, not instead of it: the `&& !data` gate this used to
+         carry hid every *re*-load failure, so a 20s poll that started failing
+         left stale peer rows and a stale Running badge on screen with nothing
+         marking them as stale. LoadFailure is role="alert", so the failure is
+         also announced to assistive tech when it appears. -->
+    <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
+    <SkeletonLoader v-if="!loaded && !loadError" variant="tiles" :rows="4" :span="3" :tile-height="52" />
     <!-- Not installed: nothing else on this page can work, so say only that. -->
     <div v-else-if="data && !data.installed" class="tile" style="border-left:3px solid var(--down)">
       <h2>{{ t('wg.not_installed_title') }}</h2>

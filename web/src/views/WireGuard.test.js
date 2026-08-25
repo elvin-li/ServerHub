@@ -150,6 +150,37 @@ describe('WireGuard page', () => {
     wrapper.unmount()
   })
 
+  it('marks stale rows with the failure banner when a refresh fails', async () => {
+    // The banner used to be gated on `loadError && !data`, so once a status
+    // had ever loaded, a failing 20s poll left stale peer rows and a stale
+    // Running badge on screen with nothing marking them as such. LoadFailure
+    // is role="alert", so the failure is also announced to assistive tech.
+    const { wrapper } = await mountView({
+      peer_count: 1,
+      peers: [{
+        pubkey: 'cwhX5s68aveCxaGMuNhXhxCyyMV4qhWPiYZwjrZ1nis=',
+        name: 'phone', mode: 'split', allowed_ips: '10.10.0.2/32',
+        endpoint: '', last_handshake: 0, handshake_age: 0, active: false,
+        stale: false, keepalive: '25', psk: false, rx: 0, tx: 0,
+        rx_human: '0.0B', tx_human: '0.0B', reissuable: true, known: true,
+      }],
+    })
+    expect(wrapper.find('.load-failure').exists()).toBe(false)
+
+    api.getWireguard.mockRejectedValue(new Error('backend gone'))
+    const refreshBtn = wrapper.findAll('button').find((b) => b.text() === 'common.refresh')
+    await refreshBtn.trigger('click')
+    await flushPromises()
+
+    const banner = wrapper.find('.load-failure')
+    expect(banner.exists()).toBe(true)
+    expect(banner.attributes('role')).toBe('alert')
+    // The previously fetched rows stay: they are the best data available.
+    expect(wrapper.text()).toContain('phone')
+    expect(wrapper.text()).toContain('10.10.0.2/32')
+    wrapper.unmount()
+  })
+
   it('tells the operator when wireguard-tools is absent', async () => {
     const { wrapper } = await mountView({ installed: false, install: { installed: false } })
     expect(wrapper.text()).toContain('wg.not_installed_title')
