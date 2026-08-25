@@ -299,6 +299,24 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit decimal is ValueError (not JSONDecodeError)
+    for the *whole* document.  In ``_load_state`` one poisoned number made
+    the load return ``{}`` — every synced override's version, warnings and
+    the last-check stamp silently lost, and the next sync re-downloaded the
+    entire catalog.  In ``check_updates`` the same number in one manifest
+    entry failed the whole sync as ``bad_manifest`` instead of that entry.
+    Dropping just the number matches the ``_jsonable`` rule for an int the
+    encoder cannot render (same hook as smart_test_svc._capped_json_int).
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _is_file(path: Path) -> bool:
     try:
         return path.is_file()
@@ -335,7 +353,13 @@ def _ensure_dir() -> None:
 
 def _load_state() -> dict:
     try:
-        data = safe_json_loads(read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"))
+        data = safe_json_loads(
+            read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"),
+            # A >4300-digit leftover number is ValueError for the whole
+            # document; without the hook it wiped every override's version
+            # and warnings, not just the poisoned value.
+            parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested state is not ValueError.
         return {}
@@ -416,7 +440,7 @@ def status() -> dict:
         })
     last_check = state.get("last_check")
     last_result = state.get("last_result")
-    return {
+    payload = {
         "url": source_url(),
         "configured": bool(source_url()),
         "last_check": last_check if isinstance(last_check, str) else "",
@@ -431,6 +455,13 @@ def status() -> dict:
         # manifest is only transport-trusted (see module docstring).
         "signature_verified": False,
     }
+    # Through _jsonable: an override id comes from a *filename* stem, and a
+    # leftover file named with surrogateescape bytes (or a hand-edited
+    # services.yaml url carrying a lone ``\ud800``) kept the raw surrogate
+    # here while every synced field was clean — Starlette's UTF-8 encode
+    # then 500'd GET /api/catalog/remote.
+    cleaned = _jsonable(payload)
+    return cleaned if isinstance(cleaned, dict) else {"configured": False, "overrides": []}
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -466,14 +497,21 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
         return "front matter is not valid YAML: " + _as_text(exc)
     if not isinstance(meta, dict):
         return "front matter is not a mapping"
-    if not str(meta.get("name") or "").strip():
+    # _as_text, not bare str(): YAML's hex/octal int forms dodge CPython's
+    # decimal digit cap, so a leftover ``name: 0xfff…`` (4000 hex digits)
+    # arrives as an int ``str()`` cannot render — the ValueError fired here,
+    # after the YAML try/except had already passed, and 500'd the whole
+    # POST /api/catalog/remote/check instead of rejecting one template.
+    # A *sane* numeric name/desc/id still renders (str() probe, not an
+    # isinstance(str) gate that would silently drop numeric YAML ids).
+    if not _as_text(meta.get("name") or "").strip():
         return "front matter lacks a name"
-    if not str(meta.get("desc") or "").strip():
+    if not _as_text(meta.get("desc") or "").strip():
         return "front matter lacks a desc"
     # The listing id comes from the *filename*, but a front-matter `id:` key
     # overrides it in _parse_template().  A template that claims another id
     # would impersonate a different catalog entry, so the two must agree.
-    if expected_id and str(meta.get("id") or expected_id) != expected_id:
+    if expected_id and _as_text(meta.get("id") or expected_id) != expected_id:
         return "front matter id does not match the manifest id"
     body = m.group(2)
     # The same trap tests/test_template_metadata.py pins for shipped templates:
@@ -548,7 +586,11 @@ def scan_compose_directives(text: str) -> list[str]:
             hits.add(WARN_CAP_ADD)
         if service.get("devices"):
             hits.add(WARN_DEVICES)
-        if str(service.get("network_mode") or "").strip().lower() == "host":
+        # _as_text, not bare str(): a leftover hex-huge ``network_mode`` or
+        # volume entry is an over-digit-cap int whose str() is ValueError —
+        # it fired here after ingest validation had already accepted the
+        # template, 500ing POST /api/catalog/remote/check on the last step.
+        if _as_text(service.get("network_mode") or "").strip().lower() == "host":
             hits.add(WARN_HOST_NETWORK)
         volumes = service.get("volumes")
         if not isinstance(volumes, list):
@@ -556,7 +598,7 @@ def scan_compose_directives(text: str) -> list[str]:
         for volume in volumes:
             # Both list forms: "sock:/sock" strings and {source: ...} maps.
             source = volume.get("source") if isinstance(volume, dict) else volume
-            if "docker.sock" in str(source or ""):
+            if "docker.sock" in _as_text(source or ""):
                 hits.add(WARN_DOCKER_SOCKET)
     return sorted(hits)
 
@@ -635,7 +677,11 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
         raise api_error("catalog_remote.fetch_failed", reason=_as_text(exc))
 
     try:
-        manifest = safe_json_loads(raw.decode("utf-8"))
+        # parse_int hook: a >4300-digit number in *one* entry (a bogus
+        # ``size``) is ValueError for the whole document and used to fail
+        # the entire sync as bad_manifest; dropping just the number lets
+        # per-entry validation reject only what deserves it.
+        manifest = safe_json_loads(raw.decode("utf-8"), parse_int=_capped_json_int)
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise api_error(
             "catalog_remote.bad_manifest", reason="not JSON: " + _as_text(exc)
