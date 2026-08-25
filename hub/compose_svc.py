@@ -10,13 +10,26 @@ import yaml
 
 from hub import cli_args, secure_io
 from hub.containers_svc import _stack_paths
-from hub.errors import api_error, exc_detail
+from hub.docker_cli import engine_up
+from hub.errors import api_error, exc_detail, soft_fail
 from hub.paths import DOCKER, user_home
 from hub.status import invalidate_status as inv
 from hub.util import read_text_capped, run_capped
 
 #: Leftover multi-MB junk occupying docker-compose.yml used to OOM GET /api/compose.
 _COMPOSE_CAP = 1024 * 1024
+
+#: What the docker CLI / compose plugin print when the daemon is unreachable.
+#: ``docker compose config`` is normally client-side, but the CLI still fails
+#: this way when the socket probe happens (context resolution, some compose
+#: builds) with the engine stopped.
+_ENGINE_DOWN_RE = re.compile(
+    r"cannot connect to the docker daemon"
+    r"|is the docker daemon running"
+    r"|error during connect"
+    r"|docker daemon is not running",
+    re.I,
+)
 
 
 def _utf8_text(value) -> str:
@@ -117,7 +130,7 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     if validate:
         v = validate_compose_text(content, cwd=str(p.parent))
         if not v.get("ok"):
-            raise api_error("compose.invalid", detail=v.get("message") or "compose invalid")
+            _raise_validation_failure(v)
     # A compose file carries the generated database and admin passwords for the
     # stack, which is the payload secure_io was written for.  write_text() then
     # chmod() creates the file at the umask default -- 0644 here -- so both the
@@ -141,6 +154,17 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     secure_io.replace_secret_text(p, content)
     inv()
     return {"ok": True, "path": str(p), "message": "Saved", "backup": str(bak)}
+
+
+def _raise_validation_failure(v: dict):
+    """Fail a compose save/create with the code the validation reported.
+
+    An engine that is off is a dependency state (coded 503), not a defect in
+    the operator's YAML (``compose.invalid``, 400).
+    """
+    if v.get("code") == "container.engine_down":
+        raise api_error("container.engine_down")
+    raise api_error("compose.invalid", detail=v.get("message") or "compose invalid")
 
 
 def validate_compose_text(content: str, cwd: str | None = None) -> dict:
@@ -203,6 +227,18 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
         elif not isinstance(text, str):
             text = "" if text is None else str(text)
         ok = rc == 0
+        if not ok and _ENGINE_DOWN_RE.search(text or "") and not engine_up(force=True):
+            # The compose file may be perfectly valid: the CLI could not reach
+            # the daemon.  Reporting that as "compose file is invalid" (400 on
+            # save/create) told the operator their YAML was broken and pointed
+            # away from the real remedy (start the engine).  The probe is
+            # forced -- same convention as containers_svc._raise_list_failure:
+            # the memoised answer has a 5s TTL and the seconds right after the
+            # engine stops are when a stale "up" would misclassify this.  The
+            # message-pattern guard matters too: ``docker compose config`` is
+            # mostly client-side, so a genuine YAML error with the engine
+            # coincidentally off must keep reporting the YAML error.
+            return soft_fail("container.engine_down")
         return {
             "ok": ok,
             "message": (text or ("valid" if ok else "invalid")).strip()[:800],
@@ -242,7 +278,7 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
         raise api_error("compose.exists", path=str(root))
     v = validate_compose_text(content, cwd=str(home / "Services"))
     if not v.get("ok"):
-        raise api_error("compose.invalid", detail=v.get("message") or "invalid compose")
+        _raise_validation_failure(v)
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError:

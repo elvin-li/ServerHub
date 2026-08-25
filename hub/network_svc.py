@@ -1712,6 +1712,22 @@ def docker_networks_detail() -> list:
     return fan_out(_detail, rows)
 
 
+def _classify_docker_failure() -> None:
+    """Raise the coded 503 when a failed docker command means the engine is off.
+
+    ``docker network connect``/``disconnect`` returned the daemon's raw stderr
+    ("Cannot connect to the Docker daemon…") as an untranslated ``ok: false``
+    message, pointing away from the real remedy (start the engine).  Same
+    convention as ``docker_update_ports`` below and ``_raise_inspect_failure``
+    in containers_svc: the probe is *forced* because the memoised ``engine_up``
+    answer has a 5s TTL, and the seconds right after the engine stops are
+    exactly when a stale "up" would misclassify the failure.  Failures while
+    the engine really is up keep their original mapping.
+    """
+    if not engine_up(force=True):
+        raise api_error("container.engine_down")
+
+
 def docker_network_connect(network: str, container: str) -> dict:
     if not network or not container:
         raise api_error("network.docker_args_required")
@@ -1720,6 +1736,8 @@ def docker_network_connect(network: str, container: str) -> dict:
     network = cli_args.require_positional(network, label="network name")
     container = cli_args.require_positional(container, label="container name")
     rc, out, err = docker("network", "connect", network, container, timeout=30)
+    if rc != 0:
+        _classify_docker_failure()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1731,6 +1749,8 @@ def docker_network_disconnect(network: str, container: str, force: bool = False)
         args.append("-f")
     args += [network, container]
     rc, out, err = docker(*args, timeout=30)
+    if rc != 0:
+        _classify_docker_failure()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
