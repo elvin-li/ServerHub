@@ -202,6 +202,10 @@ CODES: dict[str, tuple[int, str]] = {
     "smart.unsupported": (400, "this disk does not offer SMART self-tests"),
     "smart.kind_unsupported": (400, "this disk does not offer that self-test type"),
     "smart.bad_interval": (400, "unsupported schedule interval"),
+    # The smartctl binary vanished between the capability gate and the spawn
+    # (confirmed by a fresh disk probe).  503 like the other tool-absent
+    # states (backup.tool_missing, files.fb_missing, photoshub.ctl_missing).
+    "smart.smartctl_missing": (503, "smartctl is not installed on this host"),
     # ── usage explorer / Spotlight ──────────────────────────────────────────
     "usage.bad_volume": (400, "unknown volume"),
     # ── settings export ──────────────────────────────────────────────────────

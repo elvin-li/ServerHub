@@ -147,6 +147,94 @@ describe('Health overall tile', () => {
   })
 })
 
+describe('Health empty vs filter-miss', () => {
+  // A level tab that misses and a scan that produced no checks are
+  // different answers (Logs/Services split): "no matching items" on an
+  // empty scan hid that there is nothing to filter at all.
+  it('says no_match only when a filter hides existing checks', async () => {
+    api.getHealthChecks.mockResolvedValue({
+      healthy: true,
+      summary: { ok: 1, warn: 0, error: 0, total: 1 },
+      checks: [{ id: 'a', name: 'Disk', ok: true, level: 'ok', detail: '' }],
+    })
+    const wrapper = mount(Health, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+
+    const tab = (label) => wrapper.findAll('.tabs button').find((b) => b.text() === label)
+    await tab('health.errors').trigger('click')
+    expect(wrapper.find('.empty-row').text()).toBe('common.no_match')
+    wrapper.unmount()
+  })
+
+  it('says the scan is empty when there are no checks at all', async () => {
+    api.getHealthChecks.mockResolvedValue({
+      healthy: true,
+      summary: { ok: 0, warn: 0, error: 0, total: 0 },
+      checks: [],
+    })
+    const wrapper = mount(Health, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.empty-row').text()).toBe('health.empty')
+    wrapper.unmount()
+  })
+})
+
+describe('Health failed first load', () => {
+  // Nothing was fetched, so the LoadFailure banner stands alone: the table
+  // used to render its column headers above nothing (the empty-row is
+  // loadError-suppressed), claiming a scan that never arrived.
+  it('renders the banner without a headers-only table', async () => {
+    api.getHealthChecks.mockRejectedValue(new Error('boom'))
+    const wrapper = mount(Health, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.findComponent({ name: 'LoadFailure' }).exists()).toBe(true)
+    expect(wrapper.find('.table-wrap').exists(), 'no headers-only table').toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps stale rows on screen when a later rescan fails', async () => {
+    api.getHealthChecks.mockResolvedValueOnce({
+      healthy: true,
+      summary: { ok: 1, warn: 0, error: 0, total: 1 },
+      checks: [{ id: 'a', name: 'Disk', ok: true, level: 'ok', detail: '' }],
+    })
+    const wrapper = mount(Health, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.findAll('tbody tr').length).toBe(1)
+
+    api.getHealthChecks.mockRejectedValueOnce(new Error('poll failed'))
+    await wrapper.find('.toolbar button.primary').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findComponent({ name: 'LoadFailure' }).exists()).toBe(true)
+    expect(wrapper.find('.table-wrap').exists(), 'stale rows stay').toBe(true)
+    expect(wrapper.text()).toContain('Disk')
+    wrapper.unmount()
+  })
+})
+
 describe('Health leave-guards', () => {
   it('does not toast a load that fails after leave', async () => {
     let rejectLoad

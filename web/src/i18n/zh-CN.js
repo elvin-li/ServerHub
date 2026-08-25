@@ -954,6 +954,7 @@ export default {
     level: '级别',
     detail: '详情',
     fix: '建议修复',
+    empty: '上次扫描未产生任何检查项 — 请重新扫描。',
   },
   users: {
     empty: '无用户数据',
@@ -2951,6 +2952,7 @@ export default {
       unsupported: '此磁盘不支持 SMART 自检',
       kind_unsupported: '此磁盘不支持该自检类型',
       bad_interval: '不支持的计划周期',
+      smartctl_missing: '此主机未安装 smartctl',
     },
     snapshot: {
       bad_token: '快照日期无效',

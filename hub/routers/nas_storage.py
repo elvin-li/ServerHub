@@ -366,6 +366,8 @@ _SMART_ERRORS = {
     "bad_kind": "smart.bad_kind",
     "unsupported": "smart.unsupported",
     "kind_unsupported": "smart.kind_unsupported",
+    # Confirmed-vanished smartctl (fresh disk probe on the failure path).
+    "smartctl_missing": "smart.smartctl_missing",
 }
 
 
