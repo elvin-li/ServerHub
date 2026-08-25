@@ -3048,6 +3048,7 @@ export default {
     },
     identity: {
       bad_name: '计算机名称无效',
+      scutil_missing: '此主机上缺少 scutil 工具',
     },
     autostart: {
       self_protected: '{label} 是 ServerHub 面板自身的开机任务，不能从这里关闭；请使用设置页的「登录时启动」开关。',
