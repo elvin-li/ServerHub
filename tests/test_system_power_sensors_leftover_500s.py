@@ -675,6 +675,8 @@ class PowerPayloadTests(unittest.TestCase):
                 power_router.shares_svc, "set_system_service",
                 return_value={"ok": True, "n": float("inf"), "name": "ok\ud800"},
             ),
+            # The toggle is audited; keep the fixture line out of the real trail.
+            mock.patch.object(power_router.audit, "record"),
         ):
             out = power_router._set_screen_sharing(mock.Mock(), True)
         json.dumps(out, ensure_ascii=False, allow_nan=False).encode("utf-8")
@@ -690,6 +692,7 @@ class PowerPayloadTests(unittest.TestCase):
             mock.patch.object(
                 power_router.shares_svc, "set_system_service", return_value=None,
             ),
+            mock.patch.object(power_router.audit, "record"),
         ):
             with self.assertRaises(HTTPException) as ctx:
                 power_router._set_screen_sharing(mock.Mock(), True)

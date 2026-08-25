@@ -26,12 +26,24 @@
         // Follow system → concrete macos/macos-dark (or unraid pair) before paint.
         // Legacy theme=system still follows OS. Missing followSystem follows
         // only when storage is empty or still on that legacy id.
+        // Both palette lists, declared up here because the resolution needs to
+        // know whether the stored id is one the CSS still ships. A theme that
+        // has since been removed — or anything else in that key — has to fall
+        // back the way theme/index.js does, or the page paints one unstyled
+        // frame under a data-theme no stylesheet matches before the bundle
+        // corrects it. Together they are the whole catalogue, so there is no
+        // third list to keep in step.
+        var darkThemes = ['unraid-dark','nord','glass','macos-dark'];
+        var lightThemes = ['unraid','omv','docker','macos','mono'];
+        var known = darkThemes.concat(lightThemes).indexOf(t) >= 0;
         var pairs = { macos: 'macos-dark', unraid: 'unraid-dark' };
         var fromDark = { 'macos-dark': 'macos', 'unraid-dark': 'unraid' };
         var osDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
         var follow = t === 'system' || followRaw === '1' || (followRaw !== '0' && !t);
         var applied = t;
-        if (t === 'system' || !t) {
+        if (!known) {
+          // Covers the empty key and legacy `system` as well: neither is a
+          // palette, and both resolve from the remembered family.
           var lightFamily = pairs[family] ? family : 'macos';
           applied = osDark ? pairs[lightFamily] : lightFamily;
         } else if (follow) {
@@ -42,8 +54,8 @@
         document.documentElement.setAttribute('data-density', d);
         if (l) document.documentElement.setAttribute('lang', l === 'zh-CN' ? 'zh-CN' : l);
         // Set color-scheme early to avoid flash of wrong form-control style
-        var dark = ['unraid-dark','nord','glass','macos-dark'].indexOf(applied) >= 0;
-        var light = ['unraid','omv','docker','macos','mono'].indexOf(applied) >= 0;
+        var dark = darkThemes.indexOf(applied) >= 0;
+        var light = lightThemes.indexOf(applied) >= 0;
         if (dark) document.documentElement.setAttribute('data-color-mode', 'dark');
         else if (light) document.documentElement.setAttribute('data-color-mode', 'light');
         // Dynamic theme-color for browser chrome / status bar
@@ -56,9 +68,9 @@
         if (meta && tc[applied]) meta.setAttribute('content', tc[applied]);
       } catch (e) {}
     </script>
-    <script type="module" crossorigin src="/assets/index-Bda2XuPb.js"></script>
+    <script type="module" crossorigin src="/assets/index-BfsE4EiY.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/vendor-4S_DzOps.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-BDwYx408.css">
+    <link rel="stylesheet" crossorigin href="/assets/index-B1EhE3-o.css">
   </head>
   <body>
     <div id="app"></div>

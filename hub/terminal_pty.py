@@ -374,7 +374,8 @@ async def terminal_websocket(websocket: WebSocket) -> None:
         terminal_svc._audit({
             "ts": terminal_svc._now(), "event": "pty_end", "session": session.session_id,
             "target": target, "container": container, "who": user,
-            "rc": rc, "duration_ms": int((time.monotonic() - started) * 1000),
+            "rc": rc,
+            "duration_ms": terminal_svc._duration_ms(started, time.monotonic()),
             "reason": close_reason, "input_bytes": input_bytes,
         })
         _release(session.session_id)

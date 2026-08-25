@@ -1,5 +1,9 @@
 /**
  * Files mutations that finish after leave must not toast.
+ *
+ * Also pins the listing's failure state: a refresh that fails keeps the last
+ * listing on screen, and its empty row must not claim the folder is empty
+ * when the read that would prove it just failed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -66,6 +70,46 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.clearAllMocks()
+})
+
+describe('Files failed reads', () => {
+  it('does not call a failed refresh of an empty folder "no items"', async () => {
+    api.listFiles.mockResolvedValue({ ...listing(), count: 0, items: [] })
+    const wrapper = await mountFiles()
+    expect(wrapper.text()).toContain('files.empty')
+
+    api.listFiles.mockRejectedValue(new Error('mount went away'))
+    await wrapper.findAll('button').find((b) => b.text() === 'common.refresh').trigger('click')
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text, 'the reason must be shown in the error bar').toContain('mount went away')
+    expect(text, 'the empty row must not contradict the error bar').not.toContain('files.empty')
+    expect(wrapper.find('td.empty-row').text()).toBe('common.load_failed')
+    wrapper.unmount()
+  })
+})
+
+describe('Files toolbar a11y', () => {
+  it('announces the item count as a live region', async () => {
+    // The count is the toolbar's answer to every navigation, upload and
+    // delete; without role=status it changed silently for a screen reader.
+    const wrapper = await mountFiles()
+    const count = wrapper.find('.meta-count[role="status"]')
+    expect(count.exists(), 'live item count').toBe(true)
+    expect(count.text()).toBe('1 files.items')
+    wrapper.unmount()
+  })
+
+  it('keeps the upload input focusable instead of hidden', async () => {
+    // The hidden attribute removed the input from the tab order and the
+    // accessibility tree — keyboard and screen-reader users could not upload.
+    const wrapper = await mountFiles()
+    const input = wrapper.get('input[type="file"]')
+    expect(input.attributes('hidden')).toBeUndefined()
+    expect(input.classes()).toContain('sr-only')
+    wrapper.unmount()
+  })
 })
 
 describe('Files leave-guards', () => {

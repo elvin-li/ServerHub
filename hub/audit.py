@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,21 @@ MAX_LINES = 5000
 # typical line is ~150 B; 192 B/line starts checking before a fat-line
 # trail can run far past MAX_LINES.
 _TRIM_SOFT_BYTES = MAX_LINES * 192
+
+#: Serialises append + trim.  The O_APPEND write alone is atomic, but _trim is
+#: a read-tail-then-replace: a record() on another request thread that lands
+#: between the read and the rename is thrown away with the temp-file swap.
+#: Sync handlers run on uvicorn's thread pool, so two operators (or one
+#: operator plus the dashboard poll) hitting mutating routes concurrently is
+#: the normal case, not a corner — and the loss would be a security event.
+#:
+#: This lock is per-interpreter only.  The deployment hub/config.py grew its
+#: services.yaml flock for — a packaged ServerHub.app and the LaunchAgent
+#: panel sharing one ``data/`` — writes this trail from two processes, so
+#: record() additionally takes secure_io.file_lock (a kernel flock) around
+#: the same window; without it a trim in one process discarded entries the
+#: other had just appended to the pre-swap inode.
+_WRITE_LOCK = threading.Lock()
 
 #: Event names.  Kept as constants so a typo in a caller is an AttributeError
 #: rather than a silently unqueryable log line.
@@ -84,7 +100,19 @@ NFS_CHANGED = "nfs.changed"
 RAID_CHANGED = "raid.changed"
 SNAPSHOT_CHANGED = "snapshots.changed"
 SMART_TEST_STARTED = "smart.test.started"
+SMART_TEST_ABORTED = "smart.test.aborted"
+SMART_SCHEDULE_CHANGED = "smart.schedule.changed"
+#: A backup run reads every byte of the data it protects and writes it
+#: somewhere else, so a manual trigger names who asked for it.
+BACKUP_RUN = "backup.run"
 SPOTLIGHT_CHANGED = "spotlight.changed"
+#: Shutdown / restart / sleep takes every service on the machine down at
+#: once.  "Why did the server go dark at 02:14, and who told it to" is the
+#: canonical audit-trail question, so the scheduled action and the operator
+#: are recorded before the box goes away.  Wake-on-LAN decides whether the
+#: machine can be brought back remotely, so flipping it is recorded too.
+POWER_ACTION = "power.action"
+POWER_WOL_CHANGED = "power.wol.changed"
 #: Scheduled jobs run arbitrary shell commands and move data around, so every
 #: definition change and manual trigger names the operator.  The command text
 #: of a shell job is part of the record: "what exactly did the panel run at
@@ -100,12 +128,20 @@ NOTIFY_CHANNEL_CREATED = "notify.channel.created"
 NOTIFY_CHANNEL_UPDATED = "notify.channel.updated"
 NOTIFY_CHANNEL_DELETED = "notify.channel.deleted"
 NOTIFY_CHANNEL_TESTED = "notify.channel.tested"
+#: The legacy Home Assistant notify config (including its token) is edited
+#: through PUT /api/settings rather than the channel CRUD, so without this
+#: event a credential swap left no trace while the equivalent channel edit
+#: did.  Only the changed field *names* are recorded, never values.
+NOTIFY_SETTINGS_CHANGED = "notify.settings.changed"
 #: A WireGuard peer is a credential granting network access, so issuing and
 #: revoking one is recorded with the operator who did it.
 WIREGUARD_PEER_ADDED = "wireguard.peer.added"
 WIREGUARD_PEER_REMOVED = "wireguard.peer.removed"
 WIREGUARD_PEER_CHANGED = "wireguard.peer.changed"
 WIREGUARD_INTERFACE = "wireguard.interface"
+#: Server-side tunnel settings (endpoint, subnet, DNS, wstunnel wrap) shape
+#: what every issued credential can reach, so edits record the changed keys.
+WIREGUARD_SETTINGS_CHANGED = "wireguard.settings.changed"
 #: UPS safe-shutdown policy (hub/ups_policy.py).  The policy stops and starts
 #: real workloads on its own, with nobody at the keyboard, so the trail must
 #: answer "why is this stack down / who told it to do that" afterwards: every
@@ -119,6 +155,78 @@ UPS_POLICY_RESET = "ups.policy.reset"
 UPS_POLICY_CHANGED = "ups.policy.changed"
 UPS_POLICY_DRILL = "ups.policy.drill"
 UPS_HALT_CHANGED = "ups.halt.changed"
+
+#: Service lifecycle (hub/routers/api.py, hub/routers/services_api.py).
+#: Starting, stopping or restarting a workload changes what is running on the
+#: host, and unregistering a launch agent changes what starts at login — the
+#: exact questions an operator asks after the fact ("who stopped Immich?").
+#: These were the panel's most-used mutations and the only privileged ones
+#: that left no record at all.  Maintenance tasks run arbitrary repo-defined
+#: scripts, so a manual kick is recorded too.
+SERVICE_ACTION = "service.action"
+SERVICE_BULK_ACTION = "service.bulk_action"
+SERVICE_UNINSTALLED = "service.uninstalled"
+MAINTENANCE_RUN = "maintenance.run"
+
+#: Container engine mutations (hub/routers/containers.py).  Creating a
+#: container chooses its mounts and privilege level, exec runs an arbitrary
+#: command inside one (the Terminal's equivalent has always recorded the
+#: command; this trail is 0600 like that one), and removals/prunes destroy
+#: data.  Lifecycle events share one name with a target field, mirroring
+#: service.action.
+CONTAINER_ACTION = "container.action"
+CONTAINER_RUN = "container.run"
+CONTAINER_EXEC = "container.exec"
+CONTAINER_IMAGE_CHANGED = "container.image.changed"
+CONTAINER_VOLUME_CHANGED = "container.volume.changed"
+CONTAINER_NETWORK_CHANGED = "container.network.changed"
+CONTAINER_PRUNED = "container.pruned"
+CONTAINER_CONFIG_CHANGED = "container.config.changed"
+
+#: App-store and managed-app mutations (hub/routers/catalog.py).  Installing
+#: a template materialises a compose stack or brew formula on the host,
+#: uninstalling can delete its data, the credential store writes to the
+#: keychain (the password itself is never passed to record()), and the
+#: autostart console changes what comes up at boot.
+APP_INSTALLED = "app.installed"
+APP_UNINSTALLED = "app.uninstalled"
+APP_ACTION = "app.action"
+APP_CREDENTIAL_SAVED = "app.credential.saved"
+APP_CREDENTIAL_DELETED = "app.credential.deleted"
+APP_AUTOSTART_CHANGED = "app.autostart.changed"
+
+#: Cloudflare Tunnel lifecycle (hub/routers/cloudflared_api.py).  A tunnel
+#: exposes this panel to the public internet, and route-dns points a public
+#: hostname at it — exactly the changes to reconstruct after an exposure
+#: question.  The connector token is never passed to record().
+TUNNEL_CHANGED = "cloudflared.changed"
+
+#: Compose editor, brew services and system nginx (hub/routers/modules_api.py).
+#: A compose save is arbitrary container config awaiting the next stack run.
+COMPOSE_CHANGED = "compose.changed"
+NGINX_RELOADED = "nginx.reloaded"
+
+#: File manager writes and the FileBrowser sidecar (hub/routers/files_api.py).
+FILES_CHANGED = "files.changed"
+
+#: Menu-bar launcher and panel self-management (hub/routers/launcher_api.py).
+LAUNCHER_CHANGED = "launcher.changed"
+
+#: Host-level mutations (hub/routers/system_extra.py, storage.py,
+#: unraid_parity.py, services_api.py).  Network reconfiguration can cut the
+#: panel off from the network it is administered over, a VM console ticket is
+#: a raw framebuffer into a guest, eraseDisk is the most destructive action
+#: in the panel, a saved service script is arbitrary code run by the next
+#: start/stop, and a self-update replaces the panel's own code.
+VM_CHANGED = "vm.changed"
+VM_CONSOLE_OPENED = "vm.console.opened"
+NETWORK_CHANGED = "network.changed"
+UPDATES_APPLIED = "updates.applied"
+DISK_CHANGED = "disk.changed"
+POOL_CHANGED = "storage.pool.changed"
+IDENTITY_CHANGED = "identity.changed"
+SETTINGS_POWER_CHANGED = "settings.power.changed"
+SERVICE_CONFIG_CHANGED = "service.config.changed"
 
 #: Any field whose name contains one of these is replaced wholesale.  Substring
 #: matching rather than exact names, so ``current_password``, ``new_password``
@@ -192,6 +300,18 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render the
+            # number at all — json.dumps raises the same ValueError.  YAML/plist
+            # hex text loads uncapped (``int(x, 16)`` is a power-of-two base),
+            # so an already-int leftover used to reach record()'s own dump and
+            # cost the *entire* audit line to the logging-never-breaks try: a
+            # poisoned failed sign-in left no trace at all.  Dropping just the
+            # field keeps the event — the same probe as terminal_svc._jsonable
+            # and hub.errors._jsonable_param.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -314,20 +434,26 @@ def record(event: str, /, **fields: Any) -> dict:
         # entire audit trail before appending one line to it.  The same shape in
         # config._bootstrap() destroyed a populated services.yaml on every test
         # run, and here the loss would be the security history specifically.
-        secure_io.create_secret_text(AUDIT_PATH, "")
-        # O_NOFOLLOW: open("a") would follow a replacement symlink onto
-        # another file this process can write.
-        secure_io.append_text(
-            AUDIT_PATH,
-            json.dumps(entry, ensure_ascii=False, allow_nan=False, default=str) + "\n",
-            mode=0o600,
-        )
-        # chmod only when the mode drifted.  The create helper already
-        # writes 0600; repeating chmod on every login is a metadata write
-        # against an otherwise append-only file.
-        if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
-            os.chmod(AUDIT_PATH, 0o600)
-        _trim(AUDIT_PATH)
+        #
+        # The locks cover append *and* trim: without them, an entry appended
+        # by another thread — or another panel process sharing data/ —
+        # between _trim's tail-read and its atomic rename is dropped with
+        # the swap.
+        with _WRITE_LOCK, secure_io.file_lock(AUDIT_PATH):
+            secure_io.create_secret_text(AUDIT_PATH, "")
+            # O_NOFOLLOW: open("a") would follow a replacement symlink onto
+            # another file this process can write.
+            secure_io.append_text(
+                AUDIT_PATH,
+                json.dumps(entry, ensure_ascii=False, allow_nan=False, default=str) + "\n",
+                mode=0o600,
+            )
+            # chmod only when the mode drifted.  The create helper already
+            # writes 0600; repeating chmod on every login is a metadata write
+            # against an otherwise append-only file.
+            if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
+                os.chmod(AUDIT_PATH, 0o600)
+            _trim(AUDIT_PATH)
     except (OSError, TypeError, ValueError, RecursionError):
         # An unwritable or unencodable log must never turn a valid sign-in
         # into a 500. RecursionError: leftover nested audit row is not ValueError.

@@ -165,6 +165,24 @@ def _probe_port(port) -> bool | None:
         return False
 
 
+def _renderable_port(value):
+    """*value*, unless it is an int the encoder cannot render at all.
+
+    A hand-edited hex leftover (``port: 0xfff…`` in an override, or a plist
+    ``<integer>0x…</integer>`` — both parse uncapped because base 16 is
+    exempt from CPython's int(str) digit cap) used to reach the
+    ``f" · :{port}"`` detail lines below, whose int->str conversion raised
+    the digit-cap ValueError and killed the whole collector — every launchd
+    row silently vanished from /api/status and the Services page.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            str(value)
+        except ValueError:
+            return None
+    return value
+
+
 def _enrich(entry):
     """``enrich_service`` for one item, absorbing its own failures.
 
@@ -279,8 +297,10 @@ def discover_launchd():
                 running = True
 
         # Adaptive port: override → plist args/env → live pid lsof
-        port = ov.get("port")
-        detected = ports_from_plist(pl)
+        port = _renderable_port(ov.get("port"))
+        detected = [
+            p for p in ports_from_plist(pl) if _renderable_port(p) is not None
+        ]
         if port is None and detected:
             port = detected[0]
         if port is None and running and pid not in (None, "-"):
@@ -308,9 +328,13 @@ def discover_launchd():
         prog = ""
         raw_prog = pl.get("Program") or (arguments[0] if arguments else "")
         try:
-            prog = Path(str(raw_prog)).name if raw_prog else ""
+            prog = Path(_utf8_text(raw_prog)).name if raw_prog else ""
         except (OSError, ValueError, TypeError):
-            text = str(raw_prog)
+            # _utf8_text, not str(): a hex plist ``<integer>`` Program past
+            # the int->str digit cap used to raise the same ValueError again
+            # right here and kill the whole collector — every launchd row
+            # silently vanished from /api/status and the Services page.
+            text = _utf8_text(raw_prog)
             prog = text.rsplit("/", 1)[-1] if text else ""
         sig = identify(prog, port, extras=extras)
         if not (sig and sig.get("confidence") == "high"):

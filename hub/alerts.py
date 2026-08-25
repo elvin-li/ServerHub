@@ -98,7 +98,10 @@ def _append_alert(alert: dict):
         line = json.dumps(alert, ensure_ascii=False, allow_nan=False) + "\n"
     except (TypeError, ValueError, OverflowError, RecursionError):
         return
-    with _lock:
+    # file_lock as well as _lock: two panel processes sharing data/ (packaged
+    # .app + LaunchAgent) both run this sweep, and a trim in one used to swap
+    # away an alert row the other had just appended to the pre-replace inode.
+    with _lock, secure_io.file_lock(ALERTS_FILE):
         secure_io.append_text(
             ALERTS_FILE,
             line,
@@ -140,7 +143,10 @@ def _alert_ts(raw) -> int | None:
         if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
             try:
                 return int(text)
-            except OverflowError:
+            except (ValueError, OverflowError):
+                # ValueError: a >4300-digit leftover ``t`` (CPython's str->int
+                # cap) — and non-ASCII digits that pass isdigit() — used to
+                # 500 GET /api/alerts through list_alerts.
                 return None
         return None
     return None
@@ -184,7 +190,15 @@ def _jsonable_alert(value, depth: int = 0):
         return [_jsonable_alert(v, depth + 1) for v in value]
     if isinstance(value, str):
         return _utf8_text(value)
-    if isinstance(value, (int, bool)) or value is None:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
@@ -219,7 +233,10 @@ def list_alerts(limit: int = 50) -> list:
     for ln in lines:
         try:
             parsed = safe_json_loads(ln)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
+            # ValueError, not just JSONDecodeError: a leftover >4300-digit
+            # number raises CPython's str->int digit-cap ValueError out of
+            # json.loads, which used to 500 GET /api/alerts on that line.
             continue
         if isinstance(parsed, dict):
             row = _jsonable_alert(parsed)

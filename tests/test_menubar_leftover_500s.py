@@ -202,7 +202,13 @@ class ActionMessageLeftoverTests(unittest.TestCase):
             state = type("S", (), {"serverhub_auth_kind": "session"})()
 
         for leftover in (b"done", float("inf"), "ok\ud800"):
+            # The identity helpers and the audit sink are not under test: the
+            # fake request cannot satisfy them, and the trail must not collect
+            # fixture noise (see AuditIsolatedInTestsTests).
             with mock.patch.object(api_mod.actions, "run_action", return_value=(0, leftover, "")), \
+                 mock.patch.object(api_mod.audit, "record"), \
+                 mock.patch.object(api_mod.auth, "request_username", lambda r: "admin"), \
+                 mock.patch.object(api_mod.auth, "request_client_id", lambda r: "127.0.0.1"), \
                  mock.patch.object(api_mod, "invalidate_status"):
                 resp = api_mod.api_action(
                     api_mod.Action(target="panel", action="restart"), _Req(),

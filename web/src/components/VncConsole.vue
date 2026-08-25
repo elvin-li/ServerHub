@@ -304,7 +304,9 @@ useDismissable(computed(() => true), () => { close() }, panelEl)
 }
 .vnc-error {
   margin: 8px 0 0;
-  color: #d33;
+  /* --down-text, not a literal: #d33 measured 2.2:1 on Nord's card and below
+     4.5:1 on every dark palette. */
+  color: var(--down-text);
   font-size: 12px;
 }
 .vnc-policy { margin: 7px 0 0; }

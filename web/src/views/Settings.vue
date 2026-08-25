@@ -1,5 +1,7 @@
 <template>
   <div>
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('settings.title') }}</h1>
     <!-- Appearance & Language -->
     <div v-if="tab==='appearance'">
       <div class="card" style="margin-bottom:12px">
@@ -9,7 +11,9 @@
           <button
             v-for="l in locales"
             :key="l.id"
+            type="button"
             :class="{ active: locale === l.id }"
+            :aria-pressed="locale === l.id"
             @click="pickLocale(l.id)"
           >{{ finiteText(l.native) }}</button>
         </div>
@@ -233,7 +237,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('twofa.title') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('twofa.hint') }}</p>
-        <div v-if="twofaError" class="hint bad">
+        <!-- role=alert, like the identical block on Account.vue: without it a
+             failed 2FA status load appears silently for AT users. -->
+        <div v-if="twofaError" class="hint bad" role="alert">
           {{ finiteText(twofaError) }}
           <button class="tiny" type="button" :disabled="twofaBusy" @click="loadTwofa">{{ t('common.retry') }}</button>
         </div>
@@ -271,7 +277,11 @@
             </div>
             <div v-else>
               <p class="hint">{{ t('twofa.enroll_hint') }}</p>
-              <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>
+              <!-- aria-hidden: the QR encodes the same secret shown in the
+                   "Manual entry secret" below, so for a screen reader it is a
+                   duplicate with no name, announced as an anonymous graphic
+                   (same as the Account and WireGuard QRs). -->
+              <div class="twofa-qr" aria-hidden="true" v-html="twofaEnroll.qrSvg"></div>
               <div class="form-grid" style="margin-top:8px">
                 <label>{{ t('twofa.manual_secret') }}</label>
                 <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(twofaEnroll.manual_entry) }}</code>
@@ -300,7 +310,12 @@
           <p class="hint" style="margin-top:0">{{ t('twofa.admin_reset_hint') }}</p>
           <div class="form-grid">
             <label>{{ t('settings.username') }}</label>
-            <input v-model.trim="twofaResetUser" maxlength="64" :aria-label="t('twofa.admin_reset')" />
+            <!-- The old aria-label repeated the section heading ("Rescue
+                 another account"), so a speech-input user saying the visible
+                 "Username" label could not reach the field. The name keeps the
+                 rescue context so the form-controls listing can still tell it
+                 apart from the password card's username input. -->
+            <input v-model.trim="twofaResetUser" maxlength="64" :aria-label="t('twofa.admin_reset_user')" />
           </div>
           <div class="btns" style="margin-top:10px">
             <button class="danger" :disabled="twofaBusy || !twofaResetUser" @click="adminResetTwofa">{{ t('twofa.admin_reset_button') }}</button>
@@ -335,7 +350,7 @@
               <th class="col-hide-m">{{ t('apikeys.created') }}</th>
               <th class="col-hide-m">{{ t('apikeys.last_used') }}</th>
               <th class="col-hide-m">{{ t('apikeys.expires') }}</th>
-              <th class="ops"></th>
+              <th class="ops"><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>
@@ -356,7 +371,7 @@
           </tbody>
         </table>
         </div>
-        <p v-else-if="apiKeysError" class="hint" style="color:var(--down)">{{ finiteText(apiKeysError) }}</p>
+        <p v-else-if="apiKeysError" class="hint" style="color:var(--down-text)" role="alert">{{ finiteText(apiKeysError) }}</p>
         <p v-else-if="apiKeys" class="hint">{{ t('apikeys.empty') }}</p>
         <p v-else class="hint">{{ t('common.loading') }}</p>
 
@@ -401,12 +416,15 @@
         <h2 class="section-title" style="margin-top:0">{{ t('settings.notify') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.notify_legacy_hint') }}</p>
         <div class="form-grid">
+          <!-- The grid <label>s are not associated with their controls (no
+               for/id), so every checkbox needs its own aria-label; the text
+               inputs below already carry theirs. -->
           <label>{{ t('settings.notify_enable') }}</label>
-          <input type="checkbox" v-model="form.notify.enabled" />
+          <input type="checkbox" v-model="form.notify.enabled" :aria-label="t('settings.notify_enable')" />
           <label>{{ t('settings.include_warn') }}</label>
-          <input type="checkbox" v-model="form.notify.include_warn" />
+          <input type="checkbox" v-model="form.notify.include_warn" :aria-label="t('settings.include_warn')" />
           <label>{{ t('settings.notify_resolve') }}</label>
-          <input type="checkbox" v-model="form.notify.notify_resolve" />
+          <input type="checkbox" v-model="form.notify.notify_resolve" :aria-label="t('settings.notify_resolve')" />
           <label>{{ t('notifych.f_ha_url') }}</label>
           <input v-model="form.notify.ha_url" type="text" :aria-label="t('notifych.f_ha_url')" />
           <label>{{ t('notifych.f_ha_service') }}</label>
@@ -426,7 +444,7 @@
         <p class="hint" style="margin-top:0">{{ t('settings.thresholds_hint') }}</p>
         <div class="form-grid">
           <label>{{ t('settings.th_enable') }}</label>
-          <input type="checkbox" v-model="form.thresholds.enabled" />
+          <input type="checkbox" v-model="form.thresholds.enabled" :aria-label="t('settings.th_enable')" />
           <label>{{ t('settings.th_cpu') }}</label>
           <input v-model.number="form.thresholds.cpu_pct" type="number" min="50" max="100" :aria-label="t('settings.th_cpu')" />
           <label>{{ t('settings.th_mem') }}</label>
@@ -463,8 +481,13 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.ups_alerts') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.ups_alerts_hint') }}</p>
-        <LoadFailure v-if="upsError && !upsInfo" :detail="upsError" :retry="loadUps" />
-        <div class="form-grid" v-else-if="upsInfo">
+        <!-- Not gated on !upsInfo: on a *re*-load failure the previously
+             fetched status and form are still the best information available,
+             so the banner renders above them instead of the failure being
+             toast-only — the LoadFailure contract (Containers, Alerts, Users).
+             A failed first load still renders the banner alone. -->
+        <LoadFailure v-if="upsError" :detail="upsError" :retry="loadUps" />
+        <div class="form-grid" v-if="upsInfo">
           <label>{{ t('settings.power_source') }}</label>
           <div>
             <span v-if="upsInfo.present" class="badge" :class="upsInfo.on_battery ? 'warn' : 'ok'">
@@ -483,7 +506,7 @@
           <label>{{ t('settings.ups_low_pct') }}</label>
           <input v-model.number="upsForm.low_battery_pct" type="number" min="5" max="95" :aria-label="t('settings.ups_low_pct')" />
         </div>
-        <div v-else class="sub">{{ t('common.loading') }}</div>
+        <div v-else-if="!upsError" class="sub">{{ t('common.loading') }}</div>
 
         <template v-if="upsInfo">
           <h2 class="section-title">{{ t('settings.ups_shutdown_title') }}</h2>
@@ -512,7 +535,10 @@
               </select>
               <div v-if="upsForm.shutdown.stacksMode === 'custom'" style="margin-top:6px">
                 <div v-for="(row, i) in upsStackRows" :key="row.id" class="ups-pick-row">
-                  <input type="checkbox" v-model="row.selected" :aria-label="finiteText(row.id)" />
+                  <!-- Named after the visible display name, not the raw stack
+                       id: a screen reader hearing "stack:immich" cannot match
+                       it to the "Immich" the row shows. -->
+                  <input type="checkbox" v-model="row.selected" :aria-label="finiteText(row.name, '') || finiteText(row.id)" />
                   <span class="mono">
                     {{ finiteText(row.name) }}
                     <span class="sub" v-if="row.missing">· {{ t('settings.ups_shutdown_stack_missing') }}</span>
@@ -528,7 +554,9 @@
             <label v-if="upsScriptChoices.length">{{ t('settings.ups_shutdown_scripts') }}</label>
             <div v-if="upsScriptChoices.length">
               <div v-for="s in upsScriptChoices" :key="s.id" class="ups-pick-row">
-                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(s.id)" />
+                <!-- Same rule as the stack rows: the checkbox must carry the
+                     name the row displays, not the machine id. -->
+                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(s.name, '') || finiteText(s.id)" />
                 <span class="mono">{{ finiteText(s.name) }}</span>
               </div>
             </div>
@@ -542,7 +570,11 @@
           </div>
 
           <div v-if="upsDrill" style="margin-top:10px" data-test="drill-result">
-            <p class="hint" style="margin:0 0 6px">
+            <!-- role=status: this verdict is the whole outcome of the drill
+                 button press and lands silently after it — same treatment as
+                 the Scheduler run-history and PhotosHub empty states. The
+                 step rows below stay browsable rather than read in one go. -->
+            <p class="hint" role="status" style="margin:0 0 6px">
               <template v-if="upsDrill.would_trigger_now">
                 {{ t('settings.ups_would_trigger', { reason: upsDrill.reason }) }}
               </template>
@@ -631,6 +663,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_manager') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.vm_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab: the
+             colored line in the list card names the failure but offers no
+             retry and is never announced. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.vms">
           <label>UTM</label>
           <div>
@@ -654,7 +691,7 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_list') }}</h2>
-        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="table-wrap" v-else-if="(sysBundle.vms?.items||[]).length">
         <table class="dense fit-m">
@@ -677,6 +714,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.datetime') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.datetime_hint') }}</p>
+        <!-- The read-only system tabs render nothing but their headings while
+             the bundle is missing, so a failed read looked like an empty page
+             with no explanation and no way to retry. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.datetime">
           <label>{{ t('settings.now') }}</label>
           <div class="mono">{{ finiteText(sysBundle.datetime.now) }}</div>
@@ -711,6 +753,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.power') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.power_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab: the
+             colored line in the assertions card names the failure but offers
+             no retry and is never announced. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.power">
           <label>{{ t('settings.sleep') }}</label>
           <div class="row" style="gap:8px">
@@ -732,7 +779,7 @@
           </div>
           <label>WoL</label>
           <div class="row" style="gap:8px">
-            <select v-model.number="powerForm.womp" style="width:100px">
+            <select v-model.number="powerForm.womp" style="width:100px" aria-label="WoL">
               <option :value="1">{{ t('common.on') }}</option>
               <option :value="0">{{ t('common.off') }}</option>
             </select>
@@ -761,7 +808,7 @@
         </div>
         <p class="hint">{{ finiteText(sysBundle?.power?.ups?.hint) }}</p>
         <h2 class="section-title">{{ t('settings.assertions') }}</h2>
-        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div v-else-if="(sysBundle.power?.assertions||[]).length" class="mono" style="font-size:11px;max-height:180px;overflow:auto">
           <div v-for="(a,i) in sysBundle.power.assertions" :key="i" style="margin-bottom:6px">{{ finiteText(a) }}</div>
@@ -785,6 +832,11 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.disk_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab: the
+             colored line in the disk-power card names the failure but offers
+             no retry and is never announced. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.disk">
           <label>disksleep</label>
           <div>{{ finiteN(sysBundle.disk.disksleep_minutes) }} {{ t('settings.minutes') }}</div>
@@ -798,7 +850,7 @@
       </div>
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk_power') }}</h2>
-        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down)">{{ finiteText(sysBundleError) }}</div>
+        <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="table-wrap" v-else-if="(sysBundle.disk?.power_disks||[]).length">
         <table class="dense fit-m">
@@ -821,6 +873,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.network') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.network_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.alias_auto">
           <label>{{ t('settings.auto_bind') }}</label>
           <div>
@@ -833,7 +888,7 @@
             {{ finiteText(sysBundle.alias_auto.preferred.device) }} · {{ finiteText(sysBundle.alias_auto.preferred.service) }}
             · {{ finiteText(sysBundle.alias_auto.preferred.primary_ip) }}
           </div>
-          <div v-else style="color:var(--down)">—</div>
+          <div v-else style="color:var(--down-text)">—</div>
           <label>{{ t('settings.managed_ips') }}</label>
           <div>
             <span v-for="ip in (sysBundle.alias_auto.config?.ips||[])" :key="ip" class="badge ok" style="margin-right:4px">{{ finiteText(ip) }}</span>
@@ -861,6 +916,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.shares') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.shares_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.shares">
           <label>smbd</label>
           <div>
@@ -884,6 +942,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.scheduler') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.scheduler_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.scheduler">
           <label>{{ t('settings.timer_count') }}</label>
           <div>{{ finiteN(sysBundle.scheduler.count, 0) }}</div>
@@ -912,6 +973,9 @@
       <div class="card">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.access') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.access_hint') }}</p>
+        <!-- Same empty-vs-failed distinction as the Date & Time tab. -->
+        <LoadFailure v-if="sysBundleError && !sysBundle" :detail="sysBundleError" :retry="loadSysBundle" />
+        <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
         <div class="form-grid" v-if="sysBundle?.management">
           <label>{{ t('settings.panel_port') }}</label>
           <div class="mono">{{ finiteN(sysBundle.management.panel_port) }}</div>
@@ -964,12 +1028,14 @@
         <h2 class="section-title" style="margin-top:0">{{ t('settings.advanced') }}</h2>
         <p class="hint" style="margin-top:0">{{ t('settings.advanced_hint') }}</p>
         <div class="form-grid">
+          <!-- Same as the notify tab: the grid <label>s carry no for/id, so
+               each checkbox names itself. -->
           <label>{{ t('settings.adaptive') }}</label>
-          <input type="checkbox" v-model="form.adaptive" />
+          <input type="checkbox" v-model="form.adaptive" :aria-label="t('settings.adaptive')" />
           <label>{{ t('settings.alias_auto') }}</label>
-          <input type="checkbox" v-model="form.ip_aliases.auto_bind" />
+          <input type="checkbox" v-model="form.ip_aliases.auto_bind" :aria-label="t('settings.alias_auto')" />
           <label>{{ t('settings.prefer_wired') }}</label>
-          <input type="checkbox" v-model="form.ip_aliases.prefer_wired" />
+          <input type="checkbox" v-model="form.ip_aliases.prefer_wired" :aria-label="t('settings.prefer_wired')" />
           <label>{{ t('settings.alias_interval') }}</label>
           <!-- Backend is IpAliasesPatch.interval = Field(ge=30, le=600); a lower
                bound of 15 here made the whole Advanced save 422 silently. -->
@@ -995,7 +1061,7 @@
         <p class="hint" style="margin-top:0">{{ t('settings.terminal_hint') }}</p>
         <div class="form-grid">
           <label>{{ t('settings.terminal_host_enabled') }}</label>
-          <input type="checkbox" v-model="form.terminal.host_enabled" />
+          <input type="checkbox" v-model="form.terminal.host_enabled" :aria-label="t('settings.terminal_host_enabled')" />
         </div>
         <p class="hint danger-hint">⚠ {{ t('settings.terminal_warning') }}</p>
         <div class="btns" style="margin-top:12px">
@@ -1048,7 +1114,9 @@
           <router-link class="btn" to="/health">{{ t('nav.health') }}</router-link>
           <router-link class="btn" to="/logs">{{ t('nav.logs') }}</router-link>
         </div>
-        <p class="hint" v-if="diagMsg" style="margin-top:12px">{{ finiteText(diagMsg) }}</p>
+        <!-- role=status: the saved path (or the save failure) lands here after
+             the click; without a live region it appeared silently. -->
+        <p class="hint" v-if="diagMsg" style="margin-top:12px" role="status">{{ finiteText(diagMsg) }}</p>
       </div>
       <div class="card" v-if="diagPreview">
         <h2 class="section-title" style="margin-top:0">{{ t('settings.diag_preview') }}</h2>
@@ -2340,11 +2408,11 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .launcher-overall.is-ready {
-  color: var(--ok);
+  color: var(--ok-text);
   background: color-mix(in srgb, var(--ok) 10%, transparent);
 }
 .launcher-overall.is-idle {
-  color: var(--warn);
+  color: var(--warn-text);
   background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 .launcher-overall-dot {
@@ -2408,7 +2476,7 @@ onUnmounted(() => {
 .launcher-actions button { width: 100%; min-width: 0; min-height: 36px; }
 .password-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .password-state { margin: 0; }
-.password-state.bad { color: var(--down); }
+.password-state.bad { color: var(--down-text); }
 /* Same constraint story as WireGuard's .wg-qr: the scalable SVG has no
    intrinsic size, so the wrapper fixes one and keeps a light quiet zone. */
 .twofa-qr {
@@ -2418,8 +2486,8 @@ onUnmounted(() => {
 .twofa-qr :deep(svg) { display: block; width: 100%; height: 100%; }
 .twofa-recovery, .apikey-created {
   margin: 12px 0; padding: 12px; border-radius: 8px;
-  background: color-mix(in srgb, var(--up) 8%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--up) 25%, transparent);
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--ok) 25%, transparent);
 }
 .twofa-recovery-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));

@@ -1,6 +1,9 @@
 <template>
   <router-view v-if="route.meta.authPage" />
   <div v-else class="layout">
+    <!-- WCAG 2.4.1: the nav is 18 tab stops wide and repeats on every page, so
+         a keyboard user cannot reach the page body without walking all of it. -->
+    <a class="skip-link" href="#main-content" @click="focusMain">{{ t('common.skip_to_content') }}</a>
     <header ref="topchromeEl" class="topchrome">
       <div class="topchrome-inner">
         <button
@@ -61,6 +64,7 @@
             :key="item.to"
             :to="item.to"
             :class="{ active: isActive(item) }"
+            :aria-current="navCurrent(item)"
             @click="menuOpen = false"
           >
             <component :is="item.icon" :size="15" />
@@ -111,6 +115,7 @@
             :key="c.to"
             :to="c.to"
             :class="{ active: isChildActive(c) }"
+            :aria-current="isChildActive(c) ? 'page' : undefined"
             @click="menuOpen = false"
           >
             <component :is="c.icon" :size="13" />
@@ -119,11 +124,13 @@
         </div>
       </div>
     </header>
-    <!-- Mobile nav overlay -->
-    <div class="nav-overlay" :class="{ show: menuOpen }" @click="menuOpen = false"></div>
+    <!-- Mobile nav overlay: click-away scrim only, so hide it from AT the way
+         every other dialog backdrop is hidden (Escape and the hamburger are
+         the accessible ways out; the drawer itself is wired via useDismissable). -->
+    <div class="nav-overlay" :class="{ show: menuOpen }" role="presentation" aria-hidden="true" @click="menuOpen = false"></div>
     <!-- Offline banner -->
     <div v-if="offline" class="offline-banner" role="alert">⚠ {{ t('common.offline_banner') }}</div>
-    <main class="main" role="main">
+    <main id="main-content" ref="mainEl" class="main" role="main" tabindex="-1">
       <router-view v-slot="{ Component }">
         <transition name="page-fade" mode="out-in">
           <component :is="Component" />
@@ -157,19 +164,34 @@
         :aria-label="t('common.cmd_title')"
         tabindex="-1"
       >
+        <!--
+          Combobox, not a bare text field: arrow keys move a highlight that
+          lives on another element while focus stays here, so without
+          aria-activedescendant a screen reader announces nothing at all as
+          the reader walks the results.
+        -->
         <input
           ref="cmdInput"
           v-model="cmdQuery"
           type="text"
+          role="combobox"
+          aria-expanded="true"
+          aria-autocomplete="list"
+          aria-controls="cmd-list"
+          :aria-activedescendant="cmdFlat.length ? `cmd-opt-${cmdIdx}` : undefined"
+          :aria-label="t('common.cmd_title')"
           :placeholder="t('common.cmd_ph')"
-          @keydown.enter="cmdGo(cmdIdx)"
-          @keydown.up.prevent="cmdIdx = Math.max(0, cmdIdx - 1)"
-          @keydown.down.prevent="cmdIdx = Math.min(cmdFlat.length - 1, cmdIdx + 1)"
+          @keydown.enter="cmdEnter"
+          @keydown.up="cmdArrowUp"
+          @keydown.down="cmdArrowDown"
         />
-        <ul class="cmd-list">
+        <ul id="cmd-list" class="cmd-list" role="listbox" :aria-label="t('common.cmd_title')">
           <li
             v-for="(item, i) in cmdFlat"
             :key="item.to"
+            :id="`cmd-opt-${i}`"
+            role="option"
+            :aria-selected="i === cmdIdx"
             :class="{ active: i === cmdIdx, 'cmd-ai': item.type === 'ai' }"
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
@@ -177,7 +199,9 @@
             <span>{{ item.type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(item.query) }) : (finiteText(item.title, '') || t(item.labelKey)) }}</span>
             <kbd>{{ item.type === 'ai' ? t('assistant.short') : finiteText(item.to) }}</kbd>
           </li>
-          <li v-if="!cmdFlat.length" class="cmd-empty">{{ t('common.cmd_empty') }}</li>
+          <!-- role=presentation: a listbox may only own options, and "no
+               matches" is a message about the list, not a choice in it. -->
+          <li v-if="!cmdFlat.length" class="cmd-empty" role="presentation">{{ t('common.cmd_empty') }}</li>
         </ul>
       </div>
     </div>
@@ -215,6 +239,7 @@ import { ASSISTANT_EVENT, matchCatalog } from './lib/assistant'
 import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
+import { installTableWrapFocus } from './lib/tableWrapFocus'
 import { finiteN, finiteText } from './lib/finite'
 
 const route = useRoute()
@@ -229,6 +254,7 @@ const photoHubOk = ref(false)
 const menuOpen = ref(false)
 const navPanel = ref(null)
 const topchromeEl = ref(null)
+const mainEl = ref(null)
 const isNarrow = ref(false)
 const offline = ref(!navigator.onLine)
 let narrowMq = null
@@ -241,6 +267,23 @@ function closeMenu() {
   menuOpen.value = false
 }
 
+/**
+ * Hand the keyboard to the page body without touching the URL.
+ *
+ * Letting the anchor navigate to `#main-content` would push a history entry
+ * whose only difference is a hash, so Back would appear to do nothing; the
+ * router also has one real hash target (`/#remote`) that a stray fragment
+ * would fight with.  Focusing the region is what actually moves the tab
+ * sequence, and `.main` already suppresses its focus ring, so nothing paints.
+ */
+function focusMain(event) {
+  event?.preventDefault?.()
+  const el = mainEl.value
+  if (!el) return
+  el.focus?.({ preventScroll: true })
+  el.scrollIntoView?.({ block: 'start' })
+}
+
 function fmtLoad(v) {
   return finiteN(v, '')
 }
@@ -250,7 +293,18 @@ function syncNarrow() {
 }
 
 useDismissable(menuOpen, closeMenu, navPanel)
-watch(() => route.path, closeMenu)
+// WCAG 2.4.3: clicking a nav link swaps the page body but leaves focus on the
+// link, so the next Tab walks the rest of the 18-stop nav instead of entering
+// the new page — the skip link only helps on the first load. Moving focus to
+// the main region (same target the skip link uses) puts the keyboard and the
+// screen reader at the top of what just changed. Keyed to the path alone:
+// query-tab switches (Settings ?tab=) swap content *inside* the page, and
+// yanking focus off the tab the user just pressed would break arrowing
+// through the rest. The router's scrollBehavior already scrolls to top.
+watch(() => route.path, () => {
+  closeMenu()
+  nextTick(() => { mainEl.value?.focus?.({ preventScroll: true }) })
+})
 
 // Fixed header is out of flow; measure it (primary + optional subchrome, wrap,
 // density) so .layout's padding-top matches. Skip 0-height (jsdom).
@@ -267,6 +321,15 @@ watch(topchromeEl, (el, _was, onCleanup) => {
     ro.disconnect()
     document.documentElement.style.removeProperty('--topchrome-h')
   })
+}, { flush: 'post' })
+
+// Scrollable .table-wrap containers become keyboard-reachable named regions
+// the moment they render (WCAG 2.1.1 — see lib/tableWrapFocus.js). Installed
+// once over the main region so every view, drawer, and modal table it hosts
+// is covered without patching thirty templates.
+watch(mainEl, (el, _was, onCleanup) => {
+  if (!el || typeof MutationObserver !== 'function') return
+  onCleanup(installTableWrapFocus(el))
 }, { flush: 'post' })
 const ptrVisible = ref(false)
 const ptrRefreshing = ref(false)
@@ -457,6 +520,19 @@ function isActive(item) {
   if (item.exact) return path === item.to
   if (item.match) return item.match.some(m => path === m || path.startsWith(m + '/'))
   return path === item.to || path.startsWith(item.to + '/')
+}
+
+function navCurrent(item) {
+  // The top-level highlight is ours (`isActive` spans a whole section), and
+  // RouterLink's own aria-current only follows its exact match, so the two
+  // disagreed in both directions: on /pool the highlighted Storage tab said
+  // nothing at all, while on /storage and /settings?tab=network the group
+  // and its child both claimed `page` -- announcing the reader as being on
+  // two pages at once.  A group whose child is showing in the section nav is
+  // an *ancestor* of the open page, so it takes `true` and leaves `page` to
+  // the child.
+  if (!isActive(item)) return undefined
+  return (item.children || []).some(isChildActive) ? 'true' : 'page'
 }
 
 function childPathAndTab(c) {
@@ -777,12 +853,23 @@ function onCmdKey(e) {
 const cmdResults = computed(() => {
   const q = cmdQuery.value.toLowerCase().trim()
   const items = nav.value.flatMap(n => n.children ? [n, ...n.children] : [n])
-  if (!q) return items.slice(0, 8)
-  const fromNav = items.filter(n => {
-    const label = t(n.labelKey).toLowerCase()
-    return label.includes(q) || n.to.includes(q)
-  })
-  const seen = new Set(fromNav.map((n) => n.to))
+  const matched = q
+    ? items.filter(n => t(n.labelKey).toLowerCase().includes(q) || n.to.includes(q))
+    : items
+  // Every group shares a destination with its first child -- Storage and
+  // Array are both /main, Tools and Diagnostics are both /tools -- so the
+  // flat list offered those pages twice: two rows out of only eight going to
+  // the same place, keyed alike, which also let Vue reuse the wrong row when
+  // the list changed underneath.  Matching runs first so both names stay
+  // searchable and only the redundant second row is dropped.
+  const seen = new Set()
+  const fromNav = []
+  for (const n of matched) {
+    if (seen.has(n.to)) continue
+    seen.add(n.to)
+    fromNav.push(n)
+  }
+  if (!q) return fromNav.slice(0, 8)
   const fromCatalog = matchCatalog(assistCatalog.value, q, 8)
     .filter((p) => !seen.has(p.path))
     .map((p) => ({ type: 'nav', to: p.path, title: p.title, labelKey: '' }))
@@ -796,6 +883,16 @@ const cmdFlat = computed(() => {
   }
   return items
 })
+// Arrowing down and then narrowing the query used to strand the highlight
+// past the end of the shortened list: no row looked selected, and Enter ran
+// cmdGo() on an index that no longer existed, so the palette did nothing at
+// all.  Only fires when the cursor is actually out of range, so a result
+// list that grows underneath (the assistant catalogue arrives async) does
+// not yank the reader back to the top.
+watch(cmdFlat, (items) => {
+  if (cmdIdx.value > items.length - 1) cmdIdx.value = 0
+})
+
 function openAssistant(seed = '', action = '') {
   assistSeed.value = seed
   assistAction.value = action
@@ -834,6 +931,32 @@ function cmdGo(i) {
     return
   }
   router.push(item.to)
+}
+
+/**
+ * IME composition owns these keys first.  While composing Japanese or
+ * Chinese, Enter commits the composed text and the arrows walk the
+ * candidate list; acting on them here navigated away mid-word, and the
+ * `.prevent` the arrows carried broke candidate selection outright.
+ * keyCode 229 is the legacy signal some engines still send instead of
+ * (or before) `isComposing`.
+ */
+function cmdComposing(e) {
+  return Boolean(e.isComposing) || e.keyCode === 229
+}
+function cmdEnter(e) {
+  if (cmdComposing(e)) return
+  cmdGo(cmdIdx.value)
+}
+function cmdArrowUp(e) {
+  if (cmdComposing(e)) return
+  e.preventDefault()
+  cmdIdx.value = Math.max(0, cmdIdx.value - 1)
+}
+function cmdArrowDown(e) {
+  if (cmdComposing(e)) return
+  e.preventDefault()
+  cmdIdx.value = Math.min(cmdFlat.value.length - 1, cmdIdx.value + 1)
 }
 
 // Escape used to be bound to the search input alone, so it stopped working the

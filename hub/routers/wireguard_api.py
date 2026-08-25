@@ -172,9 +172,20 @@ class WgSettingsBody(BaseModel):
 
 @router.put("/api/wireguard/settings")
 def api_wireguard_settings_put(body: WgSettingsBody, request: Request):
-    _guard(request)
+    username = _guard(request)
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
-    return {"ok": True, "settings": _call(wireguard_svc.save_settings, patch=patch)}
+    saved = _call(wireguard_svc.save_settings, patch=patch)
+    # Only the changed key names go into the trail: the values (endpoint,
+    # LAN CIDR, wstunnel listen address) map the network for anyone who
+    # later reads the log, and "who changed what knob" is the question the
+    # trail answers — the current values live in the settings file itself.
+    audit.record(
+        audit.WIREGUARD_SETTINGS_CHANGED,
+        username=username,
+        client=client_host(request),
+        fields=",".join(sorted(patch)),
+    )
+    return {"ok": True, "settings": saved}
 
 
 # ── peers ────────────────────────────────────────────────────────────────────
@@ -346,8 +357,15 @@ def api_wireguard_interface(body: WgInterfaceBody, request: Request):
 @router.post("/api/wireguard/sync")
 def api_wireguard_sync(request: Request):
     """Reload the running interface from disk without dropping live tunnels."""
-    _guard(request)
+    username = _guard(request)
     result = wireguard_svc.apply_live()
+    audit.record(
+        audit.WIREGUARD_INTERFACE,
+        username=username,
+        client=client_host(request),
+        action="sync",
+        ok=bool(result.get("ok")),
+    )
     if not result.get("ok"):
         raise api_error("wg.sync_failed")
     return result

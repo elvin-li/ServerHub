@@ -1180,6 +1180,32 @@ class TestCodedErrorParamsDoNot500(unittest.TestCase):
                 ollama_api.get_status()
         json.dumps(ctx.exception.detail, ensure_ascii=False, allow_nan=False).encode("utf-8")
 
+    def test_exc_detail_unwraps_a_coded_http_exception(self):
+        """The health page rendered ``str(HTTPException)`` -- a Python dict repr.
+
+        ``404: {'code': 'nginx.conf_missing', 'message': 'nginx.conf is
+        missing'}`` was shown verbatim in the "System Nginx" row.  Health.vue
+        pipes ``detail`` through errText(), so a bare code is translated; a
+        params-bearing error keeps its formatted English because errText()
+        would only surface the unfilled ``{placeholders}``.
+        """
+        self.assertEqual(exc_detail(api_error("nginx.conf_missing")), "nginx.conf_missing")
+        self.assertEqual(
+            exc_detail(api_error("wg.bad_number", field="port")), "port is out of range"
+        )
+        # A plain-string detail is not a coded error and stays as it was.
+        self.assertEqual(exc_detail(HTTPException(404, "nope")), "404: nope")
+
+    def test_nginx_health_row_reports_a_translatable_code(self):
+        from hub import health_svc
+
+        with patch.object(
+            health_svc, "nginx_overview", side_effect=api_error("nginx.conf_missing")
+        ):
+            rows = health_svc._nginx_pair()
+        self.assertEqual([r["id"] for r in rows], ["nginx"])
+        self.assertEqual(rows[0]["detail"], "nginx.conf_missing")
+
     def test_pending_delete_infinite_limit_does_not_500(self):
         from hub.routers import photoshub_api
         with patch.object(

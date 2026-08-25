@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from hub import cli_args
+from hub import audit, auth, cli_args
 from hub import containers_svc as svc
 from hub.errors import api_error
 from hub.paths import DOCKER
@@ -36,6 +36,22 @@ def _as_text(value) -> str:
 
 
 router = APIRouter(tags=["containers"])
+
+
+def _audit_mutation(event: str, request: Request | None, **fields) -> None:
+    """One audit line for a container-engine mutation.
+
+    Called after the service call returned, so a rejected or failed docker
+    invocation that raised leaves no record — the 4xx/5xx is its own trace.
+    FastAPI always injects `request`; the None guard only keeps direct
+    in-process calls (tests, tooling) working.
+    """
+    audit.record(
+        event,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        **fields,
+    )
 
 
 class CAction(BaseModel):
@@ -111,13 +127,28 @@ def list_containers(stats: bool = True):
 
 
 @router.post("/api/containers/run")
-def containers_run(body: RunBody):
-    return svc.create_run_container(body.model_dump())
+def containers_run(body: RunBody, request: Request = None):
+    result = svc.create_run_container(body.model_dump())
+    # The mounts and the privilege flag are what an investigator needs: a
+    # privileged container with / bind-mounted is host access.
+    _audit_mutation(
+        audit.CONTAINER_RUN, request,
+        name=body.name or "", image=body.image,
+        volumes=",".join(body.volumes), privileged=bool(body.privileged),
+    )
+    return result
 
 
 @router.post("/api/containers/batch")
-def containers_batch(body: BatchBody):
-    return svc.batch_action(body.names, body.action)
+def containers_batch(body: BatchBody, request: Request = None):
+    result = svc.batch_action(body.names, body.action)
+    # One line per request, not per name, so a wide batch cannot evict real
+    # events from the capped trail.
+    _audit_mutation(
+        audit.CONTAINER_ACTION, request,
+        action=body.action, targets=",".join(body.names),
+    )
+    return result
 
 
 @router.post("/api/containers/all")
@@ -127,7 +158,10 @@ def containers_all(body: AllBody, request: Request):
         and body.action not in {"start", "stop", "restart"}
     ):
         raise api_error("auth.admin_required")
-    return svc.action_all(body.action)
+    result = svc.action_all(body.action)
+    _audit_mutation(audit.CONTAINER_ACTION, request,
+                    action=body.action, targets="all")
+    return result
 
 
 @router.post("/api/containers/check-updates")
@@ -141,13 +175,19 @@ def images():
 
 
 @router.post("/api/images/pull")
-def images_pull(body: ImageBody):
-    return svc.pull_image(body.image)
+def images_pull(body: ImageBody, request: Request = None):
+    result = svc.pull_image(body.image)
+    _audit_mutation(audit.CONTAINER_IMAGE_CHANGED, request,
+                    action="pull", image=body.image)
+    return result
 
 
 @router.post("/api/images/remove")
-def images_remove(body: ImageBody):
-    return svc.remove_image(body.image, force=body.force)
+def images_remove(body: ImageBody, request: Request = None):
+    result = svc.remove_image(body.image, force=body.force)
+    _audit_mutation(audit.CONTAINER_IMAGE_CHANGED, request,
+                    action="remove", image=body.image, force=bool(body.force))
+    return result
 
 
 @router.get("/api/volumes")
@@ -156,13 +196,19 @@ def volumes():
 
 
 @router.post("/api/volumes/create")
-def volumes_create(body: CreateVolBody):
-    return svc.create_volume(body.name, body.driver)
+def volumes_create(body: CreateVolBody, request: Request = None):
+    result = svc.create_volume(body.name, body.driver)
+    _audit_mutation(audit.CONTAINER_VOLUME_CHANGED, request,
+                    action="create", name=body.name)
+    return result
 
 
 @router.post("/api/volumes/remove")
-def volumes_remove(body: NameBody):
-    return svc.remove_volume(body.name, force=body.force)
+def volumes_remove(body: NameBody, request: Request = None):
+    result = svc.remove_volume(body.name, force=body.force)
+    _audit_mutation(audit.CONTAINER_VOLUME_CHANGED, request,
+                    action="remove", name=body.name, force=bool(body.force))
+    return result
 
 
 @router.get("/api/networks")
@@ -171,18 +217,26 @@ def networks():
 
 
 @router.post("/api/networks/create")
-def networks_create(body: CreateNetBody):
-    return svc.create_network(body.name, body.driver)
+def networks_create(body: CreateNetBody, request: Request = None):
+    result = svc.create_network(body.name, body.driver)
+    _audit_mutation(audit.CONTAINER_NETWORK_CHANGED, request,
+                    action="create", name=body.name)
+    return result
 
 
 @router.post("/api/networks/remove")
-def networks_remove(body: NameBody):
-    return svc.remove_network(body.name)
+def networks_remove(body: NameBody, request: Request = None):
+    result = svc.remove_network(body.name)
+    _audit_mutation(audit.CONTAINER_NETWORK_CHANGED, request,
+                    action="remove", name=body.name)
+    return result
 
 
 @router.post("/api/prune")
-def prune(body: PruneBody):
-    return svc.prune(body.kind)
+def prune(body: PruneBody, request: Request = None):
+    result = svc.prune(body.kind)
+    _audit_mutation(audit.CONTAINER_PRUNED, request, kind=body.kind)
+    return result
 
 
 @router.get("/api/stacks")
@@ -191,8 +245,11 @@ def stacks():
 
 
 @router.post("/api/stacks/{stack_id}/run")
-def stack_run(stack_id: str, body: StackAction):
-    return svc.start_stack_job(stack_id, body.action)
+def stack_run(stack_id: str, body: StackAction, request: Request = None):
+    result = svc.start_stack_job(stack_id, body.action)
+    _audit_mutation(audit.CONTAINER_ACTION, request,
+                    action=body.action, targets=f"stack:{stack_id}")
+    return result
 
 
 @router.get("/api/stacks/jobs/{job_id}")
@@ -202,30 +259,54 @@ def stack_job(job_id: str):
 
 # ---- per-container ----
 @router.post("/api/containers/{name}/action")
-def container_action(name: str, body: CAction):
+def container_action(name: str, body: CAction, request: Request = None):
     if body.action == "update":
-        return svc.start_update_container_job(name)
-    return svc.container_action(name, body.action)
+        result = svc.start_update_container_job(name)
+    else:
+        result = svc.container_action(name, body.action)
+    _audit_mutation(audit.CONTAINER_ACTION, request,
+                    action=body.action, targets=name)
+    return result
 
 
 @router.post("/api/containers/{name}/update")
-def container_update(name: str):
-    return svc.start_update_container_job(name)
+def container_update(name: str, request: Request = None):
+    result = svc.start_update_container_job(name)
+    _audit_mutation(audit.CONTAINER_ACTION, request,
+                    action="update", targets=name)
+    return result
 
 
 @router.post("/api/containers/{name}/exec")
-def container_exec(name: str, body: ExecBody):
-    return svc.exec_in_container(name, body.command, body.shell)
+def container_exec(name: str, body: ExecBody, request: Request = None):
+    result = svc.exec_in_container(name, body.command, body.shell)
+    # The Terminal page's docker-exec twin has always written the command it
+    # ran into its 0600 trail; this endpoint runs the same class of command
+    # and recorded nothing.  Capped so one pasted script cannot evict half
+    # the capped trail.
+    _audit_mutation(
+        audit.CONTAINER_EXEC, request,
+        container=name, shell=body.shell,
+        command=(body.command or "")[:300],
+        ok=bool(result.get("ok")) if isinstance(result, dict) else None,
+    )
+    return result
 
 
 @router.post("/api/containers/{name}/restart-policy")
-def container_restart_policy(name: str, body: RestartPolicyBody):
-    return svc.set_restart_policy(name, body.policy)
+def container_restart_policy(name: str, body: RestartPolicyBody, request: Request = None):
+    result = svc.set_restart_policy(name, body.policy)
+    _audit_mutation(audit.CONTAINER_CONFIG_CHANGED, request,
+                    container=name, field="restart_policy", value=body.policy)
+    return result
 
 
 @router.post("/api/containers/{name}/rename")
-def container_rename(name: str, body: RenameBody):
-    return svc.rename_container(name, body.new_name)
+def container_rename(name: str, body: RenameBody, request: Request = None):
+    result = svc.rename_container(name, body.new_name)
+    _audit_mutation(audit.CONTAINER_CONFIG_CHANGED, request,
+                    container=name, field="name", value=body.new_name)
+    return result
 
 
 @router.get("/api/containers/{name}/inspect")

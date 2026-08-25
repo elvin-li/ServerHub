@@ -2,7 +2,11 @@
   <div>
     <div class="page-title">
       <h1>{{ t('vms.title') }}</h1>
-      <span class="meta">
+      <!-- role=status: the VM count and hypervisor availability marks are
+           Refresh's (and the 15s poll's) only answer, and they changed
+           silently for a screen reader — same treatment as the Users and
+           Apps toolbar counts. -->
+      <span class="meta" role="status">
         {{ t('vms.meta', { utm: data?.utm_available ? '✓' : '—', orb: data?.orb_available ? '✓' : '—', n: finiteN(vms.length) }) }}
       </span>
     </div>
@@ -87,10 +91,12 @@
           <select id="vm-create-distro" v-model="createForm.distro" :aria-label="t('vms.distro')">
             <option v-for="d in (data?.orb_distros || distros)" :key="finiteText(d)" :value="d">{{ finiteText(d) }}</option>
           </select>
+          <!-- No aria-label here: it overrode the for/id labels with the
+               placeholder, so "Version" was announced as its example value. -->
           <label for="vm-create-version">{{ t('vms.version') }}</label>
-          <input id="vm-create-version" v-model="createForm.version" type="text" :placeholder="t('vms.version_ph')"  :aria-label="t('vms.version_ph')"/>
+          <input id="vm-create-version" v-model="createForm.version" type="text" :placeholder="t('vms.version_ph')" />
           <label for="vm-create-name">{{ t('vms.machine') }}</label>
-          <input id="vm-create-name" v-model="createForm.name" type="text" :placeholder="t('vms.machine_ph')"  :aria-label="t('vms.machine_ph')"/>
+          <input id="vm-create-name" v-model="createForm.name" type="text" :placeholder="t('vms.machine_ph')" />
         </div>
         <p style="font-size:11px;color:var(--sub);margin:10px 0">
           {{ t('vms.create_hint') }}
@@ -254,7 +260,7 @@ function requireOk(result) {
 let pageAlive = true
 let loadGeneration = 0
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = ++loadGeneration
   try {
     const next = await getVms()
@@ -264,7 +270,10 @@ async function refresh() {
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // Background 15s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // The retry button passes its click event as `manual`, so it still toasts.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   } finally {

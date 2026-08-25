@@ -106,6 +106,30 @@ describe('share ACL block', () => {
     expect(wrapper.findAll('.acl-user-row select')[1].element.value).toBe('readwrite')
   })
 
+  it('voices the ACL loading placeholder while the read is in flight', async () => {
+    // The sheet already holds focus when the read starts, so the placeholder
+    // must be a status region for the swap to be announced at all.
+    api.getShares.mockResolvedValue({
+      host: { name: 'Mac' }, system_services: [], smb: [SHARE], file_services: [],
+    })
+    let release
+    api.getShareAcl.mockReturnValue(new Promise((resolveAcl) => { release = resolveAcl }))
+    const wrapper = mount(Shares, { global: { provide: { toast: vi.fn() } } })
+    await flushPromises()
+    const edit = wrapper.findAll('button').find((b) => b.text().includes('shares.edit_action'))
+    await edit.trigger('click')
+    await flushPromises()
+
+    const placeholder = wrapper.find('.acl-block [role="status"]')
+    expect(placeholder.exists()).toBe(true)
+    expect(placeholder.text()).toBe('common.loading')
+
+    release(ACL)
+    await flushPromises()
+    expect(wrapper.find('.acl-block [role="status"]').exists()).toBe(false)
+    expect(wrapper.findAll('.acl-user-row select')).toHaveLength(2)
+  })
+
   it('degrades to an error line when the ACL cannot be read', async () => {
     api.getShares.mockResolvedValue({
       host: { name: 'Mac' }, system_services: [], smb: [SHARE], file_services: [],

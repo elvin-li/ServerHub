@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from hub.paths import DOCKER
@@ -54,12 +55,20 @@ def _jsonable(value, depth: int = 0):
     NDJSON; Starlette's encoder does not. A leftover ``\\ud800`` name still
     500'd ``ensure_ascii=False`` then UTF-8 on GET /api/docker/info and
     GET /api/apps/managed.
+    A >4300-digit leftover int still passed through untouched: CPython's
+    int->str digit limit then ValueError'd ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -98,6 +107,71 @@ def _jsonable(value, depth: int = 0):
 def docker(*args, timeout=30) -> tuple[int, str, str]:
     rc, out, err = sh([DOCKER, *args], timeout=timeout)
     return rc, _as_text(out), _as_text(err)
+
+
+#: What the docker CLI / compose plugin print when the daemon is unreachable.
+#: One definition for every engine-down classifier (compose validate, the
+#: Apps-page compose wrapper, catalog install/uninstall, the stack jobs), so
+#: a new phrasing only ever needs adding here.
+ENGINE_DOWN_RE = re.compile(
+    r"cannot connect to the docker daemon"
+    r"|is the docker daemon running"
+    r"|error during connect"
+    r"|docker daemon is not running",
+    re.I,
+)
+
+
+def looks_engine_down(text) -> bool:
+    """True when CLI output *text* reads like the daemon socket is gone.
+
+    Purely a message-pattern gate: callers must still confirm with a forced
+    ``engine_up`` probe before classifying, so output that merely quotes these
+    strings (a container's own log, say) cannot flip a real failure into
+    ``container.engine_down``.
+    """
+    return bool(ENGINE_DOWN_RE.search(_as_text(text)))
+
+
+def looks_cli_vanished(text) -> bool:
+    """True when *text* is ``run_capped``/``sh``'s FileNotFoundError sentinel.
+
+    Both helpers report a binary that could not be spawned as the exact
+    two-word sentinel ``"not found"`` (with rc -1) — never a real CLI exit.
+    A docker CLI that vanished between an up-front presence gate and the
+    spawn (OrbStack uninstalled mid-request, a dying mount) is the same
+    operator-facing state as a stopped engine — docker is unreachable — so
+    the classifiers that already map daemon-socket failures to
+    ``container.engine_down`` treat the two alike (the hub/backups.py
+    ``_docker_vanished`` convention).
+
+    Purely a message-pattern gate like :func:`looks_engine_down`: callers
+    must still confirm with a forced ``engine_up`` probe — which cannot
+    answer "up" while the CLI is gone — so a genuine CLI exit whose output
+    merely reads "not found" while the engine is up keeps its original
+    failure mapping.
+    """
+    return _as_text(text).strip() == "not found"
+
+
+def cli_on_disk() -> bool:
+    """True when the DOCKER binary is still present on disk.
+
+    ``run_capped``/``sh`` collapse *every* FileNotFoundError spawn into the
+    same ``(-1, "not found")`` sentinel — a cwd that vanished between the
+    caller's own mkdir/exists gate and the spawn (a stack directory deleted
+    mid-request) raises exactly like a vanished binary.  Classifiers that
+    map the sentinel to ``container.engine_down`` must therefore confirm
+    the CLI actually left the disk first: with the binary still present and
+    the engine merely off, the 503 told the operator to start the engine
+    when the real problem was the missing directory.  A stat that raises
+    (EIO/ESTALE under a dying mount holding the binary) counts as gone —
+    the CLI is unreachable either way.
+    """
+    try:
+        return Path(DOCKER).exists()
+    except (OSError, ValueError):
+        return False
 
 
 def inspect_object(out: str) -> dict | None:

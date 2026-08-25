@@ -15,6 +15,7 @@ import secrets
 import shutil
 import socket
 import string
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,8 @@ from fastapi import HTTPException
 from hub import catalog_remote
 from hub import cli_args
 from hub import secure_io
-from hub.errors import CODES, api_error
+from hub.docker_cli import engine_up, looks_cli_vanished, looks_engine_down
+from hub.errors import CODES, api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER, user_home
 from hub.util import fan_out, read_text_capped, run_capped
@@ -221,6 +223,16 @@ def _plain_ports(raw) -> list:
         ):
             continue
         if isinstance(port, int):
+            # YAML hex/octal ints dodge CPython's int(str) digit cap, so a
+            # leftover ``ports: [0xfff…]`` arrives as a >4300-digit int that
+            # renders nowhere: ``str(port_spec)`` in the url_hint fallback and
+            # Starlette's json.dumps both ValueError on it — 500ing
+            # GET /api/catalog/templates (and silently emptying the docker
+            # half of GET /api/catalog) after the parse already succeeded.
+            try:
+                str(port)
+            except ValueError:
+                continue
             out.append(port)
         else:
             text = _plain_str(port)
@@ -488,6 +500,41 @@ def _parse_template(path: Path) -> tuple[dict, str]:
 
 _list_cache: dict = {"t": 0.0, "sig": "", "items": None}
 _LIST_TTL = 20.0
+#: Guards the dict, and nothing else.  Separate from the refresh lock below so
+#: that an install finishing mid-parse can drop the listing immediately instead
+#: of queueing behind the parse it is invalidating.
+_list_lock = threading.Lock()
+#: Held across the parse, so concurrent callers that miss a cold cache wait for
+#: one answer instead of each parsing all fifty templates.  Measured on this
+#: tree: one build is 45ms, and six readers arriving together took 303ms and
+#: did the work six times over.  The store page and the dashboard both land here.
+_list_refresh_lock = threading.Lock()
+#: Bumped by `invalidate_listing`.  The signature already catches a template
+#: file or an install directory changing, but not a build that started before
+#: the change and finishes after it -- that one carries the *old* signature and
+#: would restore it along with the payload, making the stale listing look
+#: current for another TTL.
+_list_generation = 0
+
+
+def _sig_int(value) -> int:
+    """A stat number the signature f-string can render, or 0.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_size`` that is already a >4300-digit int passed through untouched,
+    and CPython's int->str digit limit then ValueError'd the ``f"{...}"``
+    below — outside the ``except OSError`` — 500ing GET /api/catalog and
+    /api/catalog/templates before a single template was parsed.  ``float()``
+    rejects anything beyond float range, the same junk test
+    files_svc._finite_int and logs_svc._stat_size apply to their stat
+    numbers.
+    """
+    try:
+        value = int(value)
+        float(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0
+    return value
 
 
 def _templates_sig() -> str:
@@ -499,11 +546,7 @@ def _templates_sig() -> str:
         for p in sorted(TEMPLATES.iterdir()):
             if p.suffix in (".yml", ".yaml"):
                 st = p.stat()
-                try:
-                    mtime = int(st.st_mtime)
-                except (TypeError, ValueError, OverflowError):
-                    mtime = 0
-                parts.append(f"{p.name}:{mtime}:{st.st_size}")
+                parts.append(f"{p.name}:{_sig_int(st.st_mtime)}:{_sig_int(st.st_size)}")
     except OSError:
         return "err"
     # Remote overrides change the merged listing without touching templates/,
@@ -512,11 +555,7 @@ def _templates_sig() -> str:
     try:
         for p in catalog_remote.remote_template_files():
             st = p.stat()
-            try:
-                mtime = int(st.st_mtime)
-            except (TypeError, ValueError, OverflowError):
-                mtime = 0
-            parts.append(f"r:{p.name}:{mtime}:{st.st_size}")
+            parts.append(f"r:{p.name}:{_sig_int(st.st_mtime)}:{_sig_int(st.st_size)}")
     except OSError:
         pass
     # installed flags change when ~/Services/<id>/docker-compose.yml appears
@@ -529,7 +568,7 @@ def _templates_sig() -> str:
     return "|".join(parts)
 
 
-def _cache_store(now: float, sig: str, items: list) -> list:
+def _cache_store(now: float, sig: str, items: list, generation: int) -> list:
     """Cache *items* and hand the caller its own copy.
 
     ``catalog_overview()`` appends to ``notes`` on the entries it returns.  When
@@ -537,27 +576,72 @@ def _cache_store(now: float, sig: str, items: list) -> list:
     and grew by one sentence per request, so the store page showed the same
     advisory repeated dozens of times.  Every exit from this function returns a
     deep copy: callers may mutate freely, the cache stays pristine.
+
+    An install or uninstall that landed since *generation* was read means this
+    listing describes the state before it, so it is handed back but not stored.
     """
-    _list_cache.update(t=now, sig=sig, items=items)
+    with _list_lock:
+        if generation == _list_generation:
+            _list_cache.update(t=now, sig=sig, items=items)
     return copy.deepcopy(items)
+
+
+def invalidate_listing() -> None:
+    """Drop the template listing after an install, uninstall or remote sync.
+
+    Public, and the only supported way to do it.  Four call sites used to
+    assign ``_list_cache["t"] = 0`` directly and one of them reached in from
+    ``catalog_remote`` -- so renaming this cache would have turned invalidation
+    into a silent no-op and left an uninstalled app showing as installed.  It
+    also gives the generation counter one place to be bumped.
+    """
+    global _list_generation
+    with _list_lock:
+        _list_generation += 1
+        _list_cache.update(t=0.0, items=None)
+
+
+def _fresh_listing(now: float, sig: str):
+    """The cached listing when it is still current, else None."""
+    with _list_lock:
+        if (
+            _list_cache["items"] is not None
+            and _list_cache["sig"] == sig
+            and now - _list_cache["t"] < _LIST_TTL
+        ):
+            return copy.deepcopy(_list_cache["items"])
+    return None
 
 
 def list_templates(force: bool = False) -> list:
     import time as _time
 
-    now = _time.time()
-    sig = _templates_sig()
-    if (
-        not force
-        and _list_cache["items"] is not None
-        and _list_cache["sig"] == sig
-        and now - _list_cache["t"] < _LIST_TTL
-    ):
-        return copy.deepcopy(_list_cache["items"])
+    if not force:
+        hit = _fresh_listing(_time.time(), _templates_sig())
+        if hit is not None:
+            return hit
 
+    with _list_refresh_lock:
+        # Re-read under the lock: the caller that held it has just published,
+        # and re-parsing would defeat the point of having waited.  The
+        # signature is re-taken with it, so the build records the state it
+        # actually observed rather than one from before the wait.  `force`
+        # keeps meaning "parse now" exactly as it did before the lock existed.
+        now = _time.time()
+        sig = _templates_sig()
+        if not force:
+            hit = _fresh_listing(now, sig)
+            if hit is not None:
+                return hit
+        return _build_listing(now, sig)
+
+
+def _build_listing(now: float, sig: str) -> list:
+    with _list_lock:
+        generation = _list_generation
     items = []
     if not _is_dir(TEMPLATES):
-        return _cache_store(now, sig, items)
+        return _cache_store(now, sig, items, generation)
     try:
         discovered = set(TEMPLATES.glob("*.yml")) | set(TEMPLATES.glob("*.yaml"))
     except OSError:
@@ -636,7 +720,13 @@ def list_templates(force: bool = False) -> list:
                     break
         path_out = None
         if dest is not None:
-            path_out = str(dest) if _exists(dest) else None
+            # Through _plain_str: a leftover front-matter id carrying a lone
+            # surrogate (or a Services tree named with surrogateescape bytes)
+            # kept the raw str here while every other field was cleaned, and
+            # Starlette's UTF-8 encode then 500'd GET /api/catalog and
+            # /api/catalog/templates.
+            path_out = _plain_str(str(dest)) if _exists(dest) else None
+            path_out = path_out or None
         items.append({
             "id": _plain_str(tid, p.stem) or _plain_str(p.stem),
             "name": _plain_str(meta.get("name"), tid) or tid,
@@ -664,7 +754,7 @@ def list_templates(force: bool = False) -> list:
             "compose_warnings": remote_warnings.get(p.stem, []) if is_remote else [],
         })
     items.sort(key=lambda x: (0 if x.get("featured") else 1, str(x.get("name") or "")))
-    return _cache_store(now, sig, items)
+    return _cache_store(now, sig, items, generation)
 
 
 def catalog_overview() -> dict:
@@ -763,23 +853,40 @@ def render_template(body: str, values: dict[str, str]) -> str:
     return VAR_RE.sub(repl, body)
 
 
-def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
-    """Append to services.yaml stacks if missing."""
-    try:
-        from hub.config import cfg, save_full
+class _StacksUnchanged(Exception):
+    """Raised inside a mutate() body to abort without rewriting the file."""
 
-        data = copy.deepcopy(cfg())
-        stacks = data.setdefault("stacks", [])
-        for s in stacks:
-            if s.get("id") == template_id or s.get("path") == str(dest_dir):
-                return
-        stacks.append({
-            "id": template_id,
-            "name": name,
-            "path": str(dest_dir),
-            "compose_file": "docker-compose.yml",
-        })
-        save_full(data)
+
+def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
+    """Append to services.yaml stacks if missing.
+
+    Through config.mutate, not save_full(deepcopy(cfg())): the snapshot form
+    read the mtime-cached config outside the write lock and wrote the whole
+    file back from it, so a concurrent install (two app-store tabs) or a
+    settings save landing in between was silently overwritten — the exact
+    lost-update save_full's own docstring warns about.
+    """
+    try:
+        from hub.config import mutate
+
+        def apply(data: dict) -> None:
+            stacks = data.get("stacks")
+            if not isinstance(stacks, list):
+                stacks = []
+                data["stacks"] = stacks
+            for s in stacks:
+                if isinstance(s, dict) and (
+                    s.get("id") == template_id or s.get("path") == str(dest_dir)
+                ):
+                    raise _StacksUnchanged
+            stacks.append({
+                "id": template_id,
+                "name": name,
+                "path": str(dest_dir),
+                "compose_file": "docker-compose.yml",
+            })
+
+        mutate(apply)
     except Exception:
         pass
 
@@ -1085,8 +1192,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         else:
             values[name] = ""
     # invalidate list cache after install so installed flag refreshes
-    _list_cache["t"] = 0
-    _list_cache["items"] = None
+    invalidate_listing()
     # Auto-injected placeholders so shipped templates never need to hardcode a
     # developer-specific absolute paths that would make templates non-portable.
     if "HOST_IP" not in values:
@@ -1234,6 +1340,43 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         )
         msg = (_plain_str(msg) or f"exit {rc}").strip()
         if rc != 0:
+            # A docker CLI that vanished between the _exists() gate above and
+            # this spawn leaves run_capped's exact ``(-1, "not found")``
+            # sentinel — the same docker-unreachable state as a stopped
+            # engine, and it used to fall through to _InstallFailed: a full
+            # rollback (discarding the operator's filled-in variables and
+            # generated passwords) reported as an uncoded two-word
+            # ``message: "not found"`` the SPA cannot translate.
+            unreachable = looks_engine_down(msg) or (
+                rc == -1 and looks_cli_vanished(msg)
+            )
+            if unreachable and not engine_up(force=True):
+                # Same shape as the missing-CLI branch just above: the compose
+                # file and registration are good, only the engine is off, so
+                # rolling everything back (and discarding the operator's
+                # filled-in variables and generated passwords) points away
+                # from the real remedy.  Keep the stack startable from
+                # "Apps -> Managed" and answer with the code the SPA can
+                # translate.  The probe is forced -- the memoised answer has a
+                # 5s TTL, and an engine that just stopped is exactly when a
+                # stale "up" would misclassify this as a failed install.
+                fail = soft_fail("container.engine_down")
+                return {
+                    "ok": False,
+                    "code": fail["code"],
+                    "path": str(dest_dir),
+                    "message": (
+                        f"{fail['message']}.\n"
+                        f"Wrote {dest}; the stack is registered and can be started "
+                        f"from Apps once the engine is running.\n"
+                        f"Run manually: docker compose -f {dest} up -d"
+                    ),
+                    "variables": values,
+                    "url": url,
+                    "notes": notes,
+                    "first_run_credentials": _plain_str(meta.get("first_run_credentials")),
+                    "stack_id": template_id,
+                }
             raise _InstallFailed(msg)
         if remapped:
             # The app is not on the port the template advertises, so say so here
@@ -1283,19 +1426,31 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
 
 
 def _unregister_stack(template_id: str, dest_dir: Path | None = None) -> None:
-    try:
-        from hub.config import cfg, save_full
+    """Drop the stack row, read-modify-write under the config write lock.
 
-        data = copy.deepcopy(cfg())
-        stacks = data.get("stacks") or []
+    Same lost-update shape as :func:`_register_stack` before the fix: an
+    uninstall racing another install or a settings save wrote a stale
+    snapshot of the whole file back and took the concurrent change with it.
+    """
+    try:
+        from hub.config import mutate
+
         dest_s = str(dest_dir) if dest_dir else None
-        new_stacks = [
-            s for s in stacks
-            if s.get("id") != template_id and (not dest_s or s.get("path") != dest_s)
-        ]
-        if len(new_stacks) != len(stacks):
-            data["stacks"] = new_stacks
-            save_full(data)
+
+        def apply(data: dict) -> None:
+            stacks = data.get("stacks")
+            rows = stacks if isinstance(stacks, list) else []
+            kept = [
+                s for s in rows
+                if not isinstance(s, dict)
+                or (s.get("id") != template_id
+                    and (not dest_s or s.get("path") != dest_s))
+            ]
+            if len(kept) == len(rows):
+                raise _StacksUnchanged
+            data["stacks"] = kept
+
+        mutate(apply)
     except Exception:
         pass
 
@@ -1321,8 +1476,7 @@ def uninstall_template(
     if not _exists(compose):
         # still try unregister
         _unregister_stack(template_id, dest_dir)
-        _list_cache["t"] = 0
-        _list_cache["items"] = None
+        invalidate_listing()
         raise api_error("catalog.not_installed", id=str(template_id))
 
     logs: list[str] = []
@@ -1341,6 +1495,26 @@ def uninstall_template(
         logs.append(_plain_str(e) or "error")
         down_ok = False
 
+    joined = "\n".join(logs)
+    if (
+        not down_ok
+        and (looks_engine_down(joined) or looks_cli_vanished(joined))
+        and not engine_up(force=True)
+    ):
+        # ``down`` did nothing: the containers, networks and volumes this
+        # uninstall promises to remove still exist inside the stopped engine.
+        # Proceeding used to rmtree the compose directory anyway and then --
+        # because ``ok`` falls back to "the compose file is gone" -- report a
+        # *successful* uninstall that had removed only the files, leaving
+        # orphaned containers to restart against a deleted tree when the
+        # engine came back.  Refuse with the coded 503 instead; the operator
+        # retries once the engine is running.  A docker CLI that vanished
+        # before the spawn (run_capped's exact ``"not found"`` sentinel) is
+        # the same did-nothing state and used to take the destructive path
+        # too, reporting the fake success.  Probe forced, failure path only,
+        # same convention as the rest of this sweep.
+        raise api_error("container.engine_down")
+
     removed_path = False
     if remove_data:
         import shutil as _shutil
@@ -1355,8 +1529,7 @@ def uninstall_template(
         logs.append(f"Kept directory {dest_dir} (remove data was not selected)")
 
     _unregister_stack(template_id, dest_dir)
-    _list_cache["t"] = 0
-    _list_cache["items"] = None
+    invalidate_listing()
 
     ok = down_ok or not _exists(compose)
     return {

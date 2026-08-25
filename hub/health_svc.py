@@ -60,12 +60,24 @@ def _as_text(value) -> str:
 
 
 def _jsonable(value, depth: int = 0):
-    """Drop leftover inf/bytes/``\\ud800`` so Starlette cannot 500 GET /api/health/checks."""
+    """Drop leftover inf/bytes/``\\ud800`` so Starlette cannot 500 GET /api/health/checks.
+
+    A >4300-digit int (a poisoned cache snapshot, a junk row from the Immich/
+    Ollama check modules whose dicts bypass ``_check``) still passed through
+    untouched: CPython's int->str digit limit then ValueError'd ``json.dumps``
+    itself.
+    """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -628,18 +640,24 @@ def _collect_checks() -> dict:
 
     # brew critical
     if isinstance(brew_states, list):
-        try:
-            for s in brew_states:
+        # Per-row guard, not one try spanning the loop: a single poisoned row
+        # (an over-cap hex-YAML/JSON int in name or status, whose bare str()
+        # is ValueError past CPython's digit cap) used to raise out of the
+        # loop-wide try and silently drop every later brew check —
+        # postgresql@18 included, the exact row this page exists to show
+        # when Immich's database is down.  _as_text's guarded str() probe
+        # coerces the renderable and absorbs the unrenderable to "".
+        for s in brew_states:
+            try:
                 if not isinstance(s, dict):
                     continue
-                n = s.get("name") or ""
+                n = _as_text(s.get("name"))
                 # postgresql@18 is a *separate* cluster (:5433) holding the
                 # Immich database; @17 (:5432) holds TeslaMate.  Checking only
                 # @17 reports "database fine" while Immich's DB is down.
                 if n not in ("postgresql@17", "postgresql@18", "mosquitto", "grafana"):
                     continue
-                raw_st = s.get("status") or ""
-                st = raw_st.lower() if isinstance(raw_st, str) else str(raw_st).lower()
+                st = _as_text(s.get("status")).lower()
                 ok = st in ("started", "running")
                 if not ok and st in ("none", ""):
                     # brew reports "none" when a formula is running under a
@@ -655,8 +673,8 @@ def _collect_checks() -> dict:
                     st or "unknown",
                     f"brew services start {n}" if not ok else "",
                 ))
-        except Exception:
-            pass
+            except Exception:
+                continue
 
     # Homebrew python upgrades delete Cellar paths while KeepAlive PIDs
     # keep listening; TCP still answers so the services table looks green.

@@ -40,7 +40,7 @@ vi.mock('../i18n', () => ({
 
 import Login from './Login.vue'
 
-async function mountAtTotpStep() {
+async function mountAtTotpStep(options = {}) {
   routing.query = {}
   routing.replace.mockReset()
   routing.replace.mockResolvedValue(undefined)
@@ -49,7 +49,7 @@ async function mountAtTotpStep() {
   api.resetAuthLost.mockReset()
   api.verifyTotpLogin.mockReset()
 
-  const wrapper = mount(Login)
+  const wrapper = mount(Login, options)
   await flushPromises()
   await wrapper.find('input[type="password"]').setValue('correct-horse-battery')
   await wrapper.find('form').trigger('submit')
@@ -160,6 +160,41 @@ describe('two-factor login step', () => {
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
     expect(codeInput(wrapper).exists()).toBe(false)
     expect(api.verifyTotpLogin).not.toHaveBeenCalled()
+  })
+
+  // The step swap unmounts the control that held focus (the submit or back
+  // button), which drops keyboard focus to <body>: autofocus= only applies on
+  // initial page load, so without an explicit move a keyboard or screen-reader
+  // user gets no indication the form changed under them (WCAG 2.4.3).
+  it('moves focus onto the code input when the step swaps in', async () => {
+    const wrapper = await mountAtTotpStep({ attachTo: document.body })
+
+    expect(document.activeElement).toBe(codeInput(wrapper).element)
+    wrapper.unmount()
+  })
+
+  it('returns focus to the password field on the way back', async () => {
+    const wrapper = await mountAtTotpStep({ attachTo: document.body })
+
+    await wrapper.find('button.totp-back').trigger('click')
+    await flushPromises()
+
+    expect(document.activeElement).toBe(wrapper.find('input[type="password"]').element)
+    wrapper.unmount()
+  })
+
+  it('puts focus on the password field after the pending window expired', async () => {
+    const wrapper = await mountAtTotpStep({ attachTo: document.body })
+    const error = new Error('window expired')
+    error.code = 'auth.totp_pending_invalid'
+    api.verifyTotpLogin.mockRejectedValue(error)
+
+    await codeInput(wrapper).setValue('123456')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(document.activeElement).toBe(wrapper.find('input[type="password"]').element)
+    wrapper.unmount()
   })
 
   it('leaves the classic flow untouched for accounts without 2FA', async () => {

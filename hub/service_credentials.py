@@ -85,6 +85,12 @@ def _json_safe(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -264,7 +270,10 @@ def store(
         raise api_error("credentials.password_too_short", min=8)
 
     keychain_service = _keychain_service(service_id)
-    with _lock:
+    # file_lock as well as _lock: two panel processes sharing data/ both
+    # edit this index, and a save from a stale snapshot used to erase the
+    # other process's entry — or resurrect one a concurrent delete removed.
+    with _lock, secure_io.file_lock(INDEX_FILE):
         items = _load()
         old = items.get(service_id) or {}
         old_user = str(old.get("username") or "")
@@ -383,7 +392,7 @@ def public_item(item: dict) -> dict:
 
 def delete(service_id: str) -> dict:
     service_id = _valid_id(service_id)
-    with _lock:
+    with _lock, secure_io.file_lock(INDEX_FILE):
         items = _load()
         item = items.pop(service_id, None)
         if not item:

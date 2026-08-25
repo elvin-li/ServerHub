@@ -16,6 +16,49 @@
   --down: #f44336;
   --accent: #ff8c2f;
   --accent-hover: #e65100;
+  /* Text tints of the status colours. --ok/--warn/--down are picked to read as
+     fills and strokes; as *text* they are 2.0-4.1:1 on --card in most themes
+     (macOS amber is 2.06:1), so every red error line and amber note in the app
+     sat under the AA floor. Mixing toward --txt keeps the hue and the theme's
+     own palette while clearing 4.5:1 -- the percentages are the largest that do
+     so in every theme, so the tints stay as saturated as legibility allows.
+     Declared once here on :root: substitution happens where the var is *used*,
+     so each theme's own --ok/--warn/--down/--txt feed the same three mixes.
+     Keep using the raw tokens for backgrounds, borders, bars and icons.
+     The percentages are sized against the worst surface each tint actually
+     lands on, not against --card: --down-text is the label of a Destroy or
+     Prune button, so it has to clear on --btn as well, and --btn is the
+     lightest fill in every dark theme (#3a3a3c on macOS dark, #2a2a2a on
+     Unraid dark). At 70% it measured 4.42 and 4.22 there. */
+  --ok-text: color-mix(in srgb, var(--ok) 55%, var(--txt));
+  --warn-text: color-mix(in srgb, var(--warn) 50%, var(--txt));
+  --down-text: color-mix(in srgb, var(--down) 60%, var(--txt));
+  /* Filled accent controls: the fill, its hover, and the label riding on it.
+     White on a raw --accent is 2.0-4.0:1 in every theme -- 2.32:1 on this
+     orange, 2.0:1 on Nord's frost blue -- because the accents are brand hues
+     chosen for fills, not for carrying a 12px label. Two ways out, and each
+     theme takes the one that keeps its identity: ink the label dark (an orange
+     or a pastel blue reads far better with dark text) or deepen the fill (the
+     macOS blues stay recognisably system blue at 85%). */
+  --accent-fill: var(--accent);
+  --accent-fill-hover: var(--accent-hover);
+  --on-accent: #2b1400;
+  /* The accent as *text* -- active tabs, active nav links, accent badges. Even
+     --accent-hover, which is already the darker step, is 2.7-4.2:1 on --bg in
+     most themes. Same trick as the status tints; the macOS themes opt out
+     because their hover blue already clears AA and a deeper one would stop
+     reading as system blue. */
+  --accent-text: color-mix(in srgb, var(--accent-hover) 65%, var(--txt));
+  /* A washed accent surface with accent text on it -- the accent badge, the
+     quieter of two primaries in one toolbar. The pair has to be defined
+     together: --accent-text is sized against --card and --bg, and a 14% wash
+     sits between them, so reusing it here measured 4.51:1 on white (passing by
+     0.01) and 4.19:1 on the grey canvas one panel over (failing). Mixing the
+     label another 12% toward --txt costs nothing visually and puts both
+     surfaces clear of the floor. */
+  --accent-wash: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-wash-hover: color-mix(in srgb, var(--accent) 22%, transparent);
+  --on-accent-wash: color-mix(in srgb, var(--accent-text) 88%, var(--txt));
   --btn: #f5f5f5;
   --btn-border: #d0d0d0;
   --radius: 3px;
@@ -24,7 +67,6 @@
   --table-alt: #fafafa;
   --table-hover: #fff8f0;
   --bar-track: #e8e8e8;
-  --chip: #fff3e0;
   --logo-grad: linear-gradient(135deg, #ff8c2f, #e65100);
   --header-active-bg: rgba(255,140,47,.1);
   --glass-blur: 0px;
@@ -51,7 +93,6 @@
     --table-alt: #161616;
     --table-hover: #241a10;
     --bar-track: #333;
-    --chip: #3b2410;
   }
 }
 
@@ -78,7 +119,6 @@
   --table-alt: #161616;
   --table-hover: #241a10;
   --bar-track: #333;
-  --chip: #3b2410;
   --logo-grad: linear-gradient(135deg, #ff8c2f, #ea580c);
   --header-active-bg: rgba(255,140,47,.12);
 }
@@ -99,6 +139,7 @@
   --down: #c62828;
   --accent: #5cb85c;
   --accent-hover: #449d44;
+  --on-accent: #0f2f10;
   --btn: #e8f0e8;
   --btn-border: #b8ceb8;
   --radius: 6px;
@@ -107,7 +148,6 @@
   --table-alt: #f5faf5;
   --table-hover: #e8f5e9;
   --bar-track: #d5e5d5;
-  --chip: #dcedc8;
   --logo-grad: linear-gradient(135deg, #5cb85c, #2e7d32);
   --header-active-bg: rgba(92,184,92,.15);
 }
@@ -121,13 +161,16 @@
   --nav-hover: #16324d;
   --card: #ffffff;
   --txt: #0d2137;
-  --sub: #5a738c;
+  /* One step down the slate ramp: #5a738c was 4.10:1 on the table head and
+     4.44:1 on the page, i.e. every secondary line in the theme just missed. */
+  --sub: #516b84;
   --line: #c5d5e5;
   --ok: #2e9e5b;
   --warn: #e0a800;
   --down: #d32f2f;
   --accent: #2496ed;
   --accent-hover: #1b7ac5;
+  --on-accent: #04223c;
   --btn: #e8f1fa;
   --btn-border: #b8cfe5;
   --radius: 8px;
@@ -136,7 +179,6 @@
   --table-alt: #f4f8fc;
   --table-hover: #e3f2fd;
   --bar-track: #d0e3f5;
-  --chip: #bbdefb;
   --logo-grad: linear-gradient(135deg, #2496ed, #0d47a1);
   --header-active-bg: rgba(36,150,237,.15);
 }
@@ -150,13 +192,25 @@
   --nav-hover: #3b4252;
   --card: #3b4252;
   --txt: #eceff4;
-  --sub: #a0aec0;
+  /* Snow-storm side of Nord's muted grey. #a0aec0 was 4.46:1 on --card and
+     3.82:1 on the table head, so the entire theme's secondary text -- table
+     headers, chart titles, every .sub line -- sat just under the floor. */
+  --sub: #c2ccd8;
   --line: #4c566a;
   --ok: #a3be8c;
   --warn: #ebcb8b;
   --down: #bf616a;
   --accent: #88c0d0;
   --accent-hover: #81a1c1;
+  --on-accent: #2e3440;
+  /* Frost on polar night is pale to begin with: the shared 65% tint is 3.96:1,
+     so Nord's accent text has to sit closer to the snow-storm end. */
+  --accent-text: color-mix(in srgb, var(--accent-hover) 45%, var(--txt));
+  /* Nord's aurora red is the one status colour no global mix can rescue: on
+     polar-night #3b4252 the shared 70% tint is 3.3:1, and only 40% clears 4.5.
+     A dusty rose is still unmistakably the error colour here, and it is the
+     palette's own tone rather than a red borrowed from another theme. */
+  --down-text: color-mix(in srgb, var(--down) 40%, var(--txt));
   --btn: #434c5e;
   --btn-border: #4c566a;
   --radius: 6px;
@@ -165,7 +219,6 @@
   --table-alt: #353b49;
   --table-hover: #4c566a;
   --bar-track: #4c566a;
-  --chip: #5e81ac;
   --logo-grad: linear-gradient(135deg, #88c0d0, #5e81ac);
   --header-active-bg: rgba(136,192,208,.12);
 }
@@ -179,13 +232,16 @@
   --nav-hover: rgba(148, 163, 184, 0.12);
   --card: rgba(30, 41, 59, 0.72);
   --txt: #f1f5f9;
-  --sub: #94a3b8;
+  /* One step up the slate ramp: #94a3b8 was 4.04-4.22:1 on the button and table
+     surfaces, so bold 10.5px table headers missed the floor. */
+  --sub: #a1b2c6;
   --line: rgba(148, 163, 184, 0.22);
   --ok: #34d399;
   --warn: #fbbf24;
   --down: #f87171;
   --accent: #a78bfa;
   --accent-hover: #8b5cf6;
+  --on-accent: #241a4d;
   --btn: rgba(51, 65, 85, 0.8);
   --btn-border: rgba(148, 163, 184, 0.28);
   --radius: 12px;
@@ -194,7 +250,6 @@
   --table-alt: rgba(15, 23, 42, 0.35);
   --table-hover: rgba(167, 139, 250, 0.12);
   --bar-track: rgba(148, 163, 184, 0.25);
-  --chip: rgba(167, 139, 250, 0.25);
   --logo-grad: linear-gradient(135deg, #a78bfa, #6366f1);
   --header-active-bg: rgba(167, 139, 250, 0.15);
   --glass-blur: 12px;
@@ -217,6 +272,7 @@
   --down: #000;
   --accent: #111;
   --accent-hover: #000;
+  --on-accent: #ffffff;
   --btn: #f0f0f0;
   --btn-border: #bbb;
   --radius: 0px;
@@ -225,7 +281,6 @@
   --table-alt: #f7f7f7;
   --table-hover: #eee;
   --bar-track: #ddd;
-  --chip: #e8e8e8;
   --logo-grad: linear-gradient(135deg, #333, #000);
   --header-active-bg: rgba(255,255,255,.08);
 }
@@ -252,6 +307,12 @@
   --down: #ff3b30;
   --accent: #007aff;
   --accent-hover: #0066d6;
+  /* System blue keeps its white label; the fill takes the 15% it needs so 13px
+     text clears AA, and hovering back to the undimmed blue is the highlight. */
+  --accent-fill: color-mix(in srgb, var(--accent) 85%, #000);
+  --accent-fill-hover: var(--accent);
+  --on-accent: #ffffff;
+  --accent-text: var(--accent-hover);
   --btn: #ffffff;
   --btn-border: #d2d2d7;
   --radius-sm: 6px;
@@ -264,7 +325,6 @@
   --table-alt: #F5F5F7;
   --table-hover: #e8f1fc;
   --bar-track: #e5e5ea;
-  --chip: #e8f1fc;
   --logo-grad: #007aff;
   --header-active-bg: transparent;
   --glass-blur: 0px;
@@ -298,6 +358,10 @@
   --down: #ff453a;
   --accent: #0a84ff;
   --accent-hover: #409cff;
+  --accent-fill: color-mix(in srgb, var(--accent) 85%, #000);
+  --accent-fill-hover: var(--accent);
+  --on-accent: #ffffff;
+  --accent-text: var(--accent-hover);
   --btn: #3a3a3c;
   --btn-border: #48484a;
   --radius-sm: 6px;
@@ -310,7 +374,6 @@
   --table-alt: #232325;
   --table-hover: #3a3a3c;
   --bar-track: #3a3a3c;
-  --chip: rgba(10, 132, 255, 0.18);
   --logo-grad: #0a84ff;
   --header-active-bg: transparent;
   --glass-blur: 0px;
@@ -373,6 +436,11 @@
   --fs-sm: 11px;
   --fs-md: 12px;
   --fs-lg: 13px;
+
+  /* Decorative icons drawn by CSS rather than by a component, kept here so they
+     stay on the lucide stroke language the .vue files import. Used as a mask, so
+     the stroke colour in the payload is irrelevant — only its alpha is read. */
+  --icon-inbox: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-6l-2 3h-4l-2-3H2'/%3E%3Cpath d='M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'/%3E%3C/svg%3E");
 }
 
 /* density */
@@ -473,11 +541,11 @@ button:hover, .btn:hover { filter: brightness(0.96); border-color: var(--accent)
 button:active { transform: translateY(1px); }
 button:disabled { opacity: .4; cursor: not-allowed; filter: none; }
 button.primary, .btn.primary {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill);
   font-weight: 600;
 }
-button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-button.danger { color: var(--down); border-color: color-mix(in srgb, var(--down) 40%, var(--btn-border)); }
+button.primary:hover { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
+button.danger { color: var(--down-text); border-color: color-mix(in srgb, var(--down) 40%, var(--btn-border)); }
 button.danger:hover { background: color-mix(in srgb, var(--down) 8%, var(--btn)); }
 button.tiny, .btn.tiny { padding: 3px 8px; font-size: 11px; }
 
@@ -516,6 +584,33 @@ button.primary.loading::after { color: #fff; }
   padding-top: var(--topchrome-h, calc(env(safe-area-inset-top, 0px) + var(--topchrome-primary) + var(--topchrome-sub)));
 }
 .layout:has(.subchrome) { --topchrome-sub: 34px; }
+/* Bypass block (WCAG 2.4.1).  Off-screen rather than display:none so it stays
+   in the tab order, and stacked above the fixed page header so it is not
+   tucked behind it when it slides in. */
+.skip-link {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  left: 12px;
+  z-index: 60;
+  transform: translateY(calc(-100% - 24px));
+  /* The fill/label pair, not raw accent + white: white on the raw accent is
+     2.32:1 on Unraid orange and 4.02:1 on macOS system blue, and this is the
+     first control every keyboard user tabs to. */
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+  text-decoration: none;
+  transition: transform .18s cubic-bezier(.2, .8, .3, 1);
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--on-accent);
+  outline-offset: -4px;
+}
 .topchrome {
   background: var(--header);
   color: var(--header-txt);
@@ -751,7 +846,13 @@ button.primary.loading::after { color: #fff; }
   transition: box-shadow .15s, border-color .15s;
 }
 .tile:hover { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
-.tile h3 {
+/* A tile heading is h3 when the tile sits in a grid under an h2.section-title,
+   and h2 when the tile is a page-level block with no section above it -- the
+   level follows the document, the look does not. `.section-title` is excluded
+   because it is a heading of the other kind that happens to live inside a tile
+   (the dashboard's Top CPU header) and carries its own margins. */
+.tile h3,
+.tile h2:not(.section-title) {
   font-size: 11px; font-weight: 700; color: var(--txt);
   text-transform: uppercase; letter-spacing: .5px;
   margin-bottom: 10px;
@@ -957,7 +1058,8 @@ button.primary.loading::after { color: #fff; }
   .name { white-space: normal; overflow-wrap: anywhere; }
   /* Tiles */
   .tile { padding: 10px 12px; min-width: 0; }
-  .tile h3 { font-size: 10px; margin-bottom: 8px; flex-wrap: wrap; gap: 6px; }
+  .tile h3,
+  .tile h2:not(.section-title) { font-size: 10px; margin-bottom: 8px; flex-wrap: wrap; gap: 6px; }
   .tile .v { font-size: 18px; }
   /* Buttons */
   button, .btn { padding: 7px 12px; font-size: 13px; }
@@ -1032,6 +1134,13 @@ button.primary.loading::after { color: #fff; }
   background: var(--card);
   box-shadow: var(--card-shadow);
 }
+/* Focusable since lib/tableWrapFocus.js (keyboard scrolling, WCAG 2.1.1).
+   Draw the ring inside the box: the global :focus-visible offset of 2px sits
+   outside it, where tile and drawer overflow clipping can crop it away. */
+.table-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 table.dense {
   width: 100%; border-collapse: collapse; font-size: 12px;
 }
@@ -1071,6 +1180,24 @@ table.dense td.mono, .mono {
 table.dense .ops { white-space: nowrap; }
 table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-bottom: 2px; }
 
+/* A table with nothing in it renders as a header bar above a void, which reads
+   as "this broke" rather than as "there is nothing here". One centred muted row
+   is the panel's existing answer — Services, Apps and Files each grew a private
+   copy of this rule — so it lives here once and every table can use it.
+
+   The row is not a record and does not open anything, so it opts out of the
+   tbody hover treatment above; keeping the accent bar would advertise a click
+   that does nothing. */
+table.dense td.empty-row {
+  text-align: center;
+  color: var(--sub);
+  padding: 24px 10px;
+}
+table.dense tbody tr:has(> td.empty-row):hover {
+  background: inherit;
+  box-shadow: none;
+}
+
 .row { display: flex; align-items: center; gap: 8px; }
 .dot {
   width: 9px; height: 9px; border-radius: 50%; flex: none;
@@ -1085,16 +1212,31 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
 .detail { color: var(--sub); font-size: 11px; margin: 4px 0 8px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btns { display: flex; gap: 4px; flex-wrap: wrap; }
+/* --sub is picked to read at 11-12px on --card; a badge is 10px on --btn, one
+   step closer to the text colour, and that combination is 3.95:1 in macOS dark
+   and 4.04:1 in Glass. Nudge the muted tone toward --txt rather than making
+   --sub itself darker everywhere. */
 .badge {
   display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 3px;
-  background: var(--btn); color: var(--sub); font-weight: 600;
+  background: var(--btn); color: color-mix(in srgb, var(--sub) 70%, var(--txt));
+  font-weight: 600;
   letter-spacing: .2px;
 }
-.badge.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
-.badge.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); }
-.badge.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: #b45309; }
-.badge.stopped { background: color-mix(in srgb, #888 14%, transparent); color: #777; }
-.badge.accent { background: var(--chip); color: var(--accent-hover); }
+.badge.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); }
+.badge.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); }
+/* The literal amber-700 this used to carry was the first place the status
+   colours had to be darkened for 10px text; --warn-text does it per theme, so
+   the badge no longer reads as brown on the dark palettes. */
+.badge.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn-text); }
+/* The literal #777 was 3.85:1 on its own tint in the light themes and 2.57:1 in
+   the dark ones, where it is a dark grey on a dark grey. */
+.badge.stopped {
+  background: color-mix(in srgb, #888 14%, transparent);
+  color: color-mix(in srgb, var(--sub) 70%, var(--txt));
+}
+/* A tint of the accent, like every other badge above. --chip was a per-theme
+   literal, and Nord's was the mid-blue #5e81ac: accent text on it was 1.49:1. */
+.badge.accent { background: var(--accent-wash); color: var(--on-accent-wash); }
 
 .tabs { display: flex; gap: 0; flex-wrap: wrap; margin-bottom: 12px; border-bottom: 2px solid var(--line); }
 .tabs button {
@@ -1103,13 +1245,17 @@ table.dense .ops button, table.dense .ops .btn { margin-right: 3px; margin-botto
   font-size: 12px; margin-bottom: -2px; transition: color .12s, border-color .12s;
 }
 .tabs button:hover { color: var(--txt); }
-.tabs button.active { color: var(--accent-hover); border-bottom-color: var(--accent); }
+.tabs button.active { color: var(--accent-text); border-bottom-color: var(--accent); }
 .toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
 
 .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+/* --accent-text, not --accent, wherever the accent is *ink*: the raw brand
+   hues measure 2.1-4.0:1 on --card (Unraid's orange is 2.32:1), so a 12px
+   label in them is decoration, not text. The tint keeps the hue; borders and
+   fills keep the raw token. theme/contrast.test.js pins this. */
 .links a {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 10px 8px; text-align: center; color: var(--accent); font-size: 12px; font-weight: 700;
+  padding: 10px 8px; text-align: center; color: var(--accent-text); font-size: 12px; font-weight: 700;
 }
 .links a:hover { border-color: var(--accent); }
 
@@ -1375,13 +1521,13 @@ img[loading="lazy"][complete] {
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
 }
 .density-row button.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill);
 }
 .lang-row {
   display: flex; flex-wrap: wrap; gap: 8px;
 }
 .lang-row button.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill);
 }
 
 /* ===== Unraid-style extras ===== */
@@ -1514,10 +1660,19 @@ img[loading="lazy"][complete] {
   align-items: center;
   gap: 12px;
 }
+/* Lucide `inbox`, masked so it takes --sub from the theme rather than shipping a
+   colour of its own. This was a 📭 emoji, which rendered as a full-colour glyph
+   next to the line icons everywhere else (Shares uses lucide FolderOpen for the
+   same job), drifted with the platform emoji font, and got announced by name by
+   screen readers even though it is decoration. */
 .placeholder::before {
-  content: '📭';
-  font-size: 32px;
-  opacity: .6;
+  content: '';
+  width: 30px;
+  height: 30px;
+  background: currentColor;
+  opacity: .45;
+  -webkit-mask: var(--icon-inbox) center / contain no-repeat;
+  mask: var(--icon-inbox) center / contain no-repeat;
 }
 .placeholder .retry-btn {
   margin-top: 4px;
@@ -1635,7 +1790,8 @@ img[loading="lazy"][complete] {
 .cmd-list li.cmd-ai {
   border-top: 1px solid var(--line);
   margin-top: 4px;
-  color: var(--accent);
+  /* Ink, so the AA-clearing tint — raw --accent is 2.3-4.0:1 on this panel. */
+  color: var(--accent-text);
 }
 
 .assist-launch {
@@ -1706,7 +1862,7 @@ img[loading="lazy"][complete] {
 }
 .assist-ollama {
   font-size: 12px;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 .assist-log {
@@ -1874,11 +2030,15 @@ img[loading="lazy"][complete] {
   border-bottom-color: transparent;
   border-left: none;
 }
+/* --accent-text, not --accent: this is 12-12.5px label text, and the plain
+   system blue is 3.7:1 on the header. The 2px underline below keeps --accent,
+   so the tint the eye reads as "selected" is unchanged. Same reasoning as
+   .tabs button.active and .badge.accent in the base stylesheet. */
 [data-theme="macos"] .top-nav a.active,
 [data-theme="macos"] .subchrome-inner a.active,
 [data-theme="macos-dark"] .top-nav a.active,
 [data-theme="macos-dark"] .subchrome-inner a.active {
-  color: var(--accent);
+  color: var(--accent-text);
   background: transparent;
   border-bottom-color: transparent;
 }
@@ -1938,17 +2098,19 @@ img[loading="lazy"][complete] {
   background: #e8e8ed;
   color: var(--header-txt);
 }
+/* Foregrounds are a shade darker than the matching system colour so 11px text
+   clears 4.5:1 on these tints; the tints themselves are unchanged. */
 [data-theme="macos"] .pill.ok {
   background: #d8f5e2;
-  color: #248a3d;
+  color: #1d7433;
 }
 [data-theme="macos"] .pill.warn {
   background: #ffe8c8;
-  color: #c93400;
+  color: #b83000;
 }
 [data-theme="macos"] .pill.down {
   background: #ffd4d1;
-  color: #d70015;
+  color: #bf000e;
 }
 [data-theme="macos-dark"] .pill {
   background: #3a3a3c;
@@ -2002,6 +2164,10 @@ img[loading="lazy"][complete] {
   border-radius: var(--radius-sm);
   padding: 1px 7px;
   font-weight: 500;
+  /* The neutral badge inherits --sub on --btn, which is 4:1 on the dark
+     palette's gray fill — under AA at this 10px size. Mixing toward --txt fixes
+     dark without inverting the muted intent on light. */
+  color: color-mix(in srgb, var(--sub) 70%, var(--txt));
 }
 [data-theme="macos"] .modal,
 [data-theme="macos-dark"] .modal {
@@ -2071,7 +2237,9 @@ img[loading="lazy"][complete] {
   letter-spacing: 0;
 }
 [data-theme="macos"] .tile h3,
-[data-theme="macos-dark"] .tile h3 {
+[data-theme="macos"] .tile h2:not(.section-title),
+[data-theme="macos-dark"] .tile h3,
+[data-theme="macos-dark"] .tile h2:not(.section-title) {
   color: var(--txt);
   text-transform: none;
   letter-spacing: 0;
@@ -2144,13 +2312,19 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .btn.primary,
 [data-theme="macos-dark"] button.primary,
 [data-theme="macos-dark"] .btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
 }
-[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+/* `.chip` is carved out for the same reason `.mac-switch` and `.hamburger` are:
+   it is a button element that is not meant to look like a button, and it has a
+   full set of macOS rules of its own further down. Without the guard this rule
+   scored (0,5,1) against those rules' (0,3,0) and painted over all of them, so
+   the Services status filter rendered its selected chip identically to the
+   unselected ones. */
+[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos"] .btn:not(.primary):not(.danger),
-[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
   /* White (elevated) fill on gray canvas — gray-on-gray --btn looked inert. */
   background: #fff;
@@ -2158,7 +2332,7 @@ img[loading="lazy"][complete] {
   color: var(--txt);
   box-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.06);
 }
-[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger),
+[data-theme="macos-dark"] button:not(.primary):not(.danger):not(.mac-switch):not(.hamburger):not(.chip),
 [data-theme="macos-dark"] .btn:not(.primary):not(.danger) {
   background: #3a3a3c;
   border-color: #48484a;
@@ -2217,8 +2391,8 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] table.dense tbody tr.selected td,
 [data-theme="macos-dark"] table.dense tbody tr.selected:hover,
 [data-theme="macos-dark"] table.dense tbody tr.selected:hover td {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 [data-theme="macos"] table.dense tbody tr.selected .sub,
@@ -2229,7 +2403,9 @@ img[loading="lazy"][complete] {
 [data-theme="macos-dark"] table.dense tbody tr.selected .sub-id,
 [data-theme="macos-dark"] table.dense tbody tr.selected .detail-cell,
 [data-theme="macos-dark"] table.dense tbody tr.selected .name-text {
-  color: #fff;
+  /* var(--on-accent), never a literal: the row paints --accent-fill under
+     this ink, and the pair is what the contrast test keeps AA-safe. */
+  color: var(--on-accent);
 }
 [data-theme="macos"] table.dense tbody tr.dim td,
 [data-theme="macos-dark"] table.dense tbody tr.dim td {
@@ -2246,28 +2422,32 @@ img[loading="lazy"][complete] {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
+/* The status-text tints do the work here: badge text is 10px, so the raw system
+   colour on its own tint sits around 2:1. See --ok-text in :root. */
 [data-theme="macos"] .badge.ok,
 [data-theme="macos-dark"] .badge.ok {
   background: color-mix(in srgb, var(--ok) 12%, var(--card));
-  color: color-mix(in srgb, var(--ok) 68%, var(--txt));
+  color: var(--ok-text);
   border: 1px solid color-mix(in srgb, var(--ok) 18%, var(--line));
 }
 [data-theme="macos"] .badge.warn,
 [data-theme="macos-dark"] .badge.warn {
   background: color-mix(in srgb, var(--warn) 10%, var(--card));
-  color: color-mix(in srgb, var(--warn) 62%, var(--txt));
+  color: var(--warn-text);
   border: 1px solid color-mix(in srgb, var(--warn) 20%, var(--line));
 }
 [data-theme="macos"] .badge.accent,
 [data-theme="macos-dark"] .badge.accent {
   background: color-mix(in srgb, var(--accent) 10%, var(--card));
-  color: var(--accent);
+  /* Flat var(--accent) sat at 3.5:1 on its own 10% tint; the mix matches the
+     shape of the sibling rules and reads on both palettes. */
+  color: color-mix(in srgb, var(--accent) 70%, var(--txt));
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
 }
 [data-theme="macos"] .badge.down,
 [data-theme="macos-dark"] .badge.down {
   background: color-mix(in srgb, var(--down) 10%, var(--card));
-  color: color-mix(in srgb, var(--down) 70%, var(--txt));
+  color: var(--down-text);
   border: 1px solid color-mix(in srgb, var(--down) 18%, var(--line));
 }
 [data-theme="macos"] .chip,
@@ -2281,31 +2461,39 @@ img[loading="lazy"][complete] {
 [data-theme="macos"] .chip.active,
 [data-theme="macos-dark"] .chip.active {
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
-  color: var(--accent);
+  /* The three state variants below already mix their status colour toward --txt
+     to clear AA on the 12% fill; this base rule was the one left on a flat
+     --accent and read 3.43:1. */
+  color: color-mix(in srgb, var(--accent) 70%, var(--txt));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
 }
 [data-theme="macos"] .chip-ok.active,
 [data-theme="macos-dark"] .chip-ok.active {
   background: color-mix(in srgb, var(--ok) 12%, var(--card));
-  color: color-mix(in srgb, var(--ok) 70%, var(--txt));
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 28%, var(--line));
 }
 [data-theme="macos"] .chip-warn.active,
 [data-theme="macos-dark"] .chip-warn.active {
   background: color-mix(in srgb, var(--warn) 12%, var(--card));
-  color: color-mix(in srgb, var(--warn) 65%, var(--txt));
+  color: var(--warn-text);
   border-color: color-mix(in srgb, var(--warn) 28%, var(--line));
 }
 [data-theme="macos"] .chip-down.active,
 [data-theme="macos-dark"] .chip-down.active {
   background: color-mix(in srgb, var(--down) 12%, var(--card));
-  color: color-mix(in srgb, var(--down) 70%, var(--txt));
+  color: var(--down-text);
   border-color: color-mix(in srgb, var(--down) 28%, var(--line));
 }
 [data-theme="macos"] .chip-sig,
 [data-theme="macos-dark"] .chip-sig {
   background: var(--btn);
-  color: var(--sub);
+  /* Same nudge, and for the same reason, as .badge above: --sub is sized for
+     11-12px on --card, and this chip is 10px on --btn -- 3.95:1 in macOS
+     dark.  The signature chip is the one label on a service row that says
+     *what* the service is, so it is the last thing that should be hard to
+     read. */
+  color: color-mix(in srgb, var(--sub) 70%, var(--txt));
   border-color: var(--line);
 }
 [data-theme="macos"] .toast,
@@ -2405,6 +2593,56 @@ html[data-theme="macos-dark"] .range-btns .btn.primary {
   background: #636366;
   color: var(--header-txt);
 }
+/* Settings → Display pickers.
+   `[data-theme="macos"] button:not(.primary):not(.danger):not(.mac-switch)
+   :not(.hamburger)` is specificity 0-5-1 and repaints every plain button white,
+   so it beat `.lang-row button.active` / `.density-row button.active` (0-2-1)
+   and `.theme-card.active` (0-2-0). Under the two macOS themes — the default
+   pair — the selected language, density and theme rendered exactly like the
+   unselected ones, so the page never showed what was actually in effect.
+   `.tabs button.active` above already needed this same re-assertion. */
+html[data-theme="macos"] .lang-row button.active,
+html[data-theme="macos"] .lang-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos"] .density-row button.active,
+html[data-theme="macos"] .density-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .lang-row button.active,
+html[data-theme="macos-dark"] .lang-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .density-row button.active,
+html[data-theme="macos-dark"] .density-row button.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
+  font-weight: 600;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12);
+}
+html[data-theme="macos"] .theme-card,
+html[data-theme="macos"] .theme-card:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .theme-card,
+html[data-theme="macos-dark"] .theme-card:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  text-align: left;
+}
+html[data-theme="macos"] .theme-card.active,
+html[data-theme="macos"] .theme-card.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .theme-card.active,
+html[data-theme="macos-dark"] .theme-card.active:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+/* Tools launcher tiles — same specificity trap as the pickers above.  A tool
+   tile is a card that happens to be a <button>, but the control rules squashed
+   it to 4px 12px / radius 8 and, in dark, repainted it #3a3a3c: --sub body text
+   on that fill is 3.9:1, and it was the only tile in the theme not on --card. */
+html[data-theme="macos"] .tool-tile,
+html[data-theme="macos"] .tool-tile:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger),
+html[data-theme="macos-dark"] .tool-tile,
+html[data-theme="macos-dark"] .tool-tile:not(.primary):not(.danger):not(.tiny):not(.mac-switch):not(.hamburger) {
+  background: var(--card);
+  border-color: var(--line);
+  padding: 12px 12px 14px;
+  border-radius: var(--radius-lg);
+}
 @media (max-width: 640px) {
   html[data-theme="macos"] .tabs,
   html[data-theme="macos-dark"] .tabs {
@@ -2428,4 +2666,33 @@ html[data-theme="macos-dark"] .range-btns .btn.primary {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Accessibility: target size (WCAG 2.5.8, 24x24 minimum).
+   Measured on a 390px viewport: a native checkbox is 13px, a checkbox row is
+   15-18px tall, and .btn.tiny is 23px -- all misses for a fingertip, and a
+   miss on a row-select box lands on dead space inside the cell.
+   Keyed on `pointer: coarse` rather than viewport width, because it is the
+   input device that decides how big a target has to be: a touchscreen laptop
+   needs this at 1440px and a trackpad does not need it at 390px. Desktop
+   metrics are deliberately left alone -- the macOS control sizes the rest of
+   this sheet is built around are correct for a mouse.
+   Label padding rather than a taller label box: padding on an inline box
+   grows the hit area without moving anything on screen. */
+@media (pointer: coarse) {
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 18px;
+    height: 18px;
+  }
+  label:has(> input[type="checkbox"]),
+  label:has(> input[type="radio"]) {
+    padding-block: 4px;
+  }
+  /* Row selection has no text to grow with it: the box is the whole target. */
+  .col-check input[type="checkbox"] {
+    width: 24px;
+    height: 24px;
+  }
+  button.tiny, .btn.tiny { min-height: 24px; }
 }

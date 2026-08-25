@@ -138,7 +138,9 @@ function actClass(a) {
   transition: border-color .12s, background .12s;
 }
 .act-btn:hover { border-color: var(--accent); }
-.act-btn.primary, .act-btn.link.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* The label is ink: --accent-text clears AA on --card where raw --accent
+   measures as low as 2.32:1 (Unraid orange). The border keeps the raw hue. */
+.act-btn.primary, .act-btn.link.primary { border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 .act-btn:disabled { opacity: .4; cursor: not-allowed; }
 .btns { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .drawer-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }

@@ -1,9 +1,9 @@
 // ServerHub Service Worker — offline-first app shell caching
 // Vite replaces the placeholder with a stable fingerprint of the build output.
-const CACHE_NAME = 'serverhub-e46f78489ce8ba08'
+const CACHE_NAME = 'serverhub-884cb56276a04938'
 // Vite replaces the placeholder with the first-paint assets (entry + vendor
 // chunks and CSS) of the build output.
-const PRECACHE_ASSETS = ["/assets/Account-BQ8889N_.css","/assets/Apps-W36Gx4AL.css","/assets/Backups-y7om_4XT.css","/assets/Bookmarks-CrBJ0fZy.css","/assets/Compose-BRPztoSv.css","/assets/Dashboard-C_Efu_MQ.css","/assets/Files-B1Ug4xWc.css","/assets/LineChart-DfJX3H1l.css","/assets/LoadFailure-s5h3k7m_.css","/assets/Login-CzCVd8Pl.css","/assets/Logs-BFK1lR4W.css","/assets/MacSwitch-BQD7pHJq.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-DEah0Was.css","/assets/Ollama-BDY0kcf4.css","/assets/PhotosHub-BCIayVtu.css","/assets/Pool-BZDZ_UnA.css","/assets/ScheduleJobForm-Qht-yzhv.css","/assets/Services-EV5zi7a2.css","/assets/Settings-ZOUTL7J7.css","/assets/Shares-K_iOO62a.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-ChNLfQFA.css","/assets/Tools-B0sK-YNu.css","/assets/Users-Bs90Lvi6.css","/assets/VMs-BRtVRGlK.css","/assets/WireGuard-DH-EaeqJ.css","/assets/en-DMMV1e6C.js","/assets/index-BDwYx408.css","/assets/index-Bda2XuPb.js","/assets/vendor-4S_DzOps.js"]
+const PRECACHE_ASSETS = ["/assets/Account-B1jxpjP4.css","/assets/Apps-BYpolqqd.css","/assets/Backups-D1iINL4t.css","/assets/Bookmarks-G1noKOe_.css","/assets/Compose-BzPwi3re.css","/assets/Dashboard-ltmB8bZh.css","/assets/Files-DRfYbfu3.css","/assets/LineChart-BEiuHeBQ.css","/assets/LoadFailure-s5h3k7m_.css","/assets/Login-iJcX9ZOM.css","/assets/Logs-5N7fRTpo.css","/assets/MacSwitch-C40cgBYQ.css","/assets/MainArray-tn0RQdqM.css","/assets/Network-CBd5blRB.css","/assets/Ollama-D-LqXqxj.css","/assets/PhotosHub-BKzsWXlb.css","/assets/Pool-B8nDm__t.css","/assets/ScheduleJobForm-5GEVvUC3.css","/assets/Services-BWxjtfAX.css","/assets/Settings-BGcnR2ov.css","/assets/Shares-CQMeN6Pk.css","/assets/SkeletonLoader-CBLdJ8iz.css","/assets/Terminal-Cz98E5BT.css","/assets/Tools-B09hH5YV.css","/assets/Users-Bx6ZQL0w.css","/assets/VMs-Dnau5GtI.css","/assets/WireGuard-BVHs_8nI.css","/assets/en-CszTW-an.js","/assets/index-B1EhE3-o.css","/assets/index-BfsE4EiY.js","/assets/vendor-4S_DzOps.js"]
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -67,8 +67,17 @@ self.addEventListener('fetch', (event) => {
       const timer = setTimeout(() => controller.abort(), NAV_TIMEOUT_MS)
       try {
         const response = await fetch(request, { signal: controller.signal })
-        cacheIfOk(request, response)
-        return response
+        if (response && response.ok) {
+          cacheIfOk(request, response)
+          return response
+        }
+        // A gateway that is up while the panel behind it is restarting answers
+        // 502 — a successful fetch of somebody else's error page, so the catch
+        // below never sees it. Returning it showed the operator raw nginx
+        // output during the restarts the panel performs on itself. The cached
+        // shell boots instead and the SPA shows its own reconnect state.
+        const stale = (await caches.match(request)) || (await caches.match('/'))
+        return (stale && stale.ok) ? stale : response
       } catch {
         const cached = await caches.match(request)
         if (cached && cached.ok) return cached

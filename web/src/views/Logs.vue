@@ -5,12 +5,12 @@
       <span class="meta">{{ t('logs.meta') }}</span>
     </div>
     <div class="toolbar">
-      <select v-model="sourceId" @change="load">
+      <select v-model="sourceId" :aria-label="t('logs.source_label')" @change="load(true)">
         <option v-for="s in sources" :key="s.id" :value="s.id">
           {{ finiteText(s.name) }}{{ s.exists ? ' · ' + fmtSize(s.size) : t('logs.missing') }}
         </option>
       </select>
-      <select v-model.number="lines" @change="load">
+      <select v-model.number="lines" :aria-label="t('logs.lines_label')" @change="load(true)">
         <option :value="100">{{ t('logs.lines_n', { n: 100 }) }}</option>
         <option :value="200">{{ t('logs.lines_n', { n: 200 }) }}</option>
         <option :value="500">{{ t('logs.lines_n', { n: 500 }) }}</option>
@@ -18,7 +18,7 @@
         <option :value="2000">{{ t('logs.lines_n', { n: 2000 }) }}</option>
       </select>
       <input v-model="filter" type="text" :placeholder="t('logs.filter_ph')" style="min-width:160px"  :aria-label="t('logs.filter_ph')"/>
-      <button class="primary" :disabled="loading" @click="load">{{ t('common.refresh') }}</button>
+      <button class="primary" :disabled="loading" @click="load(true)">{{ t('common.refresh') }}</button>
       <label style="font-size:12px;color:var(--sub);display:flex;align-items:center;gap:6px">
         <input type="checkbox" v-model="auto" /> {{ t('logs.auto') }}
       </label>
@@ -29,12 +29,27 @@
       <span class="mono">{{ finiteText(meta.path) }}</span>
       · {{ fmtSize(meta.size) }}
       · {{ t('logs.lines_n', { n: fmtCount(meta.lines) }) }}
-      <span v-if="filter"> · {{ t('logs.matched', { n: finiteN(displayLines.length) }) }}</span>
+      <!-- Always-rendered live region, text gated inside: typing in the filter
+           otherwise changes nothing a screen reader is told about, so there
+           was no way to hear whether the filter matched anything at all. -->
+      <span role="status"><template v-if="filter"> · {{ t('logs.matched', { n: finiteN(displayLines.length) }) }}</template></span>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="retry" :busy="loading" />
-    <pre v-if="!loaded" class="log-viewer">{{ t('common.loading') }}</pre>
-    <pre v-else-if="displayText" class="log-viewer">{{ finiteText(displayText) }}</pre>
-    <pre v-else-if="!loadError" class="log-viewer">{{ t('logs.empty') }}</pre>
+    <pre v-if="!loaded" class="log-viewer" role="status" aria-live="polite">{{ t('common.loading') }}</pre>
+    <!-- tabindex=0: the viewer scrolls (72vh cap) and a scrollable region a
+         keyboard cannot reach cannot be scrolled by one (WCAG 2.1.1).  The
+         role and name are what a reader announces on landing in it. -->
+    <pre
+      v-else-if="displayText"
+      class="log-viewer"
+      tabindex="0"
+      role="region"
+      :aria-label="t('logs.title')"
+    >{{ finiteText(displayText) }}</pre>
+    <!-- Filter-miss and empty-file are different answers: "(empty)" on a
+         full log whose filter matched nothing told the operator the file
+         has no lines. Same split Brew/Health pinned (common.no_match). -->
+    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ filter.trim() && text ? t('common.no_match') : t('logs.empty') }}</pre>
   </div>
 </template>
 
@@ -102,7 +117,7 @@ async function loadSources() {
   }
 }
 
-async function load() {
+async function load(manual = false) {
   if (!sourceId.value) {
     loaded.value = true
     return true
@@ -121,7 +136,12 @@ async function load() {
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // Same convention as the Audit/Alerts pollers: the 6-second auto-refresh
+    // stays silent on failure — LoadFailure already marks the state on screen,
+    // and re-toasting every tick while the panel is unreachable interrupts a
+    // screen reader over and over. Returning false is lib/poll's backoff
+    // sentinel either way.
+    if (manual) toast('❌ ' + finiteText(e.message))
     return false
   } finally {
     if (generation === loadGeneration && pageAlive) {
@@ -132,8 +152,8 @@ async function load() {
 }
 
 function retry() {
-  if (sources.value.length) return load()
-  return loadSources().then((ok) => { if (ok) return load() })
+  if (sources.value.length) return load(true)
+  return loadSources().then((ok) => { if (ok) return load(true) })
 }
 
 async function copyLog() {
@@ -171,7 +191,7 @@ onMounted(async () => {
   pageAlive = true
   await loadSources()
   if (!pageAlive) return
-  await load()
+  await load(true)
   if (!pageAlive) return
   startAutoRefresh()
 })

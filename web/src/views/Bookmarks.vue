@@ -6,7 +6,10 @@
     </div>
     <div class="toolbar">
       <button class="primary" @click="refresh(true)" :disabled="loading">{{ t('bookmarks.force') }}</button>
-      <span class="meta" v-if="data">
+      <!-- role=status: the summary is the answer to the Force check click and
+           it changed silently for a screen reader — same treatment as the
+           Tools syslog/ports counts (Tools.announcements.test.js). -->
+      <span class="meta" role="status" v-if="data">
         {{ t('bookmarks.summary', {
           up: finiteN(data.up),
           stopped: finiteN(data.stopped, 0),
@@ -31,7 +34,9 @@
         rel="noopener"
       >
         <div class="row">
-          <span class="led" :class="ledClass(b)"></span>
+          <!-- aria-hidden: the LED only repeats the badge text in colour, so it
+               is decoration — same treatment as the Gateway/VMs inline LEDs. -->
+          <span class="led" :class="ledClass(b)" aria-hidden="true"></span>
           <span class="bm-title">{{ finiteText(b.name) }}</span>
           <span class="badge" :class="badgeClass(b)">
             {{ badgeText(b) }}
@@ -186,7 +191,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .bm-page-card.stopped .bm-title { color: var(--sub); }
-.bm-page-card.down .bm-title { color: var(--down); }
+.bm-page-card.down .bm-title { color: var(--down-text); }
 .bm-url {
   font-size: 11px;
   color: var(--sub);
@@ -203,7 +208,7 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.bm-foot .err { color: var(--down); }
+.bm-foot .err { color: var(--down-text); }
 .bm-foot .backend { color: var(--sub); }
 .hint {
   margin-top: 12px;

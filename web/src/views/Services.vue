@@ -1,10 +1,17 @@
 <template>
   <div class="svc-page">
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('services.title') }}</h1>
     <!-- Problems banner -->
     <div v-if="(status?.problems || []).length" class="problems-bar">
       <strong>{{ t('services.problems') }}</strong>
+      <!-- LEDs: warn vs down reached a sighted reader in colour alone, so
+           hide the paint and spell the state — same treatment as the
+           Containers rows and Dashboard cards. ledText reuses the state-chip
+           words, so no new locale strings. -->
       <span v-for="p in (status.problems || []).slice(0, 8)" :key="p.id" class="prob-chip" @click="openDetail(p)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
-        <span class="led" :class="ledOf(p.state)"></span>
+        <span class="led" :class="ledOf(p.state)" aria-hidden="true"></span>
+        <span class="sr-only">{{ ledText(p.state) }}</span>
         {{ finiteText(p.name) }}
       </span>
       <button v-if="canManage" type="button" class="tiny primary" :disabled="busy || !downIds.length" @click="bulkAction(downIds, 'start')">
@@ -24,15 +31,15 @@
     <div class="toolbar svc-toolbar">
       <button class="primary" type="button" :disabled="loading" @click="refresh(true)">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" class="search" :placeholder="t('services.filter_ph')"  :aria-label="t('services.filter_ph')"/>
-      <select v-model="kindF" class="cat-select">
+      <select v-model="kindF" class="cat-select" :aria-label="t('services.filter_kind')">
         <option value="">{{ t('services.kind_all') }}</option>
         <option v-for="k in kindOptions" :key="k" :value="k">{{ kindLabel(k) }}</option>
       </select>
-      <select v-model="groupF" class="cat-select">
+      <select v-model="groupF" class="cat-select" :aria-label="t('services.filter_group')">
         <option value="">{{ t('services.group_all') }}</option>
         <option v-for="g in groupOptions" :key="g" :value="g">{{ displayGroup(g) }}</option>
       </select>
-      <select v-model="sortBy" class="cat-select">
+      <select v-model="sortBy" class="cat-select" :aria-label="t('common.sort_by')">
         <option value="group">{{ t('services.sort_group') }}</option>
         <option value="name">{{ t('services.sort_name') }}</option>
         <option value="state">{{ t('services.sort_state') }}</option>
@@ -41,7 +48,9 @@
       <span class="toolbar-toggles">
         <label class="chk"><input type="checkbox" v-model="onlyBad" /> {{ t('services.only_bad') }}</label>
         <label class="chk"><input type="checkbox" v-model="dense" /> {{ t('services.dense') }}</label>
-        <span class="meta-count">{{ filtered.length }} / {{ flat.length }}</span>
+        <!-- role=status: the count is the only feedback the filter box and
+             state chips give, and it changed silently for a screen reader. -->
+        <span class="meta-count" role="status">{{ filtered.length }} / {{ flat.length }}</span>
       </span>
       <span class="meta svc-summary" v-if="status">
         {{ t('services.summary', {
@@ -58,19 +67,19 @@
 
     <!-- State chips: status shortcuts, kept as their own visual row -->
     <div class="state-chips">
-      <button type="button" class="chip" :class="{ active: stateF === '' }" @click="stateF = ''">
+      <button type="button" class="chip" :class="{ active: stateF === '' }" :aria-pressed="stateF === ''" @click="stateF = ''">
         {{ t('common.all') }} {{ flat.length }}
       </button>
-      <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" @click="stateF = stateF === 'ok' ? '' : 'ok'">
+      <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" :aria-pressed="stateF === 'ok'" @click="stateF = stateF === 'ok' ? '' : 'ok'">
         {{ t('services.state_ok') }} {{ finiteN(status?.counts?.ok, 0) }}
       </button>
-      <button type="button" class="chip chip-warn" :class="{ active: stateF === 'warn' }" @click="stateF = stateF === 'warn' ? '' : 'warn'">
+      <button type="button" class="chip chip-warn" :class="{ active: stateF === 'warn' }" :aria-pressed="stateF === 'warn'" @click="stateF = stateF === 'warn' ? '' : 'warn'">
         {{ t('services.state_warn') }} {{ finiteN(status?.counts?.warn, 0) }}
       </button>
-      <button type="button" class="chip chip-down" :class="{ active: stateF === 'down' }" @click="stateF = stateF === 'down' ? '' : 'down'">
+      <button type="button" class="chip chip-down" :class="{ active: stateF === 'down' }" :aria-pressed="stateF === 'down'" @click="stateF = stateF === 'down' ? '' : 'down'">
         {{ t('services.state_down') }} {{ finiteN(status?.counts?.down, 0) }}
       </button>
-      <button type="button" class="chip chip-muted" :class="{ active: stateF === 'stopped' }" @click="stateF = stateF === 'stopped' ? '' : 'stopped'">
+      <button type="button" class="chip chip-muted" :class="{ active: stateF === 'stopped' }" :aria-pressed="stateF === 'stopped'" @click="stateF = stateF === 'stopped' ? '' : 'stopped'">
         {{ t('services.state_stopped') }} {{ finiteN(status?.counts?.stopped, 0) }}
       </button>
     </div>
@@ -82,14 +91,19 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="() => refresh(true)" :busy="loading" />
     <SkeletonLoader v-if="!loaded" :variant="dense ? 'table' : 'cards'" :cols="8" :rows="8" />
 
-    <!-- Dense table -->
+    <!-- Dense table.  On a failed *first* load nothing was fetched, so the
+         banner stands alone: the table used to render its column headers
+         above nothing (the empty-row is loadError-suppressed), claiming a
+         listing that never arrived.  When a 15s re-poll fails the stale rows
+         stay on screen under the banner instead (the LoadFailure contract —
+         same as Containers and the Users accounts table). -->
     <template v-else-if="dense">
-      <div class="table-wrap">
+      <div v-if="flat.length || !loadError" class="table-wrap">
         <table class="dense svc-table fit-m">
           <thead>
             <tr>
-              <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
-              <th></th>
+              <th v-if="canManage" class="col-check"><input type="checkbox" :checked="allSelected" :aria-label="t('common.select_all')" @change="toggleSelectAll" /></th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('common.name') }}</th>
               <th class="col-hide-m">{{ t('services.group') }}</th>
               <th class="col-hide-m">{{ t('services.kind') }}</th>
@@ -103,12 +117,20 @@
               v-for="s in filtered"
               :key="s.id"
               :class="{ selected: selected.has(s.id), bad: s.state === 'down' || s.state === 'warn' }"
-              @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
+              @click="openDetail(s)" tabindex="0" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
             >
               <td v-if="canManage" class="col-check" @click.stop>
-                <input type="checkbox" :checked="selected.has(s.id)" @change="toggleSelect(s.id)" />
+                <!-- Named per row, like the Files list: thirty checkboxes all
+                     called "Select this row" cannot be told apart in a screen
+                     reader's form-controls listing. -->
+                <input type="checkbox" :checked="selected.has(s.id)" :aria-label="t('common.select_row_name', { name: finiteText(s.name, '') || finiteText(s.id) })" @change="toggleSelect(s.id)" />
               </td>
-              <td><span class="led" :class="ledOf(s.state)"></span></td>
+              <!-- The sr-only column header names the column, but the cell
+                   itself was empty: colour alone said whether the row runs. -->
+              <td>
+                <span class="led" :class="ledOf(s.state)" aria-hidden="true"></span>
+                <span class="sr-only">{{ ledText(s.state) }}</span>
+              </td>
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
                 <span v-if="signatureOf(s)" class="chip chip-sig chip-inline" :title="signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?`">
@@ -127,13 +149,18 @@
               </td>
             </tr>
             <tr v-if="!filtered.length && !loadError">
-              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ t('services.empty') }}</td>
+              <!-- A filter that misses and a host with nothing discovered are
+                   different answers (Tools/Network/Containers pattern). -->
+              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ flat.length ? t('common.no_match') : t('services.empty') }}</td>
             </tr>
           </tbody>
         </table>
       </div>
       <div v-if="selected.size" class="bulk-bar">
-        <span>{{ t('services.selected_n', { n: selected.size }) }}</span>
+        <!-- role=status: checking rows gives no audible feedback otherwise —
+             the count lives in a bar that only exists while something is
+             selected, so a screen-reader user heard nothing change. -->
+        <span role="status">{{ t('services.selected_n', { n: selected.size }) }}</span>
         <button type="button" class="tiny primary" :disabled="busy" @click="bulkAction([...selected], 'start')">{{ t('services.act_start') }}</button>
         <button type="button" class="tiny" :disabled="busy" @click="bulkAction([...selected], 'restart')">{{ t('services.act_restart') }}</button>
         <button type="button" class="tiny danger" :disabled="busy" @click="bulkAction([...selected], 'stop')">{{ t('services.act_stop') }}</button>
@@ -146,10 +173,15 @@
       <template v-for="g in filteredGroups" :key="g.group">
         <h2 class="section-title">{{ displayGroup(g.group) }} <span class="meta-count">{{ g.services.length }}</span></h2>
         <div class="grid svc-grid">
-          <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">
+          <!-- The button role sits on the name, not the <article>: the card also
+               holds the ServiceActions buttons and a control may not contain
+               other controls (ARIA nested-interactive) — same split as the
+               Compose stack list. @click stays on the card for mouse users. -->
+          <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)">
             <div class="row">
-              <span class="led" :class="ledOf(s.state)"></span>
-              <span class="name" :title="finiteText(s.id)">{{ finiteText(s.name) }}</span>
+              <span class="led" :class="ledOf(s.state)" aria-hidden="true"></span>
+              <span class="sr-only">{{ ledText(s.state) }}</span>
+              <span class="name" :title="finiteText(s.id)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">{{ finiteText(s.name) }}</span>
               <span class="badge">{{ kindLabel(s.kind) }}</span>
               <span v-if="signatureOf(s)" class="chip chip-sig" :title="signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?`">
                 {{ signatureOf(s).confidence === 'high' ? finiteText(signatureOf(s).name) : `${finiteText(signatureOf(s).name)}?` }}
@@ -160,7 +192,7 @@
           </article>
         </div>
       </template>
-      <div v-if="!filtered.length && !loadError" class="placeholder">{{ t('services.empty') }}</div>
+      <div v-if="!filtered.length && !loadError" class="placeholder">{{ flat.length ? t('common.no_match') : t('services.empty') }}</div>
     </template>
 
     <!-- Detail drawer -->
@@ -265,6 +297,16 @@ const { actLabel, kindLabel } = serviceLabels(t)
 function displayGroup(name) {
   const key = groupI18nKey(name)
   return key ? t(key) : finiteText(name)
+}
+
+// Spelled-out twin of ledOf() for the LEDs (problems bar, table rows, cards):
+// colour reaches a sighted reader and nobody else. Reuses the state-chip
+// words, so no new locale strings (Dashboard/Containers pattern).
+function ledText(state) {
+  if (state === 'ok') return t('services.state_ok')
+  if (state === 'warn') return t('services.state_warn')
+  if (state === 'stopped') return t('services.state_stopped')
+  return t('services.state_down')
 }
 
 // Members get a read-only page: mutating controls (bulk actions, hide,
@@ -401,9 +443,12 @@ async function refresh(force = false) {
   } catch (e) {
     if (!pageAlive) return false
     loadError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message || e))
+    // The 15s tick passes force=false, so background failures stay silent —
+    // LoadFailure already marks the state on screen, and a toast per interval
+    // while the panel is down is pure noise. Manual paths pass force=true.
+    if (force) toast('❌ ' + finiteText(e.message || e))
     // Tell the 15s poller the tick failed so lib/poll.js backs off while the
-    // server stays unreachable (and the toast above stops firing every 15s).
+    // server stays unreachable.
     return false
   } finally {
     if (pageAlive) {
@@ -686,8 +731,10 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .toolbar-toggles { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
 /* Size and colour come from the global .meta-count. */
 .meta-count { font-weight: 600; }
+/* Flat --down on the page canvas is 3.25:1 at this size; the --down-text token
+   keeps it unmistakably the alarm red while clearing AA, same as button.danger. */
 .warn-tag {
-  margin-left: 8px; color: var(--down); font-weight: 600; font-size: 12px;
+  margin-left: 8px; color: var(--down-text); font-weight: 600; font-size: 12px;
 }
 .problems-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
@@ -721,8 +768,10 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 .chip-warn.active { border-color: var(--warn); }
 .chip-down.active { border-color: var(--down); }
 .chip-muted { opacity: .85; }
+/* --accent-text, not --accent: this is 10-12px label text on --card, and the
+   raw accent measures 2.3-4.0:1 there in most themes (contrast.test.js). */
 .chip-sig {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent); font-weight: 600; cursor: default;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--accent-text); font-weight: 600; cursor: default;
   display: inline-block; white-space: nowrap; overflow-wrap: normal; word-break: normal;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
 }
@@ -740,15 +789,16 @@ useDismissable(uninstallModal, () => { uninstallModal.value = null }, uninstallP
 :global([data-theme="macos-dark"] .svc-table tr.selected td),
 :global([data-theme="macos-dark"] .svc-table tr.selected:hover),
 :global([data-theme="macos-dark"] .svc-table tr.selected:hover td) {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 :global([data-theme="macos"] .svc-table tr.selected .sub-id),
 :global([data-theme="macos"] .svc-table tr.selected .detail-cell),
 :global([data-theme="macos-dark"] .svc-table tr.selected .sub-id),
 :global([data-theme="macos-dark"] .svc-table tr.selected .detail-cell) {
-  color: #fff;
+  /* The row's fill is --accent-fill; its ink has to be the paired token. */
+  color: var(--on-accent);
 }
 .svc-table tr.bad { box-shadow: inset 3px 0 0 var(--down); }
 .col-check { width: 32px; }

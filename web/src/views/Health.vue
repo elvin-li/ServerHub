@@ -7,7 +7,10 @@
 
     <div class="toolbar">
       <button class="primary" @click="load" :disabled="loading">{{ t('health.rescan') }}</button>
-      <span class="meta hide-m" v-if="data?.summary" style="color:var(--sub)">
+      <!-- role=status: these counts are the toolbar's answer to the Rescan
+           click beside them, and they updated silently for a screen reader
+           (Users toolbar-count pattern). -->
+      <span class="meta hide-m" v-if="data?.summary" role="status" style="color:var(--sub)">
         {{ t('health.passed') }} {{ finiteN(data.summary.ok) }} · {{ t('health.warnings') }} {{ finiteN(data.summary.warn) }} · {{ t('health.errors') }} {{ finiteN(data.summary.error) }}
         · {{ finiteN(data.summary.total) }}
       </span>
@@ -20,20 +23,23 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
-        <h3>{{ t('health.passed') }}</h3>
-        <div class="v" style="color:var(--ok)">{{ finiteN(data.summary.ok) }}</div>
+        <h2>{{ t('health.passed') }}</h2>
+        <div class="v" style="color:var(--ok-text)">{{ finiteN(data.summary.ok) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.warnings') }}</h3>
-        <div class="v" style="color:var(--warn)">{{ finiteN(data.summary.warn) }}</div>
+        <h2>{{ t('health.warnings') }}</h2>
+        <div class="v" style="color:var(--warn-text)">{{ finiteN(data.summary.warn) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.errors') }}</h3>
-        <div class="v" style="color:var(--down)">{{ finiteN(data.summary.error) }}</div>
+        <h2>{{ t('health.errors') }}</h2>
+        <div class="v" style="color:var(--down-text)">{{ finiteN(data.summary.error) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('health.overall') }}</h3>
-        <div class="v" style="font-size:16px">{{ data.healthy ? '✅ OK' : '⚠️' }}</div>
+        <h2>{{ t('health.overall') }}</h2>
+        <!-- Spell the state, not an emoji alone: the issues arm was a bare
+             "⚠️", announced as "warning sign" (or nothing) with no words and
+             no locale parity with the healthy arm. -->
+        <div class="v" style="font-size:16px">{{ data.healthy ? '✅ ' + t('common.healthy') : '⚠️ ' + t('common.issues') }}</div>
       </div>
     </div>
 
@@ -42,14 +48,25 @@
       <button :class="{ active: filter==='issues' }" :aria-pressed="filter === 'issues'" @click="filter='issues'">{{ t('health.only_issues') }}</button>
       <button :class="{ active: filter==='error' }" :aria-pressed="filter === 'error'" @click="filter='error'">{{ t('health.errors') }}</button>
       <button :class="{ active: filter==='warn' }" :aria-pressed="filter === 'warn'" @click="filter='warn'">{{ t('health.warnings') }}</button>
+      <!-- The tabs shrink the table below; announce the result like the text
+           filters do (filterCounts.test.js) — a sighted user watches rows
+           disappear, a screen-reader user otherwise hears nothing at all. -->
+      <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
+        {{ filtered.length }} / {{ (data?.checks || []).length }}
+      </span>
     </div>
 
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="7" :label="t('common.scanning')" />
-    <div v-else class="table-wrap">
+    <!-- On a failed *first* load nothing was fetched, so the banner stands
+         alone: the table used to render its column headers above nothing
+         (the empty-row is loadError-suppressed), claiming a scan that never
+         arrived.  Stale rows still stay on screen under the banner when a
+         later rescan fails (the LoadFailure contract — Services pattern). -->
+    <div v-else-if="(data?.checks || []).length || !loadError" class="table-wrap">
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th style="width:36px"></th>
+            <th style="width:36px"><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('health.check') }}</th>
             <th>{{ t('health.level') }}</th>
             <th class="col-hide-m">{{ t('health.detail') }}</th>
@@ -58,7 +75,9 @@
         </thead>
         <tbody>
           <tr v-for="c in filtered" :key="c.id">
-            <td><span class="led" :class="led(c)"></span></td>
+            <!-- aria-hidden: the LED repeats the Level badge's Pass/Warn/Error
+                 text in colour only (same as the Users admin LED). -->
+            <td><span class="led" :class="led(c)" aria-hidden="true"></span></td>
             <td>
               <strong>{{ finiteText(c.name) }}</strong>
               <div v-if="finiteText(errText(c.detail), '')" class="show-m sub">{{ finiteText(errText(c.detail)) }}</div>
@@ -71,7 +90,10 @@
             <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? finiteText(errText(c.fix)) : (c.ok ? '—' : '') }}</td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ loading ? t('common.scanning') : t('common.no_match') }}</td>
+            <!-- A level tab that misses and a scan that produced no checks
+                 are different answers: "no matching items" on an empty scan
+                 hid that there is nothing to filter (Logs/Services split). -->
+            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : ((data?.checks || []).length ? t('common.no_match') : t('health.empty')) }}</td>
           </tr>
         </tbody>
       </table>

@@ -60,16 +60,17 @@ function withDeadServer() {
 async function mountAgainstDeadServer(load) {
   withDeadServer()
   polls.callbacks.length = 0
+  const toast = vi.fn()
   const module = await load()
   const wrapper = mount(module.default, {
     global: {
-      provide: { toast: vi.fn() },
+      provide: { toast },
       stubs: { RouterLink: true, RouterView: true },
       mocks: { $route: { path: '/', query: {}, params: {} }, $router: { push: vi.fn() } },
     },
   })
   await flushPromises()
-  return wrapper
+  return { wrapper, toast }
 }
 
 function release(wrapper) {
@@ -88,6 +89,11 @@ describe('poll callbacks report a dead server to lib/poll.js', () => {
     { name: 'VMs', load: () => import('./VMs.vue'), pollers: 1 },
     { name: 'WireGuard', load: () => import('./WireGuard.vue'), pollers: 1 },
     { name: 'MainArray', load: () => import('./MainArray.vue'), pollers: 1 },
+    // The later sweep: Ollama (10s status), Alerts and Audit (30s each) poll
+    // through lib/poll too, and their ticks owe it the same false sentinel.
+    { name: 'Ollama', load: () => import('./Ollama.vue'), pollers: 1 },
+    { name: 'Alerts', load: () => import('./Alerts.vue'), pollers: 1 },
+    { name: 'Audit', load: () => import('./Audit.vue'), pollers: 1 },
   ]
 
   let wrapper
@@ -99,15 +105,23 @@ describe('poll callbacks report a dead server to lib/poll.js', () => {
 
   for (const { name, load, pollers } of CASES) {
     it(`${name} resolves every poll tick to false while the backend is unreachable`, async () => {
-      wrapper = await mountAgainstDeadServer(load)
+      const mounted = await mountAgainstDeadServer(load)
+      wrapper = mounted.wrapper
 
       // Guards the harness: a view that stopped registering its poll through
       // lib/poll.js would otherwise pass vacuously.
       expect(polls.callbacks.length).toBe(pollers)
 
+      // Background ticks must also stay quiet: backoff still leaves a failing
+      // tick every ~90s, and a page that toasts each one turns an outage into
+      // a stream of identical toasts (announced assertively by the screen
+      // reader). The on-screen LoadFailure banner already carries the state;
+      // only manual Refresh/retry clicks may toast.
+      mounted.toast.mockClear()
       for (const tick of polls.callbacks) {
         expect(await tick()).toBe(false)
       }
+      expect(mounted.toast).not.toHaveBeenCalled()
     })
   }
 })

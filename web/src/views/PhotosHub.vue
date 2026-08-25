@@ -24,7 +24,10 @@
         <a v-if="immichHref" class="btn-link" :href="finiteText(immichHref, '')" target="_blank" rel="noopener">Immich</a>
         <a v-if="panelHref" class="btn-link" :href="finiteText(panelHref, '')" target="_blank" rel="noopener">{{ t('photoshub.status_panel') }}</a>
       </template>
-      <span v-if="busy" class="meta">{{ t('photoshub.action_running', { action: actionLabel(busyAction) }) }}</span>
+      <!-- role=status: the actions run for seconds and disable the toolbar;
+           a sighted user watches this note, a screen-reader user otherwise
+           hears nothing until the finish toast (same as the Shares busy note). -->
+      <span v-if="busy" class="meta" role="status" aria-live="polite">{{ t('photoshub.action_running', { action: actionLabel(busyAction) }) }}</span>
     </div>
 
     <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
@@ -83,6 +86,11 @@
       <div v-else-if="tab === 'pending'" class="card-block" style="margin-bottom:14px" data-test="photoshub-pending">
         <div class="section-head">
           <h2>{{ t('photoshub.delete_title') }}</h2>
+          <!-- role=status: the count is Refresh-pending's and Remove's only
+               answer besides the tiles themselves, and it changed silently
+               for a screen reader — same treatment as the Files item count
+               and the Containers/VMs toolbar counts. -->
+          <span v-if="pending" class="meta-count" role="status" data-test="photoshub-pending-count">{{ t('photoshub.pending') }} {{ finiteN(pending.count) }}</span>
           <span class="meta">{{ t('photoshub.delete_hint') }}</span>
         </div>
         <div class="toolbar" style="margin-bottom:8px;flex-wrap:wrap">
@@ -94,8 +102,8 @@
             {{ t('photoshub.remove_selected') }} ({{ selected.length }})
           </button>
         </div>
-        <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down)" role="alert">{{ finiteText(pendingError) }}</p>
-        <p class="meta" v-if="pending?.gated || data?.gates?.allow_delete_channel === false" style="color:var(--warn)">
+        <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down-text)" role="alert">{{ finiteText(pendingError) }}</p>
+        <p class="meta" v-if="pending?.gated || data?.gates?.allow_delete_channel === false" style="color:var(--warn-text)">
           {{ t('photoshub.gated_warn') }}
         </p>
         <p v-if="(pending?.assets || []).length" class="meta select-all">
@@ -104,7 +112,10 @@
             {{ t('photoshub.select_all') }}
           </label>
         </p>
-        <p v-if="!pendingError && !(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty">
+        <!-- role=status: the scanning -> "no pending deletes" flip is the
+             whole outcome of an empty refresh and was paint-only (the Logs
+             empty/loading treatment). -->
+        <p v-if="!pendingError && !(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty" role="status">
           {{ pendingLoading ? t('common.scanning') : t('photoshub.no_pending') }}
         </p>
         <div v-else class="review-grid" data-test="photoshub-pending-grid">
@@ -138,21 +149,27 @@
       </div>
 
       <div v-else-if="tab === 'settings'" class="settings-grid" data-test="photoshub-settings">
-        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down)">{{ finiteText(settingsError) }}</p>
+        <!-- role="alert": the config read fails after the tab is already on
+             screen, and unlike pendingError below this one shipped silent. -->
+        <p v-if="settingsError" class="meta" data-test="photoshub-settings-error" style="grid-column:1/-1;color:var(--down-text)" role="alert">{{ finiteText(settingsError) }}</p>
         <div class="card-block">
           <div class="section-head">
             <h2>{{ t('photoshub.people_title') }}</h2>
             <span class="meta">{{ t('photoshub.people_hint') }}</span>
           </div>
+          <!-- No aria-label on these: each input already has a for/id label
+               carrying "child · field", and the shorter aria-label overrode it
+               — both birthday inputs were announced identically as "birthday"
+               with nothing saying whose. -->
           <div class="form-grid">
             <label for="ph-yuanbao-name">{{ t('photoshub.child_yuanbao') }} · {{ t('photoshub.person_name') }}</label>
-            <input id="ph-yuanbao-name" v-model="form.yuanbao_name" type="text" maxlength="40" :aria-label="t('photoshub.child_yuanbao')" />
+            <input id="ph-yuanbao-name" v-model="form.yuanbao_name" type="text" maxlength="40" />
             <label for="ph-yuanbao-bday">{{ t('photoshub.child_yuanbao') }} · {{ t('photoshub.birthday') }}</label>
-            <input id="ph-yuanbao-bday" v-model="form.yuanbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" :aria-label="t('photoshub.birthday')" />
+            <input id="ph-yuanbao-bday" v-model="form.yuanbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" />
             <label for="ph-erbao-name">{{ t('photoshub.child_erbao') }} · {{ t('photoshub.person_name') }}</label>
-            <input id="ph-erbao-name" v-model="form.erbao_name" type="text" maxlength="40" :aria-label="t('photoshub.child_erbao')" />
+            <input id="ph-erbao-name" v-model="form.erbao_name" type="text" maxlength="40" />
             <label for="ph-erbao-bday">{{ t('photoshub.child_erbao') }} · {{ t('photoshub.birthday') }}</label>
-            <input id="ph-erbao-bday" v-model="form.erbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" :aria-label="t('photoshub.birthday')" />
+            <input id="ph-erbao-bday" v-model="form.erbao_birthday" type="text" maxlength="10" placeholder="YYYY-MM" />
           </div>
         </div>
 
@@ -336,11 +353,14 @@ const tab = ref(initialTab())
 
 const ready = computed(() => Boolean(data.value?.photoshub_ok))
 const originalsLabel = computed(() => withUnit(data.value?.originals?.local_original_pct, '%'))
+// The -text tints, not the raw hues: this value lands as *ink* on the tile,
+// and --ok / --warn / --down are fill colours that fail AA as text
+// (contrast.test.js pins this computed's return values).
 const originalsColor = computed(() => {
   const p = finiteN(data.value?.originals?.local_original_pct, 0)
-  if (p >= 99) return 'var(--ok)'
-  if (p >= 50) return 'var(--warn)'
-  return 'var(--down)'
+  if (p >= 99) return 'var(--ok-text)'
+  if (p >= 50) return 'var(--warn-text)'
+  return 'var(--down-text)'
 })
 const allSelected = computed(() => {
   const assets = pending.value?.assets || []
@@ -350,7 +370,11 @@ const immichHref = computed(() => safeHttpUrl(data.value?.links?.immich))
 const panelHref = computed(() => safeHttpUrl(data.value?.links?.panel))
 const pendingCount = computed(() => {
   const n = finiteN(pending.value?.count, null)
-  return n == null ? null : n
+  if (n != null) return n
+  // The status payload already carries the delete-review count; until the
+  // operator opened the pending tab, the overview tile and the tab label
+  // showed "—" for a number the page had been handed all along.
+  return finiteN(data.value?.delete_review?.pending_count, null)
 })
 const externalIssue = computed(() => {
   const ext = data.value?.external_backup
@@ -663,10 +687,10 @@ onUnmounted(() => {
 
 <style scoped>
 .card-block {
-  background: var(--card, var(--panel, #fff));
+  background: var(--card);
   border-radius: 12px;
   padding: 14px 16px;
-  border: 1px solid var(--border, rgba(0,0,0,.06));
+  border: 1px solid var(--line);
 }
 .absent h2 { margin: 0 0 8px; font-size: 1.1rem; }
 .section-head {
@@ -711,7 +735,7 @@ onUnmounted(() => {
   align-items: center;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--line);
   text-decoration: none;
   color: inherit;
   font-size: 13px;
@@ -732,7 +756,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 4px;
   padding: 6px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--line);
   border-radius: 10px;
   cursor: pointer;
 }

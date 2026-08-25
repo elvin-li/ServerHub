@@ -3,11 +3,11 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from hub import __version__, alerts, backups, metrics, metrics_rollup, ollama_svc
-from hub.auth import auth_enabled
+from hub import __version__, alerts, audit, backups, metrics, metrics_rollup, ollama_svc
+from hub.auth import auth_enabled, request_client_id, request_username
 from hub.config import _YAML_CAP, cfg, settings_section, update_settings
 from hub.errors import api_error
 from hub.host_address import configured_host, host_ip
@@ -142,12 +142,20 @@ def _jsonable(value, depth: int = 0):
     theme, and a ``!!set`` groups_order each used to 500 GET /api/settings.
     A leftover ``\\ud800`` username or stack name still 500'd the same
     encoder (``ensure_ascii=False`` then UTF-8).
+    A >4300-digit stack port / groups entry still passed through untouched:
+    CPython's int->str digit limit then ValueError'd ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -194,6 +202,12 @@ def _finite(value, default):
     if isinstance(value, bool) or value is None:
         return default
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # A >4300-digit leftover interval is unrenderable by json.dumps
+            # (CPython's int->str digit cap) — fall back like inf.
+            return default
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -208,6 +222,11 @@ def _epoch(value, default: int = 0) -> int:
     if isinstance(value, bool) or value is None:
         return default
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # A >4300-digit epoch cannot be JSON-encoded (int->str digit cap).
+            return default
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -325,7 +344,7 @@ def get_settings():
 
 
 @router.put("/api/settings")
-def put_settings(body: SettingsPatch):
+def put_settings(body: SettingsPatch, request: Request = None):
     patch: dict[str, Any] = {}
     if body.host_ip is not None:
         patch["host_ip"] = body.host_ip.strip()
@@ -405,6 +424,18 @@ def put_settings(body: SettingsPatch):
     if not patch:
         raise api_error("settings.empty_patch")
     update_settings(patch)
+    if "notify" in patch:
+        # The HA notify config carries a credential (ha_token); a swap through
+        # this endpoint must leave the same trail a channel edit does.  Field
+        # names only — record() redaction would drop the values anyway.
+        audit.record(
+            audit.NOTIFY_SETTINGS_CHANGED,
+            # FastAPI always injects `request`; the None default only keeps
+            # direct in-process calls (tests, tooling) working.
+            username=request_username(request) if request is not None else "",
+            client=request_client_id(request),
+            fields=",".join(sorted(patch["notify"].keys())),
+        )
     if "ollama" in patch:
         ollama_svc.status.invalidate()
     if "resource_mode" in patch:
@@ -575,16 +606,34 @@ def get_backups():
     }
 
 
+def _audit_backup_run(kind: str, request: Request | None, result) -> None:
+    # A backup reads every byte it protects and writes it somewhere else;
+    # "who kicked off the postgres dump at 03:12" must be answerable.
+    audit.record(
+        audit.BACKUP_RUN,
+        username=request_username(request) if request is not None else "",
+        client=request_client_id(request),
+        kind=kind,
+        ok=bool(result.get("ok")) if isinstance(result, dict) else None,
+    )
+
+
 @router.post("/api/backups/postgres")
-def do_pg_backup():
-    return backups.backup_postgres()
+def do_pg_backup(request: Request = None):
+    result = backups.backup_postgres()
+    _audit_backup_run("postgres", request, result)
+    return result
 
 
 @router.post("/api/backups/immich")
-def do_immich_backup():
-    return backups.backup_immich()
+def do_immich_backup(request: Request = None):
+    result = backups.backup_immich()
+    _audit_backup_run("immich", request, result)
+    return result
 
 
 @router.post("/api/backups/configs")
-def do_cfg_backup():
-    return backups.backup_configs()
+def do_cfg_backup(request: Request = None):
+    result = backups.backup_configs()
+    _audit_backup_run("configs", request, result)
+    return result

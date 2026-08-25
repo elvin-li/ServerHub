@@ -6,7 +6,10 @@
         <div><h1>ServerHub</h1><p>{{ setupMode ? t('auth.first_setup') : t('auth.welcome_back') }}</p></div>
       </div>
 
-      <div v-if="loading" class="login-loading">{{ t('common.loading') }}</div>
+      <!-- role=status: the auth-status probe decides which form renders, and
+           the swap from this placeholder was silent for a screen reader
+           (Account 2FA-card / Settings launcher-placeholder pattern). -->
+      <div v-if="loading" class="login-loading" role="status">{{ t('common.loading') }}</div>
 
       <!-- Second sign-in step: the password was accepted but the account
            requires a TOTP code. No session cookie exists yet — only the
@@ -19,6 +22,7 @@
         <label>
           <span>{{ t('auth.totp_code') }}</span>
           <input
+            ref="totpCodeInput"
             v-model.trim="totpCode"
             class="totp-input"
             autocomplete="one-time-code"
@@ -69,7 +73,7 @@
         </label>
         <label>
           <span>{{ setupMode ? t('auth.create_password') : t('auth.password') }}</span>
-          <input v-model="password" type="password" :autocomplete="setupMode ? 'new-password' : 'current-password'" minlength="10" maxlength="256" required />
+          <input ref="passwordInput" v-model="password" type="password" :autocomplete="setupMode ? 'new-password' : 'current-password'" minlength="10" maxlength="256" required />
         </label>
         <label v-if="setupMode">
           <span>{{ t('auth.confirm_password') }}</span>
@@ -97,7 +101,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAuthStatus, getSetupToken, loginAuth, resetAuthLost, setupAuth, verifyTotpLogin } from '../api/client'
 import { applyAuthStatus } from '../lib/authState'
@@ -130,6 +134,18 @@ const error = ref('')
 const totpStep = ref(false)
 const totpPending = ref('')
 const totpCode = ref('')
+const totpCodeInput = ref(null)
+const passwordInput = ref(null)
+
+// Swapping between the password and code forms unmounts the control that held
+// focus (the submit / back button), which drops keyboard focus to <body> --
+// the `autofocus` attribute only applies on initial page load, so a keyboard
+// or screen-reader user is left stranded with no announcement that the step
+// changed. Move focus to the field the user must fill next.
+async function focusStepField(field) {
+  await nextTick()
+  if (pageAlive) field.value?.focus?.()
+}
 
 let pageAlive = true
 let loginGeneration = 0
@@ -233,6 +249,7 @@ async function submit() {
         password.value = ''
         totpStep.value = true
         if (pageAlive) busy.value = false
+        await focusStepField(totpCodeInput)
         return
       }
       rememberSession(result)
@@ -270,6 +287,7 @@ async function submitTotp() {
       totpStep.value = false
       totpPending.value = ''
       totpCode.value = ''
+      await focusStepField(passwordInput)
     }
   } finally {
     if (pageAlive && generation === loginGeneration) busy.value = false
@@ -283,6 +301,7 @@ function leaveTotpStep() {
   totpCode.value = ''
   error.value = ''
   busy.value = false
+  focusStepField(passwordInput)
 }
 </script>
 
@@ -329,7 +348,7 @@ label input { width: 100%; min-height: 44px; font-size: 16px; border-radius: 8px
   height: 0;
   overflow: hidden;
 }
-.login-error { color: var(--down); font-size: 12px; padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; animation: shake .3s ease; }
+.login-error { color: var(--down-text); font-size: 12px; padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; animation: shake .3s ease; }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-4px); }
@@ -340,15 +359,13 @@ label input { width: 100%; min-height: 44px; font-size: 16px; border-radius: 8px
   min-height: 40px; font-size: 13px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--card); color: var(--sub); cursor: pointer;
 }
-.totp-back:hover { background: var(--hover); }
 .login-foot { color: var(--sub); font-size: 11px; text-align: center; margin-top: 18px; }
 .login-loading { color: var(--sub); text-align: center; padding: 35px 0; }
-.token-card { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, var(--up) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--up) 20%, transparent); }
+.token-card { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, var(--ok) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--ok) 20%, transparent); }
 .token-label { font-size: 11px; color: var(--sub); font-weight: 600; white-space: nowrap; }
-.token-value { flex: 1; min-width: 0; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: transparent; border: none; padding: 0; color: var(--fg); word-break: break-all; user-select: all; }
-.token-copy { font-size: 11px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; white-space: nowrap; }
-.token-copy:hover { background: var(--hover); }
-.token-error { font-size: 12px; color: var(--down); padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; }
+.token-value { flex: 1; min-width: 0; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: transparent; border: none; padding: 0; color: var(--txt); word-break: break-all; user-select: all; }
+.token-copy { font-size: 11px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--line); background: var(--card); color: var(--txt); cursor: pointer; white-space: nowrap; }
+.token-error { font-size: 12px; color: var(--down-text); padding: 8px 10px; background: color-mix(in srgb, var(--down) 8%, transparent); border-radius: 5px; }
 .login-locale { margin-top: 12px; text-align: center; }
 .login-locale select { font-size: 12px; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); background: var(--card); color: var(--sub); cursor: pointer; }
 .login-locale select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }

@@ -95,6 +95,51 @@ class HostMutationTests(unittest.TestCase):
             + "\n".join(offenders),
         )
 
+    def test_mutable_state_is_redirected_out_of_the_checkout(self):
+        """tests/__init__.py must win the race with the first ``hub`` import.
+
+        hub.paths freezes STATE_ROOT / DATA_DIR / CONFIG_FILE at import time.
+        Without the package-level SERVERHUB_STATE_DIR redirection a full run
+        bootstraps services.yaml in the repo root and fills data/ with alert
+        state, metrics journals, services.yaml.bak.* and lock files -- host
+        mutations that .gitignore keeps invisible to `git status --porcelain`.
+        """
+        from hub import paths
+
+        for name in ("STATE_ROOT", "DATA_DIR", "CONFIG_FILE"):
+            value = Path(getattr(paths, name))
+            self.assertFalse(
+                value == BASE or BASE in value.parents,
+                f"hub.paths.{name} ({value}) resolved inside the checkout "
+                f"({BASE}); the suite would write panel state into the "
+                "working tree. tests/__init__.py sets SERVERHUB_STATE_DIR "
+                "before hub is imported, but it only runs when discovery "
+                "imports the tests *package*: run "
+                "`python -m unittest discover -s tests -t . -q` (note -t .).",
+            )
+
+    def test_home_derived_state_is_redirected_off_the_real_home(self):
+        """hub.backups mkdirs ~/Services/backups at import; other modules
+        derive ~/Services/* and ~/.cloudflared from Path.home() the same way.
+        tests/__init__.py points HOME into the per-run temp directory so a
+        suite run cannot create directories in the invoking user's home."""
+        import os
+        import pwd
+
+        if "SERVERHUB_TESTS_KEEP_HOME" in os.environ:
+            self.skipTest("HOME redirection explicitly disabled for this run")
+        from hub import backups
+
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        backup_root = Path(backups.BACKUP_ROOT).resolve()
+        self.assertFalse(
+            backup_root == real_home or real_home in backup_root.parents,
+            f"hub.backups.BACKUP_ROOT ({backup_root}) resolved inside the real "
+            f"home ({real_home}); importing hub.backups mkdirs it, so the "
+            "suite mutated the host. tests/__init__.py redirects HOME -- run "
+            "discovery with -t . so the tests package is imported.",
+        )
+
     def test_the_detector_catches_the_shape_it_exists_for(self):
         """The first block is the version that spawned real brew commands."""
         unsealed = ast.parse(

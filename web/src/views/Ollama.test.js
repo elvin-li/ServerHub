@@ -250,6 +250,31 @@ describe('loaded page', () => {
     })
     expect(save.attributes('disabled')).toBeUndefined()
   })
+
+  it('latches a failed settings read, blocks Save, and retry re-enables it', async () => {
+    // The old catch was fully silent and left Save enabled: the form had
+    // fallen back to the default URL and an *empty* label, so pressing Save
+    // wiped a configured LaunchAgent label — with a success toast.
+    getOllamaStatus.mockResolvedValue(STATUS)
+    getSettings.mockRejectedValueOnce(new Error('settings read failed'))
+    wrapper = mountPage()
+    await flushPromises()
+
+    const card = wrapper.get('[data-test="ollama-settings"]')
+    const failure = card.get('[data-test="ollama-settings-failed"]')
+    expect(failure.attributes('role')).toBe('alert')
+    expect(failure.text()).toContain('settings read failed')
+    const save = card.findAll('button').find(b => b.text() === 'common.save')
+    expect(save.attributes('disabled')).toBeDefined()
+    expect(putSettings).not.toHaveBeenCalled()
+
+    // Retry: the beforeEach getSettings mock answers this time.
+    await failure.findAll('button').find(b => b.text() === 'common.retry').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="ollama-settings-failed"]').exists()).toBe(false)
+    expect(save.attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('input[aria-label="ollama.settings_label"]').element.value).toBe('com.kiro.ollama')
+  })
 })
 
 describe('degraded states', () => {
@@ -290,6 +315,37 @@ describe('degraded states', () => {
     expect(html).not.toContain('ollama.resident_empty')
     const startBtn = wrapper.findAll('button').find(b => b.text() === 'services.act_start')
     expect(startBtn.attributes('disabled')).toBeUndefined()
+  })
+
+  it('blames a failed list read when the daemon answered but tags/ps did not', async () => {
+    // status() keeps reachable=true when /api/version answered and /api/tags
+    // or /api/ps then failed; the reason lands in `error`. The tables used to
+    // fall into the reachable branch and claim "no models" over a failed read
+    // — the same false-empty the unreachable branch already avoids.
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS, reachable: true, error: 'response is not json', models: [], resident: [],
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    const html = wrapper.html()
+    // The i18n mock does not interpolate params, so the key itself is the
+    // visible marker; the error text rides in as its {error} param.
+    expect(html).toContain('ollama.list_error')
+    expect(html).not.toContain('ollama.models_empty')
+    expect(html).not.toContain('ollama.resident_empty')
+    expect(html).not.toContain('ollama.daemon_unreachable')
+  })
+
+  it('still calls the lists empty when the daemon answered without error', async () => {
+    getOllamaStatus.mockResolvedValue({
+      ...STATUS, models: [], resident: [],
+    })
+    wrapper = mountPage()
+    await flushPromises()
+    const html = wrapper.html()
+    expect(html).toContain('ollama.models_empty')
+    expect(html).toContain('ollama.resident_empty')
+    expect(html).not.toContain('ollama.list_error')
   })
 
   it('surfaces a failed first load and drops the skeleton and empty states', async () => {

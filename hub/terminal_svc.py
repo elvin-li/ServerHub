@@ -28,6 +28,7 @@ from typing import Any
 
 from hub import cli_args, secure_io
 from hub.config import settings_section
+from hub.docker_cli import engine_up, looks_engine_down
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.util import iter_capped_lines, safe_json_loads, tail_file_lines, utf8_env
@@ -147,7 +148,9 @@ def _resolve_cwd(requested: str | None) -> str:
     command against a directory that has since been deleted.
     """
     for candidate in (requested, _terminal_cfg().get("cwd"), _home_dir()):
-        value = str(candidate or "").strip()
+        # _config_text: a leftover hex-int cwd from YAML used to ValueError
+        # the bare str() here (POST /api/terminal/run and the PTY handshake).
+        value = _config_text(candidate or "").strip()
         if not value:
             continue
         try:
@@ -165,6 +168,26 @@ def _terminal_cfg() -> dict:
     return dict(settings_section("terminal"))
 
 
+def _config_text(value) -> str:
+    """``str(value)`` for a config scalar, or "" when it cannot be rendered.
+
+    YAML ``0xFFF…`` loads as an int past CPython's 4300-digit str cap (hex
+    parsing has no digit limit), so a bare ``str()`` on a leftover
+    ``settings.terminal.cwd``/``shell`` raised ValueError before any sanitizer
+    ran — a 500 on GET /api/terminal and POST /api/terminal/run.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return str(value)
+    except Exception:
+        # ValueError past the digit cap; RecursionError from a leftover
+        # self-referencing __str__.  Either way the scalar is unusable.
+        return ""
+
+
 def host_enabled() -> bool:
     """True when the operator has explicitly switched the host shell on."""
     return bool(_terminal_cfg().get("host_enabled", False))
@@ -173,11 +196,14 @@ def host_enabled() -> bool:
 def status() -> dict:
     """What the Terminal page needs to render its target picker."""
     tc = _terminal_cfg()
-    cwd = tc.get("cwd")
+    # _config_text: a leftover YAML ``cwd: 0xFFF…`` is an int past the 4300
+    # digit str cap — the bare str() 500'd GET /api/terminal before the
+    # payload ever reached the sanitizer.  Unrenderable values fall back.
+    cwd = _config_text(tc.get("cwd") or "")
     payload = {
         "host_enabled": host_enabled(),
-        "shell": str(tc.get("shell") or _default_shell()),
-        "cwd": str(cwd) if cwd else _home_dir(),
+        "shell": _config_text(tc.get("shell") or "") or _default_shell(),
+        "cwd": cwd or _home_dir(),
         "default_timeout": DEFAULT_TIMEOUT,
         "max_timeout": MAX_TIMEOUT,
         # Advertised so the UI can explain *why* the host tab is locked without
@@ -209,6 +235,11 @@ def _default_shell() -> str:
 #: and recent_audit() reads the whole file per history request.
 _AUDIT_MAX_BYTES = 512 * 1024
 _AUDIT_KEEP_LINES = 1000
+#: Serialises append + trim.  The trim is a read-tail-then-rename; a command
+#: audited by another request thread inside that window vanished with the
+#: temp-file swap, and this trail is the only record of what was typed into
+#: a root-capable shell.
+_AUDIT_LOCK = threading.Lock()
 
 
 def _now() -> int:
@@ -217,6 +248,22 @@ def _now() -> int:
         return int(time.time())
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _duration_ms(started, ended) -> int:
+    """Finite non-negative milliseconds between two clock reads.
+
+    Leftover ``time.time() = inf`` made the elapsed time nan/inf here:
+    ``int(nan)`` is ValueError and ``int(inf)`` OverflowError, which used to
+    500 POST /api/terminal/run *after* the command had already executed — and
+    the same math in the PTY / VM-console end audits raised out of a
+    ``finally``, skipping the session release and the socket close.
+    """
+    try:
+        ms = int((ended - started) * 1000)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return ms if ms >= 0 else 0
 
 
 def _utf8_text(value) -> str:
@@ -249,6 +296,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -302,23 +355,29 @@ def _audit(entry: dict[str, Any]) -> None:
         # operator typed into a root-capable shell, which is the one thing in it
         # that cannot be un-leaked.  Create-if-absent rather than write, because
         # write_secret_text opens with O_TRUNC and would empty the trail.
-        secure_io.create_secret_text(AUDIT_PATH, "")
-        secure_io.append_text(
-            AUDIT_PATH,
-            json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str) + "\n",
-            mode=0o600,
-        )
-        os.chmod(AUDIT_PATH, 0o600)
-        if AUDIT_PATH.stat().st_size > _AUDIT_MAX_BYTES:
-            # Tail + atomic replace: a full slurp of a 512KB+ trail was
-            # pointless, and write_secret_text (O_TRUNC) emptied the log
-            # if the process died mid-rewrite.
-            lines = tail_file_lines(
-                AUDIT_PATH, _AUDIT_KEEP_LINES, max_bytes=_AUDIT_MAX_BYTES
+        # The locks cover append *and* trim: without them, a line appended by
+        # a concurrent request between the tail-read and the rename was lost.
+        # The flock matters beyond this interpreter: the packaged .app and
+        # the LaunchAgent panel share one data/, and a trim in one process
+        # used to swap away a command line the other had just appended.
+        with _AUDIT_LOCK, secure_io.file_lock(AUDIT_PATH):
+            secure_io.create_secret_text(AUDIT_PATH, "")
+            secure_io.append_text(
+                AUDIT_PATH,
+                json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str) + "\n",
+                mode=0o600,
             )
-            secure_io.replace_secret_text(
-                AUDIT_PATH, "\n".join(lines) + ("\n" if lines else "")
-            )
+            os.chmod(AUDIT_PATH, 0o600)
+            if AUDIT_PATH.stat().st_size > _AUDIT_MAX_BYTES:
+                # Tail + atomic replace: a full slurp of a 512KB+ trail was
+                # pointless, and write_secret_text (O_TRUNC) emptied the log
+                # if the process died mid-rewrite.
+                lines = tail_file_lines(
+                    AUDIT_PATH, _AUDIT_KEEP_LINES, max_bytes=_AUDIT_MAX_BYTES
+                )
+                secure_io.replace_secret_text(
+                    AUDIT_PATH, "\n".join(lines) + ("\n" if lines else "")
+                )
     except (OSError, ValueError, TypeError, OverflowError, UnicodeError, RecursionError):
         # RecursionError: leftover nested terminal audit after _jsonable is not
         # ValueError; POST /api/terminal/run used to 500 after the command ran.
@@ -449,7 +508,7 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
         "stdout": out,
         "stderr": err,
         "truncated": out_clipped or err_clipped,
-        "duration_ms": int((time.time() - started) * 1000),
+        "duration_ms": _duration_ms(started, time.time()),
     }
 
 
@@ -500,7 +559,9 @@ def run_host(
     cmd = _check_command(command)
     secs = _clamp_timeout(timeout)
     tc = _terminal_cfg()
-    shell = str(tc.get("shell") or _default_shell())
+    # _config_text: a leftover hex-int shell from YAML used to ValueError the
+    # bare str() here, 500'ing the run before the command ever started.
+    shell = _config_text(tc.get("shell") or "") or _default_shell()
     start_cwd = _resolve_cwd(cwd)
 
     result = _run([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd)
@@ -549,7 +610,9 @@ def run_container(
     name = cli_args.require_positional(name, label="container name")
     cmd = _check_command(command)
     secs = _clamp_timeout(timeout)
-    sh = (shell or "/bin/sh").strip() or "/bin/sh"
+    # ``container`` and ``target`` already tolerate leftover non-str values;
+    # a non-str shell used to AttributeError on .strip() here.
+    sh = (shell if isinstance(shell, str) else "").strip() or "/bin/sh"
     # A container path cannot be validated from the host, so pass it through and
     # let the shell fall back to its own default if the directory is gone.
     start_cwd = str(cwd or "").strip()
@@ -570,6 +633,18 @@ def run_container(
         "rc": result["rc"],
         "duration_ms": result["duration_ms"],
     })
+    if (
+        result["rc"] != 0
+        and looks_engine_down(f"{result.get('stderr') or ''}\n{result.get('stdout') or ''}")
+        and not engine_up(force=True)
+    ):
+        # A dead daemon used to be presented as the command's own output
+        # (raw untranslated stderr).  Coded 503 like the Containers page;
+        # raised after the audit line so the trail still records the attempt.
+        # The probe is forced (5s memo) and only runs on this failure path —
+        # a command whose own output quotes these strings while the engine
+        # answers "up" keeps its output verbatim.
+        raise api_error("container.engine_down")
     result["target"] = "container"
     result["container"] = name
     result["cwd"] = end_cwd

@@ -24,6 +24,10 @@
       <button class="primary" @click="refresh" :disabled="busy">{{ t('common.refresh') }}</button>
       <button class="primary" :disabled="busy" @click="showRun=true">{{ t('docker.create') }}</button>
       <input v-model="q" type="text" :placeholder="t('docker.filter_ph')" style="min-width:140px"  :aria-label="t('docker.filter_ph')"/>
+      <!-- role=status: the count is the only feedback the filter box and the
+           hide-system toggle give, and it changed silently for a screen
+           reader. Same pattern as the Services filter count. -->
+      <span class="meta-count" role="status">{{ filteredContainers.length }} / {{ containers.length }}</span>
       <button :disabled="busy" @click="doAll('start')">{{ t('docker.start_all') }}</button>
       <button :disabled="busy" @click="doAll('stop')">{{ t('docker.stop_all') }}</button>
       <button :disabled="busy" @click="doAll('pause')">{{ t('docker.pause_all') }}</button>
@@ -58,12 +62,22 @@
       <pre v-if="jobLog" class="log" style="max-height:160px;margin-top:6px" role="log" aria-live="polite">{{ finiteText(jobLog) }}</pre>
     </div>
 
+    <!-- The banner is not part of the chain below: when a 20s re-poll fails
+         the rows the operator was reading stay on screen under it instead of
+         being replaced wholesale (the LoadFailure contract — same as Alerts
+         and the Users accounts table). Only a failed *first* load, with
+         nothing fetched yet, renders the banner alone. -->
     <LoadFailure v-if="listError" :detail="listError" :retry="refresh" :busy="busy" />
-    <SkeletonLoader v-else-if="!data" :cols="7" :rows="6" />
+    <SkeletonLoader v-if="!data && !listError" :cols="7" :rows="6" />
     <!-- Only claim the engine is down once a reply actually said so. -->
-    <div v-else-if="!data.engine_up" class="placeholder">{{ t('docker.engine_off') }}</div>
+    <div v-else-if="data && !data.engine_up" class="placeholder">{{ t('docker.engine_off') }}</div>
 
-    <template v-else-if="tab==='containers'">
+    <template v-else-if="data && tab==='containers'">
+      <!-- An empty engine and a filter that misses are different answers
+           (Tools/Scheduler pattern): before this the tab rendered nothing at
+           all — no table, no message — for either state. -->
+      <div v-if="!containers.length" class="placeholder">{{ t('docker.no_containers') }}</div>
+      <div v-else-if="!filteredContainers.length" class="placeholder">{{ t('common.no_match') }}</div>
       <template v-for="grp in displayGroups" :key="grp.name">
         <h2 v-if="groupByProject" class="section-title">
           {{ finiteText(grp.name) }}
@@ -73,8 +87,8 @@
           <table class="dense fit-m">
             <thead>
               <tr>
-                <th style="width:28px"><input type="checkbox" :checked="allSelected(grp.items)" @change="toggleAll(grp.items, $event)" /></th>
-                <th></th>
+                <th style="width:28px"><input type="checkbox" :checked="allSelected(grp.items)" :aria-label="t('common.select_all')" @change="toggleAll(grp.items, $event)" /></th>
+                <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
                 <th>{{ t('docker.app') }}</th>
                 <th class="col-hide-m">{{ t('docker.version_update') }}</th>
                 <th class="col-hide-m">{{ t('docker.network') }}</th>
@@ -90,12 +104,21 @@
             </thead>
             <tbody>
               <tr v-for="c in grp.items" :key="c.id">
-                <td><input type="checkbox" :value="c.id" v-model="selected" /></td>
-                <td><span class="led" :class="ledClass(c)"></span></td>
+<!-- Named after the container (Files/Services row-checkbox pattern):
+                     anonymous checkboxes cannot be told apart in a form-controls list. -->
+                <td><input type="checkbox" :value="c.id" v-model="selected" :aria-label="t('common.select_row_name', { name: finiteText(c.name, '') || finiteText(c.id) })" /></td>
+                <!-- The LED is the row's whole status signal on mobile (the
+                     uptime column is col-hide-m); colour alone says nothing to
+                     a screen reader, so hide the paint and spell the state —
+                     same treatment as the Network binding and Dashboard rows. -->
+                <td>
+                  <span class="led" :class="ledClass(c)" aria-hidden="true"></span>
+                  <span class="sr-only">{{ ledText(c) }}</span>
+                </td>
                 <td style="max-width:260px">
                   <strong>{{ finiteText(c.name) }}</strong>
                   <span v-if="c.sandbox" class="badge" style="background:var(--bar-track);color:var(--sub)">pause</span>
-                  <span v-else-if="c.system" class="badge" style="background:#6366f133;color:#818cf8">k8s</span>
+                  <span v-else-if="c.system" class="badge" style="background:color-mix(in srgb, #6366f1 20%, transparent);color:color-mix(in srgb, #6366f1 40%, var(--txt))">k8s</span>
                   <div
                     class="mono"
                     style="color:var(--sub);font-size:10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
@@ -174,7 +197,7 @@
       </template>
     </template>
 
-    <template v-else-if="tab==='images'">
+    <template v-else-if="data && tab==='images'">
       <div class="toolbar">
         <input v-model="pullImage" type="text" :placeholder="t('docker.pull_ph')" style="min-width:200px"  :aria-label="t('docker.pull_ph')"/>
         <button class="primary" :disabled="busy || !pullImage.trim()" @click="doPull">{{ t('docker.pull') }}</button>
@@ -200,13 +223,13 @@
                 <button class="tiny danger" :disabled="busy" @click="rmi(im)">{{ t('docker.remove') }}</button>
               </td>
             </tr>
-            <tr v-if="!images.length && !subError.images"><td colspan="6" style="color:var(--sub)">{{ t('docker.no_images') }}</td></tr>
+            <tr v-if="!images.length && !subError.images"><td colspan="6" class="empty-row">{{ t('docker.no_images') }}</td></tr>
           </tbody>
         </table>
       </div>
     </template>
 
-    <template v-else-if="tab==='volumes'">
+    <template v-else-if="data && tab==='volumes'">
       <div class="toolbar">
         <input v-model="newVol" type="text" :placeholder="t('docker.new_vol_ph')" style="min-width:160px"  :aria-label="t('docker.new_vol_ph')"/>
         <button class="primary" :disabled="busy || !newVol.trim()" @click="createVol">{{ t('docker.create_vol') }}</button>
@@ -230,13 +253,13 @@
                 <button class="tiny danger" :disabled="busy" @click="rmVol(v)">{{ t('docker.remove') }}</button>
               </td>
             </tr>
-            <tr v-if="!volumes.length && !subError.volumes"><td colspan="4" style="color:var(--sub)">{{ t('docker.no_volumes') }}</td></tr>
+            <tr v-if="!volumes.length && !subError.volumes"><td colspan="4" class="empty-row">{{ t('docker.no_volumes') }}</td></tr>
           </tbody>
         </table>
       </div>
     </template>
 
-    <template v-else-if="tab==='networks'">
+    <template v-else-if="data && tab==='networks'">
       <div class="toolbar">
         <input v-model="newNet" type="text" :placeholder="t('docker.new_net_ph')" style="min-width:160px"  :aria-label="t('docker.new_net_ph')"/>
         <button class="primary" :disabled="busy || !newNet.trim()" @click="createNet">{{ t('docker.create_net') }}</button>
@@ -267,13 +290,13 @@
                 <span v-else class="sub">{{ t('docker.builtin') }}</span>
               </td>
             </tr>
-            <tr v-if="!networks.length && !subError.networks"><td colspan="5" style="color:var(--sub)">{{ t('docker.no_networks') }}</td></tr>
+            <tr v-if="!networks.length && !subError.networks"><td colspan="5" class="empty-row">{{ t('docker.no_networks') }}</td></tr>
           </tbody>
         </table>
       </div>
     </template>
 
-    <template v-else-if="tab==='engine'">
+    <template v-else-if="data && tab==='engine'">
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
         <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">
           {{ t('docker.engine_hint') }}
@@ -379,7 +402,7 @@
           <label>{{ t('docker.command') }}</label>
           <input v-model="runForm.command" type="text" :placeholder="t('docker.optional_ph')"  :aria-label="t('docker.optional_ph')"/>
           <label>{{ t('docker.privileged') }}</label>
-          <input type="checkbox" v-model="runForm.privileged" />
+          <input type="checkbox" v-model="runForm.privileged" :aria-label="t('docker.privileged')" />
         </div>
         <div class="btns" style="margin-top:14px">
           <button class="primary" :disabled="busy || !runForm.image.trim()" @click="doRun">{{ t('docker.create_start') }}</button>
@@ -535,6 +558,9 @@ const filteredContainers = computed(() => {
 
 const displayGroups = computed(() => {
   const list = filteredContainers.value
+  // The empty and filter-miss placeholders own the no-rows case; an empty
+  // "All" table with only headers under them would just restate it.
+  if (!list.length) return []
   if (!groupByProject.value) return [{ name: t('common.all'), items: list }]
   const map = {}
   for (const c of list) {
@@ -551,6 +577,15 @@ function ledClass(c) {
   if (c.state === 'warn') return 'warn'
   if (c.state === 'stopped') return 'off'
   return 'err'
+}
+// The sr-only twin of ledClass, in words. Existing keys only: the engine tab
+// already says Paused, and the page header already says Running/Stopped.
+function ledText(c) {
+  if (c.raw_state === 'paused') return t('docker.paused')
+  if (c.state === 'ok') return t('common.running')
+  if (c.state === 'warn') return t('common.warn')
+  if (c.state === 'stopped') return t('common.stopped')
+  return t('common.error')
 }
 function shortImage(img) {
   const s = String(finiteText(img, ''))
@@ -586,7 +621,7 @@ function toggleAll(items, ev) {
 
 let listGeneration = 0
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = ++listGeneration
   try {
     const next = await getContainers(true)
@@ -598,7 +633,10 @@ async function refresh() {
     // Without this, a failed list read left `data` null and the page rendered
     // "engine is not running" — blaming Docker for what was an API failure.
     listError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // Background 20s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // Button and retry clicks pass their event as `manual`, so those still toast.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   }

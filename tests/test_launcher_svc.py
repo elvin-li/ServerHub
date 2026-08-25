@@ -337,6 +337,8 @@ class LauncherServiceTests(unittest.TestCase):
                 "hub.launcher_svc.schedule_panel_action",
                 return_value={"ok": True, "message": "panel restart scheduled"},
             ) as panel_action,
+            # The routes are audited; keep fixture lines out of the real trail.
+            patch("hub.routers.launcher_api.audit.record"),
         ):
             responses = [
                 asgi_request("POST", "/api/launcher/open"),
@@ -1225,6 +1227,8 @@ class LauncherServiceTests(unittest.TestCase):
             patch("hub.launcher_svc.open_app", return_value={"ok": True}) as open_app,
             patch("hub.launcher_svc.set_login_enabled", return_value={"ok": True}) as set_login,
             patch("hub.launcher_svc.schedule_panel_action", return_value={"ok": True}) as panel_action,
+            # The routes are audited; keep fixture lines out of the real trail.
+            patch("hub.routers.launcher_api.audit.record"),
         ):
             self.assertTrue(launcher_open(request())["ok"])
             self.assertTrue(launcher_login(LoginItemPatch(enabled=False), request())["ok"])

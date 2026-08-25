@@ -37,14 +37,17 @@
       <button @click="openConf" :disabled="busy">{{ t('wg.view_conf') }}</button>
       <button @click="ping" :disabled="busy || !data?.running">{{ t('wg.ping') }}</button>
       <span class="toolbar-grow"></span>
-      <button class="primary subtle" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
+      <!-- Neutral, not a dimmed `.primary`: Start/Stop is this toolbar's one
+           primary action, and the 65% opacity that used to hold Refresh back
+           took its label down to 2.5:1. -->
+      <button @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
     </div>
 
     <LoadFailure v-if="loadError && !data" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-else-if="!loaded" variant="tiles" :rows="4" :span="3" :tile-height="52" />
     <!-- Not installed: nothing else on this page can work, so say only that. -->
     <div v-else-if="data && !data.installed" class="tile" style="border-left:3px solid var(--down)">
-      <h3>{{ t('wg.not_installed_title') }}</h3>
+      <h2>{{ t('wg.not_installed_title') }}</h2>
       <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
         {{ t('wg.not_installed_hint') }}
       </p>
@@ -59,7 +62,7 @@
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--down)"
       >
-        <h3>{{ t('wg.not_ready') }}</h3>
+        <h2>{{ t('wg.not_ready') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
           {{ t('wg.not_ready_hint') }}
         </p>
@@ -114,7 +117,7 @@
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--warn)"
       >
-        <h3>{{ t('wg.warnings') }}</h3>
+        <h2>{{ t('wg.warnings') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 8px">
           {{ t('wg.warnings_hint') }}
         </p>
@@ -171,7 +174,7 @@
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--warn)"
       >
-        <h3>{{ t('wg.foreign_peers_title') }}</h3>
+        <h2>{{ t('wg.foreign_peers_title') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
           {{ t('wg.foreign_peers_hint', { n: finiteN(readiness.peer_origin.foreign), total: finiteN(readiness.peer_origin.total) }) }}
         </p>
@@ -179,30 +182,32 @@
 
       <div class="dash-grid" style="margin-bottom:12px" v-if="data">
         <div class="tile span-3">
-          <h3>{{ t('wg.listen_port') }}</h3>
+          <h2>{{ t('wg.listen_port') }}</h2>
           <div class="v">{{ finiteN(data.listen_port) }}</div>
           <div class="sub">{{ finiteText(data.interface) }}</div>
         </div>
         <div class="tile span-3">
-          <h3>{{ t('wg.subnet') }}</h3>
+          <h2>{{ t('wg.subnet') }}</h2>
           <div class="v" style="font-size:15px">{{ finiteText(data.address, '') || finiteText(data.subnet) }}</div>
           <div class="sub">MTU {{ finiteN(data.mtu) }}</div>
         </div>
         <div class="tile span-3">
-          <h3>{{ t('wg.active_peers') }}</h3>
+          <h2>{{ t('wg.active_peers') }}</h2>
           <div class="v">{{ finiteN(data.active_count) }}/{{ finiteN(data.peer_count) }}</div>
           <div class="sub" v-if="data.stale_count">{{ t('wg.stale', { n: finiteN(data.stale_count, 0) }) }}</div>
         </div>
         <div class="tile span-3">
-          <h3>{{ t('wg.keepalive_missing') }}</h3>
-          <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn)' : 'var(--ok)' }">
+          <h2>{{ t('wg.keepalive_missing') }}</h2>
+          <!-- -text tints, not the raw hues: --warn / --ok are fill colours
+               and fail AA as ink (contrast.test.js pins the binding shape). -->
+          <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn-text)' : 'var(--ok-text)' }">
             {{ finiteN(data.keepalive_missing) }}
           </div>
         </div>
       </div>
 
       <div class="tile" style="margin-bottom:12px" v-if="data">
-        <h3>{{ t('wg.server_key') }}</h3>
+        <h2>{{ t('wg.server_key') }}</h2>
         <div class="mono" style="font-size:11px;word-break:break-all">{{ finiteText(data.public_key) }}</div>
         <div class="sub" style="margin-top:6px">
           {{ t('wg.endpoint') }}:
@@ -217,7 +222,7 @@
         v-if="data?.wstunnel?.configured || data?.wstunnel?.running || data?.wstunnel?.enabled"
       >
         <div class="row" style="margin-bottom:6px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('wg.wstunnel_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('wg.wstunnel_title') }}</h2>
           <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
             {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
           </span>
@@ -279,7 +284,7 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th style="width:28px"></th>
+              <th style="width:28px"><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('wg.peer_name') }}</th>
               <th>{{ t('wg.address') }}</th>
               <th class="col-hide-m">{{ t('wg.remote_endpoint') }}</th>
@@ -334,7 +339,7 @@
               </td>
             </tr>
             <tr v-if="!(data?.peers || []).length">
-              <td colspan="8" style="color:var(--sub)">{{ loading ? t('common.loading') : t('wg.no_peers') }}</td>
+              <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('wg.no_peers') }}</td>
             </tr>
           </tbody>
         </table>
@@ -379,7 +384,7 @@
       <!-- Batch + import -->
       <div class="dash-grid" style="margin-top:12px">
         <div class="tile span-6">
-          <h3>{{ t('wg.batch_add') }}</h3>
+          <h2>{{ t('wg.batch_add') }}</h2>
           <div class="form-row">
             <label>
               {{ t('wg.batch_count') }}
@@ -395,7 +400,7 @@
           </button>
         </div>
         <div class="tile span-6">
-          <h3>{{ t('wg.import_peer') }}</h3>
+          <h2>{{ t('wg.import_peer') }}</h2>
           <div class="form-row">
             <label>
               {{ t('wg.public_key') }}
@@ -420,12 +425,19 @@
       </div>
 
       <div v-if="pingResult" class="tile" style="margin-top:12px">
-        <h3>{{ t('wg.ping_result', { ok: finiteN(pingResult.reachable), total: finiteN(pingResult.total) }) }}</h3>
+        <h2>{{ t('wg.ping_result', { ok: finiteN(pingResult.reachable), total: finiteN(pingResult.total) }) }}</h2>
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
             <tr v-for="r in pingResult.results" :key="r.pubkey">
-              <td style="width:28px"><span class="led" :class="r.reachable ? 'on' : 'err'"></span></td>
+              <!-- Spell the per-row outcome, not just the LED colour: unlike
+                   the peers table there is no textual badge here, so a screen
+                   reader heard name and IP with nothing saying whether the
+                   ping came back (same fix as the Network binding table). -->
+              <td style="width:28px">
+                <span class="led" :class="r.reachable ? 'on' : 'err'"></span>
+                <span class="sr-only">{{ r.reachable ? t('wg.reachable') : t('wg.unreachable') }}</span>
+              </td>
               <td>{{ finiteText(r.name, '') || t('wg.unnamed') }}</td>
               <td class="mono">{{ finiteText(r.ip) }}</td>
               <td class="mono">{{ withUnit(r.latency_ms, ' ms') }}</td>
@@ -452,14 +464,17 @@
         <p v-if="peerFormat === 'wst'" style="font-size:11px;color:var(--sub);line-height:1.5;margin:0 0 8px">
           {{ t('wg.wstunnel_client_hint') }}
         </p>
-        <p v-else-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn);line-height:1.5;margin:0 0 8px">
+        <p v-else-if="!peerDialog.endpoint_configured" style="font-size:11px;color:var(--warn-text);line-height:1.5;margin:0 0 8px">
           {{ t('wg.endpoint_missing_warn') }}
         </p>
         <pre class="mono" style="max-height:180px;overflow:auto;font-size:11px">{{ finiteText(peerContent) }}</pre>
         <!-- The QR must never be the thing that gets clipped: give it its own
              bounded, centred box with a white quiet zone so a phone camera can
              actually resolve it against a dark theme. -->
-        <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>
+        <!-- aria-hidden: the QR encodes exactly the config shown in the <pre>
+             above and offered by Copy/Download, so for a screen reader it is
+             a duplicate with no name, announced as an anonymous graphic. -->
+        <div v-if="qrSvg" class="wg-qr" aria-hidden="true" v-html="qrSvg"></div>
         <p v-else-if="qrTooLong" style="font-size:11px;color:var(--sub);margin-top:8px">
           {{ t('wg.qr_too_long') }}
         </p>
@@ -498,6 +513,7 @@
           v-if="!settingsLoaded"
           class="tile"
           style="margin-bottom:10px;border-left:3px solid var(--down)"
+          role="alert"
         >
           <div>{{ t('wg.settings_load_failed') }}</div>
           <div v-if="settingsError" class="sub mono" style="margin-top:4px">{{ finiteText(settingsError) }}</div>
@@ -760,7 +776,7 @@ let poll = null
 // one and overwriting fresher state.
 let loadGeneration = 0
 
-async function load() {
+async function load(manual = false) {
   const generation = ++loadGeneration
   loading.value = true
   try {
@@ -787,7 +803,10 @@ async function load() {
   } catch (e) {
     if (generation !== loadGeneration) return
     loadError.value = e.message || String(e)
-    toast('❌ ' + finiteText(e.message))
+    // Background 20s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // The Refresh/retry buttons pass their click event as `manual`.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     // A superseded request (generation moved on) stays neutral: the newer
     // request will report its own outcome.
@@ -1075,8 +1094,6 @@ onUnmounted(() => {
 .wg-stop.danger { background: color-mix(in srgb, var(--down) 85%, #000); border-color: var(--down); color: #fff; }
 .wg-stop.danger:hover { background: var(--down); }
 .wg-restart { min-width: 80px; }
-button.subtle { opacity: .65; }
-button.subtle:hover { opacity: 1; }
 
 /* A QR code is only useful if the whole symbol is visible and has a light quiet
    zone. The generated SVG is scalable (viewBox, no width/height), so it needs an

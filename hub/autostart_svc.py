@@ -305,20 +305,33 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
             timeout=120, env=_brew_env(), cap=2000,
         )
         msg = _as_text(msg).strip()
-        # `brew services start/stop` is exactly what the shared snapshot
-        # reports on, so the cached copy is stale the moment this returns.
-        invalidate_brew_services()
-        # stop unloads agent → no login start; start loads with RunAtLoad
-        return {
-            "ok": rc == 0,
-            "message": msg or f"brew services {action} {name}",
-            "autostart": enabled if rc == 0 else None,
-        }
     except RecursionError:
         # leftover ``str(e)`` RecursionError is not OSError; PUT brew autostart used to 500.
         return {"ok": False, "message": "action failed"}
     except Exception as e:
         return {"ok": False, "message": _as_text(e) or "action failed"}
+    if rc == -1 and msg == "not found":
+        # run_capped reports a FileNotFoundError spawn as (-1, "not found") —
+        # a sentinel, never a real brew exit.  Homebrew vanished between the
+        # _is_file(BREW) gate above and the spawn, so answer with the same
+        # coded 503 that gate raises instead of the uncoded {ok: false,
+        # message: "not found"} the SPA cannot translate (the exact leftover
+        # brew_svc.brew_service_action already fixed; this sibling call kept
+        # it).  Sits outside the try above so the broad except cannot swallow
+        # the raise into that uncoded shape.  Confirmed against the
+        # filesystem, mirroring the docker classifiers' forced engine probe:
+        # a brew that is still present keeps its raw result.
+        if not _is_file(Path(BREW)):
+            raise api_error("brew.not_found")
+    # `brew services start/stop` is exactly what the shared snapshot
+    # reports on, so the cached copy is stale the moment this returns.
+    invalidate_brew_services()
+    # stop unloads agent → no login start; start loads with RunAtLoad
+    return {
+        "ok": rc == 0,
+        "message": msg or f"brew services {action} {name}",
+        "autostart": enabled if rc == 0 else None,
+    }
 
 
 # ─── LaunchAgents (user) ─────────────────────────────────────────────────────

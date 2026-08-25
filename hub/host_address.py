@@ -32,6 +32,12 @@ _cache_lock = threading.Lock()
 _detect_refresh_lock = threading.Lock()
 _detect_cache: dict[str, Any] = {"t": 0.0, "value": None}
 _DETECT_TTL = 30.0
+#: Bumped by `invalidate_routing`.  Because the refresh deliberately runs
+#: outside `_cache_lock`, an invalidate can land in the middle of one -- and
+#: every caller of `invalidate_routing` has just changed the very address being
+#: detected.  Publishing the pre-change answer over it would report the address
+#: the operator replaced for another thirty seconds.
+_detect_generation = 0
 
 
 def _as_text(value) -> str:
@@ -179,9 +185,11 @@ def invalidate_routing() -> None:
     DNS server, the service order or an alias already reaches.  Without it those
     handlers would re-read and report the configuration they replaced.
     """
+    global _detect_generation
     _default_route_fields.invalidate()
     _interface_address.invalidate()
     with _cache_lock:
+        _detect_generation += 1
         _detect_cache.update(t=0.0, value=None)
 
 
@@ -227,6 +235,8 @@ def detect_lan_ip(*, force: bool = False) -> str:
 
 
 def _detect_lan_ip_uncached(now: float, *, force: bool = False) -> str:
+    with _cache_lock:
+        began = _detect_generation
     candidates: list[str] = []
     # `force` has to reach the two host reads below, not just this function's own
     # cache.  Both are memoised now, so stopping at the outer cache would make
@@ -255,7 +265,8 @@ def _detect_lan_ip_uncached(now: float, *, force: bool = False) -> str:
         value = local_name if local_name else "localhost"
     value = _as_text(value)
     with _cache_lock:
-        _detect_cache.update(t=now, value=value)
+        if _detect_generation == began:
+            _detect_cache.update(t=now, value=value)
     return value
 
 

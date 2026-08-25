@@ -366,6 +366,8 @@ _SMART_ERRORS = {
     "bad_kind": "smart.bad_kind",
     "unsupported": "smart.unsupported",
     "kind_unsupported": "smart.kind_unsupported",
+    # Confirmed-vanished smartctl (fresh disk probe on the failure path).
+    "smartctl_missing": "smart.smartctl_missing",
 }
 
 
@@ -386,15 +388,32 @@ def api_smart_test(body: SmartTestBody, request: Request):
 
 @router.post("/api/smart/abort")
 def api_smart_abort(body: SmartAbortBody, request: Request):
-    require_admin_browser(request)
-    return raise_service_error(smart_test_svc.abort_test(body.device), _SMART_ERRORS)
+    username = require_admin_browser(request)
+    result = smart_test_svc.abort_test(body.device)
+    audit.record(
+        audit.SMART_TEST_ABORTED,
+        username=username,
+        client=client_host(request),
+        device=body.device,
+        ok=bool(result.get("ok")),
+    )
+    return raise_service_error(result, _SMART_ERRORS)
 
 
 @router.put("/api/smart/schedule")
 def api_smart_schedule(body: SmartScheduleBody, request: Request):
-    require_admin_browser(request)
+    username = require_admin_browser(request)
     result = smart_test_svc.set_schedule(
         interval=body.interval, kind=body.kind, devices=body.devices
+    )
+    audit.record(
+        audit.SMART_SCHEDULE_CHANGED,
+        username=username,
+        client=client_host(request),
+        interval=body.interval,
+        kind=body.kind,
+        devices=",".join(body.devices or []),
+        ok=bool(result.get("ok")),
     )
     return raise_service_error(
         result, {"bad_interval": "smart.bad_interval", "bad_kind": "smart.bad_kind"}

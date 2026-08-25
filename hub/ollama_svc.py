@@ -155,6 +155,13 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            # A >4300-digit int (a hex plist/YAML leftover dodges the
+            # str->int digit cap on parse) passes this coercer untouched and
+            # then ValueError's json.dumps itself at int->str time.
+            str(value)
+        except ValueError:
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -197,9 +204,17 @@ def _safe_int(raw, default: int = 0) -> int:
     if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
         return default
     try:
-        return int(raw)
+        n = int(raw)
     except (TypeError, ValueError, OverflowError):
         return default
+    try:
+        # int(raw) does not convert an *already-int* over-cap value, so the
+        # digit-cap ValueError never fired here and the leftover survived
+        # into Starlette's json.dumps, which raises the same ValueError.
+        str(n)
+    except ValueError:
+        return default
+    return n
 
 
 def _as_text(value) -> str:
@@ -421,13 +436,19 @@ def _plist_label_if_ollama(path: Path) -> str | None:
         return None
     try:
         haystack = repr(pl)
-    except RecursionError:
-        # leftover nested LaunchAgent: ``repr`` RecursionError is not
-        # InvalidFileException; GET /api/ollama used to 500 discovery.
+    except (ValueError, RecursionError):
+        # RecursionError: leftover nested LaunchAgent is not
+        # InvalidFileException.  ValueError: a leftover hex ``<integer>``
+        # (plistlib parses 0x… via int(raw, 16), past CPython's 4300-digit
+        # cap) makes repr() itself raise at int->str time.  Either used to
+        # 500 GET /api/ollama/status through _candidate_labels.
         return None
     if "ollama" not in haystack.lower():
         return None
-    return _as_text(pl.get("Label")) or path.stem
+    # _as_text on the stem too: an undecodable filename surfaces here as a
+    # lone-surrogate str (surrogateescape), which used to reach the
+    # health_checks fix strings raw and 500 Starlette's UTF-8 encode.
+    return _as_text(pl.get("Label")) or _as_text(path.stem)
 
 
 def origins_allow_lan(origins: str) -> bool:
@@ -697,6 +718,15 @@ def delete_model(name: str) -> dict:
     rc = run_watchdog([binary, "rm", name], timeout=RM_TIMEOUT, log=log, env=_cli_env())
     status.invalidate()
     if rc != 0:
+        # rc -1 is run_watchdog's could-not-run sentinel — but it is also
+        # what a SIGHUP-killed rm reports, so the sentinel alone must not
+        # classify.  Only when a fresh disk probe confirms the CLI vanished
+        # between the check above and the spawn does this become the same
+        # coded 503 the up-front gate raises; a still-present binary keeps
+        # its raw rm_failed result.  The re-check runs only on this failure
+        # path, never on a successful rm.
+        if rc == -1 and binary_path() is None:
+            raise api_error("ollama.not_installed")
         raise api_error("ollama.rm_failed", error="\n".join(log)[-300:] or f"exit {rc}")
     return {"ok": True, "model": name, "message": "\n".join(log)[-300:]}
 

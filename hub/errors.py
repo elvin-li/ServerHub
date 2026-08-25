@@ -139,6 +139,10 @@ CODES: dict[str, tuple[int, str]] = {
     # ── optional FileBrowser process ────────────────────────────────────────
     "files.fb_not_installed": (404, "FileBrowser is not installed (~/Services/filebrowser)"),
     "files.fb_start_failed": (500, "could not start FileBrowser"),
+    # The FileBrowser binary vanished between the installed gate and the
+    # spawn.  503 like the other tool-absent states (backup.tool_missing,
+    # vms.orb_unavailable, photoshub.ctl_missing).
+    "files.fb_missing": (503, "the FileBrowser binary is missing (~/Services/filebrowser)"),
     # ── storage pool (JBOD union planner) ───────────────────────────────────
     "storage_pool.bad_policy": (400, "unknown placement policy: {policy}"),
     "storage_pool.no_members": (400, "select at least one volume for the pool"),
@@ -198,6 +202,10 @@ CODES: dict[str, tuple[int, str]] = {
     "smart.unsupported": (400, "this disk does not offer SMART self-tests"),
     "smart.kind_unsupported": (400, "this disk does not offer that self-test type"),
     "smart.bad_interval": (400, "unsupported schedule interval"),
+    # The smartctl binary vanished between the capability gate and the spawn
+    # (confirmed by a fresh disk probe).  503 like the other tool-absent
+    # states (backup.tool_missing, files.fb_missing, photoshub.ctl_missing).
+    "smart.smartctl_missing": (503, "smartctl is not installed on this host"),
     # ── usage explorer / Spotlight ──────────────────────────────────────────
     "usage.bad_volume": (400, "unknown volume"),
     # ── settings export ──────────────────────────────────────────────────────
@@ -401,6 +409,7 @@ CODES: dict[str, tuple[int, str]] = {
     "services.not_found": (404, "service not found: {id}"),
     "services.no_logs": (404, "no logs for {id}"),
     "services.bad_port": (400, "port must be an integer"),
+    "services.bad_command": (400, "start/stop command contains characters that cannot be encoded"),
     "jobs.already_running": (409, 'a maintenance task is already running; wait for it to finish'),
     # ── panel scheduler (user-defined cron jobs) ─────────────────────────────
     "scheduler.not_found": (404, "no scheduled job with id {id}"),
@@ -423,6 +432,10 @@ CODES: dict[str, tuple[int, str]] = {
     "backup.stack_unknown": (404, "no compose stack named {stack}"),
     "backup.stack_no_compose": (400, "stack {stack} has no compose file to back up"),
     "backup.engine_down": (503, "the Docker engine is not running, so the stack cannot be backed up"),
+    # A backup job's own binary (pg_dump, tar) is gone — never installed, or
+    # uninstalled between a probe and the spawn.  503 like the other
+    # tool-absent states (brew.not_found, wg.not_installed, rsync.unavailable).
+    "backup.tool_missing": (503, "{tool} is not installed on this host"),
     # ── notification channels ────────────────────────────────────────────────
     "notify.bad_type": (400, "unsupported channel type: {type}"),
     "notify.bad_id": (400, "channel ids are 1-64 lowercase letters, digits, . _ -"),
@@ -463,6 +476,10 @@ CODES: dict[str, tuple[int, str]] = {
     "photoshub.action_failed": (500, "PhotosHub action failed: {detail}"),
     "photoshub.bad_log": (400, "unknown PhotosHub log name"),
     "photoshub.not_installed": (404, "PhotosHub is not installed on this Mac"),
+    # The photoctl helper (or the people-album python) vanished between the
+    # installed()/script gate and the spawn.  503 like the other tool-absent
+    # states (backup.tool_missing, vms.orb_unavailable, wg.not_installed).
+    "photoshub.ctl_missing": (503, "{tool} is missing from the PhotosHub tree"),
     "photoshub.bad_immich_url": (400, "Immich API URL must be a private or loopback http(s) address"),
     "photoshub.album_missing": (404, "the pending-delete album was not found"),
     "photoshub.key_missing": (503, "the Immich API key is missing"),
@@ -491,6 +508,17 @@ def _jsonable_param(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render the
+            # number at all — ``json.dumps`` raises the same ValueError this
+            # guard eats.  A str param is parse-capped before it can become an
+            # int, but YAML/plist hex text loads uncapped (``int(x, 16)`` is a
+            # power-of-two base), so an already-int leftover reached Starlette
+            # untouched and turned the coded 4xx into a 500 while encoding its
+            # own error body — the photoshub/immich ``_jsonable`` drop.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -533,6 +561,16 @@ def _jsonable_param(value, depth: int = 0):
         return text.encode("utf-8", "replace").decode("utf-8")
     except Exception:
         return None
+
+
+def jsonable_error_detail(value):
+    """Sanitize a non-coded error body for Starlette's allow_nan=False encoder.
+
+    Coded errors go through ``error_payload`` and are cleaned there.  FastAPI's
+    own validation handler builds its body from the request, so it needs the
+    same treatment before the response is rendered.
+    """
+    return _jsonable_param(value)
 
 
 def error_payload(code: str, /, **params) -> tuple[int, dict]:
@@ -594,6 +632,17 @@ def exc_detail(exc, cap: int = 200) -> str:
     RecursionError on ``str(e)`` is not ValueError; leftover ``\\ud800`` in
     the message used to 500 Starlette's UTF-8 encode of GET /api/photoshub.
     """
+    # ``str(HTTPException)`` is ``"404: {'code': 'nginx.conf_missing',
+    # 'message': 'nginx.conf is missing'}"`` -- a Python dict repr, which the
+    # health page rendered verbatim when nginx_overview() raised through
+    # _nginx_pair().  Unwrap it: a bare code is what errText() translates, and
+    # a params-bearing error keeps the already-formatted English message
+    # because errText() would only surface its unfilled {placeholders}.
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
+        detail = exc.detail
+        picked = detail.get("message") if detail.get("params") else detail.get("code")
+        if isinstance(picked, str) and picked:
+            return picked.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
     try:
         text = str(exc)
     except Exception:

@@ -126,7 +126,9 @@ describe('PhotosHub page', () => {
     expect(wrap.find('[data-test="photoshub-absent"]').exists()).toBe(false)
     expect(wrap.find('[data-test="photoshub-pending"]').exists()).toBe(false)
     expect(wrap.text()).toContain('Yuanbao')
-    expect(wrap.text()).toContain('photoshub.pending —')
+    // The status payload already carries delete_review.pending_count: the
+    // overview tile shows that number without fetching the pending list.
+    expect(wrap.text()).toContain('photoshub.pending 2')
     expect(wrap.text()).not.toContain('photoshub.act_backup')
     expect(getPhotosHubPending).not.toHaveBeenCalled()
     expect(getPhotosHubLogs).not.toHaveBeenCalled()
@@ -274,6 +276,29 @@ describe('PhotosHub page', () => {
     wrap.unmount()
   })
 
+  it('announces a running action through a live status note', async () => {
+    // The note was paint only: the actions run for seconds and disable the
+    // toolbar, and a screen-reader user heard nothing until the finish toast.
+    getPhotosHubStatus.mockResolvedValue(INSTALLED)
+    const { postPhotosHubAction } = await import('../api/client')
+    let finish
+    postPhotosHubAction.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.findAll('button').find((b) => b.text() === 'photoshub.act_sync').trigger('click')
+    const note = wrapper.find('.toolbar [role="status"]')
+    expect(note.exists(), 'busy note is a live region').toBe(true)
+    expect(note.attributes('aria-live')).toBe('polite')
+    expect(note.text()).toContain('photoshub.action_running')
+
+    finish({ action: 'sync', ok: true, status_after: INSTALLED })
+    await flushPromises()
+    expect(wrapper.find('.toolbar [role="status"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('does not toast a settings save that finishes after leave', async () => {
     getPhotosHubStatus.mockResolvedValue(INSTALLED)
     getPhotosHubConfig.mockResolvedValue(CONFIG)
@@ -380,6 +405,67 @@ describe('PhotosHub page', () => {
     await flushPromises()
     expect(new URL(window.location.href).searchParams.get('tab')).toBe('pending')
     expect(history.state).toMatchObject({ current: '/photoshub', position: 3 })
+    wrap.unmount()
+  })
+
+  it('shows the delete-review count from status before the pending tab opens', async () => {
+    // pendingCount used to read only the pending-tab payload, so the overview
+    // tile and the tab label said "—" for a number the status response had
+    // been handing the page all along.
+    getPhotosHubStatus.mockResolvedValue({
+      ...INSTALLED,
+      delete_review: { pending_count: 7 },
+    })
+    const wrap = mountPage()
+    await flushPromises()
+    expect(wrap.text()).toContain('photoshub.pending 7')
+    expect(tabButton(wrap, 'photoshub.tab_pending').text()).toContain('(7)')
+    expect(getPhotosHubPending).not.toHaveBeenCalled()
+    wrap.unmount()
+  })
+
+  it('announces the pending count and empty state as live status regions', async () => {
+    // "Refresh pending list" and "Remove" answer only through the count and
+    // the tiles (or the scanning -> "no pending" flip on an empty album);
+    // both changed silently for a screen reader.
+    getPhotosHubStatus.mockResolvedValue(INSTALLED)
+    getPhotosHubPending.mockResolvedValue({
+      album: 'Pending Delete',
+      count: 2,
+      assets: [
+        { id: 'aa-11', originalFileName: 'IMG_0001.HEIC', type: 'IMAGE' },
+        { id: 'bb-22', originalFileName: 'IMG_0002.HEIC', type: 'IMAGE' },
+      ],
+    })
+    const wrap = mountPage()
+    await flushPromises()
+    await tabButton(wrap, 'photoshub.tab_pending').trigger('click')
+    await flushPromises()
+    const count = wrap.get('[data-test="photoshub-pending-count"]')
+    expect(count.attributes('role')).toBe('status')
+    expect(count.text()).toContain('2')
+
+    getPhotosHubPending.mockResolvedValue({ album: 'Pending Delete', count: 0, assets: [] })
+    await wrap.findAll('button').find((b) => b.text() === 'photoshub.refresh_pending').trigger('click')
+    await flushPromises()
+    const empty = wrap.get('[data-test="photoshub-pending-empty"]')
+    expect(empty.attributes('role')).toBe('status')
+    expect(empty.text()).toContain('photoshub.no_pending')
+    wrap.unmount()
+  })
+
+  it('keeps the stale overview under the banner when a re-poll fails', async () => {
+    // The LoadFailure contract (Alerts / Users / Containers): a failed
+    // refresh puts the banner above the tiles the operator was reading,
+    // instead of replacing them wholesale.
+    getPhotosHubStatus.mockResolvedValue(INSTALLED)
+    const wrap = mountPage()
+    await flushPromises()
+    getPhotosHubStatus.mockRejectedValue(new Error('poll died'))
+    await wrap.findAll('button').find((b) => b.text() === 'common.refresh').trigger('click')
+    await flushPromises()
+    expect(wrap.find('.load-failure').text()).toContain('poll died')
+    expect(wrap.text()).toContain('Yuanbao')
     wrap.unmount()
   })
 

@@ -10,7 +10,8 @@ import yaml
 
 from hub import cli_args, secure_io
 from hub.containers_svc import _stack_paths
-from hub.errors import api_error, exc_detail
+from hub.docker_cli import cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
+from hub.errors import api_error, exc_detail, soft_fail
 from hub.paths import DOCKER, user_home
 from hub.status import invalidate_status as inv
 from hub.util import read_text_capped, run_capped
@@ -43,6 +44,25 @@ def _utf8_text(value) -> str:
         return ""
 
 
+def _finite_mtime(value) -> int:
+    """A ``st_mtime`` the JSON body can carry, or 0.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_mtime`` that is already a >4300-digit int passed through untouched,
+    and CPython's int->str digit limit then ValueError'd Starlette's
+    ``json.dumps`` — 500ing GET /api/compose/{id} after the compose had
+    already been read.  ``float()`` rejects anything beyond float range,
+    the same junk test files_svc._finite_int, logs_svc._stat_size,
+    usage_svc._safe_bytes and catalog._sig_int apply to their stat numbers.
+    """
+    try:
+        value = int(value)
+        float(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0
+    return value
+
+
 def _find_stack(stack_id: str) -> dict:
     for s in _stack_paths():
         if s.get("id") == stack_id:
@@ -69,10 +89,10 @@ def get_compose(stack_id: str) -> dict:
         raise api_error("container.no_compose_file")
     # FUSE ``st_mtime = inf`` OverflowError'd GET /api/compose/{id};
     # OverflowError is not ValueError, so it escaped the handler above.
-    try:
-        mtime = int(st.st_mtime)
-    except (TypeError, ValueError, OverflowError):
-        mtime = 0
+    # A huge *already-int* leftover slipped past that ``int(...)`` clamp
+    # the same way it did in catalog/_templates_sig — _finite_mtime adds
+    # the float() junk test.
+    mtime = _finite_mtime(st.st_mtime)
     sid = _utf8_text(s.get("id")) if isinstance(s.get("id"), str) else ""
     if not sid:
         sid = "stack"
@@ -117,7 +137,7 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     if validate:
         v = validate_compose_text(content, cwd=str(p.parent))
         if not v.get("ok"):
-            raise api_error("compose.invalid", detail=v.get("message") or "compose invalid")
+            _raise_validation_failure(v)
     # A compose file carries the generated database and admin passwords for the
     # stack, which is the payload secure_io was written for.  write_text() then
     # chmod() creates the file at the umask default -- 0644 here -- so both the
@@ -141,6 +161,17 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     secure_io.replace_secret_text(p, content)
     inv()
     return {"ok": True, "path": str(p), "message": "Saved", "backup": str(bak)}
+
+
+def _raise_validation_failure(v: dict):
+    """Fail a compose save/create with the code the validation reported.
+
+    An engine that is off is a dependency state (coded 503), not a defect in
+    the operator's YAML (``compose.invalid``, 400).
+    """
+    if v.get("code") == "container.engine_down":
+        raise api_error("container.engine_down")
+    raise api_error("compose.invalid", detail=v.get("message") or "compose invalid")
 
 
 def validate_compose_text(content: str, cwd: str | None = None) -> dict:
@@ -203,6 +234,30 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
         elif not isinstance(text, str):
             text = "" if text is None else str(text)
         ok = rc == 0
+        unreachable = looks_engine_down(text) or (
+            # A vanished DOCKER binary is run_capped's exact ``(-1, "not
+            # found")`` sentinel; it used to fall through and fail the
+            # save/create as ``compose.invalid: not found`` — a 400 blaming
+            # the operator's YAML for a missing CLI.  But the sentinel is
+            # any FileNotFoundError spawn: a *cwd* that vanished between the
+            # mkdir above and the spawn raises the same way, so the binary
+            # must be confirmed gone from disk before the sentinel reads as
+            # a missing CLI — with the CLI present and the engine merely
+            # off, the coded 503 pointed the operator at the wrong remedy.
+            rc == -1 and looks_cli_vanished(text) and not cli_on_disk()
+        )
+        if not ok and unreachable and not engine_up(force=True):
+            # The compose file may be perfectly valid: the CLI could not reach
+            # the daemon.  Reporting that as "compose file is invalid" (400 on
+            # save/create) told the operator their YAML was broken and pointed
+            # away from the real remedy (start the engine).  The probe is
+            # forced -- same convention as containers_svc._raise_list_failure:
+            # the memoised answer has a 5s TTL and the seconds right after the
+            # engine stops are when a stale "up" would misclassify this.  The
+            # message-pattern guard matters too: ``docker compose config`` is
+            # mostly client-side, so a genuine YAML error with the engine
+            # coincidentally off must keep reporting the YAML error.
+            return soft_fail("container.engine_down")
         return {
             "ok": ok,
             "message": (text or ("valid" if ok else "invalid")).strip()[:800],
@@ -242,7 +297,7 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
         raise api_error("compose.exists", path=str(root))
     v = validate_compose_text(content, cwd=str(home / "Services"))
     if not v.get("ok"):
-        raise api_error("compose.invalid", detail=v.get("message") or "invalid compose")
+        _raise_validation_failure(v)
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError:

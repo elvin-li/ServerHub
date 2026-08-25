@@ -33,6 +33,17 @@ _status_cache = {"t": 0.0, "v": None}
 _lock = threading.Lock()
 # Single-flight: only one full refresh at a time; waiters reuse the result.
 _refresh_lock = threading.Lock()
+# Bumped by invalidate_status().  Every container mutation calls that, and the
+# dashboard is polling throughout, so a build that started just before the click
+# is the ordinary case — and it read the pre-action host.  Publishing it stamps
+# the old snapshot fresh and the stopped container keeps showing as running for
+# another TTL. A build from a superseded generation is dropped instead.
+#
+# Shared by both caches below: invalidate_status() drops them together, so a
+# scan is stale for exactly the same reason and at exactly the same moments as
+# a status build.  The adaptive one holds it for a minute rather than seconds,
+# which is how long a compose project stayed listed after being torn down.
+_status_generation = 0
 # Adaptive filesystem scans change rarely — cache longer.
 _adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
 _ADAPTIVE_TTL = 60.0
@@ -62,12 +73,22 @@ def _jsonable(value, depth: int = 0):
     in ``quick_links`` are ``datetime`` objects — both 500 GET /api/status.
     A leftover ``\\ud800`` in a name or key still 500'd the same encoder
     (``ensure_ascii=False`` then UTF-8) on GET /api/status and status peek.
+    A >4300-digit leftover int (YAML/plist hex/octal loads uncapped) still
+    passed through untouched: CPython's int->str digit limit then
+    ValueError'd ``json.dumps`` itself, 500ing GET /api/status,
+    GET /api/services and GET /api/services/{id}/detail.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -140,7 +161,12 @@ def peek_status() -> dict | None:
 
 def invalidate_status():
     """Bust status cache (and short-lived discovery caches)."""
+    global _status_generation
     with _lock:
+        _status_generation += 1
+        # `v` is kept: /api/health serves it through cached_status() without
+        # triggering a build, and a liveness probe must not start returning
+        # "no snapshot" because a container was restarted.
         _status_cache["t"] = 0
     # Related discovery caches so next full_status sees fresh data
     try:
@@ -172,6 +198,9 @@ def invalidate_status():
     except Exception:
         pass
     with _lock:
+        # `_status_generation` was bumped above, under this same lock, and it
+        # covers this cache too -- so a scan already running is dropped rather
+        # than allowed to restore the pre-action project list for a minute.
         _adaptive_cache["t"] = 0
 
 
@@ -200,6 +229,7 @@ def _adaptive_info() -> dict:
                     "compose_projects": _adaptive_cache["compose"],
                     "nginx_sites": _adaptive_cache["nginx"],
                 }
+            began = _status_generation
         # Two unrelated filesystem scans (compose project tree, nginx sites dir).
         f_compose = _pool.submit(scan_new_compose_projects)
         f_nginx = _pool.submit(nginx_sites)
@@ -212,7 +242,8 @@ def _adaptive_info() -> dict:
         except Exception:
             nginx = []
         with _lock:
-            _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
+            if _status_generation == began:
+                _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
         return {"compose_projects": compose, "nginx_sites": nginx}
 
 
@@ -476,6 +507,7 @@ def full_status(force=False):
         with _lock:
             if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
                 return _stamp_locale(_status_cache["v"])
+            began = _status_generation
         try:
             v = _build_status()
         except Exception:
@@ -485,7 +517,9 @@ def full_status(force=False):
                     return _stamp_locale(_status_cache["v"])
             raise
         with _lock:
-            _status_cache.update(t=time.time(), v=v)
+            if _status_generation == began:
+                _status_cache.update(t=time.time(), v=v)
+        # Returned either way: this caller asked before the invalidate landed.
         return _stamp_locale(v)
 
 

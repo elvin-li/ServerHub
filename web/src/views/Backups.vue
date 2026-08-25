@@ -10,7 +10,10 @@
       <button :disabled="busy" @click="doCfg">{{ t('backups.cfg') }}</button>
       <button :disabled="busy" @click="refresh">{{ t('backups.refresh_list') }}</button>
     </div>
-    <div v-if="msg" class="card" style="margin-bottom:12px;white-space:pre-wrap;font-size:13px">{{ finiteText(msg) }}</div>
+    <!-- role=status: this card is the only durable record of what a backup
+         button just did (the toast is gone in four seconds), and it filled in
+         silently for a screen reader. -->
+    <div v-if="msg" class="card" style="margin-bottom:12px;white-space:pre-wrap;font-size:13px" role="status" aria-live="polite">{{ finiteText(msg) }}</div>
 
     <div v-if="layers" class="tile" style="margin-bottom:12px" data-test="immich-layers">
       <div class="row">
@@ -86,7 +89,7 @@
       </div>
       <p class="meta" style="font-size:11px;color:var(--sub);margin:6px 0">
         {{ t('backups.rsync_desc') }}
-        <span v-if="rsyncBinary && !rsyncBinary.available" style="color:var(--warn,#c60)"> {{ t('backups.rsync_missing') }}</span>
+        <span v-if="rsyncBinary && !rsyncBinary.available" style="color:var(--warn-text)"> {{ t('backups.rsync_missing') }}</span>
         <span v-else-if="rsyncBinary" class="mono"> · {{ finiteText(rsyncBinary.variant) }} {{ finiteText(rsyncBinary.version) }}</span>
       </p>
       <SkeletonLoader v-if="!jobsLoaded" :cols="5" :rows="2" />
@@ -119,7 +122,7 @@
             </td>
           </tr>
           <tr v-if="!rsyncJobs.length && jobsLoaded">
-            <td colspan="5" style="color:var(--sub);font-size:12px">{{ t('backups.no_tasks') }}</td>
+            <td colspan="5" class="empty-row" style="font-size:12px">{{ t('backups.no_tasks') }}</td>
           </tr>
         </tbody>
       </table>
@@ -157,16 +160,23 @@
             </td>
           </tr>
           <tr v-if="!stackJobs.length && jobsLoaded">
-            <td colspan="5" style="color:var(--sub);font-size:12px">{{ t('backups.no_tasks') }}</td>
+            <td colspan="5" class="empty-row" style="font-size:12px">{{ t('backups.no_tasks') }}</td>
           </tr>
         </tbody>
       </table>
       </div>
     </div>
 
+    <!-- The banner is not part of the chain below: when a background re-read
+         fails, the artefact rows the operator was reading stay on screen
+         under it instead of being replaced wholesale (the LoadFailure
+         contract — same as Containers and the Users accounts table).  Only a
+         failed *first* load, with nothing fetched yet, renders the banner
+         alone — a header-only table under it used to look like an empty
+         backup listing, on the page where "not listed" reads as "gone". -->
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
-    <SkeletonLoader v-if="!loaded" :cols="4" :rows="5" />
-    <div v-else class="table-wrap backups-artefacts">
+    <SkeletonLoader v-if="!loaded && !loadError" :cols="4" :rows="5" />
+    <div v-else-if="!loadError || backups.length" class="table-wrap backups-artefacts">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -196,14 +206,18 @@
             </td>
           </tr>
           <tr v-if="!backups.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ t('backups.empty') }}</td>
+            <td colspan="5" class="empty-row">{{ t('backups.empty') }}</td>
           </tr>
         </tbody>
       </table>
       <!-- The table is capped, so say so. Without this the older backups look
            deleted rather than merely unlisted, which is the opposite of what a
-           backups page should tell you. -->
-      <p v-if="hiddenCount" class="meta" style="margin-top:8px">
+           backups page should tell you.
+           role=status: this count is the only summary of how many backups
+           exist, and it appears/updates silently after every finished backup
+           or refresh for a screen reader — same treatment as the Ollama
+           model count and the VMs/Health header counts. -->
+      <p v-if="hiddenCount" class="meta" style="margin-top:8px" role="status">
         {{ t('backups.truncated', { shown: backups.length, total: finiteN(total) }) }}
       </p>
     </div>
@@ -230,7 +244,10 @@
           <button class="tiny" @click="previewFor = null">{{ t('common.close') }}</button>
         </div>
         <div v-if="previewBusy" class="meta">{{ t('common.loading') }}</div>
-        <div v-else-if="previewError" class="meta" style="color:var(--err,#c33)">{{ finiteText(previewError) }}</div>
+        <!-- role=alert: the dry-run result loads after the dialog already holds
+             focus, so the panel-focus read never covers a failure — same as the
+             Scheduler run-history and MainArray SMART overview errors. -->
+        <div v-else-if="previewError" class="meta" style="color:var(--down-text)" role="alert">{{ finiteText(previewError) }}</div>
         <template v-else-if="preview">
           <div style="margin-bottom:8px;font-size:12px">
             <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(preview.creates) }) }}</span>
@@ -349,7 +366,7 @@ async function copyRestore(text) {
   toast(ok ? '✅ ' + t('common.copied') : '❌ ' + t('common.copy_failed'))
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = ++backupsGeneration
   try {
     const d = await getBackups()
@@ -366,26 +383,65 @@ async function refresh() {
   } catch (e) {
     if (generation !== backupsGeneration || !pageAlive) return
     loadError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // loadJobs() re-reads the artefact list when a running task ends — that
+    // is background timing, and its failure must not toast over whatever the
+    // operator moved on to; the LoadFailure banner already carries the state.
+    // User-initiated reloads (mount, retry click) pass `manual` and toast.
+    if (manual) toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === backupsGeneration) loaded.value = true
   }
 }
 
-async function loadJobs() {
+async function loadJobs(manual = false) {
   const generation = ++jobsGeneration
+  const wasRunning = jobs.value.some((j) => j.running)
   try {
     const d = await getSchedulerJobs()
     if (generation !== jobsGeneration || !pageAlive) return
     jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
     jobsError.value = ''
+    jobsPollFailures = 0
+    // A finished run leaves new artefacts behind; pick them up without asking
+    // the operator to press "Refresh list" to see the backup they just made.
+    if (wasRunning && !jobs.value.some((j) => j.running)) void refresh()
   } catch (e) {
     if (generation !== jobsGeneration || !pageAlive) return
     jobsError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    jobsPollFailures += 1
+    // The 7s running-job loop calls this without arguments: with the panel
+    // down mid-backup it used to re-toast the same failure every tick.  The
+    // on-screen jobsError banner carries the state; only the retry button
+    // (whose click event lands in `manual`) still toasts.
+    if (manual) toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === jobsGeneration) jobsLoaded.value = true
   }
+  scheduleJobsPoll()
+}
+
+// While a backup task is running, re-read the job list every few seconds so
+// the "Running…" badge and last-run status resolve on their own — the same
+// loop the Scheduler page uses for the same jobs.  An idle page arms no timer,
+// and a hidden tab keeps the loop armed without asking the host for status.
+let jobsPollTimer = null
+// With the panel dead mid-backup, the stale `running` flag keeps this loop
+// alive forever — back it off like lib/poll.js (1.5^n, capped at 6x) instead
+// of asking a host that is not answering every 7 seconds.
+let jobsPollFailures = 0
+const JOBS_POLL_MS = 7000
+function jobsPollDelay() {
+  return Math.min(JOBS_POLL_MS * Math.pow(1.5, jobsPollFailures), JOBS_POLL_MS * 6)
+}
+function scheduleJobsPoll() {
+  if (!pageAlive || jobsPollTimer) return
+  if (!jobs.value.some((j) => j.running)) return
+  jobsPollTimer = setTimeout(() => {
+    jobsPollTimer = null
+    if (!pageAlive) return
+    if (typeof document !== 'undefined' && document.hidden) scheduleJobsPoll()
+    else void loadJobs()
+  }, jobsPollDelay())
 }
 
 async function loadBinary() {
@@ -476,7 +532,7 @@ async function doPg() {
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
     toast(r.ok ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh()
+    if (r.ok) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -495,7 +551,7 @@ async function doImmich() {
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
     toast(r.ok ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh()
+    if (r.ok) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -514,7 +570,7 @@ async function doCfg() {
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)}` : '')
     toast(r.ok ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
-    if (r.ok) await refresh()
+    if (r.ok) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -526,7 +582,9 @@ async function doCfg() {
 
 onMounted(() => {
   pageAlive = true
-  refresh()
+  // The first load counts as user-initiated: nothing is on screen yet, so a
+  // failure toasts as well as raising the LoadFailure banner.
+  refresh(true)
   loadJobs()
   loadBinary()
 })
@@ -535,6 +593,8 @@ onUnmounted(() => {
   pageAlive = false
   backupsGeneration += 1
   jobsGeneration += 1
+  if (jobsPollTimer) clearTimeout(jobsPollTimer)
+  jobsPollTimer = null
 })
 </script>
 

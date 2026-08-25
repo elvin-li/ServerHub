@@ -187,7 +187,9 @@ class SessionCookieSecureFlagTests(unittest.TestCase):
         """delete_cookie must repeat the Secure flag or HTTPS sessions survive logout."""
         response = Response()
         req = request(scheme="https")
-        with mock.patch.object(auth, "request_username", return_value="admin"):
+        # Logout is audited; keep the fixture line out of the real trail.
+        with mock.patch.object(auth, "request_username", return_value="admin"), \
+             mock.patch.object(auth_api.audit, "record"):
             auth_api.auth_logout(req, response)
         header = response.headers.get("set-cookie", "")
         self.assertIn("serverhub_session=", header.lower())
@@ -204,11 +206,23 @@ class FileBrowserLogPathTests(unittest.TestCase):
     """
 
     def test_the_log_is_not_in_a_shared_temp_directory(self):
+        """Checked by mode, not by a "/tmp/" string prefix.
+
+        The attack needs a world-writable (sticky) directory the attacker can
+        pre-create the log name in -- the literal /tmp and /var/tmp.  A path
+        prefix test also condemned any private 0700 tree that merely lives
+        under /tmp, such as the suite's own hermetic HOME, while missing
+        other shared locations entirely.
+        """
+        probe = Path(files_svc.FB_LOG).parent
+        # The log directory may not exist yet; judge the nearest ancestor
+        # that does (for /tmp/filebrowser-hub.log that is /tmp itself).
+        while not probe.exists():
+            probe = probe.parent
         self.assertFalse(
-            str(files_svc.FB_LOG).startswith("/tmp/"),
-            f"{files_svc.FB_LOG} is in a world-writable directory",
+            probe.stat().st_mode & 0o002,
+            f"{files_svc.FB_LOG} is reachable through world-writable {probe}",
         )
-        self.assertFalse(str(files_svc.FB_LOG).startswith("/var/tmp/"))
 
     def test_the_log_lives_under_the_users_own_home(self):
         self.assertTrue(
@@ -682,8 +696,17 @@ class ContentSecurityPolicyTests(unittest.TestCase):
     def setUpClass(cls):
         from fastapi.testclient import TestClient
 
+        from hub import app_factory
         from hub.app_factory import create_app
 
+        # These assertions are about the shell that is on disk right now, so
+        # take the reading against a cold cache.  The policy is memoised for
+        # 30s process-wide, and any neighbour that served a request with
+        # STATIC_DIR patched elsewhere would otherwise hand this class its
+        # leftovers -- and be blamed for it only when the run was fast
+        # enough to land inside the window.
+        app_factory._csp_header.invalidate()
+        cls.addClassCleanup(app_factory._csp_header.invalidate)
         response = TestClient(create_app()).get("/api/auth/status")
         cls.csp = response.headers.get("content-security-policy", "")
         cls.headers = response.headers
@@ -696,8 +719,24 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         self.assertTrue(self.csp, "no Content-Security-Policy header was sent")
 
     def test_script_src_forbids_inline(self):
+        """`'self'` plus per-script hashes, and nothing else.
+
+        A hash authorises one exact block of bytes.  ``'unsafe-inline'`` is the
+        keyword that would re-enable ``javascript:`` URLs, so hashes leave the
+        property this class exists to protect untouched -- and are what lets
+        the shell keep its pre-paint theme script.
+        """
         script_src = self._directive("script-src")
-        self.assertEqual(script_src, "'self'", f"script-src is {script_src!r}")
+        tokens = script_src.split()
+        self.assertIn("'self'", tokens, f"script-src is {script_src!r}")
+        unexpected = [
+            token for token in tokens
+            if token != "'self'" and not re.fullmatch(r"'sha(?:256|384|512)-[A-Za-z0-9+/=]+'", token)
+        ]
+        self.assertEqual(
+            unexpected, [],
+            f"only 'self' and hashes belong in script-src; found {unexpected}",
+        )
         self.assertNotIn(
             "unsafe-inline",
             script_src,
@@ -705,6 +744,102 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             "SPA binds :href directly to URLs from config and Docker labels",
         )
         self.assertNotIn("unsafe-eval", script_src)
+
+    def test_every_hash_matches_an_inline_script_in_the_shell(self):
+        """A hash nobody can point at is a hash nobody is checking.
+
+        Hashes are derived from ``static/index.html`` at import, so a rebuild
+        that changes the shell changes them.  This recomputes them from the
+        file on disk and requires the header to agree -- if the two ever drift,
+        the theme script silently stops running again and the panel goes back
+        to flashing the light theme on every load.
+        """
+        import base64
+        import hashlib
+
+        from hub.paths import STATIC_DIR
+
+        shell = STATIC_DIR / "index.html"
+        if not shell.exists():
+            self.skipTest("no built shell on disk")
+
+        text = shell.read_text(encoding="utf-8")
+        bodies = re.findall(
+            r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", text, re.DOTALL | re.IGNORECASE
+        )
+        expected = {
+            "'sha256-%s'" % base64.b64encode(
+                hashlib.sha256(body.encode("utf-8")).digest()
+            ).decode("ascii")
+            for body in bodies if body.strip()
+        }
+        sent = {t for t in self._directive("script-src").split() if t.startswith("'sha256-")}
+        self.assertEqual(
+            sent, expected,
+            "the hashes in script-src do not match the inline scripts the shell ships",
+        )
+
+    def test_a_rebuilt_shell_gets_its_own_hash(self):
+        """`static/` is served off disk, so the policy has to follow it there.
+
+        A policy pinned at import would keep authorising the previous build's
+        theme script after a rebuild, and the flash would be back until
+        somebody restarted the process.
+        """
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from hub import app_factory
+
+        first = Path(tempfile.mkdtemp())
+        (first / "index.html").write_text("<script>var a = 1</script>")
+        second = Path(tempfile.mkdtemp())
+        (second / "index.html").write_text("<script>var a = 2</script>")
+
+        app_factory._csp_header.invalidate()
+        self.addCleanup(app_factory._csp_header.invalidate)
+        with mock.patch.object(app_factory, "STATIC_DIR", first):
+            before = app_factory._csp_header()
+        app_factory._csp_header.invalidate()
+        with mock.patch.object(app_factory, "STATIC_DIR", second):
+            after = app_factory._csp_header()
+        self.assertNotEqual(before, after, "the policy did not follow the shell")
+
+    def test_an_unusable_shell_leaves_the_policy_alone(self):
+        """No hash is the old behaviour; a broken read must not widen anything."""
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from hub import app_factory
+
+        empty = Path(tempfile.mkdtemp())
+        huge = Path(tempfile.mkdtemp())
+        (huge / "index.html").write_bytes(b"<script>x</script>" + b"a" * (3 * 1024 * 1024))
+        binary = Path(tempfile.mkdtemp())
+        (binary / "index.html").write_bytes(b"<script>\xff\xfe</script>")
+
+        self.addCleanup(app_factory._csp_header.invalidate)
+        for label, directory in (("missing", empty), ("oversized", huge), ("undecodable", binary)):
+            with self.subTest(shell=label):
+                app_factory._csp_header.invalidate()
+                with mock.patch.object(app_factory, "STATIC_DIR", directory):
+                    policy = app_factory._csp_header()
+                self.assertIn("script-src 'self';", policy, f"{label} shell changed script-src")
+                self.assertNotIn("unsafe-inline; ", policy.split("script-src")[1])
+
+    def test_the_shell_still_has_a_script_worth_hashing(self):
+        """Guards the test above from passing on an empty set."""
+        from hub.paths import STATIC_DIR
+
+        shell = STATIC_DIR / "index.html"
+        if not shell.exists():
+            self.skipTest("no built shell on disk")
+        self.assertIn(
+            "serverhub.theme", shell.read_text(encoding="utf-8"),
+            "the pre-paint theme bootstrap is gone from the shell",
+        )
 
     def test_the_other_containment_directives_hold(self):
         self.assertEqual(self._directive("object-src"), "'none'")
@@ -765,9 +900,17 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         self.assertEqual(
             sorted(sinks),
             [
-                'views/Account.vue: <div class="twofa-qr" v-html="enrollment.qrSvg"></div>',
-                'views/Settings.vue: <div class="twofa-qr" v-html="twofaEnroll.qrSvg"></div>',
-                'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" v-html="qrSvg"></div>',
+                # aria-hidden carries no markup; it hides the QR from AT
+                # because the same secret is already in the manual-entry field.
+                'views/Account.vue: <div class="twofa-qr" aria-hidden="true" '
+                'v-html="enrollment.qrSvg"></div>',
+                # Same enrollment QR on the admin Settings panel tab; same
+                # AT treatment, the manual-entry secret sits below it.
+                'views/Settings.vue: <div class="twofa-qr" aria-hidden="true" '
+                'v-html="twofaEnroll.qrSvg"></div>',
+                # Same AT treatment as Account: the peer config is in the <pre>.
+                'views/WireGuard.vue: <div v-if="qrSvg" class="wg-qr" '
+                'aria-hidden="true" v-html="qrSvg"></div>',
             ],
             "the v-html sinks changed; each one needs its own argument for why "
             "the value cannot contain markup:\n" + "\n".join(sinks),

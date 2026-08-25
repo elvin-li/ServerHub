@@ -230,6 +230,9 @@ class CatalogRemoteStateLeftoverTests(unittest.TestCase):
             mock.patch.object(catalog_remote, "REMOTE_DIR", self.remote),
             mock.patch.object(catalog_remote, "STATE_PATH", self.remote / "state.json"),
             mock.patch.object(catalog_remote, "source_url", return_value="https://x.example/index.json"),
+            # check_updates()/sync audit each run; keep fixture noise out of
+            # the real trail (see AuditIsolatedInTestsTests).
+            mock.patch.object(catalog_remote.audit, "record"),
         ]
         for p in self.patches:
             p.start()
@@ -961,6 +964,8 @@ class CatalogCredentialSaveLeftoverTests(unittest.TestCase):
                 catalog_router.service_credentials, "store",
                 return_value={"service_id": "jellyfin"},
             ),
+            # The save is audited; keep fixture lines out of the real trail.
+            mock.patch.object(catalog_router.audit, "record"),
         ):
             return catalog_router.save_app_credential(body, mock.Mock())
 

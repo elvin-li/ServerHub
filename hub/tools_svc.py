@@ -9,7 +9,6 @@ Inspired by Cockpit (logs/services), OMV (SMART/updates), CasaOS (simple tiles).
 from __future__ import annotations
 
 import glob
-import json
 import math
 import os
 import platform
@@ -28,7 +27,13 @@ from hub import cli_args
 from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.service_signatures import unescape_proc_name
-from hub.docker_cli import docker, engine_up
+from hub.docker_cli import (
+    cli_on_disk,
+    docker,
+    engine_up,
+    looks_cli_vanished,
+    looks_engine_down,
+)
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
 from hub.util import LazyPool, fan_out, read_bytes_capped, safe_json_loads, sh, strftime_now, tail_file_lines, ttl_memo
@@ -175,11 +180,42 @@ def top_processes(limit: int = 25) -> list:
 _DOCKER_DF_TTL = 30.0
 
 
+def _docker_gone(rc: int, out: str, err: str) -> bool:
+    """Whether a failed docker spawn should be classified as engine-down.
+
+    Two shapes, one operator-facing state: the daemon-socket complaint, and
+    ``sh``'s FileNotFoundError sentinel when the CLI itself vanished inside
+    ``engine_up()``'s 5s memo (OrbStack uninstalled mid-request, a dying
+    mount).  The sentinel alone is not proof — a cwd that vanished raises the
+    same FileNotFoundError — so it requires the fresh disk confirm, run only
+    on this failure path (the docker_cli ``looks_cli_vanished`` contract:
+    pattern-match, then confirm).  Either way the forced ``engine_up`` probe
+    stays the final arbiter, so a genuine CLI exit whose output merely reads
+    "not found" while the engine answers "up" keeps its raw result.
+    """
+    if rc == 0:
+        return False
+    text = err or out
+    suspicious = looks_engine_down(text) or (
+        looks_cli_vanished(text) and not cli_on_disk()
+    )
+    return suspicious and not engine_up(force=True)
+
+
 @ttl_memo(_DOCKER_DF_TTL)
 def docker_disk_usage() -> dict:
     if not engine_up():
         return {"engine_up": False, "raw": "", "lines": []}
     rc, out, err = _docker("system", "df", timeout=30)
+    if _docker_gone(rc, out, err):
+        # The gate above trusts a 5s memo, so an engine that dies inside the
+        # TTL still reached `docker system df` — and the payload then claimed
+        # engine_up: True with the raw daemon stderr as `raw`.  A CLI that
+        # vanished inside the same window claimed engine_up: True with the
+        # two-word spawn sentinel as `raw`.  The probe is forced (same
+        # convention as containers_svc._raise_if_engine_down); a failure
+        # while the engine answers "up" keeps the raw message.
+        return {"engine_up": False, "raw": "", "lines": []}
     lines = []
     for line in out.splitlines():
         if not line.strip() or line.startswith("TYPE"):
@@ -253,6 +289,17 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     # A prune is exactly the event the cached totals describe, so the cached copy is
     # wrong the moment this returns.  Drop it before reporting the new figures.
     docker_disk_usage.invalidate()
+    if _docker_gone(rc, out, err):
+        # The engine_up() gate at entry trusts a 5s memo; an engine that died
+        # inside the TTL used to surface as an uncoded ok:false carrying the
+        # raw untranslated daemon stderr — and a CLI that vanished inside it
+        # as an uncoded ok:false carrying the raw two-word spawn sentinel.
+        # Coded soft-fail (dict contract, like tools ping/dns) with the
+        # fields Tools.vue already renders.
+        fail = soft_fail("container.engine_down")
+        fail["what"] = what
+        fail["df"] = None
+        return fail
     return {
         "ok": rc == 0,
         "what": what,
@@ -280,16 +327,25 @@ def diagnostics() -> dict:
 
     def probe_ncpu() -> int | None:
         rc, out, _ = _sh(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=3)
-        return int(out) if rc == 0 and out.isdigit() else None
+        if rc != 0 or not out.isdigit():
+            return None
+        try:
+            # ``isdigit()`` does not bound length: ``int()`` of a >4300-digit
+            # leftover is ValueError (CPython's str->int cap), which used to
+            # 500 GET /api/system/diagnostics through fan_out.
+            return int(out)
+        except (TypeError, ValueError, OverflowError):
+            return None
 
     def probe_mem_gb() -> float | None:
         rc, out, _ = _sh(["/usr/sbin/sysctl", "-n", "hw.memsize"], timeout=3)
         if rc != 0 or not out.isdigit():
             return None
-        # A leftover 400-digit ``hw.memsize`` OverflowError'd GET /api/diagnostics.
+        # A leftover 400-digit ``hw.memsize`` OverflowError'd GET
+        # /api/diagnostics; a >4300-digit one ValueError'd ``int()`` itself.
         try:
             gb = round(int(out) / 2**30, 1)
-        except OverflowError:
+        except (TypeError, ValueError, OverflowError):
             return None
         return gb if math.isfinite(gb) else None
 
@@ -379,8 +435,11 @@ def diagnostics() -> dict:
         "root_disk_pct": root_disk_pct,
         "root_disk_free_gb": root_disk_free_gb,
         "orbstack": eng,
-        "docker_cli": DOCKER,
-        "orb_cli": ORB,
+        # shutil.which resolves these at import from a surrogateescape-decoded
+        # PATH; a leftover lone surrogate served raw 500'd the UTF-8 encode of
+        # GET /api/system/diagnostics (the _host_snapshot fix, one module over).
+        "docker_cli": _as_text(DOCKER),
+        "orb_cli": _as_text(ORB),
         "python": _as_text(platform.python_version()),
         "host_ip": ip,
         "docker_df": df,
@@ -1304,9 +1363,21 @@ def _plist_int(raw):
     if isinstance(raw, bool) or raw is None:
         return None
     try:
-        return int(raw)
+        value = int(raw)
     except (TypeError, ValueError, OverflowError):
         return None
+    try:
+        # ``int()`` of an int is not length-capped: XML plists load
+        # ``<integer>0x…</integer>`` through ``int(raw, 16)``, which CPython's
+        # 4300-digit conversion limit exempts, so an over-cap StartInterval
+        # arrived here *already-int* and Starlette's json.dumps raised the
+        # int->str digit-cap ValueError — 500ing GET /api/system/scheduler
+        # and GET /api/tools/agents.  Probe with str(): unrenderable is
+        # unusable.
+        str(value)
+    except ValueError:
+        return None
+    return value
 
 
 def _plist_jsonable(value, depth: int = 0):
@@ -1316,6 +1387,14 @@ def _plist_jsonable(value, depth: int = 0):
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render the
+            # number at all — a hex-plist calendar minute dodges the parse-time
+            # cap (``int(raw, 16)``) and used to ValueError Starlette's own
+            # json.dumps.  Same drop as its inf float sibling below.
+            return None
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -1472,7 +1551,9 @@ def about_info() -> dict:
         "host_ip": ip,
         "platform": _as_text(plat),
         "python": _as_text(platform.python_version()),
-        "base": str(BASE),
+        # BASE derives from __file__; a checkout path with a leftover non-UTF-8
+        # byte surfaces as a lone surrogate and 500'd GET /api/tools/about.
+        "base": _as_text(BASE),
         "credit_keys": [
             "tools.credit_stack",
             "tools.credit_services",

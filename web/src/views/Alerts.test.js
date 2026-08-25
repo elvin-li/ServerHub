@@ -101,4 +101,126 @@ describe('Alerts page', () => {
     expect(w.text()).toContain('alerts.empty')
     w.unmount()
   })
+
+  it('filters rows by level through the tabs', async () => {
+    api.getAlerts.mockResolvedValue({
+      alerts: [
+        { t: 1, name: 'svc-a', level: 'down', event: 'problem', kind: 'service' },
+        { t: 2, name: 'svc-b', level: 'warn', event: 'problem', kind: 'service' },
+        { t: 3, name: 'svc-c', level: 'ok', event: 'resolved', kind: 'service' },
+      ],
+    })
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+    const tab = (label) => w.findAll('button').find((b) => b.text() === label)
+
+    expect(w.text()).toContain('svc-c')
+    await tab('alerts.only_issues').trigger('click')
+    expect(w.text()).toContain('svc-a')
+    expect(w.text()).toContain('svc-b')
+    expect(w.text()).not.toContain('svc-c')
+
+    await tab('alerts.only_down').trigger('click')
+    expect(w.text()).toContain('svc-a')
+    expect(w.text()).not.toContain('svc-b')
+
+    await tab('alerts.only_warn').trigger('click')
+    expect(w.text()).toContain('svc-b')
+    expect(w.text()).not.toContain('svc-a')
+
+    await tab('common.all').trigger('click')
+    expect(w.text()).toContain('svc-c')
+    w.unmount()
+  })
+
+  it('announces the filtered result count next to the level tabs', async () => {
+    // Same contract as the text filters (filterCounts.test.js): the tabs
+    // shrink the table, and "shown / total" through role="status" is the only
+    // feedback a screen-reader user gets.
+    api.getAlerts.mockResolvedValue({
+      alerts: [
+        { t: 1, name: 'svc-a', level: 'down', event: 'problem', kind: 'service' },
+        { t: 2, name: 'svc-b', level: 'warn', event: 'problem', kind: 'service' },
+        { t: 3, name: 'svc-c', level: 'ok', event: 'resolved', kind: 'service' },
+      ],
+    })
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+
+    const count = w.find('.tabs .meta-count[role="status"]')
+    expect(count.exists(), 'live result count').toBe(true)
+    expect(count.text()).toBe('3 / 3')
+
+    const tab = (label) => w.findAll('.tabs button').find((b) => b.text() === label)
+    await tab('alerts.only_issues').trigger('click')
+    expect(count.text()).toBe('2 / 3')
+    await tab('alerts.only_down').trigger('click')
+    expect(count.text()).toBe('1 / 3')
+    w.unmount()
+  })
+
+  it('says a filter came up empty instead of rendering a bare table', async () => {
+    api.getAlerts.mockResolvedValue({
+      alerts: [{ t: 3, name: 'svc-c', level: 'ok', event: 'resolved', kind: 'service' }],
+    })
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text() === 'alerts.only_down').trigger('click')
+    expect(w.text()).toContain('alerts.filter_empty')
+    w.unmount()
+  })
+
+  it('polls while mounted and stops the poller on leave', async () => {
+    api.getAlerts.mockResolvedValue({ alerts: [] })
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+    expect(api.getAlerts).toHaveBeenCalledTimes(1)
+    // The poller re-arms with setTimeout; a queued tick that fires after
+    // unmount must not hit the API again.
+    vi.useFakeTimers()
+    w.unmount()
+    await vi.advanceTimersByTimeAsync(120000)
+    vi.useRealTimers()
+    expect(api.getAlerts).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps background poll failures silent but toasts a manual refresh failure', async () => {
+    const toast = vi.fn()
+    api.getAlerts.mockRejectedValue(new Error('panel down'))
+    vi.useFakeTimers()
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    // Mount refresh counts as manual: the operator just navigated here.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(toast).toHaveBeenCalledTimes(1)
+    // One background tick later: no second toast for the same outage.
+    await vi.advanceTimersByTimeAsync(31000)
+    expect(toast).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+    w.unmount()
+  })
 })

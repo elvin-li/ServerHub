@@ -86,7 +86,7 @@
            labels sit under the plot, first/last on the time extent ends. -->
       <div v-if="xTicks.length" class="x-axis-row">
         <div v-if="!quiet" class="x-spacer"></div>
-        <div class="x-axis" :class="{ 'two-line': xAxisTwoLine }">
+        <div :ref="bindAxis" class="x-axis" :class="{ 'two-line': xAxisTwoLine }">
           <span
             v-for="(g, i) in xTicks"
             :key="'xl'+i"
@@ -110,7 +110,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { injectI18n } from '../i18n'
 import { finiteText } from '../lib/finite'
 
@@ -300,10 +300,57 @@ function formatTimeTick(epochSec, spanSec) {
 const X_TICK_COUNT_SHORT = 5
 const X_TICK_COUNT_LONG = 3
 
+//: Width one label needs before the next may start. Every format the axis
+//: emits is at most five monospace characters (`HH:MM`, `12/31`, and the wider
+//: line of the two-line `M/D`+`HH:MM`), which is ~30px at the 10px font below;
+//: the rest is the smallest gap that still reads as two separate labels.
+const X_LABEL_MIN_PX = 38
+
 function xTickCount(spanSec) {
   if (spanSec > 36 * 3600 && spanSec <= 10 * 86400) return X_TICK_COUNT_LONG
   return X_TICK_COUNT_SHORT
 }
+
+//: Live width of the label strip, or 0 before/without a ResizeObserver.
+const axisWidth = ref(0)
+let axisObserver = null
+let axisEl = null
+
+/**
+ * Track the label strip's width so the tick count can fit it.
+ *
+ * The dashboard puts two charts side by side inside one card, which leaves each
+ * x-axis ~110px: five `HH:MM` labels do not fit and rendered as `11:1711:32`.
+ * A template ref rather than onMounted because the row is behind v-if, and a
+ * width of 0 (no ResizeObserver, e.g. jsdom) keeps the full tick count.
+ */
+function bindAxis(el) {
+  // Vue re-invokes a template ref on every patch of its element, so without
+  // this the observer would be torn down and rebuilt on each metrics tick.
+  if (el === axisEl) return
+  axisEl = el
+  if (axisObserver) {
+    axisObserver.disconnect()
+    axisObserver = null
+  }
+  if (!el || typeof ResizeObserver === 'undefined') {
+    axisWidth.value = 0
+    return
+  }
+  axisWidth.value = el.getBoundingClientRect().width || 0
+  // Safe against resize loops: .x-axis is a flex child whose labels are
+  // absolutely positioned, so how many we draw cannot change its width.
+  axisObserver = new ResizeObserver((entries) => {
+    axisWidth.value = entries[0]?.contentRect?.width || 0
+  })
+  axisObserver.observe(el)
+}
+
+onBeforeUnmount(() => {
+  axisObserver?.disconnect()
+  axisObserver = null
+  axisEl = null
+})
 
 const xTicks = computed(() => {
   if (props.quiet) return []
@@ -311,7 +358,13 @@ const xTicks = computed(() => {
   if (!ext) return []
   const span = ext.hi - ext.lo
   if (!(span > 0)) return []
-  const n = xTickCount(span)
+  let n = xTickCount(span)
+  // A leftover non-finite rect would make the tick count NaN, and the loop
+  // below would then emit no labels at all rather than too many.
+  const width = axisWidth.value
+  if (Number.isFinite(width) && width > 0) {
+    n = Math.max(2, Math.min(n, Math.floor(width / X_LABEL_MIN_PX)))
+  }
   const out = []
   for (let i = 0; i < n; i++) {
     const frac = i / (n - 1)
@@ -581,7 +634,11 @@ function formatLegend(v) {
 }
 .lc.quiet .plot-body { border-left: none; }
 
-/* Y labels in real HTML — fixed aspect, no SVG stretch */
+/* Y labels in real HTML — fixed aspect, no SVG stretch.
+   Axis labels take --sub at full strength: they are 10px, and the extra
+   opacity: .8 they used to carry pushed the effective colour to #8b8b8f on
+   white, i.e. 3.4:1, under the AA floor for text that small. --sub is already
+   the muted tone each theme picked, so dimming it twice was the bug. */
 .y-axis {
   position: relative;
   width: 34px;
@@ -600,7 +657,9 @@ function formatLegend(v) {
   font-weight: 500;
   white-space: nowrap;
   user-select: none;
-  opacity: .8;
+  /* No extra opacity: --sub is already the muted-text token and clears WCAG AA
+     on the card (5.07:1), but multiplying it by .8 blended it back toward the
+     surface to 3.39:1 — every axis label on every chart failed AA at 10px. */
 }
 
 .plot-body {
@@ -644,7 +703,7 @@ function formatLegend(v) {
   white-space: pre;
   text-align: center;
   user-select: none;
-  opacity: .8;
+  /* No extra opacity, for the same reason as .y-lbl above. */
 }
 .x-lbl.first { transform: none; text-align: left; }
 .x-lbl.last { transform: translateX(-100%); text-align: right; }
@@ -665,7 +724,7 @@ function formatLegend(v) {
   transform: translateY(-100%);
   font-size: 10px;
   line-height: 1.2;
-  color: var(--warn);
+  color: var(--warn-text);
   font-family: ui-monospace, Menlo, monospace;
   font-weight: 600;
   background: color-mix(in srgb, var(--card) 88%, transparent);

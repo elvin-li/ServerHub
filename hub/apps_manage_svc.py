@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 from hub import cli_args
-from hub.docker_cli import _jsonable, docker, engine_up, inspect_object
+from hub.docker_cli import _jsonable, docker, engine_up, inspect_object, looks_cli_vanished, looks_engine_down
 from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import DOCKER, user_home
@@ -87,7 +87,14 @@ def _field_text(value, fallback: str = "") -> str:
             return fallback
         return str(value)
     if isinstance(value, int):
-        return str(value)
+        # A YAML hex/octal leftover dodges the int(str) digit cap, so an
+        # override ``port: 0xfff…`` arrives as a >4300-digit int whose str()
+        # is ValueError — it used to escape this helper and 500
+        # GET /api/apps/managed/detail (and cost inventory whole sections).
+        try:
+            return str(value)
+        except ValueError:
+            return fallback
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
@@ -407,7 +414,26 @@ def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
             env=dict(os.environ),
             cap=4000,
         )
-        return {"ok": rc == 0, "message": (_as_text(msg) or f"exit {rc}").strip()}
+        text = (_as_text(msg) or f"exit {rc}").strip()
+        unreachable = looks_engine_down(text) or (
+            # The DOCKER binary vanished between the _exists() gate above and
+            # this spawn: run_capped's exact ``(-1, "not found")`` sentinel,
+            # which used to fall through as an uncoded ``ok: false`` the SPA
+            # cannot translate.
+            rc == -1 and looks_cli_vanished(text)
+        )
+        if rc != 0 and unreachable and not engine_up(force=True):
+            # Every Apps-page compose action (up/stop/restart/pull/logs) used
+            # to hand the raw untranslated daemon stderr back as ok:false,
+            # pointing away from the real remedy (start the engine).  Same
+            # convention as network_svc._classify_docker_failure, kept as the
+            # coded soft-fail because this helper's contract is a dict the SPA
+            # renders.  The probe is *forced*: the memoised answer has a 5s
+            # TTL and the seconds right after the engine stops are when a
+            # stale "up" would misclassify this.  A failure while the engine
+            # really is up keeps the daemon's message -- it is then the truth.
+            return soft_fail("container.engine_down")
+        return {"ok": rc == 0, "message": text}
     except Exception as e:
         return {"ok": False, "message": _as_text(e)}
 
@@ -617,7 +643,12 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
         compose = path / "compose.yml"
     if _exists(compose):
         r = _compose_cmd(str(compose), "logs", "--no-color", "--tail", str(lines), timeout=60)
-        return {"ok": r["ok"], "log": r["message"], "source": str(compose)}
+        out = {"ok": r["ok"], "log": r["message"], "source": str(compose)}
+        if isinstance(r.get("code"), str):
+            # engine-down (or another coded soft-fail): keep the code so the
+            # SPA can translate it instead of rendering raw daemon stderr.
+            out["code"] = r["code"]
+        return out
     # fallback: logs of matching containers
     from hub import containers_svc
     containers = _container_rows(containers_svc.list_containers(with_stats=False))
@@ -1454,10 +1485,17 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         if action_name == "update":
             r1 = _compose_cmd(str(compose), "pull", timeout=600)
             r2 = _compose_cmd(str(compose), "up", "-d", timeout=300)
-            return {
+            out = {
                 "ok": r1["ok"] and r2["ok"],
                 "message": (r1["message"] + "\n" + r2["message"])[-2500:],
             }
+            code = next(
+                (r.get("code") for r in (r1, r2) if isinstance(r.get("code"), str)),
+                None,
+            )
+            if code:
+                out["code"] = code
+            return out
         if action_name == "uninstall":
             from hub import catalog
             return catalog.uninstall_template(

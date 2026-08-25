@@ -21,10 +21,12 @@ TTL. Consolidating them means the property is asserted once, here, instead of be
 re-established per module.
 
 Two page caches stay hand-written on purpose and are exempted below with reasons:
-``network_svc`` needs a generation counter so an invalidation during a build cannot
-be overwritten by that build, and ``status.full_status`` serves the last good
-snapshot when a rebuild raises. Neither behaviour belongs in the shared helper, and
-both are already single-flight.
+``network_svc`` coalesces a ``force=True`` caller onto a refresh already in flight,
+and ``status.full_status`` serves the last good snapshot when a rebuild raises.
+Neither behaviour belongs in the shared helper, and both are already single-flight.
+The third reason ``network_svc`` used to give -- a generation counter, so that an
+invalidation landing mid-build is not overwritten when the build finishes -- is no
+longer one: both shared helpers do that now, and it is asserted below.
 
 A static scan of this was written first and produced two false positives -- exactly
 those two -- because their work happens inside a ``_build_*()`` call the token list
@@ -45,7 +47,7 @@ from unittest import mock
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from hub.util import cached_snapshot  # noqa: E402
+from hub.util import cached_snapshot, ttl_memo  # noqa: E402
 
 HUB = BASE / "hub"
 
@@ -178,6 +180,56 @@ class CachedSnapshotContractTests(unittest.TestCase):
         self.assertEqual(len(built), 2)
         self.assertIs(read.cache_clear, read.invalidate, "the alias diverged")
 
+    def test_an_invalidate_during_a_build_is_not_undone_by_that_build(self):
+        """The build already read the pre-action world; publishing it loses the action.
+
+        The invalidate calls in this tree all sit on the mutation path -- stop a
+        container, change a share, rotate a key -- and the dashboard is polling
+        the whole time, so an overlapping build is the normal case rather than a
+        narrow window. Without a generation counter the poll that started a
+        moment before the click wins, and the page shows the pre-action state
+        until the TTL lapses.
+        """
+        world = {"state": "running"}
+        reading = threading.Event()
+        release = threading.Event()
+
+        @cached_snapshot(30.0)
+        def read():
+            observed = world["state"]
+            reading.set()
+            release.wait(2)
+            return {"state": observed}
+
+        slow = threading.Thread(target=read)
+        slow.start()
+        self.assertTrue(reading.wait(2), "the build never started")
+
+        world["state"] = "stopped"
+        read.invalidate()
+        release.set()
+        slow.join(timeout=2)
+
+        self.assertEqual(
+            read(),
+            {"state": "stopped"},
+            "a build that began before invalidate() republished the stale payload",
+        )
+
+    def test_a_build_with_no_invalidate_racing_it_still_publishes(self):
+        """The generation check must not turn every refresh into a rebuild."""
+        built = []
+
+        @cached_snapshot(30.0)
+        def read():
+            built.append(1)
+            return {"n": len(built)}
+
+        read()
+        read()
+        read()
+        self.assertEqual(len(built), 1, "the epoch check defeated the cache")
+
     def test_a_raising_builder_is_not_cached(self):
         """Otherwise one transient failure would be served for a whole TTL."""
         calls = []
@@ -191,6 +243,140 @@ class CachedSnapshotContractTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 read()
         self.assertEqual(len(calls), 2, "a failure was cached")
+
+
+class TtlMemoContractTests(unittest.TestCase):
+    """The per-key helper, which the same mutation paths invalidate."""
+
+    def test_concurrent_callers_of_one_key_read_once(self):
+        reads = []
+        lock = threading.Lock()
+
+        @ttl_memo(30.0)
+        def read(device):
+            with lock:
+                reads.append(device)
+            time.sleep(0.05)
+            return device.upper()
+
+        threads = [threading.Thread(target=read, args=("disk0",)) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(reads, ["disk0"], f"eight callers ran {len(reads)} reads")
+
+    def test_two_keys_are_still_read_concurrently(self):
+        """Serialising distinct keys would defeat the fan-out that motivated this."""
+        live = 0
+        peak = 0
+        lock = threading.Lock()
+
+        @ttl_memo(30.0)
+        def read(device):
+            nonlocal live, peak
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.05)
+            with lock:
+                live -= 1
+            return device
+
+        threads = [
+            threading.Thread(target=read, args=(f"disk{n}",)) for n in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(peak, 4, "per-key reads stopped overlapping")
+
+    def test_a_varying_key_does_not_grow_the_cache_for_ever(self):
+        """The constraint that made containers_svc take no arguments.
+
+        Entries only ever left on invalidate(), so a memo keyed on anything
+        that changes -- a ps table, a container-name tuple -- kept one dead
+        entry per key seen since boot.  Expired entries are swept on a miss
+        now, so what is held is roughly one TTL's worth of keys.
+        """
+        memo = ttl_memo(0.2)(lambda key: key)
+
+        for i in range(400):
+            memo(f"k{i}")
+        self.assertEqual(len(memo._cache), 400, "sanity: they were all cached")
+
+        time.sleep(0.25)
+        for i in range(400, 440):
+            memo(f"k{i}")
+        self.assertEqual(
+            len(memo._cache), 40,
+            "the 400 expired entries were still held after their TTL lapsed",
+        )
+
+    def test_a_live_entry_is_never_swept(self):
+        """The sweep must only drop what could no longer be served anyway."""
+        memo = ttl_memo(30)(lambda key: key)
+        for i in range(100):
+            memo(f"k{i}")
+        reads = []
+        counting = ttl_memo(30)(lambda key: (reads.append(key), key)[1])
+        for i in range(100):
+            counting(f"k{i}")
+        for i in range(100):
+            counting(f"k{i}")
+        self.assertEqual(len(reads), 100, "a sweep dropped entries that were still fresh")
+        self.assertEqual(len(memo._cache), 100)
+
+    def test_the_per_key_locks_are_released_with_the_key(self):
+        memo = ttl_memo(0.2)(lambda key: key)
+        for i in range(200):
+            memo(f"k{i}")
+        self.assertEqual(
+            len(memo._refresh_locks), 0,
+            "a lock was kept for every key ever refreshed",
+        )
+
+    def test_an_invalidate_during_a_read_is_not_undone_by_that_read(self):
+        """Same property as the snapshot helper, and the same reason it matters."""
+        world = {"state": "attached"}
+        reading = threading.Event()
+        release = threading.Event()
+
+        @ttl_memo(30.0)
+        def read(device):
+            observed = world["state"]
+            reading.set()
+            release.wait(2)
+            return observed
+
+        slow = threading.Thread(target=read, args=("disk0",))
+        slow.start()
+        self.assertTrue(reading.wait(2), "the read never started")
+
+        world["state"] = "detached"
+        read.invalidate()
+        release.set()
+        slow.join(timeout=2)
+
+        self.assertEqual(
+            read("disk0"),
+            "detached",
+            "a read that began before invalidate() republished the stale value",
+        )
+
+    def test_the_epoch_check_does_not_defeat_the_cache(self):
+        reads = []
+
+        @ttl_memo(30.0)
+        def read(device):
+            reads.append(device)
+            return device
+
+        read("disk0")
+        read("disk0")
+        read("disk1")
+        self.assertEqual(reads, ["disk0", "disk1"])
 
 
 class ConvertedSnapshotTests(unittest.TestCase):
@@ -409,6 +595,199 @@ class AdaptiveScanCacheTests(unittest.TestCase):
         self.assertEqual(peak, 2, "the compose and nginx scans stopped overlapping")
 
 
+class InvalidationDuringBuildTests(unittest.TestCase):
+    """The three page caches that stayed hand-written need the property too.
+
+    They are on the shortest path between an action and the row it changes:
+    stopping a container ends in ``invalidate_status``, which cascades into the
+    container discovery cache, and saving a pool ends in ``invalidate_pool``.
+    Each is polled by the page the operator is looking at, so the build that
+    loses this race is the one that started a moment before the click, and the
+    symptom is the action appearing not to have happened.
+    """
+
+    def _racing_build(self, world, key="state"):
+        """A builder that samples *world* on entry and publishes much later."""
+        reading = threading.Event()
+        release = threading.Event()
+
+        def build(*args, **kwargs):
+            observed = world[key]
+            if not reading.is_set():
+                reading.set()
+                release.wait(2)
+            return observed
+
+        return build, reading, release
+
+    def _assert_invalidate_wins(self, world, read, invalidate, expected):
+        slow = threading.Thread(target=read)
+        slow.start()
+        self.assertTrue(world["reading"].wait(2), "the build never started")
+        world["state"] = "after"
+        invalidate()
+        world["release"].set()
+        slow.join(timeout=2)
+        self.assertEqual(read(), expected, "the stale build published anyway")
+
+    def test_full_status_drops_a_build_that_invalidate_superseded(self):
+        from hub import status
+
+        with status._lock:
+            status._status_cache.update(t=0.0, v=None)
+        self.addCleanup(
+            lambda: status._status_cache.update(t=0.0, v=None)
+        )
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+        world["reading"], world["release"] = reading, release
+
+        with (
+            mock.patch.object(status, "_build_status",
+                              lambda: {"marker": build()}),
+            mock.patch.object(status, "_stamp_locale", lambda v: v),
+        ):
+            self._assert_invalidate_wins(
+                world,
+                lambda: status.full_status().get("marker"),
+                # The real invalidate_status also reaches into the discovery
+                # caches; those imports are cheap and their absence would be
+                # the more surprising thing to mock away.
+                status.invalidate_status,
+                "after",
+            )
+
+    def test_the_adaptive_scan_drops_a_build_that_invalidate_superseded(self):
+        """Sixty seconds, so this is the longest-lived of the four.
+
+        Tearing a compose project down ends in ``invalidate_status`` like every
+        other action; without the generation check the project stayed in
+        ``compose_projects`` for a full minute afterwards.
+        """
+        from hub import status
+
+        with status._lock:
+            status._adaptive_cache.update(t=0.0, compose=None, nginx=None)
+        self.addCleanup(
+            lambda: status._adaptive_cache.update(t=0.0, compose=None, nginx=None)
+        )
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+
+        with (
+            mock.patch.object(status, "scan_new_compose_projects",
+                              lambda: [build()]),
+            mock.patch.object(status, "nginx_sites", list),
+        ):
+            slow = threading.Thread(target=status._adaptive_info)
+            slow.start()
+            self.assertTrue(reading.wait(2), "the scan never started")
+            world["state"] = "after"
+            status.invalidate_status()
+            release.set()
+            slow.join(timeout=2)
+            self.assertEqual(
+                status._adaptive_info()["compose_projects"],
+                ["after"],
+                "the pre-action project list was republished for a whole minute",
+            )
+
+    def test_container_discovery_drops_a_superseded_docker_ps(self):
+        from hub.discovery import containers
+
+        containers.invalidate_containers()
+        self.addCleanup(containers.invalidate_containers)
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+        world["reading"], world["release"] = reading, release
+
+        def fake_sh(cmd, timeout=None):
+            return 0, f"web\trunning\tUp ({build()})\tnginx\t", ""
+
+        def detail():
+            items, _up = containers.discover_containers()
+            return items[0]["detail"] if items else ""
+
+        with (
+            mock.patch.object(containers, "sh", fake_sh),
+            mock.patch.object(containers, "override", lambda name: None),
+            mock.patch.object(containers, "configured_signatures", list),
+            mock.patch.object(containers, "configured_group_rules", list),
+        ):
+            self._assert_invalidate_wins(
+                world, detail, containers.invalidate_containers, "Up (after)"
+            )
+
+    def test_pool_overview_drops_a_build_that_invalidate_superseded(self):
+        from hub import storage_pool_svc
+
+        storage_pool_svc.invalidate_pool()
+        self.addCleanup(storage_pool_svc.invalidate_pool)
+
+        world = {"state": "before"}
+        build, reading, release = self._racing_build(world)
+        world["reading"], world["release"] = reading, release
+
+        with mock.patch.object(storage_pool_svc, "_build",
+                               lambda: {"marker": build()}):
+            self._assert_invalidate_wins(
+                world,
+                lambda: storage_pool_svc.pool_overview().get("marker"),
+                storage_pool_svc.invalidate_pool,
+                "after",
+            )
+
+    def test_lan_detection_drops_a_probe_that_invalidate_superseded(self):
+        """`network_svc._bust()` calls this right after changing the address."""
+        from hub import host_address
+
+        host_address.invalidate_routing()
+        self.addCleanup(host_address.invalidate_routing)
+
+        world = {"state": "10.0.0.1"}
+        build, reading, release = self._racing_build(world)
+
+        with (
+            mock.patch.object(host_address, "default_interface",
+                              lambda force=False: "en0"),
+            mock.patch.object(host_address, "interface_address",
+                              lambda iface, force=False: build()),
+            mock.patch.object(host_address, "_usable_address", bool),
+        ):
+            slow = threading.Thread(target=host_address.detect_lan_ip)
+            slow.start()
+            self.assertTrue(reading.wait(2), "the probe never started")
+            world["state"] = "192.168.1.5"
+            host_address.invalidate_routing()
+            release.set()
+            slow.join(timeout=2)
+            self.assertEqual(
+                host_address.detect_lan_ip(),
+                "192.168.1.5",
+                "the pre-change address was republished over the invalidate",
+            )
+
+    def test_health_still_serves_the_last_snapshot_after_an_invalidate(self):
+        """invalidate_status expires the snapshot without discarding it.
+
+        /api/health reads it through cached_status() and never builds, so
+        dropping the payload would make a liveness probe answer "no data"
+        every time a container was restarted.
+        """
+        from hub import status
+
+        with status._lock:
+            status._status_cache.update(t=time.time(), v={"ok": True})
+        self.addCleanup(
+            lambda: status._status_cache.update(t=0.0, v=None)
+        )
+        status.invalidate_status()
+        self.assertEqual(status.cached_status(), {"ok": True})
+
+
 class NoHandWrittenPayloadCacheTests(unittest.TestCase):
     """A new endpoint cache must use a shared helper, not another local copy.
 
@@ -424,8 +803,9 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
     #: shape the helper replaced.
     EXEMPT = {
         "hub/network_svc.py":
-            "generation counter: an invalidation during a build must not be "
-            "overwritten when that build finishes",
+            "a refresh serial, so a force=True caller that queued behind another "
+            "refresh reuses that refresh instead of running a second one; also "
+            "hands out a copy per caller rather than the shared list",
         "hub/status.py":
             "serves the last good snapshot when a rebuild raises",
         "hub/health_svc.py": "single-flight via its own _refresh_lock",
@@ -443,6 +823,21 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
         "hub/tools_svc.py":
             "three separate refresh locks, one per read, so a slow syslog tail does "
             "not block the hardware profile",
+        "hub/catalog.py":
+            "keys on a signature of the template files and install dirs, not on a "
+            "TTL alone, and deep-copies per caller because catalog_overview() "
+            "edits the rows it is handed",
+    }
+
+    #: The two hand-written caches that hold their *access* lock across the
+    #: refresh itself.  An invalidation cannot interleave with a publish there,
+    #: because it has to wait for the publish first -- so they are correct
+    #: without a generation counter, at the cost of blocking readers during a
+    #: probe.  Both probes are a single short subprocess, which is why the
+    #: trade is acceptable in these two and not in the others.
+    NO_GENERATION_NEEDED = {
+        "hub/docker_cli.py": "_engine_lock is held across `docker info`",
+        "hub/cloudflared_svc.py": "_tunnels_lock is held across `cloudflared tunnel list`",
     }
 
     def _payload_cache_modules(self) -> list[str]:
@@ -458,7 +853,8 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
                 value = getattr(node, "value", None)
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(value, ast.Dict):
                     keys = {k.value for k in value.keys if isinstance(k, ast.Constant)}
-                    if keys and keys <= {"t", "v", "value", "ts", "data", "compose", "nginx"}:
+                    if keys and keys <= {"t", "v", "value", "ts", "data",
+                                         "compose", "nginx", "sig", "items"}:
                         out.append(path.relative_to(BASE).as_posix())
                         break
         return out
@@ -484,6 +880,61 @@ class NoHandWrittenPayloadCacheTests(unittest.TestCase):
             "whole-payload read or hub.util.ttl_memo for a per-key one; both are "
             "single-flight and publish atomically, which every hand-written copy in "
             "this tree got wrong:\n  " + "\n  ".join(offenders),
+        )
+
+    def test_every_invalidatable_hand_written_cache_has_a_generation(self):
+        """A cache you can invalidate needs to be able to lose a stale publish.
+
+        Otherwise the refresh that was already running when the operator acted
+        writes the pre-action answer back and stamps it fresh, and the panel
+        reports the state the action just replaced for a whole TTL. Modules
+        that hold their access lock across the refresh are exempt above with
+        the reason; everything else needs the counter.
+        """
+        gaps = []
+        for module in sorted(self.EXEMPT):
+            if module in self.NO_GENERATION_NEEDED:
+                continue
+            tree = ast.parse((BASE / module).read_text())
+            invalidates = any(
+                isinstance(node, ast.FunctionDef)
+                and (node.name.startswith("invalidate") or node.name.endswith("_bust"))
+                for node in tree.body
+            )
+            if not invalidates:
+                continue
+            has_counter = any(
+                "generation" in target.id.lower()
+                for node in tree.body
+                if isinstance(node, ast.Assign)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            )
+            if not has_counter:
+                gaps.append(module)
+        self.assertEqual(
+            gaps,
+            [],
+            "these expose an invalidation but cannot tell a refresh that began "
+            "before it from one that began after, so the invalidate can be "
+            "silently undone:\n  " + "\n  ".join(gaps),
+        )
+
+    def test_the_generation_scan_sees_the_counters_it_expects(self):
+        """Guards the test above against a detector that finds nothing."""
+        found = [
+            module
+            for module in sorted(self.EXEMPT)
+            if any(
+                "generation" in target.id.lower()
+                for node in ast.parse((BASE / module).read_text()).body
+                if isinstance(node, ast.Assign)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            )
+        ]
+        self.assertGreaterEqual(
+            len(found), 6, f"the generation-counter scan only matched {found}"
         )
 
     def test_the_shared_helpers_are_actually_used(self):

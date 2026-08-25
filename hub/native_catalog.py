@@ -1037,6 +1037,36 @@ def _brew_refuses_root(msg: str) -> bool:
     return _BREW_ROOT_REFUSAL in (msg or "").lower()
 
 
+def _brew_vanished(result: dict) -> bool:
+    """Whether a ``_run`` result means the brew binary itself is gone.
+
+    ``run_capped`` reports a FileNotFoundError spawn as the exact sentinel
+    ``(-1, "not found")`` — never a real brew exit (the vms_svc / brew_svc /
+    hub.backups convention).  A brew that vanished between install_native's
+    up-front ``catalog.brew_missing`` gate and the spawn used to fall through
+    as an uncoded ``{ok: false, message: "not found"}`` the SPA cannot
+    translate.  A timeout keeps its own message ("command timed out") and a
+    genuine non-zero brew exit keeps its raw output — that is then the truth.
+    """
+    return (
+        result.get("rc") == -1
+        and _as_text(result.get("message")).strip() == "not found"
+    )
+
+
+def _raise_if_brew_vanished(result: dict) -> dict:
+    """Map the vanished-brew spawn sentinel to the same coded 503 as the gate.
+
+    Message-pattern first, then confirmed against the filesystem — a brew
+    that is still present while a run somehow reports the sentinel keeps its
+    raw result, mirroring how the docker classifiers confirm with a forced
+    ``engine_up`` probe before mapping to ``container.engine_down``.
+    """
+    if _brew_vanished(result) and not _is_file(Path(BREW)):
+        raise api_error("catalog.brew_missing", path=BREW)
+    return result
+
+
 def _run_brew(
     brew_args: list[str],
     *,
@@ -1064,7 +1094,7 @@ def _run_brew(
     from hub.macos_admin import admin_password_supplied, prime_sudo_ticket
 
     cmd = [BREW, *brew_args]
-    r = _run(cmd, timeout=timeout)
+    r = _raise_if_brew_vanished(_run(cmd, timeout=timeout))
     if r["ok"] or not admin_on_sudo_fail:
         return r
 
@@ -1083,7 +1113,7 @@ def _run_brew(
     if admin_password_supplied():
         prime = prime_sudo_ticket(timeout=min(30, timeout))
         if prime.get("ok"):
-            r2 = _run(cmd, timeout=timeout)
+            r2 = _raise_if_brew_vanished(_run(cmd, timeout=timeout))
             if r2["ok"] or not _needs_admin_retry(r2.get("message") or ""):
                 return r2
             r = r2

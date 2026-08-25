@@ -151,6 +151,842 @@ describe('control names', () => {
       'aria-label must name the control, not repeat its example value',
     ).toEqual([])
   })
+
+  it('names every form control on the account, settings, sharing and workload surfaces', () => {
+    // The form-grid layout puts a <label> next to its control without for/id,
+    // so the label text counts for nothing: the text inputs all carried
+    // aria-label while nine checkboxes/selects on Settings (notify, thresholds,
+    // WoL, advanced, terminal) shipped with no accessible name at all.
+    // Accepted name sources: aria-label / aria-labelledby (static or bound),
+    // a wrapping <label>, or a for= that targets the control's id.
+    // The sharing surfaces (Shares sheet, Files toolbar/table, PhotosHub
+    // settings, WireGuard peer forms + settings dialog) are in the list so a
+    // control added to any of their form grids cannot ship nameless.
+    // The workload surfaces followed in the next sweep: the Apps install-modal
+    // variable inputs and autostart policy select, the Containers select-all /
+    // per-row / privileged checkboxes, and the Tools syslog level and range
+    // selects all sat beside unassociated labels (or none at all).
+    // The services/maintenance surfaces (Services toolbar + uninstall dialog,
+    // Scheduler job table + job form, Maintenance/Brew/Audit filters) close the
+    // sweep: their form grids use the same label-without-for layout, so a
+    // control added to any of them cannot ship nameless.
+    // Logs and Gateway joined last: the Logs toolbar's source/lines selects and
+    // highlight filter were labeled but never pinned, and Gateway ships no form
+    // control today — both are listed so one cannot be added nameless.
+    const FILES = [
+      'views/Login.vue', 'views/Account.vue', 'views/Users.vue', 'views/Settings.vue',
+      'views/Shares.vue', 'views/Files.vue', 'views/PhotosHub.vue', 'views/WireGuard.vue',
+      'views/Compose.vue', 'views/Apps.vue', 'views/Containers.vue', 'views/Network.vue',
+      'views/Tools.vue', 'views/Services.vue', 'views/Scheduler.vue', 'views/Maintenance.vue',
+      'views/Brew.vue', 'views/Audit.vue', 'views/Logs.vue', 'views/Gateway.vue',
+      'components/ScheduleJobForm.vue',
+    ]
+    const TAG = /<\/?([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)\/?>/g
+    const offenders = []
+    for (const name of FILES) {
+      const src = readFileSync(resolve(SRC, name), 'utf8')
+      const template = src
+        .slice(0, src.search(/<script\b/) >>> 0)
+        // Prose comments mention tags ("the grid <label>s…"); they must not
+        // confuse the nesting walker below.
+        .replace(/<!--[\s\S]*?-->/g, '')
+      let labelDepth = 0
+      for (const m of template.matchAll(TAG)) {
+        const [raw, tag, attrs] = m
+        if (tag === 'label') {
+          labelDepth += raw.startsWith('</') ? -1 : 1
+          continue
+        }
+        if (raw.startsWith('</')) continue
+        if (!['input', 'select', 'textarea'].includes(tag)) continue
+        if (labelDepth > 0) continue
+        if (/\baria-label(?:ledby)?=/.test(attrs)) continue
+        const id = attrs.match(/\sid="([^"]+)"/)
+        if (id && template.includes(`for="${id[1]}"`)) continue
+        offenders.push(`${name}: ${raw.replace(/\s+/g, ' ').slice(0, 90)}`)
+      }
+    }
+    expect(
+      offenders,
+      'a form control next to an unassociated <label> has no accessible name',
+    ).toEqual([])
+  })
+})
+
+describe('account surface load-failure alerts', () => {
+  // These fetch failures render inline (no toast, no LoadFailure banner), so
+  // without role="alert" they appear silently for assistive technology.
+  it('announces the Settings 2FA and API-key load failures', () => {
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    // Account.vue carried role="alert" on its copy of the 2FA block from the
+    // start; the Settings copy shipped without it.
+    expect(settings).toMatch(/v-if="twofaError"[^>]*role="alert"/)
+    expect(settings).toMatch(/v-else-if="apiKeysError"[^>]*role="alert"/)
+    const account = readFileSync(resolve(SRC, 'views/Account.vue'), 'utf8')
+    expect(account).toMatch(/v-if="twofaError"[^>]*role="alert"/)
+  })
+
+  it('announces the Users service-picker and accounts-table load failures', () => {
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    // Both copies of the resource picker (create form + row editor).
+    const pickers = users.match(/v-if="serviceOptionsError"[^>]*role="alert"/g) || []
+    expect(pickers.length).toBe(2)
+    // The empty-row error text, but not its loading/none siblings, is live.
+    expect(users).toMatch(/v-if="accountsError"[^>]*role="alert"/)
+  })
+})
+
+describe('sharing surface load-failure alerts', () => {
+  // Same class of gap as the account surfaces: inline fetch failures with no
+  // toast and no LoadFailure banner, appearing silently for AT.
+  it('announces the Shares ACL read failure inside the edit sheet', () => {
+    // The ACL loads *after* the sheet already holds focus, so the panel-focus
+    // read never covers it.
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(shares).toMatch(/v-else-if="aclError"[^>]*role="alert"/)
+  })
+
+  it('announces the PhotosHub settings-config load failure', () => {
+    // pendingError and logError carried role="alert" from the start; the
+    // settings tab's copy shipped without it.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/v-if="settingsError"[^>]*role="alert"/)
+    expect(photoshub).toMatch(/v-if="pendingError"[^>]*role="alert"/)
+    expect(photoshub).toMatch(/v-if="logError"[^>]*role="alert"/)
+  })
+
+  it('announces the WireGuard settings-dialog load failure', () => {
+    // The tile latches a failed read and blocks Save; without role="alert" a
+    // screen-reader user hears an editable form and a disabled Save button
+    // with no stated reason.
+    const wireguard = readFileSync(resolve(SRC, 'views/WireGuard.vue'), 'utf8')
+    expect(wireguard).toMatch(/v-if="!settingsLoaded"[^>]*role="alert"/)
+  })
+
+  it('keeps the Files listing error bar an assertive live region', () => {
+    const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+    expect(files).toMatch(/class="err-live" role="alert" aria-live="assertive"/)
+  })
+
+  it('voices the Shares ACL loading placeholder inside the edit sheet', () => {
+    // The ACL loads after the sheet already holds focus, so the swap from
+    // this placeholder was silent for a screen reader (Login-loading /
+    // Settings launcher-placeholder pattern); its failure sibling above
+    // already carries role=alert.
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(shares).toMatch(/v-if="aclLoading" class="acl-hint" role="status"/)
+  })
+
+  it('announces the Shares page-title count summary', () => {
+    // The shares/services breakdown is Refresh's only answer and it changed
+    // silently for a screen reader, while the same page-title count on Users
+    // and Bookmarks already carried role=status.
+    const shares = readFileSync(resolve(SRC, 'views/Shares.vue'), 'utf8')
+    expect(shares).toMatch(/class="meta" role="status">\s*\{\{ data\s*\? t\('shares\.summary'/)
+  })
+})
+
+describe('sharing surface control names', () => {
+  it('does not shadow the PhotosHub people labels with shorter aria-labels', () => {
+    // Each input has a for/id <label> reading "child · field". The aria-labels
+    // that used to sit on top overrode them with the bare field name, so both
+    // birthday inputs were announced identically as "birthday" with nothing
+    // saying whose.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    for (const id of ['ph-yuanbao-name', 'ph-yuanbao-bday', 'ph-erbao-name', 'ph-erbao-bday']) {
+      expect(photoshub, `${id} must keep its for/id label`).toContain(`for="${id}"`)
+      const input = photoshub.match(new RegExp(`<input id="${id}"[^>]*>`))
+      expect(input, `input #${id}`).toBeTruthy()
+      expect(input[0], `${id}: aria-label overrides the richer visible label`)
+        .not.toMatch(/aria-label/)
+    }
+  })
+
+  it('names the Containers row checkboxes after their container', () => {
+    // Same pattern the Services and Files row checkboxes already follow: a
+    // page of checkboxes all announced as "checkbox" cannot be told apart in
+    // a screen reader's form-controls listing.
+    const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+    expect(containers).toMatch(
+      /:aria-label="t\('common\.select_row_name',\s*\{\s*name:/,
+    )
+    expect(containers).toMatch(/:aria-label="t\('common\.select_all'\)"/)
+  })
+
+  it('keeps the Compose stack list keyboard-operable without nesting controls', () => {
+    // Loading a stack's YAML into the editor was row-click only — no keyboard
+    // path at all, unlike Apps (Detail button) and Files (name cell). The
+    // button role sits on the name cell, not the <tr>: the row also holds the
+    // Up/Update/Down buttons and a control may not contain other controls
+    // (ARIA nested-interactive).
+    const compose = readFileSync(resolve(SRC, 'views/Compose.vue'), 'utf8')
+    expect(compose).toMatch(
+      /<td[^>]*tabindex="0"[^>]*role="button"[^>]*@keydown\.enter\.prevent="select\(s\)"/,
+    )
+    expect(compose).not.toMatch(/<tr[^>]*role="button"/)
+  })
+
+  it('names every navigation landmark', () => {
+    // App.vue ships two labelled navs (sidebar, section tabs). The Files
+    // breadcrumb trail is a third landmark; unnamed, it is announced as an
+    // anonymous "navigation" indistinguishable from the others.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      const template = src.slice(0, src.search(/<script\b/) >>> 0)
+      for (const m of template.matchAll(/<nav\b[^>]*>|role="navigation"[^>]*/g)) {
+        const tag = m[0].startsWith('<nav')
+          ? m[0]
+          // role= can sit mid-tag; re-read the whole element around the match.
+          : template.slice(template.lastIndexOf('<', m.index), template.indexOf('>', m.index) + 1)
+        if (!/:?aria-label(?:ledby)?=/.test(tag)) offenders.push(`${name}: ${tag.replace(/\s+/g, ' ').slice(0, 80)}`)
+      }
+    }
+    expect(offenders, 'nav landmarks need aria-label to be told apart').toEqual([])
+  })
+})
+
+describe('services and scheduler surface leftovers', () => {
+  it('names the Scheduler enable toggles after their job', () => {
+    // A column of checkboxes all announced as "Enabled" cannot be told apart
+    // in a screen reader's form-controls listing — same fix as the Services
+    // and Containers row checkboxes. The single checkbox inside the job form
+    // keeps the plain label; only the per-row table copy needs the job name.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/:aria-label="t\('sched\.enable_name',\s*\{\s*name:/)
+    expect(scheduler).not.toMatch(/:aria-label="t\('sched\.enabled'\)"/)
+  })
+
+  it('announces the Scheduler run-history load failure inside its dialog', () => {
+    // The history loads after the dialog already holds focus, so the
+    // panel-focus read never covers it — same as the Shares ACL error.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/v-if="runsError"[^>]*role="alert"/)
+  })
+
+  it('announces the Scheduler job and timer counts as status regions', () => {
+    // Each toolbar count is Refresh's (and, for panel jobs, the running-jobs
+    // poll's) only summary, and it changed silently for a screen reader —
+    // same treatment as the VMs title-meta and Users/Apps toolbar counts.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/<span class="meta" role="status"[^>]*v-if="jobsLoaded">\{\{ jobs\.length \}\}/)
+    expect(scheduler).toMatch(/<span class="meta" role="status"[^>]*v-if="data">\{\{ finiteN\(data\.count\) \}\}/)
+  })
+
+  it('announces the Scheduler run-history empty state inside its dialog', () => {
+    // The loading -> "no runs recorded" flip is the whole outcome of an empty
+    // history and lands after the dialog already holds focus, so it was
+    // paint-only — same as the PhotosHub empty pending state.
+    const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
+    expect(scheduler).toMatch(/v-else-if="!runs\.length" class="meta" role="status">\{\{ t\('sched\.runs_empty'\) \}\}/)
+  })
+
+  it('announces the job form stack-list load failure instead of swallowing it', () => {
+    // A failed stack read was swallowed into `stacks = []`, leaving an empty
+    // select and a disabled Save with no stated reason — the same silent hole
+    // the WireGuard settings dialog had.
+    const form = readFileSync(resolve(SRC, 'components/ScheduleJobForm.vue'), 'utf8')
+    expect(form).toMatch(/v-if="stacksError"[^>]*role="alert"/)
+    expect(form).toMatch(/stacksError\.value = finiteText/)
+  })
+
+  it('keeps the Services card grid keyboard-operable without nesting controls', () => {
+    // Same rule that moved the Compose row role to the name cell: the card
+    // holds the ServiceActions buttons, and a control may not contain other
+    // controls (ARIA nested-interactive). The name span carries the role and
+    // the keyboard path; @click stays on the card for mouse users.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).not.toMatch(/<article[^>]*role="button"/)
+    expect(services).toMatch(/class="name"[^>]*role="button"[^>]*@keydown\.enter\.prevent="openDetail\(s\)"/)
+  })
+
+  it('renders the Maintenance load failure as the standard retryable banner', () => {
+    // The old inline placeholder only rendered once the table had rows, so a
+    // failed *first* read fell into the empty-table row with no retry and no
+    // role=alert. The behavioural half lives in loadStates.test.js.
+    const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+    expect(maintenance).toMatch(/<LoadFailure v-if="loadError"[^>]*:retry="refresh"/)
+    expect(maintenance).toMatch(/v-if="!filtered\.length && !loadError"/)
+  })
+
+  it('announces the Maintenance job log — and its finish line — as a live region', () => {
+    // pollLog appends maintenance.log_end (with the exit code) inside the
+    // modal pre when the job stops running; without a live region the finish
+    // was silent for a screen reader. Same role=log aria-live=polite pair the
+    // Compose/Apps/Containers job logs already carry.
+    const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+    expect(maintenance).toMatch(/<pre role="log" aria-live="polite">\{\{ finiteText\(logText\) \}\}<\/pre>/)
+  })
+})
+
+describe('dashboard and storage surface leftovers', () => {
+  it('exposes the Dashboard metric-range selection with aria-pressed', () => {
+    // The chosen range (1h…1y) is signalled by the `primary` tint alone. The
+    // "selected state" sweep above only matches `:class="{ active: … }"`, so
+    // this ternary-class variant slipped through it: paint for a sighted
+    // reader, nothing for anyone else.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const chip = dashboard.match(/<button[^>]*v-for="r in METRIC_RANGES"[\s\S]*?>/)
+    expect(chip, 'metric range chips').toBeTruthy()
+    expect(chip[0]).toMatch(/:aria-pressed="metricRange === r"/)
+  })
+
+  it('spells the Dashboard standalone LED states, not just their colour', () => {
+    // Four LEDs sit outside any table, so the sr-only status_led column-header
+    // convention cannot cover them: the member service cards (the sub line
+    // prefers free-text detail over the state word), the attention list
+    // (warn vs down), the recent alerts (severity), and the failed health
+    // checks (error vs warn). Same fix as the WireGuard ping rows: hide the
+    // paint, put the word beside it. ledText reuses the Services state keys,
+    // so no new locale strings.
+    // The Docker table LED joined the sweep: it sits under the sr-only
+    // status_led header, but the visible Status column is col-hide-m, so on
+    // a phone the dot is the row's only state — the Containers page rule.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/function ledText\(state\)[\s\S]*t\('services\.state_ok'\)[\s\S]*t\('services\.state_down'\)/)
+    const spelled = dashboard.match(/class="led" :class="led\((?:s\.state|c\.state)\)" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ ledText\(/g) || []
+    expect(spelled.length, 'member card + attention list + docker table LEDs carry sr-only state text').toBe(3)
+    expect(dashboard, 'no Dashboard LED ships colour-only').not.toMatch(/class="led" :class="led\([^)]*\)"><\/span>/)
+    expect(dashboard).toMatch(/a\.level === 'ok' \? 'on' : \(a\.level === 'warn' \? 'warn' : 'err'\)" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ a\.level === 'ok' \? t\('common\.ok'\) : \(a\.level === 'warn' \? t\('common\.warn'\) : t\('common\.error'\)\) \}\}/)
+    expect(dashboard).toMatch(/c\.level === 'error' \? 'err' : 'warn'" aria-hidden="true"><\/span>\s*<span class="sr-only">\{\{ c\.level === 'error' \? t\('common\.error'\) : t\('common\.warn'\) \}\}/)
+    // The bookmark-card LED only repeats bmLabel's up/stopped/down text in
+    // colour, so it is decoration — same treatment as the Bookmarks page.
+    expect(dashboard).toMatch(/class="led" :class="bmLed\(b\)" aria-hidden="true"/)
+  })
+
+  it('keeps the Dashboard attention tile from reading unloaded as healthy-empty', () => {
+    // Before status resolves, attention is [] because nothing was read, not
+    // because everything is healthy: the status-gated ok branch fell through
+    // to an empty .alert-list that said nothing at all — silent load
+    // presented as empty, the same gap the ports/volumes rows already close.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/<div v-if="!status" class="sub">\{\{ loadError \? t\('common\.load_failed'\) : t\('common\.loading'\) \}\}<\/div>\s*<div v-else-if="!attention\.length" class="sub ok-msg">\{\{ t\('dashboard\.all_ok'\) \}\}<\/div>/)
+    expect(dashboard).not.toMatch(/v-if="status && !attention\.length"/)
+  })
+
+  it('announces the Dashboard live service counts as status regions', () => {
+    // Both service_count summaries (member header, attention tile) update
+    // silently on every status poll — the count is the poll's whole answer,
+    // so it gets role=status like the Scheduler/VMs/Users toolbar counts.
+    // The attention tile wraps its badge and count in one region so a poll
+    // that moves both reads as one announcement.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    const counts = dashboard.match(/\{\{ t\('dashboard\.services_count'/g) || []
+    expect(counts.length, 'both services_count copies are present').toBe(2)
+    expect(dashboard).toMatch(/<span role="status">\{\{ t\('dashboard\.services_count'/)
+    expect(dashboard).toMatch(/<span role="status">\s*<span class="badge" :class="attention\.length \? 'down' : 'ok'">\{\{ attention\.length \}\}<\/span>/)
+    expect(dashboard, 'no services_count copy ships without a live region').not.toMatch(/<span>\{\{ t\('dashboard\.services_count'/)
+  })
+
+  it('drops the Dashboard skeleton once a failed first load is on record', () => {
+    // The comment above the skeleton promised the loadError gate but the
+    // condition never carried it: a failed first admin load rendered the
+    // failure banner with the placeholder still pulsing beneath it,
+    // presented as if data were on the way. The behavioural half lives in
+    // Dashboard.loadFailure.test.js.
+    const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dashboard).toMatch(/v-else-if="!host && !sensors && !loadError"/)
+  })
+
+  it('announces the Files item count as a live region', () => {
+    // The count is the answer to Refresh / navigation / delete and changed
+    // silently for a screen reader — same treatment as the Modules count.
+    const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(listing\.count\) \}\} \{\{ t\('files\.items'\) \}\}/)
+  })
+
+  it('names the MainArray SMART attribute expander and carries its open state', () => {
+    // The visible face is a glyph and a count ("▼ 12"), which is also what a
+    // screen reader announced — nothing said what expands, and nothing said
+    // whether it already had.
+    const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    const toggle = mainArray.match(/<button[^>]*v-if="m\.smart\?\.attrs\?\.length"[\s\S]*?>/)
+    expect(toggle, 'SMART attribute expander').toBeTruthy()
+    expect(toggle[0]).toMatch(/:aria-label="t\('main_extra\.smart_attrs_toggle'/)
+    expect(toggle[0]).toMatch(/:aria-expanded="smartExpanded\.has\(m\.id\)"/)
+  })
+
+  it('announces the MainArray SMART overview load failure inside its dialog', () => {
+    // The overview loads after the dialog already holds focus, so the
+    // panel-focus read never covers it — same as the Scheduler run-history
+    // and Shares ACL errors.
+    const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    expect(mainArray).toMatch(/v-if="smartError && !smartData" role="alert"/)
+  })
+
+  it('names the MainArray format-confirm input after its label, not the placeholder', () => {
+    // The bound aria-label used to repeat the "type {name} to confirm"
+    // placeholder, so the control was announced as its example value; the
+    // static-attribute scan in "control names" cannot see bound duplicates.
+    const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
+    const input = mainArray.match(/<input v-model="formatConfirm"[^>]*>/)
+    expect(input, 'format confirm input').toBeTruthy()
+    expect(input[0]).toMatch(/:aria-label="t\('main_extra\.confirm'\)"/)
+    expect(input[0]).not.toMatch(/:aria-label="t\('main_extra\.format_type_ph'/)
+  })
+
+  it('announces the VMs count and hypervisor availability as a status region', () => {
+    // The title-meta count (and the UTM/Orb ✓/— marks beside it) is the only
+    // feedback Refresh and the 15s poll give, and it changed silently for a
+    // screen reader — same treatment as the Users and Apps toolbar counts.
+    const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+    expect(vms).toMatch(/<span class="meta" role="status">\s*\{\{ t\('vms\.meta'/)
+  })
+
+  it('announces the PhotosHub pending count and empty state as status regions', () => {
+    // "Refresh pending list" and "Remove" answer only through the count and
+    // the tiles (or the scanning -> "no pending" flip on an empty album);
+    // both changed silently for a screen reader — the Files item-count and
+    // Logs empty/loading treatment.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/data-test="photoshub-pending-count"[^>]*>|role="status" data-test="photoshub-pending-count"/)
+    expect(photoshub).toMatch(/<span v-if="pending" class="meta-count" role="status"/)
+    expect(photoshub).toMatch(/data-test="photoshub-pending-empty" role="status"/)
+  })
+
+  it('announces the Backups truncation count and keeps the failed list honest', () => {
+    // The truncation note is the only summary of how many backups exist and
+    // appears/updates silently after every finished backup or refresh — the
+    // Ollama model-count / VMs header-count treatment.  And a failed *first*
+    // read must render the banner alone: a header-only table under it read
+    // as an empty backup listing, on the page where "not listed" means
+    // "gone" (the Containers LoadFailure contract).
+    const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+    expect(backups).toMatch(/<p v-if="hiddenCount" class="meta"[^>]*role="status">/)
+    expect(backups).toMatch(/<SkeletonLoader v-if="!loaded && !loadError"/)
+    expect(backups).toMatch(/v-else-if="!loadError \|\| backups\.length" class="table-wrap backups-artefacts"/)
+  })
+
+  it('does not shadow the VMs create-dialog labels with placeholder aria-labels', () => {
+    // Each input has a for/id <label> ("Version", "Machine name"). The bound
+    // aria-labels that used to sit on top overrode them with the placeholder,
+    // so both fields were announced as their example values — same shadowing
+    // the PhotosHub people labels had.
+    const vms = readFileSync(resolve(SRC, 'views/VMs.vue'), 'utf8')
+    for (const id of ['vm-create-version', 'vm-create-name']) {
+      expect(vms, `${id} must keep its for/id label`).toContain(`for="${id}"`)
+      const input = vms.match(new RegExp(`<input id="${id}"[^>]*>`))
+      expect(input, `input #${id}`).toBeTruthy()
+      expect(input[0], `${id}: aria-label overrides the visible label`)
+        .not.toMatch(/aria-label/)
+    }
+  })
+})
+
+describe('backup and workload surface leftovers', () => {
+  it('announces the Backups dry-run preview load failure inside its dialog', () => {
+    // The preview loads after the dialog already holds focus, so the
+    // panel-focus read never covers it — same as the Scheduler run-history
+    // and MainArray SMART overview errors.
+    const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
+    expect(backups).toMatch(/v-else-if="previewError"[^>]*role="alert"/)
+  })
+
+  it('names each Apps autostart switch after its app', () => {
+    // Three per-row copies (managed table mobile + desktop, autostart tab)
+    // all announced as "Autostart" — indistinguishable in a form-controls
+    // listing, same fix as the Scheduler enable toggles. The detail drawer's
+    // single switch keeps the plain label: the dialog is already named after
+    // the app.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    const named = apps.match(/:aria-label="t\('apps\.autostart_name',\s*\{\s*name:/g) || []
+    expect(named.length, 'per-row autostart switches named after their app').toBe(3)
+    const plain = apps.match(/:aria-label="t\('apps\.col_autostart'\)"/g) || []
+    expect(plain.length, 'only the detail drawer keeps the plain label').toBe(1)
+  })
+
+  it('announces the Apps managed and autostart count breakdowns', () => {
+    // Both breakdowns are the only answer Refresh (and Run now) gives, and
+    // they changed silently for a screen reader while the two sibling
+    // .meta-count filter spans on the same page already carried role=status.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/class="meta-count" role="status" v-if="managed\.counts"/)
+    expect(apps).toMatch(/class="meta-count" role="status" v-if="autostart\.counts"/)
+    expect(apps).not.toMatch(/class="meta-count" v-if=/)
+  })
+
+  it('names each Apps docker restart-policy select after its container', () => {
+    // Same column-of-identical-controls gap as the autostart switches: every
+    // row's select was announced as "Restart policy".
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/:aria-label="t\('apps\.policy_name',\s*\{\s*name:/)
+    expect(apps).not.toMatch(/:aria-label="t\('docker\.restart_policy'\)"/)
+  })
+
+  it('never re-declares a native button as role=button', () => {
+    // The Apps "Detail" button carried tabindex/role/keydown copied from the
+    // non-button hotspots (Services problem chips). Redundant on a <button>,
+    // and the copied @keydown.enter.prevent suppressed the element's native
+    // activation to substitute its own.
+    const offenders = []
+    for (const [name, src] of vueFiles()) {
+      if (/<button[^>]*role="button"/.test(src)) offenders.push(name)
+    }
+    expect(offenders, 'a <button> is already a button; role/tabindex belong on non-button hotspots').toEqual([])
+  })
+
+  it('announces the Apps remote-catalog source load failure inside its modal', () => {
+    // The source config loads after the modal already holds focus, and a
+    // failure used to leave it silently blank — neither "not configured" nor
+    // the overrides table rendered, so a dead read looked like a fresh
+    // install once the toast faded.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/v-if="remoteError"[^>]*role="alert"/)
+    expect(apps).toMatch(/remoteError\.value = finiteText/)
+  })
+
+  it('spells the Network binding-table interface state, not just its LED colour', () => {
+    // The status column of the multi-IP bindings table is the LED alone (the
+    // interfaces tab pairs its LED with a textual badge); colour is invisible
+    // to a screen reader. Both copies: the addressed rows and the
+    // no-IPv4 row.
+    const network = readFileSync(resolve(SRC, 'views/Network.vue'), 'utf8')
+    const spelled = network.match(/class="sr-only">\{\{ iface\.up \? t\('network\.on'\) : t\('network\.off'\) \}\}/g) || []
+    expect(spelled.length, 'both binding-table status cells carry sr-only text').toBe(2)
+  })
+
+  it('hides the Network interfaces-tab LED that the Status column already spells', () => {
+    // The interfaces tab pairs its LED with a textual status badge, so the
+    // dot is decoration — but it carried no aria-hidden, leaving AT a column
+    // named "status LED" whose cells said nothing. Spelling it there instead
+    // would have duplicated the Status column one cell over.
+    const network = readFileSync(resolve(SRC, 'views/Network.vue'), 'utf8')
+    expect(network).toMatch(/class="led" :class="i\.up \? 'on' : 'off'" aria-hidden="true"/)
+    expect(network).not.toMatch(/class="led" :class="i\.up \? 'on' : 'off'"><\/span>/)
+  })
+
+  it('announces the Terminal container-discovery failure', () => {
+    // This inline line is the only surface the failure reaches (no toast, no
+    // banner), so without role=alert it appeared silently for AT.
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    expect(terminal).toMatch(/v-if="containerListError"[^>]*role="alert"/)
+  })
+
+  it('renders the Terminal status load failure as the standard retryable banner', () => {
+    // A failed status read leaves `status` null, which keeps the host Run
+    // button disabled; the only stated reason was a toast that faded in four
+    // seconds. The behavioural half lives in Terminal.test.js.
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    expect(terminal).toMatch(/<LoadFailure v-if="statusError"[^>]*:retry="load"/)
+  })
+
+  it('voices the Terminal dialog connection state', () => {
+    // The status dot's colour was the only connected/disconnected cue, and
+    // the transition was silent for a screen reader — the VNC console beside
+    // it already carries an aria-live status label for the same handshake.
+    const terminal = readFileSync(resolve(SRC, 'views/Terminal.vue'), 'utf8')
+    expect(terminal).toMatch(/class="status-dot" :class="\{ live: connected \}" aria-hidden="true"/)
+    expect(terminal).toMatch(/class="sr-only" role="status">\{\{ connected \? t\('terminal\.a11y_connected'\) : t\('terminal\.a11y_disconnected'\) \}\}/)
+  })
+})
+
+describe('settings and users surface leftovers', () => {
+  it('renders every Settings bundle-backed tab failure as the standard retryable banner', () => {
+    // Date & Time, Network, Shares, Scheduler and Access got the LoadFailure
+    // banner in the first sweep; Power, Disk and VMs kept only a colored line
+    // in their *second* card — no role=alert, no retry, and the primary card
+    // rendered bare headings indistinguishable from "still loading". Eight
+    // tabs read from the bundle, so eight banners. The behavioural half lives
+    // in Settings.sysBundle.test.js.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    const banners = settings.match(/<LoadFailure v-if="sysBundleError && !sysBundle"[^>]*:retry="loadSysBundle"/g) || []
+    expect(banners.length, 'every bundle-backed tab carries the retryable banner').toBe(8)
+  })
+
+  it('names the UPS shutdown stack and script checkboxes after their display name', () => {
+    // Both pickers used to name each checkbox with the raw machine id while
+    // the row displayed a human name — a screen reader hearing "stack:immich"
+    // cannot match it to the "Immich" a sighted user is told to tick.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(settings).toMatch(/:aria-label="finiteText\(row\.name, ''\) \|\| finiteText\(row\.id\)"/)
+    expect(settings).toMatch(/:aria-label="finiteText\(s\.name, ''\) \|\| finiteText\(s\.id\)"/)
+    expect(settings).not.toMatch(/:aria-label="finiteText\(row\.id\)"/)
+    expect(settings).not.toMatch(/:aria-label="finiteText\(s\.id\)"/)
+  })
+
+  it('keeps the UPS load banner over stale data and announces the drill verdict', () => {
+    // The banner was gated on !upsInfo, so a failed *re*-load (tab revisit
+    // with the backend down) was toast-only while the stale form sat there
+    // as if fresh — the Containers/Alerts LoadFailure contract. And the
+    // drill verdict is the whole outcome of the drill button press, landing
+    // silently after it — the Scheduler run-history treatment.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(settings).toMatch(/<LoadFailure v-if="upsError" :detail="upsError" :retry="loadUps" \/>/)
+    expect(settings).not.toMatch(/upsError && !upsInfo/)
+    expect(settings).toMatch(/data-test="drill-result">[\s\S]{0,400}?<p class="hint" role="status"/)
+  })
+
+  it('spells and announces the Dashboard UPS chip state the colour carries', () => {
+    // The red paint (danger class) used to be the only low-battery signal —
+    // nothing at all for a screen reader (the Containers/Network LED rule) —
+    // and mid-outage the poll flipped engaged/restoring silently. The
+    // battery glyph repeats the percent + state word, so it is decoration.
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dash).toMatch(/<span v-if="upsStateLabel" role="status">\{\{ upsStateLabel \}\}<\/span>/)
+    expect(dash).toMatch(/upsLow\.value\) return t\('dashboard\.ups_low'\)/)
+    expect(dash).toMatch(/<component :is="upsIcon" :size="13" aria-hidden="true" \/>/)
+  })
+
+  it('keeps the visible Username label inside the 2FA rescue input name', () => {
+    // The old aria-label repeated the section heading ("Rescue another
+    // account"), so the field's visible "Username" label was nowhere in its
+    // accessible name — a speech-input user saying what they see could not
+    // reach it (WCAG 2.5.3). The dedicated key keeps the rescue context so
+    // the control stays distinguishable from the password card's username.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    const input = settings.match(/<input v-model\.trim="twofaResetUser"[^>]*>/)
+    expect(input, '2FA rescue username input').toBeTruthy()
+    expect(input[0]).toMatch(/:aria-label="t\('twofa\.admin_reset_user'\)"/)
+    expect(input[0]).not.toMatch(/:aria-label="t\('twofa\.admin_reset'\)"/)
+  })
+
+  it('names the Users reset-password input after the password it takes, not the button', () => {
+    // The input's accessible name used to be "Reset password" — identical to
+    // the button beside it and hiding the visible "New password" placeholder,
+    // so the field and its action were announced the same.
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    const input = users.match(/<input\s+v-model="resetPassword"[\s\S]*?>/)
+    expect(input, 'reset-password input').toBeTruthy()
+    expect(input[0]).toMatch(/:aria-label="t\('settings\.new_password'\)"/)
+    expect(input[0]).not.toMatch(/:aria-label="t\('accounts\.reset_password'\)"/)
+  })
+})
+
+describe('llm, photos, vpn and health surface leftovers', () => {
+  it('latches the Ollama settings read failure and blocks Save behind it', () => {
+    // Same hole the WireGuard settings dialog had: the form falls back to
+    // literal defaults on a failed read, Save sends every field, so saving on
+    // top of a failure silently wiped a configured LaunchAgent label — and
+    // the old catch produced no toast and no inline text at all. The
+    // behavioural half lives in Ollama.test.js.
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/v-if="!ollamaSettingsLoaded && ollamaSettingsError"[\s\S]{0,120}role="alert"/)
+    expect(ollama).toMatch(/@click="loadOllamaSettings"/)
+    expect(ollama).toMatch(/:disabled="ollamaSaving \|\| !ollamaSettingsLoaded"/)
+    expect(ollama).toMatch(/async function saveOllamaSettings\(\) \{[\s\S]{0,300}if \(!ollamaSettingsLoaded\.value\)/)
+    expect(ollama).toMatch(/ollamaSettingsError\.value = finiteText/)
+  })
+
+  it('names the two Ollama copy buttons after what they copy', () => {
+    // The service card holds two "Copy" buttons side by side copying
+    // different URLs; announced identically, a form-controls listing cannot
+    // tell them apart. The visible "Copy" stays first in the accessible name
+    // (WCAG 2.5.3 label-in-name).
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/:aria-label="t\('ollama\.copy_name', \{ name: t\('ollama\.api'\) \}\)"/)
+    expect(ollama).toMatch(/:aria-label="t\('ollama\.copy_name', \{ name: t\('ollama\.openai_api'\) \}\)"/)
+  })
+
+  it('announces the Ollama installed-model count as a live region', () => {
+    // The count is the 10s poll's (and a finished pull/delete's) only
+    // summary of the model list and changed silently for a screen reader —
+    // same treatment as the VMs title-meta and Health summary counts.
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/<span v-if="models\.length" class="meta" role="status">\{\{ t\('ollama\.models_count'/)
+  })
+
+  it('keeps the Ollama tables honest about a failed list read', () => {
+    // reachable=true with `error` set means /api/version answered but
+    // /api/tags//api/ps failed; both empty rows must route through the
+    // helper that says so instead of claiming "no models". The behavioural
+    // half lives in Ollama.test.js.
+    const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
+    expect(ollama).toMatch(/\{\{ emptyListText\('ollama\.resident_empty'\) \}\}/)
+    expect(ollama).toMatch(/\{\{ emptyListText\('ollama\.models_empty'\) \}\}/)
+    expect(ollama).toMatch(/function emptyListText\(emptyKey\)[\s\S]{0,220}t\('ollama\.list_error'/)
+  })
+
+  it('spells the WireGuard ping outcome, not just its LED colour', () => {
+    // The ping-result rows carried reachability in the LED class alone —
+    // unlike the peers table there is no textual badge, so a screen reader
+    // heard name and IP with nothing saying whether the ping came back. Same
+    // fix as the Network binding-table interface state.
+    const wireguard = readFileSync(resolve(SRC, 'views/WireGuard.vue'), 'utf8')
+    expect(wireguard).toMatch(
+      /class="sr-only">\{\{ r\.reachable \? t\('wg\.reachable'\) : t\('wg\.unreachable'\) \}\}/,
+    )
+  })
+
+  it('announces the PhotosHub action-running note', () => {
+    // The actions run for seconds and disable the toolbar; the note beside
+    // them was paint only, so a screen-reader user heard nothing between the
+    // click and the finish toast. Same shape as the Shares busy note.
+    const photoshub = readFileSync(resolve(SRC, 'views/PhotosHub.vue'), 'utf8')
+    expect(photoshub).toMatch(/v-if="busy"[^>]*role="status"[^>]*aria-live="polite"/)
+  })
+
+  it('spells the Health overall tile state instead of an emoji alone', () => {
+    // The issues arm was a bare "⚠️" — announced as "warning sign" at best,
+    // with no words and no locale parity with the healthy arm.
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    expect(health).toMatch(/data\.healthy \? '✅ ' \+ t\('common\.healthy'\) : '⚠️ ' \+ t\('common\.issues'\)/)
+    expect(health).not.toMatch(/\{\{ data\.healthy \? '✅ OK' : '⚠️' \}\}/)
+  })
+
+  it('announces the Health toolbar summary counts', () => {
+    // The passed/warnings/errors counts are the toolbar's answer to the
+    // Rescan click beside them, and they updated silently for a screen
+    // reader — the same role=status the Users toolbar count carries. The
+    // behavioural half lives in Health.test.js.
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    expect(health).toMatch(/class="meta hide-m" v-if="data\?\.summary" role="status"/)
+  })
+
+  it('marks the Health check LED as decoration', () => {
+    // The LED repeats the Level badge's Pass/Warn/Error text in colour only
+    // (same as the Users admin LED).
+    const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
+    expect(health).toMatch(/class="led" :class="led\(c\)" aria-hidden="true"/)
+  })
+})
+
+describe('brew and gateway surface leftovers', () => {
+  it('announces the Brew action-running note', () => {
+    // brew services start/stop/restart runs for seconds (the list call alone
+    // is allowed 20s) and act() greys out every button for the duration;
+    // before the note that state was paint only — a screen-reader user heard
+    // nothing between the click and the finish toast. Same shape as the
+    // PhotosHub/Shares busy notes; the behavioural half lives in Brew.test.js.
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(brew).toMatch(/v-if="busy"[^>]*role="status"[^>]*aria-live="polite"/)
+    expect(brew).toContain("t('brew.action_running'")
+  })
+
+  it('marks the Brew status LED as decoration', () => {
+    // The LED repeats the Status badge's started/stopped text in colour only
+    // — same treatment as the Health check LED one table over.
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(brew).toMatch(/class="led" :class="s\.state==='ok'\?'on':\(s\.state==='warn'\?'warn':'err'\)" aria-hidden="true"/)
+  })
+
+  it('tells a filtered-out Brew list apart from an empty one', () => {
+    // "No Homebrew services found" beside a non-empty count misreported the
+    // host whenever the filter simply matched nothing — the same split the
+    // Network ports and Tools process tables already carry. The behavioural
+    // half lives in Brew.test.js.
+    const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
+    expect(brew).toMatch(/q\.trim\(\) \? t\('common\.no_match'\) : t\('brew\.empty'\)/)
+  })
+
+  it('hides the Gateway status LED from the accessibility tree', () => {
+    // The LED only repeats the Running/Stopped text beside it in colour, so
+    // it is decoration — same treatment as the VMs and Network inline LEDs.
+    // (Table-cell LEDs are covered by their sr-only column header instead.)
+    const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
+    expect(gateway).toMatch(/class="led" :class="data\.running \? 'on' : 'err'" aria-hidden="true"/)
+  })
+})
+
+describe('bookmarks and modules surface leftovers', () => {
+  const bookmarks = readFileSync(resolve(SRC, 'views/Bookmarks.vue'), 'utf8')
+  const modules = readFileSync(resolve(SRC, 'views/Modules.vue'), 'utf8')
+
+  it('announces the Bookmarks summary and hides the card LEDs', () => {
+    // The up/stopped/down summary is the answer to the Force check click and
+    // changed silently for a screen reader; the LED only repeats the badge
+    // text in colour, so it is decoration — same treatment as the Gateway
+    // LED above. The behavioural half lives in Bookmarks.test.js.
+    expect(bookmarks).toMatch(/<span class="meta" role="status" v-if="data">/)
+    expect(bookmarks).toMatch(/class="led" :class="ledClass\(b\)" aria-hidden="true"/)
+  })
+
+  it('announces the Modules count and disables Refresh while loading', () => {
+    // The count is the answer to the Refresh click (Tools syslog/ports
+    // convention), and Refresh used to stay clickable during a load — each
+    // extra click bumped the generation and threw the earlier answers away.
+    // The behavioural half lives in Modules.test.js.
+    expect(modules).toMatch(/class="meta-count" role="status">\{\{ t\('modules\.count_n'/)
+    expect(modules).toMatch(/@click="load" :disabled="loading"/)
+    expect(modules).toMatch(/<LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" \/>/)
+  })
+})
+
+describe('files surface leftovers', () => {
+  const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
+
+  it('announces the Files item count', () => {
+    // The count is the toolbar's answer to every navigation, upload and
+    // delete, and it changed silently for a screen reader — the same
+    // role=status every sibling list page already carries on .meta-count.
+    // The behavioural half lives in Files.test.js.
+    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(listing\.count\) \}\}/)
+  })
+
+  it('keeps the upload input reachable by keyboard', () => {
+    // hidden removed the file input from the tab order and the accessibility
+    // tree, so a keyboard or screen-reader user had no way to upload at all —
+    // drag-drop is mouse-only. sr-only keeps it focusable and the wrapping
+    // label keeps naming it; the ring is drawn on the visible button.
+    expect(files).toMatch(/<input type="file" multiple class="sr-only" @change="onUpload" \/>/)
+    expect(files).not.toMatch(/<input type="file"[^>]*\bhidden\b/)
+    expect(files).toMatch(/\.upload-btn:has\(input:focus-visible\)/)
+  })
+})
+
+describe('logs and tools surface leftovers', () => {
+  const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
+
+  it('keeps the Tools syslog failure banner above stale lines instead of behind them', () => {
+    // The old v-else-if chain put the lines branch first, so once any lines
+    // were on screen a failed re-load (level/range change, Refresh) rendered
+    // no banner at all — its only trace was a four-second toast. The
+    // behavioural half lives in Tools.announcements.test.js.
+    expect(tools).toMatch(/<LoadFailure v-if="tabError\.syslog"[\s\S]{0,600}v-if="\(syslog\.lines\|\|\[\]\)\.length"/)
+    expect(tools).not.toMatch(/<LoadFailure v-else-if="tabError\.syslog"/)
+    // The syslog and ports loaders are wired straight to toolbar controls that
+    // stay clickable above the banner, so a direct retry that worked must also
+    // drop it — reload()'s up-front clear never runs on that path.
+    expect(tools).toMatch(/syslog\.value = next\s*\n\s*clearTabError\('syslog'\)/)
+    expect(tools).toMatch(/ports\.value = next\s*\n\s*clearTabError\('net'\)/)
+  })
+
+  it('announces the Tools syslog line count and names its scrollable log box', () => {
+    // The count is the answer to the level/range selects and the Refresh
+    // click; it changed silently for a screen reader. The box caps at 480px
+    // and scrolls, and a scrollable region a keyboard cannot reach cannot be
+    // scrolled by one (WCAG 2.1.1) — same treatment as the Logs viewer.
+    expect(tools).toMatch(/<span class="meta" role="status">\{\{ t\('tools\.lines_n'/)
+    expect(tools).toMatch(/class="log-box mono"\s+tabindex="0"\s+role="region"\s+:aria-label="t\('tools\.tab_syslog'\)"/)
+  })
+
+  it('keeps the Tools hardware panes keyboard-scrollable and named', () => {
+    // system_profiler output overflows the 240px cap; each pane is named
+    // after its own section heading.
+    expect(tools).toMatch(/class="mono hw-pre" tabindex="0" role="region" :aria-label="finiteText\(key\)"/)
+  })
+
+  it('labels the Tools listening-port count instead of a bare number', () => {
+    // This was a lone "12" that said nothing about what it counted, and its
+    // own Refresh updated it silently. Reuses the Network summary's
+    // "{n} ports" key, so no new locale strings.
+    expect(tools).toMatch(/<span class="meta" role="status">\{\{ t\('network\.sum_ports_n', \{ n: finiteN\(ports\.count, 0\) \}\) \}\}<\/span>/)
+    expect(tools).not.toMatch(/<span class="meta">\{\{ finiteN\(ports\.count, 0\) \}\}<\/span>/)
+  })
+
+  it('announces the Tools scheduler timer count like its syslog/ports siblings', () => {
+    // The count is the answer to the Refresh click and it changed silently
+    // for a screen reader — the last refresh-driven count on this page
+    // without a live region.
+    expect(tools).toMatch(/role="status">\{\{ t\('tools\.tasks_n', \{ n: timers\.length \}\) \}\}<\/span>/)
+  })
+
+  it('tells engine-off apart from an empty container-size list', () => {
+    // With the engine (or its vanished CLI, now classified by the backend)
+    // down, the size list is empty because docker is unreachable — "no data"
+    // under a df table saying "engine down" contradicted it. Same split the
+    // df table already makes; behavioural half in Tools.dockerEngineOff.test.js.
+    expect(tools).toMatch(/df\.engine_up === false \? t\('tools\.engine_off'\) : t\('tools\.no_data'\)[\s\S]{0,2500}df\.engine_up === false \? t\('tools\.engine_off'\) : t\('tools\.no_data'\)/)
+  })
+
+  it('keeps the Logs auto-refresh silent on failure but toasts a manual one', () => {
+    // Same convention Audit and Alerts pinned: LoadFailure latches the state
+    // on screen, and a toast per 6-second tick while the panel is unreachable
+    // interrupts a screen reader over and over. The behavioural half lives in
+    // Logs.test.js.
+    const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
+    expect(logs).toMatch(/async function load\(manual = false\)/)
+    expect(logs).toMatch(/if \(manual\) toast/)
+    expect(logs).toMatch(/startVisibleInterval\(load, 6000\)/)
+  })
 })
 
 describe('service uninstall UI', () => {
@@ -431,6 +1267,99 @@ describe('appearance controls', () => {
   })
 })
 
+/**
+ * The opening tag containing *index*, quote-aware so that a `=>` inside a
+ * handler cannot be mistaken for the end of the tag.
+ */
+function openingTagAt(source, index) {
+  const start = source.lastIndexOf('<', index)
+  let quote = null
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i]
+    if (quote) {
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      continue
+    }
+    if (ch === '>') return source.slice(start, i + 1)
+  }
+  return source.slice(start)
+}
+
+const ACTIVE_CLASS = /:class="\{[^"]*\bactive:/g
+const ARIA_STATE = /\baria-(pressed|selected|current|checked)\b/
+
+describe('selected state', () => {
+  it('exposes every "active" highlight to assistive technology', () => {
+    // The panel signals the current choice -- filter chip, tab, nav link,
+    // theme card -- by adding an `active` class.  That is paint: it reaches
+    // a sighted reader and nobody else.  Most of these controls already
+    // carried aria-pressed, which is exactly why the handful that did not
+    // went unnoticed: the state chips on Services, the language buttons in
+    // Settings (directly above a theme grid that did have it), the category
+    // pills on Apps, and both levels of the main nav.
+    const unannounced = []
+    for (const [name, source] of vueFiles()) {
+      for (const match of source.matchAll(ACTIVE_CLASS)) {
+        const tag = openingTagAt(source, match.index)
+        if (!ARIA_STATE.test(tag)) {
+          unannounced.push(`${name}: ${tag.replace(/\s+/g, ' ').slice(0, 100)}`)
+        }
+      }
+    }
+    expect(unannounced).toEqual([])
+  })
+
+  it('finds the highlights it is meant to be checking', () => {
+    // A scan that silently matches nothing passes for ever.  These are the
+    // shapes in the tree today; the count only has to stay plausible.
+    const found = vueFiles().reduce(
+      (n, [, source]) => n + [...source.matchAll(ACTIVE_CLASS)].length,
+      0,
+    )
+    expect(found).toBeGreaterThan(20)
+  })
+
+  it('announces the bulk-selection count on Services', () => {
+    // Checking a row updates "{n} selected" inside a bar that only exists
+    // while something is selected; without a live region a screen-reader
+    // user hears nothing change as they select or deselect services.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /<span role="status">\{\{ t\('services\.selected_n'/,
+    )
+  })
+
+  it('announces the Services filter result count', () => {
+    // The "34 / 50" count is the only feedback the filter box and the state
+    // chips give; without a live region it changed silently.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /<span class="meta-count" role="status">\{\{ filtered\.length \}\}/,
+    )
+  })
+
+  it('names each Services row checkbox after its service', () => {
+    // Thirty checkboxes all called "Select this row" cannot be told apart in
+    // a screen reader's form-controls listing; the Files list already names
+    // its per-row checkboxes after the item, so the pattern is established.
+    const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
+    expect(services).toMatch(
+      /:aria-label="t\('common\.select_row_name',\s*\{\s*name:/,
+    )
+    for (const [name, source] of vueFiles()) {
+      // A regex, not the literal call text: the backend's i18n contract test
+      // scans every source for translation-key references and would otherwise
+      // count this guard as a use of the removed key.
+      expect(source, `${name} uses the anonymous row-checkbox label`)
+        .not.toMatch(/t\('common\.select_row'\)/)
+    }
+  })
+})
+
 describe('macos switch controls', () => {
   it('uses a capsule switch for autostart and sharing, not a green checkbox', () => {
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
@@ -600,7 +1529,9 @@ describe('operations polling and submission guards', () => {
   })
 
   it('does not refresh a failed backup into the successful list', () => {
-    expect(backups).toContain('if (r.ok) await refresh()')
+    // refresh(true): these re-reads follow a user-initiated backup, so their
+    // failure may toast (jobFinishRefresh.test.js pins the background chain).
+    expect(backups).toContain('if (r.ok) await refresh(true)')
   })
 
   it('tears down action timers on Services and Apps job polls', () => {
@@ -770,7 +1701,9 @@ describe('operations polling and submission guards', () => {
     expect(users).toMatch(/async function removeAccount\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(users).toMatch(/async function removeAccount\([\s\S]*finally \{[\s\S]*if \(pageAlive\) accountsBusy\.value = false/)
     expect(brew).toMatch(/async function act\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
-    expect(brew).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
+    // Block form since the busy note: the same pageAlive gate also clears the
+    // note's action/name so a leave mid-action cannot resurrect the region.
+    expect(brew).toMatch(/async function act\([\s\S]*finally \{[\s\S]*if \(pageAlive\) \{[\s\S]{0,80}busy\.value = false/)
     expect(brew).toMatch(/onUnmounted\(\(\) => \{[\s\S]*pageAlive = false/)
   })
 
@@ -905,7 +1838,9 @@ describe('operations polling and submission guards', () => {
     expect(dashboard).toMatch(/async function copyVnc\(\)[\s\S]*if \(!dashAlive\) return/)
     expect(dashboard).toMatch(/async function copyOllamaApi\(\)[\s\S]*if \(!dashAlive\) return/)
     expect(dashboard).toMatch(/function setMetricRange\([\s\S]*\.finally\(\(\) => \{[\s\S]*if \(dashAlive\) metricsSwitching\.value = false/)
-    expect(audit).toMatch(/async function refresh\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
+    // refresh takes a `manual` flag now (poll ticks stay silent); the guard
+    // itself is what this test pins, whatever the signature.
+    expect(audit).toMatch(/async function refresh\([^)]*\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(audit).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
     expect(health).toMatch(/async function load\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
   })
@@ -1019,7 +1954,7 @@ describe('operations polling and submission guards', () => {
     expect(form).toContain('let stacksGeneration = 0')
     expect(health).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
     expect(bookmarks).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
-    expect(modules).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\) loaded\.value = true/)
+    expect(modules).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\) \{[\s\S]*loading\.value = false[\s\S]*loaded\.value = true/)
     expect(logs).toMatch(/async function load\([\s\S]*finally \{[\s\S]*if \(generation === loadGeneration && pageAlive\)/)
     expect(maintenance).toMatch(/async function pollLog\([\s\S]*if \(!id \|\| generation !== pollGeneration \|\| !pageAlive\) return/)
     expect(maintenance).toMatch(/async function refresh\([\s\S]*finally \{[\s\S]*if \(generation === listGeneration && pageAlive\) loaded\.value = true/)
@@ -1084,7 +2019,7 @@ describe('operations polling and submission guards', () => {
     expect(apps).toMatch(/async function checkRemoteUpdates\(\)[\s\S]*await loadRemote\(\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
     expect(apps).toMatch(/async function toggleManagedAutostart\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
     expect(apps).toMatch(/async function doManagedAction\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
-    expect(compose).toMatch(/async function create\(\)[\s\S]*await loadStacks\(\)[\s\S]*if \(!pageAlive\) return[\s\S]*selected\.value = j\.id/)
+    expect(compose).toMatch(/async function create\(\)[\s\S]*await loadStacks\(true\)[\s\S]*if \(!pageAlive\) return[\s\S]*selected\.value = j\.id/)
     expect(photoshub).toMatch(/await getPhotosHubStatus\(\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value =/)
     expect(photoshub).toMatch(/await getPhotosHubStatus\(\)\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value = after/)
     expect(wireguard).not.toMatch(/pingResult\.value = await pingWireguardPeers/)
@@ -1580,8 +2515,8 @@ describe('leftover Infinity interpolations', () => {
     expect(network).toMatch(/finiteText\(n\.gateway\)/)
     expect(network).not.toMatch(/\{\{\s*a\.ip\s*\}\}/)
     expect(network).toMatch(/finiteText\(a\.ip\)/)
-    expect(network).not.toMatch(/data\?\.services_error \|\| t\('network\.no_services'\)/)
-    expect(network).toMatch(/finiteText\(data\?\.services_error, ''\) \|\| t\('network\.no_services'\)/)
+    expect(network).not.toMatch(/data\?\.services_error \|\| t\('network\.empty_services'\)/)
+    expect(network).toMatch(/finiteText\(data\?\.services_error, ''\) \|\| t\('network\.empty_services'\)/)
     expect(network).not.toMatch(/finiteText\(\(i\.ipv6 \|\| \[\]\)\.slice\(0,2\)\.join\(', '\)\)/)
     expect(network).toMatch(/\(i\.ipv6 \|\| \[\]\)\.slice\(0,2\)\.map\(n => finiteText\(n, ''\)\)/)
     expect(network).not.toMatch(/finiteText\(\(s\.dns\|\|\[\]\)\.join\(', '\)\)/)
@@ -1671,6 +2606,12 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).not.toMatch(/logName\.value = c\.name/)
     expect(containers).toMatch(/logName\.value = finiteText\(c\.name/)
     expect(containers).toMatch(/logText\.value \+ finiteText\(chunk, ''\)/)
+  })
+
+  it('takes the off Screen Sharing control out of the tab order', () => {
+    const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
+    expect(dash).toMatch(/:tabindex="ss\.running \? undefined : -1"/)
+    expect(dash).toMatch(/:aria-disabled="ss\.running \? undefined : 'true'"/)
   })
 
   it('Apps leftover catalog counts go through finiteN', () => {
@@ -1763,6 +2704,15 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).toMatch(/logText\.value = finiteText\(j\.log, ''\)/)
     expect(apps).not.toMatch(/if \(tpl\.url_hint\) return tpl\.url_hint/)
     expect(apps).toMatch(/finiteText\(tpl\.url_hint, ''\) \|\| finiteText\(tpl\.url, ''\)/)
+  })
+
+  it('Apps cloudflared login URL is announced when it appears', () => {
+    // The sign-in link arrives asynchronously (login start + poll); without a
+    // live region a screen reader user is never told the panel's key
+    // call-to-action showed up.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).not.toMatch(/v-if="cfStatus\.login_url" class="notes" style/)
+    expect(apps).toMatch(/v-if="cfStatus\.login_url" class="notes" role="status"/)
   })
 
   it('Dashboard leftover volumes/ports/rss go through finite helpers', () => {
@@ -2262,7 +3212,9 @@ describe('leftover Infinity interpolations', () => {
     expect(users).not.toMatch(/acct\.resources\.join\(', '\)/)
     expect(users).toMatch(/function resourceList\([\s\S]*finiteText/)
     expect(users).toMatch(/finiteText\(serviceOptionsError\)/)
-    expect(users).toMatch(/finiteText\(accountsError, ''\)/)
+    // The error now renders inside its own v-if="accountsError" alert span,
+    // so the '' fallback that used to pick the loading/none branch is gone.
+    expect(users).toMatch(/finiteText\(accountsError\)/)
     expect(users).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(users).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
   })
@@ -2298,7 +3250,9 @@ describe('leftover Infinity interpolations', () => {
     expect(maintenance).not.toMatch(/\{\{\s*task\.name\s*\}\}/)
     expect(maintenance).toMatch(/finiteText\(task\.name\)/)
     expect(maintenance).not.toMatch(/\{\{\s*loadError\s*\}\}/)
-    expect(maintenance).toMatch(/finiteText\(loadError/)
+    // loadError is no longer interpolated inline: it feeds the LoadFailure
+    // banner, whose detail line applies finiteText internally.
+    expect(maintenance).toMatch(/:detail="loadError"/)
     expect(maintenance).not.toMatch(/loadError \|\| \(loaded/)
     expect(maintenance).not.toMatch(/\{\{\s*logTitle\s*\}\}/)
     expect(maintenance).toMatch(/finiteText\(logTitle\)/)
@@ -2907,5 +3861,70 @@ describe('leftover Infinity interpolations', () => {
   it('keeps MainArray unknown-status leftover composition', () => {
     const main = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
     expect(main).toContain("finiteText(data?.array?.status, '') || t('network.unknown')")
+  })
+})
+
+describe('Users and Account leftover a11y', () => {
+  it('keeps both Users resource pickers keyboard-reachable and named', () => {
+    // Both copies (create form + row editor) cap at 220px and scroll; a
+    // scrollable region a keyboard cannot reach cannot be scrolled by one
+    // (WCAG 2.1.1) — the Tools log-box treatment.
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    const pickers = users.match(
+      /class="resource-picker" tabindex="0" role="region" :aria-label="t\('accounts\.resources'\)"/g,
+    ) || []
+    expect(pickers.length).toBe(2)
+  })
+
+  it('renders the Users accounts reload failure above the stale rows with retries', () => {
+    // The empty-row alert only exists while the table is empty; once rows were
+    // on screen a failed re-load surfaced nowhere (loadAccounts never toasts).
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    expect(users).toMatch(/<LoadFailure\s+v-if="accountsError && accounts\.length"/)
+    // Both inline failure spots offer a non-submitting retry.
+    expect(users).toMatch(/v-if="accountsError"[^>]*type="button" @click="loadAccounts"/)
+    const retries = users.match(
+      /v-if="serviceOptionsError"[^>]*type="button" @click="loadServiceOptions"/g,
+    ) || []
+    expect(retries.length).toBe(2)
+  })
+
+  it('labels and announces the Users toolbar counts', () => {
+    // "12 · 3 Admins" left the total unlabeled, and Refresh updated both
+    // numbers silently for a screen reader (Tools ports pattern).
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    expect(users).toMatch(
+      /<span class="meta"[^>]*v-if="data" role="status">\s*\{\{ finiteN\(data\.count\) \}\} \{\{ t\('users\.total'\) \}\}/,
+    )
+  })
+
+  it('marks the Users admin LED as decoration', () => {
+    // The LED repeats the Role badge's Admin/Standard text in colour only
+    // (same as the Gateway and VMs LEDs).
+    const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
+    expect(users).toMatch(/class="led" :class="u\.admin \? 'on' : 'off'" aria-hidden="true"/)
+  })
+
+  it('hides the Account enrollment QR and voices the password rule', () => {
+    const account = readFileSync(resolve(SRC, 'views/Account.vue'), 'utf8')
+    // A duplicate of the manual-entry secret; an anonymous graphic otherwise
+    // (same as the WireGuard peer QR).
+    expect(account).toMatch(/class="twofa-qr" aria-hidden="true"/)
+    // The identical enrollment QR on the Settings panel tab gets the same
+    // treatment; its manual-entry secret also sits right below.
+    const settings = readFileSync(resolve(SRC, 'views/Settings.vue'), 'utf8')
+    expect(settings).toMatch(/class="twofa-qr" aria-hidden="true"/)
+    // The Update button disables with no spoken reason; the hint carries it.
+    expect(account).toMatch(/:class="\{ bad: !!passwordMessage \}" role="status"/)
+    // The 2FA card's pending state is a status region, like the Settings
+    // launcher placeholder.
+    expect(account).toMatch(/v-else-if="!twofa" class="hint" role="status"/)
+  })
+
+  it('voices the Login loading placeholder', () => {
+    const login = readFileSync(resolve(SRC, 'views/Login.vue'), 'utf8')
+    // The auth-status probe decides which form renders; the placeholder
+    // swap was silent for a screen reader (Account 2FA-card pattern).
+    expect(login).toMatch(/v-if="loading" class="login-loading" role="status"/)
   })
 })

@@ -14,8 +14,8 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.config import cfg, maintenance_env, override
-from hub.errors import api_error
-from hub.docker_cli import _as_text, _jsonable, docker, docker_json, engine_up, inspect_object, redact_env
+from hub.errors import api_error, soft_fail
+from hub.docker_cli import _as_text, _jsonable, docker, docker_json, engine_up, inspect_object, looks_engine_down, redact_env
 from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.host_address import resolve_value
 from hub.secure_io import replace_bytes
@@ -133,6 +133,18 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
             # errors="replace": binary junk in CLI output must not kill the read.
             text=True, errors="replace", env=utf8_env(env), start_new_session=True,
         )
+    except FileNotFoundError as exc:
+        # The command's own binary is gone — vanished between the job's entry
+        # gate and this spawn.  Flag the job dict (internal only: job_public /
+        # stack_job_log never surface it) so _classify_job_failure can map the
+        # failure to the coded engine-down state instead of leaving only the
+        # raw locale-dependent strerror in the log.  The filename check keeps
+        # a vanished *cwd* — also ENOENT — out of the flag: that is a missing
+        # stack directory, not a missing docker CLI.
+        j["log"].append(f"!! error: {_as_text(exc)}")
+        if getattr(exc, "filename", None) == argv[0]:
+            j["cli_missing"] = True
+        return -1
     except (OSError, ValueError, TypeError) as exc:
         # Leftover ``\\ud800`` env/cwd UnicodeEncodeError is ValueError, not OSError.
         j["log"].append(f"!! error: {_as_text(exc)}")
@@ -177,8 +189,59 @@ def _stream_job_command(cmd: list[str], j: dict, *, cwd=None, env=None,
                     total -= len(j["log"].pop(0))
         finally:
             watchdog.cancel()
-            _reap()
+            # stdout EOF usually means the child is done, but it may not have
+            # been reaped yet. Killing the group immediately is a SIGTERM race
+            # (rc -15) against a just-finished ``echo`` — leftover flake in
+            # test_leftover_surrogate_env_is_not_500 on loaded CI. Wait first;
+            # only reap if it is actually still running.
+            if p.poll() is None:
+                try:
+                    p.wait(timeout=2)
+                    # After stdout EOF the child is usually exiting; this wait
+                    # is the reap, not a second blocking read of the pipe.
+                except subprocess.TimeoutExpired:
+                    _reap()
         return 124 if timed_out.is_set() else (p.returncode if p.returncode is not None else -1)
+
+
+#: How much of a failed job's log tail the engine-down classifier reads.
+#: The daemon-unreachable line is what the CLI printed last before exiting,
+#: so a short window is enough -- and a container's own (attacker-writable)
+#: log lines scrolled hundreds of entries earlier cannot reach the matcher.
+_JOB_CLASSIFY_TAIL = 20
+
+
+def _classify_job_failure(j: dict) -> None:
+    """Stamp a failed compose/pull job with the coded reason it failed.
+
+    A stack up/down/pull job that failed because the daemon socket was gone
+    used to finish as a bare non-zero ``rc`` with the raw untranslated CLI
+    error buried in the log -- the SPA rendered "!! failed exit 1" plus daemon
+    stderr and pointed away from the real remedy (start the engine).  The job
+    dict gains ``code: container.engine_down`` (surfaced by ``stack_job_log``
+    and ``job_public``) plus one coded log line, on the same two conditions as
+    every other classifier in this sweep: the failure output must *look* like
+    the daemon is unreachable, and a forced ``engine_up`` probe must confirm
+    it.  The probe is forced because the memoised answer has a 5s TTL, and
+    the seconds right after the engine stops are exactly when a stale "up"
+    would misclassify this.  Healthy jobs never reach here, so the success
+    path stays probe-free.
+    """
+    raw_log = j.get("log") if isinstance(j.get("log"), list) else []
+    tail = "\n".join(_as_text(x) for x in raw_log[-_JOB_CLASSIFY_TAIL:])
+    # ``cli_missing``: the docker CLI itself could not be spawned (vanished
+    # mid-job — see _stream_job_command).  Same operator-facing state as the
+    # dead socket, and the forced probe below still rules: it cannot answer
+    # "up" while the CLI is gone, so a job whose output merely reads like
+    # either pattern with a healthy engine keeps its raw failure.
+    if not (looks_engine_down(tail) or j.get("cli_missing")):
+        return
+    if engine_up(force=True):
+        return
+    fail = soft_fail("container.engine_down")
+    j["code"] = fail["code"]
+    if isinstance(j.get("log"), list):
+        j["log"].append(f"!! {fail['message']} ({fail['code']})")
 
 
 UPDATE_STATUS_PATH = DATA_DIR / "docker-update-status.json"
@@ -213,10 +276,9 @@ def _stats_cached() -> dict:
     """Stats for whatever is currently running.
 
     Deliberately zero-argument.  Keying this by the running-name tuple would look
-    tidier but would leave one cache entry per distinct set of running containers,
-    and ``ttl_memo`` only drops entries on invalidate -- so a host whose containers
-    come and go would accumulate them for the life of the process.  One entry on a
-    15s TTL is also exactly what the dict this replaces did.
+    tidier but would buy nothing: every caller wants the current set, so a second
+    key can only ever be a set that is already out of date.  One entry on a 15s
+    TTL is also exactly what the dict this replaces did.
     """
     engine_ok, items = _container_list_cached()
     if not engine_ok:
@@ -273,7 +335,16 @@ def _field_text(value, fallback: str = "") -> str:
             return fallback
         return str(value)
     if isinstance(value, int):
-        return str(value)
+        try:
+            return str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap ``str()`` is itself the
+            # conversion that fails.  YAML hex/octal ints load *uncapped*
+            # (``int(x, 16)`` is a power-of-two base), so a leftover
+            # ``name: 0xfff…`` in services.yaml stacks/overrides used to
+            # raise here and 500 GET /api/stacks, GET /api/containers and
+            # GET /api/compose/{id}.
+            return fallback
     if isinstance(value, str):
         text = value
     elif isinstance(value, (bytes, bytearray)):
@@ -601,6 +672,8 @@ def container_action(name: str, action: str) -> dict:
     invalidate_container_lists()
     invalidate_status()
     ok = rc == 0
+    if not ok:
+        _raise_if_engine_down(err, out)
     return {"ok": ok, "message": out if ok else (err or out or f"exit {rc}")}
 
 
@@ -610,15 +683,27 @@ def batch_action(names: list[str], action: str) -> dict:
     results = []
     ok_n = 0
     for n in names:
+        # _as_text: a JSON ``"\ud800"`` name echoed back as ``id`` used to
+        # 500 POST /api/containers/batch on Starlette's UTF-8 encode.
         try:
             r = container_action(n, action)
-            results.append({"id": n, **r})
+            results.append({"id": _as_text(n), **r})
             if r.get("ok"):
                 ok_n += 1
         except HTTPException as e:
-            results.append({"id": n, "ok": False, "message": _as_text(e.detail)})
+            # Carry the code (container.engine_down and friends) so the SPA
+            # can translate per-row failures instead of rendering a dict repr.
+            detail = e.detail if isinstance(e.detail, dict) else {}
+            entry = {
+                "id": _as_text(n),
+                "ok": False,
+                "message": _as_text(detail.get("message") or e.detail),
+            }
+            if detail.get("code"):
+                entry["code"] = _as_text(detail["code"])
+            results.append(entry)
         except Exception as e:
-            results.append({"id": n, "ok": False, "message": _as_text(e)})
+            results.append({"id": _as_text(n), "ok": False, "message": _as_text(e)})
     return {"ok": ok_n == len(names), "done": ok_n, "total": len(names), "results": results}
 
 
@@ -847,12 +932,49 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
     return True
 
 
+def _raise_if_engine_down(*chunks) -> None:
+    """Fail a docker CLI mutation as coded 503 when the daemon socket is gone.
+
+    Every mutation in this module (action/exec/prune/rm/pull/rename/run/
+    create) used to hand the raw untranslated daemon stderr back as an
+    uncoded ``ok: false``, pointing away from the real remedy (start the
+    engine).  Called only on failure paths, so the healthy path never spawns
+    a ``docker info``.  The message-pattern gate runs first — a genuine
+    failure whose output does not read engine-down never probes at all — and
+    the probe is *forced* because the memoised ``engine_up`` answer has a 5s
+    TTL, and the seconds right after the engine stops are exactly when a
+    stale "up" would misclassify the failure.  Output that merely looks
+    engine-down while the engine answers "up" keeps its original mapping.
+    """
+    if not looks_engine_down("\n".join(_as_text(c) for c in chunks if c)):
+        return
+    if not engine_up(force=True):
+        raise api_error("container.engine_down")
+
+
+def _raise_inspect_failure():
+    """Fail a per-container ``docker inspect`` as 503 when the engine is off.
+
+    ``inspect_container`` and ``start_update_container_job`` mapped *any*
+    non-zero exit to ``container.not_found`` (404), so with the engine
+    stopped the panel claimed a container that exists had vanished, and the
+    SPA offered no path to the real remedy (start the engine).  Same
+    classification as ``_raise_list_failure``: the probe is *forced* because
+    the memoised ``engine_up`` answer has a 5s TTL, and the seconds right
+    after the engine stops are exactly when the stale "up" would misreport
+    the failure as a missing container.
+    """
+    if not engine_up(force=True):
+        raise api_error("container.engine_down")
+    raise api_error("container.not_found")
+
+
 def start_update_container_job(name: str) -> dict:
     """Pull image and recreate container (docker compose style recreate via force)."""
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
-        raise api_error("container.not_found")
+        _raise_inspect_failure()
     data = inspect_object(out)
     if data is None:
         raise api_error("container.not_found")
@@ -953,6 +1075,8 @@ def start_update_container_job(name: str) -> dict:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
+            if j.get("rc") not in (0, None):
+                _classify_job_failure(j)
             j["running"] = False
             j["finished"] = strftime_now("%H:%M:%S")
             invalidate_status()
@@ -982,6 +1106,8 @@ def exec_in_container(name: str, command: str, shell: str = "/bin/sh") -> dict:
         timeout=60,
     )
     out, err = _as_text(out), _as_text(err)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {
         "ok": rc == 0,
         "rc": rc,
@@ -1001,6 +1127,8 @@ def set_restart_policy(name: str, policy: str = "unless-stopped") -> dict:
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("update", f"--restart={policy}", "--", name, timeout=30)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out), "policy": policy}
 
 
@@ -1008,7 +1136,7 @@ def inspect_container(name: str) -> dict:
     name = cli_args.require_positional(name, label="container name")
     rc, out, err = docker("inspect", "--", name, timeout=15)
     if rc != 0:
-        raise api_error("container.not_found")
+        _raise_inspect_failure()
     data = inspect_object(out)
     if data is None:
         raise api_error("container.not_found")
@@ -1069,11 +1197,36 @@ def inspect_container(name: str) -> dict:
     }
 
 
+def _raise_list_failure(kind: str):
+    """Fail an inventory read as 503 when the engine is simply not running.
+
+    A stopped container engine is an ordinary state this panel models
+    everywhere else -- ``engine_up`` rides along on /api/status, the
+    Containers page renders "engine is down", and every other
+    engine-dependent entry point raises ``container.engine_down`` (503).
+    The three inventory reads instead mapped *any* non-zero exit to
+    ``container.list_failed`` (500), so with OrbStack stopped the Images,
+    Volumes and Networks tabs reported a panel fault rather than a
+    dependency that is off.
+
+    ``engine_up`` is consulted only after a failure, so the healthy path
+    does not pay for an extra ``docker info``.  The probe is *forced*:
+    the memoised value has a 5s TTL, so for the first seconds after the
+    engine stops the cache still says "up" and the failure this function
+    exists to classify would be misreported as ``container.list_failed``
+    (500).  A fresh probe on the failure path is cheap -- failures are
+    rare -- and is the one moment the cached answer must not be trusted.
+    """
+    if not engine_up(force=True):
+        raise api_error("container.engine_down")
+    raise api_error("container.list_failed", kind=kind)
+
+
 def list_images() -> list:
     data, rc, err = docker_json(
         ["images", "--format", "{{json .}}"], timeout=15)
     if rc != 0:
-        raise api_error("container.list_failed", kind="images")
+        _raise_list_failure("images")
     if isinstance(data, dict):
         data = [data]
     elif not isinstance(data, list):
@@ -1084,7 +1237,7 @@ def list_images() -> list:
 def list_volumes() -> list:
     rc, out, err = docker("volume", "ls", "--format", "{{.Name}}\t{{.Driver}}\t{{.Mountpoint}}", timeout=12)
     if rc != 0:
-        raise api_error("container.list_failed", kind="volumes")
+        _raise_list_failure("volumes")
     items = []
     for line in _as_text(out).splitlines():
         p = line.split("\t")
@@ -1096,7 +1249,7 @@ def list_volumes() -> list:
 def list_networks() -> list:
     rc, out, err = docker("network", "ls", "--format", "{{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}", timeout=12)
     if rc != 0:
-        raise api_error("container.list_failed", kind="networks")
+        _raise_list_failure("networks")
     items = []
     for line in _as_text(out).splitlines():
         p = line.split("\t")
@@ -1119,6 +1272,8 @@ def prune(kind: str = "system") -> dict:
     else:
         raise api_error("container.bad_action", action=kind)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out or err}
 
 
@@ -1131,6 +1286,8 @@ def remove_image(image: str, force: bool = False) -> dict:
     args += ["--", image]
     rc, out, err = docker(*args, timeout=120)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1143,6 +1300,8 @@ def remove_volume(name: str, force: bool = False) -> dict:
         args.append("-f")
     args += ["--", name]
     rc, out, err = docker(*args, timeout=60)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1153,6 +1312,8 @@ def remove_network(name: str) -> dict:
     if name in ("bridge", "host", "none"):
         raise api_error("container.builtin_network")
     rc, out, err = docker("network", "rm", "--", name, timeout=30)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1160,6 +1321,8 @@ def pull_image(image: str) -> dict:
     if not image or not re_match_image(image):
         raise api_error("container.bad_image_name")
     rc, out, err = docker("pull", image, timeout=600)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": (_as_text(out) or _as_text(err) or "")[-2000:]}
 
 
@@ -1177,6 +1340,8 @@ def rename_container(name: str, new_name: str) -> dict:
             raise api_error("container.bad_new_name")
     rc, out, err = docker("rename", "--", name, new_name, timeout=30)
     invalidate_status()
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1240,6 +1405,10 @@ def create_run_container(body: dict) -> dict:
     rc, out, err = docker(*args, timeout=180)
     invalidate_status()
     out, err = _as_text(out), _as_text(err)
+    if rc != 0:
+        # The engine_up() gate at entry trusts a 5s memo, so an engine that
+        # dies inside the TTL still reaches the docker run.
+        _raise_if_engine_down(err, out)
     return {
         "ok": rc == 0,
         "message": out.strip() if rc == 0 else (err or out),
@@ -1260,6 +1429,8 @@ def create_volume(name: str, driver: str = "local") -> dict:
         args += ["--driver", driver]
     args.append(name)
     rc, out, err = docker(*args, timeout=30)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1277,6 +1448,8 @@ def create_network(name: str, driver: str = "bridge") -> dict:
         args += ["--driver", driver]
     args.append(name)
     rc, out, err = docker(*args, timeout=30)
+    if rc != 0:
+        _raise_if_engine_down(err, out)
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1330,6 +1503,13 @@ def _stack_paths() -> list[dict]:
         elif s.get("containers"):
             sid = s.get("id")
             if not isinstance(sid, str) or not sid:
+                continue
+            # Same _field_text pass as the path branch above: YAML double
+            # quotes load ``id: "\ud800"`` as a *lone surrogate* str, which
+            # this branch used to hand to Starlette raw — its UTF-8 encode
+            # then 500'd GET /api/stacks for every stack.
+            sid = _field_text(sid)
+            if not sid:
                 continue
             stacks.append({
                 "id": sid,
@@ -1456,6 +1636,8 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
+            if j.get("rc") not in (0, None):
+                _classify_job_failure(j)
             j["running"] = False
             j["finished"] = strftime_now("%H:%M:%S")
             invalidate_status()
@@ -1484,7 +1666,10 @@ def stack_job_log(job_id: str) -> dict:
     return {"running": j.get("running"), "rc": j.get("rc"), "started": j.get("started"),
             "finished": j.get("finished"),
             "log": "\n".join(_as_text(x) for x in raw_log) or "(waiting for output…)",
-            "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action")}
+            "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action"),
+            # machine-readable failure class (container.engine_down) so the
+            # SPA can translate instead of rendering raw daemon stderr
+            "code": j.get("code") if isinstance(j.get("code"), str) else None}
 
 
 def latest_stack_jobs() -> list:
@@ -1503,4 +1688,5 @@ def job_public(jid, j):
     if not isinstance(j, dict):
         j = {}
     return {"job_id": jid, "stack_id": j.get("stack_id"), "action": j.get("action"),
-            "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished")}
+            "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished"),
+            "code": j.get("code") if isinstance(j.get("code"), str) else None}

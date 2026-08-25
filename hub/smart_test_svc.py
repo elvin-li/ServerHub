@@ -29,7 +29,7 @@ from pathlib import Path
 from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
-from hub.secure_io import replace_bytes
+from hub.secure_io import file_lock, replace_bytes
 from hub.util import cached_snapshot, fan_out, read_text_capped, safe_json_loads, sh, strftime_now
 
 HISTORY_PATH = DATA_DIR / "smart-tests.json"
@@ -95,6 +95,22 @@ SCHEDULE_INTERVALS = {
     "biweekly": 14 * 86400,
     "monthly": 30 * 86400,
 }
+
+
+def _parsed_int(text) -> int | None:
+    """int() of a regex-captured digit run, or None past CPython's str->int cap.
+
+    ``(\\d+)`` bounds the charset but not the length: ``int()`` of a >4300-digit
+    smartctl leftover is ValueError (CPython's str->int cap).  A polling time
+    past the cap used to raise out of ``_capabilities`` and 500
+    POST /api/smart/test through ``start_test``, and a self-test log row's
+    index/hours past it cost the whole disk row (``probe_failed``) on
+    GET /api/smart through ``_device_report``.
+    """
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
 
 _history_lock = threading.Lock()
 _scheduler_stop: threading.Event | None = None
@@ -198,6 +214,26 @@ def _smartctl(args: list[str], *, timeout: int = 20) -> tuple[int, str, str]:
     return _raw_smartctl(argv, timeout=timeout)
 
 
+def _spawn_missing(rc: int, out, err) -> bool:
+    """True when a smartctl spawn failed like a vanished binary.
+
+    ``sh`` collapses every FileNotFoundError spawn into the exact ``(-1,
+    "not found")`` sentinel (the docker_cli.looks_cli_vanished convention),
+    and a sudo wrapper whose target is gone relays ``command not found``
+    with a real exit code.  Purely a message-pattern gate: callers must
+    still confirm with a fresh :func:`_smartctl_installed` disk probe, so a
+    permission denial or a genuine smartctl exit keeps its original
+    fallback (the authorization sheet), never the tool-absent 503.
+    """
+    if rc in (0, 4):
+        return False
+    out_t, err_t = _as_text(out), _as_text(err)
+    if rc == -1 and (out_t.strip() == "not found" or err_t.strip() == "not found"):
+        return True
+    blob = f"{out_t}\n{err_t}".lower()
+    return "command not found" in blob or "no such file or directory" in blob
+
+
 def passwordless_available() -> bool:
     """Whether ``sudo -n smartctl`` works, i.e. scheduled tests can run headless."""
     rc, _, _ = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-V"], timeout=6)
@@ -278,8 +314,11 @@ def _capabilities(
     minutes: dict[str, int] = {}
     for kind, label in _POLLING_LABELS.items():
         m = re.search(_polling_time_pattern(label), text, re.IGNORECASE | re.DOTALL)
-        if m:
-            minutes[kind] = int(m.group(1))
+        # An unparseable duration falls back to _KIND_HINT_MINUTES below,
+        # exactly like a drive that reports no polling time at all.
+        n = _parsed_int(m.group(1)) if m else None
+        if n is not None:
+            minutes[kind] = n
 
     if no_access:
         reason = "no_smart_passthrough"
@@ -321,13 +360,15 @@ def _selftest_log(device: str, selftest: tuple[int, str, str] | None = None) -> 
         m = _SELFTEST_ROW.match(stripped.strip())
         if m:
             num, kind, status, remaining, hours, lba = m.groups()
+            # 0 on an over-cap number, matching the NVMe rows below: the row's
+            # status text still renders rather than costing the whole disk.
             rows.append({
-                "index": int(num),
+                "index": _parsed_int(num) or 0,
                 "kind": kind.strip(),
                 "status": status.strip(),
                 "passed": "without error" in status.lower() or "completed" == status.strip().lower(),
                 "remaining": remaining,
-                "power_on_hours": int(hours),
+                "power_on_hours": _parsed_int(hours) or 0,
                 "failing_lba": lba.strip() or "",
             })
             continue
@@ -362,7 +403,12 @@ def _in_progress(device: str, caps_raw: tuple[int, str, str] | None = None) -> d
         if not m2:
             return {"running": False, "percent_remaining": None}
         m = m2
-    remaining = int(m.group(1))
+    remaining = _parsed_int(m.group(1))
+    if remaining is None or not 0 <= remaining <= 100:
+        # smartctl said a test is in progress; an over-cap or out-of-range
+        # percentage must not raise (or report a negative percent_done),
+        # only leave the progress figure unknown.
+        return {"running": True, "percent_remaining": None, "percent_done": None}
     return {"running": True, "percent_remaining": remaining, "percent_done": 100 - remaining}
 
 
@@ -415,6 +461,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -450,9 +502,27 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is ValueError (not JSONDecodeError) for
+    the *whole* document: one poisoned row made ``_load_history`` return
+    ``[]``, GET /api/smart/history went silently empty, and the next
+    ``_append_history`` rewrote the journal with only its own record — every
+    prior self-test result silently lost.  Dropping just the number matches
+    the ``_jsonable`` rule for an int the encoder cannot render.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_history() -> list[dict]:
     try:
-        data = safe_json_loads(read_text_capped(HISTORY_PATH, _HISTORY_CAP))
+        data = safe_json_loads(
+            read_text_capped(HISTORY_PATH, _HISTORY_CAP), parse_int=_capped_json_int
+        )
     except (OSError, TypeError, ValueError, RecursionError):
         return []
     if not isinstance(data, list):
@@ -461,7 +531,10 @@ def _load_history() -> list[dict]:
 
 
 def _append_history(record: dict) -> None:
-    with _history_lock:
+    # file_lock as well as _history_lock: both panel processes sharing data/
+    # journal test results, and this is a whole-file load→append→replace, so
+    # a write from a stale snapshot dropped the row the other just recorded.
+    with _history_lock, file_lock(HISTORY_PATH):
         history = _load_history()
         history.append(_jsonable(record) if isinstance(record, dict) else {})
         # Bounded so a daily schedule cannot grow the file without limit.
@@ -494,6 +567,31 @@ def _schedule_cfg() -> dict:
     return stored if isinstance(stored, dict) else {}
 
 
+def _schedule_text(value) -> str:
+    """str() probe for hand-edited YAML schedule fields.
+
+    ``interval: 0xFFF…`` loads as an over-cap int (``int(x, 16)`` is a
+    power-of-two base, so the 4300-digit parse cap never applied) and a bare
+    ``str()`` here ValueError'd GET /api/smart through ``overview()`` — and
+    the same raise escaped ``schedule_due()`` inside the scheduler tick,
+    silently stopping every scheduled self-test.  An unrenderable value
+    coerces to "" so the caller's own fallback ("off" / "short" / drop the
+    device entry) answers instead; a renderable int still coerces via str()
+    rather than being hidden behind an isinstance(str) gate.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except Exception:
+        return ""
+    # Lone surrogates (a mojibake hand-edit) must not reach Starlette's
+    # UTF-8 encode.
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _now() -> int:
     """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd SMART runs."""
     try:
@@ -521,18 +619,24 @@ def _schedule_epoch(raw) -> float:
 
 def get_schedule() -> dict:
     stored = _schedule_cfg()
-    interval = str(stored.get("interval") or "off").lower()
+    interval = (_schedule_text(stored.get("interval")) or "off").lower()
     if interval not in SCHEDULE_INTERVALS:
         interval = "off"
-    kind = str(stored.get("kind") or "short").lower()
+    kind = (_schedule_text(stored.get("kind")) or "short").lower()
     if kind not in TEST_KINDS:
         kind = "short"
     devices = stored.get("devices")
+    cleaned_devices = []
+    for d in (devices if isinstance(devices, list) else []):
+        # An over-cap device entry drops alone; its siblings stay scheduled.
+        node = _schedule_text(d)
+        if node and _DEV_RE.match(node):
+            cleaned_devices.append(node)
     return {
         "interval": interval,
         "kind": kind,
         "last_run": _schedule_epoch(stored.get("last_run")),
-        "devices": [d for d in (devices if isinstance(devices, list) else []) if _DEV_RE.match(str(d))],
+        "devices": cleaned_devices,
         "intervals": list(SCHEDULE_INTERVALS),
         "kinds": list(TEST_KINDS),
     }
@@ -546,7 +650,11 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
     if kind not in TEST_KINDS:
         return {"ok": False, "error": "bad_kind"}
     known = set(_device_nodes())
-    cleaned = [str(d) for d in (devices or []) if _DEV_RE.match(str(d)) and str(d) in known]
+    cleaned = [
+        node
+        for node in (_schedule_text(d) for d in (devices or []))
+        if node and _DEV_RE.match(node) and node in known
+    ]
     current = _schedule_cfg()
     update_settings({
         "smart_schedule": {
@@ -686,8 +794,16 @@ def start_test(device: str, kind: str) -> dict:
 
     caps = _capabilities(node)
     if not caps["available"]:
-        # Refusing here beats issuing a command the controller will reject, and
-        # lets the UI say which drives can actually be tested.
+        # sh()'s vanished-binary sentinel and a controller with no SMART
+        # passthrough answer identically from the exit code alone; only a
+        # FRESH disk probe on this failure path separates "the drive cannot
+        # be tested" from "smartctl itself is gone".  Without it, a brew
+        # cleanup that removed smartctl was reported as the coded 400 "this
+        # disk does not offer SMART self-tests" — a statement about healthy
+        # hardware that misdirects the operator (files.fb_missing /
+        # photoshub.ctl_missing / backup.tool_missing convention).
+        if caps["reason"] == "no_smart_passthrough" and not _smartctl_installed():
+            return {"ok": False, "error": "smartctl_missing", "device": node}
         return {"ok": False, "error": "unsupported", "reason": caps["reason"], "device": node}
     if test not in caps["supported"]:
         return {"ok": False, "error": "kind_unsupported", "supported": caps["supported"], "device": node}
@@ -695,6 +811,13 @@ def start_test(device: str, kind: str) -> dict:
     flags = list(device_type(node))
     rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-t", test, *flags, node], timeout=60)
     if rc not in (0, 4):
+        # A vanished-looking spawn probes the disk before falling back to the
+        # authorization sheet: capabilities may have answered from the
+        # pre-vanish cache, and asking macOS for admin rights to run a binary
+        # that no longer exists can only fail after the password dance.  A
+        # permission denial (binary present) keeps the sheet as before.
+        if _spawn_missing(rc, out, err) and not _smartctl_installed():
+            return {"ok": False, "error": "smartctl_missing", "device": node}
         # No passwordless rule: ask macOS for one-shot authorization instead.
         admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
         ok = bool(admin.get("ok")) if isinstance(admin, dict) else False
@@ -729,6 +852,11 @@ def abort_test(device: str) -> dict:
     flags = list(device_type(node))
     rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-X", *flags, node], timeout=30)
     if rc not in (0, 4):
+        # Same fresh-probe rule as start_test: only a vanished-looking spawn
+        # whose binary a fresh disk probe confirms gone becomes the
+        # tool-absent 503; anything else keeps the authorization fallback.
+        if _spawn_missing(rc, out, err) and not _smartctl_installed():
+            return {"ok": False, "error": "smartctl_missing", "device": node}
         result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
         invalidate()
         cleaned = _jsonable(result) if isinstance(result, dict) else {}
@@ -837,7 +965,10 @@ def overview() -> dict:
         "next_due": next_due,
         "overdue": bool(period) and schedule_due(),
         "passwordless_sudo": passwordless,
-        "smartctl": SMARTCTL,
+        # PATH decodes with surrogateescape, so a mojibake PATH entry gave
+        # shutil.which a lone-surrogate path; echoed verbatim it 500'd
+        # Starlette's UTF-8 encode of GET /api/smart.
+        "smartctl": _as_text(SMARTCTL),
         "smartctl_installed": _smartctl_installed(),
         "history": history(30),
     }

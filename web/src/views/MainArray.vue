@@ -1,5 +1,7 @@
 <template>
   <div>
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('nav.main') }}</h1>
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
       <button @click="openSmart" :disabled="smartLoading">{{ t('main.smart_btn') }}</button>
@@ -7,7 +9,7 @@
         {{ t('main_extra.summary_counts', { disks: (data?.power_disks || []).length, vols: data?.volumes?.length || 0 }) }}
       </span>
       <span v-if="data?.array" class="badge" :class="data.array.status === 'started' ? 'ok' : 'warn'">
-        Array {{ finiteText(data.array.status) }}
+        {{ t('main_extra.array_state', { state: finiteText(data.array.status) }) }}
       </span>
     </div>
 
@@ -27,25 +29,25 @@
     <!-- Unraid-style array summary -->
     <div class="dash-grid" style="margin-bottom:12px" v-if="data?.array || data?.totals">
       <div class="tile span-3">
-        <h3>{{ t('main.array_status') }}</h3>
+        <h2>{{ t('main.array_status') }}</h2>
         <div
           class="v"
-          :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok)' : 'var(--warn)' }"
+          :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok-text)' : 'var(--warn-text)' }"
         >{{ finiteText(data?.array?.status, '') || t('network.unknown') }}</div>
         <div class="sub">{{ finiteN(data?.array?.system_count, 0) }} + {{ finiteN(data?.array?.data_count, 0) }}</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('main.capacity') }}</h3>
+        <h2>{{ t('main.capacity') }}</h2>
         <div class="v" style="font-size:16px">{{ finiteN(data?.array?.total_tb) }} <span style="font-size:12px;font-weight:500;color:var(--sub)">TB</span></div>
         <div class="sub">{{ t('common.used') }} {{ finiteN(data?.array?.used_tb) }} · {{ t('common.free') }} {{ finiteN(data?.array?.free_tb) }} TB</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('main.physical') }}</h3>
+        <h2>{{ t('main.physical') }}</h2>
         <div class="v">{{ finiteN(data?.array?.disk_count, (data?.disks || []).length) }}</div>
         <div class="sub">SMART</div>
       </div>
       <div class="tile span-3">
-        <h3>{{ t('main.unassigned') }}</h3>
+        <h2>{{ t('main.unassigned') }}</h2>
         <div class="v">{{ unassigned.length }}</div>
       </div>
     </div>
@@ -55,7 +57,9 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <!-- Status LED. The column is drawn as a dot, so its name has to be
+                 spoken rather than shown or the row starts with a blank cell. -->
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th class="col-hide-m">{{ t('main_extra.role') }}</th>
             <th>{{ t('dashboard.col_mount') }}</th>
             <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
@@ -95,7 +99,7 @@
             </td>
           </tr>
           <tr v-if="!arrayDevices.length && !loadError">
-            <td colspan="9" style="color:var(--sub)">{{ t('main_extra.empty_array_vols') }}</td>
+            <td colspan="9" class="empty-row">{{ t('main_extra.empty_array_vols') }}</td>
           </tr>
         </tbody>
       </table>
@@ -106,7 +110,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('common.name') }}</th>
             <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
@@ -139,14 +143,14 @@
             </td>
           </tr>
           <tr v-if="!unassigned.length && !loadError && !pendingFull">
-            <td colspan="7" style="color:var(--sub)">{{ t('main_extra.empty_unassigned') }}</td>
+            <td colspan="7" class="empty-row">{{ t('main_extra.empty_unassigned') }}</td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-      <h3 style="margin:0 0 6px">{{ t('main.tip_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('main.tip_title') }}</h2>
       <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">
         {{ t('main.tip_body') }}
       </p>
@@ -157,7 +161,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('common.name') }}</th>
             <th class="col-hide-m">{{ t('main_extra.th_kind') }}</th>
@@ -221,7 +225,7 @@
             </td>
           </tr>
           <tr v-if="!powerDisks.length && !loadError && !pendingFull">
-            <td colspan="9" style="color:var(--sub)">{{ t('main_extra.empty_disks') }}</td>
+            <td colspan="9" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
           </tr>
         </tbody>
       </table>
@@ -275,7 +279,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('main_extra.device') }}</th>
             <th>{{ t('main_extra.model') }}</th>
             <th class="col-hide-m">{{ t('main_extra.protocol') }}</th>
@@ -315,6 +319,9 @@
             <td class="mono col-hide-m">{{ finiteText(d.smart?.power_on) }}</td>
             <td class="col-hide-m">{{ finiteText(d.size) }}</td>
           </tr>
+          <tr v-if="!(data?.disks || []).length && !loadError">
+            <td colspan="10" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -351,11 +358,14 @@
             <td class="col-hide-m">{{ fmtGb(v.used_gb) }}</td>
             <td class="col-hide-m">{{ fmtGb(v.avail_gb) }}</td>
             <td style="min-width:120px">
-              <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
+              <strong :style="{ color: v.pct >= 90 ? 'var(--down-text)' : (v.pct >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
               <div class="pct-bar" :class="v.pct>=90?'danger':v.pct>=75?'warn':''" style="margin-top:3px">
                 <i :style="{ width: barPct(v.pct) + '%' }"></i>
               </div>
             </td>
+          </tr>
+          <tr v-if="!(data?.volumes || []).length && !loadError">
+            <td colspan="8" class="empty-row">{{ t('main_extra.empty_volumes') }}</td>
           </tr>
         </tbody>
       </table>
@@ -418,7 +428,7 @@
             </td>
           </tr>
           <tr v-if="!managedVols.length && !loadError && !pendingFull">
-            <td colspan="6" style="color:var(--sub)">{{ t('main_extra.no_vols') }}</td>
+            <td colspan="6" class="empty-row">{{ t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
       </table>
@@ -445,12 +455,12 @@
     <div ref="formatPanel" v-if="formatTarget" class="modal-bg" @click.self="formatTarget=null" role="presentation">
       <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="array-format-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="array-format-title" class="name" style="color:var(--down)">
+          <span id="array-format-title" class="name" style="color:var(--down-text)">
             {{ formatWhole ? t('main_extra.erase_disk') : t('main_extra.format') }} · {{ finiteText(formatTarget.id) }}
           </span>
           <button class="tiny" @click="formatTarget=null">{{ t('common.close') }}</button>
         </div>
-        <p style="font-size:12px;color:var(--down);line-height:1.5;margin-bottom:10px">
+        <p style="font-size:12px;color:var(--down-text);line-height:1.5;margin-bottom:10px">
           ⚠️ {{ t('main_extra.format_warn') }}
         </p>
         <div class="field-grid">
@@ -461,7 +471,10 @@
           <label>{{ t('main_extra.vol_name') }}</label>
           <input v-model="formatName" type="text" :aria-label="t('main_extra.vol_name')" />
           <label>{{ t('main_extra.confirm') }}</label>
-          <input v-model="formatConfirm" type="text" :placeholder="t('main_extra.format_type_ph', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) })"  :aria-label="t('main_extra.format_type_ph', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) })"/>
+          <!-- The aria-label used to repeat the placeholder, so the control was
+               announced as its example value instead of what it is; the grid
+               <label> above carries the real name. -->
+          <input v-model="formatConfirm" type="text" :placeholder="t('main_extra.format_type_ph', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) })" :aria-label="t('main_extra.confirm')"/>
         </div>
         <p style="font-size:11px;color:var(--sub);margin:8px 0 12px">
           {{ t('main_extra.format_confirm_hint', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) }) }}
@@ -483,18 +496,21 @@
         <div class="sub" style="margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;font-size:11px">
           <span v-if="finiteText(smartData?.ts, '')">{{ finiteText(smartData.ts) }}</span>
           <template v-if="smartData">
-            <span :style="{ color: smartData.passwordless_sudo ? 'var(--ok)' : 'var(--warn)' }">
+            <span :style="{ color: smartData.passwordless_sudo ? 'var(--ok-text)' : 'var(--warn-text)' }">
               {{ smartData.passwordless_sudo ? t('main_extra.smart_sudo_ok') : t('main_extra.smart_sudo_no') }}
             </span>
-            <span :style="{ color: smartData.smartctl_installed ? 'var(--ok)' : 'var(--down)' }">
+            <span :style="{ color: smartData.smartctl_installed ? 'var(--ok-text)' : 'var(--down-text)' }">
               {{ smartData.smartctl_installed ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
             </span>
           </template>
-          <span v-else-if="smartError" style="color:var(--down)">{{ finiteText(smartError) }}</span>
+          <span v-else-if="smartError" style="color:var(--down-text)">{{ finiteText(smartError) }}</span>
         </div>
         <div v-if="smartLoading" style="text-align:center;padding:20px;color:var(--sub)">{{ t('main_extra.scanning') }}</div>
         <div v-else>
-          <div v-if="smartError && !smartData" style="color:var(--down)">{{ finiteText(smartError) }}</div>
+          <!-- The overview loads after the dialog already holds focus, so the
+               panel-focus read never covers a failure — same as the Scheduler
+               run-history and Shares ACL errors. -->
+          <div v-if="smartError && !smartData" role="alert" style="color:var(--down-text)">{{ finiteText(smartError) }}</div>
           <div v-else-if="!smartMerged.length" style="color:var(--sub)">{{ t('main_extra.smart_no_devices') }}</div>
           <div v-else class="table-wrap" style="max-height:400px;overflow:auto">
             <table class="dense fit-m">
@@ -516,7 +532,7 @@
                 <tr>
                   <td class="mono">
                     <strong>{{ finiteText(m.id) }}</strong>
-                    <div v-if="m.error" class="sub" style="font-size:10px;color:var(--warn)">{{ finiteText(m.error) }}</div>
+                    <div v-if="m.error" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.error) }}</div>
                   </td>
                   <td>
                     <strong>{{ finiteText(m.smart?.model, '') || finiteText(m.smart?.serial) }}</strong>
@@ -535,12 +551,21 @@
                   <td class="col-hide-m" style="font-size:11px">
                     <span v-if="m.caps?.supported?.length">{{ (m.caps.supported || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
                     <span v-else style="color:var(--sub)">{{ t('main_extra.smart_unsupported') }}</span>
-                    <div v-if="finiteText(m.caps?.reason, '')" class="sub" style="font-size:10px;color:var(--warn)">{{ finiteText(m.caps.reason) }}</div>
-                    <div v-if="m.progress?.running" class="sub" style="font-size:10px;color:var(--ok)">{{ t('main_extra.smart_running', { pct: finiteN(m.progress.percent_remaining, '?') }) }}</div>
+                    <div v-if="finiteText(m.caps?.reason, '')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.caps.reason) }}</div>
+                    <div v-if="m.progress?.running" class="sub" style="font-size:10px;color:var(--ok-text)">{{ t('main_extra.smart_running', { pct: finiteN(m.progress.percent_remaining, '?') }) }}</div>
                     <div v-if="finiteText(m.lastResult, '')" class="sub" style="font-size:10px">{{ finiteText(m.lastResult) }} · {{ finiteN(m.logCount, 0) }} {{ t('main_extra.smart_logs') }}</div>
                   </td>
                   <td class="ops">
-                    <button v-if="m.smart?.attrs?.length" class="tiny" @click="toggleSmartDetail(m.id)">
+                    <!-- The visible face is a glyph and a count, so the
+                         accessible name was "▼ 12" — nothing says what
+                         expands. aria-expanded carries the open state. -->
+                    <button
+                      v-if="m.smart?.attrs?.length"
+                      class="tiny"
+                      :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(m.id) })"
+                      :aria-expanded="smartExpanded.has(m.id)"
+                      @click="toggleSmartDetail(m.id)"
+                    >
                       {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ m.smart.attrs.length }}
                     </button>
                     <template v-if="m.caps?.supported?.length">
@@ -554,7 +579,7 @@
                   </td>
                 </tr>
                 <tr v-if="smartExpanded.has(m.id) && m.smart?.attrs?.length">
-                  <td :colspan="9" style="padding:0;background:var(--bg2,#f6f6f6)">
+                  <td :colspan="9" style="padding:0;background:var(--table-alt)">
                     <div style="padding:6px 10px;max-height:300px;overflow:auto">
                       <table class="dense fit-m" style="width:100%">
                         <thead>
@@ -948,7 +973,7 @@ function kindBadge(d) {
   return 'accent'
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   const mySeq = ++loadSeq
   loading.value = true
   try {
@@ -959,7 +984,10 @@ async function refresh() {
   } catch (e) {
     if (mySeq !== loadSeq || !pageAlive) return
     loadError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // Background 45s ticks stay silent: LoadFailure already marks the state on
+    // screen, and re-toasting every interval while the panel is down is noise.
+    // The retry button passes its click event as `manual`, so it still toasts.
+    if (manual) toast('❌ ' + finiteText(e.message))
     // Failed tick → lib/poll.js backoff while the server stays unreachable.
     return false
   } finally {

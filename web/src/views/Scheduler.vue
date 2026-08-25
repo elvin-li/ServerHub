@@ -19,7 +19,10 @@
       <div class="toolbar">
         <button class="primary" @click="openCreate">{{ t('sched.new_job') }}</button>
         <button :disabled="jobsBusy" @click="loadJobs">{{ t('common.refresh') }}</button>
-        <span class="meta" style="color:var(--sub)" v-if="jobsLoaded">{{ jobs.length }} {{ t('sched.jobs_count') }}</span>
+        <!-- role=status: the count is Refresh's (and the running-jobs poll's)
+             only summary and changed silently for a screen reader — same
+             treatment as the VMs title-meta and Users/Apps toolbar counts. -->
+        <span class="meta" role="status" style="color:var(--sub)" v-if="jobsLoaded">{{ jobs.length }} {{ t('sched.jobs_count') }}</span>
       </div>
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
@@ -64,7 +67,10 @@
                 <span v-else class="meta">{{ t('sched.never') }}</span>
               </td>
               <td>
-                <input type="checkbox" :checked="job.enabled" :aria-label="t('sched.enabled')"
+                <!-- Named per row, like the Services and Containers checkboxes:
+                     a column of toggles all announced as "Enabled" cannot be
+                     told apart in a screen reader's form-controls listing. -->
+                <input type="checkbox" :checked="job.enabled" :aria-label="t('sched.enable_name', { name: finiteText(job.name) })"
                        @change="toggle(job, $event.target.checked)" />
               </td>
               <td>
@@ -77,7 +83,7 @@
               </td>
             </tr>
             <tr v-if="!jobs.length && !jobsError">
-              <td colspan="7" style="color:var(--sub)">{{ t('sched.no_jobs') }}</td>
+              <td colspan="7" class="empty-row">{{ t('sched.no_jobs') }}</td>
             </tr>
           </tbody>
         </table>
@@ -85,7 +91,7 @@
 
       <!-- bridged system-managed schedules (read-only) -->
       <div v-if="systemJobs.length" class="tile" style="margin-top:12px">
-        <h3 style="margin-top:0">{{ t('sched.managed_title') }}</h3>
+        <h2 style="margin-top:0">{{ t('sched.managed_title') }}</h2>
         <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.managed_smart_hint') }}</p>
         <div class="table-wrap" style="margin-top:6px">
         <table class="dense fit-m">
@@ -109,7 +115,9 @@
     <div v-else>
       <div class="toolbar">
         <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
-        <span class="meta" style="color:var(--sub)" v-if="data">{{ finiteN(data.count) }} {{ t('scheduler.timers') }}</span>
+        <!-- role=status: the timer count is Refresh's only summary on this
+             tab and changed silently — same rule as the panel-jobs count. -->
+        <span class="meta" role="status" style="color:var(--sub)" v-if="data">{{ finiteN(data.count) }} {{ t('scheduler.timers') }}</span>
       </div>
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
@@ -122,16 +130,16 @@
       <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
       <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
         <div class="tile span-4">
-          <h3>{{ t('scheduler.timers') }}</h3>
+          <h2>{{ t('scheduler.timers') }}</h2>
           <div class="v">{{ finiteN(data.count) }}</div>
         </div>
         <div class="tile span-4">
-          <h3>{{ t('scheduler.interval_type') }}</h3>
+          <h2>{{ t('scheduler.interval_type') }}</h2>
           <div class="v">{{ intervalCount }}</div>
           <div class="sub">StartInterval</div>
         </div>
         <div class="tile span-4">
-          <h3>{{ t('scheduler.calendar_type') }}</h3>
+          <h2>{{ t('scheduler.calendar_type') }}</h2>
           <div class="v">{{ calendarCount }}</div>
           <div class="sub">StartCalendarInterval</div>
         </div>
@@ -139,6 +147,10 @@
 
       <div class="toolbar">
         <input v-model="q" type="text" :placeholder="t('scheduler.filter_ph')" style="min-width:200px" :aria-label="t('scheduler.filter_ph')" />
+        <!-- role=status: the count is the only feedback the filter box gives,
+             and it changed silently for a screen reader. Same pattern as the
+             Services filter count. -->
+        <span class="meta-count" role="status">{{ filtered.length }} / {{ (data?.timers || []).length }}</span>
       </div>
 
       <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
@@ -169,9 +181,11 @@
                 {{ finiteText(row.program) }}
               </td>
             </tr>
+            <!-- "None" was claimed even when the filter box was what emptied the
+                 table; a host full of timers appeared to have none. -->
             <tr v-if="!filtered.length && !loadError">
-              <td colspan="5" style="color:var(--sub)">
-                {{ loading ? t('common.loading') : t('common.none') }}
+              <td colspan="5" class="empty-row">
+                {{ loading ? t('common.loading') : (q.trim() && (data?.timers || []).length ? t('common.no_match') : t('common.none')) }}
               </td>
             </tr>
           </tbody>
@@ -202,9 +216,16 @@
           <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: finiteText(runsFor.name) }) }}</span>
           <button class="tiny" @click="runsFor = null">{{ t('common.close') }}</button>
         </div>
-        <div v-if="runsError" class="meta" style="color:var(--down)">{{ finiteText(runsError) }}</div>
+        <!-- role=alert: the history loads *after* the dialog already holds
+             focus, so the panel-focus read never covers this failure. Same
+             pattern as the Shares ACL read error. -->
+        <div v-if="runsError" class="meta" role="alert" style="color:var(--down-text)">{{ finiteText(runsError) }}</div>
         <div v-else-if="!runsLoaded" class="meta">{{ t('common.loading') }}</div>
-        <div v-else-if="!runs.length" class="meta">{{ t('sched.runs_empty') }}</div>
+        <!-- role=status: the loading -> "no runs" flip is the whole outcome
+             of an empty history and lands after the dialog already holds
+             focus, so the panel-focus read never covers it — same as the
+             PhotosHub empty pending state. -->
+        <div v-else-if="!runs.length" class="meta" role="status">{{ t('sched.runs_empty') }}</div>
         <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
           <div style="font-size:12px;margin-bottom:4px">
             <span class="badge" :class="run.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${run.status}`) }}</span>
@@ -276,9 +297,11 @@ async function loadJobs() {
     jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
     systemJobs.value = Array.isArray(d?.system) ? d.system : []
     jobsError.value = ''
+    pollFailures = 0
   } catch (e) {
     if (pollStopped) return
     jobsError.value = finiteText(e.message || String(e), '')
+    pollFailures += 1
   } finally {
     if (!pollStopped) {
       jobsBusy.value = false
@@ -292,6 +315,14 @@ async function loadJobs() {
 // and last-run status update themselves; the timer stops as soon as nothing
 // is running, so an idle page polls nothing.
 let pollTimer = null
+// With the panel dead mid-run, the stale `running` flag keeps this loop alive
+// forever — back it off like lib/poll.js (1.5^n, capped at 6x) instead of
+// asking a host that is not answering every 7 seconds.
+let pollFailures = 0
+const POLL_MS = 7000
+function pollDelay() {
+  return Math.min(POLL_MS * Math.pow(1.5, pollFailures), POLL_MS * 6)
+}
 function schedulePoll() {
   if (pollStopped || pollTimer) return
   if (!jobs.value.some(j => j.running)) return
@@ -303,7 +334,7 @@ function schedulePoll() {
     // tab asking the host for job status all night.
     if (typeof document !== 'undefined' && document.hidden) schedulePoll()
     else loadJobs()
-  }, 7000)
+  }, pollDelay())
 }
 
 onBeforeUnmount(() => {

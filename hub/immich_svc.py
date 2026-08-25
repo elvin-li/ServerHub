@@ -101,6 +101,14 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — ``json.dumps`` raises the same ValueError
+            # this guard eats (hex/octal text loads uncapped, so a leftover
+            # dodges the int(str) parse limit) — same drop as backups/jobs.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):

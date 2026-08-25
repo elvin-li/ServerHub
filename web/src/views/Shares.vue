@@ -2,7 +2,10 @@
   <div class="sharing-page" :aria-busy="loading || busy">
     <div class="page-title">
       <h1>{{ t('shares.title') }}</h1>
-      <span class="meta">
+      <!-- role=status: this count summary is Refresh's only answer and it
+           changed silently for a screen reader (Users / Bookmarks page-title
+           count pattern). -->
+      <span class="meta" role="status">
         {{ data
           ? t('shares.summary', { shares: shareCount, services: coreServices.length })
           : t('shares.meta') }}
@@ -263,8 +266,14 @@
           <section v-if="editing" class="acl-block">
             <h3>{{ t('shares.acl_title') }}</h3>
             <p class="acl-hint">{{ t('shares.acl_hint') }}</p>
-            <div v-if="aclLoading" class="acl-hint">{{ t('common.loading') }}</div>
-            <div v-else-if="aclError" class="acl-error">{{ finiteText(aclError) }}</div>
+            <!-- role=status: the ACL loads after the sheet already holds
+                 focus, so the swap from this placeholder was silent for a
+                 screen reader (Login-loading / Settings launcher pattern);
+                 the failure sibling below already carries role=alert. -->
+            <div v-if="aclLoading" class="acl-hint" role="status">{{ t('common.loading') }}</div>
+            <!-- role="alert": the ACL read finishes after the sheet already has
+                 focus, so without it the failure text appears silently. -->
+            <div v-else-if="aclError" class="acl-error" role="alert">{{ finiteText(aclError) }}</div>
             <template v-else-if="acl">
               <div v-for="user in acl.users" :key="user.username" class="acl-user-row">
                 <span class="acl-user">
@@ -608,7 +617,11 @@ onUnmounted(() => {
 .host-overview { display:grid; grid-template-columns:minmax(220px,1fr) auto auto; align-items:center; gap:20px; margin-bottom:14px; }
 .host-identity { display:flex; align-items:center; gap:12px; min-width:0; }
 .host-icon,.folder-icon,.service-icon { display:grid; place-items:center; flex:0 0 auto; color:#fff; }
-.host-icon { width:42px; height:42px; border-radius:var(--radius); background:var(--accent); }
+/* The accent wells take the fill/label pair, not raw accent + white: a white
+   glyph on Unraid orange is 2.32:1, under even the 3:1 graphics floor. The
+   fixed service-icon literals keep white -- their darkest well clears 3:1. */
+.host-icon,.folder-icon { background:var(--accent-fill); color:var(--on-accent); }
+.host-icon { width:42px; height:42px; border-radius:var(--radius); }
 .host-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
 .host-copy .section-title { margin:0; }
 .host-copy strong { overflow:hidden; font-size:15px; text-overflow:ellipsis; white-space:nowrap; }
@@ -661,19 +674,19 @@ onUnmounted(() => {
 :global([data-theme="macos-dark"] .service-row + .service-row::after) {
   right: 58px;
 }
-.folder-icon { width:34px; height:34px; border-radius:var(--radius); background:var(--accent); }
+.folder-icon { width:34px; height:34px; border-radius:var(--radius); }
 .share-copy { display:flex; flex-direction:column; min-width:0; gap:2px; }
 .share-copy strong { font-size:13px; }
 .share-copy .path { overflow:hidden; color:var(--sub); font-size:10.5px; text-overflow:ellipsis; white-space:nowrap; }
-.share-copy a { color:var(--accent); font-size:10.5px; text-decoration:none; }
+.share-copy a { color:var(--accent-text); font-size:10.5px; text-decoration:none; }
 .share-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
 .share-badges .badge { display:inline-flex; align-items:center; gap:3px; }
-.danger-button { color:var(--down); }
+.danger-button { color:var(--down-text); }
 .tm-note { display:flex; gap:10px; align-items:flex-start; margin-top:8px; padding:12px; border-left:3px solid var(--accent); color:var(--sub); font-size:11px; line-height:1.5; }
 .tm-note > svg { flex:0 0 auto; margin-top:1px; color:var(--accent); }
 .tm-note > div { display:flex; flex-direction:column; gap:3px; min-width:0; }
 .tm-note strong { color:var(--txt); font-size:12px; }
-.tm-note .tm-warn { color:var(--warn); font-weight:600; }
+.tm-note .tm-warn { color:var(--warn-text); font-weight:600; }
 .empty-state { display:flex; align-items:center; justify-content:center; gap:12px; min-height:92px; color:var(--sub); text-align:left; }
 .empty-state > div { display:flex; flex-direction:column; gap:3px; }
 .empty-state strong { color:var(--txt); font-size:13px; }
@@ -690,8 +703,10 @@ onUnmounted(() => {
 :global([data-theme="macos"] .folder-icon),
 :global([data-theme="macos-dark"] .host-icon),
 :global([data-theme="macos-dark"] .folder-icon) {
-  background: var(--accent);
-  color: #fff;
+  /* --accent-fill is the System Settings well: the 15%-deepened blue both
+     macOS palettes already use for button.primary, with its white label. */
+  background: var(--accent-fill);
+  color: var(--on-accent);
 }
 :global([data-theme="macos"] .service-icon),
 :global([data-theme="macos"] .service-icon[class*="service-"]),
@@ -708,7 +723,8 @@ onUnmounted(() => {
 :global([data-theme="macos"] .share-badges .badge.accent),
 :global([data-theme="macos-dark"] .share-badges .badge.accent) {
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
-  color: var(--accent);
+  /* Same ink as the global .badge.accent: sized for the wash it sits on. */
+  color: var(--on-accent-wash);
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
 }
 :global([data-theme="macos"] .service-action .badge.ok),
@@ -787,7 +803,7 @@ onUnmounted(() => {
 .share-sheet { width:min(560px,100%); max-height:90vh; overflow:auto; border:1px solid var(--line); border-radius:var(--radius); color:var(--txt); background:var(--card); box-shadow:0 20px 70px rgba(0,0,0,.32); }
 .share-sheet header { position:sticky; top:0; z-index:1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; min-height:52px; padding:0 12px; border-bottom:1px solid var(--line); background:var(--card); }
 .share-sheet header h2 { margin:0; font-size:14px; }
-.sheet-cancel,.sheet-save { border:0; background:transparent; color:var(--accent); }
+.sheet-cancel,.sheet-save { border:0; background:transparent; color:var(--accent-text); }
 .sheet-cancel { justify-self:start; }.sheet-save { justify-self:end; font-weight:700; }
 .sheet-body { display:flex; flex-direction:column; gap:14px; padding:16px; }
 .sheet-body > label { display:flex; flex-direction:column; gap:6px; }
@@ -804,11 +820,11 @@ onUnmounted(() => {
 .acl-block { border:1px dashed var(--line); border-radius:8px; padding:10px 12px; }
 .acl-block h3 { margin:0 0 4px; font-size:12.5px; }
 .acl-hint { color:var(--sub); font-size:10.5px; line-height:1.45; margin:2px 0 8px; }
-.acl-error { color:var(--down); font-size:11px; }
+.acl-error { color:var(--down-text); font-size:11px; }
 .acl-user-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:5px 0; }
 .acl-user { display:flex; align-items:baseline; gap:7px; min-width:0; }
 .acl-user small { color:var(--sub); font-size:10px; }
-.acl-owner-tag { color:var(--accent); font-weight:600; }
+.acl-owner-tag { color:var(--accent-text); font-weight:600; }
 .acl-user-row select { font-size:11.5px; padding:3px 6px; border-radius:5px; }
 .acl-entries { margin-top:6px; }
 .acl-entries summary { font-size:10.5px; color:var(--sub); cursor:pointer; }

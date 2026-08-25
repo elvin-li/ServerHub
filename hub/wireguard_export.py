@@ -118,8 +118,13 @@ def _csv(value: str) -> list[str]:
 
 def _mtu(interface: dict) -> int:
     raw = str(interface.get("MTU") or "").strip()
-    if raw.isdigit():
-        return int(raw)
+    try:
+        if raw.isdigit():
+            return int(raw)
+    except ValueError:
+        # isdigit() does not bound length: a >4300-digit MTU is ValueError
+        # (CPython's str->int cap), not a parse miss.
+        pass
     return DEFAULT_MTU
 
 
@@ -271,8 +276,22 @@ def render(
 
 
 def filename_for(fmt: str, name: str) -> str:
-    """A safe download filename for *name* in *fmt*."""
-    safe = "".join(ch if (ch.isalnum() or ch in "-_") else "-" for ch in (name or "peer"))[:48] or "peer"
+    """A safe download filename for *name* in *fmt*.
+
+    ASCII only: the value goes into a ``Content-Disposition`` header, and
+    Starlette encodes header values as latin-1.  ``str.isalnum`` is true for
+    CJK / Cyrillic / superscripts, so a leftover non-ASCII peer name in
+    ``data/wireguard-peers.json`` (hand-edited, or restored from a backup
+    written before the name rule existed) used to UnicodeEncodeError the
+    header render and answer a bare 500 on GET /api/wireguard/peers/download.
+    """
+    safe = "".join(
+        ch if ((ch.isascii() and ch.isalnum()) or ch in "-_") else "-"
+        for ch in (name or "peer")
+    )[:48]
+    if not any(ch.isalnum() for ch in safe):
+        # A fully non-ASCII name would otherwise download as "-----.conf".
+        safe = "peer"
     suffix = {
         "wg": f"{safe}.conf",
         "clash": f"{safe}-clash.yaml",

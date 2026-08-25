@@ -1,5 +1,7 @@
 <template>
   <div class="tools-page">
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('tools.title') }}</h1>
     <div class="tabs">
       <button
         v-for="tb in tabs"
@@ -81,7 +83,9 @@
             <router-link class="btn" to="/settings">{{ t('nav.settings') }}</router-link>
             <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>
           </div>
-          <p class="hint" v-if="diagMsg" style="margin-top:10px">{{ finiteText(diagMsg) }}</p>
+          <!-- role=status: the saved path (or the save failure) lands here after
+               the click; without a live region it appeared silently. -->
+          <p class="hint" v-if="diagMsg" style="margin-top:10px" role="status">{{ finiteText(diagMsg) }}</p>
         </div>
       </div>
     </template>
@@ -89,34 +93,57 @@
     <!-- Syslog -->
     <template v-else-if="tab==='syslog'">
       <div class="toolbar">
-        <select v-model="syslogLevel" @change="loadSyslog">
+        <select v-model="syslogLevel" :aria-label="t('tools.syslog_level')" @change="loadSyslog">
           <option value="error">{{ t('tools.syslog_err') }}</option>
           <option value="fault">{{ t('tools.syslog_fault') }}</option>
           <option value="default">{{ t('tools.syslog_default') }}</option>
           <option value="all">{{ t('tools.syslog_all') }}</option>
         </select>
-        <select v-model.number="syslogMinutes" @change="loadSyslog">
+        <select v-model.number="syslogMinutes" :aria-label="t('tools.syslog_range')" @change="loadSyslog">
           <option :value="15">15m</option>
           <option :value="60">1h</option>
           <option :value="360">6h</option>
           <option :value="1440">24h</option>
         </select>
         <button @click="loadSyslog" :disabled="loading">{{ t('common.refresh') }}</button>
-        <span class="meta">{{ t('tools.lines_n', { n: finiteN(syslog.count, 0) }) }}</span>
+        <!-- role=status: the count is the answer to the level/range selects and
+             the Refresh click, and it changed silently for a screen reader.
+             Same pattern as the filter counts (filterCounts.test.js). -->
+        <span class="meta" role="status">{{ t('tools.lines_n', { n: finiteN(syslog.count, 0) }) }}</span>
       </div>
       <p class="hint">{{ finiteText(syslog.hint, '') || t('tools.syslog_hint') }}</p>
       <SkeletonLoader v-if="!tabLoaded.syslog" :cols="1" :rows="8" />
-      <div class="log-box mono" v-else-if="(syslog.lines||[]).length">
-        <div v-for="(ln,i) in syslog.lines" :key="i">{{ finiteText(ln) }}</div>
-      </div>
-      <LoadFailure v-else-if="tabError.syslog" :detail="tabError.syslog" :retry="reload" :busy="loading" />
-      <div v-else class="placeholder">{{ finiteText(syslog.message, '') || t('tools.no_data') }}</div>
+      <template v-else>
+        <!-- Banner above the content, not behind it: the old v-else-if chain put
+             the lines branch first, so once any lines were on screen a failed
+             re-load (level/range change, Refresh) rendered no banner at all —
+             its only trace was a four-second toast. Stale lines still render
+             below, which is the LoadFailure contract. -->
+        <LoadFailure v-if="tabError.syslog" :detail="tabError.syslog" :retry="reload" :busy="loading" />
+        <!-- tabindex=0: the box caps at 480px and scrolls; a scrollable region a
+             keyboard cannot reach cannot be scrolled by one (WCAG 2.1.1). Same
+             treatment as the Logs viewer. -->
+        <div
+          v-if="(syslog.lines||[]).length"
+          class="log-box mono"
+          tabindex="0"
+          role="region"
+          :aria-label="t('tools.tab_syslog')"
+        >
+          <div v-for="(ln,i) in syslog.lines" :key="i">{{ finiteText(ln) }}</div>
+        </div>
+        <div v-else-if="!tabError.syslog" class="placeholder">{{ finiteText(syslog.message, '') || t('tools.no_data') }}</div>
+      </template>
     </template>
 
     <!-- Processes -->
     <template v-else-if="tab==='proc'">
       <div class="toolbar">
         <input v-model="procQ" type="text" :placeholder="t('tools.filter_proc')" style="min-width:180px"  :aria-label="t('tools.filter_proc')"/>
+        <!-- role=status: the count is the only feedback the filter box gives,
+             and it changed silently for a screen reader. Same pattern as the
+             Services filter count. -->
+        <span class="meta-count" role="status">{{ filteredProc.length }} / {{ processes.length }}</span>
       </div>
       <SkeletonLoader v-if="!tabLoaded.proc" :cols="6" :rows="8" />
       <LoadFailure v-else-if="tabError.proc" :detail="tabError.proc" :retry="reload" :busy="loading" />
@@ -136,8 +163,11 @@
               <td class="mono col-hide-m">{{ finiteText(p.time) }}</td>
               <td class="mono" style="max-width:480px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(p.command)">{{ finiteText(p.command) }}</td>
             </tr>
+            <!-- "No match" is only true while a filter is applied; with the box
+                 empty a bare list means the host reported no processes, which is
+                 a different (and stranger) fact worth stating as itself. -->
             <tr v-if="!filteredProc.length">
-              <td colspan="6" style="color:var(--sub)">{{ t('common.no_match') }}</td>
+              <td colspan="6" class="empty-row">{{ procQ.trim() ? t('common.no_match') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -172,7 +202,7 @@
               <td>{{ finiteText(l.reclaimable) }}</td>
             </tr>
             <tr v-if="!(df.lines||[]).length && !tabError.docker">
-              <td colspan="5" style="color:var(--sub)">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
+              <td colspan="5" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -186,7 +216,9 @@
         <button :disabled="loading" @click="doPrune('volumes')">{{ t('tools.prune_volumes') }}</button>
         <button :disabled="loading" class="warn" @click="doPrune('all_unused')">{{ t('tools.prune_all') }}</button>
       </div>
-      <p class="hint" v-if="pruneMsg">{{ finiteText(pruneMsg) }}</p>
+      <!-- role=status: how much a prune reclaimed is the answer to the click,
+           and it used to arrive silently for a screen reader. -->
+      <p class="hint" v-if="pruneMsg" role="status">{{ finiteText(pruneMsg) }}</p>
 
       <h2 class="section-title">{{ t('tools.container_size') }}</h2>
       <div v-if="tabLoaded.docker && !tabError.docker" class="table-wrap">
@@ -202,8 +234,12 @@
               <td>{{ finiteText(c.status) }}</td>
               <td class="mono">{{ finiteText(c.size) }}</td>
             </tr>
+            <!-- Same engine-off / no-data split as the df table above: with the
+                 engine (or its CLI) gone this list is empty because docker is
+                 unreachable, not because zero containers exist, and "no data"
+                 next to an "engine down" df row contradicted it. -->
             <tr v-if="!sizes.length">
-              <td colspan="4" style="color:var(--sub)">{{ t('tools.no_data') }}</td>
+              <td colspan="4" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -215,7 +251,10 @@
       <div class="toolbar">
         <router-link class="btn primary" to="/scheduler">{{ t('tools.open_scheduler') }}</router-link>
         <router-link class="btn" to="/maintenance">{{ t('nav.maintenance') }}</router-link>
-        <span class="meta" style="color:var(--sub)">{{ t('tools.tasks_n', { n: timers.length }) }}</span>
+        <!-- role=status: the timer count is the answer to the Refresh click,
+             and it changed silently for a screen reader. Same pattern as the
+             syslog line count and the listening-port count. -->
+        <span class="meta" style="color:var(--sub)" role="status">{{ t('tools.tasks_n', { n: timers.length }) }}</span>
       </div>
       <h2 class="section-title">{{ t('tools.timers') }}</h2>
       <SkeletonLoader v-if="!tabLoaded.sched" :cols="4" :rows="5" />
@@ -242,12 +281,20 @@
               <td class="mono col-hide-m" style="max-width:360px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(row.program)">{{ finiteText(row.program) }}</td>
             </tr>
             <tr v-if="!timers.length && !tabError.sched">
-              <td colspan="4" style="color:var(--sub)">{{ t('tools.no_timers') }}</td>
+              <td colspan="4" class="empty-row">{{ t('tools.no_timers') }}</td>
             </tr>
           </tbody>
         </table>
       </div>
       <h2 class="section-title">{{ t('tools.agents') }}</h2>
+      <!-- Same pending/failure gate as the timers table above. This section used
+           to render unconditionally, so while the sched load was in flight the
+           timers slot showed a skeleton but this one already claimed "no agents"
+           — and after a failure it kept a bare set of column headings under the
+           timers' LoadFailure banner. That banner covers both tables (one load
+           fills both), so the failed branch here renders nothing extra. -->
+      <SkeletonLoader v-if="!tabLoaded.sched" :cols="5" :rows="4" />
+      <template v-else-if="!tabError.sched">
       <p class="hint" style="margin-top:0">{{ finiteText(agents.hint) }} · {{ finiteN(agents.count, 0) }}</p>
       <div class="table-wrap">
         <table class="dense fit-m">
@@ -272,9 +319,13 @@
               <td class="mono">{{ finiteN(a.interval_sec, null) ? withUnit(a.interval_sec, 's') : (a.calendar ? 'cal' : '—') }}</td>
               <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(a.program)">{{ finiteText(a.program) }}</td>
             </tr>
+            <tr v-if="!(agents.agents||[]).length">
+              <td colspan="5" class="empty-row">{{ t('tools.no_agents') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
+      </template>
     </template>
 
     <!-- Hardware -->
@@ -282,7 +333,10 @@
       <div class="two-col" v-if="hw">
         <div class="card" v-for="(sec, key) in (hw.sections||{})" :key="key">
           <h2 class="section-title" style="margin-top:0">{{ finiteText(key) }} · {{ finiteText(sec.data_type) }}</h2>
-          <pre class="mono hw-pre">{{ finiteText(sec.text) }}</pre>
+          <!-- tabindex=0: system_profiler output overflows the 240px cap, and a
+               scrollable region a keyboard cannot reach cannot be scrolled by
+               one (WCAG 2.1.1). Named after its own section heading. -->
+          <pre class="mono hw-pre" tabindex="0" role="region" :aria-label="finiteText(key)">{{ finiteText(sec.text) }}</pre>
         </div>
       </div>
       <div class="card" style="margin-top:12px" v-if="(hw?.disks||[]).length">
@@ -425,7 +479,10 @@
         <div class="toolbar">
           <button @click="loadPorts" :disabled="loading">{{ t('common.refresh') }}</button>
           <router-link class="btn" to="/network">{{ t('nav.network') }}</router-link>
-          <span class="meta">{{ finiteN(ports.count, 0) }}</span>
+          <!-- Labeled and live: this was a bare number ("12") that said nothing
+               about what it counted, and Refresh updated it silently for a
+               screen reader. Reuses the Network summary's "{n} ports" key. -->
+          <span class="meta" role="status">{{ t('network.sum_ports_n', { n: finiteN(ports.count, 0) }) }}</span>
         </div>
         <SkeletonLoader v-if="!tabLoaded.net" :cols="4" :rows="5" />
         <LoadFailure v-else-if="tabError.net" :detail="tabError.net" :retry="reload" :busy="loading" />
@@ -450,7 +507,7 @@
               <td class="mono">{{ finiteText(p.name) }}</td>
             </tr>
             <tr v-if="!(ports.ports||[]).length">
-              <td colspan="4" style="color:var(--sub)">{{ t('tools.no_data') }}</td>
+              <td colspan="4" class="empty-row">{{ t('tools.no_data') }}</td>
             </tr>
           </tbody>
         </table>
@@ -585,6 +642,18 @@ const tabError = ref({})
 function noteTabError(id, e) {
   tabError.value = { ...tabError.value, [id]: finiteText(e.message || String(e), '') }
   toast('❌ ' + finiteText(e.message))
+}
+
+/**
+ * Drop a tab's latched failure after a load that succeeded.
+ *
+ * reload() clears the banner up front, but the syslog and ports loaders are
+ * also wired straight to their toolbar controls (level/range selects, their
+ * own Refresh), which stay clickable above the banner — without this a
+ * direct retry that worked left the failure banner claiming otherwise.
+ */
+function clearTabError(id) {
+  if (tabError.value[id]) tabError.value = { ...tabError.value, [id]: '' }
 }
 const df = ref({})
 const sizes = ref([])
@@ -738,6 +807,7 @@ async function loadSyslog() {
     const next = await getToolsSyslog(syslogMinutes.value, syslogLevel.value, 100)
     if (generation !== reloadGeneration || !pageAlive) return
     syslog.value = next
+    clearTabError('syslog')
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('syslog', e)
@@ -945,6 +1015,7 @@ async function loadPorts() {
     const next = await getListeningPorts(50)
     if (generation !== reloadGeneration || !pageAlive) return
     ports.value = next
+    clearTabError('net')
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('net', e)

@@ -174,6 +174,75 @@ class PidExePathTests(unittest.TestCase):
         self.assertEqual(sum(1 for c in calls if c[0] == "/usr/sbin/lsof"), 1)
 
 
+class ExeCacheInvalidateRaceTests(unittest.TestCase):
+    """A kickstart wave must survive a probe that was already in flight.
+
+    ``pid_exe_path`` shells out with ``_exe_lock`` released, so
+    ``kick_stale`` can clear the cache in the middle of it.  Storing the
+    answer afterwards put the pre-kickstart path back for a whole
+    ``_EXE_TTL`` -- the exact answer the invalidate exists to erase.
+    """
+
+    def setUp(self):
+        stale_runtime.invalidate_exe_cache()
+        self.addCleanup(stale_runtime.invalidate_exe_cache)
+
+    def _sh_returning(self, path, *, on_call=None):
+        def fake_sh(cmd, **kwargs):
+            if cmd[:2] == ["/bin/ps", "-p"]:
+                if on_call is not None:
+                    on_call()
+                return 0, path, ""
+            raise AssertionError(f"unexpected {cmd}")
+        return fake_sh
+
+    def test_an_invalidate_during_the_probe_is_not_undone(self):
+        gone = "/opt/homebrew/Cellar/python@3.12/3.12.13_4/bin/python3.12"
+
+        with (
+            patch.object(stale_runtime, "_LIBC", None),
+            patch.object(
+                stale_runtime, "sh",
+                self._sh_returning(gone, on_call=stale_runtime.invalidate_exe_cache),
+            ),
+        ):
+            # The caller still gets the answer it paid for.
+            self.assertEqual(stale_runtime.pid_exe_path(2761), gone)
+
+        self.assertEqual(
+            stale_runtime._exe_cache, {},
+            "a probe that started before the kickstart republished its answer",
+        )
+
+    def test_the_next_reader_sees_the_post_kickstart_path(self):
+        gone = "/opt/homebrew/Cellar/python@3.12/3.12.13_4/bin/python3.12"
+        fresh = "/opt/homebrew/Cellar/python@3.12/3.12.14/bin/python3.12"
+
+        with (
+            patch.object(stale_runtime, "_LIBC", None),
+            patch.object(
+                stale_runtime, "sh",
+                self._sh_returning(gone, on_call=stale_runtime.invalidate_exe_cache),
+            ),
+        ):
+            stale_runtime.pid_exe_path(2761)
+
+        with (
+            patch.object(stale_runtime, "_LIBC", None),
+            patch.object(stale_runtime, "sh", self._sh_returning(fresh)),
+        ):
+            self.assertEqual(stale_runtime.pid_exe_path(2761), fresh)
+
+    def test_a_probe_with_no_invalidate_still_caches(self):
+        path = "/opt/homebrew/opt/python@3.14/bin/python3.14"
+        with (
+            patch.object(stale_runtime, "_LIBC", None),
+            patch.object(stale_runtime, "sh", self._sh_returning(path)),
+        ):
+            self.assertEqual(stale_runtime.pid_exe_path(2761), path)
+        self.assertEqual(stale_runtime._exe_cache.get(2761, (0, None))[1], path)
+
+
 class ScanSkipTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

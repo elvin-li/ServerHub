@@ -481,7 +481,7 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
             "ts": terminal_svc._now(), "event": "vm_console_end",
             "session": session.session_id, "console": target.console_id,
             "who": user, "reason": reason,
-            "duration_ms": int((time.monotonic() - started) * 1000),
+            "duration_ms": terminal_svc._duration_ms(started, time.monotonic()),
             "bytes_from_client": sent, "bytes_to_client": received,
         })
         try:

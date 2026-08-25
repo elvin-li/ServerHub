@@ -15,7 +15,7 @@
 
     <!-- What this is, and what it deliberately is not. -->
     <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-      <h3 style="margin:0 0 6px">{{ t('pool.model_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('pool.model_title') }}</h2>
       <p class="note">{{ t('pool.model_body') }}</p>
     </div>
 
@@ -26,7 +26,7 @@
       class="tile"
       style="margin-bottom:12px;border-left:3px solid var(--warn)"
     >
-      <h3 style="margin:0 0 6px">{{ t('pool.union_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('pool.union_title') }}</h2>
       <p class="note">{{ t('pool.union_body') }}</p>
       <p class="note" style="margin-top:6px">{{ t('pool.union_available') }}</p>
     </div>
@@ -37,7 +37,7 @@
       class="tile"
       style="margin-bottom:12px;border-left:3px solid var(--warn)"
     >
-      <h3 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h3>
+      <h2 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h2>
       <p class="note">{{ t('pool.missing_body') }}</p>
       <p class="mono" style="font-size:11px;margin:6px 0 0">
         <span v-for="m in view.missing_members" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
@@ -138,7 +138,7 @@
             </td>
           </tr>
           <tr v-if="!selectedMembers.length && !loadError">
-            <td colspan="8" style="color:var(--sub)">{{ t('pool.empty_members') }}</td>
+            <td colspan="8" class="empty-row">{{ t('pool.empty_members') }}</td>
           </tr>
         </tbody>
       </table>
@@ -180,7 +180,7 @@
             </td>
           </tr>
           <tr v-if="!availableCandidates.length && !loadError">
-            <td colspan="6" style="color:var(--sub)">{{ t('pool.empty_candidates') }}</td>
+            <td colspan="6" class="empty-row">{{ t('pool.empty_candidates') }}</td>
           </tr>
         </tbody>
       </table>
@@ -209,14 +209,14 @@
               <div class="show-m sub">{{ finiteText(r.disk_id) }}</div>
             </td>
             <td class="mono col-hide-m">{{ finiteText(r.disk_id) }}</td>
-            <td style="color:var(--warn)">{{ fmtGb(r.at_risk_gb) }}</td>
-            <td style="color:var(--ok)">{{ fmtGb(r.survives_gb) }}</td>
+            <td style="color:var(--warn-text)">{{ fmtGb(r.at_risk_gb) }}</td>
+            <td style="color:var(--ok-text)">{{ fmtGb(r.survives_gb) }}</td>
             <td class="col-hide-m">
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
           </tr>
           <tr v-if="!shownFaults.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ t('pool.empty_faults') }}</td>
+            <td colspan="5" class="empty-row">{{ t('pool.empty_faults') }}</td>
           </tr>
         </tbody>
       </table>
@@ -264,7 +264,7 @@
           <button class="tiny" @click="clearOpen = false">{{ t('common.close') }}</button>
         </div>
         <p class="note" style="margin-bottom:8px">{{ t('pool.clear_body') }}</p>
-        <p class="note" style="margin-bottom:12px;color:var(--ok)">{{ t('pool.clear_safe') }}</p>
+        <p class="note" style="margin-bottom:12px;color:var(--ok-text)">{{ t('pool.clear_safe') }}</p>
         <div class="btns">
           <button class="danger" :disabled="busy" @click="doClear">{{ t('pool.clear_ok') }}</button>
           <button @click="clearOpen = false">{{ t('common.cancel') }}</button>

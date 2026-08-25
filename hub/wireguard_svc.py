@@ -292,8 +292,15 @@ def _valid_endpoint(value: str) -> bool:
     host, port = split_endpoint(value)
     if not host:
         return False
-    if port and not (port.isdigit() and 1 <= int(port) <= 65535):
-        return False
+    if port:
+        try:
+            if not (port.isdigit() and 1 <= int(port) <= 65535):
+                return False
+        except ValueError:
+            # isdigit() bounds neither length (CPython caps str->int at 4300
+            # digits) nor the digit class (``²`` passes isdigit but not int);
+            # the ValueError used to 500 PUT /api/wireguard/settings.
+            return False
     try:
         ipaddress.ip_address(host)
         return True
@@ -344,18 +351,24 @@ def settings() -> dict:
         merged["interface"] = DEFAULTS["interface"]
     if _usable_network(merged["subnet"]) is None:
         merged["subnet"] = DEFAULTS["subnet"]
-    try:
-        merged["listen_port"] = int(merged["listen_port"])
-    except (TypeError, ValueError, OverflowError):
-        merged["listen_port"] = DEFAULTS["listen_port"]
-    try:
-        merged["mtu"] = int(merged["mtu"])
-    except (TypeError, ValueError, OverflowError):
-        merged["mtu"] = DEFAULTS["mtu"]
-    try:
-        merged["keepalive"] = int(merged["keepalive"])
-    except (TypeError, ValueError, OverflowError):
-        merged["keepalive"] = DEFAULTS["keepalive"]
+    # Same ranges save_settings enforces.  services.yaml is hand-editable and
+    # a YAML hex/octal int skips CPython's str->int digit cap (base 16/8 are
+    # exempt), so ``listen_port: 0x<4300+ digits>`` parsed here as an over-cap
+    # int and then ValueError'd ``json.dumps`` itself — GET /api/wireguard,
+    # GET /api/wireguard/settings and the Network overview's wstunnel snapshot
+    # all 500'd on a value the write path would have rejected.
+    for key, low, high in (
+        ("listen_port", 1, 65535),
+        ("mtu", 576, 1500),
+        ("keepalive", 0, 3600),
+    ):
+        try:
+            number = int(merged[key])
+            if not (low <= number <= high):
+                number = DEFAULTS[key]
+        except (TypeError, ValueError, OverflowError):
+            number = DEFAULTS[key]
+        merged[key] = number
     for key, value in merged.items():
         if isinstance(value, str):
             merged[key] = _as_text(value)
@@ -491,6 +504,30 @@ def installation() -> dict:
 
 # ── key material ─────────────────────────────────────────────────────────────
 
+def _cli_missing(rc, err) -> bool:
+    """Whether an ``sh()`` result means the ``wg`` binary itself is gone.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real ``wg`` exit.  The route guard checks the binary is
+    on disk before the request runs, so an uninstall in between used to turn
+    peer create / batch / PSK toggle into a 500 ``wg.keygen_failed`` when the
+    truthful answer is the same coded 503 the guard raises.  A timeout keeps
+    its own sentinel and stays ``keygen_failed``: a slow wg is not a missing
+    one.
+
+    The sentinel alone is not proof (the docker_cli.looks_cli_vanished
+    convention: pattern-match, then confirm).  A spawn can FileNotFoundError
+    for reasons other than the binary — and answering "wireguard-tools is not
+    installed" while ``installation()`` on the same page shows a version
+    string sends the operator at the wrong repair.  Confirm on the filesystem
+    before claiming the 503; a wg that is still on disk keeps the original
+    ``keygen_failed`` mapping.
+    """
+    if rc != -1 or _as_text(err).strip() != "not found":
+        return False
+    return not _path_exists(WG)
+
+
 def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
     """Run *argv* feeding *data* on stdin, returning trimmed stdout.
 
@@ -535,9 +572,11 @@ def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
 
 def generate_keypair() -> tuple[str, str]:
     """A fresh (private, public) Curve25519 pair from ``wg genkey`` / ``wg pubkey``."""
-    rc, private, _ = sh([WG, "genkey"], timeout=8)
+    rc, private, err = sh([WG, "genkey"], timeout=8)
     private = _as_text(private).strip()
     if rc != 0 or not _KEY_RE.match(private):
+        if _cli_missing(rc, err):
+            raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.keygen_failed")
     public = _run_with_input([WG, "pubkey"], private + "\n")
     if not _KEY_RE.match(public):
@@ -546,9 +585,11 @@ def generate_keypair() -> tuple[str, str]:
 
 
 def generate_psk() -> str:
-    rc, psk, _ = sh([WG, "genpsk"], timeout=8)
+    rc, psk, err = sh([WG, "genpsk"], timeout=8)
     psk = _as_text(psk).strip()
     if rc != 0 or not _KEY_RE.match(psk):
+        if _cli_missing(rc, err):
+            raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.keygen_failed")
     return psk
 
@@ -752,11 +793,20 @@ def peer_records() -> list[dict]:
 # adding or revoking a peer edited the file and never reached the live tunnel.
 
 def _sockets() -> list[str]:
-    """Device names of the WireGuard UAPI sockets currently present."""
+    """Device names of the WireGuard UAPI sockets currently present.
+
+    Only names ``wg`` could ever be asked about: a kernel utun or a manageable
+    interface name.  Filenames come back surrogateescape'd, so a leftover
+    socket with undecodable bytes in its name used to flow through
+    :func:`real_interface` / :func:`runtime_state` into
+    GET /api/wireguard/readiness (``runtime.sockets`` / ``real_interface``)
+    and POST /api/wireguard/sync (``device``) and 500 the UTF-8 encode.
+    """
     try:
-        return sorted(p.stem for p in WG_RUN_DIR.glob("*.sock"))
+        stems = sorted(p.stem for p in WG_RUN_DIR.glob("*.sock"))
     except OSError:
         return []
+    return [s for s in stems if _UTUN_RE.match(s) or _IFACE_RE.match(s)]
 
 
 def _recorded_device(name_file: Path) -> str:
@@ -1660,7 +1710,12 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
 
     conf = build_client_conf(
         private_key=private,
-        ip=configured["ip"] or str(meta.get("ip") or ""),
+        # _as_text, not str: a leftover ``\\ud800`` in the registry's ip
+        # (hand-edited, or restored from a backup) leaked into ``content``
+        # whenever the conf block had no AllowedIPs to prefer, and 500'd
+        # peers/config (JSON body), peers/download (PlainTextResponse
+        # encode) and export under Starlette's UTF-8 encode.
+        ip=configured["ip"] or _as_text(meta.get("ip") or "").strip(),
         mode=str(meta.get("mode") or "split"),
         preshared_key=configured["preshared_key"],
         obfuscated=(fmt or "").lower() == "wst",
@@ -1887,7 +1942,17 @@ def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None]:
     except Exception:
         return False, None
     match = re.search(r"time=([\d.]+)\s*ms", _as_text(out))
-    return rc == 0, float(match.group(1)) if match else None
+    if not match:
+        return rc == 0, None
+    try:
+        latency = float(match.group(1))
+    except ValueError:
+        # ``[\d.]+`` also matches ``1.2.3``; the ValueError escaped through
+        # fan_out and 500'd POST /api/wireguard/ping.
+        return rc == 0, None
+    # A >308-digit run parses to inf, which Starlette's allow_nan=False
+    # encoder refuses -- same 500, one layer later.
+    return rc == 0, (None if _nonfinite(latency) else latency)
 
 
 def ping_peers(timeout_ms: int = 800) -> dict:

@@ -62,7 +62,7 @@
             <input v-model="del" type="checkbox" :aria-label="t('sched.rsync_delete')" />
             {{ t('sched.rsync_delete') }}
           </label>
-          <span v-if="del" class="meta" style="color:var(--warn,#c60);font-size:11px">{{ t('sched.rsync_delete_warn') }}</span>
+          <span v-if="del" class="meta" style="color:var(--warn-text);font-size:11px">{{ t('sched.rsync_delete_warn') }}</span>
           <label style="display:flex;align-items:center;gap:6px">
             <input v-model="compress" type="checkbox" :aria-label="t('sched.rsync_compress')" />
             {{ t('sched.rsync_compress') }}
@@ -76,7 +76,7 @@
           {{ previewing ? t('common.loading') : t('sched.rsync_preview') }}
         </button>
       </div>
-      <div v-if="previewError" class="meta" role="status" aria-live="polite" style="color:var(--err,#c33);font-size:12px;margin-bottom:8px">
+      <div v-if="previewError" class="meta" role="status" aria-live="polite" style="color:var(--down-text);font-size:12px;margin-bottom:8px">
         {{ finiteText(previewError) }}
       </div>
       <div v-else-if="preview" role="status" aria-live="polite"
@@ -102,6 +102,12 @@
         </select>
         <div class="k">{{ t('sched.stack_retain') }}</div>
         <input v-model.number="retain" type="number" min="1" max="365" :aria-label="t('sched.stack_retain')" />
+      </div>
+      <!-- role=alert: a failed stack read used to be swallowed, leaving an
+           empty select and a disabled Save with no stated reason. The form
+           loads after the dialog holds focus, so the panel read misses it. -->
+      <div v-if="stacksError" class="meta" role="alert" style="color:var(--down-text);font-size:12px;margin-bottom:8px">
+        {{ t('common.load_failed') }} · {{ finiteText(stacksError) }}
       </div>
       <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.stack_hint') }}</p>
     </template>
@@ -156,6 +162,7 @@ const bwlimit = ref(p.bwlimit_kbps || null)
 const stackId = ref(p.stack_id || '')
 const retain = ref(p.retain || 14)
 const stacks = ref([])
+const stacksError = ref('')
 
 const previewing = ref(false)
 const preview = ref(null)
@@ -267,10 +274,12 @@ onMounted(async () => {
     const d = await getStacks()
     if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = Array.isArray(d?.stacks) ? d.stacks : []
+    stacksError.value = ''
     if (!stackId.value && stacks.value.length) stackId.value = stacks.value[0].id
-  } catch {
+  } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = []
+    stacksError.value = finiteText(e.message || String(e), '')
   }
 })
 onUnmounted(() => {

@@ -53,12 +53,23 @@ def _jsonable(value, depth: int = 0):
     Inf CPU / huge RSS were already dropped at parse; leftover ``\\ud800``
     in a process name, leftover bytes, or a leftover inf planted in the
     peek cache still 500'd GET /api/system/sensors?light=1.
+
+    A >4300-digit int (planted in the peek cache, or the sum of per-iface
+    byte counters that each parse under the cap) still passed through
+    untouched: CPython's int->str digit limit then ValueError'd
+    ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -101,7 +112,15 @@ def _sysctl_int(value) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     text = _as_text(value).strip()
-    return int(text) if text.isdigit() else None
+    if not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # ``isdigit()`` does not bound length: a >4300-digit thermal level is
+        # ValueError (CPython's str->int cap) and used to drop the whole
+        # thermal leg from GET /api/system/sensors through _thermal's pool.
+        return None
 
 
 def _finite_float(value) -> float | None:
@@ -331,12 +350,19 @@ def _cpu_and_mem_from_top() -> dict:
         if "processes:" in line.lower() and "total" in line.lower():
             # Processes: 512 total, 8 running, 504 sleeping...
             data["processes_raw"] = line.strip()
+            # _sysctl_int, not bare int(): a >4300-digit top process count is
+            # ValueError (CPython's str->int cap) and used to drop the whole
+            # top leg — PhysMem, load, CPU fallback — from GET
+            # /api/system/sensors through _collect_sensors_uncached's pool,
+            # the same way the guarded pmset thermal level below once did.
             m = re.search(r"(\d+)\s+total", line)
-            if m:
-                data["proc_total"] = int(m.group(1))
+            n = _sysctl_int(m.group(1)) if m else None
+            if n is not None:
+                data["proc_total"] = n
             m = re.search(r"(\d+)\s+running", line)
-            if m:
-                data["proc_running"] = int(m.group(1))
+            n = _sysctl_int(m.group(1)) if m else None
+            if n is not None:
+                data["proc_running"] = n
     return data
 
 
@@ -599,8 +625,11 @@ def _thermal() -> dict | None:
     elif "no thermal warning" in text:
         pressure = "normal"
     else:
-        level = re.search(r"thermal warning level\D+(\d+)", text)
-        pressure = "warning" if level and int(level.group(1)) > 0 else "normal"
+        m = re.search(r"thermal warning level\D+(\d+)", text)
+        # _sysctl_int, not bare int(): a >4300-digit pmset level ValueError'd
+        # here and nulled the whole thermal leg of GET /api/system/sensors.
+        level_n = _sysctl_int(m.group(1)) if m else None
+        pressure = "warning" if level_n is not None and level_n > 0 else "normal"
     return {
         "cpu_temp_c": temp_c,
         "temp_source": source,

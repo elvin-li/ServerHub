@@ -7,8 +7,11 @@
 
     <div class="toolbar">
       <button class="primary" @click="load" :disabled="loading">{{ t('common.refresh') }}</button>
-      <span class="meta" style="color:var(--sub)" v-if="data">
-        {{ finiteN(data.count) }} · {{ finiteN(data.admins) }} {{ t('users.admins') }}
+      <!-- role=status + a name for the first number: "12 · 3 Admins" left the
+           total unlabeled, and Refresh updated both counts silently for a
+           screen reader. Reuses the summary tiles' keys (Tools ports pattern). -->
+      <span class="meta" style="color:var(--sub)" v-if="data" role="status">
+        {{ finiteN(data.count) }} {{ t('users.total') }} · {{ finiteN(data.admins) }} {{ t('users.admins') }}
       </span>
     </div>
 
@@ -21,7 +24,7 @@
     <!-- ── panel accounts (ServerHub sign-ins, not macOS users) ─────────── -->
     <div class="tile" style="margin-bottom:12px" v-if="authState.canManage">
       <div class="accounts-head">
-        <h3 style="margin:0">{{ t('accounts.title') }}</h3>
+        <h2 style="margin:0">{{ t('accounts.title') }}</h2>
         <button class="primary" @click="creating = !creating">
           {{ creating ? t('common.cancel') : t('accounts.add') }}
         </button>
@@ -35,13 +38,22 @@
           <label>{{ t('accounts.initial_password') }}</label>
           <input v-model="createForm.password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required :aria-label="t('accounts.initial_password')" />
           <label>{{ t('accounts.resources') }}</label>
-          <div class="resource-picker">
+          <!-- tabindex=0: the picker caps at 220px and scrolls; a scrollable
+               region a keyboard cannot reach cannot be scrolled by one
+               (WCAG 2.1.1). Same treatment as the Tools log boxes. -->
+          <div class="resource-picker" tabindex="0" role="region" :aria-label="t('accounts.resources')">
             <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
               <input type="checkbox" :value="opt.id" v-model="createForm.resources" />
               <span>{{ finiteText(opt.name) }}</span>
               <code class="mono">{{ finiteText(opt.id) }}</code>
             </label>
-            <span v-if="serviceOptionsError" class="hint bad">{{ finiteText(serviceOptionsError) }}</span>
+            <!-- role=alert: the picker is the only place this failure shows,
+                 and without it the empty checkbox list reads like "no
+                 services" to an AT user. -->
+            <span v-if="serviceOptionsError" class="hint bad" role="alert">{{ finiteText(serviceOptionsError) }}</span>
+            <!-- type=button: this retry sits inside the create <form>, and a
+                 bare <button> would submit it instead of refetching. -->
+            <button v-if="serviceOptionsError" class="tiny" type="button" @click="loadServiceOptions">{{ t('common.retry') }}</button>
             <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
           </div>
         </div>
@@ -52,6 +64,18 @@
         </div>
       </form>
 
+      <!-- Banner above the rows, not behind them: the empty-row alert below
+           only exists while the table is empty, so once accounts were on
+           screen a failed *re*-load (after a create/save/delete, or Retry)
+           surfaced nowhere — loadAccounts() never toasts. Stale rows still
+           render below, which is the LoadFailure contract. -->
+      <LoadFailure
+        v-if="accountsError && accounts.length"
+        :detail="accountsError"
+        :retry="loadAccounts"
+        :busy="accountsBusy"
+        style="margin-top:10px"
+      />
       <div class="table-wrap" style="margin-top:10px">
         <table class="dense fit-m">
           <thead>
@@ -60,7 +84,7 @@
               <th>{{ t('users.role') }}</th>
               <th class="col-hide-m">2FA</th>
               <th class="col-hide-m">{{ t('accounts.resources') }}</th>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>
@@ -100,13 +124,16 @@
                 <td colspan="5" class="account-editor">
                   <div class="editor-section">
                     <strong>{{ t('accounts.resources') }}</strong>
-                    <div class="resource-picker">
+                    <!-- tabindex=0: same 220px scroll cap as the create form's
+                         copy, so the same keyboard reachability fix. -->
+                    <div class="resource-picker" tabindex="0" role="region" :aria-label="t('accounts.resources')">
                       <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
                         <input type="checkbox" :value="opt.id" v-model="editResources" />
                         <span>{{ finiteText(opt.name) }}</span>
                         <code class="mono">{{ finiteText(opt.id) }}</code>
                       </label>
-                      <span v-if="serviceOptionsError" class="hint bad">{{ finiteText(serviceOptionsError) }}</span>
+                      <span v-if="serviceOptionsError" class="hint bad" role="alert">{{ finiteText(serviceOptionsError) }}</span>
+                      <button v-if="serviceOptionsError" class="tiny" type="button" @click="loadServiceOptions">{{ t('common.retry') }}</button>
                       <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
                     </div>
                     <div class="btns" style="margin-top:8px">
@@ -119,6 +146,10 @@
                     <strong>{{ t('accounts.reset_password') }}</strong>
                     <p class="hint" style="margin:4px 0 6px">{{ t('accounts.reset_password_hint') }}</p>
                     <div class="btns">
+                      <!-- Named after the visible "New password" placeholder,
+                           not the action: the old aria-label repeated the
+                           button beside it, so the input and the button were
+                           announced identically. -->
                       <input
                         v-model="resetPassword"
                         type="password"
@@ -126,7 +157,7 @@
                         maxlength="256"
                         autocomplete="new-password"
                         :placeholder="t('settings.new_password')"
-                        :aria-label="t('accounts.reset_password')"
+                        :aria-label="t('settings.new_password')"
                         style="max-width:240px"
                       />
                       <button :disabled="accountsBusy || resetPassword.length < 10" @click="doResetPassword(acct)">
@@ -149,8 +180,17 @@
               </tr>
             </template>
             <tr v-if="!accounts.length">
-              <td colspan="5" style="color:var(--sub)">
-                {{ finiteText(accountsError, '') || (accountsLoaded ? t('common.none') : t('common.loading')) }}
+              <td colspan="5" class="empty-row">
+                <!-- The failure text gets its own role=alert span: loadAccounts()
+                     does not toast, so this cell is the only place the error
+                     surfaces — and the loading/none states must stay out of the
+                     live region or they would be announced too. -->
+                <span v-if="accountsError" role="alert">{{ finiteText(accountsError) }}</span>
+                <!-- Outside the alert span so the announcement stays the error
+                     text alone; without this button the only recovery from a
+                     failed first fetch was reloading the page. -->
+                <button v-if="accountsError" class="tiny" type="button" @click="loadAccounts">{{ t('common.retry') }}</button>
+                <template v-else>{{ accountsLoaded ? t('common.none') : t('common.loading') }}</template>
               </td>
             </tr>
           </tbody>
@@ -162,16 +202,16 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="3" :span="4" :tile-height="34" style="margin-bottom:12px" />
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data">
       <div class="tile span-4">
-        <h3>{{ t('users.total') }}</h3>
+        <h2>{{ t('users.total') }}</h2>
         <div class="v">{{ finiteN(data.count) }}</div>
       </div>
       <div class="tile span-4">
-        <h3>{{ t('users.admins') }}</h3>
+        <h2>{{ t('users.admins') }}</h2>
         <div class="v">{{ finiteN(data.admins) }}</div>
         <div class="sub">admin / wheel / root</div>
       </div>
       <div class="tile span-4">
-        <h3>{{ t('users.normal') }}</h3>
+        <h2>{{ t('users.normal') }}</h2>
         <div class="v">{{ finiteDiff(data.count, data.admins) }}</div>
       </div>
     </div>
@@ -181,7 +221,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('users.username') }}</th>
             <th class="col-hide-m">{{ t('users.display') }}</th>
             <th>UID</th>
@@ -193,7 +233,9 @@
         </thead>
         <tbody>
           <tr v-for="u in data?.users || []" :key="u.uid">
-            <td><span class="led" :class="u.admin ? 'on' : 'off'"></span></td>
+            <!-- aria-hidden: the LED repeats the Role badge's Admin/Standard
+                 text in colour only (same as the Gateway and VMs LEDs). -->
+            <td><span class="led" :class="u.admin ? 'on' : 'off'" aria-hidden="true"></span></td>
             <td>
               <strong>{{ finiteText(u.name) }}</strong>
               <div v-if="finiteText(u.gecos, '')" class="show-m sub">{{ finiteText(u.gecos) }}</div>
@@ -211,7 +253,7 @@
             </td>
           </tr>
           <tr v-if="!(data?.users||[]).length && !loadError">
-            <td colspan="8" style="color:var(--sub)">{{ loading ? t('common.loading') : t('users.empty') }}</td>
+            <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('users.empty') }}</td>
           </tr>
         </tbody>
       </table>

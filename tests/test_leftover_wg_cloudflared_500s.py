@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -1097,9 +1098,17 @@ class CloudflaredTunnelListExcDetailTests(unittest.TestCase):
             def __str__(self):
                 raise RecursionError("nested")
 
+        # login_start clears LOGIN_URL_FILE / LOGIN_LOG before spawning; left
+        # unpatched it created a real ~/Services/cloudflared/login.log on the
+        # host running the suite.
+        root = Path(tempfile.mkdtemp(prefix="cf-login-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         with (
             mock.patch.object(cloudflared_svc, "_logged_in", return_value=False),
             mock.patch.object(cloudflared_svc, "_ensure_dirs"),
+            mock.patch.object(cloudflared_svc, "LOGIN_PID", root / "login.pid"),
+            mock.patch.object(cloudflared_svc, "LOGIN_LOG", root / "login.log"),
+            mock.patch.object(cloudflared_svc, "LOGIN_URL_FILE", root / "login.url"),
             mock.patch.object(cloudflared_svc, "_bin", return_value="/opt/homebrew/bin/cloudflared"),
             mock.patch.object(cloudflared_svc, "_terminate_login_process", return_value=True),
             mock.patch.object(cloudflared_svc.subprocess, "Popen", side_effect=Recursing()),

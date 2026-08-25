@@ -249,9 +249,18 @@ def _opt_bool(value):
 
 def _size_bytes(raw) -> int:
     try:
-        return int(raw or 0)
+        size = int(raw or 0)
     except (TypeError, ValueError, OverflowError):
         return 0
+    try:
+        str(size)
+    except ValueError:
+        # A leftover plist Size already past CPython's int->str digit cap
+        # survives ``int()`` unchanged; the 400-digit class only overflowed
+        # the GB conversion, this one ValueError'd json.dumps itself on
+        # GET /api/storage/manage.
+        return 0
+    return size
 
 
 def _size_gb(size: int):

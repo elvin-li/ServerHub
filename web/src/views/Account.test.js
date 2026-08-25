@@ -85,6 +85,9 @@ describe('account self-service', () => {
 
     expect(wrapper.find('.password-footer button').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('auth.password_mismatch')
+    // The blocking reason lives in a live region: the button disables with no
+    // spoken explanation otherwise.
+    expect(wrapper.find('.password-footer .hint').attributes('role')).toBe('status')
     expect(api.changeAuthPassword).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -109,6 +112,43 @@ describe('account self-service', () => {
 
     expect(api.confirmTotp).toHaveBeenCalledWith('123456')
     expect(wrapper.text()).toContain('AAAAA-BBBBB')
+    wrapper.unmount()
+  })
+
+  it('hides the enrollment QR from the accessibility tree', async () => {
+    // The QR encodes exactly the manual-entry secret shown beside it; without
+    // aria-hidden it was announced as an anonymous graphic.
+    api.enrollTotp.mockResolvedValue({
+      secret: 'S3CRET', otpauth_uri: 'otpauth://totp/x', manual_entry: 'S3CR ET',
+    })
+    const wrapper = mountAccount()
+    await flushPromises()
+
+    await wrapper.find('.btns .primary').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.twofa-qr').attributes('aria-hidden')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('toasts the recovery-code regeneration instead of a silent swap', async () => {
+    // Enable and disable both toast; regeneration only swapped DOM below the
+    // button, so a screen reader heard nothing happen.
+    api.getTotpStatus.mockResolvedValue({ enabled: true, recovery_remaining: 2 })
+    api.regenerateTotpRecovery.mockResolvedValue({ ok: true, recovery_codes: ['CCCCC-DDDDD'] })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const toast = vi.fn()
+    const wrapper = mount(Account, { global: { provide: { toast } } })
+    await flushPromises()
+
+    await wrapper.find('input[autocomplete="one-time-code"]').setValue('654321')
+    await wrapper.findAll('.btns button')[0].trigger('click')
+    await flushPromises()
+
+    expect(api.regenerateTotpRecovery).toHaveBeenCalledWith('654321')
+    expect(toast).toHaveBeenCalledWith('✅ twofa.regen_toast')
+    expect(wrapper.text()).toContain('CCCCC-DDDDD')
+    confirmSpy.mockRestore()
     wrapper.unmount()
   })
 })

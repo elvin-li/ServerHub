@@ -15,11 +15,42 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class DistributionPathTests(unittest.TestCase):
     def test_source_checkout_keeps_state_beside_runtime_by_default(self):
-        from hub import paths
+        """No SERVERHUB_STATE_DIR: mutable state lives beside the runtime tree.
 
-        self.assertEqual(paths.STATE_ROOT, paths.RUNTIME_ROOT)
-        self.assertEqual(paths.CONFIG_FILE, paths.RUNTIME_ROOT / "services.yaml")
-        self.assertEqual(paths.DATA_DIR, paths.RUNTIME_ROOT / "data")
+        Probed in a subprocess because the suite's own process deliberately
+        does not run with the default: tests/__init__.py points
+        SERVERHUB_STATE_DIR at a temp directory so the suite cannot fill the
+        checkout with panel state.  The probe's runtime root is a temp dir
+        too -- the default must never be exercised against the checkout.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            env = os.environ.copy()
+            env.pop("SERVERHUB_STATE_DIR", None)
+            env.update({
+                "PYTHONPATH": str(ROOT),
+                "SERVERHUB_RUNTIME_DIR": str(runtime),
+            })
+            script = (
+                "import json\n"
+                "from hub.paths import CONFIG_FILE, DATA_DIR, RUNTIME_ROOT, STATE_ROOT\n"
+                "print(json.dumps({key: str(value) for key, value in {\n"
+                "    'runtime': RUNTIME_ROOT, 'state': STATE_ROOT,\n"
+                "    'config': CONFIG_FILE, 'data': DATA_DIR,\n"
+                "}.items()}))\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=tmp, env=env, capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            resolved = runtime.resolve()
+            self.assertEqual(report["runtime"], str(resolved))
+            self.assertEqual(report["state"], str(resolved))
+            self.assertEqual(report["config"], str(resolved / "services.yaml"))
+            self.assertEqual(report["data"], str(resolved / "data"))
 
     def test_packaged_runtime_keeps_all_mutable_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:

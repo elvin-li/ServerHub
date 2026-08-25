@@ -1,0 +1,119 @@
+/**
+ * Bookmark page announcements and leave-guards.
+ *
+ * Behavioural half of the a11y.test.js "bookmarks and modules surface
+ * leftovers" pins: the up/stopped/down summary is the answer to the Force
+ * check click and must be a live region, the health LED is decoration, and
+ * a load that fails after leave must not toast.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+
+const api = vi.hoisted(() => ({
+  getBookmarks: vi.fn(),
+}))
+
+vi.mock('../api/client', () => api)
+vi.mock('../i18n', () => ({
+  injectI18n: () => ({
+    // Keys carry no {placeholders}, so append the params instead: the summary
+    // test below needs to see the counts in the rendered text.
+    t: (key, params = {}) => {
+      const values = Object.values(params)
+      return values.length ? `${key} ${values.join(' ')}` : key
+    },
+  }),
+}))
+
+import Bookmarks from './Bookmarks.vue'
+
+function mountPage(toast = vi.fn()) {
+  return mount(Bookmarks, {
+    global: {
+      provide: { toast },
+      stubs: { SkeletonLoader: true, LoadFailure: true },
+    },
+  })
+}
+
+beforeEach(() => {
+  api.getBookmarks.mockResolvedValue({
+    bookmarks: [
+      {
+        id: 'nas', service: 'nas', name: 'NAS', url: 'http://nas.local',
+        ok: true, health: 'ok', status: 200, ms: 12, error: null, backend: null,
+      },
+      {
+        id: 'vm', service: 'vm', name: 'Old VM', url: 'http://vm.local',
+        ok: false, health: 'stopped', status: null, ms: null, error: null,
+        backend: { id: 'vm', name: 'old-vm', kind: 'vm', state: 'stopped', status: 'stopped' },
+      },
+      {
+        id: 'down', service: 'down', name: 'Broken', url: 'http://down.local',
+        ok: false, health: 'error', status: null, ms: 3, error: 'refused', backend: null,
+      },
+    ],
+    up: 1,
+    stopped: 1,
+    down: 1,
+    checked_at: '12:00:00',
+  })
+})
+
+afterEach(() => {
+  vi.clearAllMocks()
+})
+
+describe('Bookmarks summary announcement', () => {
+  it('announces the up/stopped/down counts through a live region', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const summary = wrapper.get('.toolbar [role="status"]')
+    expect(summary.text()).toBe('bookmarks.summary 1 1 1 12:00:00')
+    wrapper.unmount()
+  })
+
+  it('hides the card LEDs from the accessibility tree', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const leds = wrapper.findAll('.led')
+    expect(leds.length).toBe(3)
+    for (const led of leds) {
+      expect(led.attributes('aria-hidden')).toBe('true')
+    }
+    // The badge next to each LED carries the state in words, so nothing is
+    // lost by hiding the dot.
+    const badges = wrapper.findAll('.badge').map((b) => b.text())
+    expect(badges).toEqual(['200', 'dashboard.bm_stopped', 'dashboard.bm_down'])
+    wrapper.unmount()
+  })
+})
+
+describe('Bookmarks failure states', () => {
+  it('latches the failure banner and toasts once', async () => {
+    api.getBookmarks.mockRejectedValue(new Error('probe sweep failed'))
+    const toast = vi.fn()
+    const wrapper = mountPage(toast)
+    await flushPromises()
+
+    const banner = wrapper.findComponent({ name: 'LoadFailure' })
+    expect(banner.exists(), 'failure banner').toBe(true)
+    expect(banner.attributes('detail')).toBe('probe sweep failed')
+    expect(toast).toHaveBeenCalledTimes(1)
+    expect(toast).toHaveBeenCalledWith('❌ probe sweep failed')
+    wrapper.unmount()
+  })
+
+  it('does not toast a load that fails after leave', async () => {
+    let rejectLoad
+    api.getBookmarks.mockImplementation(() => new Promise((_, reject) => { rejectLoad = reject }))
+    const toast = vi.fn()
+    const wrapper = mountPage(toast)
+    wrapper.unmount()
+    rejectLoad(new Error('gone'))
+    await flushPromises()
+    expect(toast).not.toHaveBeenCalled()
+  })
+})

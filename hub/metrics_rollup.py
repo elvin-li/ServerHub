@@ -176,6 +176,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -221,7 +227,11 @@ def _first_row_ts(path) -> int | None:
     for ln in head.decode(errors="replace").splitlines():
         try:
             t = _sample_ts(safe_json_loads(ln).get("t"))
-        except (json.JSONDecodeError, AttributeError, RecursionError):
+        except (ValueError, AttributeError, RecursionError):
+            # ValueError, not just JSONDecodeError: a leftover >4300-digit
+            # number raises CPython's str->int digit-cap ValueError out of
+            # json.loads, which used to 500 GET /api/metrics?range= through
+            # the tier probe (and abort the rollup pass).
             continue
         if t is not None:
             return t
@@ -241,7 +251,8 @@ def _last_row_ts(path) -> int | None:
     for ln in reversed(tail.decode(errors="replace").splitlines()):
         try:
             t = _sample_ts(safe_json_loads(ln).get("t"))
-        except (json.JSONDecodeError, AttributeError, RecursionError):
+        except (ValueError, AttributeError, RecursionError):
+            # Same digit-cap ValueError as _first_row_ts.
             continue
         if t is not None:
             return t
@@ -279,7 +290,11 @@ def _rows_since(path, since_ts: int) -> list[dict]:
         for ln in lines:
             try:
                 o = safe_json_loads(ln)
-            except (json.JSONDecodeError, RecursionError):
+            except (ValueError, RecursionError):
+                # ValueError, not just JSONDecodeError: a leftover
+                # >4300-digit number raises CPython's str->int digit-cap
+                # ValueError out of json.loads, which used to 500
+                # GET /api/metrics?range= on that line.
                 continue
             t = _sample_ts(o.get("t") if isinstance(o, dict) else None)
             if t is None:
@@ -479,8 +494,11 @@ def _maybe_trim_locked(tier: str, path, now: float) -> bool:
                 ln = raw.decode("utf-8", "replace").rstrip("\n")
                 try:
                     parsed = safe_json_loads(ln)
-                except (json.JSONDecodeError, RecursionError):
-                    continue  # corrupt / leftover nested line: dropped with the trim
+                except (ValueError, RecursionError):
+                    # corrupt / leftover nested / >4300-digit line (json.loads
+                    # digit-cap ValueError is not JSONDecodeError): dropped
+                    # with the trim instead of aborting it.
+                    continue
                 t = _sample_ts(parsed.get("t") if isinstance(parsed, dict) else None)
                 if t is not None and t >= cutoff:
                     kept.append(ln)

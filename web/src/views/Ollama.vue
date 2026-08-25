@@ -47,14 +47,18 @@
             <div class="meta">{{ t('ollama.api') }}</div>
             <div class="mono api-line">
               <span>{{ finiteText(data.url) }}</span>
-              <button class="tiny" type="button" @click="copyText(data.url)">{{ t('common.copy') }}</button>
+              <!-- Two identical "Copy" buttons sit in this card copying
+                   different URLs; a form-controls listing cannot tell them
+                   apart without the field name. The visible "Copy" text stays
+                   first in the name (WCAG 2.5.3). -->
+              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(data.url)">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.openai_api') }}</div>
             <div class="mono api-line">
               <span>{{ finiteText(openaiCompatUrl) }}</span>
-              <button class="tiny" type="button" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
+              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.openai_api') })" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div v-if="data.service?.pid">
@@ -103,8 +107,8 @@
                 </td>
               </tr>
               <tr v-if="!resident.length">
-                <td colspan="5" style="color:var(--sub)">
-                  {{ data.reachable ? t('ollama.resident_empty') : t('ollama.daemon_unreachable') }}
+                <td colspan="5" class="empty-row">
+                  {{ emptyListText('ollama.resident_empty') }}
                 </td>
               </tr>
             </tbody>
@@ -116,7 +120,10 @@
       <div class="card-block" style="margin-bottom:14px">
         <div class="section-head">
           <h2>{{ t('ollama.models_title') }}</h2>
-          <span v-if="models.length" class="meta">{{ t('ollama.models_count', { n: finiteN(models.length) }) }}</span>
+          <!-- role=status: the count is the 10s poll's (and a finished
+               pull/delete's) only summary and changed silently for a screen
+               reader — same treatment as the VMs and Health header counts. -->
+          <span v-if="models.length" class="meta" role="status">{{ t('ollama.models_count', { n: finiteN(models.length) }) }}</span>
         </div>
         <div class="table-wrap">
           <table class="dense fit-m">
@@ -151,8 +158,8 @@
                 </td>
               </tr>
               <tr v-if="!models.length">
-                <td colspan="7" style="color:var(--sub)">
-                  {{ data.reachable ? t('ollama.models_empty') : t('ollama.daemon_unreachable') }}
+                <td colspan="7" class="empty-row">
+                  {{ emptyListText('ollama.models_empty') }}
                 </td>
               </tr>
             </tbody>
@@ -279,6 +286,23 @@
           <h2>{{ t('ollama.settings_title') }}</h2>
           <span class="meta">{{ t('ollama.settings_hint') }}</span>
         </div>
+        <!-- Latched like the WireGuard settings dialog: the form falls back to
+             literal defaults on a failed read, and Save sends every field, so
+             saving on top of a failure silently wiped a configured LaunchAgent
+             label. The old catch was fully silent — no toast, no inline text —
+             and Save stayed enabled. -->
+        <div
+          v-if="!ollamaSettingsLoaded && ollamaSettingsError"
+          class="notice warn"
+          role="alert"
+          data-test="ollama-settings-failed"
+        >
+          {{ t('ollama.settings_load_failed') }}
+          <div class="mono" style="margin-top:4px;font-size:11px">{{ finiteText(ollamaSettingsError) }}</div>
+          <button class="tiny" type="button" style="margin-top:6px" :disabled="ollamaSaving" @click="loadOllamaSettings">
+            {{ t('common.retry') }}
+          </button>
+        </div>
         <div class="settings-grid">
           <label>{{ t('ollama.settings_url') }}</label>
           <input
@@ -295,7 +319,7 @@
           />
         </div>
         <div class="toolbar" style="margin:10px 0 0">
-          <button class="tiny primary" :disabled="ollamaSaving" @click="saveOllamaSettings">
+          <button class="tiny primary" :disabled="ollamaSaving || !ollamaSettingsLoaded" @click="saveOllamaSettings">
             {{ t('common.save') }}
           </button>
         </div>
@@ -399,6 +423,14 @@ const deletePanel = ref(null)
 
 const ollamaForm = ref({ url: 'http://127.0.0.1:11434', label: '' })
 const ollamaSaving = ref(false)
+// Whether ollamaForm reflects the server's real settings. Save is blocked
+// until it does: on a failed read the form holds fallbacks (default URL, empty
+// label), and saveOllamaSettings sends both fields, so saving on top of a
+// failed load silently cleared a configured LaunchAgent label — with a success
+// toast. Latched rather than toasted because a toast is gone by the time the
+// user reaches the Save button.
+const ollamaSettingsLoaded = ref(false)
+const ollamaSettingsError = ref('')
 
 let statusTimer = null
 let actionTimer = null
@@ -461,6 +493,18 @@ function finiteN(v) {
   return Number.isFinite(n) ? n : '—'
 }
 
+/** What an empty resident/models table really means.
+ *
+ * The daemon can answer /api/version and still fail /api/tags or /api/ps —
+ * status() keeps reachable=true then and puts the reason in `error`, which
+ * this page never rendered: the tables claimed "no models" over a failed
+ * read (the same false-empty the unreachable branch already avoids). */
+function emptyListText(emptyKey) {
+  if (!data.value?.reachable) return t('ollama.daemon_unreachable')
+  if (data.value?.error) return t('ollama.list_error', { error: finiteText(data.value.error, '') })
+  return t(emptyKey)
+}
+
 function fmtSize(n) {
   const v = Number(n)
   if (!Number.isFinite(v) || v <= 0) return '—'
@@ -493,8 +537,12 @@ async function loadOllamaSettings() {
       url: s.ollama?.url || data.value?.url || 'http://127.0.0.1:11434',
       label: s.ollama?.label || '',
     }
-  } catch {
+    ollamaSettingsLoaded.value = true
+    ollamaSettingsError.value = ''
+  } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
+    ollamaSettingsLoaded.value = false
+    ollamaSettingsError.value = finiteText(e.message || e, '')
     ollamaForm.value = {
       url: data.value?.url || 'http://127.0.0.1:11434',
       label: ollamaForm.value.label || '',
@@ -503,6 +551,12 @@ async function loadOllamaSettings() {
 }
 
 async function saveOllamaSettings() {
+  // Refuse to write when the current settings were never read back: the PUT
+  // below would consist of this form's fallbacks.
+  if (!ollamaSettingsLoaded.value) {
+    toast('❌ ' + t('ollama.settings_load_failed'))
+    return
+  }
   const generation = loadGeneration
   ollamaSaving.value = true
   try {
@@ -803,10 +857,10 @@ onUnmounted(() => {
 
 <style scoped>
 .card-block {
-  background: var(--card, var(--panel, #fff));
+  background: var(--card);
   border-radius: 12px;
   padding: 14px 16px;
-  border: 1px solid var(--border, rgba(0, 0, 0, .06));
+  border: 1px solid var(--line);
 }
 .section-head {
   display: flex;
@@ -868,7 +922,7 @@ onUnmounted(() => {
   align-items: center;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--line);
   text-decoration: none;
   color: inherit;
   font-size: 13px;
@@ -924,7 +978,9 @@ onUnmounted(() => {
 .chat-error {
   margin-top: 6px;
   font-size: 12px;
-  color: var(--down, #c00);
+  /* --down-text, not the raw hue: --down is a fill colour and measures
+     2.2-3.8:1 as text on the dark themes' cards. */
+  color: var(--down-text);
 }
 .chat-input {
   flex: 1;

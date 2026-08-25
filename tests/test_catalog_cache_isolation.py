@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -120,6 +121,98 @@ class TestCatalogOverviewIsIdempotent(unittest.TestCase):
             data = catalog.catalog_overview()
         self.assertEqual(data["native_count"], 1)
         self.assertEqual(data["templates"][0]["id"], "native-x")
+
+
+class ListTemplatesSingleFlightTests(unittest.TestCase):
+    """One parse per cold burst, and an install still wins the race.
+
+    Parsing the fifty shipped templates costs ~45ms and the cache had no lock
+    at all, so six readers arriving on a cold cache -- the store page, the
+    dashboard, and a couple of polls -- each did the whole parse. Adding the
+    refresh lock introduces the race the rest of this tree already guards
+    against: an install that lands mid-parse must not be undone when the parse
+    publishes the listing it started before.
+    """
+
+    def setUp(self):
+        catalog.invalidate_listing()
+        self.addCleanup(catalog.invalidate_listing)
+
+    def test_a_cold_burst_parses_the_templates_once(self):
+        builds = []
+        lock = threading.Lock()
+        real = catalog._build_listing
+
+        def counted(now, sig):
+            with lock:
+                builds.append(1)
+            return real(now, sig)
+
+        with mock.patch.object(catalog, "_build_listing", counted):
+            threads = [
+                threading.Thread(target=catalog.list_templates) for _ in range(6)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(
+            len(builds), 1, f"six concurrent readers parsed the catalog {len(builds)} times"
+        )
+
+    def test_a_forced_refresh_still_rebuilds(self):
+        """`force` kept its old meaning: parse now, cached or not."""
+        builds = []
+        real = catalog._build_listing
+
+        with mock.patch.object(
+            catalog, "_build_listing",
+            lambda now, sig: (builds.append(1), real(now, sig))[1],
+        ):
+            catalog.list_templates()
+            catalog.list_templates()
+            catalog.list_templates(force=True)
+        self.assertEqual(len(builds), 2, "force stopped bypassing the cache")
+
+    def test_an_install_during_a_parse_is_not_undone_by_that_parse(self):
+        reading = threading.Event()
+        release = threading.Event()
+        real = catalog._parse_template
+
+        def slow(path):
+            if not reading.is_set():
+                reading.set()
+                release.wait(3)
+            return real(path)
+
+        with mock.patch.object(catalog, "_parse_template", slow):
+            worker = threading.Thread(target=catalog.list_templates)
+            worker.start()
+            self.assertTrue(reading.wait(3), "the parse never started")
+            catalog.invalidate_listing()
+            release.set()
+            worker.join(timeout=5)
+
+        self.assertIsNone(
+            catalog._list_cache["items"],
+            "the pre-install listing was republished over invalidate_listing()",
+        )
+
+    def test_nothing_reaches_into_the_cache_dict_any_more(self):
+        """The four sites that did are why invalidate_listing() is public.
+
+        A rename of ``_list_cache`` would have turned each of them into a
+        silent no-op, leaving an uninstalled app showing as installed.
+        """
+        for name in ("catalog.py", "catalog_remote.py"):
+            src = (BASE / "hub" / name).read_text()
+            body = src[src.index("def invalidate_listing") :] if "def invalidate_listing" in src else src
+            self.assertNotIn(
+                '_list_cache["t"] = 0', body.replace(
+                    '``_list_cache["t"] = 0``', ""
+                ),
+                f"{name} still drops the listing by hand",
+            )
 
 
 class VanishedTemplateTests(unittest.TestCase):

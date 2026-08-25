@@ -171,6 +171,47 @@ def _as_text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def _finite_int(value, default: int = 0) -> int:
+    """A stat number JSON and headers can carry, or *default*.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_size`` that is already a >4300-digit int passes through untouched,
+    and CPython's int->str digit limit then ValueError'd Starlette's
+    ``json.dumps`` — 500ing GET /api/files/list after the listing had
+    already been built — and the ``str(length)`` Content-Length header on
+    GET /api/files/download.  ``float()`` rejects anything beyond float
+    range, the same junk test hub/backups.py applies to its stat numbers.
+    """
+    try:
+        value = int(value)
+        float(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return default
+    return value
+
+
+def _max_upload_mb() -> int:
+    """The configured upload cap in MB, or 512 on junk.
+
+    ``int(raw)`` with a try only guards *conversions*: YAML parses hex and
+    octal integer text uncapped (``int(x, 16)`` is a power-of-two base, so
+    CPython's 4300-digit parse limit does not apply), and a leftover
+    ``max_upload_mb: 0xFFF…`` was therefore already an over-cap int that
+    passed straight through — silently disabling the upload size cap, and
+    handing ``files.upload_too_large`` an over-cap ``max_mb`` param that
+    ``json.dumps`` cannot render.  :func:`_finite_int`'s float() probe
+    rejects anything beyond float range, the same junk test the stat
+    numbers get.
+    """
+    raw = _settings().get("max_upload_mb")
+    if isinstance(raw, bool) or raw is None:
+        return 512
+    max_mb = _finite_int(raw, 512)
+    if max_mb <= 0:
+        return 512
+    return max_mb
+
+
 def _try_resolve(value) -> Path | None:
     """Resolve *value*, or None on a leftover path the kernel will not follow.
 
@@ -337,20 +378,14 @@ def _entry(p: Path, root: Path) -> dict:
         # follow only for size of regular files
         size = 0
         if p.is_file():
-            try:
-                size = int(st.st_size)
-            except (TypeError, ValueError, OverflowError, OSError):
-                size = 0
+            size = _finite_int(st.st_size)
             if size < 0:
                 size = 0
         try:
             rel = str(p.relative_to(root)) if p != root else ""
         except ValueError:
             rel = p.name
-        try:
-            mtime = int(st.st_mtime)
-        except (TypeError, ValueError, OverflowError):
-            mtime = 0
+        mtime = _finite_int(st.st_mtime)
         try:
             mode = stat.filemode(int(st.st_mode))
         except (TypeError, ValueError, OverflowError):
@@ -708,10 +743,7 @@ def download(path: str, root_id: str | None = None) -> StreamingResponse:
             raise api_error("files.file_only")
         _reject_opened_outside(fd, root_id)
         media = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
-        try:
-            length = int(st.st_size)
-        except (TypeError, ValueError, OverflowError):
-            length = 0
+        length = _finite_int(st.st_size)
         if length < 0:
             length = 0
         headers = {
@@ -787,16 +819,7 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
         return dest, name, fd
 
     dest, name, fd = await asyncio.to_thread(_prepare)
-    raw_max = _settings().get("max_upload_mb")
-    if isinstance(raw_max, bool) or raw_max is None:
-        max_mb = 512
-    else:
-        try:
-            max_mb = int(raw_max)
-        except (TypeError, ValueError, OverflowError):
-            max_mb = 512
-    if max_mb <= 0:
-        max_mb = 512
+    max_mb = _max_upload_mb()
     max_bytes = max_mb * 1024 * 1024
     written = 0
     try:
@@ -856,15 +879,20 @@ def filebrowser_status() -> dict:
             except (TypeError, ValueError, OverflowError):
                 pass
     host = host_ip()
+    # _as_text, not str: these paths derive from the home directory, and a
+    # home whose on-disk name holds undecodable bytes reaches here as lone
+    # surrogates (os surrogateescape).  The listing fields are sanitized in
+    # _entry(); these were returned raw, so GET /api/files used to 500 at
+    # Starlette's UTF-8 encode while the listing itself was clean.
     return {
         "installed": _exists(FB_BIN) or _exists(FB_PLIST),
         "running": running,
         "pid": pid,
         "port": FB_PORT,
-        "url": f"http://{host}:{FB_PORT}",
-        "plist": str(FB_PLIST) if _exists(FB_PLIST) else None,
-        "bin": str(FB_BIN) if _exists(FB_BIN) else None,
-        "root": str(FB_ROOT_DEFAULT),
+        "url": _as_text(f"http://{host}:{FB_PORT}"),
+        "plist": _as_text(FB_PLIST) if _exists(FB_PLIST) else None,
+        "bin": _as_text(FB_BIN) if _exists(FB_BIN) else None,
+        "root": _as_text(FB_ROOT_DEFAULT),
         "started_by_hub": _started_by_hub,
         "keepalive": _plist_keepalive(),
     }
@@ -879,6 +907,23 @@ def _plist_keepalive() -> bool | None:
         return bool(isinstance(pl, dict) and pl.get("KeepAlive"))
     except Exception:
         return None
+
+
+def _fb_on_disk() -> bool:
+    """True when the FileBrowser binary is still present on disk.
+
+    Every failed direct spawn collapses into the same except arm below, so
+    mapping it to the coded 503 must first confirm the binary actually left
+    the disk (the docker ``cli_on_disk`` / vms ``_cli_missing`` /
+    photoshub ``_ctl_on_disk`` rule) — with the binary still present, the
+    raw start failure is the truth.  A stat that raises (EIO under a dying
+    volume holding ~/Services) counts as gone: the tool is unreachable
+    either way.
+    """
+    try:
+        return FB_BIN.is_file()
+    except (OSError, ValueError):
+        return False
 
 
 def ensure_filebrowser() -> dict:
@@ -924,6 +969,13 @@ def ensure_filebrowser() -> dict:
                 )
         except (OSError, ValueError, TypeError):
             # Leftover ``\\ud800`` env/path UnicodeEncodeError is ValueError, not OSError.
+            if not _fb_on_disk():
+                # The _exists gate blessed this binary moments ago; vanished
+                # between the check and the spawn (an uninstall or an
+                # unmounted ~/Services volume), the answer used to be the
+                # uncoded 500 fb_start_failed instead of a 503 like the
+                # other tool-absent states.
+                raise api_error("files.fb_missing")
             raise api_error("files.fb_start_failed")
     else:
         raise api_error("files.fb_start_failed")
@@ -971,7 +1023,7 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     from hub import secure_io
     try:
         pl = plistlib.loads(read_bytes_capped(FB_PLIST, _PLIST_CAP))
-    except (OSError, ValueError, RecursionError):
+    except (OSError, ValueError, OverflowError, RecursionError):
         # RecursionError: leftover deeply-nested LaunchAgent plist is not
         # ValueError; POST /api/files/filebrowser/ondemand used to 500.
         raise api_error("files.fb_bad_plist")
@@ -984,7 +1036,17 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
         pl["RunAtLoad"] = True
         pl["KeepAlive"] = True
     try:
-        secure_io.replace_bytes(FB_PLIST, plistlib.dumps(pl))
+        payload = plistlib.dumps(pl)
+    except (OverflowError, ValueError, TypeError, RecursionError):
+        # The XML parser reads ``<integer>0x…</integer>`` uncapped (a
+        # power-of-two base dodges CPython's 4300-digit parse limit), so a
+        # leftover hex integer loads fine and then OverflowErrors the
+        # writer's 64-bit range check — which used to 500 POST
+        # /api/files/filebrowser/ondemand after loads() had already been
+        # guarded.  TypeError: a loaded value dumps cannot represent.
+        raise api_error("files.fb_bad_plist")
+    try:
+        secure_io.replace_bytes(FB_PLIST, payload)
     except OSError:
         raise api_error("files.permission_denied", path=str(FB_PLIST))
     # reload definition if loaded
@@ -998,7 +1060,7 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
         "ok": True,
         "ondemand": enabled,
         "message": "Set to on-demand (not resident at boot)" if enabled else "Set to resident (starts at boot)",
-        "plist": str(FB_PLIST),
+        "plist": _as_text(FB_PLIST),
     }
 
 

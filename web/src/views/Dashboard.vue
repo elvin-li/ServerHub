@@ -1,5 +1,9 @@
 <template>
   <div class="dash">
+    <!-- The page has no visible title -- the host card is the heading the eye
+         uses -- but a document with no h1 leaves a screen reader without the
+         one landmark that names where it landed. -->
+    <h1 class="sr-only">{{ t('nav.dashboard') }}</h1>
     <!-- A failed load must not read as "still loading". The banner stays up while
          the failure persists and clears on the next successful poll, so stale
          tiles below it are never presented as current. -->
@@ -27,7 +31,10 @@
         <div class="host-main">
           <div class="host-name">{{ t('dashboard.member_title') }}</div>
           <div class="host-meta">
-            <span>{{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}</span>
+            <!-- role=status: this count is the poll's (and Refresh's) only
+                 summary of the member's services and changed silently for a
+                 screen reader — the Scheduler/VMs/Users toolbar-count rule. -->
+            <span role="status">{{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}</span>
             <span class="dot">·</span>
             <span>{{ finiteText(status?.ts, '…') }}</span>
           </div>
@@ -41,7 +48,13 @@
         <div class="dash-grid">
           <div v-for="s in g.services || []" :key="s.id" class="tile span-4 member-svc">
             <div class="row">
-              <span class="led" :class="led(s.state)"></span>
+              <!-- The LED is colour alone, and the sub line below prefers the
+                   free-text detail over the state word, so a screen reader
+                   heard "Plex · port 32400 responding" with nothing saying
+                   whether that is up or down. Same treatment as the WireGuard
+                   ping rows: hide the paint, spell the state. -->
+              <span class="led" :class="led(s.state)" aria-hidden="true"></span>
+              <span class="sr-only">{{ ledText(s.state) }}</span>
               <span class="name">{{ finiteText(s.name) }}</span>
             </div>
             <div class="sub" style="margin-top:4px">{{ finiteText(s.detail, '') || finiteText(s.state) }}</div>
@@ -52,17 +65,18 @@
           </div>
         </div>
       </template>
-      <div v-if="!status && !loadError" class="tile" style="color:var(--sub)">
+      <div v-if="!status && !loadError" class="tile sub" role="status">
         {{ t('common.loading') }}
       </div>
-      <div v-else-if="!(status?.groups || []).length && !loadError" class="tile" style="color:var(--sub)">
+      <div v-else-if="!(status?.groups || []).length && !loadError" class="tile sub">
         {{ t('dashboard.member_empty') }}
       </div>
     </template>
 
     <!-- Skeleton loading state. Gated on loadError too: without that, a failed
-         first load left this placeholder on screen permanently. -->
-    <template v-else-if="!host && !sensors">
+         first load left this placeholder on screen permanently, presented
+         above the failure banner as if data were still on the way. -->
+    <template v-else-if="!host && !sensors && !loadError">
       <div class="host-strip">
         <div class="host-main">
           <div class="skeleton skeleton-title" style="width:140px"></div>
@@ -110,9 +124,14 @@
             :title="upsTooltip"
             data-test="ups-indicator"
           >
-            <component :is="upsIcon" :size="13" />
+            <!-- The battery glyph repeats what the percent and state word
+                 already say, so it is decoration for a screen reader. -->
+            <component :is="upsIcon" :size="13" aria-hidden="true" />
             <span v-if="finiteN(ups.battery_percent, null) != null" class="ups-pct">{{ withUnit(ups.battery_percent, '%') }}</span>
-            <span v-if="upsStateLabel">{{ upsStateLabel }}</span>
+            <!-- role=status: mid-outage the poll promotes engaged/restoring/
+                 on-battery/low into this word — the chip's whole signal —
+                 and it used to change silently for a screen reader. -->
+            <span v-if="upsStateLabel" role="status">{{ upsStateLabel }}</span>
           </span>
           <router-link
             v-if="ollamaChipVisible"
@@ -159,9 +178,17 @@
         <span class="pill">{{ finiteText(sensors?.ts, '') || finiteText(status?.ts, '…') }}</span>
        <button class="tiny" @click="refreshAll" :disabled="loading">{{ t('common.refresh') }}</button>
       <span id="remote" class="pwr-group">
+         <!-- Screen Sharing is off => no href, and an <a> without href has no
+              implicit role, which makes aria-label a prohibited attribute that
+              assistive tech drops. This control is icon-only, so dropping the
+              label left it announced as nothing at all. State the role and
+              carry the off state in aria-disabled instead. -->
          <a class="tiny primary"
+           role="link"
            :class="{ disabled: !ss.running }"
            :href="ss.running ? finiteText(ss.vnc_url, '') : undefined"
+           :tabindex="ss.running ? undefined : -1"
+           :aria-disabled="ss.running ? undefined : 'true'"
            :title="ss.running ? t('power.connect') : t('power.off')"
            :aria-label="ss.running ? t('power.connect') : t('power.off')"
          ><Monitor :size="14" /></a>
@@ -184,11 +211,15 @@
     <div class="dash-grid">
       <div class="span-12 monitor-toolbar">
         <span class="range-btns">
+          <!-- The chosen range is signalled by the primary tint alone, which
+               reaches a sighted reader and nobody else — same gap the `active`
+               chips had (the a11y sweep only matched that class name). -->
           <button
             v-for="r in METRIC_RANGES"
             :key="r"
             class="tiny"
             :class="metricRange===r?'primary':''"
+            :aria-pressed="metricRange === r"
             @click="setMetricRange(r)"
           >{{ r }}</button>
         </span>
@@ -201,7 +232,7 @@
       </div>
       <!-- ===== CPU + Load ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.cpu') }}
           <span class="tile-tools">
             <span class="badge" data-test="cpu-badge" :class="cpuBadge">{{ cpuBadgeText }}</span>
@@ -216,7 +247,7 @@
               <span v-if="gpuMemLabel" data-test="gpu-mem">{{ gpuMemLabel }}</span>
             </span>
           </span>
-        </h3>
+        </h2>
         <!-- CPU left, GPU right — taller twin plots than Memory/Disk. -->
         <div v-if="isMacSurface" class="cpu-charts am-cpu">
           <LineChart
@@ -288,12 +319,12 @@
 
       <!-- ===== Memory ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.memory') }}
           <span class="tile-tools">
             <span class="badge" :class="memBadge">{{ t('dashboard.pressure_pct', { p: finiteN(memUsedPct) }) }}</span>
           </span>
-        </h3>
+        </h2>
         <!-- chart-first keeps non-mac stacked order (chart then stats); mac
              surface CSS still places stats left / chart right. -->
         <div class="am-monitor am-mem chart-first">
@@ -345,13 +376,13 @@
 
       <!-- ===== Disk + SMART ===== -->
       <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
-        <h3>
+        <h2>
           {{ t('dashboard.disk_smart') }}
           <span class="tile-tools">
             <span class="badge" :class="barClass(diskPct) || ''">{{ withUnit(diskPct, '%') }}</span>
             <span class="badge" :class="smartSummaryClass" :title="smartSummaryTitle" :aria-label="smartSummaryTitle">{{ smartSummary }}</span>
           </span>
-        </h3>
+        </h2>
         <div class="am-monitor am-disk">
           <div class="am-monitor-stats">
             <div class="res-head disk-head">
@@ -383,7 +414,7 @@
                 </div>
                 <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
               </div>
-              <div v-if="!storage" class="disk-empty">{{ t('common.loading') }}</div>
+              <div v-if="!storage" class="disk-empty">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
               <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
             </div>
           </div>
@@ -405,7 +436,7 @@
 
       <!-- ===== Network + processes ===== -->
       <div class="tile span-4">
-        <h3>{{ t('dashboard.net_proc') }}</h3>
+        <h2>{{ t('dashboard.net_proc') }}</h2>
         <div class="net-stats">
           <div class="ns">
             <div class="k">↓ RX</div>
@@ -420,7 +451,7 @@
             <div class="v2">{{ finiteN(cpu.proc_total) }} <small class="sub">run {{ finiteN(cpu.proc_running) }}</small></div>
           </div>
         </div>
-        <h2 class="section-title top-cpu-head">
+        <h3 class="section-title top-cpu-head">
           <span>{{ t('dashboard.top_cpu') }}</span>
           <span class="ollama-api-wrap">
             <router-link
@@ -442,7 +473,7 @@
               @click="copyOllamaApi"
             ><Copy :size="12" /></button>
           </span>
-        </h2>
+        </h3>
         <div class="table-wrap">
           <table class="dense top-cpu fit-m">
             <colgroup>
@@ -477,7 +508,7 @@
                 <td class="num col-hide-m">{{ withUnit(p.rss_mb, 'M') }}</td>
               </tr>
               <tr v-if="!topProcs.length">
-                <td colspan="4" style="color:var(--sub)">{{ sensors ? t('common.none') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
+                <td colspan="4" class="empty-row">{{ sensors ? t('common.none') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
               </tr>
             </tbody>
           </table>
@@ -499,7 +530,7 @@
               <th class="col-hide-m">{{ t('dashboard.col_capacity') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_used') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_free') }}</th>
-              <th></th>
+              <th>{{ t('main_extra.th_pct') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -513,11 +544,19 @@
               <td class="col-hide-m">{{ fmtGb(v.used_gb) }}</td>
               <td class="col-hide-m">{{ fmtGb(v.avail_gb) }}</td>
               <td style="min-width:100px">
-                <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
+                <!-- -text tints, not the raw hues: --down / --warn are fill
+                     colours and measure 2.0-4.1:1 as ink on most cards
+                     (contrast.test.js pins the binding shape too). -->
+                <strong :style="{ color: v.pct >= 90 ? 'var(--down-text)' : (v.pct >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
                 <div class="pct-bar" :class="barClass(v.pct)" style="margin-top:3px">
                   <i :style="{ width: barPct(v.pct) + '%' }"></i>
                 </div>
               </td>
+            </tr>
+            <!-- Column headings above nothing read as "still loading"; say
+                 which of the two states this actually is. -->
+            <tr v-if="!(storage?.volumes || []).length">
+              <td colspan="6" class="empty-row">{{ storage ? t('main_extra.empty_volumes') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
             </tr>
           </tbody>
         </table>
@@ -538,17 +577,24 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
               <th>{{ t('dashboard.col_name') }}</th>
               <th class="col-hide-m">{{ t('dashboard.col_status') }}</th>
               <th class="num">{{ t('dashboard.col_cpu') }}</th>
               <th class="num">{{ t('dashboard.col_mem') }}</th>
-              <th></th>
+              <th><span class="sr-only">{{ t('common.actions') }}</span></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="c in (containers || []).slice(0, 10)" :key="c.id">
-              <td><span class="led" :class="led(c.state)"></span></td>
+              <!-- The visible Status column is col-hide-m, so on a phone this
+                   LED is the row's only state and colour alone says nothing
+                   to a screen reader: hide the paint, spell the state — same
+                   treatment as the Containers page rows. -->
+              <td>
+                <span class="led" :class="led(c.state)" aria-hidden="true"></span>
+                <span class="sr-only">{{ ledText(c.state) }}</span>
+              </td>
               <td>
                 <strong>{{ finiteText(c.name) }}</strong>
                 <div class="mono" style="color:var(--sub);font-size:10px">{{ shortImage(c.image) }}</div>
@@ -567,10 +613,10 @@
               </td>
             </tr>
             <tr v-if="containers && !containers.length">
-              <td colspan="6" style="color:var(--sub)">{{ t('dashboard.no_containers') }}</td>
+              <td colspan="6" class="empty-row">{{ t('dashboard.no_containers') }}</td>
             </tr>
             <tr v-else-if="!containers">
-              <td colspan="6" style="color:var(--sub)">{{ t('common.loading') }}</td>
+              <td colspan="6" class="empty-row">{{ loadError ? t('common.load_failed') : t('common.loading') }}</td>
             </tr>
           </tbody>
         </table>
@@ -581,15 +627,28 @@
       <div class="tile span-4">
         <h3>
           {{ t('dashboard.attention') }}
-          <span class="badge" :class="attention.length ? 'down' : 'ok'">{{ attention.length }}</span>
-          <span class="sub" style="font-weight:500;text-transform:none;letter-spacing:0">
-            {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
+          <!-- role=status: both counts update silently on every status poll,
+               and together they are the tile's whole summary (how many need
+               attention, out of how many ok) — same rule as the member
+               header count. One region so a poll that moves both reads as
+               one announcement, not two. -->
+          <span role="status">
+            <span class="badge" :class="attention.length ? 'down' : 'ok'">{{ attention.length }}</span>
+            <span class="sub" style="font-weight:500;text-transform:none;letter-spacing:0">
+              {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
+            </span>
           </span>
         </h3>
-        <div v-if="status && !attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
+        <!-- Before status resolves, attention is [] because nothing was read,
+             not because everything is healthy: the old status-gated ok branch
+             fell through to an empty list that said nothing at all. -->
+        <div v-if="!status" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
+        <div v-else-if="!attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
         <div v-else class="alert-list">
           <div v-for="s in attention.slice(0, 10)" :key="s.id" class="alert-item">
-            <span class="led" :class="led(s.state)"></span>
+            <!-- warn vs down was carried by the LED colour alone. -->
+            <span class="led" :class="led(s.state)" aria-hidden="true"></span>
+            <span class="sr-only">{{ ledText(s.state) }}</span>
             <div style="flex:1;min-width:0">
               <div class="name">{{ finiteText(s.name) }}</div>
               <div class="detail" style="margin:0">{{ finiteText(s.group) }} · {{ finiteText(s.detail) }}</div>
@@ -604,10 +663,13 @@
           </div>
         </div>
         <h3 style="margin-top:12px">{{ t('dashboard.recent_alerts') }}</h3>
-        <div v-if="!alerts" class="sub">{{ t('common.loading') }}</div>
+        <div v-if="!alerts" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
         <div v-else-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
         <div v-for="(a,i) in (alerts || []).slice(0,5)" :key="i" class="alert-item">
-          <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')"></span>
+          <!-- The alert's severity was its LED colour alone; the message text
+               does not necessarily repeat it. -->
+          <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')" aria-hidden="true"></span>
+          <span class="sr-only">{{ a.level === 'ok' ? t('common.ok') : (a.level === 'warn' ? t('common.warn') : t('common.error')) }}</span>
           <div style="flex:1">
             <div class="name">{{ finiteText(a.name) }}</div>
             <div class="detail" style="margin:0">{{ fmt(a.t) }} · {{ finiteText(a.message) }}</div>
@@ -633,8 +695,8 @@
               <td class="mono">{{ finiteN(p.port) }}</td>
               <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.address) }}</td>
             </tr>
-            <tr v-if="!ports"><td colspan="3" style="color:var(--sub)">{{ t('common.loading') }}</td></tr>
-            <tr v-else-if="!ports.length"><td colspan="3" style="color:var(--sub)">{{ t('common.none') }}</td></tr>
+            <tr v-if="!ports"><td colspan="3" class="empty-row">{{ loadError ? t('common.load_failed') : t('common.loading') }}</td></tr>
+            <tr v-else-if="!ports.length"><td colspan="3" class="empty-row">{{ t('common.none') }}</td></tr>
           </tbody>
         </table>
         </div>
@@ -654,7 +716,9 @@
         </div>
         <div class="failed-checks" v-if="failedChecks.length">
           <div v-for="c in failedChecks.slice(0, 3)" :key="c.id" class="alert-item">
-            <span class="led" :class="c.level === 'error' ? 'err' : 'warn'"></span>
+            <!-- error vs warn was the LED colour alone. -->
+            <span class="led" :class="c.level === 'error' ? 'err' : 'warn'" aria-hidden="true"></span>
+            <span class="sr-only">{{ c.level === 'error' ? t('common.error') : t('common.warn') }}</span>
             <div style="flex:1">
               <div class="name">{{ finiteText(c.name) }}</div>
               <div class="detail" style="margin:0">{{ finiteText(errText(c.detail)) }}</div>
@@ -681,7 +745,10 @@
             rel="noopener"
             :title="finiteText(b.url)"
           >
-            <span class="led" :class="bmLed(b)"></span>
+            <!-- Decoration: .bm-meta below already spells up/stopped/down
+                 (bmLabel), so the LED only repeats it in colour — same
+                 treatment as the Bookmarks page cards. -->
+            <span class="led" :class="bmLed(b)" aria-hidden="true"></span>
             <span class="bm-name">{{ finiteText(b.name) }}</span>
             <span class="bm-meta">{{ bmLabel(b) }}</span>
           </a>
@@ -1009,6 +1076,11 @@ const upsIcon = computed(() => {
 const upsStateLabel = computed(() => {
   if (upsPolicyPhase.value === 'engaged') return t('dashboard.ups_policy_engaged')
   if (upsPolicyPhase.value === 'restoring') return t('dashboard.ups_policy_restoring')
+  // The red paint (upsChipClass danger) used to be the *only* low-battery
+  // signal — e.g. recharging under the alert floor after an outage, back on
+  // AC: a red chip with no word for sighted users, nothing at all for a
+  // screen reader. Spell the state, the Containers/Network LED rule.
+  if (upsLow.value) return t('dashboard.ups_low')
   if (ups.value?.on_battery) return t('dashboard.ups_on_battery')
   return ''
 })
@@ -1376,6 +1448,15 @@ function led(state) {
   if (state === 'stopped') return 'off'
   return 'err'
 }
+// Spelled-out twin of led() for the standalone LEDs (member cards, attention
+// list): colour reaches a sighted reader and nobody else. Reuses the Services
+// state words, so no new locale strings.
+function ledText(state) {
+  if (state === 'ok') return t('services.state_ok')
+  if (state === 'warn') return t('services.state_warn')
+  if (state === 'stopped') return t('services.state_stopped')
+  return t('services.state_down')
+}
 function fmt(ts) {
   return fmtTs(ts, '')
 }
@@ -1502,8 +1583,13 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
       loadError.value = finiteText(e.message || String(e), '')
       hostOk = false
     }),
-    getAlerts(12).then(a => { if (stillHere()) alerts.value = a.alerts || [] }).catch(() => { if (stillHere() && !alerts.value) alerts.value = [] }),
-    getListeningPorts(40).then(p => { if (stillHere()) ports.value = p.ports || [] }).catch(() => { if (stillHere() && !ports.value) ports.value = [] }),
+    // Failures leave these null rather than fabricating []: an empty array is
+    // the tile's "fetched, and none" claim, and a dead backend used to make
+    // Ports say "None" and Recent alerts say "None" as if that were verified.
+    // Null keeps the placeholder row, which reads load_failed once loadError
+    // (the host probe, the canonical liveness signal) reports the tick failed.
+    getAlerts(12).then(a => { if (stillHere()) alerts.value = a.alerts || [] }).catch(() => {}),
+    getListeningPorts(40).then(p => { if (stillHere()) ports.value = p.ports || [] }).catch(() => {}),
     getUps().then(u => { if (stillHere()) ups.value = u }).catch(() => {}),
     getOllamaStatus().then(o => { if (stillHere()) ollama.value = o }).catch(() => {}),
     loadPower(),
@@ -1841,7 +1927,7 @@ onUnmounted(() => {
 .am-surface .disk-primary,
 .am-surface .disk-primary-meta { white-space: nowrap; }
 .am-surface .disk-primary strong { font-size: 12px; font-weight: 500; }
-.res-card > h3 { margin-bottom: 8px; }
+.res-card > h2 { margin-bottom: 8px; }
 .cpu-loadline { margin-top: 8px; }
 .tile .mem-footnote {
   margin-top: 6px;
@@ -1892,9 +1978,9 @@ onUnmounted(() => {
   cursor: default;
 }
 .host-ups .ups-pct { font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
-.host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: transparent; }
-.host-ups.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
-.host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+.host-ups.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn-text); border-color: transparent; }
+.host-ups.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); border-color: transparent; }
+.host-ups.danger { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); border-color: transparent; }
 a.host-ollama { text-decoration: none; }
 button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .host-meta { color: var(--sub); font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1904,8 +1990,10 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   background: var(--btn); border: 1px solid var(--line);
   color: var(--txt); padding: 4px 10px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600;
 }
-.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); border-color: transparent; }
-.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); border-color: transparent; }
+/* The status text tokens (--ok-text/--down-text) exist because flat
+   var(--ok)/var(--down) on their own 12-14% tint read 2.2:1 and 3.0:1 at 11px. */
+.host-pills .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-text); border-color: transparent; }
+.host-pills .pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down-text); border-color: transparent; }
 
 .res-card .big {
   font-size: 28px; font-weight: 800; line-height: 1.1;
@@ -1950,7 +2038,7 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .mb .k { font-size: 9px; color: var(--sub); text-transform: uppercase; letter-spacing: .3px; }
 .mb .v { font-size: 13px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
 
-.temp-warn { color: var(--warn) !important; }
+.temp-warn { color: var(--warn-text) !important; }
 .disk-head { align-items: end; }
 .disk-head .sub { margin: 0; white-space: nowrap; }
 .disk-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
@@ -1965,7 +2053,9 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
 .disk-temp { color: var(--txt); font-weight: 700; font-family: ui-monospace, Menlo, monospace; }
 .disk-unavailable, .disk-empty { margin-top: 2px; color: var(--sub); font-size: 10px; line-height: 1.25; }
 
-.top-cpu-head { justify-content: space-between; margin-top: 10px; }
+/* Now an h3 inside an h2-headed tile, so `.tile h3` claims margin-bottom where
+   `.section-title` used to.  Pinned here so the level change is invisible. */
+.top-cpu-head { justify-content: space-between; margin: 10px 0 8px; }
 .ollama-api-wrap { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 .ollama-api {
   display: inline-flex; align-items: center; gap: 5px;
@@ -1977,7 +2067,7 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   text-transform: none; letter-spacing: 0; color: var(--txt);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ollama-api:hover { color: var(--accent); }
+.ollama-api:hover { color: var(--accent-text); }
 table.top-cpu { table-layout: fixed; }
 table.top-cpu .col-cpu { width: 112px; }
 table.top-cpu .col-mem { width: 52px; }
@@ -2033,7 +2123,9 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 .pwr-group .tiny { font-size: 12px; padding: 2px 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .pwr-group a.tiny.disabled { opacity: .4; pointer-events: none; cursor: not-allowed; }
 .hint-line { margin-top: 8px; font-size: 11px; color: var(--sub); line-height: 1.5; }
-.ok-msg { color: var(--ok); font-weight: 600; padding: 8px 0; }
+/* Flat var(--ok) is a 2.2:1 mint green on the card — the least legible text on
+   the dashboard. --ok-text carries the AA-clearing shade for every palette. */
+.ok-msg { color: var(--ok-text); font-weight: 600; padding: 8px 0; }
 
 .health-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
@@ -2044,9 +2136,9 @@ table.top-cpu .mini-bar { margin-left: 6px; }
 }
 .hg .n { font-size: 24px; font-weight: 800; }
 .hg .l { font-size: 9px; color: var(--sub); text-transform: uppercase; margin-top: 3px; letter-spacing: .3px; }
-.hg.ok .n { color: var(--ok); }
-.hg.warn .n { color: var(--warn); }
-.hg.err .n { color: var(--down); }
+.hg.ok .n { color: var(--ok-text); }
+.hg.warn .n { color: var(--warn-text); }
+.hg.err .n { color: var(--down-text); }
 .failed-checks { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
 
 /* Bookmark health — equal cards, aligned grid */
@@ -2084,9 +2176,9 @@ table.top-cpu .mini-bar { margin-left: 6px; }
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  color: var(--accent);
+  color: var(--accent-text);
 }
-.bm-card.down .bm-name { color: var(--down); }
+.bm-card.down .bm-name { color: var(--down-text); }
 .bm-card.stopped .bm-name { color: var(--sub); }
 .bm-meta {
   grid-column: 2;

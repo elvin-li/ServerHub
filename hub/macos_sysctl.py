@@ -56,7 +56,16 @@ def parse_int(value) -> int | None:
         return None
     except Exception:
         return None
-    return int(text) if text.isdigit() else None
+    if not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # ``isdigit()`` does not bound length: ``int()`` of a >4300-digit
+        # leftover is ValueError (CPython's str->int cap).  It used to raise
+        # through sysctl_int into sensors_svc._static_hw and 500
+        # GET /api/system/sensors?light=1, and kill metrics sampler ticks.
+        return None
 
 
 def sysctlbyname_int(name: str) -> int | None:

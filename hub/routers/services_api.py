@@ -6,7 +6,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from hub import actions, auth, services_manage_svc, services_uninstall_svc
+from hub import actions, audit, auth, services_manage_svc, services_uninstall_svc
 from hub.errors import api_error
 from hub.status import invalidate_status, member_service_summary
 
@@ -33,6 +33,22 @@ def _as_text(value) -> str:
 
 
 router = APIRouter(tags=["services"])
+
+
+def _audit_config(request: Request | None, action: str, **fields) -> None:
+    """One audit line for a services.yaml configuration change.
+
+    The script entries matter most: a saved start/stop script is arbitrary
+    code the next lifecycle action runs.  Called after the service call
+    returned, so a rejected change leaves no record.  FastAPI always injects
+    `request`; the None guard only keeps direct in-process calls working."""
+    audit.record(
+        audit.SERVICE_CONFIG_CHANGED,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        action=action,
+        **fields,
+    )
 
 
 class OverrideBody(BaseModel):
@@ -105,14 +121,18 @@ def services_list_signatures(request: Request):
 def services_upsert_signature(request: Request, body: SignatureBody):
     if _member_username(request):
         raise api_error("auth.admin_required")
-    return services_manage_svc.upsert_signature(body.model_dump())
+    result = services_manage_svc.upsert_signature(body.model_dump())
+    _audit_config(request, "signature_saved")
+    return result
 
 
 @router.delete("/api/services/signatures/{slug}")
 def services_forget_signature(request: Request, slug: str):
     if _member_username(request):
         raise api_error("auth.admin_required")
-    return services_manage_svc.forget_signature(slug)
+    result = services_manage_svc.forget_signature(slug)
+    _audit_config(request, "signature_deleted", target=slug)
+    return result
 
 
 @router.get("/api/services/group-rules")
@@ -128,14 +148,18 @@ def services_save_group_rules(request: Request, body: dict[str, Any] | None = No
     """Upsert one rule, or replace the list when ``rules`` is present."""
     if _member_username(request):
         raise api_error("auth.admin_required")
-    return services_manage_svc.save_group_rules(body if isinstance(body, dict) else {})
+    result = services_manage_svc.save_group_rules(body if isinstance(body, dict) else {})
+    _audit_config(request, "group_rules_saved")
+    return result
 
 
 @router.delete("/api/services/group-rules/{rule_id}")
 def services_delete_group_rule(request: Request, rule_id: str):
     if _member_username(request):
         raise api_error("auth.admin_required")
-    return services_manage_svc.delete_group_rule(rule_id)
+    result = services_manage_svc.delete_group_rule(rule_id)
+    _audit_config(request, "group_rule_deleted", target=rule_id)
+    return result
 
 
 @router.get("/api/services")
@@ -172,14 +196,19 @@ def services_logs(sid: str, lines: int = 150):
 
 
 @router.put("/api/services/{sid}/override")
-def services_override(sid: str, body: OverrideBody):
+def services_override(sid: str, body: OverrideBody, request: Request = None):
     patch = body.model_dump(exclude_unset=True)
-    return services_manage_svc.update_override(sid, patch)
+    result = services_manage_svc.update_override(sid, patch)
+    _audit_config(request, "override_saved", target=sid,
+                  fields=",".join(sorted(patch.keys())))
+    return result
 
 
 @router.post("/api/services/{sid}/hide")
-def services_hide(sid: str, body: HideBody = HideBody()):
-    return services_manage_svc.hide_service(sid, hide=body.hide)
+def services_hide(sid: str, body: HideBody = HideBody(), request: Request = None):
+    result = services_manage_svc.hide_service(sid, hide=body.hide)
+    _audit_config(request, "hide" if body.hide else "unhide", target=sid)
+    return result
 
 
 @router.post("/api/services/{sid}/adopt")
@@ -191,7 +220,9 @@ def services_adopt(sid: str, request: Request, body: AdoptBody = AdoptBody()):
     """
     if _member_username(request):
         raise api_error("auth.admin_required")
-    return services_manage_svc.adopt_service(sid, body.model_dump(exclude_unset=True))
+    result = services_manage_svc.adopt_service(sid, body.model_dump(exclude_unset=True))
+    _audit_config(request, "adopt", target=sid)
+    return result
 
 
 @router.put("/api/services/{sid}/script")
@@ -199,7 +230,14 @@ def services_update_script(sid: str, request: Request, body: ScriptBody):
     """Rewrite a managed scripts[] entry (adopted or hand-written)."""
     if _member_username(request):
         raise api_error("auth.admin_required")
-    return services_manage_svc.update_script(sid, body.model_dump(exclude_unset=True))
+    patch = body.model_dump(exclude_unset=True)
+    result = services_manage_svc.update_script(sid, patch)
+    # The script text itself is not recorded — it can embed credentials —
+    # but a saved script is arbitrary code the next lifecycle action runs,
+    # so who changed which fields is.
+    _audit_config(request, "script_saved", target=sid,
+                  fields=",".join(sorted(patch.keys())))
+    return result
 
 
 @router.delete("/api/services/{sid}/script")
@@ -207,7 +245,9 @@ def services_forget_script(sid: str, request: Request):
     """Drop a managed scripts[] entry so a live listener can be rediscovered."""
     if _member_username(request):
         raise api_error("auth.admin_required")
-    return services_manage_svc.forget_script(sid)
+    result = services_manage_svc.forget_script(sid)
+    _audit_config(request, "script_deleted", target=sid)
+    return result
 
 
 @router.get("/api/services/{sid}/uninstall/preview")
@@ -235,13 +275,23 @@ def services_uninstall(sid: str, request: Request, body: Optional[UninstallBody]
     """
     if not auth.browser_authenticated(request):
         raise api_error("services.uninstall_browser_session_required", id=sid)
-    return services_uninstall_svc.uninstall(
+    result = services_uninstall_svc.uninstall(
         sid, remove_data=bool(body and body.remove_data),
     )
+    # uninstall() raises on an unknown or protected service, so a record here
+    # means the launch agent really was unregistered.
+    audit.record(
+        audit.SERVICE_UNINSTALLED,
+        username=auth.request_username(request),
+        client=auth.request_client_id(request),
+        target=sid,
+        remove_data=bool(body and body.remove_data),
+    )
+    return result
 
 
 @router.post("/api/services/bulk-action")
-def services_bulk(body: BulkActionBody):
+def services_bulk(body: BulkActionBody, request: Request = None):
     if body.action not in ("start", "stop", "restart", "run"):
         raise api_error("services.bad_action")
     results = []
@@ -274,6 +324,20 @@ def services_bulk(body: BulkActionBody):
             })
     invalidate_status()
     ok_n = sum(1 for r in results if r["ok"])
+    # One record per request, not per id: the trail is capped and evicts
+    # oldest-first, so a stop of forty services must not push forty real
+    # security events out.  The ids ride along for "what exactly was hit".
+    audit.record(
+        audit.SERVICE_BULK_ACTION,
+        # FastAPI always injects `request`; the None default only keeps
+        # direct in-process calls (tests, tooling) working.
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        action=body.action,
+        targets=",".join(_as_text(sid) for sid in (body.ids or [])),
+        ok_count=ok_n,
+        fail_count=len(results) - ok_n,
+    )
     return {
         "ok": ok_n == len(results) and bool(results),
         "ok_count": ok_n,

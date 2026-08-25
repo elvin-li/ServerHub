@@ -110,6 +110,13 @@ def _interfaces_uncached() -> list:
             name = m.group(1)
             flags = re.search(r"flags=\w+<([^>]+)>", line)
             mtu_m = re.search(r"mtu\s+(\d+)", line)
+            try:
+                # The ``(\d+)`` capture is unbounded and CPython caps str->int
+                # at 4300 digits with ValueError; a garbled mtu column used to
+                # 500 GET /api/system/network/addresses and alias/auto.
+                mtu = int(mtu_m.group(1)) if mtu_m else None
+            except ValueError:
+                mtu = None
             cur = {
                 "name": name,
                 "flags": (flags.group(1).split(",") if flags else []),
@@ -119,7 +126,7 @@ def _interfaces_uncached() -> list:
                 "mac": None,
                 "status": None,
                 "media": None,
-                "mtu": int(mtu_m.group(1)) if mtu_m else None,
+                "mtu": mtu,
             }
             if flags and "UP" in flags.group(1).split(","):
                 cur["up"] = True
@@ -264,7 +271,14 @@ def _network_service_order_uncached() -> list[dict]:
         match = re.search(r"\((\d+)\)\s+(.+)", block)
         if not match:
             continue
-        order, name = int(match.group(1)), match.group(2).strip()
+        try:
+            order = int(match.group(1))
+        except ValueError:
+            # A >4300-digit index is ValueError (CPython's str->int cap).
+            # Skip the garbled block like any other unparsable one instead of
+            # 500ing GET /api/system/network/services.
+            continue
+        name = match.group(2).strip()
         disabled = name.startswith("*")
         if disabled:
             name = name.lstrip("*").strip()
@@ -766,11 +780,20 @@ def _coerce_int(value, default: int) -> int:
     panel restart.  A bad value now degrades to the default instead.
     """
     try:
-        return int(value)
+        coerced = int(value)
     except (TypeError, ValueError, OverflowError):
         # YAML ``.inf`` / ``.nan``: ``int(inf)`` is OverflowError, not ValueError,
         # and both settings readers sit on GET /api/system/network.
         return default
+    try:
+        str(coerced)
+    except ValueError:
+        # YAML hex/octal ints skip CPython's str->int digit cap (base 16/8 are
+        # exempt), so ``interval: 0x<4300+ digits>`` parsed fine and the number
+        # then blew up ``json.dumps`` on GET /api/system/network — the encoder
+        # renders ints through the same capped int->str conversion.
+        return default
+    return coerced
 
 
 def _alias_settings() -> dict:
@@ -1712,6 +1735,22 @@ def docker_networks_detail() -> list:
     return fan_out(_detail, rows)
 
 
+def _classify_docker_failure() -> None:
+    """Raise the coded 503 when a failed docker command means the engine is off.
+
+    ``docker network connect``/``disconnect`` returned the daemon's raw stderr
+    ("Cannot connect to the Docker daemon…") as an untranslated ``ok: false``
+    message, pointing away from the real remedy (start the engine).  Same
+    convention as ``docker_update_ports`` below and ``_raise_inspect_failure``
+    in containers_svc: the probe is *forced* because the memoised ``engine_up``
+    answer has a 5s TTL, and the seconds right after the engine stops are
+    exactly when a stale "up" would misclassify the failure.  Failures while
+    the engine really is up keep their original mapping.
+    """
+    if not engine_up(force=True):
+        raise api_error("container.engine_down")
+
+
 def docker_network_connect(network: str, container: str) -> dict:
     if not network or not container:
         raise api_error("network.docker_args_required")
@@ -1720,6 +1759,8 @@ def docker_network_connect(network: str, container: str) -> dict:
     network = cli_args.require_positional(network, label="network name")
     container = cli_args.require_positional(container, label="container name")
     rc, out, err = docker("network", "connect", network, container, timeout=30)
+    if rc != 0:
+        _classify_docker_failure()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1731,6 +1772,8 @@ def docker_network_disconnect(network: str, container: str, force: bool = False)
         args.append("-f")
     args += [network, container]
     rc, out, err = docker(*args, timeout=30)
+    if rc != 0:
+        _classify_docker_failure()
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
@@ -1742,6 +1785,11 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
     container = cli_args.require_positional(container, label="container name")
     rc, out, err = docker("inspect", container, timeout=15)
     if rc != 0:
+        # The engine_up() gate above trusts a 5s memo, so an engine that dies
+        # inside the TTL still reaches this inspect — classify the failure
+        # with a forced probe instead of claiming the container vanished.
+        if not engine_up(force=True):
+            raise api_error("container.engine_down")
         raise api_error("network.container_not_found", name=container)
     data = inspect_object(out)
     if data is None:

@@ -188,6 +188,8 @@ class AuthHardeningTests(unittest.TestCase):
             patch(
                 "hub.routers.catalog.apps_manage_svc.action", return_value={"ok": True},
             ) as dispatched,
+            # The action is audited; keep the fixture line out of the real trail.
+            patch("hub.routers.catalog.audit.record"),
         ):
             self.assertEqual(apps_managed_action(body, req), {"ok": True})
         dispatched.assert_called_once_with(
@@ -202,6 +204,7 @@ class AuthHardeningTests(unittest.TestCase):
             patch(
                 "hub.routers.catalog.apps_manage_svc.action", return_value={"ok": True},
             ) as dispatched,
+            patch("hub.routers.catalog.audit.record"),
         ):
             for action in ("start", "stop", "restart"):
                 with self.subTest(action=action):
@@ -264,6 +267,8 @@ class AuthHardeningTests(unittest.TestCase):
         with (
             patch("hub.routers.api.actions.run_action", return_value=(0, "removed", "")) as run_action,
             patch("hub.routers.api.invalidate_status"),
+            # The action is audited; keep the fixture line out of the real trail.
+            patch("hub.routers.api.audit.record"),
         ):
             response = api_action(Action(target="media", action="remove"), req)
         self.assertEqual(response.status_code, 200)
@@ -274,7 +279,7 @@ class AuthHardeningTests(unittest.TestCase):
         with patch(
             "hub.routers.containers.svc.action_all",
             return_value={"ok": True},
-        ) as action_all:
+        ) as action_all, patch("hub.routers.containers.audit.record"):
             self.assertEqual(
                 containers_all(AllBody(action="pause"), container_req),
                 {"ok": True},

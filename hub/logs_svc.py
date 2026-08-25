@@ -28,12 +28,45 @@ def _utf8_text(value) -> str:
 
 
 def _stat_size(path: Path) -> int:
-    """``st_size`` can be inf/nan from a FUSE stub; Starlette rejects those."""
+    """``st_size`` can be inf/nan from a FUSE stub; Starlette rejects those.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover ``st_size``
+    that is already a >4300-digit int passes through untouched, and CPython's
+    int->str digit limit then ValueError'd Starlette's ``json.dumps`` —
+    500ing GET /api/logs and GET /api/logs/{id} after the tail had already
+    been read.  ``float()`` rejects anything beyond float range, the same
+    junk test hub/files_svc.py's ``_finite_int`` applies to its stat numbers.
+    """
     try:
         size = int(path.stat().st_size)
+        float(size)
     except (OSError, TypeError, ValueError, OverflowError):
         return 0
     return size if size >= 0 else 0
+
+
+def _config_text(value) -> str | None:
+    """A configured id/name as text, or None when the entry must skip it.
+
+    YAML hex/octal (``id: 0x2A``) loads *already-int* — uncapped, because
+    ``int(x, 16)`` is exempt from CPython's 4300-digit conversion limit.
+    The original panel accepted numeric ids verbatim, so the strict
+    ``isinstance(str)`` gate a later sweep added silently hid the whole
+    configured source from GET /api/logs (and 404'd its tail).  A
+    renderable int coerces through the ``str()`` probe; an unrenderable
+    >4300-digit leftover — whose ``str()`` is the same digit-cap
+    ValueError ``json.dumps`` would raise — returns None so only its
+    field/entry drops.  bool passes ``isinstance(int)`` and must not
+    become ``"True"``.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    try:
+        return str(value)
+    except ValueError:
+        return None
 
 
 def _log_path_allowed(path: Path) -> bool:
@@ -57,12 +90,16 @@ def log_sources() -> list:
         ]
     out = []
     for s in sources:
-        if not isinstance(s, dict) or not isinstance(s.get("id"), str) or not s.get("id") or not s.get("path"):
+        if not isinstance(s, dict) or not s.get("path"):
+            continue
+        raw_id = _config_text(s.get("id"))
+        if not raw_id:
             continue
         try:
             p = Path(os.path.expanduser(str(s["path"])))
         except (OSError, ValueError, TypeError, RuntimeError):
             # RuntimeError: leftover HOME unset on a ``~/…`` log path.
+            # ValueError: an over-cap int path is the digit-cap ``str()``.
             continue
         if not _log_path_allowed(p):
             continue
@@ -71,9 +108,9 @@ def log_sources() -> list:
             size = _stat_size(p) if exists else 0
         except OSError:
             exists, size = False, 0
-        sid = _utf8_text(s["id"])
-        name = s.get("name", sid)
-        if not isinstance(name, str) or not name:
+        sid = _utf8_text(raw_id)
+        name = _config_text(s.get("name"))
+        if not name:
             name = sid
         else:
             name = _utf8_text(name)

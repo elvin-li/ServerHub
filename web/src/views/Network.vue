@@ -1,5 +1,7 @@
 <template>
   <div>
+    <!-- No visible page title on this layout; see Dashboard.vue. -->
+    <h1 class="sr-only">{{ t('network.title') }}</h1>
     <div class="tabs">
       <button :class="{ active: tab==='switch' }" :aria-pressed="tab === 'switch'" @click="tab='switch'">{{ t('network.tab_switch') }}</button>
       <button :class="{ active: tab==='ifaces' }" :aria-pressed="tab === 'ifaces'" @click="tab='ifaces'">{{ t('network.tab_ifaces') }}</button>
@@ -51,7 +53,7 @@
     <!-- Switch profile + multi-IP bindings -->
     <template v-if="tab==='switch'">
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
-        <h3 style="margin:0 0 6px">{{ t('network.switch_title') }}</h3>
+        <h2 style="margin:0 0 6px">{{ t('network.switch_title') }}</h2>
         <p style="margin:0;font-size:12px;color:var(--sub);line-height:1.55">
           {{ t('network.wifi_switch_hint1') }}
           <code>networksetup</code> {{ t('network.wifi_switch_hint2') }}
@@ -70,7 +72,7 @@
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--ok)">
         <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('network.failover_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('network.failover_title') }}</h2>
           <span class="badge" :class="data?.network_failover?.state?.mode === 'wired' ? 'ok' : 'warn'">
             {{ failoverModeLabel }}
           </span>
@@ -82,7 +84,7 @@
         </p>
         <div style="font-size:12px;line-height:1.6" v-if="data?.network_failover">
           <span>{{ t('network.policy_is', { state: data.network_failover.config?.enabled ? t('network.enabled_state') : t('network.disabled_state') }) }}</span>
-          <span> · Wi‑Fi：{{ failoverWifiLabel }}</span>
+          <span> · {{ t('network.wifi_is', { state: failoverWifiLabel }) }}</span>
           <span v-if="finiteText(data.network_failover.state?.last_check_at, '')"> · {{ t('network.last_check', { at: finiteText(data.network_failover.state.last_check_at) }) }}</span>
           <span v-if="finiteText(data.network_failover.state?.last_action, '')"> · {{ t('network.last_action', { action: finiteText(data.network_failover.state.last_action) }) }}</span>
         </div>
@@ -94,7 +96,7 @@
         v-if="data?.wstunnel?.configured || data?.wstunnel?.running"
       >
         <div class="row" style="margin-bottom:8px;align-items:center;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0;flex:1">{{ t('network.wstunnel_title') }}</h3>
+          <h2 style="margin:0;flex:1">{{ t('network.wstunnel_title') }}</h2>
           <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
             {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
           </span>
@@ -155,6 +157,9 @@
                 </template>
               </td>
             </tr>
+            <tr v-if="!orderList.length && !loadError">
+              <td colspan="6" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -190,7 +195,7 @@
             <strong class="mono" v-if="data.alias_auto.preferred">
               {{ finiteText(data.alias_auto.preferred.device) }}
             </strong>
-            <span v-else style="color:var(--down)">{{ t('network.no_network') }}</span>
+            <span v-else style="color:var(--down-text)">{{ t('network.no_network') }}</span>
             <span v-if="data.alias_auto.preferred" style="color:var(--sub)">
               · {{ finiteText(data.alias_auto.preferred.service) }}
               · {{ t('network.primary_ip_is', { ip: finiteText(data.alias_auto.preferred.primary_ip) }) }}
@@ -225,7 +230,11 @@
                   <strong>{{ finiteText(iface.device) }}</strong>
                 </td>
                 <td v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
-                  <span class="led" :class="iface.up ? 'on' : 'off'"></span>
+                  <!-- The LED is the whole status column here (the interfaces tab
+                       pairs its LED with a textual badge); colour alone says
+                       nothing to a screen reader, so spell the state. -->
+                  <span class="led" :class="iface.up ? 'on' : 'off'" aria-hidden="true"></span>
+                  <span class="sr-only">{{ iface.up ? t('network.on') : t('network.off') }}</span>
                 </td>
                 <td class="mono">
                   <strong>{{ finiteText(a.ip) }}</strong>
@@ -252,11 +261,17 @@
               </tr>
               <tr v-if="!(iface.addresses||[]).length" :key="iface.device+'-empty'">
                 <td class="mono"><strong>{{ finiteText(iface.device) }}</strong></td>
-                <td><span class="led" :class="iface.up ? 'on' : 'off'"></span></td>
-                <td colspan="3" style="color:var(--sub)">{{ t('network.no_ipv4') }}</td>
+                <td>
+                  <span class="led" :class="iface.up ? 'on' : 'off'" aria-hidden="true"></span>
+                  <span class="sr-only">{{ iface.up ? t('network.on') : t('network.off') }}</span>
+                </td>
+                <td colspan="3" class="empty-row">{{ t('network.no_ipv4') }}</td>
                 <td></td>
               </tr>
             </template>
+            <tr v-if="!(data?.interface_addresses||[]).length && !loadError">
+              <td colspan="6" class="empty-row">{{ t('network.no_bindings') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -289,12 +304,17 @@
         <table class="dense fit-m">
           <thead>
             <tr>
-              <th></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">IPv6</th><th class="col-hide-m">MAC</th><th class="col-hide-m">MTU</th>
+              <th><span class="sr-only">{{ t('common.status_led') }}</span></th><th>{{ t('network.iface') }}</th><th>{{ t('common.status') }}</th><th>IPv4</th><th class="col-hide-m">{{ t('network.mask') }}</th><th class="col-hide-m">IPv6</th><th class="col-hide-m">MAC</th><th class="col-hide-m">MTU</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="i in data?.interfaces || []" :key="i.name">
-              <td><span class="led" :class="i.up ? 'on' : 'off'"></span></td>
+              <!-- The Status column next to it spells the state in text, so
+                   the LED is decoration here; without aria-hidden a screen
+                   reader met a column named "status LED" whose cells said
+                   nothing (the bindings table pairs its LED with sr-only text
+                   because there the LED is the whole status column). -->
+              <td><span class="led" :class="i.up ? 'on' : 'off'" aria-hidden="true"></span></td>
               <td>
                 <strong>{{ finiteText(i.name) }}</strong>
                 <div class="show-m sub mono">{{ finiteText(i.mac) }}{{ finiteN(i.mtu, null) != null ? ' · MTU ' + finiteN(i.mtu) : '' }}</div>
@@ -311,6 +331,9 @@
               <td class="mono col-hide-m" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="mono col-hide-m">{{ finiteText(i.mac) }}</td>
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
+            </tr>
+            <tr v-if="!(data?.interfaces||[]).length && !loadError">
+              <td colspan="8" class="empty-row">{{ t('network.no_interfaces') }}</td>
             </tr>
           </tbody>
         </table>
@@ -356,7 +379,7 @@
               </td>
             </tr>
             <tr v-if="!(data?.services||[]).length && !loadError">
-              <td colspan="8" style="color:var(--sub)">{{ finiteText(data?.services_error, '') || t('network.no_services') }}</td>
+              <td colspan="8" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
         </table>
@@ -379,7 +402,7 @@
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
       <div class="table-wrap">
         <table class="dense fit-m">
-          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th></th></tr></thead>
+          <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
           <tbody>
             <tr v-for="s in data?.services || []" :key="s.name">
               <td>
@@ -390,6 +413,9 @@
               <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
+            <tr v-if="!(data?.services||[]).length && !loadError">
+              <td colspan="4" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -399,6 +425,10 @@
     <template v-else-if="tab==='ports'">
       <div class="toolbar">
         <input v-model="portQ" type="text" :placeholder="t('network.filter_port')" style="min-width:160px"  :aria-label="t('network.filter_port')"/>
+        <!-- role=status: the count is the only feedback the filter box gives,
+             and it changed silently for a screen reader. Same pattern as the
+             Services filter count. -->
+        <span class="meta-count" role="status">{{ filteredListen.length }} / {{ (data?.listening || []).length }}</span>
       </div>
       <div class="table-wrap">
         <table class="dense fit-m">
@@ -413,6 +443,9 @@
               <td class="col-hide-m">{{ finiteText(p.user) }}</td>
               <td class="mono col-hide-m">{{ finiteText(p.address) }}</td>
               <td class="mono">{{ finiteN(p.port) }}</td>
+            </tr>
+            <tr v-if="!filteredListen.length && !loadError">
+              <td colspan="5" class="empty-row">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>
             </tr>
           </tbody>
         </table>
@@ -434,6 +467,9 @@
               <td class="mono col-hide-m">{{ finiteText(r.flags) }}</td>
               <td>{{ finiteText(r.netif) }}</td>
             </tr>
+            <tr v-if="!(data?.routes||[]).length && !loadError">
+              <td colspan="4" class="empty-row">{{ t('network.no_routes') }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -446,12 +482,16 @@
         <h2 class="section-title">{{ t('network.port_maps') }}</h2>
         <div class="toolbar">
           <input v-model="dockerPortQ" type="text" :placeholder="t('network.filter_ctr')" style="min-width:160px"  :aria-label="t('network.filter_ctr')"/>
+          <!-- role=status: the count is the only feedback the filter box gives,
+               and it changed silently for a screen reader. Same pattern as the
+               Services filter count. -->
+          <span class="meta-count" role="status">{{ filteredDockerPorts.length }} / {{ (data?.docker_ports || []).length }}</span>
           <button @click="openPortEdit()" :disabled="busy">{{ t('network.edit_map') }}</button>
         </div>
         <div class="table-wrap" style="margin-bottom:14px">
           <table class="dense fit-m">
             <thead>
-              <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th></th></tr>
+              <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr>
             </thead>
             <tbody>
               <tr v-for="(p,i) in filteredDockerPorts" :key="i">
@@ -469,7 +509,10 @@
                 </td>
               </tr>
               <tr v-if="!filteredDockerPorts.length && !loadError">
-                <td colspan="7" style="color:var(--sub)">{{ t('network.no_published') }}</td>
+                <!-- A filter miss and a host with no published ports are
+                     different states; the listening tab already tells them
+                     apart the same way. -->
+                <td colspan="7" class="empty-row">{{ dockerPortQ.trim() ? t('common.no_match') : t('network.no_published') }}</td>
               </tr>
             </tbody>
           </table>
@@ -501,6 +544,9 @@
                   <button class="tiny" :disabled="busy || n.builtin" @click="openConnect(n)">{{ t('network.connect') }}</button>
                   <button class="tiny" :disabled="busy || n.builtin" @click="openDisconnect(n)">{{ t('network.disconnect') }}</button>
                 </td>
+              </tr>
+              <tr v-if="!(data?.docker_networks || []).length && !loadError">
+                <td colspan="6" class="empty-row">{{ t('network.empty_docker_nets') }}</td>
               </tr>
             </tbody>
           </table>
@@ -555,7 +601,7 @@
           <span id="net-port-title" class="name">{{ t('network.port_map') }} · {{ finiteText(portEdit) }}</span>
           <button class="tiny" @click="portEdit=null">{{ t('common.close') }}</button>
         </div>
-        <p style="font-size:12px;color:var(--down);line-height:1.45;margin-bottom:8px">
+        <p style="font-size:12px;color:var(--down-text);line-height:1.45;margin-bottom:8px">
           {{ t('network.recreate_hint') }}
         </p>
         <label style="font-size:12px;color:var(--sub)">{{ t('network.map_list') }}</label>

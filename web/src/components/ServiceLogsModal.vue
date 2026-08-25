@@ -19,7 +19,10 @@
           <button type="button" @click="emit('close')">{{ t('common.close') }}</button>
         </div>
       </div>
-      <pre class="log">{{ finiteText(entry.log, '') || t('services.log_empty') }}</pre>
+      <!-- tabindex=0: the pane scrolls inside a fixed-height modal, and a
+           scrollable region the keyboard cannot reach cannot be scrolled by
+           one (WCAG 2.1.1). -->
+      <pre class="log" tabindex="0" role="region" :aria-label="t('services.logs')">{{ finiteText(entry.log, '') || t('services.log_empty') }}</pre>
     </div>
   </div>
 </template>

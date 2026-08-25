@@ -7,6 +7,16 @@
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="busy">{{ t('common.refresh') }}</button>
       <input v-model="q" type="text" :placeholder="t('brew.filter_ph')"  :aria-label="t('brew.filter_ph')"/>
+      <!-- role=status: the count is the only feedback the filter box gives,
+           and it changed silently for a screen reader. Same pattern as the
+           Services filter count. -->
+      <span class="meta-count" role="status">{{ filtered.length }} / {{ services.length }}</span>
+      <!-- role=status: brew actions run for seconds (brew services itself is
+           slow enough that the list call gets 20s) and every button greys out
+           for the duration; a sighted user watches the disabled toolbar, a
+           screen-reader user otherwise hears nothing between the click and
+           the finish toast. Same shape as the PhotosHub/Shares busy notes. -->
+      <span v-if="busy" class="meta" role="status" aria-live="polite" data-test="brew-busy">{{ busyNote }}</span>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
@@ -14,7 +24,7 @@
       <table class="dense fit-m">
         <thead>
           <tr>
-            <th></th>
+            <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
             <th>{{ t('brew.service') }}</th>
             <th>{{ t('common.status') }}</th>
             <th class="col-hide-m">{{ t('brew.user') }}</th>
@@ -23,7 +33,9 @@
         </thead>
         <tbody>
           <tr v-for="s in filtered" :key="s.id">
-            <td><span class="led" :class="s.state==='ok'?'on':(s.state==='warn'?'warn':'err')"></span></td>
+            <!-- aria-hidden: the LED repeats the Status badge's started/stopped
+                 text in colour only (same as the Health check LED). -->
+            <td><span class="led" :class="s.state==='ok'?'on':(s.state==='warn'?'warn':'err')" aria-hidden="true"></span></td>
             <td>
               <strong>{{ finiteText(s.name) }}</strong>
               <div v-if="finiteText(s.file, '')" class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(s.file) }}</div>
@@ -45,7 +57,11 @@
             </td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
-            <td colspan="5" style="color:var(--sub)">{{ t('brew.empty') }}</td>
+            <!-- A filter that matched nothing is not "No Homebrew services
+                 found": that claim beside a non-empty count misreports the
+                 host (same split as the Network ports and Tools process
+                 tables). -->
+            <td colspan="5" class="empty-row">{{ q.trim() ? t('common.no_match') : t('brew.empty') }}</td>
           </tr>
         </tbody>
       </table>
@@ -65,6 +81,9 @@ const toast = inject('toast')
 const { t } = injectI18n()
 const services = ref([])
 const busy = ref(false)
+// What the busy note announces: set before `busy` flips on, cleared with it.
+const busyAction = ref('')
+const busyName = ref('')
 const q = ref('')
 // The worst false-empty case in the app: `brew services list` is allowed 20s,
 // and for all of it this table asserted that no brew services were installed.
@@ -87,6 +106,11 @@ const labels = computed(() => ({
   start: t('services.act_start'),
   stop: t('services.act_stop'),
   restart: t('services.act_restart'),
+}))
+
+const busyNote = computed(() => t('brew.action_running', {
+  action: finiteText(labels.value[busyAction.value], '') || finiteText(busyAction.value),
+  name: busyName.value,
 }))
 
 const filtered = computed(() => {
@@ -115,6 +139,8 @@ async function act(s, action) {
   if (action === 'stop' && !confirm(t('brew.confirm_stop', { name: finiteText(s.name) }))) return
   if (action === 'restart' && !confirm(t('brew.confirm_restart', { name: finiteText(s.name) }))) return
   const generation = loadGeneration
+  busyAction.value = action
+  busyName.value = finiteText(s.name)
   busy.value = true
   try {
     const j = await brewAction(s.id, action)
@@ -125,7 +151,11 @@ async function act(s, action) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
   } finally {
-    if (pageAlive) busy.value = false
+    if (pageAlive) {
+      busy.value = false
+      busyAction.value = ''
+      busyName.value = ''
+    }
   }
 }
 

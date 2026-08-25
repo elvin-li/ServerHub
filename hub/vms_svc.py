@@ -61,6 +61,28 @@ def _orb_available() -> bool:
     return _bin_present(ORBCTL)
 
 
+def _cli_missing(rc, err, binary) -> bool:
+    """Whether an ``sh()`` result means the hypervisor CLI itself is gone.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real utmctl/orbctl exit.  The availability check runs
+    before the spawn, so an uninstall in between used to answer the action
+    with an uncoded ``{ok: false, message: "not found"}`` instead of the same
+    coded 503 the up-front check raises.  A timeout keeps its own sentinel and
+    is deliberately not classified: a slow CLI is not a missing one.
+
+    The sentinel alone used to classify.  rc -1 is also what a signal-killed
+    run reports, so a *still-present* CLI that printed exactly ``not found``
+    and died mid-request was answered with the vanished-binary 503 instead of
+    its raw result — the same "defer to a fresh probe" rule the docker paths
+    follow via ``engine_up``.  The disk re-check runs only on this failure
+    path (after the sentinel matched), never on a successful spawn.
+    """
+    if rc != -1 or _as_text(err).strip() != "not found":
+        return False
+    return not _bin_present(binary)
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/vms cannot UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
@@ -460,7 +482,13 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
 
     if not isinstance(new_name, str) or not new_name.strip():
         raise api_error("vms.name_required")
-    new_name = new_name.strip()
+    # _as_text: a JSON ``"\ud800"`` name (a lone surrogate — json.loads accepts
+    # the escape, Starlette's UTF-8 response encode does not) used to be stored
+    # verbatim in the override and echoed back, so the rename was already
+    # applied when the response render raised a bare 500.
+    new_name = _as_text(new_name).strip()
+    if not new_name:
+        raise api_error("vms.name_required")
     backend, name = _parse_id(vm_id)
     name = (name or "").strip()
     if not name:
@@ -496,6 +524,14 @@ def _argv_name(value: str, *, code: str = "vms.bad_id") -> str:
         or text.startswith("-")
         or any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
     ):
+        raise api_error(code)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate (JSON ``"\ud800"`` body, a services.yaml leftover
+        # routed through actions.py) can never name a listed machine — the
+        # listings are UTF-8-cleaned — and echoing it back in ``id`` or the
+        # ``orb -m {name}`` shell hint used to 500 Starlette's UTF-8 encode.
         raise api_error(code)
     return text
 
@@ -573,6 +609,8 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         rc, out, err = sh(args, timeout=300)
     elif action == "ip":
         rc, out, err = sh([UTMCTL, "ip-address", ident], timeout=15)
+        if _cli_missing(rc, err, UTMCTL):
+            raise api_error("vms.utm_unavailable")
         text = _as_text(out)
         ips = [ln.strip() for ln in text.splitlines() if ln.strip()]
         _invalidate()
@@ -587,6 +625,8 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         return {"ok": True, "action": action, "id": ident, "status": st}
     else:
         raise api_error("vms.utm_unsupported_action", action=action)
+    if _cli_missing(rc, err, UTMCTL):
+        raise api_error("vms.utm_unavailable")
     _invalidate()
     return {
         "ok": rc == 0, "action": action, "id": ident,
@@ -675,6 +715,8 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         }
     elif action == "info":
         rc, out, err = sh([ORBCTL, "info", ident], timeout=15)
+        if _cli_missing(rc, err, ORBCTL):
+            raise api_error("vms.orb_unavailable")
         return {
             "ok": rc == 0, "action": "info", "id": ident,
             "message": _as_text(out) or _as_text(err),
@@ -683,6 +725,8 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         return rename_vm_display(f"orb:{ident}", kwargs.get("name") or "")
     else:
         raise api_error("vms.orb_unsupported_action", action=action)
+    if _cli_missing(rc, err, ORBCTL):
+        raise api_error("vms.orb_unavailable")
     _invalidate()
     return {
         "ok": rc == 0, "action": action, "id": ident,
@@ -712,6 +756,8 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
     if arch in ("arm64", "amd64"):
         args += ["--arch", arch]
     rc, out, err = sh(args, timeout=600)
+    if _cli_missing(rc, err, ORBCTL):
+        raise api_error("vms.orb_unavailable")
     _invalidate()
     return {
         "ok": rc == 0,

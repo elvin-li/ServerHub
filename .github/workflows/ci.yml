@@ -5,9 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Keep the suite off the runner's local timezone/locale so a date
+      # format or collate order cannot pass here and fail on another image.
+      TZ: UTC
+      LC_ALL: C
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,8 +34,34 @@ jobs:
           grep -vE '^(rumps|pyobjc)' requirements.txt > /tmp/requirements-ci.txt
           python -m pip install -r /tmp/requirements-ci.txt
       - name: Backend tests
-        run: python -m unittest discover -s tests -q
+        # -t . makes discovery import the `tests` package, whose __init__.py
+        # points SERVERHUB_STATE_DIR at a temp directory. Without it the
+        # modules load as top-level files, the redirection never runs, and
+        # the suite bootstraps services.yaml and data/ inside the checkout
+        # (gitignored, so the static/ drift check below cannot see it).
+        run: python -m unittest discover -s tests -t . -q
       - name: Frontend tests
         run: |
           npm --prefix web ci
           npm --prefix web test
+      - name: Dead code
+        run: npm --prefix web run check:dead-code
+      # `static/` is the panel that actually ships: the backend serves it off
+      # disk and it is committed to the repo. Nothing here built it, so a
+      # change to `web/` merged green while the served panel stayed on the
+      # previous build. Vite's output is content-hashed and reproducible from
+      # the lockfile, so rebuilding and diffing is an exact check.
+      - name: Built panel matches web/
+        run: |
+          npm --prefix web run build
+          # `git status --porcelain`, not `git diff`: the build empties
+          # static/ and re-emits, so a chunk or public asset that exists in
+          # web/ but was never committed comes back as an *untracked* file,
+          # which `git diff` does not report — the check passed while the
+          # shipped panel was missing a file.
+          drift="$(git status --porcelain static/)"
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            echo "::error::static/ is out of date — run 'npm --prefix web run build' and commit the result"
+            exit 1
+          fi

@@ -10,6 +10,9 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// Rollup ships vite's own parser, so this import can never drift from the
+// syntax the build actually accepts.
+import { parseAst } from 'rollup/parseAst'
 
 import en from './en.js'
 import ja from './ja.js'
@@ -74,6 +77,45 @@ describe('locale dictionaries', () => {
     expect(DICTS[FALLBACK_LOCALE]).toBeDefined()
   })
 
+  it('declare every key exactly once in each dictionary source', () => {
+    // Runtime imports cannot see this class of merge damage: a duplicate key
+    // in an object literal silently keeps the last value, so the flatten-based
+    // assertions still pass while one translation shadows another. Parse the
+    // source instead and reject any object level that names a key twice.
+    for (const name of Object.keys(DICTS)) {
+      const file = join(HERE, `${name}.js`)
+      const src = readFileSync(file, 'utf8')
+      const line = (offset) => src.slice(0, offset).split('\n').length
+      const ast = parseAst(src)
+      const root = ast.body.find((n) => n.type === 'ExportDefaultDeclaration')
+      expect(root, `${name}.js has no default export`).toBeDefined()
+
+      const problems = []
+      const walk = (node, prefix) => {
+        if (!node || node.type !== 'ObjectExpression') return
+        const seen = new Map()
+        for (const prop of node.properties) {
+          if (prop.type !== 'Property' || prop.computed) {
+            // Spreads and computed keys could smuggle in duplicates the walk
+            // below cannot see, so the dictionaries simply do not allow them.
+            problems.push(`${prefix || '<root>'} uses ${prop.type} at line ${line(prop.start)}`)
+            continue
+          }
+          const key = prop.key.type === 'Identifier' ? prop.key.name : String(prop.key.value)
+          const path = prefix ? `${prefix}.${key}` : key
+          if (seen.has(key)) {
+            problems.push(`${path} declared at lines ${seen.get(key)} and ${line(prop.start)}`)
+          } else {
+            seen.set(key, line(prop.start))
+          }
+          walk(prop.value, path)
+        }
+      }
+      walk(root.declaration, '')
+      expect(problems, `duplicate keys in ${name}.js`).toEqual([])
+    }
+  })
+
   it('have identical key sets across locales', () => {
     const base = [...flatten(zhCN).keys()].sort()
     for (const [name, dict] of Object.entries(DICTS)) {
@@ -114,7 +156,18 @@ describe('t() keys referenced by the app', () => {
     for (const file of SOURCES) {
       const text = readFileSync(file, 'utf8')
       for (const m of text.matchAll(/\bt\(\s*['"]([\w.$-]+)['"]/g)) referenced.add(m[1])
+      // Keys stored in data and only later fed to t(): nav/theme entries carry
+      // labelKey fields, and groupLabels.js maps yaml group ids to i18n keys.
+      // The plain t( scan cannot see these, so a renamed dictionary entry
+      // would ship as a raw key path in the sidebar without this pass.
+      for (const m of text.matchAll(/\blabelKey\s*:\s*['"]([\w.$-]+)['"]/g)) referenced.add(m[1])
     }
+    const groupLabels = readFileSync(join(HERE, 'groupLabels.js'), 'utf8')
+    for (const m of groupLabels.matchAll(/:\s*['"]([a-z][\w$-]*(?:\.[\w$-]+)+)['"]/g)) {
+      referenced.add(m[1])
+    }
+    // The locale picker's own labels live in index.js, outside the scan above.
+    for (const l of LOCALES) referenced.add(l.labelKey)
     // Sanity-check the scanner itself: a broken regex would make this vacuous.
     expect(referenced.size).toBeGreaterThan(100)
 

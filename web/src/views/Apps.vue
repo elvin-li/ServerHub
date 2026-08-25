@@ -18,7 +18,11 @@
     <template v-if="tab === 'catalog'">
       <div class="toolbar apps-toolbar">
         <input v-model="q" type="text" class="search" :placeholder="t('apps.search_ph')"  :aria-label="t('apps.search_ph')"/>
-        <select v-model="cat" class="cat-select">
+        <!-- role=status: the count is the only feedback the search box, category
+             select and toggles give, and it changed silently for a screen
+             reader. Same pattern as the Services filter count. -->
+        <span class="meta-count" role="status">{{ filtered.length }} / {{ catalog.length }}</span>
+        <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
           <option v-for="c in categories" :key="c.id" :value="c.id">
             {{ catLabel(c.id) }}{{ countLabel(c.id) }}
           </option>
@@ -41,6 +45,7 @@
           type="button"
           class="cat-pill"
           :class="{ active: cat === c.id }"
+          :aria-pressed="cat === c.id"
           @click="cat = c.id"
         >{{ catLabel(c.id) }}{{ countLabel(c.id) }}</button>
       </div>
@@ -143,7 +148,11 @@
     <template v-else-if="tab === 'managed'">
       <div class="toolbar apps-toolbar">
         <input v-model="mq" type="text" class="search" :placeholder="t('apps.managed_search')"  :aria-label="t('apps.managed_search')"/>
-        <select v-model="mkind" class="cat-select">
+        <!-- role=status: the count is the only feedback the search box and kind
+             select give, and it changed silently for a screen reader. Same
+             pattern as the Services filter count. -->
+        <span class="meta-count" role="status">{{ filteredManaged.length }} / {{ (managed.items || []).length }}</span>
+        <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
           <option value="docker">{{ t('apps.kind_docker') }}</option>
@@ -152,7 +161,10 @@
         </select>
         <button type="button" class="primary" @click="loadManaged(true)" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" @click="tab = 'catalog'">{{ t('apps.browse_catalog') }}</button>
-        <span class="meta-count" v-if="managed.counts">
+        <!-- role=status: the breakdown is Refresh's only answer and it changed
+             silently for a screen reader — the same treatment the filter count
+             beside it (and every sibling .meta-count) already carries. -->
+        <span class="meta-count" role="status" v-if="managed.counts">
           {{ finiteN(managed.counts.total) }} ·
           {{ t('apps.kind_native') }} {{ finiteN(managed.counts.native) }} ·
           Docker {{ finiteN(managed.counts.docker) }} ·
@@ -186,7 +198,13 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">
+            <!-- The row keeps its click shortcut, but not role="button"/tabindex:
+                 it holds the autostart switch and the whole action button row, and
+                 a control may not contain other controls (ARIA nested-interactive).
+                 It also duplicated the tab stop the "Detail" button in the actions
+                 cell already provides, which is the keyboard path to the same
+                 openDetail(it). -->
+            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)">
               <td>
                 <strong>{{ finiteText(it.name) }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
@@ -194,11 +212,14 @@
                 <div v-if="finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
                 <div class="show-m sub-line mono">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend, '') }}</div>
                 <div class="show-m" @click.stop>
+                  <!-- Named after the app: a column of switches all announced as
+                       "Autostart" cannot be told apart in a form-controls
+                       listing — same fix as the Scheduler enable toggles. -->
                   <MacSwitch
                     v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
                     :checked="!!it.autostart"
                     :disabled="busy || it.kind === 'vm'"
-                    :aria-label="t('apps.col_autostart')"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                     :title="finiteText(it.autostart_detail, '')"
                     @click.stop
                     @change="toggleManagedAutostart(it, $event)"
@@ -219,7 +240,7 @@
                   v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
                   :checked="!!it.autostart"
                   :disabled="busy || it.kind === 'vm'"
-                  :aria-label="t('apps.col_autostart')"
+                  :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                   :title="finiteText(it.autostart_detail, '')"
                   @click.stop
                   @change="toggleManagedAutostart(it, $event)"
@@ -229,7 +250,11 @@
               <td class="mono path-cell col-hide-m" :title="finiteText(it.path, '') || finiteText(it.package, '')">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
-                  <button type="button" class="act-btn" @click="openDetail(it)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(it)" @keydown.space.prevent="openDetail(it)">{{ t('apps.detail') }}</button>
+                  <!-- A native <button> activates on Enter/Space and sits in the
+                       tab order by itself; the copied role/tabindex/keydown set
+                       belongs on the non-button hotspots (Services problem chips),
+                       not here, where it double-declared what the element is. -->
+                  <button type="button" class="act-btn" @click="openDetail(it)">{{ t('apps.detail') }}</button>
                   <button v-if="canAct(it, 'start')" type="button" class="act-btn primary" :disabled="busy" @click="doManagedAction(it, 'start')">{{ t('apps.act_start') }}</button>
                   <button v-if="canAct(it, 'stop')" type="button" class="act-btn" :disabled="busy" @click="doManagedAction(it, 'stop')">{{ t('apps.act_stop') }}</button>
                   <button v-if="canAct(it, 'restart')" type="button" class="act-btn hide-m" :disabled="busy" @click="doManagedAction(it, 'restart')">{{ t('apps.act_restart') }}</button>
@@ -258,7 +283,10 @@
       <div class="toolbar apps-toolbar">
         <button type="button" class="primary" @click="loadAutostart(true)" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="runAutostartNow">{{ t('apps.run_autostart_now') }}</button>
-        <span class="meta-count" v-if="autostart.counts">
+        <!-- role=status: these counts are Refresh's and Run-now's only answer
+             and changed silently for a screen reader — same treatment as the
+             managed-tab breakdown and every sibling .meta-count. -->
+        <span class="meta-count" role="status" v-if="autostart.counts">
           {{ t('apps.auto_on') }} {{ finiteN(autostart.counts.autostart_on) }} ·
           {{ t('apps.auto_off') }} {{ finiteN(autostart.counts.autostart_off) }} ·
           brew {{ finiteN(autostart.counts.brew) }} ·
@@ -303,7 +331,7 @@
                   <MacSwitch
                     :checked="!!it.autostart"
                     :disabled="busy"
-                    :aria-label="t('apps.col_autostart')"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                     @change="setAutostartItem(it, $event)"
                   />
                 </td>
@@ -314,6 +342,7 @@
                       class="policy-select"
                       :value="finiteText(it.policy, '') || 'no'"
                       :disabled="busy"
+                      :aria-label="t('apps.policy_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
                       @change="setDockerPolicy(it, $event.target.value)"
                     >
                       <option value="no">no</option>
@@ -450,7 +479,7 @@
             <button type="button" :disabled="busy || cfBusy" @click="openManagedLogs(detail)">{{ t('apps.logs') }}</button>
           </div>
 
-          <div v-if="cfStatus.login_url" class="notes" style="margin-bottom:10px;word-break:break-all">
+          <div v-if="cfStatus.login_url" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
             {{ t('apps.cf_open_link') }}
             <a :href="finiteText(cfStatus.login_url, '')" target="_blank" rel="noopener">{{ finiteText(cfStatus.login_url) }}</a>
             <div class="sub-line" style="margin-top:6px">{{ t('apps.cf_after_auth') }}</div>
@@ -642,9 +671,12 @@
           <template v-for="v in installTpl.vars" :key="v.name">
             <label class="form-label">{{ finiteText(v.label, '') || finiteText(v.name) }}</label>
             <div class="form-field">
+<!-- The form-label beside this grid cell is not associated (no for/id), so
+                   the input had no accessible name; mirror the label's text. -->
               <input
                 v-model="installVars[v.name]"
                 :type="v.secret ? 'password' : 'text'"
+                :aria-label="finiteText(v.label, '') || finiteText(v.name)"
                 :placeholder="v.default === '' && v.secret ? t('apps.auto_password') : (v.required === false ? t('apps.optional') : '')"
               />
               <div v-if="finiteText(v.help, '')" class="field-help">{{ finiteText(v.help) }}</div>
@@ -703,6 +735,14 @@
             {{ remoteBusy ? t('catalog_remote.checking') : t('catalog_remote.check_updates') }}
           </button>
         </div>
+        <!-- role=alert: the source config loads after the modal already holds
+             focus, and a failure used to leave it silently blank — neither the
+             "not configured" line nor the overrides list rendered, so a dead
+             read looked like a fresh install. -->
+        <div v-if="remoteError" class="tpl-danger" role="alert">
+          <div>{{ t('catalog_remote.load_failed') }}</div>
+          <div class="sub mono" style="margin-top:4px">{{ finiteText(remoteError) }}</div>
+        </div>
         <p v-if="remoteInfo && !remoteInfo.configured && !remoteUrl" class="sub-line">
           {{ t('catalog_remote.not_configured') }}
         </p>
@@ -723,7 +763,7 @@
         <section v-if="(remoteInfo?.overrides || []).length">
           <h4 class="modal-title" style="font-size:14px;margin:8px 0">{{ t('catalog_remote.overrides_title') }}</h4>
           <table class="mini-table">
-            <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th></th></tr></thead>
+            <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
             <tbody>
               <tr v-for="o in remoteInfo.overrides" :key="o.id">
                 <td class="mono">{{ finiteText(o.id) }}</td>
@@ -853,6 +893,7 @@ const hideInstalled = ref(false)
 const remoteModal = ref(false)
 const remotePanel = ref(null)
 const remoteInfo = ref(null)
+const remoteError = ref('')
 const remoteUrl = ref('')
 const remoteBusy = ref(false)
 const remoteResult = ref(null)
@@ -1159,7 +1200,10 @@ async function loadManaged(force = false) {
   } catch (e) {
     if (generation !== managedGeneration) return false
     managedError.value = finiteText(e.message || String(e), '')
-    toast('❌ ' + finiteText(e.message))
+    // The 15s tick passes force=false, so background failures stay silent —
+    // LoadFailure already marks the state on screen, and a toast per interval
+    // while the panel is down is pure noise. Manual paths pass force=true.
+    if (force) toast('❌ ' + finiteText(e.message))
     // The 15s tick returns this promise, so a dead server engages the
     // lib/poll.js failure backoff instead of being polled at full rate.
     return false
@@ -1789,7 +1833,7 @@ function countLabel(id) {
   return n ? ` (${n})` : ''
 }
 
-async function refresh() {
+async function refresh(manual = false) {
   const generation = appsDataGeneration
   loading.value = true
   try {
@@ -1799,7 +1843,11 @@ async function refresh() {
     jobs.value = d.jobs || []
   } catch (e) {
     if (generation !== appsDataGeneration) return
-    toast('❌ ' + finiteText(e.message))
+    // The job-completion poll calls this in the background (the server, not
+    // the user, decides when a stack job ends); a failure there must not
+    // toast over whatever the operator is doing. User-initiated reloads pass
+    // `manual` and keep their feedback.
+    if (manual) toast('❌ ' + finiteText(e.message))
   }
   if (generation === appsDataGeneration) loading.value = false
 }
@@ -1849,9 +1897,14 @@ async function loadRemote() {
     const next = await getCatalogRemote()
     if (generation !== appsDataGeneration) return
     remoteInfo.value = next
+    remoteError.value = ''
     remoteUrl.value = next?.url || ''
   } catch (e) {
     if (generation !== appsDataGeneration) return
+    // Latched, not just toasted: with remoteInfo null the modal renders neither
+    // the "not configured" line nor the overrides table, so after the toast
+    // faded the failure was indistinguishable from an unconfigured source.
+    remoteError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   }
 }
@@ -1962,7 +2015,7 @@ async function doInstall() {
     if (r.ok) {
       // Three independent re-reads after a successful install: catalog, managed
       // list and stacks. refresh() was already fire-and-forget here.
-      await Promise.all([loadCatalog(), loadManaged(true), refresh()])
+      await Promise.all([loadCatalog(), loadManaged(true), refresh(true)])
     }
   } catch (e) {
     if (!stillOnApps(generation)) return
@@ -2001,7 +2054,7 @@ async function doUninstall(tpl) {
     // loadManaged too: uninstalling from the catalog left the app still listed
     // under Managed until something else happened to refresh it, so the two
     // uninstall paths disagreed -- doManagedUninstall() already reloads it.
-    await Promise.all([loadCatalog(), refresh(), loadManaged(true)])
+    await Promise.all([loadCatalog(), refresh(true), loadManaged(true)])
   } catch (e) {
     if (!stillOnApps(generation)) return
     toast('❌ ' + finiteText(e.message))
@@ -2019,7 +2072,7 @@ async function run(s, action) {
     if (!stillOnApps(generation)) return
     toast('🚀 ' + (finiteText(r.message, '') || t('common.ok')))
     if (r.job_id) openJob(r.job_id, s.name)
-    refresh()
+    refresh(true)
   } catch (e) {
     if (!stillOnApps(generation)) return
     toast('❌ ' + finiteText(e.message))
@@ -2071,7 +2124,9 @@ onMounted(() => {
   pageAlive = true
   loadManaged()
   loadCatalog()
-  refresh()
+  // The first load counts as user-initiated: with no stacks fetched yet there
+  // is no stale-but-usable list on screen, so the failure must say something.
+  refresh(true)
   // startVisibleInterval also refreshes the moment the tab becomes visible
   // again, so returning to the page does not show up-to-15s-stale data.
   timer = startVisibleInterval(() => {
@@ -2285,55 +2340,60 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
   color: var(--txt);
 }
 
+/* Mixed toward --txt like the branded chips below:
+   the raw --ok on its own 16% tint is ~2:1 for this 10px text. */
 .chip-native {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  /* var(--ok) on its own 16% tint is 1.9:1 — the least legible text in the
+     panel. --ok-text keeps the green reading as "native" on both palettes
+     while clearing WCAG AA. */
+  color: var(--ok-text);
 }
 
+/* Brand-hue inks mixed toward --txt, like the --*-text tokens in styles.css:
+   the literal inks these shipped with (#1a6fb0 / #b45309 / #7c4fe0) were
+   darkened for light cards only — on the dark themes they measured 1.7-3.0:1,
+   and the per-theme #7ec8ff override that patched .chip-docker also applied
+   in *light* system mode (1.7:1 on white). The percentages are the largest
+   that clear 4.5:1 on the chip's own tint in every theme
+   (theme/contrast.test.js measures them). */
 .chip-docker {
   background: color-mix(in srgb, #2496ed 12%, var(--card));
   border-color: color-mix(in srgb, #2496ed 35%, var(--line));
-  color: #1a6fb0;
+  color: color-mix(in srgb, #2496ed 50%, var(--txt));
 }
 
 .chip-launchd {
   background: color-mix(in srgb, #d97706 12%, var(--card));
   border-color: color-mix(in srgb, #d97706 35%, var(--line));
-  color: #b45309;
+  color: color-mix(in srgb, #d97706 50%, var(--txt));
 }
 
 .chip-feat {
   background: color-mix(in srgb, var(--accent) 14%, var(--card));
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
-  color: var(--accent-hover, var(--accent));
+  /* The ink sized for a 14% accent wash; raw --accent-hover is 2.8-4.2:1 on
+     this tint in eight of the eleven palettes. */
+  color: var(--on-accent-wash);
 }
 
 .chip-remote {
   background: color-mix(in srgb, #8b5cf6 14%, var(--card));
   border-color: color-mix(in srgb, #8b5cf6 40%, var(--line));
-  color: #7c4fe0;
+  color: color-mix(in srgb, #8b5cf6 45%, var(--txt));
 }
 
 .chip-ok {
   background: color-mix(in srgb, var(--ok) 16%, var(--card));
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .chip-muted {
   background: var(--btn);
   border-color: var(--line);
   color: var(--sub);
-}
-
-[data-theme="nord"] .chip-docker,
-[data-theme="glass"] .chip-docker,
-[data-theme="unraid-dark"] .chip-docker,
-[data-theme="macos-dark"] .chip-docker,
-[data-theme="system"] .chip-docker,
-[data-theme="mono"] .chip-docker {
-  color: #7ec8ff;
 }
 
 .app-meta {
@@ -2503,7 +2563,7 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
    louder tone than ordinary install notes. */
 .tpl-danger {
   font-size: 12px;
-  color: var(--down);
+  color: var(--down-text);
   background: color-mix(in srgb, var(--down) 10%, var(--card));
   border-left: 3px solid var(--down);
   padding: 8px 10px;
@@ -2642,20 +2702,22 @@ useDismissable(detail, () => { closeDetail() }, detailPanel)
 }
 
 .act-btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
 }
 
 .act-btn.danger {
   background: color-mix(in srgb, var(--down) 12%, var(--card));
   border-color: color-mix(in srgb, var(--down) 45%, var(--line));
-  color: var(--down);
+  color: var(--down-text);
   font-weight: 700;
 }
 
 .act-btn.link {
-  color: var(--accent-hover, var(--accent));
+  /* --accent-text, not the raw hover hue: as ink on --card the hover step is
+     still 2.7-4.2:1 in most themes (styles.css sizes the tint per palette). */
+  color: var(--accent-text);
 }
 
 .act-btn:disabled {

@@ -220,12 +220,20 @@ def _jsonable(value, depth: int = 0):
     ``!!set`` of ``.nan``, ``.inf`` keys, and tuple-inf still leaked into
     GET /api/scheduler/jobs and failed the encoder. A leftover ``\\ud800``
     job name still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
+    A >4300-digit ``timeout``/param int still passed through untouched:
+    CPython's int->str digit limit then ValueError'd ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -350,8 +358,25 @@ def new_job_id() -> str:
     return f"job-{uuid.uuid4().hex[:8]}"
 
 
-def save_job(record: dict) -> None:
-    """Insert or replace one job record under the cross-process config lock."""
+class _NoChange(Exception):
+    """Raised inside a mutate() body to abort without rewriting the file."""
+
+
+def save_job(record: dict, *, mode: str = "upsert") -> bool:
+    """Insert or replace one job record under the cross-process config lock.
+
+    ``mode`` decides what happens when the id's existence disagrees with the
+    caller's intent, *checked under the same lock as the write*:
+
+    * ``"upsert"`` — insert or replace, always succeeds (the historic shape).
+    * ``"create"`` — insert only; returns False when the id already exists.
+    * ``"update"`` — replace only; returns False when the id is gone.
+
+    The create/update modes exist because the router used to pre-check with
+    :func:`get_job` and then call this unconditionally: two concurrent creates
+    with the same id both passed the check and the second silently overwrote
+    the first, and an update racing a delete re-created the deleted job.
+    """
     def apply(data: dict) -> None:
         jobs = data.get("schedules")
         if not isinstance(jobs, list):
@@ -359,11 +384,19 @@ def save_job(record: dict) -> None:
             data["schedules"] = jobs
         for i, j in enumerate(jobs):
             if isinstance(j, dict) and j.get("id") == record["id"]:
+                if mode == "create":
+                    raise _NoChange
                 jobs[i] = record
                 return
+        if mode == "update":
+            raise _NoChange
         jobs.append(record)
 
-    mutate(apply)
+    try:
+        mutate(apply)
+    except _NoChange:
+        return False
+    return True
 
 
 def delete_job(job_id: str) -> bool:
@@ -380,12 +413,32 @@ def delete_job(job_id: str) -> bool:
 
 
 def set_enabled(job_id: str, enabled: bool) -> dict | None:
-    job = get_job(job_id)
-    if job is None:
+    """Flip one job's ``enabled`` flag in place, under the write lock.
+
+    The read and the write must share one lock.  The previous
+    ``get_job()`` → ``save_job()`` pair took its snapshot outside the
+    cross-process lock and wrote the *whole* stale record back, so a
+    concurrent PUT /api/scheduler/jobs/{id} landing in between was silently
+    reverted by the toggle — the exact lost-update shape config.save_full's
+    docstring warns about.
+    """
+    hit: dict = {}
+
+    def apply(data: dict) -> None:
+        jobs = data.get("schedules")
+        rows = jobs if isinstance(jobs, list) else []
+        for j in rows:
+            if isinstance(j, dict) and j.get("id") == job_id:
+                j["enabled"] = bool(enabled)
+                hit.update(j)
+                return
+        raise _NoChange
+
+    try:
+        mutate(apply)
+    except _NoChange:
         return None
-    job["enabled"] = bool(enabled)
-    save_job(job)
-    return job
+    return dict(hit)
 
 
 # ── run history journal ──────────────────────────────────────────────────────
@@ -399,7 +452,10 @@ def _record_run(entry: dict) -> None:
     :data:`_TRIM_INTERVAL`, whatever the append rate.
     """
     global _last_trim
-    with _runs_lock:
+    # file_lock as well as _runs_lock: two panel processes sharing data/ can
+    # both journal runs, and a trim in one used to swap away a record the
+    # other had just appended to the pre-replace inode.
+    with _runs_lock, secure_io.file_lock(RUNS_PATH):
         try:
             RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
             payload = _jsonable(entry) if isinstance(entry, dict) else None
@@ -541,7 +597,14 @@ def _job_id(job: dict) -> str:
     if isinstance(raw, bool) or raw is None:
         return ""
     if isinstance(raw, int):
-        return str(raw)
+        try:
+            return str(raw)
+        except ValueError:
+            # A YAML hex/octal ``id`` dodges CPython's str->int digit cap on
+            # parse (base 16/8 are exempt), and the int->str cap then
+            # ValueError'd here — 500ing GET /api/scheduler/jobs and aborting
+            # the whole engine tick, so every *other* job's minute was lost.
+            return ""
     if isinstance(raw, float):
         # YAML ``id: .inf``: ``float('inf').is_integer()`` is True and
         # ``int(inf)`` OverflowError used to 500 GET /api/scheduler/jobs.
@@ -570,6 +633,14 @@ def job_enabled(job: dict) -> bool:
     return False
 
 
+def _encodable_utf8(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _command_text(raw) -> str:
     """Shell text for a scheduled command.  Leftover non-str is not argv.
 
@@ -577,6 +648,13 @@ def _command_text(raw) -> str:
     repr, not the payload, but leftover lists of non-str parts were still
     joined into ``bash -c`` and leftover mappings stringified.  Only real
     strings.
+
+    Encodable strings only, the rsync-params rule: a lone surrogate (a JSON
+    ``"\\ud800"`` body, a hand-edited services.yaml escape) can never be
+    spawned — Popen's argv/env UTF-8 encode refuses it — so POST
+    /api/scheduler/jobs used to sail it into mutate()'s YAML dump and answer
+    the misleading coded 503 ``settings.save_failed`` instead of the same
+    400 ``scheduler.bad_params`` its control-character siblings get.
     """
     if isinstance(raw, (list, tuple)):
         parts: list[str] = []
@@ -588,11 +666,15 @@ def _command_text(raw) -> str:
                 continue
             if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
                 return ""
+            if not _encodable_utf8(text):
+                return ""
             parts.append(text)
         return " ".join(parts)
     if not isinstance(raw, str):
         return ""
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
+        return ""
+    if not _encodable_utf8(raw):
         return ""
     return raw.strip()
 

@@ -26,12 +26,19 @@
         <button type="button" :disabled="busy" @click="doMkdir">{{ t('files.mkdir') }}</button>
         <label class="upload-btn">
           {{ t('files.upload') }}
-          <input type="file" multiple hidden @change="onUpload" />
+          <!-- sr-only, not the hidden attribute: hidden removed the input from
+               the tab order and the accessibility tree, so a keyboard or
+               screen-reader user had no way to upload at all (drag-drop is
+               mouse-only). The wrapping label still names it; the ring is
+               drawn on the visible button below. -->
+          <input type="file" multiple class="sr-only" @change="onUpload" />
         </label>
         <button type="button" class="danger" :disabled="busy || !selected.length" @click="doDeleteSelected">
           {{ t('files.delete') }}
         </button>
-        <span class="meta-count" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
+        <!-- role=status: navigation, uploads and deletes change this count and
+             it changed silently for a screen reader (Modules / Services). -->
+        <span class="meta-count" role="status" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
         <div class="toolbar-spacer"></div>
         <button type="button" :disabled="busy" @click="openFullFB">{{ t('files.open_full') }}</button>
         <button
@@ -45,7 +52,9 @@
         <button type="button" class="tiny" @click="deactivate">{{ t('files.close_panel') }}</button>
       </div>
 
-      <nav class="crumbs" v-if="listing">
+      <!-- App.vue already owns two labelled navigation landmarks; a third one
+           with no name is announced as an anonymous "navigation". -->
+      <nav class="crumbs" v-if="listing" :aria-label="t('files.breadcrumbs')">
         <button type="button" class="crumb" @click="goPath(listing.root)">{{ finiteText(listing.root_id, 'root') }}</button>
         <template v-for="(c, i) in listing.crumbs || []" :key="c.path">
           <span class="sep">/</span>
@@ -104,8 +113,11 @@
                 </div>
               </td>
             </tr>
+            <!-- A failed reload keeps the previous listing on screen; the row
+                 must not claim the folder is empty when the read that would
+                 prove it just failed (the banner above carries the reason). -->
             <tr v-if="!(listing.items || []).length">
-              <td colspan="6" class="empty-row">{{ t('files.empty') }}</td>
+              <td colspan="6" class="empty-row">{{ error ? t('common.load_failed') : t('files.empty') }}</td>
             </tr>
           </tbody>
         </table>
@@ -558,13 +570,17 @@ onUnmounted(() => {
   background: var(--card); cursor: pointer;
 }
 .upload-btn:hover { border-color: var(--accent); }
+/* The file input inside is sr-only (kept focusable for keyboard upload), and
+   the global sheet suppresses input:focus-visible outlines — so the keyboard
+   ring has to be drawn on the visible button the input lives in. */
+.upload-btn:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .crumbs {
   display: flex; flex-wrap: wrap; align-items: center; gap: 2px;
   margin: 0 0 10px; font-size: 12px;
 }
 .crumb {
-  background: none; border: none; color: var(--accent);
+  background: none; border: none; color: var(--accent-text);
   cursor: pointer; padding: 2px 4px; font-size: 12px;
 }
 .crumb.current { color: var(--txt); font-weight: 600; cursor: default; }
@@ -595,15 +611,16 @@ onUnmounted(() => {
 :global([data-theme="macos-dark"] .files-table tr.selected td),
 :global([data-theme="macos-dark"] .files-table tr.selected:hover),
 :global([data-theme="macos-dark"] .files-table tr.selected:hover td) {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
   box-shadow: none;
 }
 :global([data-theme="macos"] .files-table tr.selected .sub),
 :global([data-theme="macos"] .files-table tr.selected .name-text),
 :global([data-theme="macos-dark"] .files-table tr.selected .sub),
 :global([data-theme="macos-dark"] .files-table tr.selected .name-text) {
-  color: #fff;
+  /* The row's fill is --accent-fill; its ink has to be the paired token. */
+  color: var(--on-accent);
 }
 
 /* Uniform row height across all columns */
@@ -680,7 +697,7 @@ onUnmounted(() => {
   white-space: nowrap;
   box-sizing: border-box;
 }
-.act-btn.danger { color: var(--down); border-color: color-mix(in srgb, var(--down) 40%, var(--line)); }
+.act-btn.danger { color: var(--down-text); border-color: color-mix(in srgb, var(--down) 40%, var(--line)); }
 .empty-row, .placeholder { text-align: center; color: var(--sub); padding: 24px; height: auto; }
 .drop-hint { font-size: 11px; color: var(--sub); margin-top: 8px; }
 .parent-row { cursor: pointer; }

@@ -183,12 +183,20 @@ def _jsonable(value, depth: int = 0):
     A leftover ``engaged_at: 1e400`` in the state file used to 500 GET /api/ups.
     ``json.dumps`` without ``allow_nan=False`` used to rewrite Infinity back
     onto disk from ``_save_state``.
+    A >4300-digit leftover int still passed through untouched: CPython's
+    int->str digit limit then ValueError'd ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -206,6 +214,12 @@ def _jsonable(value, depth: int = 0):
                     k = str(k)
                 except Exception:
                     continue
+            # A str *key* skipped the string sanitizer below: a leftover JSON
+            # ``"\ud800…"`` key in the state file's steps/last used to 500
+            # Starlette's UTF-8 encode of GET /api/ups — and _save_state's own
+            # encode failed the same way, so every _mutate silently stopped
+            # persisting while the poisoned key sat there.
+            k = k.encode("utf-8", "replace").decode("utf-8")
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -459,6 +473,32 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     return steps
 
 
+def _cfg_text(value) -> str:
+    """Renderable text for a raw services.yaml scalar, or "" when it has none.
+
+    ``yaml.safe_load`` parses ``id: 0xFFF…`` through ``int(raw, 16)``, which is
+    exempt from CPython's 4300-digit str->int cap, so a hand-edited leftover
+    arrived *already-int* and the bare ``str()`` in ``_catalog`` raised the
+    int->str digit-cap ValueError — 500ing GET /api/ups/shutdown/plan and
+    POST /api/ups/shutdown/drill, i.e. the whole UPS settings form.  An
+    unrenderable scalar reads as "no value" (the backups pg_targets rule);
+    a sane numeric id keeps its old ``str()`` coercion.
+    """
+    if isinstance(value, bool) or value is None:
+        return ""
+    if isinstance(value, int):
+        try:
+            return str(value)
+        except ValueError:
+            return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return str(value)
+    except Exception:
+        return ""
+
+
 def _catalog() -> dict:
     """Everything the policy *could* act on, for the settings pickers.
 
@@ -477,14 +517,20 @@ def _catalog() -> dict:
     if not isinstance(raw_scripts, list):
         raw_scripts = []
     for s in raw_scripts:
-        if isinstance(s, dict) and s.get("id"):
-            scripts.append({
-                "id": str(s["id"]),
-                "name": str(s.get("name") or s["id"]),
-                # Without a stop command run_action degrades to a no-op stop,
-                # so the form marks these rather than hiding them.
-                "has_stop": bool(s.get("stop")),
-            })
+        if not isinstance(s, dict):
+            continue
+        sid = _cfg_text(s.get("id"))
+        if not sid:
+            # No renderable id: the entry cannot be selected or acted on, so
+            # it drops alone rather than 500ing the whole picker catalog.
+            continue
+        scripts.append({
+            "id": sid,
+            "name": _cfg_text(s.get("name")) or sid,
+            # Without a stop command run_action degrades to a no-op stop,
+            # so the form marks these rather than hiding them.
+            "has_stop": bool(s.get("stop")),
+        })
     return {
         "stacks": [
             {"id": str(s.get("id")), "name": str(s.get("name") or s.get("id")),
@@ -584,7 +630,13 @@ def _worker_busy(st: dict) -> bool:
     if _worker_active.is_set():
         return True
     owner = st.get("worker_owner")
-    if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int):
+    if not isinstance(owner, dict):
+        return False
+    pid = owner.get("pid")
+    # bool passes isinstance(int); a leftover ``pid: true`` used to probe
+    # pid 1 (always alive) and read as busy for up to a day.  Zero/negative
+    # pids probe this process / a whole process group, never a real owner.
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return False
     # A claim older than a day is treated as stale even if the pid now happens
     # to be alive (pid reuse across a reboot), so it can never wedge forever.
@@ -595,8 +647,15 @@ def _worker_busy(st: dict) -> bool:
     if _now() - claimed > 86400:
         return False
     try:
-        os.kill(owner["pid"], 0)
+        os.kill(pid, 0)
         return True
+    except OverflowError:
+        # A leftover pid past the C long range is no real process.  os.kill
+        # raises OverflowError, not OSError, and it used to escape sweep():
+        # check_once's containment ate it, so the whole UPS policy tick
+        # silently aborted every sweep — never engaging, never restoring —
+        # for as long as the leftover sat in the state file.
+        return False
     except OSError:
         return False
 

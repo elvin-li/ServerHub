@@ -14,17 +14,19 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="2" :span="6" :tile-height="72" />
     <div class="dash-grid" v-else-if="data">
       <div class="tile span-4">
-        <h3>{{ t('gateway.status') }}</h3>
+        <h2>{{ t('gateway.status') }}</h2>
         <div class="row">
-          <span class="led" :class="data.running ? 'on' : 'err'"></span>
+          <!-- aria-hidden: the LED only repeats the Running/Stopped text
+               beside it in colour (same as the VMs and Network inline LEDs). -->
+          <span class="led" :class="data.running ? 'on' : 'err'" aria-hidden="true"></span>
           <strong>{{ data.running ? t('gateway.running') : t('gateway.stopped') }}</strong>
           <span v-if="finiteN(data.pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(data.pid) }}</span>
         </div>
-        <div class="sub" style="margin-top:8px">Label: {{ finiteText(data.label) }}</div>
+        <div class="sub" style="margin-top:8px">{{ t('gateway.label_is', { label: finiteText(data.label) }) }}</div>
         <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(data.conf) }}</div>
       </div>
       <div class="tile span-8">
-        <h3>{{ t('gateway.about') }}</h3>
+        <h2>{{ t('gateway.about') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.55;margin:0">
           {{ t('gateway.about_body') }}
         </p>
@@ -56,7 +58,7 @@
             <td class="mono col-hide-m" style="font-size:11px">{{ (s.upstreams || []).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</td>
           </tr>
           <tr v-if="!(data?.sites || []).length && !loadError">
-            <td colspan="4" style="color:var(--sub)">{{ t('gateway.empty') }}</td>
+            <td colspan="4" class="empty-row">{{ t('gateway.empty') }}</td>
           </tr>
         </tbody>
       </table>

@@ -58,13 +58,17 @@ class TokenShapeTests(unittest.TestCase):
 
 class WriteTokenTests(unittest.TestCase):
     def test_dummy_paste_is_coded_invalid_token(self):
-        with self.assertRaises(HTTPException) as ctx:
-            cloudflared_svc.start_with_token("t" * 40)
+        # start_with_token runs _ensure_dirs before validating; unpatched it
+        # created real ~/Services/cloudflared and ~/.cloudflared on the host.
+        with mock.patch.object(cloudflared_svc, "_ensure_dirs", lambda: None):
+            with self.assertRaises(HTTPException) as ctx:
+                cloudflared_svc.start_with_token("t" * 40)
         self.assertEqual(ctx.exception.detail["code"], "cloudflared.invalid_token")
 
     def test_write_token_rejects_dummy(self):
-        with self.assertRaises(HTTPException) as ctx:
-            cloudflared_svc._write_token("t" * 40)
+        with mock.patch.object(cloudflared_svc, "_ensure_dirs", lambda: None):
+            with self.assertRaises(HTTPException) as ctx:
+                cloudflared_svc._write_token("t" * 40)
         self.assertEqual(ctx.exception.detail["code"], "cloudflared.invalid_token")
 
     def test_write_launchagent_rejects_saved_dummy(self):
