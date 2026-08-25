@@ -2039,6 +2039,7 @@ export default {
     remove_note: '移出只改面板配置，盘上文件原地不动，盘仍然挂载可浏览。',
     empty_members: '还没有成员盘，从下方选盘加入。',
     empty_candidates: '没有可加入的盘。系统盘和虚拟文件系统不可加入。',
+    all_in_pool: '所有可加入的盘都已在池中。',
     fault_title: '单盘故障影响范围',
     fault_body: '这张表是整个设计的重点。换成 RAID0 或 APFS 卷组，每一行都会变成「全部数据丢失」。',
     fault_caption: '每块成员盘失效时的数据影响',
@@ -2946,6 +2947,7 @@ export default {
       stripe_not_growable: '条带组无法增加成员',
       member_not_found: '此组中没有 id 为 {uuid} 的成员',
       last_redundant_member: '移除该成员会使镜像失去冗余保护',
+      diskutil_missing: '此主机上缺少 diskutil',
     },
     smart: {
       bad_device: '未知的磁盘设备',

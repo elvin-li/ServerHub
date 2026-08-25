@@ -2037,6 +2037,7 @@ export default {
     remove_note: '外すのはパネルの設定のみです。ファイルはそのままの場所に残り、ディスクもマウントされたまま閲覧できます。',
     empty_members: 'メンバーディスクがありません。下の一覧から追加してください。',
     empty_candidates: '対象ディスクがありません。システムボリュームと仮想ファイルシステムは参加できません。',
+    all_in_pool: '対象ディスクはすべてプールに参加済みです。',
     fault_title: 'ディスク 1 台故障時の影響',
     fault_body: 'この表がこの設計の要点です。RAID0 や APFS ボリュームグループなら、すべての行が「全データ喪失」になります。',
     fault_caption: '各メンバーが故障したときのデータへの影響',
@@ -2944,6 +2945,7 @@ export default {
       stripe_not_growable: 'ストライプセットにメンバーを追加できません',
       member_not_found: 'このセットに id が {uuid} のメンバーはありません',
       last_redundant_member: 'このメンバーを外すとミラーの冗長性が失われます',
+      diskutil_missing: 'このホストに diskutil がありません',
     },
     smart: {
       bad_device: '不明なディスクデバイスです',

@@ -157,7 +157,10 @@ def _raid_call(fn, request: Request, action: str, **kwargs):
         ok=bool(result.get("ok")),
         **{k: v for k, v in kwargs.items() if k != "confirm_phrase"},
     )
-    return raise_for_admin_result(result)
+    # A diskutil confirmed vanished by a fresh disk probe answers the coded
+    # 503, not the generic 500 "the privileged macOS operation failed" that
+    # sends the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {"diskutil_missing": "raid.diskutil_missing"})
 
 
 @router.post("/api/raid/sets")

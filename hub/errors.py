@@ -190,6 +190,10 @@ CODES: dict[str, tuple[int, str]] = {
     "raid.stripe_not_growable": (400, "a stripe set cannot gain members"),
     "raid.member_not_found": (404, "no member with id {uuid} in this set"),
     "raid.last_redundant_member": (400, "removing this member would leave the mirror unprotected"),
+    # Confirmed-vanished diskutil (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (smart.smartctl_missing,
+    # backup.tool_missing, files.fb_missing, photoshub.ctl_missing).
+    "raid.diskutil_missing": (503, "diskutil is missing on this host"),
     # ── APFS snapshots / Time Machine ───────────────────────────────────────
     "snapshot.bad_token": (400, "invalid snapshot date"),
     "snapshot.confirm_required": (400, "deleting a restore point requires confirm=true"),

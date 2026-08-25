@@ -101,11 +101,25 @@ def _text(raw) -> str:
     ``list_volumes`` leftover ``mount: inf`` / ``disk_id: bytes`` used to 500
     GET /api/storage/pool under Starlette's ``allow_nan=False`` encoder.
     A leftover ``\\ud800`` YAML name / mount still 500'd the UTF-8 encode.
+
+    Ints coerce via the str() probe, not an ``isinstance(str)`` gate:
+    services.yaml is hand-editable, so ``name: 2026`` arrives *already-int*
+    and used to silently read as the default "pool", and a numeric member
+    vanished from the view entirely — not even listed as missing.  Only an
+    over-cap leftover (YAML hex/octal loads uncapped; its str() is the same
+    digit-cap ValueError json.dumps would raise) still reads as "".
     """
     if isinstance(raw, (list, tuple)):
         raw = raw[0] if raw else ""
     if isinstance(raw, (bytes, bytearray)):
         raw = bytes(raw).decode("utf-8", "replace")
+    elif isinstance(raw, bool):
+        return ""
+    elif isinstance(raw, int):
+        try:
+            return str(raw)
+        except ValueError:
+            return ""
     elif isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
         return ""
     elif raw in (None, False, True, "") or isinstance(raw, (dict, set, frozenset)):
