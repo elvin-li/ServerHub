@@ -3116,6 +3116,7 @@ export default {
       order_required: '需要完整的服务顺序列表',
       unknown_service: '未知服务: {service}',
       services_unreadable: '无法读取网络服务',
+      networksetup_missing: '此主机上缺少 networksetup 工具',
       bad_profile: 'profile 可选: wifi | ethernet | wifi_only | ethernet_only',
       invalid_device: '非法网卡名: {device}',
       device_not_found: '网卡不存在: {device}',
