@@ -61,7 +61,10 @@
                 {{ t('maintenance.empty_hint') }}
                 <span class="mono">services.yaml → maintenance:</span>
               </template>
-              <template v-else>{{ t('common.none') }}</template>
+              <!-- Tasks exist but the filter hid them all: say the filter
+                   missed (the Brew/Health/Services common.no_match split),
+                   not a bare "None" that reads as configured-empty. -->
+              <template v-else>{{ t('common.no_match') }}</template>
             </td>
           </tr>
         </tbody>
