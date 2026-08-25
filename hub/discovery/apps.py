@@ -75,7 +75,14 @@ def collect_apps(engine_up):
         # would be read by pgrep as a flag rather than as a pattern.  A missing
         # key used to raise KeyError here and take the whole status response with
         # it, so an unnamed entry is now skipped instead.
-        process = str(a.get("process") or "").strip()
+        try:
+            process = str(a.get("process") or "").strip()
+        except ValueError:
+            # A hand-edited hex leftover (``process: 0xfff…`` loads uncapped
+            # through YAML) raised the int->str digit-cap ValueError here and
+            # killed the whole collector — every app row silently vanished
+            # from /api/status.  Drop only the poisoned entry.
+            continue
         if not process or not cli_args.is_safe_positional(process):
             continue
         plans.append({"kind": "app", "app": a, "id": sid, "process": process})

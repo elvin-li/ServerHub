@@ -341,7 +341,13 @@ def parse_signature(raw) -> dict | None:
     """Normalise one operator-defined signature, or None if it is unusable."""
     if not isinstance(raw, dict):
         return None
-    slug = re.sub(r"[^a-z0-9]+", "-", str(raw.get("slug") or "").lower()).strip("-")
+    # _utf8_text (a str() probe), not bare str(): a hand-edited hex slug
+    # (``slug: 0xfff…`` loads uncapped through YAML) raised the int->str
+    # digit-cap ValueError here, which 500'd GET/PUT/DELETE
+    # /api/services/signatures and silently wiped every discovery row that
+    # reads configured_signatures().  A numeric YAML slug (``slug: 123``)
+    # still coerces; the over-cap leftover drops only its own row.
+    slug = re.sub(r"[^a-z0-9]+", "-", _utf8_text(raw.get("slug") or "").lower()).strip("-")
     if not slug:
         return None
     raw_procs = raw.get("procs")
@@ -371,7 +377,9 @@ def parse_signature(raw) -> dict | None:
     http = raw.get("http")
     if http not in (True, False, None):
         http = None
-    brew = str(raw.get("brew") or "").strip()
+    # Same str() probe: an over-cap ``brew:`` leftover drops the field, not
+    # the row (and never the whole signatures listing).
+    brew = _utf8_text(raw.get("brew") or "").strip()
     if brew and not cli_args.is_safe_positional(brew):
         brew = ""
     return {
