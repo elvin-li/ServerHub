@@ -214,20 +214,50 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _task_id(raw) -> str:
+    """Configured task identity as text; ``""`` drops the entry.
+
+    YAML hex/octal (``id: 0x2A5F``) loads *already-int* — uncapped, because
+    ``int(x, 16)`` is exempt from CPython's 4300-digit conversion limit —
+    and the strict ``isinstance(str)`` gate silently hid the whole task
+    from GET /api/maintenance (the logs_svc._config_text rule).  A
+    renderable int coerces through the ``str()`` probe; an over-cap
+    leftover — whose ``str()`` raises the same digit-cap ValueError
+    ``json.dumps`` would — drops only its entry.  bool passes
+    ``isinstance(int)`` and must not become ``"True"``.
+
+    The result is surrogate-scrubbed *before* it becomes the mapping key:
+    ``_jsonable`` already scrubbed the row's ``id`` value, so a leftover
+    ``\\ud800`` id was listed with the scrubbed ``?`` form while the key kept the
+    raw surrogate — POST /api/maintenance/{tid}/run could never match the
+    id the list showed, and the mapping itself was not UTF-8 encodable.
+    """
+    if isinstance(raw, str):
+        return _utf8_text(raw).strip()
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
+
+
 def maintenance_tasks():
     out = {}
     raw = cfg().get("maintenance")
     for t in raw if isinstance(raw, list) else []:
         if not isinstance(t, dict):
             continue
-        tid = t.get("id")
-        if not isinstance(tid, str) or not tid.strip():
+        tid = _task_id(t.get("id"))
+        if not tid:
             continue
         row = dict(t)
-        row["id"] = tid.strip()
+        row["id"] = tid
         cleaned = _jsonable(row)
         if isinstance(cleaned, dict):
-            out[row["id"]] = cleaned
+            # tid is already scrubbed, so this key equals cleaned["id"] —
+            # the id the list serves is the id the run/log routes can find.
+            out[tid] = cleaned
     return out
 
 

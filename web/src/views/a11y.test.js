@@ -407,6 +407,15 @@ describe('services and scheduler surface leftovers', () => {
     expect(maintenance).toMatch(/<LoadFailure v-if="loadError"[^>]*:retry="refresh"/)
     expect(maintenance).toMatch(/v-if="!filtered\.length && !loadError"/)
   })
+
+  it('announces the Maintenance job log — and its finish line — as a live region', () => {
+    // pollLog appends maintenance.log_end (with the exit code) inside the
+    // modal pre when the job stops running; without a live region the finish
+    // was silent for a screen reader. Same role=log aria-live=polite pair the
+    // Compose/Apps/Containers job logs already carry.
+    const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
+    expect(maintenance).toMatch(/<pre role="log" aria-live="polite">\{\{ finiteText\(logText\) \}\}<\/pre>/)
+  })
 })
 
 describe('dashboard and storage surface leftovers', () => {

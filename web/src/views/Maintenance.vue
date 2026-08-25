@@ -74,7 +74,11 @@
           <span id="maint-log-title" class="name">📋 {{ finiteText(logTitle) }}</span>
           <button class="tiny" @click="closeLog">{{ t('common.close') }}</button>
         </div>
-        <pre>{{ finiteText(logText) }}</pre>
+        <!-- role=log + polite live region: the poll appends the finish line
+             (maintenance.log_end with the exit code) inside this pre, and a
+             screen reader heard nothing when the job ended. Same convention
+             as the Compose/Apps/Containers job logs. -->
+        <pre role="log" aria-live="polite">{{ finiteText(logText) }}</pre>
       </div>
     </div>
   </div>
