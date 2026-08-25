@@ -256,7 +256,15 @@ def get_ups_info() -> dict:
         if "internalbattery" in low.replace(" ", "") or "internalbattery" in low:
             m = re.search(r"(\d+)%", line)
             if m:
-                percent = int(m.group(1))
+                try:
+                    # Clamped like ups_svc: ``(\d+)`` bounds the charset, not
+                    # the length, and ``int()`` of a >4300-digit pmset percent
+                    # is ValueError (CPython's str->int cap).  It used to null
+                    # the whole UPS leg of GET /api/settings/power through
+                    # get_power_info's fan-out.
+                    percent = max(0, min(100, int(m.group(1))))
+                except ValueError:
+                    percent = None
             charging = "charging" in low and "not charging" not in low
             present = "present: true" in low
     return {

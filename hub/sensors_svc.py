@@ -339,12 +339,19 @@ def _cpu_and_mem_from_top() -> dict:
         if "processes:" in line.lower() and "total" in line.lower():
             # Processes: 512 total, 8 running, 504 sleeping...
             data["processes_raw"] = line.strip()
+            # _sysctl_int, not bare int(): a >4300-digit top process count is
+            # ValueError (CPython's str->int cap) and used to drop the whole
+            # top leg — PhysMem, load, CPU fallback — from GET
+            # /api/system/sensors through _collect_sensors_uncached's pool,
+            # the same way the guarded pmset thermal level below once did.
             m = re.search(r"(\d+)\s+total", line)
-            if m:
-                data["proc_total"] = int(m.group(1))
+            n = _sysctl_int(m.group(1)) if m else None
+            if n is not None:
+                data["proc_total"] = n
             m = re.search(r"(\d+)\s+running", line)
-            if m:
-                data["proc_running"] = int(m.group(1))
+            n = _sysctl_int(m.group(1)) if m else None
+            if n is not None:
+                data["proc_running"] = n
     return data
 
 
