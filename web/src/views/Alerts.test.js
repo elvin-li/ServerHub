@@ -138,6 +138,37 @@ describe('Alerts page', () => {
     w.unmount()
   })
 
+  it('announces the filtered result count next to the level tabs', async () => {
+    // Same contract as the text filters (filterCounts.test.js): the tabs
+    // shrink the table, and "shown / total" through role="status" is the only
+    // feedback a screen-reader user gets.
+    api.getAlerts.mockResolvedValue({
+      alerts: [
+        { t: 1, name: 'svc-a', level: 'down', event: 'problem', kind: 'service' },
+        { t: 2, name: 'svc-b', level: 'warn', event: 'problem', kind: 'service' },
+        { t: 3, name: 'svc-c', level: 'ok', event: 'resolved', kind: 'service' },
+      ],
+    })
+    const w = mount(Alerts, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { LoadFailure: true, SkeletonLoader: true, RouterLink: true },
+      },
+    })
+    await flushPromises()
+
+    const count = w.find('.tabs .meta-count[role="status"]')
+    expect(count.exists(), 'live result count').toBe(true)
+    expect(count.text()).toBe('3 / 3')
+
+    const tab = (label) => w.findAll('.tabs button').find((b) => b.text() === label)
+    await tab('alerts.only_issues').trigger('click')
+    expect(count.text()).toBe('2 / 3')
+    await tab('alerts.only_down').trigger('click')
+    expect(count.text()).toBe('1 / 3')
+    w.unmount()
+  })
+
   it('says a filter came up empty instead of rendering a bare table', async () => {
     api.getAlerts.mockResolvedValue({
       alerts: [{ t: 3, name: 'svc-c', level: 'ok', event: 'resolved', kind: 'service' }],

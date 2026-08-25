@@ -525,7 +525,10 @@
               <td class="col-hide-m">{{ fmtGb(v.used_gb) }}</td>
               <td class="col-hide-m">{{ fmtGb(v.avail_gb) }}</td>
               <td style="min-width:100px">
-                <strong :style="{ color: v.pct >= 90 ? 'var(--down)' : (v.pct >= 75 ? 'var(--warn)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
+                <!-- -text tints, not the raw hues: --down / --warn are fill
+                     colours and measure 2.0-4.1:1 as ink on most cards
+                     (contrast.test.js pins the binding shape too). -->
+                <strong :style="{ color: v.pct >= 90 ? 'var(--down-text)' : (v.pct >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
                 <div class="pct-bar" :class="barClass(v.pct)" style="margin-top:3px">
                   <i :style="{ width: barPct(v.pct) + '%' }"></i>
                 </div>

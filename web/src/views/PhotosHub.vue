@@ -336,11 +336,14 @@ const tab = ref(initialTab())
 
 const ready = computed(() => Boolean(data.value?.photoshub_ok))
 const originalsLabel = computed(() => withUnit(data.value?.originals?.local_original_pct, '%'))
+// The -text tints, not the raw hues: this value lands as *ink* on the tile,
+// and --ok / --warn / --down are fill colours that fail AA as text
+// (contrast.test.js pins this computed's return values).
 const originalsColor = computed(() => {
   const p = finiteN(data.value?.originals?.local_original_pct, 0)
-  if (p >= 99) return 'var(--ok)'
-  if (p >= 50) return 'var(--warn)'
-  return 'var(--down)'
+  if (p >= 99) return 'var(--ok-text)'
+  if (p >= 50) return 'var(--warn-text)'
+  return 'var(--down-text)'
 })
 const allSelected = computed(() => {
   const assets = pending.value?.assets || []

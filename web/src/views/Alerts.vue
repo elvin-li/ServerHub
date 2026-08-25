@@ -26,6 +26,12 @@
       <button :class="{ active: filter==='issues' }" :aria-pressed="filter === 'issues'" @click="filter='issues'">{{ t('alerts.only_issues') }}</button>
       <button :class="{ active: filter==='down' }" :aria-pressed="filter === 'down'" @click="filter='down'">{{ t('alerts.only_down') }}</button>
       <button :class="{ active: filter==='warn' }" :aria-pressed="filter === 'warn'" @click="filter='warn'">{{ t('alerts.only_warn') }}</button>
+      <!-- The tabs shrink the table below; announce the result like the text
+           filters do (filterCounts.test.js) — a sighted user watches rows
+           disappear, a screen-reader user otherwise hears nothing at all. -->
+      <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
+        {{ filtered.length }} / {{ alerts.length }}
+      </span>
     </div>
     <div class="table-wrap">
       <table class="dense fit-m">
