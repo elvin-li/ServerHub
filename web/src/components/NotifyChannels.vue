@@ -3,8 +3,11 @@
     <h2 class="section-title" style="margin-top:0">{{ t('notifych.title') }}</h2>
     <p class="hint" style="margin-top:0">{{ t('notifych.hint') }}</p>
 
+    <!-- The error banner sits *above* the last known rows instead of
+         replacing them: a failed refresh must not blank a list the operator
+         was just reading (same rule as the bookmarks card). -->
     <div v-if="loadError" class="sub" style="color:var(--down-text)" role="alert">{{ finiteText(loadError) }}</div>
-    <div class="table-wrap" v-else-if="channels.length">
+    <div class="table-wrap" v-if="channels.length">
     <table class="dense fit-m">
       <thead>
         <tr>
@@ -41,8 +44,10 @@
       </tbody>
     </table>
     </div>
-    <div v-else-if="loaded" class="sub">{{ t('notifych.empty') }}</div>
-    <div v-else class="sub">{{ t('common.loading') }}</div>
+    <!-- Empty only when a load actually succeeded: an error with no rows is
+         the error state, not "no channels configured". -->
+    <div v-else-if="loaded && !loadError" class="sub">{{ t('notifych.empty') }}</div>
+    <div v-else-if="!loaded" class="sub" aria-live="polite">{{ t('common.loading') }}</div>
 
     <div class="btns" style="margin-top:10px" v-if="!editing">
       <button class="primary" :disabled="!loaded" @click="startAdd">{{ t('notifych.add') }}</button>
