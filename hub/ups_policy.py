@@ -183,12 +183,20 @@ def _jsonable(value, depth: int = 0):
     A leftover ``engaged_at: 1e400`` in the state file used to 500 GET /api/ups.
     ``json.dumps`` without ``allow_nan=False`` used to rewrite Infinity back
     onto disk from ``_save_state``.
+    A >4300-digit leftover int still passed through untouched: CPython's
+    int->str digit limit then ValueError'd ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):

@@ -16,6 +16,12 @@ Follow-up: leftover ``!!timestamp .inf`` / ``2026-13-01`` / a 5000-digit int
 / ``!!bool 2`` raise TypeError/ValueError/AttributeError/KeyError — not
 YAMLError — and used to 500 cfg(). ``Path.read_bytes()`` of leftover
 multi-MB services.yaml used to OOM PUT /api/settings during the backup copy.
+
+Follow-up: a >4300-digit leftover *int* (already parsed, so no str->int guard
+fires) rode through every Settings-domain sanitizer unchanged and
+ValueError'd ``json.dumps`` itself (CPython's int->str digit cap) — a 500 on
+GET /api/settings, /api/settings/system, /api/diagnostics, /api/modules,
+/api/ups and /api/docker/info after the handler had already succeeded.
 """
 from __future__ import annotations
 
@@ -650,6 +656,205 @@ class DiagnosticsBundleDumpLeftoverTests(unittest.TestCase):
 
         self.assertEqual(system_settings_svc._utf8_text(Recursing()), "Recursing")
         _starlette({"k": system_settings_svc._utf8_text(Recursing())})
+
+
+#: Over CPython's default 4300-digit int->str cap: ``str()`` / ``json.dumps``
+#: of this raise ValueError.  Built by arithmetic, so no str->int guard fires.
+HUGE_INT = 10 ** 5000
+
+
+class SettingsDomainDigitCapLeftoverTests(unittest.TestCase):
+    """A >4300-digit leftover int used to 500 the whole Settings domain."""
+
+    def _pub(self, data: dict) -> dict:
+        with (
+            mock.patch.object(settings_api, "cfg", return_value=data),
+            mock.patch.object(settings_api, "host_ip", return_value="10.0.0.1"),
+            mock.patch.object(settings_api, "configured_host", return_value="auto"),
+            mock.patch.object(settings_api, "auth_enabled", return_value=True),
+        ):
+            return settings_api.get_settings()
+
+    def test_settings_jsonable_drops_over_cap_int(self):
+        self.assertIsNone(settings_api._jsonable(HUGE_INT))
+        _json(settings_api._jsonable({"port": HUGE_INT, "name": "ok"}))
+        _json(settings_api._jsonable([HUGE_INT, 1]))
+        # An over-cap key cannot be rendered either; the entry is dropped.
+        _json(settings_api._jsonable({HUGE_INT: "x", "keep": 1}))
+
+    def test_settings_finite_and_epoch_fall_back(self):
+        self.assertEqual(settings_api._finite(HUGE_INT, 90), 90)
+        self.assertEqual(settings_api._finite(45, 90), 45)
+        self.assertEqual(settings_api._epoch(HUGE_INT, 0), 0)
+        self.assertEqual(settings_api._epoch(1724500000, 0), 1724500000)
+
+    def test_public_settings_over_cap_ints_do_not_500(self):
+        pub = self._pub({
+            "settings": {
+                "metrics_interval": HUGE_INT,
+                "alert_interval": HUGE_INT,
+                "thresholds": {"cpu_pct": HUGE_INT},
+                "ip_aliases": {"interval": HUGE_INT},
+            },
+            "stacks": [{"id": "s", "name": "ok", "port": HUGE_INT}],
+            "groups_order": ["Core", HUGE_INT],
+        })
+        _json(pub)
+        _starlette(pub)
+        self.assertEqual(pub["metrics_interval"], 90)
+        self.assertEqual(pub["alert_interval"], 90)
+        self.assertEqual(pub["thresholds"]["cpu_pct"], 90)
+        self.assertIsNone(pub["ip_aliases"]["interval"])
+        self.assertIsNone(pub["stacks"][0]["port"])
+        self.assertIn("Core", pub["groups_order"])
+        self.assertNotIn(HUGE_INT, pub["groups_order"])
+
+    def test_system_settings_sanitizers_drop_over_cap_int(self):
+        self.assertEqual(system_settings_svc._finite_number(HUGE_INT, 60), 60)
+        self.assertIsNone(system_settings_svc._json_atom(HUGE_INT))
+        cleaned = system_settings_svc._json_tree({"n": HUGE_INT, "ok": 1})
+        _json(cleaned)
+        self.assertIsNone(cleaned["n"])
+        self.assertEqual(cleaned["ok"], 1)
+        # An over-cap key is dropped with its entry.
+        _json(system_settings_svc._json_tree({HUGE_INT: True, "keep": 1}))
+
+    def test_scheduler_over_cap_interval_does_not_500(self):
+        with mock.patch(
+            "hub.tools_svc.launchd_timers",
+            return_value=[{"label": "com.job", "interval": HUGE_INT,
+                           "calendar": None, "path": "/tmp/p.plist"}],
+        ):
+            data = system_settings_svc.get_scheduler_summary()
+        _json(data)
+        self.assertIsNone(data["timers"][0]["interval"])
+
+    def test_disk_over_cap_numbers_do_not_500(self):
+        with mock.patch.object(
+            system_settings_svc, "fan_out",
+            return_value=[
+                {"disksleep": HUGE_INT},
+                ({}, []),
+                [{"id": "disk0", "name": "disk0",
+                  "power_state": "active", "size_gb": HUGE_INT}],
+            ],
+        ):
+            data = system_settings_svc.get_disk_settings()
+        _json(data)
+        self.assertIsNone(data["disksleep_minutes"])
+        self.assertIsNone(data["power_disks"][0]["size_gb"])
+
+    def test_other_settings_over_cap_intervals_do_not_500(self):
+        with (
+            mock.patch.object(system_settings_svc, "cfg", return_value={
+                "settings": {"metrics_interval": HUGE_INT,
+                             "alert_interval": HUGE_INT},
+            }),
+            mock.patch.object(
+                system_settings_svc, "settings_section",
+                return_value={"interval": HUGE_INT, "cpu_pct": HUGE_INT},
+            ),
+        ):
+            data = system_settings_svc.get_other_settings()
+        _json(data)
+        self.assertEqual(data["metrics_interval"], 90)
+        self.assertEqual(data["alert_interval"], 90)
+        self.assertEqual(data["ip_aliases"]["interval"], 60)
+        self.assertEqual(data["thresholds"]["cpu_pct"], 90)
+
+    def test_persist_diagnostics_drops_over_cap_int(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(system_settings_svc, "DATA_DIR", Path(tmp.name)):
+            path, err = system_settings_svc._persist_diagnostics({
+                "n": HUGE_INT, "ok": True,
+            })
+        self.assertIsNone(err)
+        raw = json.loads(Path(path).read_text())
+        _json(raw)
+        self.assertIsNone(raw["n"])
+        self.assertIs(raw["ok"], True)
+
+
+class UpsDockerModulesDigitCapLeftoverTests(unittest.TestCase):
+    """Same leftover int on GET /api/ups, /api/docker/info and /api/modules."""
+
+    def test_ups_jsonable_drops_over_cap_int(self):
+        from hub import ups_svc
+
+        self.assertIsNone(ups_svc._jsonable(HUGE_INT))
+        _json(ups_svc._jsonable({"battery_percent": HUGE_INT, "name": "APC"}))
+
+    def test_ups_settings_over_cap_ints_fall_back(self):
+        from hub import ups_svc
+
+        with mock.patch.object(ups_svc, "cfg", return_value={
+            "settings": {"ups": {
+                "low_battery_pct": HUGE_INT,
+                "shutdown": {
+                    "trigger_pct": HUGE_INT,
+                    "trigger_remaining_min": HUGE_INT,
+                    "stop_scripts": [HUGE_INT, "backup-flush"],
+                },
+            }},
+        }):
+            out = ups_svc.ups_settings()
+        _json(out)
+        self.assertEqual(out["low_battery_pct"], 20)
+        self.assertIsNone(out["shutdown"]["trigger_pct"])
+        self.assertIsNone(out["shutdown"]["trigger_remaining_min"])
+        self.assertIn("backup-flush", out["shutdown"]["stop_scripts"])
+
+    def test_ups_status_over_cap_halt_level_does_not_500(self):
+        from hub import ups_svc
+
+        with (
+            mock.patch.object(ups_svc, "ups_snapshot", return_value={
+                "present": True, "kind": "ups", "name": "APC",
+                "halt_levels": {"haltlevel": HUGE_INT},
+            }),
+            mock.patch.object(ups_svc, "ups_settings", return_value={
+                "alerts_enabled": True, "low_battery_pct": 20,
+            }),
+        ):
+            body = ups_svc.ups_status()
+        _json(body)
+        self.assertIsNone(body["halt_levels"]["haltlevel"])
+        self.assertEqual(body["name"], "APC")
+
+    def test_ups_policy_state_over_cap_int_does_not_500(self):
+        from hub import ups_policy
+
+        cleaned = ups_policy._jsonable({"engaged_at": HUGE_INT, "reason": "pct"})
+        _json(cleaned)
+        self.assertIsNone(cleaned["engaged_at"])
+        self.assertEqual(cleaned["reason"], "pct")
+
+    def test_docker_jsonable_drops_over_cap_int(self):
+        from hub.docker_cli import _jsonable as docker_jsonable
+
+        cleaned = docker_jsonable({"NCPU": HUGE_INT, "MemTotal": 8})
+        _json(cleaned)
+        self.assertIsNone(cleaned["NCPU"])
+        self.assertEqual(cleaned["MemTotal"], 8)
+
+    def test_module_row_over_cap_ints_do_not_500(self):
+        saved = list(modules.MODULES)
+        self.addCleanup(lambda: modules.MODULES.__setitem__(slice(None), saved))
+        modules.MODULES.append({
+            "id": "plugin",
+            "name": HUGE_INT,
+            "description": "ops",
+            "category": "ops",
+            "apis": ["/api/x"],
+            "ui_routes": ["/x"],
+            "priority": HUGE_INT,
+        })
+        rows = modules.list_modules()
+        _json({"modules": rows, "by_category": modules.modules_by_category()})
+        row = next(r for r in rows if r.get("id") == "plugin")
+        self.assertIsNone(row["name"])
+        self.assertIsNone(row["priority"])
 
 
 class MaintenanceEnvLeftoverTests(unittest.TestCase):
