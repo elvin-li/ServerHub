@@ -60,12 +60,24 @@ def _as_text(value) -> str:
 
 
 def _jsonable(value, depth: int = 0):
-    """Drop leftover inf/bytes/``\\ud800`` so Starlette cannot 500 GET /api/health/checks."""
+    """Drop leftover inf/bytes/``\\ud800`` so Starlette cannot 500 GET /api/health/checks.
+
+    A >4300-digit int (a poisoned cache snapshot, a junk row from the Immich/
+    Ollama check modules whose dicts bypass ``_check``) still passed through
+    untouched: CPython's int->str digit limit then ValueError'd ``json.dumps``
+    itself.
+    """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
