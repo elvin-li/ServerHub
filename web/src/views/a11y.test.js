@@ -491,6 +491,16 @@ describe('backup and workload surface leftovers', () => {
     expect(plain.length, 'only the detail drawer keeps the plain label').toBe(1)
   })
 
+  it('announces the Apps managed and autostart count breakdowns', () => {
+    // Both breakdowns are the only answer Refresh (and Run now) gives, and
+    // they changed silently for a screen reader while the two sibling
+    // .meta-count filter spans on the same page already carried role=status.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).toMatch(/class="meta-count" role="status" v-if="managed\.counts"/)
+    expect(apps).toMatch(/class="meta-count" role="status" v-if="autostart\.counts"/)
+    expect(apps).not.toMatch(/class="meta-count" v-if=/)
+  })
+
   it('names each Apps docker restart-policy select after its container', () => {
     // Same column-of-identical-controls gap as the autostart switches: every
     // row's select was announced as "Restart policy".
