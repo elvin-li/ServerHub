@@ -172,6 +172,33 @@ def valid_channel_id(cid) -> bool:
     return isinstance(cid, str) and bool(_ID_RE.fullmatch(cid))
 
 
+def _id_text(raw) -> str:
+    """A channel id coerced to its string form via the str() probe.
+
+    services.yaml is hand-editable, so ``id: 123`` arrives as an *int*.  The
+    strict ``isinstance(id, str)`` comparisons this replaces made such a row
+    visible in GET /api/alerts/channels yet unreachable by PUT/DELETE/test
+    (``123 == "123"`` is False), and save_channel appended a duplicate row
+    instead of replacing it.  YAML hex/octal (``id: 0xFF…``) loads uncapped
+    (``int(x, 16)`` is exempt from CPython's 4300-digit conversion limit), so
+    a bare ``str()`` on it *is* the digit-cap ValueError — that used to 500
+    GET /api/alerts/channels and raise out of dispatch() on the alert thread.
+    Unrenderable ids coerce to "" and the callers drop the row.
+    """
+    if isinstance(raw, str):
+        return raw
+    if raw is None or isinstance(raw, bool):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        # Past the int->str digit cap the id cannot be rendered, matched,
+        # or used as a secrets key — treat the row as having no id at all.
+        return ""
+    except Exception:
+        return ""
+
+
 # ── configuration ─────────────────────────────────────────────────────────────
 
 def _raw_notify_cfg() -> dict:
@@ -187,13 +214,22 @@ def channels(raw: dict | None = None) -> list[dict]:
     if not isinstance(rows, list):
         rows = []
     for ch in rows:
-        if not isinstance(ch, dict) or not ch.get("id"):
+        if not isinstance(ch, dict):
+            continue
+        # str() probe, not an isinstance gate: a numeric YAML ``id: 123``
+        # must behave as "123" everywhere, and a hex over-cap id (whose str()
+        # raises the digit-cap ValueError) must drop the row, not the route.
+        cid = _id_text(ch.get("id"))
+        if not cid:
             continue
         # Membership on a dict hashes the key.  A hand-edit like ``type: [ntfy]``
         # used to TypeError here and 500 GET /api/alerts/channels *and* the
         # alert thread (dispatch claims it never raises).
         ctype = ch.get("type")
         if isinstance(ctype, str) and ctype in CHANNEL_TYPES:
+            if ch.get("id") != cid:
+                # Copy: rows are the live cfg() cache, never mutated in place.
+                ch = {**ch, "id": cid}
             out.append(ch)
     return out
 
@@ -221,7 +257,9 @@ def save_channel(ch: dict) -> dict:
             chans = []
             notify["channels"] = chans
         for i, existing in enumerate(chans):
-            if isinstance(existing, dict) and existing.get("id") == ch["id"]:
+            # _id_text, not ``==``: a numeric YAML ``id: 123`` used to miss
+            # the str "123" here and the upsert appended a duplicate row.
+            if isinstance(existing, dict) and _id_text(existing.get("id")) == ch["id"]:
                 chans[i] = ch
                 return
         chans.append(ch)
@@ -243,7 +281,9 @@ def delete_channel(cid: str) -> bool:
         chans = notify.get("channels")
         if not isinstance(chans, list):
             return
-        kept = [c for c in chans if not (isinstance(c, dict) and c.get("id") == cid)]
+        # _id_text, not ``==``: a numeric YAML ``id: 123`` was listed but
+        # could never be deleted (``123 == "123"`` is False → 404 forever).
+        kept = [c for c in chans if not (isinstance(c, dict) and _id_text(c.get("id")) == cid)]
         if len(kept) != len(chans):
             removed.append(cid)
         notify["channels"] = kept
@@ -329,15 +369,43 @@ def _drop_leftover_nonfile(path) -> None:
         pass
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one poisoned number used to make
+    :func:`_load_secrets` return ``{}``, and the very next write — any channel
+    edit, delete, or secret merge — rewrote notify-credentials.json from that
+    empty snapshot, silently wiping every sibling channel's secrets.  Dropping
+    just the number keeps the file, same as smart_test_svc's history hook.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_secrets() -> dict[str, dict]:
     try:
-        raw = safe_json_loads(read_text_capped(SECRETS_FILE, _SECRETS_CAP, encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
+        raw = safe_json_loads(
+            read_text_capped(SECRETS_FILE, _SECRETS_CAP, encoding="utf-8"),
+            parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); the alert sweep reads this.
         # RecursionError: a leftover deeply-nested document is not ValueError.
         return {}
+    if not isinstance(raw, dict):
+        return {}
+    # Scrub keys (and values) *on load*, before they become lookup keys.
+    # ``json.loads`` happily produces a lone-surrogate KEY from an escaped
+    # ``"\\ud800…"`` in the file; _write_secrets scrubbed only at write time,
+    # so the in-memory maps that set/drop/channel_secrets index — and hand to
+    # the senders on the alert thread — still carried surrogates that no
+    # UTF-8 encode downstream (urllib headers, SMTP login) can survive.
+    cleaned = _json_safe(raw)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _secret_map(data: dict, cid: str) -> dict:
@@ -500,8 +568,11 @@ def _write_secrets(data: dict) -> None:
 def public_channel(ch: dict) -> dict:
     """API-safe view: config fields verbatim, secrets as has_* booleans only."""
     spec = CHANNEL_TYPES.get(str(ch.get("type"))) or {"fields": (), "secrets": ()}
-    stored = channel_secrets(str(ch.get("id") or ""))
-    cid = _json_safe(ch.get("id"))
+    # _id_text, not bare str(): a hex-YAML over-cap id made str() itself raise
+    # the digit-cap ValueError and 500 GET /api/alerts/channels right here.
+    raw_id = _id_text(ch.get("id"))
+    stored = channel_secrets(raw_id)
+    cid = _json_safe(raw_id if raw_id else ch.get("id"))
     name = _json_safe(ch.get("name"))
     if not (isinstance(name, str) and name.strip()):
         name = cid if isinstance(cid, str) and cid else cid
@@ -806,7 +877,7 @@ def _send_via(sender, ch: dict, secrets: dict, title: str, message: str,
     # Leftover YAML ``id: "\ud800"`` / a sender returning inf/bytes/a date
     # used to 500 POST /api/alerts/test under Starlette's UTF-8 encoder.
     return _json_safe({
-        "id": str(ch.get("id") or ""),
+        "id": _id_text(ch.get("id")),
         "type": ch.get("type"),
         "ok": bool(res.get("ok")),
         "message": res.get("message") or res.get("body") or "",
@@ -837,11 +908,15 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
     if legacy:
         targets.append(legacy)
     for ch in channels(raw):
-        targets.append((ch, channel_secrets(str(ch["id"]))))
+        # channels() already coerced ids via the str() probe; _id_text here
+        # keeps the never-raises contract even for a caller that hands
+        # dispatch a raw over-cap hex id (str() alone was the digit-cap
+        # ValueError that killed the alert thread's sweep).
+        targets.append((ch, channel_secrets(_id_text(ch.get("id")))))
 
     wanted: list[tuple] = []
     for ch, secrets in targets:
-        cid = str(ch.get("id") or "")
+        cid = _id_text(ch.get("id"))
         if channel_id is not None:
             if cid != channel_id:
                 continue
@@ -878,14 +953,14 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
                     # timeout/exception path used to skip _json_safe and
                     # 500 POST /api/alerts/test under Starlette's UTF-8 encoder.
                     results.append(_json_safe({
-                        "id": str(ch.get("id") or ""),
+                        "id": _id_text(ch.get("id")),
                         "type": ch.get("type"),
                         "ok": False,
                         "message": _utf8_text(e),
                     }))
             else:
                 results.append(_json_safe({
-                    "id": str(ch.get("id") or ""),
+                    "id": _id_text(ch.get("id")),
                     "type": ch.get("type"),
                     "ok": False,
                     "message": f"timed out ({DISPATCH_BUDGET:.0f}s dispatch budget exhausted)",
