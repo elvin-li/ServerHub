@@ -226,6 +226,32 @@ def _as_text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def settings_text(value) -> str:
+    """A hand-edited settings scalar as sanitized text.
+
+    ``_as_text`` gates on ``isinstance(str)``, which silently dropped numeric
+    YAML values: a hand-edited ``label: 2023`` read back as int, discovery
+    fell through to the plist scan, and Start/Stop targeted a different
+    agent.  A ``str()`` probe keeps the numeric id — guarded, because a YAML
+    hex/octal integer is parsed via ``int(raw, 16)``/``int(raw, 8)`` (exempt
+    from CPython's 4300-digit cap) and an over-cap leftover would otherwise
+    ValueError at ``str()`` time.  bool/inf/NaN and collections stay "".
+    """
+    if isinstance(value, (str, bytes, bytearray)):
+        return _as_text(value)
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+    if not isinstance(value, (int, float)):
+        return ""
+    try:
+        text = str(value)
+    except ValueError:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _settings() -> dict:
     # Read through this module's ``cfg`` so tests can patch it.
     # A leftover list/string settings (same shape that 500'd /api/ups) must
@@ -236,8 +262,13 @@ def _settings() -> dict:
 
 
 def configured_url() -> str:
-    """The operator-edited URL, unvalidated."""
-    return _as_text(_settings().get("url")).strip().rstrip("/") or DEFAULT_URL
+    """The operator-edited URL, unvalidated.
+
+    ``settings_text``, not ``_as_text``: a numeric YAML leftover coerces to
+    text and is then *visibly* rejected by :func:`base_url` (url_rejected
+    warns in the UI) instead of silently reading as unconfigured.
+    """
+    return settings_text(_settings().get("url")).strip().rstrip("/") or DEFAULT_URL
 
 
 def base_url() -> str:
@@ -580,7 +611,10 @@ def discover_label(
     *loaded* / *running* are injectable so the health path can pass empty sets
     instead of triggering a launchctl spawn.
     """
-    configured = _as_text(_settings().get("label")).strip()
+    # settings_text, not _as_text: a hand-edited numeric YAML label
+    # (``label: 2023``) used to be silently ignored here, so discovery fell
+    # through to the plist scan and Start/Stop targeted a different agent.
+    configured = settings_text(_settings().get("label")).strip()
     if configured:
         return configured
     candidates = _candidate_labels()

@@ -326,9 +326,16 @@ def _public_settings() -> dict:
             "host_enabled": bool(_as_map(s.get("terminal")).get("host_enabled", False)),
         },
         "ollama": {
-            "url": (_text(ollama.get("url"), ollama_svc.DEFAULT_URL).rstrip("/")
+            # settings_text, not _text: a hand-edited numeric YAML value
+            # (``label: 2023``) used to read back as int, fail the isinstance
+            # gate, and render as "" — so the settings form showed an empty
+            # label over a configured one and Save then wiped it.  The str()
+            # probe inside is guarded: a YAML hex/octal over-cap integer
+            # (exempt from the digit cap at parse time) answers "" instead of
+            # ValueError'ing this whole endpoint.
+            "url": (ollama_svc.settings_text(ollama.get("url")).strip().rstrip("/")
                     or ollama_svc.DEFAULT_URL),
-            "label": _text(ollama.get("label"), ""),
+            "label": ollama_svc.settings_text(ollama.get("label")).strip(),
         },
         "paths": {"docker": _text(DOCKER), "orb": _text(ORB)},
         "stacks": _json_list(data.get("stacks") or []),
