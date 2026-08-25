@@ -31,7 +31,10 @@
         <div class="host-main">
           <div class="host-name">{{ t('dashboard.member_title') }}</div>
           <div class="host-meta">
-            <span>{{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}</span>
+            <!-- role=status: this count is the poll's (and Refresh's) only
+                 summary of the member's services and changed silently for a
+                 screen reader — the Scheduler/VMs/Users toolbar-count rule. -->
+            <span role="status">{{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}</span>
             <span class="dot">·</span>
             <span>{{ finiteText(status?.ts, '…') }}</span>
           </div>
@@ -71,8 +74,9 @@
     </template>
 
     <!-- Skeleton loading state. Gated on loadError too: without that, a failed
-         first load left this placeholder on screen permanently. -->
-    <template v-else-if="!host && !sensors">
+         first load left this placeholder on screen permanently, presented
+         above the failure banner as if data were still on the way. -->
+    <template v-else-if="!host && !sensors && !loadError">
       <div class="host-strip">
         <div class="host-main">
           <div class="skeleton skeleton-title" style="width:140px"></div>
@@ -578,7 +582,14 @@
           </thead>
           <tbody>
             <tr v-for="c in (containers || []).slice(0, 10)" :key="c.id">
-              <td><span class="led" :class="led(c.state)"></span></td>
+              <!-- The visible Status column is col-hide-m, so on a phone this
+                   LED is the row's only state and colour alone says nothing
+                   to a screen reader: hide the paint, spell the state — same
+                   treatment as the Containers page rows. -->
+              <td>
+                <span class="led" :class="led(c.state)" aria-hidden="true"></span>
+                <span class="sr-only">{{ ledText(c.state) }}</span>
+              </td>
               <td>
                 <strong>{{ finiteText(c.name) }}</strong>
                 <div class="mono" style="color:var(--sub);font-size:10px">{{ shortImage(c.image) }}</div>
@@ -611,9 +622,16 @@
       <div class="tile span-4">
         <h3>
           {{ t('dashboard.attention') }}
-          <span class="badge" :class="attention.length ? 'down' : 'ok'">{{ attention.length }}</span>
-          <span class="sub" style="font-weight:500;text-transform:none;letter-spacing:0">
-            {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
+          <!-- role=status: both counts update silently on every status poll,
+               and together they are the tile's whole summary (how many need
+               attention, out of how many ok) — same rule as the member
+               header count. One region so a poll that moves both reads as
+               one announcement, not two. -->
+          <span role="status">
+            <span class="badge" :class="attention.length ? 'down' : 'ok'">{{ attention.length }}</span>
+            <span class="sub" style="font-weight:500;text-transform:none;letter-spacing:0">
+              {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
+            </span>
           </span>
         </h3>
         <!-- Before status resolves, attention is [] because nothing was read,
