@@ -697,7 +697,15 @@ def _collect_checks() -> dict:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
             if not isinstance(pl, dict):
                 continue
-            label = str(pl.get("Label") or Path(path).stem)
+            # str() probe via _as_text, with the plist filename as the
+            # fallback (the stale_runtime.scan convention): plistlib parses
+            # ``<integer>0x…</integer>`` through int(raw, 16), which CPython's
+            # 4300-digit cap does not bound, so a bare str() over a poisoned
+            # Label ValueError'd into this loop's except and silently dropped
+            # the agent's KeepAlive warning from GET /api/health/checks.
+            label = _as_text(pl.get("Label")) or _as_text(Path(path).stem)
+            if not label:
+                continue
             if _skip_keepalive_watch(pl, label):
                 continue
             if not pl.get("KeepAlive"):
