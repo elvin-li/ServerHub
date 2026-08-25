@@ -141,7 +141,10 @@
       </div>
       <LoadFailure v-if="catalogError" :detail="catalogError" :retry="loadCatalog" :busy="busy" />
       <div v-else-if="!catalogLoaded" class="placeholder">{{ t('common.loading') }}</div>
-      <div v-else-if="!filtered.length" class="placeholder">{{ t('apps.empty') }}</div>
+      <!-- A filter miss on a stocked catalog is not an empty store: the single
+           apps.empty string claimed "no apps" while a search or category filter
+           simply matched nothing. Same split as Services/Tools/Brew. -->
+      <div v-else-if="!filtered.length" class="placeholder">{{ catalog.length ? t('common.no_match') : t('apps.empty') }}</div>
     </template>
 
     <!-- Managed inventory: native + docker + launchd + vm -->
@@ -270,8 +273,10 @@
                 </div>
               </td>
             </tr>
+            <!-- Same split: a kind/search filter that matches nothing must not
+                 claim the host has no managed apps. -->
             <tr v-if="!filteredManaged.length && !managedError">
-              <td colspan="7" class="empty-row">{{ t('apps.managed_empty') }}</td>
+              <td colspan="7" class="empty-row">{{ (managed.items || []).length ? t('common.no_match') : t('apps.managed_empty') }}</td>
             </tr>
           </tbody>
         </table>

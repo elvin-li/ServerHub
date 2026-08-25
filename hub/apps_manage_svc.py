@@ -1604,7 +1604,13 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 return cloudflared_svc.restart()
 
         if pkg and app.get("method") in ("brew_formula", "brew_cask"):
-            from hub.native_catalog import _run, BREW
+            # _raise_if_brew_vanished: these are the same ``brew services``
+            # spawns as autostart_svc.set_brew_autostart and _run_brew, but
+            # this path handed the uncoded ``{ok: false, message: "not
+            # found"}`` sentinel straight back to the SPA when brew vanished
+            # between inventory and the click.  The disk confirmation inside
+            # keeps a raw sentinel from a still-present brew untouched.
+            from hub.native_catalog import _raise_if_brew_vanished, _run, BREW
             if action_name == "start":
                 if app.get("method") == "brew_formula":
                     if source_id == "native-ollama" and native_catalog.ollama_api_already_served():
@@ -1617,12 +1623,16 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                             "ok": True,
                             "message": "Valkey/Redis is already serving :6379; not starting Homebrew Redis",
                         }
-                    return _run([BREW, "services", "start", pkg], timeout=120)
+                    return _raise_if_brew_vanished(
+                        _run([BREW, "services", "start", pkg], timeout=120)
+                    )
                 if app.get("open"):
                     return _run(["/usr/bin/open", "-a", app["open"]], timeout=15)
             if action_name == "stop":
                 if app.get("method") == "brew_formula":
-                    return _run([BREW, "services", "stop", pkg], timeout=120)
+                    return _raise_if_brew_vanished(
+                        _run([BREW, "services", "stop", pkg], timeout=120)
+                    )
                 if app.get("open"):
                     return _run(
                         ["/usr/bin/osascript", "-e", f'quit app "{app["open"]}"'],
@@ -1630,7 +1640,9 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                     )
             if action_name == "restart":
                 if app.get("method") == "brew_formula":
-                    return _run([BREW, "services", "restart", pkg], timeout=120)
+                    return _raise_if_brew_vanished(
+                        _run([BREW, "services", "restart", pkg], timeout=120)
+                    )
             if action_name == "open" and app.get("open"):
                 return _run(["/usr/bin/open", "-a", app["open"]], timeout=15)
         raise api_error("apps.native_action_unsupported", action=action_name)
