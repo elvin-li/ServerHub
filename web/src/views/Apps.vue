@@ -329,6 +329,7 @@
                       class="policy-select"
                       :value="finiteText(it.policy, '') || 'no'"
                       :disabled="busy"
+                      :aria-label="t('docker.restart_policy')"
                       @change="setDockerPolicy(it, $event.target.value)"
                     >
                       <option value="no">no</option>
@@ -657,9 +658,12 @@
           <template v-for="v in installTpl.vars" :key="v.name">
             <label class="form-label">{{ finiteText(v.label, '') || finiteText(v.name) }}</label>
             <div class="form-field">
+<!-- The form-label beside this grid cell is not associated (no for/id), so
+                   the input had no accessible name; mirror the label's text. -->
               <input
                 v-model="installVars[v.name]"
                 :type="v.secret ? 'password' : 'text'"
+                :aria-label="finiteText(v.label, '') || finiteText(v.name)"
                 :placeholder="v.default === '' && v.secret ? t('apps.auto_password') : (v.required === false ? t('apps.optional') : '')"
               />
               <div v-if="finiteText(v.help, '')" class="field-help">{{ finiteText(v.help) }}</div>

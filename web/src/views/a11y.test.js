@@ -152,7 +152,7 @@ describe('control names', () => {
     ).toEqual([])
   })
 
-  it('names every form control on the account, settings and sharing surfaces', () => {
+  it('names every form control on the account, settings, sharing and workload surfaces', () => {
     // The form-grid layout puts a <label> next to its control without for/id,
     // so the label text counts for nothing: the text inputs all carried
     // aria-label while nine checkboxes/selects on Settings (notify, thresholds,
@@ -162,9 +162,15 @@ describe('control names', () => {
     // The sharing surfaces (Shares sheet, Files toolbar/table, PhotosHub
     // settings, WireGuard peer forms + settings dialog) are in the list so a
     // control added to any of their form grids cannot ship nameless.
+    // The workload surfaces followed in the next sweep: the Apps install-modal
+    // variable inputs and autostart policy select, the Containers select-all /
+    // per-row / privileged checkboxes, and the Tools syslog level and range
+    // selects all sat beside unassociated labels (or none at all).
     const FILES = [
       'views/Login.vue', 'views/Account.vue', 'views/Users.vue', 'views/Settings.vue',
       'views/Shares.vue', 'views/Files.vue', 'views/PhotosHub.vue', 'views/WireGuard.vue',
+      'views/Compose.vue', 'views/Apps.vue', 'views/Containers.vue', 'views/Network.vue',
+      'views/Tools.vue',
     ]
     const TAG = /<\/?([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)\/?>/g
     const offenders = []
@@ -268,6 +274,30 @@ describe('sharing surface control names', () => {
       expect(input[0], `${id}: aria-label overrides the richer visible label`)
         .not.toMatch(/aria-label/)
     }
+  })
+
+  it('names the Containers row checkboxes after their container', () => {
+    // Same pattern the Services and Files row checkboxes already follow: a
+    // page of checkboxes all announced as "checkbox" cannot be told apart in
+    // a screen reader's form-controls listing.
+    const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
+    expect(containers).toMatch(
+      /:aria-label="t\('common\.select_row_name',\s*\{\s*name:/,
+    )
+    expect(containers).toMatch(/:aria-label="t\('common\.select_all'\)"/)
+  })
+
+  it('keeps the Compose stack list keyboard-operable without nesting controls', () => {
+    // Loading a stack's YAML into the editor was row-click only — no keyboard
+    // path at all, unlike Apps (Detail button) and Files (name cell). The
+    // button role sits on the name cell, not the <tr>: the row also holds the
+    // Up/Update/Down buttons and a control may not contain other controls
+    // (ARIA nested-interactive).
+    const compose = readFileSync(resolve(SRC, 'views/Compose.vue'), 'utf8')
+    expect(compose).toMatch(
+      /<td[^>]*tabindex="0"[^>]*role="button"[^>]*@keydown\.enter\.prevent="select\(s\)"/,
+    )
+    expect(compose).not.toMatch(/<tr[^>]*role="button"/)
   })
 
   it('names every navigation landmark', () => {

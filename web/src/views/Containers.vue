@@ -77,7 +77,7 @@
           <table class="dense fit-m">
             <thead>
               <tr>
-                <th style="width:28px"><input type="checkbox" :checked="allSelected(grp.items)" @change="toggleAll(grp.items, $event)" /></th>
+                <th style="width:28px"><input type="checkbox" :checked="allSelected(grp.items)" :aria-label="t('common.select_all')" @change="toggleAll(grp.items, $event)" /></th>
                 <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
                 <th>{{ t('docker.app') }}</th>
                 <th class="col-hide-m">{{ t('docker.version_update') }}</th>
@@ -94,7 +94,9 @@
             </thead>
             <tbody>
               <tr v-for="c in grp.items" :key="c.id">
-                <td><input type="checkbox" :value="c.id" v-model="selected" /></td>
+<!-- Named after the container (Files/Services row-checkbox pattern):
+                     anonymous checkboxes cannot be told apart in a form-controls list. -->
+                <td><input type="checkbox" :value="c.id" v-model="selected" :aria-label="t('common.select_row_name', { name: finiteText(c.name, '') || finiteText(c.id) })" /></td>
                 <td><span class="led" :class="ledClass(c)"></span></td>
                 <td style="max-width:260px">
                   <strong>{{ finiteText(c.name) }}</strong>
@@ -383,7 +385,7 @@
           <label>{{ t('docker.command') }}</label>
           <input v-model="runForm.command" type="text" :placeholder="t('docker.optional_ph')"  :aria-label="t('docker.optional_ph')"/>
           <label>{{ t('docker.privileged') }}</label>
-          <input type="checkbox" v-model="runForm.privileged" />
+          <input type="checkbox" v-model="runForm.privileged" :aria-label="t('docker.privileged')" />
         </div>
         <div class="btns" style="margin-top:14px">
           <button class="primary" :disabled="busy || !runForm.image.trim()" @click="doRun">{{ t('docker.create_start') }}</button>

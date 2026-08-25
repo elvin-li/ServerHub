@@ -93,13 +93,13 @@
     <!-- Syslog -->
     <template v-else-if="tab==='syslog'">
       <div class="toolbar">
-        <select v-model="syslogLevel" @change="loadSyslog">
+        <select v-model="syslogLevel" :aria-label="t('tools.syslog_level')" @change="loadSyslog">
           <option value="error">{{ t('tools.syslog_err') }}</option>
           <option value="fault">{{ t('tools.syslog_fault') }}</option>
           <option value="default">{{ t('tools.syslog_default') }}</option>
           <option value="all">{{ t('tools.syslog_all') }}</option>
         </select>
-        <select v-model.number="syslogMinutes" @change="loadSyslog">
+        <select v-model.number="syslogMinutes" :aria-label="t('tools.syslog_range')" @change="loadSyslog">
           <option :value="15">15m</option>
           <option :value="60">1h</option>
           <option :value="360">6h</option>

@@ -1292,6 +1292,8 @@ export default {
     credit_stack: 'Vue 3 + Vite · FastAPI · OrbStack · UTM',
     credit_services: 'Home Assistant · Nginx · Docker',
     lines_n: '{n} lines',
+    syslog_level: 'Log level',
+    syslog_range: 'Time range',
     syslog_err: 'error only',
     syslog_fault: 'error + fault',
     syslog_default: '+ default',
