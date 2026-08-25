@@ -43,12 +43,21 @@ def _jsonable(value, depth: int = 0):
     leftover ``\\ud800`` / inf in the SMART cache still leaked into
     GET /api/status's ``system`` object when the status sanitizer was
     bypassed (and into any direct collect_system caller).
+    A >4300-digit leftover int in the SMART cache still passed through
+    untouched: CPython's int->str digit limit then ValueError'd
+    ``json.dumps`` itself.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):

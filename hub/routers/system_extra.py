@@ -247,8 +247,10 @@ def _host_snapshot() -> dict:
         "lan_ip": ip,
         "interfaces": ifaces,
         "orbstack": orbstack,
-        "docker_cli": DOCKER,
-        "orb_cli": ORB,
+        # shutil.which resolves these at import from a surrogateescape-decoded
+        # PATH; a leftover lone surrogate served raw 500'd the UTF-8 encode.
+        "docker_cli": _as_text(DOCKER),
+        "orb_cli": _as_text(ORB),
     }
 
 

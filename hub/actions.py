@@ -14,7 +14,7 @@ from fastapi import HTTPException
 
 from hub import cli_args
 from hub.config import cfg
-from hub.docker_cli import engine_up, looks_engine_down
+from hub.docker_cli import cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, BREW, DOCKER, ORB, UID, UTMCTL
@@ -333,6 +333,21 @@ def run_action(target, action):
             # raw untranslated daemon stderr back as an uncoded ok:false.
             # Coded 503 like the Containers page; the probe is forced (5s
             # memo) and only runs on this failure path.
+            raise api_error("container.engine_down")
+        if (
+            rc == -1
+            and looks_cli_vanished(_as_text(err) or _as_text(out))
+            and not cli_on_disk()
+            and not engine_up(force=True)
+        ):
+            # ``sh`` collapses a FileNotFoundError spawn into rc -1 + the
+            # two-word "not found" sentinel — a docker CLI that vanished
+            # between the registry read and the spawn used to hand that raw
+            # sentinel back as an uncoded HTTP 500.  Same operator-facing
+            # state as the daemon-socket branch above, so the same coded
+            # 503; the disk confirm keeps a vanished cwd (identical
+            # sentinel, CLI still present) on its raw result, and the
+            # forced probe stays the final arbiter.
             raise api_error("container.engine_down")
         return rc, out, err
     # brew formula services (when not registered as local LaunchAgent)
