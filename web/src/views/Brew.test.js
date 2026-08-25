@@ -86,4 +86,29 @@ describe('Brew page', () => {
     expect(toast).toHaveBeenCalledWith('❌ brew exploded')
     wrapper.unmount()
   })
+
+  it('tells a filtered-out list apart from an empty one', async () => {
+    // "brew.empty" claims no Homebrew services are installed; beside a
+    // non-empty count that misreports the host whenever the filter simply
+    // matched nothing.
+    api.getBrewServices.mockResolvedValue({ services: [REDIS] })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('tbody').text()).toContain('redis')
+
+    wrapper.vm.q = 'no-such-service'
+    await flushPromises()
+    const body = wrapper.find('tbody').text()
+    expect(body).toContain('common.no_match')
+    expect(body).not.toContain('brew.empty')
+    wrapper.unmount()
+  })
+
+  it('still calls a truly empty list empty', async () => {
+    api.getBrewServices.mockResolvedValue({ services: [] })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('tbody').text()).toContain('brew.empty')
+    wrapper.unmount()
+  })
 })

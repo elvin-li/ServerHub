@@ -33,7 +33,9 @@
         </thead>
         <tbody>
           <tr v-for="s in filtered" :key="s.id">
-            <td><span class="led" :class="s.state==='ok'?'on':(s.state==='warn'?'warn':'err')"></span></td>
+            <!-- aria-hidden: the LED repeats the Status badge's started/stopped
+                 text in colour only (same as the Health check LED). -->
+            <td><span class="led" :class="s.state==='ok'?'on':(s.state==='warn'?'warn':'err')" aria-hidden="true"></span></td>
             <td>
               <strong>{{ finiteText(s.name) }}</strong>
               <div v-if="finiteText(s.file, '')" class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(s.file) }}</div>
@@ -55,7 +57,11 @@
             </td>
           </tr>
           <tr v-if="!filtered.length && !loadError">
-            <td colspan="5" class="empty-row">{{ t('brew.empty') }}</td>
+            <!-- A filter that matched nothing is not "No Homebrew services
+                 found": that claim beside a non-empty count misreports the
+                 host (same split as the Network ports and Tools process
+                 tables). -->
+            <td colspan="5" class="empty-row">{{ q.trim() ? t('common.no_match') : t('brew.empty') }}</td>
           </tr>
         </tbody>
       </table>

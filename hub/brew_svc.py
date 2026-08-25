@@ -46,6 +46,14 @@ def _json_safe(value):
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # YAML hex/octal leftovers dodge CPython's str->int digit cap, so
+            # an over-cap ``exit_code`` / ``user`` arrived here intact and
+            # Starlette's json.dumps ValueError'd GET /api/brew/services —
+            # same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -192,8 +200,13 @@ def service_action(name: str, action: str) -> dict:
         # 503 that check raises instead of an uncoded {ok: false,
         # message: "not found"} the SPA cannot translate.  (This must sit
         # outside the try above: the broad except used to swallow the raise
-        # into exactly that uncoded shape.)
-        raise api_error("brew.not_found")
+        # into exactly that uncoded shape.)  Confirmed against the
+        # filesystem, mirroring set_brew_autostart and the docker
+        # classifiers' forced engine probe: a signal-killed brew is also
+        # rc -1, so a brew that is still present keeps its raw result
+        # instead of a false "Homebrew is not installed".
+        if not _brew_present():
+            raise api_error("brew.not_found")
     # The shared `brew services list --json` snapshot has a 6s TTL, so
     # without this the UI re-reads the pre-action state right after a
     # start/stop and shows the service back in its old state until the TTL
@@ -204,7 +217,15 @@ def service_action(name: str, action: str) -> dict:
     # run_capped is str; a bytes leftover from a stub (or a future
     # binary-capped helper) used to TypeError Starlette's encoder.
     text = _as_text(msg).strip()
+    if not text:
+        try:
+            text = f"exit {rc}"
+        except (ValueError, TypeError, RecursionError, OverflowError):
+            # Past CPython's int->str digit cap an over-cap rc cannot be
+            # rendered at all; the f-string used to ValueError and 500
+            # POST /api/brew/services/{name}/action after the run finished.
+            text = "exit unknown"
     return {
         "ok": rc == 0,
-        "message": text or f"exit {rc}",
+        "message": text,
     }

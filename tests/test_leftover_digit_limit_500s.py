@@ -27,6 +27,9 @@ from hub.routers import scheduler_api, system_extra
 
 #: Past CPython's default 4300-digit str<->int conversion limit.
 _HUGE_DIGITS = "9" * 5000
+#: An int already past the cap: power-of-two bases are exempt from the
+#: str->int limit, which is exactly how YAML hex/octal leftovers mint one.
+_HUGE_INT = 1 << 20000
 
 
 def _code(exc: HTTPException) -> str:
@@ -98,6 +101,61 @@ class BrewDigitLimitPinTests(unittest.TestCase):
         """`brew services list --json` with a >4300-digit int is refused whole."""
         blob = '[{"name": "redis", "status": "started", "exit_code": %s}]' % _HUGE_DIGITS
         self.assertIsNone(brew_cache._services_from_output(blob))
+
+    def test_overcap_int_fields_do_not_500_list(self):
+        """A hex-minted over-cap int in a row used to 500 GET /api/brew/services.
+
+        str->int refuses >4300 decimal digits, but base-16 is exempt, so a
+        YAML/stub leftover can still hand `_json_safe` an int whose str() is
+        ValueError.  The surrogate name rides along so the same row also pins
+        the UTF-8 encode.
+        """
+        with (
+            patch.object(brew_svc.os.path, "isfile", return_value=True),
+            patch.object(
+                brew_svc, "brew_services_list",
+                return_value=[{
+                    "name": "redis\ud800", "status": "started",
+                    "exit_code": _HUGE_INT, "user": _HUGE_INT, "file": None,
+                }],
+            ),
+        ):
+            rows = brew_svc.list_services()
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["exit_code"])
+        self.assertIsNone(rows[0]["user"])
+        self.assertNotIn("\ud800", rows[0]["name"])
+        _starlette(rows)
+
+    def test_overcap_rc_does_not_500_action(self):
+        """`f"exit {rc}"` with an over-cap rc ValueError'd POST the action."""
+        with (
+            patch.object(brew_svc.os.path, "isfile", return_value=True),
+            patch.object(brew_svc, "run_capped", return_value=(_HUGE_INT, "")),
+            patch.object(brew_svc, "invalidate_brew_services"),
+            patch.object(brew_svc, "invalidate_status"),
+        ):
+            out = brew_svc.service_action("redis", "stop")
+        self.assertEqual(out, {"ok": False, "message": "exit unknown"})
+        _starlette(out)
+
+    def test_cache_strips_overcap_ints_before_publish(self):
+        """Nested or top-level, an over-cap int must not reach the encoder."""
+        cleaned = brew_cache._copy_items([{
+            "name": "x",
+            "exit_code": _HUGE_INT,
+            "meta": {"pid": _HUGE_INT, "ok": 3},
+        }])
+        self.assertIsNone(cleaned[0]["exit_code"])
+        self.assertIsNone(cleaned[0]["meta"]["pid"])
+        self.assertEqual(cleaned[0]["meta"]["ok"], 3)
+        _starlette(cleaned)
+
+    def test_cache_drops_overcap_int_keys(self):
+        """An over-cap int *key* cannot be rendered either; pin the drop."""
+        out = brew_cache._json_safe({_HUGE_INT: "x", "name": "redis"})
+        self.assertEqual(out, {"name": "redis"})
+        _starlette(out)
 
     def test_brew_list_survives_raising_cache(self):
         """A ValueError out of the shared cache degrades to the text parse."""

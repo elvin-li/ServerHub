@@ -170,8 +170,11 @@ class OrbCliMissingTests(unittest.TestCase):
 class BrewCliMissingTests(unittest.TestCase):
     def test_vanished_brew_carries_the_code(self):
         """The raise must survive the broad except that used to swallow it."""
+        # The up-front gate passes, then the confirmation finds brew gone —
+        # the same two-look shape set_brew_autostart pins.
+        gate = mock.Mock(side_effect=[True, False])
         with (
-            mock.patch.object(brew_svc, "_brew_present", return_value=True),
+            mock.patch.object(brew_svc, "_brew_present", gate),
             mock.patch.object(
                 brew_svc, "run_capped", return_value=(-1, "not found"),
             ),
@@ -180,6 +183,54 @@ class BrewCliMissingTests(unittest.TestCase):
                 brew_svc.service_action("redis", "start")
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertEqual(_detail(ctx)["code"], "brew.not_found")
+        self.assertEqual(gate.call_count, 2)
+
+    def test_sentinel_while_brew_is_still_present_keeps_the_dict(self):
+        """The filesystem confirmation rules, mirroring set_brew_autostart: a
+        signal-killed brew is also rc -1, so a brew that is really there must
+        keep its raw result instead of a false "Homebrew is not installed"."""
+        gate = mock.Mock(side_effect=[True, True])
+        invalidate = mock.Mock()
+        with (
+            mock.patch.object(brew_svc, "_brew_present", gate),
+            mock.patch.object(
+                brew_svc, "run_capped", return_value=(-1, "not found"),
+            ),
+            mock.patch.object(brew_svc, "invalidate_brew_services", invalidate),
+            mock.patch.object(brew_svc, "invalidate_status"),
+        ):
+            result = brew_svc.service_action("redis", "start")
+        self.assertEqual(result, {"ok": False, "message": "not found"})
+        self.assertEqual(gate.call_count, 2)
+        invalidate.assert_called_once_with()
+
+    def test_timeout_sentinel_is_not_classified(self):
+        """rc -1 with empty output is run_capped's timeout, not the spawn
+        sentinel: no second filesystem look, the exit fallback message."""
+        gate = mock.Mock(return_value=True)
+        with (
+            mock.patch.object(brew_svc, "_brew_present", gate),
+            mock.patch.object(brew_svc, "run_capped", return_value=(-1, "")),
+            mock.patch.object(brew_svc, "invalidate_brew_services"),
+            mock.patch.object(brew_svc, "invalidate_status"),
+        ):
+            result = brew_svc.service_action("redis", "start")
+        self.assertEqual(result, {"ok": False, "message": "exit -1"})
+        gate.assert_called_once()
+
+    def test_a_real_brew_exit_reading_not_found_stays_raw(self):
+        """``rc == -1`` is part of the gate: a genuine brew exit whose output
+        happens to read "not found" keeps its own shape."""
+        gate = mock.Mock(return_value=True)
+        with (
+            mock.patch.object(brew_svc, "_brew_present", gate),
+            mock.patch.object(brew_svc, "run_capped", return_value=(1, "not found")),
+            mock.patch.object(brew_svc, "invalidate_brew_services"),
+            mock.patch.object(brew_svc, "invalidate_status"),
+        ):
+            result = brew_svc.service_action("redis", "start")
+        self.assertEqual(result, {"ok": False, "message": "not found"})
+        gate.assert_called_once()
 
     def test_real_brew_failure_keeps_its_output(self):
         invalidations = []
