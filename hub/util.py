@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -395,6 +396,11 @@ def tail_file_lines(path, n: int, *, max_bytes: int = 256 * 1024) -> list[str]:
     swapped between the denylist check and the read would leak whatever it
     pointed at.  Resolve first (so a legitimate rotation link still works),
     then ``O_NOFOLLOW`` so a swap of the resolved name cannot be followed.
+
+    ``O_NONBLOCK`` + the regular-file check: a leftover FIFO occupying a
+    journal (data/metrics.jsonl was the found case) used to park ``os.open``
+    until a writer appeared — hanging GET /api/metrics forever instead of
+    raising the OSError every caller already handles.
     """
     n = max(1, int(n))
     cap = max(1, int(max_bytes))
@@ -402,11 +408,13 @@ def tail_file_lines(path, n: int, *, max_bytes: int = 256 * 1024) -> list[str]:
         target = os.path.realpath(path)
     except OSError:
         target = path
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     fd = os.open(target, flags)
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(target))
         with os.fdopen(fd, "rb") as fh:
             fd = -1
             fh.seek(0, 2)
@@ -436,13 +444,15 @@ def read_text_capped(
     or JSON store that grew to megabytes used to OOM the request that opened
     it.  Raises ``OSError`` (including ``FileNotFoundError``) like
     ``Path.read_text``, plus ``OSError(EFBIG)`` when the file exceeds
-    *max_bytes* so callers reuse their existing OSError fallback.
+    *max_bytes* so callers reuse their existing OSError fallback, plus
+    ``OSError(EINVAL)`` for a leftover FIFO/device occupying the path —
+    ``open()`` of a FIFO used to park the caller until a writer appeared
+    (a FIFO at data/metrics-rollup-state.json wedged the metrics sampler).
     """
     cap = max(1, int(max_bytes))
     try:
         p = path if isinstance(path, Path) else Path(path)
-        with p.open(encoding=encoding, errors=errors) as fh:
-            data = fh.read(cap + 1)
+        fd = os.open(p, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except UnicodeEncodeError as exc:
         # Leftover ``\\ud800`` in the name is not OSError; open() used to
         # 500 callers that only catch OSError.
@@ -452,6 +462,15 @@ def read_text_capped(
             raise
         # Leftover NUL in the name.
         raise OSError(errno.EINVAL, str(exc), str(path)) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(p))
+        with os.fdopen(fd, encoding=encoding, errors=errors) as fh:
+            fd = -1
+            data = fh.read(cap + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if len(data) > cap:
         raise OSError(errno.EFBIG, "file exceeds read cap", str(p))
     return data
@@ -542,19 +561,28 @@ def read_bytes_capped(path, max_bytes: int) -> bytes:
     request that parsed it.  Raises ``OSError`` (including
     ``FileNotFoundError``) like ``Path.read_bytes``, plus ``OSError(EFBIG)``
     when the file exceeds *max_bytes* so callers reuse their existing
-    OSError fallback.
+    OSError fallback, plus ``OSError(EINVAL)`` for a leftover FIFO/device
+    occupying the path (a plain open of a FIFO parks until a writer appears).
     """
     cap = max(1, int(max_bytes))
     try:
         p = path if isinstance(path, Path) else Path(path)
-        with p.open("rb") as fh:
-            data = fh.read(cap + 1)
+        fd = os.open(p, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except UnicodeEncodeError as exc:
         raise OSError(errno.EINVAL, str(exc), str(path)) from exc
     except ValueError as exc:
         if isinstance(exc, UnicodeError):
             raise
         raise OSError(errno.EINVAL, str(exc), str(path)) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(p))
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            data = fh.read(cap + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if len(data) > cap:
         raise OSError(errno.EFBIG, "file exceeds read cap", str(p))
     return data

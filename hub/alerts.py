@@ -126,10 +126,19 @@ def _append_alert(alert: dict):
     # .app + LaunchAgent) both run this sweep, and a trim in one used to swap
     # away an alert row the other had just appended to the pre-replace inode.
     with _lock, secure_io.file_lock(ALERTS_FILE):
-        secure_io.append_text(
-            ALERTS_FILE,
-            line,
-        )
+        # A leftover directory occupying alerts.jsonl IsADirectoryError'd
+        # this append out of emit_alert (500ing the scheduler/UPS caller),
+        # and a leftover FIFO parked it forever.  Drop the node so the
+        # journal self-heals; a disk that still refuses loses this row,
+        # never the request.
+        secure_io.drop_leftover_nonfile(ALERTS_FILE)
+        try:
+            secure_io.append_text(
+                ALERTS_FILE,
+                line,
+            )
+        except OSError:
+            return
         _appends_since_trim += 1
         if _appends_since_trim < _TRIM_EVERY:
             return

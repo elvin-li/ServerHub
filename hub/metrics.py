@@ -177,7 +177,16 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
     # sampler, and a ring-buffer rewrite in one used to swap away samples the
     # other had just appended to the pre-replace inode.
     with secure_io.file_lock(METRICS_FILE):
-        secure_io.append_text(METRICS_FILE, chunk)
+        # A leftover FIFO occupying metrics.jsonl used to park this append
+        # forever — while holding _lock, so GET /api/metrics wedged behind
+        # it.  Drop the non-regular node (dir/FIFO/socket) so the append
+        # recreates a real journal; a disk that still refuses loses this
+        # chunk, not the sampler thread.
+        secure_io.drop_leftover_nonfile(METRICS_FILE)
+        try:
+            secure_io.append_text(METRICS_FILE, chunk)
+        except OSError:
+            return
         _last_flush = time.time()
         now = time.time()
         if force_trim or now - _last_trim >= _TRIM_INTERVAL:
@@ -360,13 +369,14 @@ def latest_sample() -> dict | None:
     # cold start: tail last line only
     try:
         if METRICS_FILE.exists():
-            # read last ~4KB
-            with open(METRICS_FILE, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 4096))
-                chunk = f.read().decode(errors="replace")
-            lines = [ln for ln in chunk.splitlines() if ln.strip()]
+            # tail_file_lines, not a bare open(): a leftover FIFO occupying
+            # metrics.jsonl used to park the open forever (alert thresholds
+            # call this on the request path).  It raises OSError instead,
+            # which the guard below already absorbs.
+            lines = [
+                ln for ln in tail_file_lines(METRICS_FILE, 64, max_bytes=4096)
+                if ln.strip()
+            ]
             if lines:
                 parsed = safe_json_loads(lines[-1], loads=json.loads)
                 if isinstance(parsed, dict):

@@ -43,8 +43,10 @@ Semantics that are deliberate (and pinned by tests/test_metrics_rollup.py):
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
 import threading
 import time
 
@@ -217,10 +219,30 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _open_journal_rb(path):
+    """Binary handle to a *regular* journal file.
+
+    A leftover FIFO occupying metrics-5m.jsonl / metrics-1h.jsonl (or the raw
+    journal reached through the tier probe) used to park a bare ``open()``
+    until a writer appeared — hanging GET /api/metrics?range= and the rollup
+    pass forever.  ``O_NONBLOCK`` makes the FIFO open return at once and the
+    regular-file check turns any non-regular node into the OSError every
+    caller here already handles.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(path))
+    except Exception:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb")
+
+
 def _first_row_ts(path) -> int | None:
     """Timestamp of the first parseable row, reading only the file head."""
     try:
-        with open(path, "rb") as f:
+        with _open_journal_rb(path) as f:
             head = f.read(8192)
     except OSError:
         return None
@@ -241,7 +263,7 @@ def _first_row_ts(path) -> int | None:
 def _last_row_ts(path) -> int | None:
     """Timestamp of the last parseable row, reading only the file tail."""
     try:
-        with open(path, "rb") as f:
+        with _open_journal_rb(path) as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - 8192))
@@ -277,7 +299,7 @@ def _rows_since(path, since_ts: int) -> list[dict]:
     while True:
         offset = max(0, size - chunk)
         try:
-            with open(path, "rb") as f:
+            with _open_journal_rb(path) as f:
                 f.seek(offset)
                 data = f.read()
         except OSError:
@@ -449,6 +471,11 @@ def _rollup_tier_locked(src_path, dst_path, win: int, key: str, target: int) -> 
                 for wt, rows in sorted(buckets.items())
             )
             dst_path.parent.mkdir(exist_ok=True)
+            # A leftover FIFO/dir occupying the aggregate file would fail
+            # this append on every pass (append_text refuses non-regular
+            # nodes); drop it so the tier self-heals instead of stalling
+            # its watermark forever.
+            secure_io.drop_leftover_nonfile(dst_path)
             secure_io.append_text(dst_path, lines)
         except (OSError, TypeError, ValueError, RecursionError):
             # RecursionError: leftover nested aggregate after _jsonable is not
@@ -485,7 +512,8 @@ def _maybe_trim_locked(tier: str, path, now: float) -> bool:
         # trim forever (same failure class as metrics.py's ring buffer).
         # Leftover multi-GB jsonl: only the tail is kept (trim is dropping
         # the old prefix anyway) so the rewrite cannot OOM the sampler.
-        with open(path, "rb") as fh:
+        # _open_journal_rb: a leftover FIFO used to park this open forever.
+        with _open_journal_rb(path) as fh:
             if size > _ROWS_CAP:
                 fh.seek(max(0, size - _ROWS_CAP))
                 if fh.tell() > 0:
