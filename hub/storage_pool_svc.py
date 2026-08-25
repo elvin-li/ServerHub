@@ -362,7 +362,10 @@ def _validate(mounts: list[str], policy: str) -> tuple[list[str], list[dict]]:
 
     wanted: list[str] = []
     for raw in mounts or []:
-        m = str(raw).strip()
+        # _text, not str(): a leftover int already past CPython's int->str
+        # digit cap made ``str(raw)`` itself ValueError out of the endpoint
+        # instead of the coded refusal every other junk mount gets.
+        m = _text(raw).strip()
         # A mount listed twice would double-count its capacity in the summary
         # and make the fault model claim more survives than actually would.
         if m and m not in wanted:
@@ -417,7 +420,10 @@ def save_pool(mounts: list[str], policy: str = DEFAULT_POLICY, name: str = "",
     # purely for its rejections.
     wanted, _ = _validate(mounts, policy)
 
-    clean_name = str(name or "").strip() or "pool"
+    # _text for the same reason as _validate: a leftover over-digit-cap int
+    # name made ``str()`` ValueError, and a leftover ``\ud800`` name would be
+    # persisted raw into services.yaml; scrub before writing, not after.
+    clean_name = _text(name).strip() or "pool"
     try:
         floor = max(0.0, float(min_free_gb or 0))
     except (TypeError, ValueError, OverflowError):
