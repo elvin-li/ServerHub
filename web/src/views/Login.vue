@@ -6,7 +6,10 @@
         <div><h1>ServerHub</h1><p>{{ setupMode ? t('auth.first_setup') : t('auth.welcome_back') }}</p></div>
       </div>
 
-      <div v-if="loading" class="login-loading">{{ t('common.loading') }}</div>
+      <!-- role=status: the auth-status probe decides which form renders, and
+           the swap from this placeholder was silent for a screen reader
+           (Account 2FA-card / Settings launcher-placeholder pattern). -->
+      <div v-if="loading" class="login-loading" role="status">{{ t('common.loading') }}</div>
 
       <!-- Second sign-in step: the password was accepted but the account
            requires a TOTP code. No session cookie exists yet — only the
