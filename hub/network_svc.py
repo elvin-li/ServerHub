@@ -780,11 +780,20 @@ def _coerce_int(value, default: int) -> int:
     panel restart.  A bad value now degrades to the default instead.
     """
     try:
-        return int(value)
+        coerced = int(value)
     except (TypeError, ValueError, OverflowError):
         # YAML ``.inf`` / ``.nan``: ``int(inf)`` is OverflowError, not ValueError,
         # and both settings readers sit on GET /api/system/network.
         return default
+    try:
+        str(coerced)
+    except ValueError:
+        # YAML hex/octal ints skip CPython's str->int digit cap (base 16/8 are
+        # exempt), so ``interval: 0x<4300+ digits>`` parsed fine and the number
+        # then blew up ``json.dumps`` on GET /api/system/network — the encoder
+        # renders ints through the same capped int->str conversion.
+        return default
+    return coerced
 
 
 def _alias_settings() -> dict:

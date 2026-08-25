@@ -381,6 +381,11 @@ def status(settings: dict | None = None) -> dict[str, Any]:
         listen_port = int(cfg.get("listen_port") or 0)
     except (TypeError, ValueError, OverflowError):
         listen_port = 0
+    if not (0 <= listen_port <= 65535):
+        # A YAML hex/octal int skips CPython's str->int digit cap, so an
+        # over-cap ``listen_port`` reached ``local_port`` here and ValueError'd
+        # ``json.dumps`` on GET /api/wireguard and the Network overview.
+        listen_port = 0
     desired_listen = _as_text(cfg.get("wstunnel_listen") or DEFAULT_LISTEN)
     desired_restrict = _as_text(cfg.get("wstunnel_restrict_to") or "") or default_restrict_to(
         listen_port
