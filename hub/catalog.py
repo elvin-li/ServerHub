@@ -1247,12 +1247,26 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         for bf in meta.get("bootstrap_files") if isinstance(meta.get("bootstrap_files"), list) else []:
             if not isinstance(bf, dict) or not bf.get("path"):
                 continue
-            rel = str(bf["path"]).lstrip("/")
-            if ".." in rel:
+            # _plain_str, not bare str(): bootstrap_files is the one block of
+            # front matter _parse_template leaves raw.  A leftover hex-huge
+            # YAML int in ``path`` (or ``content``) is a >4300-digit int whose
+            # ``str()`` is the digit-cap ValueError, and a lone ``"\ud800"``
+            # UnicodeEncodeError'd the write — either escaped this loop's
+            # OSError guard and failed the *whole* install through the broad
+            # rollback, discarding the operator's filled-in variables and
+            # minted passwords over one junk entry.  Unrenderable entries are
+            # dropped; the rest of the install proceeds.
+            rel = _plain_str(bf["path"]).lstrip("/")
+            if not rel or ".." in rel:
                 continue
             fp = dest_dir / rel
-            fp.parent.mkdir(parents=True, exist_ok=True)
-            content = str(bf.get("content") or "")
+            try:
+                fp.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # A leftover file occupying the parent path blocks this one
+                # bootstrap file, not the install.
+                continue
+            content = _plain_str(bf.get("content") or "")
             for k, v in values.items():
                 content = content.replace("{{" + k + "}}", str(v))
             # "x" so an existing file is never rewritten: these are deployment
