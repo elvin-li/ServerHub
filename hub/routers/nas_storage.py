@@ -464,7 +464,13 @@ def api_storage_spotlight(body: SpotlightBody, request: Request):
         enabled=body.enabled,
         ok=bool(result.get("ok")),
     )
-    return raise_service_error(result, {"bad_volume": "usage.bad_volume"})
+    # An mdutil confirmed vanished by a fresh disk probe answers the coded
+    # 503, not the generic 500 "the privileged macOS operation failed" that
+    # sends the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {
+        "bad_volume": "usage.bad_volume",
+        "mdutil_missing": "usage.mdutil_missing",
+    })
 
 
 @router.get("/api/nfs/exports/preview", response_class=PlainTextResponse)

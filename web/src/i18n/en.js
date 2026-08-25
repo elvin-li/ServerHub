@@ -2970,6 +2970,7 @@ export default {
     },
     usage: {
       bad_volume: 'Unknown volume',
+      mdutil_missing: 'mdutil is missing on this host',
     },
     immich: {
       worker_down: 'not running — uploads get no thumbnails, no transcoding, no face recognition',

@@ -212,6 +212,10 @@ CODES: dict[str, tuple[int, str]] = {
     "smart.smartctl_missing": (503, "smartctl is not installed on this host"),
     # ── usage explorer / Spotlight ──────────────────────────────────────────
     "usage.bad_volume": (400, "unknown volume"),
+    # Confirmed-vanished mdutil (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (raid.diskutil_missing,
+    # smart.smartctl_missing, backup.tool_missing, files.fb_missing).
+    "usage.mdutil_missing": (503, "mdutil is missing on this host"),
     # ── settings export ──────────────────────────────────────────────────────
     "system_settings.export_failed": (500, "the configuration file could not be read for export"),
     "settings.invalid_locale": (400, "invalid locale: {locale}"),

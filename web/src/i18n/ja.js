@@ -2964,6 +2964,7 @@ export default {
     },
     usage: {
       bad_volume: '不明なボリュームです',
+      mdutil_missing: 'このホストに mdutil がありません',
     },
     immich: {
       worker_down: '未実行 —— アップロード写真のサムネイル生成/トランスコード/顔認識が行われません',

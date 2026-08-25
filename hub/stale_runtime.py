@@ -137,11 +137,22 @@ def pid_exe_path(pid) -> str | None:
     ``txt`` is the last resort — without it Gravity Next stayed green on
     a deleted Homebrew ``node``.
     """
+    if isinstance(pid, bool):
+        # ``int(True)`` is 1: a leftover bool pid used to probe launchd
+        # itself and answer /sbin/launchd for a process that never existed.
+        return None
     try:
         n = int(pid)
     except (TypeError, ValueError, OverflowError):
         return None
     if n <= 0:
+        return None
+    try:
+        # str() probe, not a range gate: a leftover already-int pid past
+        # CPython's 4300-digit cap ValueError'd ``str(n)`` inside the ps
+        # argv below and 500'd GET /api/health/checks and /api/apps/managed.
+        str(n)
+    except ValueError:
         return None
     now = time.time()
     with _exe_lock:
@@ -213,9 +224,16 @@ def scan() -> list[dict]:
             continue
         if pl.get("StartInterval") or pl.get("StartCalendarInterval"):
             continue
-        label = _as_text(pl.get("Label") or path.stem)
+        # str() probe via _as_text, with the plist filename as the fallback:
+        # a leftover ``<integer>0x…</integer>`` Label parses past CPython's
+        # int->str digit cap (hex has no cap), scrubbed to "" — which used to
+        # silently drop the agent from the stale scan instead of matching it
+        # by its on-disk name.
+        label = _as_text(pl.get("Label") or path.stem) or _as_text(path.stem)
+        if not label:
+            continue
         pid = listing.pid_for(label)
-        if not pid:
+        if not pid or isinstance(pid, bool):
             continue
         exe = pid_exe_path(pid)
         if not exe:
@@ -228,6 +246,9 @@ def scan() -> list[dict]:
             continue
         try:
             pid_n = int(pid)
+            # A leftover over-cap already-int pid passes int() untouched and
+            # the digit-cap ValueError then lands in the JSON encoder.
+            str(pid_n)
         except (TypeError, ValueError, OverflowError):
             pid_n = 0
         stale.append({"label": label, "pid": pid_n, "exe": _as_text(exe)})
