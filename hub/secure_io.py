@@ -232,10 +232,28 @@ def append_text(
     points.  Audit, metrics and alerts journals live under a writable data
     directory; a planted symlink would redirect the next line onto another
     file the panel user can write.
+
+    ``O_NONBLOCK`` + the regular-file check: a leftover FIFO occupying a
+    journal used to park this open until a reader appeared — the metrics
+    sampler wedged holding its buffer lock, and GET /api/metrics hung behind
+    it.  A FIFO now raises OSError (ENXIO from the open, or EINVAL from the
+    check when a reader exists), the same failure class a leftover directory
+    already produced.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, mode)
+    fd = os.open(
+        p,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+        | getattr(os, "O_NONBLOCK", 0),
+        mode,
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(p))
+    except Exception:
+        os.close(fd)
+        raise
     with os.fdopen(fd, "a", encoding=encoding) as fh:
         fh.write(content)
     return p
