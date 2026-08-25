@@ -19,6 +19,8 @@ from __future__ import annotations
 import plistlib
 import re
 
+from pathlib import Path
+
 from hub.macos_admin import run_admin
 from hub.util import cached_snapshot, fan_out, sh, strftime_now
 
@@ -159,9 +161,69 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _req_text(raw) -> str:
+    """Mutation argument as text via the str() probe (never the digit-cap raise).
+
+    Arguments arrive as str through Pydantic, but the service is also called
+    in-process, and a leftover YAML/plist hex int is *already-int* —
+    ``int(x, 16)`` is exempt from CPython's 4300-digit parse cap — so the bare
+    ``str()`` these call sites used raised the int->str digit-cap ValueError
+    (a 500 on POST /api/raid/sets, /delete, /repair and /members/*) where
+    every other junk value gets the coded refusal.  A str() probe, not an
+    ``isinstance(str)`` gate: a finite numeric leftover must keep behaving as
+    its string form and earn the same coded refusal path.  Lone surrogates
+    are scrubbed so a refusal's own params cannot 500 the error body.
+    """
+    if raw is None or isinstance(raw, bool):
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw).decode("utf-8", "replace")
+    if not isinstance(raw, str):
+        try:
+            raw = str(raw)
+        except Exception:
+            # The digit-cap ValueError, or a leftover whose __str__ raises.
+            return ""
+    return raw.encode("utf-8", "replace").decode("utf-8")
+
+
+def _diskutil_on_disk() -> bool:
+    """Fresh disk probe for the mutation-failure path only (vms/brew/rsync rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /usr/sbin is not confirmably carrying it.
+    """
+    try:
+        return Path(DISKUTIL).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+#: What a spawn of a gone binary reads like through run_admin: the shell's own
+#: refusal (``sh: /usr/sbin/diskutil: command not found`` / ``No such file or
+#: directory``) or sh()'s FileNotFoundError sentinel (``not found``).  Purely a
+#: message-pattern gate: classification additionally requires the fresh
+#: :func:`_diskutil_on_disk` probe to confirm the binary is really gone.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
 def _admin_result(result) -> dict:
     cleaned = _jsonable(result) if isinstance(result, dict) else {}
-    return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
+    if not isinstance(cleaned, dict):
+        return {"ok": False, "error": "failed"}
+    # A diskutil that vanished between the eligibility check and the spawn
+    # (an OS update mid-flight, a dying system volume) used to surface as the
+    # generic 500 ``admin.failed`` — "the privileged macOS operation failed"
+    # sends the operator to re-enter a password that can never help.  The
+    # coded 503 fires only after a fresh disk probe confirms diskutil is gone
+    # (the vms/brew/rsync rule); with the binary still on disk the raw
+    # failure is the truth and keeps its own message.  The probe runs only on
+    # this failure path, never on a successful mutation.
+    if not cleaned.get("ok") and cleaned.get("error") == "failed":
+        message = _ident(cleaned.get("message") or "").lower()
+        if any(marker in message for marker in _VANISH_MARKERS) and not _diskutil_on_disk():
+            return {"ok": False, "error": "diskutil_missing"}
+    return cleaned
 
 
 def _whole_disk(device: str) -> str:
@@ -436,7 +498,11 @@ def _check_devices(devices: list[str], *, minimum: int) -> list[str]:
     """Validate and re-verify member devices against a fresh enumeration."""
     cleaned: list[str] = []
     for device in devices or []:
-        value = str(device or "").strip().replace("/dev/", "")
+        # _req_text, not str(): a leftover int already past CPython's
+        # int->str digit cap made ``str(device)`` itself ValueError out of
+        # the endpoint instead of the coded refusal every other junk
+        # device gets (the storage_pool_svc._validate convention).
+        value = _req_text(device).strip().replace("/dev/", "")
         if not _DEV_RE.match(value):
             raise RaidError("raid.bad_device", device=value[:40])
         if value in cleaned:
@@ -462,18 +528,21 @@ def create_set(
     confirm_phrase: str,
 ) -> dict:
     """Build a new AppleRAID set.  Erases every selected device."""
-    level = (level or "").strip().lower()
+    # _req_text throughout: ``(level or "").strip()`` AttributeError'd (a
+    # 500) on any in-process non-str leftover where the coded refusal below
+    # is the contract.
+    level = _req_text(level).strip().lower()
     if level not in LEVELS:
         raise RaidError("raid.bad_level", level=level[:20], choices=", ".join(LEVELS))
-    filesystem = (filesystem or "").strip()
+    filesystem = _req_text(filesystem).strip()
     if filesystem not in FILESYSTEMS:
         raise RaidError("raid.bad_filesystem", fs=filesystem[:20], choices=", ".join(FILESYSTEMS))
-    name = (name or "").strip()
+    name = _req_text(name).strip()
     if not _NAME_RE.match(name):
         raise RaidError("raid.bad_name")
     if not confirm:
         raise RaidError("raid.confirm_required")
-    if (confirm_phrase or "").strip() != "ERASE":
+    if _req_text(confirm_phrase).strip() != "ERASE":
         raise RaidError("raid.confirm_phrase_mismatch")
 
     # A mirror needs two members; a stripe needs two to be a stripe at all; a
@@ -496,7 +565,7 @@ def delete_set(*, set_uuid: str, confirm: bool, confirm_phrase: str) -> dict:
     target = _resolve_set(set_uuid)
     if not confirm:
         raise RaidError("raid.confirm_required")
-    if (confirm_phrase or "").strip() != target["name"]:
+    if _req_text(confirm_phrase).strip() != target["name"]:
         raise RaidError("raid.confirm_name_mismatch", name=target["name"])
     result = run_admin([DISKUTIL, "appleRAID", "delete", target["uuid"]], timeout=600)
     invalidate()
@@ -505,7 +574,9 @@ def delete_set(*, set_uuid: str, confirm: bool, confirm_phrase: str) -> dict:
 
 def _resolve_set(set_uuid: str) -> dict:
     """Look a set up by UUID from a fresh enumeration."""
-    value = str(set_uuid or "").strip()
+    # _req_text, not str(): an already-int over-cap uuid ValueError'd here
+    # instead of the coded ``raid.bad_set`` refusal.
+    value = _req_text(set_uuid).strip()
     if not re.fullmatch(r"[0-9A-Fa-f-]{8,64}", value):
         raise RaidError("raid.bad_set")
     for entry in list_sets():
@@ -549,7 +620,9 @@ def add_member(*, set_uuid: str, device: str, confirm: bool) -> dict:
 def remove_member(*, set_uuid: str, member_uuid: str, confirm: bool) -> dict:
     """Detach one member from a set, leaving the set with fewer copies."""
     target = _resolve_set(set_uuid)
-    value = str(member_uuid or "").strip()
+    # Same probe as _resolve_set: str() of an over-cap member uuid was the
+    # digit-cap ValueError, not the coded ``raid.member_not_found``.
+    value = _req_text(member_uuid).strip()
     known = {m["uuid"].lower() for m in target["members"] if m["uuid"]}
     if value.lower() not in known:
         raise RaidError("raid.member_not_found", uuid=value[:40])
