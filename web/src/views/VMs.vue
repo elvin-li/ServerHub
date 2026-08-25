@@ -87,10 +87,12 @@
           <select id="vm-create-distro" v-model="createForm.distro" :aria-label="t('vms.distro')">
             <option v-for="d in (data?.orb_distros || distros)" :key="finiteText(d)" :value="d">{{ finiteText(d) }}</option>
           </select>
+          <!-- No aria-label here: it overrode the for/id labels with the
+               placeholder, so "Version" was announced as its example value. -->
           <label for="vm-create-version">{{ t('vms.version') }}</label>
-          <input id="vm-create-version" v-model="createForm.version" type="text" :placeholder="t('vms.version_ph')"  :aria-label="t('vms.version_ph')"/>
+          <input id="vm-create-version" v-model="createForm.version" type="text" :placeholder="t('vms.version_ph')" />
           <label for="vm-create-name">{{ t('vms.machine') }}</label>
-          <input id="vm-create-name" v-model="createForm.name" type="text" :placeholder="t('vms.machine_ph')"  :aria-label="t('vms.machine_ph')"/>
+          <input id="vm-create-name" v-model="createForm.name" type="text" :placeholder="t('vms.machine_ph')" />
         </div>
         <p style="font-size:11px;color:var(--sub);margin:10px 0">
           {{ t('vms.create_hint') }}

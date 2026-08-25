@@ -2124,6 +2124,7 @@ export default {
     written: '累计写入',
     power_on: '通电',
     smart_title: 'SMART 自检状态',
+    smart_attrs_toggle: 'SMART 属性 · {id}',
     smart_logs: '日志',
     smart_caps: '支持的测试',
     smart_no_devices: '无可读取 SMART 的设备',

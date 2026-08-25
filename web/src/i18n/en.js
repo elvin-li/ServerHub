@@ -2128,6 +2128,7 @@ export default {
     written: 'Written',
     power_on: 'Power-on',
     smart_title: 'SMART Self-test Status',
+    smart_attrs_toggle: 'SMART attributes · {id}',
     smart_logs: 'Logs',
     smart_caps: 'Supported Tests',
     smart_no_devices: 'No readable SMART devices',
