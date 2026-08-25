@@ -274,7 +274,30 @@ def _discard(dest: Path) -> None:
         pass
 
 
-def _cli_vanished(rc, text) -> bool:
+def _tool_on_disk(tool) -> bool:
+    """Fresh disk probe for the vanished-CLI classifier below.
+
+    Bare names (``pg_dump``) resolve the way the spawn resolved them — over
+    PATH — and absolute paths (``/usr/bin/tar``, the Immich script) stat
+    directly.  A probe that raises (EIO under a dying volume) counts as
+    gone: the CLI is unreachable either way (the photoshub ``_ctl_on_disk``
+    rule).
+    """
+    try:
+        text = str(tool or "")
+    except Exception:
+        return False
+    if not text:
+        return False
+    try:
+        if os.sep in text:
+            return Path(text).is_file()
+        return shutil.which(text) is not None
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _cli_vanished(rc, text, tool) -> bool:
     """Whether a ``run_capped`` result means the job's own binary is gone.
 
     ``run_capped`` reports a FileNotFoundError spawn as ``(-1, "not found")``
@@ -284,8 +307,18 @@ def _cli_vanished(rc, text) -> bool:
     ``{ok: false, message: "not found"}`` the SPA cannot translate.  A
     timeout keeps its own shape and a genuine non-zero exit keeps its raw
     output — that message is then the truth.
+
+    The sentinel alone must not classify: rc -1 is also what a SIGHUP-killed
+    run reports through ``subprocess.run``, so a *still-present* tool whose
+    trailing output happened to read exactly ``not found`` was answered with
+    the vanished-binary 503 instead of its raw result.  Only when a fresh
+    disk probe confirms *tool* actually left the disk does the coded answer
+    apply — the vms ``_cli_missing`` / ollama ``delete_model`` rule.  The
+    re-check runs only on this failure path, never on a successful spawn.
     """
-    return rc == -1 and _as_text(text).strip() == "not found"
+    if rc != -1 or _as_text(text).strip() != "not found":
+        return False
+    return not _tool_on_disk(tool)
 
 
 # ── configurable backup targets (services.yaml `backups:`) ───────────────────
@@ -333,6 +366,34 @@ def _pg_conninfo_chars(value: str) -> bool:
     return "=" in value or any(c.isspace() for c in value)
 
 
+def _cfg_text(value) -> str | None:
+    """A ``backups.postgres`` scalar as clean text, or None when it cannot be.
+
+    YAML hex/octal integers load uncapped (``int(x, 16)`` is exempt from
+    CPython's 4300-digit conversion limit), so a leftover ``db: 0xFF…`` was
+    an *already-int* here and the bare ``str()`` raised the digit-cap
+    ValueError — 500ing GET /api/backups and POST /api/backups/postgres
+    through :func:`pg_targets`, which promises to drop malformed entries
+    one by one instead.  A quoted ``"\\ud800…"`` loads as a lone-surrogate
+    str, passed every check, and 500'd Starlette's UTF-8 encode on the same
+    routes.  No real host/db/role name is un-encodable, so both shapes mean
+    "drop this entry", never "raise".
+    """
+    if value is None:
+        return ""
+    try:
+        text = str(value)
+    except Exception:
+        # ValueError past the int->str digit cap; RecursionError on a
+        # leftover self-referential __str__.
+        return None
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return text
+
+
 def _backups_cfg() -> dict:
     raw = cfg().get("backups")
     return raw if isinstance(raw, dict) else {}
@@ -360,10 +421,19 @@ def pg_targets(raw: list | None = None) -> list[dict]:
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        tid = str(entry.get("id") or "").strip()
-        db = str(entry.get("db") or "").strip()
-        host = str(entry.get("host") or "").strip() or "localhost"
-        user = str(entry.get("user") or "").strip() or db
+        # _cfg_text, not str(): a YAML hex over-cap int or lone-surrogate
+        # value in any of these fields used to raise out of this loop and
+        # 500 GET /api/backups instead of dropping the one bad entry.
+        fields = {
+            key: _cfg_text(entry.get(key) or "")
+            for key in ("id", "db", "host", "user", "password_env")
+        }
+        if any(v is None for v in fields.values()):
+            continue
+        tid = fields["id"].strip()
+        db = fields["db"].strip()
+        host = fields["host"].strip() or "localhost"
+        user = fields["user"].strip() or db
         port_raw = entry.get("port", 5432)
         try:
             # None/"" mean "unset" and take the default; 0 is a typo, not a port.
@@ -390,7 +460,7 @@ def pg_targets(raw: list | None = None) -> list[dict]:
             "port": port,
             "db": db,
             "user": user,
-            "password_env": str(entry.get("password_env") or "").strip(),
+            "password_env": fields["password_env"].strip(),
         })
     return out
 
@@ -951,7 +1021,7 @@ def _backup_immich_script() -> dict:
     except Exception as exc:
         # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 POST /api/backups.
         return {"ok": False, "message": _as_text(exc)[:500]}
-    if _cli_vanished(rc, text):
+    if _cli_vanished(rc, text, IMMICH_SCRIPT):
         # immich_backup_info() said "script", but it vanished between that
         # probe and this spawn.  Answer with the same coded refusal the
         # up-front gate gives instead of the bare "not found" sentinel
@@ -962,7 +1032,12 @@ def _backup_immich_script() -> dict:
     ok = rc == 0 and bool(created)
     return {
         "ok": ok,
-        "path": str(BACKUP_ROOT / latest["name"]) if ok and latest else None,
+        # _as_text: an artefact whose on-disk name is undecodable surfaces
+        # as lone surrogates (os surrogateescape); raw, it used to 500
+        # POST /api/backups/immich at Starlette's UTF-8 encode.  The
+        # created-check above stays raw on purpose — it compares glob
+        # results with glob results.
+        "path": _as_text(BACKUP_ROOT / latest["name"]) if ok and latest else None,
         "message": (text or f"exit {rc}")[:500],
         "size_mb": latest["size_mb"] if ok and latest else 0,
     }
@@ -1158,7 +1233,7 @@ def _dump_one_postgres(target: dict) -> dict:
     try:
         rc, text = run_capped(cmd, timeout=600, env=_pg_env(target))
         text = _as_text(text)
-        if _cli_vanished(rc, text):
+        if _cli_vanished(rc, text, cmd[0]):
             # pg_dump itself could not be spawned — never installed, or
             # uninstalled while this ran.  The coded 503 instead of the
             # two-word "not found" the sentinel leaves in message.
@@ -1793,7 +1868,7 @@ def _backup_configs() -> dict:
             timeout=120,
         )
         text = _as_text(text)
-        if _cli_vanished(rc, text):
+        if _cli_vanished(rc, text, "/usr/bin/tar"):
             # tar itself could not be spawned: the coded 503 instead of the
             # bare "not found" sentinel in an uncoded ok:false.
             _discard(dest)
