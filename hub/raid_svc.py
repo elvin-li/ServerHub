@@ -113,6 +113,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -179,6 +185,13 @@ def _size_fields(raw) -> tuple:
     try:
         n = int(raw)
     except (TypeError, ValueError, OverflowError):
+        return None, None
+    try:
+        str(n)
+    except ValueError:
+        # A leftover plist Size already past CPython's int->str digit cap
+        # survives ``int()`` unchanged and ValueError'd json.dumps itself
+        # on GET /api/raid (the 400-digit class only lost its GB figure).
         return None, None
     try:
         gb = round(n / 2**30, 1)

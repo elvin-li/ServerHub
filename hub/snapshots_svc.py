@@ -67,6 +67,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -147,8 +153,18 @@ def _xid(raw):
         return None
     if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
         return None
-    if isinstance(raw, (int, str)):
+    if isinstance(raw, int):
+        try:
+            str(raw)
+        except ValueError:
+            # A >4300-digit leftover XID is past CPython's int->str digit
+            # cap and ValueError'd json.dumps on GET /api/snapshots.
+            return None
         return raw
+    if isinstance(raw, str):
+        # A leftover ``\ud800`` XID string used to 500 the UTF-8 encode the
+        # same way an unscrubbed SnapshotName did.
+        return _as_text(raw)
     try:
         return int(raw)
     except (TypeError, ValueError, OverflowError):

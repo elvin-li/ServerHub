@@ -201,6 +201,12 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all — same drop as its inf float sibling.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -270,9 +276,16 @@ def _json_int(raw, default: int = 0) -> int:
     if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except (TypeError, ValueError, OverflowError):
         return default
+    try:
+        str(value)
+    except ValueError:
+        # A leftover already past CPython's int->str digit cap survives
+        # ``int()`` unchanged and then ValueError'd ``json.dumps`` itself.
+        return default
+    return value
 
 
 def _volume_row(raw) -> dict | None:
@@ -301,7 +314,12 @@ def _volume_row(raw) -> dict | None:
         if isinstance(val, bool) or val is None:
             row[key] = 0.0
         elif isinstance(val, int):
-            continue
+            try:
+                str(val)
+            except ValueError:
+                # A >4300-digit leftover int rode through the int fast path
+                # and ValueError'd Starlette's encoder on GET /api/storage.
+                row[key] = 0.0
         elif isinstance(val, float):
             if val != val or val in (float("inf"), float("-inf")):
                 row[key] = 0.0
