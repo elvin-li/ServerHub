@@ -2853,6 +2853,7 @@ export default {
       unsupported_fs: 'Unsupported filesystem {fs}; choose one of {choices}',
       whole_disk_only: 'Erasing a disk only applies to a whole disk (diskN)',
       invalid_device: 'Invalid device id: {device}',
+      diskutil_missing: 'diskutil is missing on this host',
     },
     files: {
       bad_filename: 'Invalid file name',
@@ -3097,6 +3098,7 @@ export default {
       unknown_action: 'Unknown disk power action: {action}',
       invalid_id: 'invalid disk id',
       not_found: 'Disk not found: {disk}',
+      diskutil_missing: 'diskutil is missing on this host',
     },
     apps: {
       bad_id: 'id must be kind:source, e.g. docker:plex / native:native-redis / launchd:label / vm:uuid',

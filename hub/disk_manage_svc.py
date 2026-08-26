@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any
 
 from hub.disk_snapshot import (
@@ -23,6 +24,41 @@ from hub.util import fan_out, run_bytes, sh
 
 DISK_RE = re.compile(r"^disk\d+(s\d+)*$")
 WHOLE_RE = re.compile(r"^disk\d+$")
+
+#: Every mutation below shells out to this one binary.
+DISKUTIL = "/usr/sbin/diskutil"
+
+#: What a spawn of a gone binary reads like: sh()'s FileNotFoundError
+#: sentinel (``not found``) or a wrapper shell's own refusal.  Purely a
+#: message-pattern gate — diskutil's genuine failures can contain "not
+#: found" too ("Volume … was not found"), so classification additionally
+#: requires the fresh :func:`_diskutil_on_disk` probe (the raid_svc rule).
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
+def _diskutil_on_disk() -> bool:
+    """Fresh disk probe for the mutation-failure path only (raid_svc rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a
+    disk that cannot even answer for /usr/sbin is not confirmably carrying
+    the binary.
+    """
+    try:
+        return Path(DISKUTIL).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _vanished_spawn(rc: int, out: str, err: str) -> bool:
+    """True when a diskutil failure reads like the binary itself is gone.
+
+    Callers must still confirm with :func:`_diskutil_on_disk`: with the
+    binary on disk the raw failure is the truth and keeps its own message.
+    """
+    if rc == 0:
+        return False
+    blob = f"{out}\n{err}".lower()
+    return any(marker in blob for marker in _VANISH_MARKERS)
 
 # Formats we allow for eraseVolume / eraseDisk
 FS_TYPES = {
@@ -657,6 +693,16 @@ def disk_action(
         # here rather than only in the router so the service is correct when called
         # directly.
         invalidate_disks()
+        # A diskutil that vanished between the eligibility checks and the
+        # spawn (an OS update mid-flight, a dying system volume) used to
+        # surface as HTTP 200 ``{"ok": false, "message": "not found"}`` —
+        # a body that reads like a missing *disk* and misdirects the
+        # operator.  The coded 503 fires only after a fresh disk probe
+        # confirms the binary is really gone (the raid_svc rule); with
+        # diskutil still on disk the raw failure keeps its own message.
+        # The probe runs only on this failure path, never on success.
+        if rc != 0 and _vanished_spawn(rc, out, err) and not _diskutil_on_disk():
+            raise api_error("disk.diskutil_missing")
         return rc, out, err
 
     # ---- non-destructive ----

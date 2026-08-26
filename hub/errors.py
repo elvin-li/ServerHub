@@ -142,6 +142,11 @@ CODES: dict[str, tuple[int, str]] = {
     "disk.whole_disk_only": (400, "eraseDisk only applies to a whole disk (diskN)"),
     "disk.unknown_action": (400, "unknown action: {action}"),
     "disk.invalid_device": (400, "invalid device id: {device}"),
+    # A diskutil confirmed vanished by a fresh disk probe on the mutation
+    # failure path.  503 like the other tool-absent states
+    # (raid.diskutil_missing, smart.smartctl_missing, snapshot.tmutil_missing);
+    # the bare "not found" body it replaced read like a missing *disk*.
+    "disk.diskutil_missing": (503, "diskutil is missing on this host"),
     # ── optional FileBrowser process ────────────────────────────────────────
     "files.fb_not_installed": (404, "FileBrowser is not installed (~/Services/filebrowser)"),
     "files.fb_start_failed": (500, "could not start FileBrowser"),
@@ -402,6 +407,11 @@ CODES: dict[str, tuple[int, str]] = {
     "disk_power.unknown_action": (400, "unknown disk power action: {action}"),
     "disk_power.invalid_id": (400, "invalid disk id"),
     "disk_power.not_found": (404, "disk not found: {disk}"),
+    # A diskutil confirmed vanished by a fresh disk probe on the failure
+    # path.  503 like disk.diskutil_missing: the pre-fix answers — a bare
+    # "not found" body, or the 404 "disk not found" when the vanished binary
+    # emptied the listing — both misdirected the operator at the disk.
+    "disk_power.diskutil_missing": (503, "diskutil is missing on this host"),
     "credentials.bad_service_id": (400, 'invalid service id'),
     "credentials.username_required": (400, 'username is required'),
     "credentials.password_too_short": (400, 'the service password must be at least {min} characters'),

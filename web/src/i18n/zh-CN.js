@@ -2849,6 +2849,7 @@ export default {
       unsupported_fs: '不支持的文件系统 {fs}，可选：{choices}',
       whole_disk_only: '抹掉整盘只能针对整盘（diskN）',
       invalid_device: '无效的设备 id：{device}',
+      diskutil_missing: '此主机上缺少 diskutil',
     },
     files: {
       bad_filename: '非法文件名',
@@ -3093,6 +3094,7 @@ export default {
       unknown_action: '未知的磁盘电源操作：{action}',
       invalid_id: '无效的磁盘 id',
       not_found: '找不到磁盘：{disk}',
+      diskutil_missing: '此主机上缺少 diskutil',
     },
     apps: {
       bad_id: 'id 格式应为 kind:source，如 docker:plex / native:native-redis / launchd:label / vm:uuid',
