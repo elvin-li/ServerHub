@@ -188,10 +188,16 @@ def _truthy(value) -> bool:
         return False
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -219,6 +225,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a leftover subclass
+                # ``__str__`` bomb used to blow the digit-cap probe below
+                # (only ValueError was caught) and 500 GET /api/maintenance
+                # — the modules5 unbound convention.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -227,13 +242,24 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a leftover subclass
+                # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf
+                # probes below and 500 GET /api/maintenance.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover bytes-subclass ``decode`` bomb
+        # (a poisoned task name — or a bytes mapping *key*, which reaches
+        # _utf8_text below) used to 500 the encoder walk.
+        return _decode_bytes(value)
     if isinstance(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
@@ -309,6 +335,14 @@ def _task_id(raw) -> str:
         return text.strip()
     if isinstance(raw, bool) or not isinstance(raw, int):
         return ""
+    if type(raw) is not int:
+        try:
+            # Base coercion first: an int-subclass id whose ``__str__``
+            # raised anything but the digit-cap ValueError used to 500
+            # GET /api/maintenance for every task.
+            raw = int.__index__(raw)
+        except Exception:
+            return ""
     try:
         return str(raw)
     except ValueError:
@@ -388,7 +422,9 @@ def _log_lines(raw) -> list[str]:
         if isinstance(item, str):
             out.append(item)
         elif isinstance(item, (bytes, bytearray)):
-            out.append(item.decode("utf-8", "replace"))
+            # Unbound base decode: a bytes-subclass ``decode`` bomb in a
+            # leftover log list used to 500 GET /api/maintenance/{tid}/log.
+            out.append(_decode_bytes(item))
     return out
 
 
