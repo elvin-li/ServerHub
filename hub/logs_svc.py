@@ -28,6 +28,39 @@ def _utf8_text(value) -> str:
     return text.encode("utf-8", "replace").decode("utf-8")
 
 
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    ``isinstance(x, dict)`` passes an odd subclass whose ``get`` (or
+    ``__getitem__``) raises — the ups_svc/backups convention.  One such
+    leftover as the cfg() root or as a ``log_sources`` entry used to raise
+    out of :func:`_entries` and 500 GET /api/logs and GET /api/logs/{id}
+    at once.  ``dict.get`` reads the real storage underneath the override,
+    so a subclass that only poisoned its method keeps its sane fields.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except Exception:
+        try:
+            return dict.get(mapping, key)
+        except Exception:
+            return None
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    Fails closed to False: a bomb as a ``path`` value is junk, not a
+    configured source, so the entry drops instead of 500ing the listing.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _stat_size(path: Path) -> int:
     """``st_size`` can be inf/nan from a FUSE stub; Starlette rejects those.
 
@@ -80,7 +113,11 @@ def _config_text(value) -> str | None:
         return None
     try:
         return str(value)
-    except ValueError:
+    except Exception:
+        # ValueError is the >4300-digit cap; anything else is an
+        # int-subclass ``__str__`` bomb, which used to raise past the
+        # narrow catch and 500 both logs routes.  Either way the field
+        # cannot be rendered — drop it, not the page.
         return None
 
 
@@ -129,8 +166,14 @@ def _entries() -> list[tuple[Path, dict]]:
     "(file does not exist)" for a file the listing had just stat'ed.
     The tail therefore reads through the raw ``Path`` kept here.
     """
-    sources = cfg().get("log_sources")
-    if not isinstance(sources, list) or not sources:
+    # _mapping_get / unbound list reads throughout: cfg() normally hands out
+    # plain parsed YAML, but a leftover cache poisoned with dict/list
+    # *subclasses* passes every isinstance gate here while its ``.get`` /
+    # ``__bool__`` / ``__iter__`` / ``__getitem__`` overrides raise — one
+    # such bomb used to 500 GET /api/logs and GET /api/logs/{id} together.
+    # The unbound reads keep the sane data stored underneath the override.
+    sources = _mapping_get(cfg(), "log_sources")
+    if not isinstance(sources, list) or not list.__len__(sources):
         home = user_home()
         if home is None:
             return []
@@ -140,13 +183,13 @@ def _entries() -> list[tuple[Path, dict]]:
             {"id": "ha", "name": "Home Assistant", "path": str(home / "Services/homeassistant/config/home-assistant.log")},
         ]
     out = []
-    for s in sources:
-        if not isinstance(s, dict) or not s.get("path"):
+    for s in list.__iter__(sources):
+        raw_path = _mapping_get(s, "path")
+        if not _truthy(raw_path):
             continue
-        raw_id = _config_text(s.get("id"))
+        raw_id = _config_text(_mapping_get(s, "id"))
         if not raw_id:
             continue
-        raw_path = s["path"]
         if isinstance(raw_path, (bytes, bytearray)):
             # A bytes path (os.listdir(b"...") leftover) used to stringify
             # to the garbage relative name ``b'/…'``; fsdecode keeps the
@@ -166,7 +209,7 @@ def _entries() -> list[tuple[Path, dict]]:
         except OSError:
             exists, size = False, 0
         sid = _utf8_text(raw_id)
-        name = _config_text(s.get("name"))
+        name = _config_text(_mapping_get(s, "name"))
         if not name:
             name = sid
         else:
