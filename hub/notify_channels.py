@@ -179,6 +179,73 @@ def valid_channel_id(cid) -> bool:
     return isinstance(cid, str) and bool(_ID_RE.fullmatch(cid))
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule, which these notify readers never
+    got: ``isinstance(x, dict)`` passes an odd subclass whose ``get`` raises,
+    and one such channel row used to raise out of :func:`channels` and 500
+    every /api/alerts/channels route — plus POST /api/alerts/test through
+    :func:`dispatch`, which claims it never raises.  ``dict.get`` reads the
+    real storage underneath the override, so a subclass that only poisoned
+    its method keeps its sane data.
+    """
+    if not isinstance(mapping, dict):
+        return default
+    try:
+        return mapping.get(key, default)
+    except Exception:
+        try:
+            return dict.get(mapping, key, default)
+        except Exception:
+            return default
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule: the truth tests hidden in
+    ``ch.get("min_level") or "warn"`` / ``bool(ch.get("enabled", True))`` /
+    ``raw.get("ha_token") or …`` used to detonate a junk stored value whose
+    ``__bool__`` raises and 500 GET /api/alerts/channels and
+    POST /api/alerts/test (killing the alert thread's sweep the same way).
+    Fails closed to False — a bomb flag is junk, not consent to notify.
+    """
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that a leftover ``__bool__`` bomb cannot 500."""
+    return value if _truthy(value) else fallback
+
+
+def _plain_row(ch) -> dict | None:
+    """A channel row as a *plain* dict copy, or None for a non-mapping.
+
+    ``dict(subclass)`` copies through CPython's C-level storage, bypassing a
+    leftover row's overridden ``.get`` / ``items`` / ``keys`` (the bomb class
+    backups6/sched6 sealed elsewhere), so every read on the returned map is
+    on a plain dict.  A subclass whose copy itself raises is junk and drops.
+    """
+    if not isinstance(ch, dict):
+        return None
+    try:
+        return dict(ch)
+    except Exception:
+        return None
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _id_text(raw) -> str:
     """A channel id coerced to its string form via the str() probe.
 
@@ -191,11 +258,29 @@ def _id_text(raw) -> str:
     a bare ``str()`` on it *is* the digit-cap ValueError — that used to 500
     GET /api/alerts/channels and raise out of dispatch() on the alert thread.
     Unrenderable ids coerce to "" and the callers drop the row.
+
+    Always returns an *exact* ``str``: a str-subclass id whose ``__eq__``
+    raises used to detonate every ``== cid`` comparison downstream (the
+    containers_svc ``_plain_text`` rule) and 500 all six channel routes at
+    once.  ``str.__str__`` copies the real text without running the
+    subclass's own ``__str__`` / ``__eq__``.
     """
     if isinstance(raw, str):
-        return raw
+        if type(raw) is str:
+            return raw
+        try:
+            return str.__str__(raw)
+        except Exception:
+            return ""
     if raw is None or isinstance(raw, bool):
         return ""
+    if isinstance(raw, int) and type(raw) is not int:
+        # Base coercion to an exact int: an int-subclass ``__str__`` bomb
+        # id must keep its real number, not drop the row.
+        try:
+            raw = int.__index__(raw)
+        except Exception:
+            return ""
     try:
         return str(raw)
     except ValueError:
@@ -213,15 +298,29 @@ def _raw_notify_cfg() -> dict:
 
 
 def channels(raw: dict | None = None) -> list[dict]:
-    """Explicit channels from services.yaml (legacy HA is not among them)."""
+    """Explicit channels from services.yaml (legacy HA is not among them).
+
+    Every returned row is a *plain* dict with an exact-str ``id`` and
+    ``type``: a leftover dict-subclass row (``.get`` bomb), a list-subclass
+    ``channels:`` (``__iter__`` bomb) or a str-subclass id (``__eq__`` bomb)
+    used to raise out of this walk and 500 all six /api/alerts/channels
+    routes and POST /api/alerts/test at once — the modules5 unbound-base
+    class the rest of the tree already seals.
+    """
     if raw is None:
         raw = _raw_notify_cfg()
     out = []
-    rows = raw.get("channels") if isinstance(raw, dict) else None
+    rows = _mapping_get(raw, "channels")
     if not isinstance(rows, list):
         rows = []
-    for ch in rows:
-        if not isinstance(ch, dict):
+    # Unbound base iteration: a list-subclass ``__iter__`` bomb cannot 500
+    # and the real rows still walk.
+    for ch in list.__iter__(rows):
+        # Plain-dict copy first (C-level storage): the row's own overridden
+        # ``.get`` / ``keys`` never runs.  Rows are the live cfg() cache,
+        # so the copy also keeps them unmutated.
+        ch = _plain_row(ch)
+        if ch is None:
             continue
         # str() probe, not an isinstance gate: a numeric YAML ``id: 123``
         # must behave as "123" everywhere, and a hex over-cap id (whose str()
@@ -231,12 +330,13 @@ def channels(raw: dict | None = None) -> list[dict]:
             continue
         # Membership on a dict hashes the key.  A hand-edit like ``type: [ntfy]``
         # used to TypeError here and 500 GET /api/alerts/channels *and* the
-        # alert thread (dispatch claims it never raises).
-        ctype = ch.get("type")
-        if isinstance(ctype, str) and ctype in CHANNEL_TYPES:
-            if ch.get("id") != cid:
-                # Copy: rows are the live cfg() cache, never mutated in place.
-                ch = {**ch, "id": cid}
+        # alert thread (dispatch claims it never raises).  Exact-str coercion
+        # first: a str-subclass ``__hash__``/``__eq__`` bomb passes the
+        # isinstance gate and used to detonate inside this very lookup.
+        ctype = _id_text(ch.get("type"))
+        if ctype and ctype in CHANNEL_TYPES:
+            ch["id"] = cid
+            ch["type"] = ctype
             out.append(ch)
     return out
 
@@ -309,7 +409,10 @@ def _min_rank(ch: dict) -> int:
     # contract — and out of effective_settings, whose caller fell back to the
     # raw legacy flags and silently stopped notifying for every explicit
     # channel.  An unrenderable level falls back to the "warn" default.
-    return LEVELS.get(_utf8_text(ch.get("min_level") or "warn"), LEVELS["warn"])
+    # _pick, not ``or``: the truth test hidden in ``… or "warn"`` used to
+    # detonate a ``__bool__`` bomb value the same way.
+    return LEVELS.get(_utf8_text(_pick(_mapping_get(ch, "min_level"), "warn")),
+                      LEVELS["warn"])
 
 
 def effective_settings(raw: dict) -> dict:
@@ -322,14 +425,16 @@ def effective_settings(raw: dict) -> dict:
     precise routing.  With no enabled explicit channel the raw dict is
     returned untouched, so a pure-legacy install behaves exactly as before.
     """
-    enabled = [c for c in channels(raw) if c.get("enabled", True)]
+    # _truthy: a ``__bool__`` bomb flag must read as junk (False), never
+    # raise out of the alert engine's settings read.
+    enabled = [c for c in channels(raw) if _truthy(c.get("enabled", True))]
     if not enabled:
         return raw
     out = dict(raw)
     out["enabled"] = True
     if any(_min_rank(c) <= LEVELS["warn"] for c in enabled):
         out["include_warn"] = True
-    if any(c.get("notify_resolve", True) for c in enabled):
+    if any(_truthy(c.get("notify_resolve", True)) for c in enabled):
         out["notify_resolve"] = True
     return out
 
@@ -340,24 +445,30 @@ def _legacy_target(raw: dict) -> tuple[dict, dict] | None:
     Returns None when the legacy config has nothing to send to, so installs
     that never configured Home Assistant get no phantom channel.
     """
-    if not (raw.get("ha_webhook_url") or raw.get("webhook_url") or raw.get("ha_token")):
+    # _truthy / _pick, not bare truth tests: a leftover ``__bool__`` bomb in
+    # any legacy field used to raise out of dispatch() (never-raises contract)
+    # and 500 POST /api/alerts/test.
+    if not (_truthy(_mapping_get(raw, "ha_webhook_url"))
+            or _truthy(_mapping_get(raw, "webhook_url"))
+            or _truthy(_mapping_get(raw, "ha_token"))):
         return None
     ch = {
         "id": LEGACY_ID,
         "type": "home_assistant",
         "name": "Home Assistant",
-        "enabled": bool(raw.get("enabled")),
+        "enabled": _truthy(_mapping_get(raw, "enabled")),
         # include_warn defaults to True here.  The stricter per-callsite
         # defaults (service warns need an explicit include_warn) are already
         # enforced by the gates in hub/alerts.py before dispatch() runs.
-        "min_level": "warn" if raw.get("include_warn", True) else "down",
-        "notify_resolve": raw.get("notify_resolve", True),
-        "ha_url": raw.get("ha_url"),
-        "ha_service": raw.get("ha_service"),
+        "min_level": "warn" if _truthy(_mapping_get(raw, "include_warn", True)) else "down",
+        "notify_resolve": _truthy(_mapping_get(raw, "notify_resolve", True)),
+        "ha_url": _mapping_get(raw, "ha_url"),
+        "ha_service": _mapping_get(raw, "ha_service"),
     }
     secrets = {
-        "ha_token": raw.get("ha_token") or "",
-        "ha_webhook_url": raw.get("ha_webhook_url") or raw.get("webhook_url") or "",
+        "ha_token": _pick(_mapping_get(raw, "ha_token"), ""),
+        "ha_webhook_url": _pick(_mapping_get(raw, "ha_webhook_url"),
+                                _pick(_mapping_get(raw, "webhook_url"), "")),
     }
     return ch, secrets
 
@@ -553,7 +664,9 @@ def drop_channel_secrets(cid: str) -> None:
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a subclass ``.decode`` bomb used to raise
+        # straight out of GET /api/alerts/channels.
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -576,16 +689,32 @@ def _json_safe(value, depth: int = 0):
     GET /api/alerts/channels under Starlette's allow_nan=False encoder.
     A leftover ``\\ud800`` in ``name`` / ``id`` / a nested key still 500'd
     the same route (and POST /api/alerts/test via dispatch results).
+
+    Probes run on the *base* types (the modules5 unbound convention): a
+    subclass ``items()`` / ``__iter__`` / ``__str__`` / ``__eq__`` /
+    ``decode`` bomb, or a raising ``isoformat`` property, each used to 500
+    GET /api/alerts/channels out of this very sanitizer.
     """
     if depth > 32:
         return None
+    if isinstance(value, bool) or value is None:
+        return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a dict-subclass ``items()`` that raises or
+        # yields non-pairs cannot 500, and the real entries still walk.
+        for k, v in dict.items(value):
             try:
                 key = _utf8_text(k)
             except Exception:
@@ -593,12 +722,21 @@ def _json_safe(value, depth: int = 0):
             out[key] = _json_safe(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_safe(v, depth + 1) for v in value]
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.
+                return [_json_safe(v, depth + 1) for v in base.__iter__(value)]
     if isinstance(value, str):
         return _utf8_text(value)
-    if isinstance(value, bool) or value is None:
-        return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -607,8 +745,13 @@ def _json_safe(value, depth: int = 0):
             return None
         return value
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    iso = getattr(value, "isoformat", None)
+        return _decode_bytes(value)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -646,9 +789,12 @@ def _write_secrets(data: dict) -> None:
 
 def public_channel(ch: dict) -> dict:
     """API-safe view: config fields verbatim, secrets as has_* booleans only."""
-    spec = CHANNEL_TYPES.get(str(ch.get("type"))) or {"fields": (), "secrets": ()}
-    # _id_text, not bare str(): a hex-YAML over-cap id made str() itself raise
-    # the digit-cap ValueError and 500 GET /api/alerts/channels right here.
+    # Plain-dict copy first: a dict-subclass row's own ``.get`` bomb must
+    # never run; _id_text (not bare str()) for the type, since an int-subclass
+    # ``__str__`` bomb — and the hex-YAML over-cap id, whose str() raises the
+    # digit-cap ValueError — used to 500 GET /api/alerts/channels right here.
+    ch = _plain_row(ch) or {}
+    spec = CHANNEL_TYPES.get(_id_text(ch.get("type"))) or {"fields": (), "secrets": ()}
     raw_id = _id_text(ch.get("id"))
     stored = channel_secrets(raw_id)
     cid = _json_safe(raw_id if raw_id else ch.get("id"))
@@ -659,14 +805,16 @@ def public_channel(ch: dict) -> dict:
         "id": cid,
         "type": _json_safe(ch.get("type")),
         "name": name,
-        "enabled": bool(ch.get("enabled", True)),
+        # _truthy / _pick, not bool() / ``or``: a ``__bool__`` bomb flag
+        # value used to 500 GET /api/alerts/channels out of these reads.
+        "enabled": _truthy(ch.get("enabled", True)),
         # _utf8_text directly, not around a bare str(): a hex-YAML over-cap
         # ``min_level`` made the inner str() raise the digit-cap ValueError
         # before _utf8_text ever ran, 500ing GET /api/alerts/channels.
-        "min_level": _utf8_text(ch.get("min_level") or "warn") or "warn",
-        "notify_resolve": bool(ch.get("notify_resolve", True)),
+        "min_level": _utf8_text(_pick(ch.get("min_level"), "warn")) or "warn",
+        "notify_resolve": _truthy(ch.get("notify_resolve", True)),
         "config": {},
-        "has": {s: bool(stored.get(s)) for s in spec["secrets"]},
+        "has": {s: _truthy(_mapping_get(stored, s)) for s in spec["secrets"]},
     }
     for field in spec["fields"]:
         value = _json_safe(ch.get(field))
@@ -935,12 +1083,14 @@ _SENDERS = {
 # ── dispatch ──────────────────────────────────────────────────────────────────
 
 def _channel_wants(ch: dict, level, event) -> bool:
-    if not ch.get("enabled", True):
+    # _truthy: a ``__bool__`` bomb flag used to raise out of dispatch() on
+    # the alert thread (never-raises contract) and 500 POST /api/alerts/test.
+    if not _truthy(_mapping_get(ch, "enabled", True)):
         return False
     if event == "test":
         return True
     if event == "resolved":
-        return bool(ch.get("notify_resolve", True))
+        return _truthy(_mapping_get(ch, "notify_resolve", True))
     rank = LEVELS.get(str(level or "down"), LEVELS["down"])
     return rank >= _min_rank(ch)
 
