@@ -12,7 +12,7 @@ from pathlib import Path
 
 from hub import cli_args
 from hub.docker_cli import _jsonable, engine_up
-from hub.errors import api_error
+from hub.errors import CODES, api_error
 from hub.launchd_cache import invalidate_launchd, loaded_labels
 from hub.util import cached_snapshot, fan_out, read_bytes_capped, run_capped, sh, strftime_now, utf8_env
 from hub.brew_cache import brew_services_list, invalidate_brew_services
@@ -35,6 +35,14 @@ from hub.paths import BREW  # noqa: E402
 _TTL = 12.0
 #: Leftover multi-MB LaunchAgent plist used to OOM GET /api/apps/autostart.
 _PLIST_CAP = 256 * 1024
+
+# Same code (and localized string) native_catalog registers for its own
+# LaunchAgent writes; setdefault here too so raising it does not depend on
+# import order — api_error() degrades unknown codes to HTTP 500.
+CODES.setdefault(
+    "catalog.plist_write_failed",
+    (409, "could not write LaunchAgent {label}: {detail}"),
+)
 
 
 def _as_text(value) -> str:
@@ -144,7 +152,20 @@ def _read_plist(path: Path) -> dict:
 
 def _write_plist(path: Path, data: dict) -> None:
     from hub import secure_io
-    secure_io.replace_bytes(path, plistlib.dumps(data))
+    try:
+        secure_io.replace_bytes(path, plistlib.dumps(data))
+    except (OSError, OverflowError, ValueError, TypeError, RecursionError) as exc:
+        # plistlib.loads reads any <integer> — the 0x… spelling parses uncapped
+        # past CPython's digit limit — but the dumps writer refuses ints outside
+        # the 64-bit window with OverflowError (the files_svc/ondemand class).
+        # That, or an unwritable LaunchAgents dir (OSError from replace_bytes),
+        # used to 500 POST /api/apps/autostart for a launchd/script toggle on a
+        # plist that had already passed the bad_plist gate — homebrew.mxcl.*
+        # agents included.  Same coded 409 as native_catalog's agent writes.
+        label = data.get("Label") if isinstance(data.get("Label"), str) else path.stem
+        raise api_error(
+            "catalog.plist_write_failed", label=label, detail=_as_text(exc)
+        )
 
 
 def _loaded_labels() -> frozenset[str]:
