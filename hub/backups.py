@@ -24,10 +24,16 @@ from hub.paths import CONFIG_FILE, DATA_DIR, user_home
 from hub.util import read_text_capped, run_capped, safe_json_loads, strftime_now, utf8_env
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """``run_capped`` leftovers arrive as bytes/None; JSON and ``.strip`` need text."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif value is None:
         return ""
     else:
@@ -40,7 +46,14 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the hub.modules._utf8_text rule): ``str()`` of a
+    # subclass whose ``__str__`` answers *self* skips CPython's exact-str
+    # copy, so a leftover bound ``encode`` bomb rode this line out of the
+    # broad catches around the postgres/configs jobs — the *successful*
+    # artefact was discarded and reported as the dump's failure.  The
+    # round-trip also hands every caller an exact str, so the ``[:500]`` /
+    # ``.strip()`` that follow cannot hit another poisoned override.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _home_dir() -> Path:
@@ -406,10 +419,39 @@ def _cfg_text(value) -> str | None:
         # leftover self-referential __str__.
         return None
     try:
-        text.encode("utf-8")
+        # Unbound base encode, and the round-trip rather than a bare probe:
+        # ``str()`` of a subclass whose ``__str__`` answers *self* skips
+        # CPython's exact-str copy, so a leftover bound ``encode`` bomb
+        # raised RuntimeError past the UnicodeEncodeError catch and 500'd
+        # GET /api/backups — and the subclass's ``.strip()`` / ``__eq__``
+        # were the next overrides in pg_targets' path.  The decode of the
+        # exact bytes hands back an exact str.
+        return str.encode(text, "utf-8").decode("utf-8")
     except UnicodeEncodeError:
         return None
-    return text
+    except Exception:
+        return None
+
+
+def _exact_str(value) -> str | None:
+    """Exact-str copy of *value* without calling any overridable method.
+
+    ``agent_keywords`` / ``extra_paths`` entries pass ``isinstance(x, str)``
+    as odd subclasses too, and the bound ``.strip()`` that followed used to
+    raise out of :func:`agent_keywords` / :func:`config_archive_extra_paths`
+    and 500 POST /api/backups/configs.  surrogatepass, not the
+    :func:`_cfg_text` reject: these values name real on-disk files, and an
+    undecodable filename legitimately carries lone surrogates
+    (os surrogateescape) all the way into tar's argv.
+    """
+    if type(value) is str:
+        return value
+    try:
+        return str.encode(value, "utf-8", "surrogatepass").decode(
+            "utf-8", "surrogatepass"
+        )
+    except Exception:
+        return None
 
 
 def _truthy(value) -> bool:
@@ -802,7 +844,7 @@ def _immich_latest() -> dict | None:
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -812,7 +854,10 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode this line to a 500 — at value, nested and mapping-key rank.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -824,12 +869,26 @@ def _jsonable(value, depth: int = 0):
     still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
     A >4300-digit int still passed through untouched: CPython's int->str
     digit limit then ValueError'd ``json.dumps`` itself.
+    Subclass bombs (the hub.modules._jsonable unbound convention this copy
+    never got) each 500'd the page out of ``_json_object``, whose
+    ``_jsonable(raw)`` call sits outside its load-time catch: a dict whose
+    ``items()`` raises, a container whose ``__iter__`` raises, an int whose
+    ``__str__`` blows the digit-cap probe, a float whose ``__eq__`` blows
+    the NaN/inf probes, bytes whose ``decode`` raises, and an ``isoformat``
+    probe on an object whose ``__getattr__`` raises.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -838,17 +897,28 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a dict subclass whose ``items()`` raises used
+        # to 500 the page; the real storage underneath still comes through.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -856,8 +926,17 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -1424,6 +1503,13 @@ def agent_keywords() -> tuple[str, ...]:
     if isinstance(extras, list):
         for kw in _iter_list(extras):
             if isinstance(kw, str):
+                # _exact_str first: a str-subclass entry whose bound
+                # ``.strip()`` / ``__eq__`` raises used to 500
+                # POST /api/backups/configs as soon as one LaunchAgents
+                # plist was up for the _wanted_agent test.
+                kw = _exact_str(kw)
+                if kw is None:
+                    continue
                 kw = kw.strip()
                 if kw and kw not in merged:
                     merged.append(kw)
@@ -1444,7 +1530,12 @@ def config_archive_extra_paths() -> list[Path]:
     if not isinstance(raw, list):
         return out
     for entry in _iter_list(raw):
-        if not isinstance(entry, str) or not entry.strip():
+        if not isinstance(entry, str):
+            continue
+        # _exact_str first: a str-subclass entry whose bound ``.strip()``
+        # raises used to 500 POST /api/backups/configs out of this loop.
+        entry = _exact_str(entry)
+        if entry is None or not entry.strip():
             continue
         try:
             path = Path(os.path.expanduser(entry.strip()))
