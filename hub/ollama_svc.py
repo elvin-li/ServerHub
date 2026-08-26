@@ -761,18 +761,53 @@ _pull_lock = threading.Lock()
 
 
 def pull_state() -> dict:
-    return {
-        "running": _pull["running"],
-        "rc": _pull["rc"],
-        "model": _pull["model"],
-        "started": _pull["started"],
-        "finished": _pull["finished"],
+    """Pull-job state as the UI polls it.  Never raises.
+
+    The maintenance twin (:func:`hub.jobs.job_state`) already coerces a junk
+    in-memory row; this one served ``_pull`` raw.  GET /api/ollama/status
+    survived only because :func:`status` re-walks the whole snapshot through
+    ``_jsonable`` — GET /api/ollama/pull/log had no such pass, so a leftover
+    inf ``rc`` (or one past the int->str digit cap) 500'd the encoder there.
+    """
+    state = _jsonable({
+        "running": bool(_pull.get("running")),
+        "rc": _pull.get("rc"),
+        "model": _pull.get("model"),
+        "started": _pull.get("started"),
+        "finished": _pull.get("finished"),
+    })
+    return state if isinstance(state, dict) else {
+        "running": False, "rc": None, "model": None,
+        "started": None, "finished": None,
     }
 
 
+def _pull_log_lines(raw) -> list[str]:
+    """String lines from a leftover pull-row ``log`` field.  Never raises.
+
+    The ``jobs._log_lines`` rule: ``log: [bytes, None, 5]`` in a junk
+    in-memory row TypeError'd ``str.join`` out of GET /api/ollama/pull/log.
+    """
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, (bytes, bytearray)):
+            out.append(item.decode("utf-8", "replace"))
+    return out
+
+
 def pull_log() -> dict:
-    """State + joined log, same shape the maintenance log endpoint serves."""
-    return {**pull_state(), "log": "\n".join(_pull["log"])}
+    """State + joined log, same shape the maintenance log endpoint serves.
+
+    ``_utf8_text`` on the joined tail: a leftover lone surrogate in one line
+    used to 500 Starlette's strict UTF-8 encode of the response body.
+    """
+    return {**pull_state(), "log": _utf8_text("\n".join(_pull_log_lines(_pull.get("log"))))}
 
 
 def start_pull(name: str) -> dict:
