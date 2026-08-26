@@ -296,8 +296,18 @@ def _account_rows(auth_cfg: dict) -> list[dict]:
 
 
 def _utf8(text: str) -> bytes:
-    """UTF-8 bytes of *text*.  Lone surrogates must not 500 login or setup."""
-    return str(text).encode("utf-8", "surrogatepass")
+    """UTF-8 bytes of *text*.  Lone surrogates must not 500 login or setup.
+
+    Unbound ``str.encode`` on an exact str (the json6 ``_utf8_text`` rule):
+    ``str(x)`` of a str *subclass* whose ``__str__`` returns itself keeps the
+    subclass, so the bound ``.encode`` dispatched into a leftover override —
+    a bomb there raised out of ``account_session_version`` past
+    ``verify_session``'s catch list and 500'd every cookie check.
+    """
+    value = text if isinstance(text, str) else str(text)
+    if type(value) is not str:
+        value = str.__str__(value)
+    return str.encode(value, "utf-8", "surrogatepass")
 
 
 def _cfg_text(raw) -> str:
@@ -313,19 +323,40 @@ def _cfg_text(raw) -> str:
     leftover int-subclass ``__str__`` bomb as a ``session_epochs`` key used
     to raise past the digit-cap guard and 500 every login through
     :func:`_session_epoch`.
+
+    Laundered to an *exact* str (the json6 ``panel_locale`` rule):
+    ``str(x)`` of a str subclass whose ``__str__`` returns itself keeps the
+    subclass, so every downstream bound dispatch reflected into leftover
+    overrides — ``.strip()`` in :func:`accounts` / :func:`_epoch_key` /
+    :func:`setup_token_mode`, ``.startswith`` in :func:`verify_password` /
+    :func:`verify_account_password`, ``in ROLES`` / ``not in ("",
+    "change-me")`` reflected ``__eq__``, and the resources walk — and one
+    such value planted anywhere in ``settings.auth`` 500'd GET
+    /api/auth/status, POST /api/auth/login and every session-cookie check
+    at once.  ``str.__str__`` copies through the C-level storage, so the
+    real text underneath the poisoned override is kept.
     """
     try:
-        return str(raw)
+        text = str(raw)
+        if type(text) is not str:
+            text = str.__str__(text)
+        return text
     except Exception:
         return ""
 
 
 def _utf8_ok(text: str) -> bool:
-    """False for leftover YAML ``\\ud800`` — Starlette's JSON encoder rejects it."""
+    """False for leftover YAML ``\\ud800`` — Starlette's JSON encoder rejects it.
+
+    Unbound ``str.encode`` + broad catch: a str-subclass ``encode`` bomb
+    used to raise past the UnicodeEncodeError-only catch.  The unbound call
+    reads the real text underneath the override, so a bombed-but-clean name
+    still answers True; anything else unanswerable fails closed to False.
+    """
     try:
-        text.encode("utf-8")
+        str.encode(text, "utf-8")
         return True
-    except UnicodeEncodeError:
+    except Exception:
         return False
 
 
