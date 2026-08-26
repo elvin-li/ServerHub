@@ -413,9 +413,9 @@ def _field_text(value, fallback: str = "") -> str:
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a leftover float-subclass
-                # ``__eq__``/``__ne__`` bomb in a stack id/name/group used to
-                # blow the NaN/inf probes below and 500 GET /api/stacks (the
-                # docker_cli._jsonable unbound convention).
+                # ``__eq__``/``__ne__``/``__float__`` bomb in a stack id/name/group
+                # used to blow the NaN/inf probes below and 500 GET /api/stacks
+                # and GET /api/compose/{id} (the docker_cli._jsonable convention).
                 value = float.__float__(value)
             except Exception:
                 return fallback
@@ -426,8 +426,8 @@ def _field_text(value, fallback: str = "") -> str:
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: an int-subclass ``__str__``
-                # bomb used to blow the digit-cap probe below (only
-                # ValueError was caught) and 500 the same routes.
+                # / ``__index__`` bomb used to blow the digit-cap probe below
+                # (only ValueError was caught) and 500 the same routes.
                 value = int.__index__(value)
             except Exception:
                 return fallback
@@ -1620,8 +1620,8 @@ def _stack_paths() -> list[dict]:
     # dict.get through the C storage, with both the snapshot provider and
     # the lookup guarded: a leftover cfg() root that is a dict *subclass*
     # with a bombing ``.get`` (or a str-subclass key whose ``__eq__`` raises
-    # on hash collision with "stacks") used to 500 GET /api/stacks and
-    # POST /api/stacks/{id}/run — the backups6 ``_mapping_get`` class.
+    # on hash collision with "stacks") used to 500 GET /api/stacks,
+    # GET /api/compose/{id} and POST /api/stacks/{id}/run.
     try:
         data = cfg()
     except Exception:
