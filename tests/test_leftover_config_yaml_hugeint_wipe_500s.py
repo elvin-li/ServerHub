@@ -253,6 +253,48 @@ class SettingsRoutesPoisonedConfigPins(unittest.TestCase):
         self.assertEqual(parsed["settings"]["auth"]["username"], "keep-admin")
 
 
+class UncappedIntSpellingsStayImmunePins(unittest.TestCase):
+    """Every YAML 1.1 int spelling that dodges CPython's int(str) cap.
+
+    Hex is pinned elsewhere; octal and binary go through power-of-two bases
+    (``int(x, 8)`` / ``int(x, 2)``, both exempt from the digit cap) and the
+    sexagesimal form (``59:59:…``) multiplies per-part — every ``int(part)``
+    is under the cap, yet the product is thousands of digits.  All three
+    load as *already-int* over-cap values that no encoder can render, so
+    they exercise the same str()-probe drops as hex.  Pinned because no
+    other test spells them, and a loader swap (or a cap applied to the
+    wrong bases) would surface here first.
+    """
+
+    SPELLINGS = {
+        "octal": "0" + "7" * 6000,
+        "binary": "0b" + "1" * 20000,
+        "sexagesimal": ":".join(["59"] * 3000),
+    }
+
+    def test_each_spelling_loads_as_a_real_unrenderable_int(self):
+        for name, text in self.SPELLINGS.items():
+            with self.subTest(spelling=name):
+                doc = config.load_yaml_int_capped("v: " + text + "\n")
+                self.assertIsInstance(doc["v"], int)
+                self.assertNotIsInstance(doc["v"], bool)
+                with self.assertRaises(ValueError):
+                    str(doc["v"])
+
+    def test_renderable_tree_drops_each_spelling_but_keeps_siblings(self):
+        for name, text in self.SPELLINGS.items():
+            with self.subTest(spelling=name):
+                doc = config.load_yaml_int_capped(
+                    "keep: yes\nbig: " + text + "\nrows: [7, " + text + "]\n"
+                )
+                cleaned = config._renderable_tree(doc)
+                self.assertIs(cleaned["keep"], True)
+                self.assertNotIn("big", cleaned)
+                self.assertEqual(cleaned["rows"], [7])
+                # the cleaned tree must round-trip through the dumper
+                yaml.safe_dump(cleaned)
+
+
 class JsonJournalContractStaysImmunePins(unittest.TestCase):
     """The JSON side was found immune — pin the stdlib contract it rests on."""
 

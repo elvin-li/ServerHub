@@ -2728,6 +2728,7 @@ export default {
       invalid_resource_mode: '无效的资源模式：{mode}',
       empty_patch: '没有提供任何设置更改',
       save_failed: '无法保存配置文件',
+      config_unreadable: '无法读取 services.yaml；请先修复或恢复该文件再保存',
     },
     metrics: {
       bad_window: 'until 必须大于 since',
