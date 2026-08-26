@@ -220,6 +220,42 @@ def _prefetch_disk_info(nodes: list[str]) -> None:
     fan_out(_fetch_shared, pending, max_workers=min(_INFO_WORKERS, len(pending)))
 
 
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False).
+
+    The nas_common rule: a plist flag that passes ``isinstance`` with a
+    ``__bool__`` that raises used to 500 POST /api/storage/manage/{id}
+    straight out of the boot-volume guard's ``and`` chain, and to drop a
+    whole node from the manage listing where only its own field is
+    unreadable.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _plain_info(info) -> dict:
+    """*info* as a plain ``dict``, or empty.
+
+    A dict-*subclass* leftover in the ``diskutil info`` cache (the
+    jobs/metrics row-bomb class) passes the isinstance gate with a
+    ``__bool__``/``__len__``/``.get`` that raises; ``disk_action``'s own
+    ``if not info`` truthiness probe used to 500 every manage mutation on
+    such a value.  ``dict()`` copies through the C-level storage, so an
+    overridden method cannot fire; a subclass whose copy itself raises is
+    junk and reads as "no info".
+    """
+    if type(info) is dict:
+        return info
+    if isinstance(info, dict):
+        try:
+            return dict(info)
+        except Exception:
+            return {}
+    return {}
+
+
 def _ident(value) -> str:
     """Plist device identifier as a string.
 
@@ -230,7 +266,12 @@ def _ident(value) -> str:
     leftover ``\\ud800`` identifier used to 500 the same JSON encoder.
     """
     if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
+        try:
+            value = value[0] if value else ""
+        except Exception:
+            # A sequence subclass whose ``__bool__``/``__getitem__``
+            # raises: nothing usable to read.
+            return ""
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8", "replace")
     if not isinstance(value, str):
@@ -238,6 +279,10 @@ def _ident(value) -> str:
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:
+        return ""
+    except Exception:
+        # A str-subclass ``encode`` bomb: the identifier cannot be
+        # verified UTF-8-safe, so it reads as absent like the surrogate.
         return ""
     return value
 
@@ -249,19 +294,44 @@ def _text(value) -> str:
     diskutil plist.  ``inf`` used to fail Starlette's ``allow_nan=False``
     encoder and ``bytes`` used to TypeError ``json.dumps``.  A leftover
     ``\\ud800`` name still 500'd the UTF-8 encode of GET /api/storage.
+
+    Subclass bombs (the modules5/tools5 class) go through unbound base
+    coercions: a float ``__eq__`` bomb used to blow the NaN probe, a
+    str-subclass ``encode`` bomb the final re-encode, and either one cost
+    the whole node (with a single disk, the whole manage listing) where
+    only its own field is unreadable.
     """
     if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
+        try:
+            value = value[0] if value else ""
+        except Exception:
+            return ""
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8", "replace")
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
-    elif value in (None, False, ""):
-        return ""
-    elif isinstance(value, (dict, set, frozenset)):
-        return ""
-    elif not isinstance(value, str):
+    elif isinstance(value, float):
         try:
+            value = float.__float__(value)
+        except Exception:
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        if value == 0.0:
+            # Pre-restructure parity: 0.0 matched the ``(None, False, "")``
+            # membership below (``0.0 == False``) and read as absent.
+            return ""
+        value = str(value)
+    else:
+        try:
+            if value in (None, False, ""):
+                return ""
+        except Exception:
+            # ``in`` reflects into the leftover's own ``__eq__``.
+            return ""
+        if isinstance(value, (dict, set, frozenset)):
+            return ""
+        try:
+            # str() also for str *subclasses*: it returns a base copy, so
+            # a subclass ``encode`` bomb cannot fire on the re-encode below.
             value = str(value)
         except RecursionError:
             try:
@@ -310,15 +380,23 @@ def _opt_bool(value):
         return value
     if value is None:
         return None
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+    try:
+        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            return None
+        # ``__bool__``/``__eq__`` bombs (the tools5 class) used to raise out
+        # of the listing walk and drop the whole node for one bad flag.
+        return bool(value)
+    except Exception:
         return None
-    return bool(value)
 
 
 def _size_bytes(raw) -> int:
     try:
+        # ``except Exception``: ``raw or 0`` reflects into a leftover's own
+        # ``__bool__`` and ``int()`` into a subclass ``__int__``/``__index__``
+        # — neither bomb is one of the three usual conversion errors.
         size = int(raw or 0)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return 0
     try:
         str(size)
@@ -396,10 +474,12 @@ def _is_system_related(info: dict, device_id: str) -> bool:
     whole = _ident(info.get("ParentWholeDisk"))
     if whole == "disk0":
         # only if this is internal system — still be careful for partitions of disk0
-        if info.get("Internal") and info.get("SolidState"):
+        # _truthy: a leftover ``__bool__`` bomb on either flag used to raise
+        # out of this ``and`` chain — a bare 500 on POST /api/storage/manage.
+        if _truthy(info.get("Internal")) and _truthy(info.get("SolidState")):
             # APFS system container
-            fs = _text(info.get("FilesystemType") or info.get("FilesystemName")).lower()
-            if "apfs" in fs or info.get("APFSContainerReference"):
+            fs = (_text(info.get("FilesystemType")) or _text(info.get("FilesystemName"))).lower()
+            if "apfs" in fs or _truthy(info.get("APFSContainerReference")):
                 # any volume on system APFS container
                 if not mp.startswith("/Volumes/"):
                     # not user external mount
@@ -565,9 +645,9 @@ def list_managed_volumes() -> list[dict]:
                     "mount": mount,
                     "mounted": bool(mount),
                     "writable": _opt_bool(info.get("Writable")) if "Writable" in info else None,
-                    "internal": bool(info.get("Internal")),
-                    "ejectable": bool(info.get("Ejectable")),
-                    "removable": bool(info.get("Removable") or info.get("RemovableMedia")),
+                    "internal": _truthy(info.get("Internal")),
+                    "ejectable": _truthy(info.get("Ejectable")),
+                    "removable": _truthy(info.get("Removable")) or _truthy(info.get("RemovableMedia")),
                     "system": is_sys,
                     "actions": _actions_for(info, ident, is_whole=True, system=is_sys),
                 })
@@ -617,9 +697,9 @@ def list_managed_volumes() -> list[dict]:
             "mount": mount,
             "mounted": bool(mount),
             "writable": _opt_bool(info.get("WritableVolume", info.get("Writable"))),
-            "internal": bool(info.get("Internal")),
-            "ejectable": bool(info.get("Ejectable")),
-            "removable": bool(info.get("Removable") or info.get("RemovableMedia")),
+            "internal": _truthy(info.get("Internal")),
+            "ejectable": _truthy(info.get("Ejectable")),
+            "removable": _truthy(info.get("Removable")) or _truthy(info.get("RemovableMedia")),
             "system": system,
             "actions": _actions_for(info, ident, is_whole=False, system=system),
         }
@@ -682,11 +762,13 @@ def _actions_for(info: dict, device_id: str, is_whole: bool, system: bool) -> li
     if system:
         return []  # no management actions on system volumes
     actions = []
-    mounted = bool(info.get("MountPoint"))
+    # _truthy throughout: a leftover ``__bool__`` bomb on a plist flag used
+    # to raise out of this row build and drop the node from the listing.
+    mounted = _truthy(info.get("MountPoint"))
     if is_whole:
         actions.append("mountDisk")
         actions.append("unmountDisk")
-        if info.get("Ejectable") or info.get("Removable") or info.get("RemovableMedia"):
+        if _truthy(info.get("Ejectable")) or _truthy(info.get("Removable")) or _truthy(info.get("RemovableMedia")):
             actions.append("eject")
         # erase whole disk — very destructive
         actions.append("eraseDisk")
@@ -697,7 +779,7 @@ def _actions_for(info: dict, device_id: str, is_whole: bool, system: bool) -> li
             actions.append("mount")
         actions.append("rename")
         actions.append("eraseVolume")
-        if info.get("Ejectable"):
+        if _truthy(info.get("Ejectable")):
             actions.append("eject")
     return actions
 
@@ -713,12 +795,25 @@ def disk_action(
 ) -> dict[str, Any]:
     """Execute mount/unmount/rename/format via diskutil."""
     did = _normalize_id(device)
-    info = _diskutil_info(did)
+    # _plain_info: a dict-subclass leftover in the info cache whose
+    # ``__bool__``/``__len__``/``.get`` raises used to 500 every manage
+    # mutation right out of the truthiness probe below.
+    info = _plain_info(_diskutil_info(did))
     if not info and action not in ("mount", "mountDisk"):
         # may still exist
         pass
 
-    system = _is_system_related(info, did) if info else (did == "disk0" or did.startswith("disk0s"))
+    if info:
+        try:
+            system = _is_system_related(info, did)
+        except Exception:
+            # Fail closed (the sleep_disk rule): a disk whose eligibility
+            # cannot be read must never be mounted over, renamed or erased.
+            # Pre-fix a residual bomb here was a bare 500 in place of the
+            # coded refusal.
+            system = True
+    else:
+        system = did == "disk0" or did.startswith("disk0s")
     if system:
         raise api_error("disk.system_protected")
 
@@ -794,7 +889,12 @@ def disk_action(
     if action in ("eraseVolume", "format", "eraseDisk"):
         if not confirm:
             raise api_error("disk.confirm_required")
-        vol_name = _text(info.get("VolumeName") or info.get("MediaName") or did).strip()
+        # _text each candidate before ``or``: the bare ``a or b`` chain
+        # reflected into a leftover value's own ``__bool__`` and 500'd the
+        # confirmed erase path.
+        vol_name = (
+            _text(info.get("VolumeName")) or _text(info.get("MediaName")) or did
+        ).strip()
         if confirm_name is not None:
             # _req_text probe, not an isinstance gate: a finite numeric
             # confirm_name compares as its string form; an over-cap

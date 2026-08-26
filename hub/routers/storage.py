@@ -25,7 +25,8 @@ def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` in ``str(e)`` so GET /api/storage cannot UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # bytes() base copy first: a subclass ``.decode`` bomb cannot fire.
+        value = bytes(value).decode("utf-8", "replace")
     elif value is None:
         return ""
     else:
