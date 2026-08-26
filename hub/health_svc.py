@@ -44,7 +44,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound ``str.encode`` (the modules6 rule): ``str(x)`` of a subclass
+    # whose ``__str__`` answers *self* skips CPython's exact-str copy, so a
+    # leftover bound ``encode`` bomb planted in the cache snapshot rode this
+    # line out of ``_serve_cached`` and 500'd GET /api/health/checks on
+    # every TTL hit.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value) -> str:
@@ -62,7 +67,8 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode — same subclass ``.encode`` bomb note as _utf8_text.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -597,8 +603,10 @@ def _fresh_snapshot() -> dict | None:
         # /api/health/checks on every request; the sibling ``v`` poisonings
         # were already re-sanitized by _serve_cached.  Treat an unusable
         # timestamp as expired: _collect_checks rewrites both keys.
+        # Exception, not the arithmetic trio: a numeric subclass whose
+        # ``__rsub__``/``__le__`` raises RuntimeError still 500'd here.
         expired = time.time() - _cache["t"] >= _TTL
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return None
     if expired:
         return None

@@ -450,7 +450,11 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound ``str.encode`` (the modules6 rule): ``str(x)`` of a subclass
+    # whose ``__str__`` answers *self* skips CPython's exact-str copy, so a
+    # leftover bound ``encode`` bomb in a history row / run_admin result
+    # rode this line out of ``_jsonable`` and 500'd the SMART routes.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value) -> str:
@@ -469,7 +473,8 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode — same subclass ``.encode`` bomb note as _utf8_text.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -621,9 +626,18 @@ def _append_history(record: dict) -> None:
 
 def history(limit: int = 100) -> list[dict]:
     records = _load_history()
+    # Base coercion first: the route hands over a Pydantic-exact int, but the
+    # service is also called in-process, and an int-subclass limit whose
+    # ``__bool__``/``__int__`` raises used to blow ``limit or 100`` /
+    # ``int(limit)`` — a raw 500 on GET /api/smart/history for those callers.
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        try:
+            limit = int.__index__(limit)
+        except Exception:
+            limit = 100
     try:
         n = max(1, min(int(limit or 100), 500))
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         n = 100
     return [_jsonable(row) for row in reversed(records[-n:]) if isinstance(row, dict)]
 
@@ -674,14 +688,20 @@ def _schedule_text(value) -> str:
     if value is None:
         return ""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a bytes-subclass ``.decode`` bomb stored as a
+        # schedule field used to raise out of get_schedule() — a 500 on
+        # GET /api/smart, and the same raise escaped schedule_due() inside
+        # the scheduler tick.
+        return _decode_bytes(value)
     try:
         text = str(value)
     except Exception:
         return ""
     # Lone surrogates (a mojibake hand-edit) must not reach Starlette's
-    # UTF-8 encode.
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # UTF-8 encode.  Unbound ``str.encode``: ``str(x)`` of a subclass whose
+    # ``__str__`` answers *self* skips CPython's exact-str copy, so a bound
+    # ``encode`` bomb here used to 500 GET /api/smart the same way.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _now() -> int:
@@ -698,8 +718,19 @@ def _schedule_epoch(raw) -> float:
     if isinstance(raw, bool) or raw is None:
         return 0.0
     try:
+        # Base coercions before any dispatch (the modules._jsonable rule):
+        # an int/float subclass whose ``__bool__``/``__float__`` raises used
+        # to blow ``raw or 0`` / ``float(raw)`` — a 500 on GET /api/smart
+        # through get_schedule(), and the same raise escaped schedule_due()
+        # inside the scheduler tick, silently stopping every scheduled
+        # self-test.  Exception, not the numeric trio: these bombs raise
+        # whatever they like.
+        if isinstance(raw, int):
+            raw = int.__index__(raw)
+        elif isinstance(raw, float):
+            raw = float.__float__(raw)
         value = float(raw or 0)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return 0.0
     # ``last_run: .inf`` in settings used to OverflowError ``int(inf)``
     # on GET /api/smart, and Starlette's allow_nan=False encoder 500'd
@@ -719,7 +750,12 @@ def get_schedule() -> dict:
         kind = "short"
     devices = stored.get("devices")
     cleaned_devices = []
-    for d in (devices if isinstance(devices, list) else []):
+    # list.__iter__ unbound (the backups/auth rule): a list-subclass
+    # ``__iter__`` bomb stored as ``devices`` used to raise out of the loop
+    # header — a 500 on GET /api/smart through get_schedule(), and the same
+    # raise escaped schedule_due() inside the scheduler tick.  The real
+    # entries still walk.
+    for d in (list.__iter__(devices) if isinstance(devices, list) else ()):
         # An over-cap device entry drops alone; its siblings stay scheduled.
         node = _schedule_text(d)
         if node and _DEV_RE.match(node):
@@ -745,9 +781,17 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
     if kind not in TEST_KINDS:
         return {"ok": False, "error": "bad_kind"}
     known = _known_nodes()
+    # Same unbound walk as get_schedule(): the route hands over a
+    # Pydantic-exact list, but the service is also called in-process, and a
+    # list-subclass ``__bool__``/``__iter__`` bomb used to blow the old
+    # ``(devices or [])`` — a raw 500 on PUT /api/smart/schedule where junk
+    # entries already drop silently.
     cleaned = [
         node
-        for node in (_schedule_text(d) for d in (devices or []))
+        for node in (
+            _schedule_text(d)
+            for d in (list.__iter__(devices) if isinstance(devices, list) else ())
+        )
         if node and _DEV_RE.match(node) and node in known
     ]
     current = _schedule_cfg()

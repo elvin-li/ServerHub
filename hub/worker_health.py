@@ -44,7 +44,11 @@ _workers: dict[str, dict] = {}
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a subclass ``.decode`` bomb registered as a
+        # worker name used to raise out of snapshot() and silently wipe the
+        # workers row from the health page.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
     try:
         text = str(value)
     except RecursionError:
@@ -54,7 +58,10 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound ``str.encode`` (the modules6 rule): ``str(x)`` of a subclass
+    # whose ``__str__`` answers *self* skips CPython's exact-str copy, so a
+    # bound ``encode`` bomb rode this scrub out of snapshot()/problems().
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _coerce_interval(interval) -> float:
