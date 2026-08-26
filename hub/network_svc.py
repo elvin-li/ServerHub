@@ -49,6 +49,9 @@ _INTERFACE_CACHE_TTL = 6.0
 _ORDER_CACHE_TTL = 6.0
 
 NS = "/usr/sbin/networksetup"
+#: Module-level so the vanished-CLI probe re-checks the exact path the
+#: alias/interface spawns used (the identity ``SCUTIL`` convention).
+IFCONFIG = "/sbin/ifconfig"
 
 
 def _as_text(value) -> str:
@@ -99,7 +102,7 @@ def _hex_netmask_to_dotted(mask: str) -> str:
 
 def _interfaces_uncached() -> list:
     items = []
-    rc, out, _ = _sh(["/sbin/ifconfig", "-a"], timeout=8)
+    rc, out, _ = _sh([IFCONFIG, "-a"], timeout=8)
     if rc != 0:
         return items
     cur = None
@@ -528,6 +531,11 @@ def set_service_order(services: list[str]) -> dict:
         raise api_error("network.order_required")
     # validate all names
     current = network_services()
+    if not current and _networksetup_missing():
+        # An empty listing with the binary confirmed absent used to blame the
+        # first requested name with the 400 ``network.unknown_service``; the
+        # profile route's twin (switch_profile) already answers the coded 503.
+        raise api_error("network.networksetup_missing")
     names = [s["name"] for s in current]
     cleaned = []
     for s in services:
@@ -560,12 +568,29 @@ def _networksetup_missing() -> bool:
     probed *on this failure path only* (the identity ``_scutil_missing`` /
     docker ``cli_on_disk`` rule — a successful listing never pays the stat) so
     the tool-absent case can answer the coded 503 its siblings do instead of a
-    500 that blames the server.
+    500 that blames the server — or, on the per-service mutation routes, a
+    404 that blames the caller's service name.
     """
     try:
         return not Path(NS).is_file()
     except (OSError, ValueError):
         # An unreadable /usr/sbin must not upgrade the failure to a 503.
+        return False
+
+
+def _ifconfig_missing() -> bool:
+    """The ``_networksetup_missing`` twin for the alias routes' ifconfig.
+
+    A vanished ``/sbin/ifconfig`` empties ``interfaces()`` the same way, so
+    POST alias/add and alias/remove used to answer the coded 404
+    ``network.device_not_found`` — "no such interface: en0" for a missing
+    host tool.  Same rule: the disk is probed on the empty-listing failure
+    path only, and only a confirmed-absent binary answers the coded 503.
+    """
+    try:
+        return not Path(IFCONFIG).is_file()
+    except (OSError, ValueError):
+        # An unreadable /sbin must not upgrade the failure to a 503.
         return False
 
 
@@ -749,10 +774,10 @@ def add_ip_alias(device: str, ip: str, netmask: str = "255.255.255.255") -> dict
     if not _valid_ip(netmask):
         raise api_error("network.invalid_netmask")
     # try without sudo first
-    rc, out, err = _sh(["/sbin/ifconfig", device, "alias", ip, "netmask", netmask], timeout=10)
+    rc, out, err = _sh([IFCONFIG, device, "alias", ip, "netmask", netmask], timeout=10)
     if rc != 0:
         rc, out, err = _sh(
-            ["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "alias", ip, "netmask", netmask],
+            ["/usr/bin/sudo", "-n", IFCONFIG, device, "alias", ip, "netmask", netmask],
             timeout=10,
         )
     _bust()
@@ -767,9 +792,9 @@ def remove_ip_alias(device: str, ip: str) -> dict:
     device = _validate_device(device)
     if not _valid_ip(ip):
         raise api_error("network.invalid_ip")
-    rc, out, err = _sh(["/sbin/ifconfig", device, "-alias", ip], timeout=10)
+    rc, out, err = _sh([IFCONFIG, device, "-alias", ip], timeout=10)
     if rc != 0:
-        rc, out, err = _sh(["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "-alias", ip], timeout=10)
+        rc, out, err = _sh(["/usr/bin/sudo", "-n", IFCONFIG, device, "-alias", ip], timeout=10)
     _bust()
     msg = out or err
     if rc != 0:
@@ -1484,6 +1509,10 @@ def _validate_device(device: str) -> str:
     # must exist in ifconfig
     names = {i["name"] for i in interfaces()}
     if device not in names:
+        if not names and _ifconfig_missing():
+            # An empty interface listing with ifconfig confirmed absent is
+            # the tool gone, not a caller typo — see _ifconfig_missing.
+            raise api_error("network.ifconfig_missing")
         raise api_error("network.device_not_found", device=device)
     return device
 
@@ -1499,6 +1528,14 @@ def _validate_service(service: str) -> str:
         rc, out, _ = _sh([NS, "-listallnetworkservices"], timeout=8)
         listed = {ln.strip().lstrip("* ").strip() for ln in (out or "").splitlines()[1:] if ln.strip()}
         if service not in listed:
+            if not listed and _networksetup_missing():
+                # A vanished networksetup empties both listings (``sh``
+                # answers its spawn sentinel), so dhcp/manual/dns/enabled
+                # used to 404 ``service_not_found`` — blaming the caller's
+                # service name for a missing host tool.  The disk confirm
+                # runs on the empty-fallback failure path only; a listing
+                # that names other services keeps the honest 404.
+                raise api_error("network.networksetup_missing")
             raise api_error("network.service_not_found", service=service)
     return service
 

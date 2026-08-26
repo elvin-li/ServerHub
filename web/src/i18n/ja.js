@@ -3122,6 +3122,7 @@ export default {
       unknown_service: '不明なネットワークサービス: {service}',
       services_unreadable: 'ネットワークサービスを読み取れません',
       networksetup_missing: 'このホストには networksetup がありません',
+      ifconfig_missing: 'このホストには ifconfig がありません',
       bad_profile: 'profile は wifi | ethernet | wifi_only | ethernet_only のいずれかを指定してください',
       invalid_device: '無効なインターフェース名: {device}',
       device_not_found: 'インターフェースが見つかりません: {device}',

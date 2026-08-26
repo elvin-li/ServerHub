@@ -353,6 +353,7 @@ CODES: dict[str, tuple[int, str]] = {
     # was the services_unreadable 500, which blamed the server for a missing
     # host tool.
     "network.networksetup_missing": (503, 'networksetup is missing on this host'),
+    "network.ifconfig_missing": (503, 'ifconfig is missing on this host'),
     "network.bad_profile": (400, 'profile must be one of: wifi | ethernet | wifi_only | ethernet_only'),
     "network.invalid_device": (400, 'invalid interface name: {device}'),
     "network.device_not_found": (404, 'no such interface: {device}'),
