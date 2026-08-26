@@ -3057,10 +3057,12 @@ export default {
       bad_key: 'Unsupported power setting: {key}',
       bad_value: 'Value must be an integer',
       value_range: 'Value is out of range 0–180',
+      pmset_missing: 'pmset is missing on this host',
     },
     identity: {
       bad_name: 'Computer name is invalid',
       scutil_missing: 'scutil is missing on this host',
+      value_too_long: '{field} is too long (max {max} characters)',
     },
     autostart: {
       self_protected: '{label} is ServerHub\'s own login task and cannot be disabled here; use the \'Start at login\' switch on the Settings page instead',

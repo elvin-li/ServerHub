@@ -15,6 +15,15 @@ _pool = LazyPool(7, "hub-identity")
 #: vanished-CLI probe re-checks the exact path the spawn used.
 SCUTIL = "/usr/sbin/scutil"
 
+#: Caps for the two free-text identity fields persisted into services.yaml.
+#: Unbounded, a multi-MB PUT /api/identity used to be refused only by the
+#: whole-file save cap — a settings.save_failed 503 that blamed the disk for
+#: oversized input — and a value just under that cap crowded every sibling
+#: writer toward it.  256 is generous for a server comment; 253 is the DNS
+#: hostname maximum, which also covers any literal address.
+MAX_COMMENT = 256
+MAX_HOST_IP = 253
+
 
 def _scutil_missing(rc, err) -> bool:
     """Whether an ``sh()`` result means scutil itself is gone.
@@ -171,9 +180,15 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
         # used to be persisted raw into services.yaml, where every consumer
         # had to re-scrub it forever (and the patch dict itself could never
         # be JSON-encoded again).
-        patch["server_comment"] = _as_text(comment)
+        comment_text = _as_text(comment)
+        if len(comment_text) > MAX_COMMENT:
+            raise api_error("identity.value_too_long", field="comment", max=MAX_COMMENT)
+        patch["server_comment"] = comment_text
     if host_ip is not None:
-        patch["host_ip"] = _as_text(host_ip).strip()
+        host_ip_text = _as_text(host_ip).strip()
+        if len(host_ip_text) > MAX_HOST_IP:
+            raise api_error("identity.value_too_long", field="host_ip", max=MAX_HOST_IP)
+        patch["host_ip"] = host_ip_text
     if patch:
         update_settings(patch)
         msgs.append("Panel settings updated")
