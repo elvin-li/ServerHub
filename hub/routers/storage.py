@@ -43,6 +43,20 @@ def _as_text(value) -> str:
 
 router = APIRouter(tags=["storage"])
 
+
+def _rendered(payload):
+    """Response payload through the shared sanitizer before Starlette renders it.
+
+    The overview cleans itself, but the power / manage sections and the
+    mutation results were pasted into the body verbatim.  A leftover the
+    encoder cannot take — an over-cap already-int (YAML/plist hex loads
+    uncapped through ``int(x, 16)``), a lone ``\\ud800``, or a collection
+    that passes ``isinstance`` but refuses iteration — 500'd the whole
+    route where every NAS sibling answers with the field dropped or the
+    text scrubbed (the ``nas_common._jsonable`` rule this router missed).
+    """
+    return storage_svc._jsonable(payload)
+
 #: Page composer only.  Overview fans out SMART on the shared probe pool.
 _PAGE_POOL = LazyPool(3, "storage-page")
 
@@ -70,12 +84,12 @@ def storage(light: bool = False):
     if not isinstance(data, dict):
         data = {"volumes": [], "disks": [], "error": _as_text(data)}
     try:
-        data["power_disks"] = f_power.result()
+        data["power_disks"] = _rendered(f_power.result())
     except Exception as e:
         data["power_disks"] = []
         data["power_error"] = _as_text(e)
     try:
-        data["managed"] = f_managed.result()
+        data["managed"] = _rendered(f_managed.result())
     except Exception as e:
         data["managed"] = {"volumes": [], "error": _as_text(e)}
     return data
@@ -83,13 +97,13 @@ def storage(light: bool = False):
 
 @router.get("/api/storage/disks")
 def storage_disks():
-    return {"disks": disk_power_svc.list_power_disks()}
+    return {"disks": _rendered(disk_power_svc.list_power_disks())}
 
 
 @router.get("/api/storage/manage")
 def storage_manage():
     """List volumes/partitions for mount/format management."""
-    return disk_manage_svc.overview()
+    return _rendered(disk_manage_svc.overview())
 
 
 class DiskPowerBody(BaseModel):
@@ -99,7 +113,7 @@ class DiskPowerBody(BaseModel):
 @router.post("/api/storage/disks/{disk_id}/power")
 def storage_disk_power(disk_id: str, body: DiskPowerBody, request: Request = None):
     try:
-        result = disk_power_svc.disk_power_action(disk_id, body.action)
+        result = _rendered(disk_power_svc.disk_power_action(disk_id, body.action))
         _audit_disk_change(audit.DISK_CHANGED, request,
                            action=body.action, disk=disk_id)
         return result
@@ -123,14 +137,14 @@ class DiskManageBody(BaseModel):
 @router.post("/api/storage/manage/{device_id}")
 def storage_manage_action(device_id: str, body: DiskManageBody, request: Request = None):
     try:
-        result = disk_manage_svc.disk_action(
+        result = _rendered(disk_manage_svc.disk_action(
             device_id,
             body.action,
             name=body.name,
             fs=body.fs,
             confirm=body.confirm,
             confirm_name=body.confirm_name,
-        )
+        ))
         _audit_disk_change(audit.DISK_CHANGED, request,
                            action=body.action, disk=device_id,
                            fs=body.fs or "")

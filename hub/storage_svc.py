@@ -217,8 +217,18 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass in a
+            # leftover row): nothing to salvage, but its *siblings* must
+            # survive — pre-fix this raised out of storage_overview and
+            # 500'd GET /api/storage?light (the snapshots_svc/raid_svc/
+            # smart_test_svc._jsonable rule the NAS sweep applied, which
+            # this copy missed).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if isinstance(k, (bytes, bytearray)):
                 k = k.decode("utf-8", "replace")
             elif not isinstance(k, str):
@@ -229,7 +239,12 @@ def _jsonable(value, depth: int = 0):
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the volume table or the route.
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
