@@ -214,6 +214,39 @@ def _key_text(value) -> str | None:
     return _utf8_text(s) or None
 
 
+def _plain_dict(value) -> dict | None:
+    """*value* as a plain ``dict``, or None.
+
+    A leftover dict-*subclass* (the usage5/metrics5 row-bomb class: passes
+    the ``isinstance(x, dict)`` gate, then ``.get()`` / ``.items()`` /
+    ``__bool__`` raises) used to 500 GET /api/bookmarks from four separate
+    call sites — the overrides merge loop, ``_resolve_backend``'s override
+    scan, the probe-decision loop, and the dedupe ``any()`` — and to wipe
+    the whole backend index out of ``_backend_index``'s override loop.
+    ``dict()`` copies through the C-level storage, so an overridden method
+    cannot fire.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        return dict(value)
+    except Exception:
+        return None
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    Fails closed to False: a bomb url is not a probeable url and a bomb
+    name is not a printable name — pre-fix, ``not link.get("url")`` and
+    ``ov.get("url") and …`` raised straight out of GET /api/bookmarks.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _backend_index() -> dict:
     """Map id / name / url → backend runtime info for expected-state checks."""
     idx: dict[str, dict] = {}
@@ -307,24 +340,31 @@ def _backend_index() -> dict:
         pass
 
     # overrides: map sid + url → best-effort (may fill gaps for launchd etc.)
-    raw_ov = cfg().get("overrides")
-    for sid, raw in (raw_ov.items() if isinstance(raw_ov, dict) else ()):
+    # _plain_dict, not a bare isinstance: a dict-subclass overrides mapping
+    # whose ``items()`` raised used to discard the entire index built above,
+    # so every stopped VM's bookmark probed red instead of gray.
+    raw_ov = _plain_dict(cfg().get("overrides")) or {}
+    for sid, raw in raw_ov.items():
         try:
             ov = resolve_value(raw)
         except Exception:
             continue
-        if not isinstance(ov, dict):
+        ov = _plain_dict(ov)
+        if ov is None:
             continue
         key = _key_text(sid)
         if not key or key in idx:
             continue
         # only mark intentionally hidden/disabled as stopped if flag set
         if ov.get("expected") == "stopped" or ov.get("disabled") is True:
+            # _truthy: a __bool__-bomb name used to raise out of the ``or``
+            # and cost the whole index the same way as the items() bomb.
+            name = ov.get("name")
             info = {
                 "state": "stopped",
                 "status": "disabled",
                 "kind": "override",
-                "name": ov.get("name") or key,
+                "name": name if _truthy(name) else key,
                 "id": key,
             }
             put(key, info)
@@ -367,14 +407,17 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
         hit = _index_lookup(idx, f"url:{url}")
         if hit is not None:
             return hit
-    # match override sid by identical url
-    raw_ov = cfg().get("overrides")
-    for sid, raw in (raw_ov.items() if isinstance(raw_ov, dict) else ()):
+    # match override sid by identical url.  _plain_dict: a dict-subclass
+    # overrides mapping whose ``items()`` raised used to 500 the list route
+    # out of this loop (unlike _backend_index, nothing absorbs a raise here).
+    raw_ov = _plain_dict(cfg().get("overrides")) or {}
+    for sid, raw in raw_ov.items():
         try:
             ov = resolve_value(raw)
         except Exception:
             continue
-        if not isinstance(ov, dict):
+        ov = _plain_dict(ov)
+        if ov is None:
             continue
         ou = (_key_text(ov.get("url")) or "").rstrip("/")
         if ou and ou == url:
@@ -388,11 +431,15 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
     """Merge HTTP probe + backend expected-state into tri-state health."""
     if not isinstance(backend, dict):
         backend = None
+    # _truthy, not a bare ``or``: a __bool__-bomb id/service value used to
+    # raise here and 500 the list route with every healthy sibling row.
+    lid = link.get("id")
+    service = link.get("service")
     base = {
         "name": link.get("name"),
         "url": link.get("url"),
-        "id": link.get("id") or link.get("service"),
-        "service": link.get("service") or link.get("id"),
+        "id": lid if _truthy(lid) else service,
+        "service": service if _truthy(service) else lid,
     }
     b_state = (backend or {}).get("state")
     # intentional stop / suspended (treat suspended as stopped-ish warn gray? user said 主动停止=灰)
@@ -513,8 +560,16 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass riding a
+            # link field): nothing to salvage from it, but its *siblings*
+            # must survive — pre-fix this raised out of the final scrub and
+            # 500'd GET /api/bookmarks (the ups_svc/nginx_svc rule).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
@@ -527,7 +582,13 @@ def _jsonable(value, depth: int = 0):
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            vals = list(value)
+        except Exception:
+            # A sequence subclass whose __iter__ raises: same rule as the
+            # dict branch — the bomb drops alone, siblings keep rendering.
+            return None
+        return [_jsonable(v, depth + 1) for v in vals]
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -563,23 +624,43 @@ def list_bookmarks() -> dict:
 
     raw_links = cfg().get("quick_links")
     try:
-        links = resolve_value(list(raw_links) if isinstance(raw_links, list) else [])
+        # Materialised once, on its own: a list-subclass ``__iter__`` bomb
+        # used to raise out of ``list(raw_links)`` here and then raise a
+        # second time out of the identical call in the except fallback — a
+        # 500 from the exception handler itself.
+        base_links = list(raw_links) if isinstance(raw_links, list) else []
     except Exception:
-        links = list(raw_links) if isinstance(raw_links, list) else []
+        base_links = []
+    try:
+        links = resolve_value(list(base_links))
+    except Exception:
+        links = base_links
     if not isinstance(links, list):
         links = []
-    raw_ov = cfg().get("overrides")
-    overrides = raw_ov if isinstance(raw_ov, dict) else {}
+    # Plain-dict every row up front: resolve_value launders well-behaved
+    # rows into plain dicts, but its all-or-nothing fallback keeps the raw
+    # list when any single row bombs, so a dict-subclass ``.get`` bomb used
+    # to ride into every loop below and 500 the route.  Non-dict junk rows
+    # were already skipped everywhere; dropping them here changes nothing.
+    links = [row for row in (_plain_dict(l) for l in links) if row is not None]
+    # _plain_dict, not a bare isinstance: an overrides mapping whose
+    # ``items()`` raised used to 500 the merge loop below.
+    overrides = _plain_dict(cfg().get("overrides")) or {}
     # also from overrides urls
     for sid, raw in overrides.items():
         try:
             ov = resolve_value(raw)
         except Exception:
             continue
-        if not isinstance(ov, dict):
+        ov = _plain_dict(ov)
+        if ov is None:
             continue
-        if ov.get("url") and ov.get("hide") is not True:
-            name = ov.get("name") or sid
+        # _truthy: a __bool__-bomb url or name value used to raise straight
+        # out of this ``and`` / ``or`` and 500 the route.
+        if _truthy(ov.get("url")) and ov.get("hide") is not True:
+            name = ov.get("name")
+            if not _truthy(name):
+                name = sid
             if not any(isinstance(l, dict) and l.get("url") == ov["url"] for l in links):
                 links.append({
                     "name": name,
@@ -601,14 +682,23 @@ def list_bookmarks() -> dict:
     to_probe = []
     preassigned: dict[int, dict] = {}  # link index → result without probe
     for i, link in enumerate(links):
-        if not isinstance(link, dict) or not link.get("url"):
+        # _truthy: a __bool__-bomb url value used to raise out of the bare
+        # ``not link.get("url")`` and 500 the route.
+        if not isinstance(link, dict) or not _truthy(link.get("url")):
             continue
         backend = _resolve_backend(link, idx)
         b_state = (backend or {}).get("state")
+        try:
+            # Guarded: a __bool__-bomb status value on a backend row used to
+            # raise out of the ``or`` here after the index had already been
+            # built — a 500 at decision time, not collection time.
+            vm_status = str((backend or {}).get("status") or "").lower()
+        except Exception:
+            vm_status = ""
         if b_state == "stopped" or (
             backend
             and backend.get("kind") == "vm"
-            and str(backend.get("status") or "").lower() in (
+            and vm_status in (
                 "stopped", "stop", "exited", "created", "shutdown"
             )
         ):
