@@ -251,6 +251,27 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _row_get(row, key):
+    """Seam-row field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    ``isinstance(s, dict)`` passes an odd subclass whose ``get`` raises (the
+    disk_power_svc pool5 class); one such row from the stack/script/status
+    seams used to raise out of build_plan()/_catalog() and 500
+    GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill with every
+    sane sibling row.  ``dict.get`` reads the real storage underneath the
+    override, so a subclass that only poisoned its method keeps its data.
+    """
+    if not isinstance(row, dict):
+        return None
+    try:
+        return row.get(key)
+    except Exception:
+        try:
+            return dict.get(row, key)
+        except Exception:
+            return None
+
+
 def _service_states() -> dict[str, str]:
     """service id -> state ("ok"/"warn"/"down"/...), from the shared status."""
     from hub.status import full_status
@@ -266,7 +287,11 @@ def _service_states() -> dict[str, str]:
     for g in groups:
         if not isinstance(g, dict):
             continue
-        services = g.get("services") or []
+        # _row_get: a group whose ``get`` raises used to abort the whole
+        # scan and wipe every sibling group's states along with its own.
+        # isinstance, not ``or []``: truth-testing a __bool__ bomb value
+        # would raise the same way.
+        services = _row_get(g, "services")
         if not isinstance(services, list):
             continue
         try:
@@ -281,10 +306,10 @@ def _service_states() -> dict[str, str]:
             # str() probe, not a bare render: an already-int over-cap id or
             # state (YAML hex) used to ValueError here and drop every
             # sibling service's state along with its own.
-            sid = _cfg_text(s.get("id"))
+            sid = _cfg_text(_row_get(s, "id"))
             if not sid:
                 continue
-            out[sid] = _cfg_text(s.get("state")) or "unknown"
+            out[sid] = _cfg_text(_row_get(s, "state")) or "unknown"
     return out
 
 
@@ -460,17 +485,19 @@ def build_plan(policy: dict | None = None) -> list[dict]:
         stacks = []
     # _cfg_text probe, not a bare str(): an already-int over-cap id (YAML
     # hex, exempt from the digit cap) in one row used to ValueError here and
-    # wipe every sane sibling out of the plan with the 500.
+    # wipe every sane sibling out of the plan with the 500.  _row_get, not a
+    # bare ``.get``: a dict-subclass row whose ``get`` raises used to 500 the
+    # plan/drill routes the same way.
     by_id: dict[str, dict] = {}
     for s in stacks:
-        sid = _cfg_text(s.get("id"))
+        sid = _cfg_text(_row_get(s, "id"))
         if sid and sid not in by_id:
             by_id[sid] = s
     wanted = policy.get("stacks")
     if isinstance(wanted, list):
         ordered = [_cfg_text(x) for x in wanted]
     else:  # "all"
-        ordered = [_cfg_text(s.get("id")) for s in stacks]
+        ordered = [_cfg_text(_row_get(s, "id")) for s in stacks]
     # Dedupe, first occurrence wins: steps are addressed by (kind, id) in the
     # state file, so a duplicated id would leave one entry forever unresolved.
     # An id with no renderable text cannot be addressed at all and drops.
@@ -478,13 +505,16 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     ordered = [sid for sid in ordered if sid and not (sid in seen or seen.add(sid))]
     for sid in ordered:
         stack = by_id.get(sid)
+        # ``stack is not None`` rather than truth-testing: a dict-subclass
+        # row whose ``__bool__`` raises used to 500 the plan out of the old
+        # ``bool(stack and …)`` expression.
         steps.append({
             "kind": "stack",
             "id": sid,
             # Same probe for the label: an over-cap int name falls back to
             # the id instead of 500ing the whole plan.
-            "name": _cfg_text((stack or {}).get("name")) or sid,
-            "running": bool(stack and stack.get("status") == "ok"),
+            "name": _cfg_text(_row_get(stack, "name")) or sid,
+            "running": stack is not None and _row_get(stack, "status") == "ok",
             "known": stack is not None,
         })
     # Separate namespace: steps are addressed by (kind, id), so a service id
@@ -565,30 +595,39 @@ def _catalog() -> dict:
     for s in raw_scripts:
         if not isinstance(s, dict):
             continue
-        sid = _cfg_text(s.get("id"))
+        # _row_get: a dict-subclass row whose ``get`` raises used to 500 the
+        # plan/drill routes out of this loop with every sane sibling.
+        sid = _cfg_text(_row_get(s, "id"))
         if not sid:
             # No renderable id: the entry cannot be selected or acted on, so
             # it drops alone rather than 500ing the whole picker catalog.
             continue
+        try:
+            # Without a stop command run_action degrades to a no-op stop,
+            # so the form marks these rather than hiding them.  Guarded: a
+            # __bool__ bomb stop value used to 500 the whole catalog where
+            # "no usable stop" is the honest reading.
+            has_stop = bool(_row_get(s, "stop"))
+        except Exception:
+            has_stop = False
         scripts.append({
             "id": sid,
-            "name": _cfg_text(s.get("name")) or sid,
-            # Without a stop command run_action degrades to a no-op stop,
-            # so the form marks these rather than hiding them.
-            "has_stop": bool(s.get("stop")),
+            "name": _cfg_text(_row_get(s, "name")) or sid,
+            "has_stop": has_stop,
         })
     stack_rows = []
     for s in stacks:
         # _cfg_text probe, matching the scripts side above: one row whose
         # already-int over-cap id/name (YAML hex) fails str() drops alone
-        # instead of 500ing the whole picker catalog with its siblings.
-        sid = _cfg_text(s.get("id"))
+        # instead of 500ing the whole picker catalog with its siblings —
+        # and _row_get keeps a ``.get`` bomb row from doing the same.
+        sid = _cfg_text(_row_get(s, "id"))
         if not sid:
             continue
         stack_rows.append({
             "id": sid,
-            "name": _cfg_text(s.get("name")) or sid,
-            "running": s.get("status") == "ok",
+            "name": _cfg_text(_row_get(s, "name")) or sid,
+            "running": _row_get(s, "status") == "ok",
         })
     return {
         "stacks": stack_rows,

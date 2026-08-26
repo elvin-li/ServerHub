@@ -140,6 +140,28 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    ``isinstance(x, dict)`` passes an odd subclass whose ``get`` raises (the
+    disk_power_svc pool5 class): one such settings block used to raise out of
+    ``ups_settings()`` and 500 GET /api/ups, GET /api/ups/shutdown/plan,
+    POST /api/ups/shutdown/drill and PUT /api/ups/settings all at once, while
+    the sibling ``items()`` call right next to it was already guarded.
+    ``dict.get`` reads the real storage underneath the override, so a subclass
+    that only poisoned its method keeps its sane data.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except Exception:
+        try:
+            return dict.get(mapping, key)
+        except Exception:
+            return None
+
+
 def _finite_int(raw, default: int | None):
     """``int(inf)`` OverflowError is not ValueError; leftover ``.inf`` must fall back.
 
@@ -277,7 +299,18 @@ def _normalized_shutdown(raw: dict | None) -> dict:
             # passing the isinstance gate) used to raise out of this merge
             # and 500 GET /api/ups; the defaults are the honest degrade.
             items = []
-        out.update({k: v for k, v in items if k in SHUTDOWN_DEFAULTS})
+        for pair in items:
+            # Per-pair guard: ``k in SHUTDOWN_DEFAULTS`` hashes the key, so
+            # one unhashable leftover key — or a torn non-pair row from a
+            # subclass ``items()`` — used to raise out of the old
+            # comprehension *after* the guarded materialize above and 500
+            # GET /api/ups along with every sane sibling key.
+            try:
+                k, v = pair
+                if k in SHUTDOWN_DEFAULTS:
+                    out[k] = v
+            except Exception:
+                continue
     # Explicit null still means "condition off"; leftover inf must not leak
     # into GET /api/ups (Starlette allow_nan=False) or fire the policy.
     if out.get("trigger_pct") is not None:
@@ -288,8 +321,10 @@ def _normalized_shutdown(raw: dict | None) -> dict:
 
 
 def ups_settings() -> dict:
-    settings = cfg().get("settings")
-    raw = settings.get("ups") if isinstance(settings, dict) else None
+    # _mapping_get at every rank: the ``.get`` bombs pass the isinstance
+    # gates below, and this function backs four routes at once.
+    settings = _mapping_get(cfg(), "settings")
+    raw = _mapping_get(settings, "ups")
     if not isinstance(raw, dict):
         raw = {}
     try:
@@ -300,16 +335,28 @@ def ups_settings() -> dict:
         # GET /api/ups instead of falling back to the defaults.
         raw_items = []
     out = dict(UPS_DEFAULTS)
-    out.update({
-        k: v for k, v in raw_items
-        if k in UPS_DEFAULTS and k != "shutdown" and v is not None
-    })
+    for pair in raw_items:
+        # Per-pair guard, matching _normalized_shutdown: ``k in
+        # UPS_DEFAULTS`` hashes the key, so one unhashable leftover key —
+        # or a torn non-pair row from a subclass ``items()`` — used to
+        # raise here and 500 GET /api/ups with every sane sibling key.
+        try:
+            k, v = pair
+            if k in UPS_DEFAULTS and k != "shutdown" and v is not None:
+                out[k] = v
+        except Exception:
+            continue
     if "alerts_enabled" in out:
-        out["alerts_enabled"] = bool(out["alerts_enabled"])
+        try:
+            out["alerts_enabled"] = bool(out["alerts_enabled"])
+        except Exception:
+            # A __bool__ bomb value is unreadable either way; the default
+            # is the honest degrade, never a 500.
+            out["alerts_enabled"] = UPS_DEFAULTS["alerts_enabled"]
     if "low_battery_pct" in out:
         pct = _finite_int(out["low_battery_pct"], UPS_DEFAULTS["low_battery_pct"])
         out["low_battery_pct"] = UPS_DEFAULTS["low_battery_pct"] if pct is None else pct
-    out["shutdown"] = _normalized_shutdown(raw.get("shutdown"))
+    out["shutdown"] = _normalized_shutdown(_mapping_get(raw, "shutdown"))
     return _jsonable(out)
 
 
