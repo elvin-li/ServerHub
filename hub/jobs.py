@@ -207,7 +207,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
+    # returns self keeps the subclass, so a bound ``.encode`` bomb in a
+    # leftover task name/id (or a poisoned in-memory job-row field) used to
+    # raise here — outside the try — and 500 GET /api/maintenance and the
+    # log route.  The modules6/docker6 unbound convention.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
