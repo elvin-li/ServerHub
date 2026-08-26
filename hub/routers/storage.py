@@ -39,7 +39,11 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: an exception whose ``__str__`` returns a
+    # str-subclass ``encode`` bomb used to raise out of this scrub *inside*
+    # the routes' own except handlers — a bare 500 on GET /api/storage/disks
+    # where the degraded ``error`` body is the contract.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 router = APIRouter(tags=["storage"])

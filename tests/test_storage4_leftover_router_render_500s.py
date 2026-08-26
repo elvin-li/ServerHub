@@ -132,7 +132,12 @@ class StorageJsonableIterationContractTests(unittest.TestCase):
         })
         _starlette(row)
         self.assertEqual(row["mount"], "/Volumes/Data")
-        self.assertIsNone(row["attrs"])
+        # storage7 upgraded sequence rank to the unbound ``base.__iter__``
+        # view (the same rule storage6 gave ``dict.items``): the hostile
+        # override cannot fire, so the real elements survive instead of
+        # collapsing to None.  The row keeping its siblings is the
+        # invariant either way.
+        self.assertEqual(row["attrs"], ["a"])
         self.assertEqual(row["pct"], 40)
 
 
@@ -172,7 +177,9 @@ class StorageLightIterationBombTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         smart = body["disks"][0]["smart"]
-        self.assertIsNone(smart["attrs"])
+        # storage7: the unbound ``base.__iter__`` view salvages the real
+        # elements instead of collapsing the field to None.
+        self.assertEqual(smart["attrs"], ["x"])
         # The sibling field survives — the whole point of the guard.
         self.assertEqual(smart["health"], "PASSED")
 
@@ -188,7 +195,8 @@ class StorageLightIterationBombTests(unittest.TestCase):
         _starlette(body)
         self.assertEqual(len(body["volumes"]), 1)
         self.assertEqual(body["volumes"][0]["mount"], "/Volumes/Data")
-        self.assertIsNone(body["volumes"][0]["extras"])
+        # storage7: the unbound iteration salvages the field's real content.
+        self.assertEqual(body["volumes"][0]["extras"], ["y"])
 
 
 class StorageFullPageSurvivalTests(unittest.TestCase):
@@ -217,7 +225,8 @@ class StorageFullPageSurvivalTests(unittest.TestCase):
         _starlette(body)
         self.assertNotIn("error", body)
         self.assertEqual(body["volumes"][0]["mount"], "/Volumes/Data")
-        self.assertIsNone(body["disks"][0]["smart"]["attrs"])
+        # storage7: the unbound iteration salvages the field's real content.
+        self.assertEqual(body["disks"][0]["smart"]["attrs"], ["x"])
 
 
 class StorageRouterSectionRenderTests(unittest.TestCase):
@@ -246,7 +255,8 @@ class StorageRouterSectionRenderTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertEqual(body["power_disks"][0]["id"], "disk4")
-        self.assertIsNone(body["power_disks"][0]["volumes"])
+        # storage7: the unbound iteration salvages the field's real content.
+        self.assertEqual(body["power_disks"][0]["volumes"], ["x"])
         self.assertEqual(body["managed"]["count"], 1)
 
     def test_over_cap_int_and_surrogate_in_sections_stay_http_200(self):
@@ -273,7 +283,8 @@ class StorageRouterSectionRenderTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertEqual(body["disks"][0]["id"], "disk4")
-        self.assertIsNone(body["disks"][0]["volumes"])
+        # storage7: the unbound iteration salvages the field's real content.
+        self.assertEqual(body["disks"][0]["volumes"], ["x"])
 
     def test_manage_route_bomb_row_salvages_the_row(self):
         # storage6: the unbound ``dict.items`` view salvages the row's real
@@ -308,7 +319,8 @@ class StorageMutationResultRenderTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertIs(body["ok"], True)
-        self.assertIsNone(body["log"])
+        # storage7: the unbound iteration salvages the bombed log's content.
+        self.assertEqual(body["log"], ["x"])
         self.assertEqual(body["disk"], "disk4")
 
     def test_manage_action_ok_result_with_bomb_and_over_cap_int(self):

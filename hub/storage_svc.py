@@ -73,7 +73,11 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` launders most subclasses, but one whose
+    # ``__str__`` returns *self* keeps its type through the coercion above,
+    # and its bound ``encode`` bomb used to raise out of here — nulling the
+    # whole volume table on GET /api/storage?light for one bad field.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _parent_disk_id(filesystem: str) -> str | None:
@@ -266,13 +270,34 @@ def _jsonable(value, depth: int = 0):
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
+        # Unbound base iteration (the ``dict.items`` rule at sequence rank):
+        # a sequence subclass whose ``__iter__`` raises used to null the
+        # whole field here, while the real elements sit readable in the
+        # C-level storage.
+        if isinstance(value, list):
+            base = list
+        elif isinstance(value, tuple):
+            base = tuple
+        elif isinstance(value, set):
+            base = set
+        else:
+            base = frozenset
         try:
-            return [_jsonable(v, depth + 1) for v in value]
+            items = list(base.__iter__(value))
         except Exception:
-            # Same class as the mapping above, at sequence rank: only this
-            # field drops, never the volume table or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+        try:
+            return [_jsonable(v, depth + 1) for v in items]
+        except Exception:
+            # Residual raise out of the recursion: only this field drops,
+            # never the volume table or the route.
+            return None
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # A leftover whose ``isoformat`` is a raising property used to blow
+        # this probe and null the containing table.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
