@@ -1008,7 +1008,12 @@ def set_account_resources(username: str, resources: list[str]) -> list[str]:
         settings, auth_cfg = _auth_block(data)
         entries = _account_rows(auth_cfg)
         for entry in entries:
-            if _cfg_text(entry.get("username") or "") == name:
+            # .strip(), matching set_account_password / delete_account and the
+            # accounts() presentation: a hand-edited row like ``username:
+            # "kid "`` resolves as account "kid" everywhere else, so the
+            # unstripped comparison here matched nothing — the PUT answered
+            # 200 with the granted list while the write was silently lost.
+            if _cfg_text(entry.get("username") or "").strip() == name:
                 entry["resources"] = clean
         auth_cfg["accounts"] = entries
         settings["auth"] = auth_cfg
