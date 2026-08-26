@@ -25,10 +25,23 @@ CONF_D = NGINX_ROOT / "conf.d"
 LABEL = "local.system-nginx"
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
-    """Leftover ``\\ud800`` in ``nginx -t`` used to 500 Settings → Test/Reload."""
+    """Leftover ``\\ud800`` in ``nginx -t`` used to 500 Settings → Test/Reload.
+
+    Reads through unbound base-type calls (the modules5 convention this
+    module never got): a bytes-subclass ``.decode`` bomb arriving as an odd
+    ``sh`` answer or a site-row key used to 500 POST /api/nginx/test and
+    GET /api/nginx, and a str subclass whose ``__str__`` returns *itself*
+    kept the bound ``encode`` bomb live through the final scrub line.
+    """
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif value is None:
         return ""
     else:
@@ -41,7 +54,9 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # ``str(x)`` on a subclass whose ``__str__`` answers self is still the
+    # subclass: the unbound base encode dodges its ``encode`` override.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _sh_message(err, out, fallback: str = "") -> str:
@@ -64,6 +79,17 @@ def _sh_triple(cmd, timeout: int) -> tuple:
         rc, out, err = sh(cmd, timeout=timeout)
     except Exception as exc:
         return -1, "", _as_text(exc)
+    # Exact-int rc, the same base coercion _jsonable applies: the callers
+    # compare ``rc == 0`` / ``rc == -1`` / ``rc != 0``, and an rc whose
+    # ``__eq__`` raises (an int-subclass bomb, or a non-int shape) used to
+    # ride those comparisons to Starlette and 500 POST /api/nginx/test and
+    # both spawn ranks of POST /api/nginx/reload.  A junk rc degrades to the
+    # same failure code as a raising runner; the vanished-CLI classification
+    # stays disk-confirmed either way.
+    try:
+        rc = int.__index__(rc) if isinstance(rc, int) else -1
+    except Exception:
+        rc = -1
     return rc, out, err
 
 
@@ -85,6 +111,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules5 unbound
+                # convention): an int subclass whose ``__str__`` raises used
+                # to blow the digit-cap probe below out of overview() and
+                # 500 GET /api/nginx.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             # A str() probe, never an isinstance(x, str) gate: the finite
             # numeric listen ports the Gateway table renders must pass
@@ -94,25 +129,35 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a float subclass whose
+                # ``__eq__``/``__ne__`` raises used to blow the NaN/inf
+                # probes below the same way.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _as_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return bytes(value).decode("utf-8", "replace")
+        # Unbound base decode: ``bytes(value)`` re-enters a subclass
+        # ``__bytes__`` bomb before the copy, and a bound ``.decode`` bomb
+        # was live for bytearray shapes — both used to 500 GET /api/nginx.
+        return _decode_bytes(value)
     if isinstance(value, dict):
-        try:
-            items = list(value.items())
-        except Exception:
-            # A mapping that refuses iteration (odd dict subclass): there is
-            # nothing to salvage from it, but its *siblings* must survive —
-            # pre-fix this raised out of the comprehension in overview() and
-            # 500'd GET /api/nginx, wiping the sane rows beside it.
-            return None
         out = {}
-        for k, v in items:
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a dict subclass whose ``items()`` raises used
+        # to wipe its whole row (pre-fix the raise escaped overview()'s
+        # comprehension and 500'd the route, taking every sane sibling site
+        # down with it); the base view cannot raise and the real entries
+        # survive.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -121,12 +166,11 @@ def _jsonable(value, depth: int = 0):
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        try:
-            return [_jsonable(v, depth + 1) for v in value]
-        except Exception:
-            # Same class as the mapping above, at sequence rank: only this
-            # field drops, never the row or the route.
-            return None
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb used
+                # to drop the whole field — the real elements survive now.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
     return _as_text(value)
 
 
@@ -150,6 +194,15 @@ def _pid_text(value) -> str | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion first (the modules5 unbound convention): an
+                # int subclass whose ``__str__`` raises non-ValueError used
+                # to escape into overview()'s guard and flip ``running`` to
+                # a false "stopped" while nginx held a real pid.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             value = str(value)
         except ValueError:

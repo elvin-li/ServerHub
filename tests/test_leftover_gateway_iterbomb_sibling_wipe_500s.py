@@ -24,11 +24,13 @@ against the mounted route before fixing — each of these was an HTTP 500:
   wipe this sweep hunts).
 
 The fix keeps the blast radius one field wide: ``_jsonable`` materializes
-mapping items and sequence iteration under its own guard (an unreadable
-mapping or sequence collapses to None, its siblings survive), and
+mapping items and sequence iteration under its own guard, and
 ``overview()`` materializes the top-level list under a guard and scrubs
 row by row, so a row whose scrub collapses drops alone and ``site_count``
-counts only the survivors.
+counts only the survivors.  The gateway6 sweep upgraded the walk to the
+modules5 unbound convention (``dict.items(value)`` / ``base.__iter__``),
+so a bound ``items()`` / ``__iter__`` bomb no longer costs even the field:
+the real entries survive it.
 
 The rest of this battery pins vectors the same hunt found already immune,
 held at the HTTP layer for the first time so a refactor cannot quietly
@@ -131,9 +133,11 @@ class IterationBombRouteTests(unittest.TestCase):
         self.assertEqual(body["sites"], [])
         self.assertEqual(body["site_count"], 0)
 
-    def test_items_bomb_row_drops_alone_and_the_sibling_survives(self):
+    def test_items_bomb_row_keeps_its_real_entries_and_the_sibling(self):
         # Pre-fix: the poisoned row 500'd the route and wiped the sane
         # sibling site with it — the sibling-row wipe this sweep hunts.
+        # Post-gateway6 the unbound base view (``dict.items(value)``) dodges
+        # the bound bomb entirely: the row's real entries survive too.
         resp = _get_nginx([
             _ItemsBombDict({"file": "poison.conf"}),
             {"file": "sane.conf", "listens": [8080]},
@@ -141,13 +145,16 @@ class IterationBombRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text[:200])
         body = resp.json()
         _starlette(body)
-        self.assertEqual([s["file"] for s in body["sites"]], ["sane.conf"])
-        self.assertEqual(body["sites"][0]["listens"], [8080])
-        self.assertEqual(body["site_count"], 1)
+        self.assertEqual(
+            [s["file"] for s in body["sites"]], ["poison.conf", "sane.conf"]
+        )
+        self.assertEqual(body["sites"][1]["listens"], [8080])
+        self.assertEqual(body["site_count"], 2)
 
-    def test_nested_items_bomb_collapses_the_field_not_the_row(self):
-        # One rank down: only the unreadable mapping drops to None; the
-        # row's readable siblings survive field-level.
+    def test_nested_items_bomb_keeps_the_real_entries_not_just_the_row(self):
+        # One rank down: the unbound base view reads through the bound
+        # ``items()`` bomb, so even the poisoned mapping's real entries
+        # survive beside the row's readable siblings.
         row = nginx_svc._jsonable({
             "file": "a.conf",
             "extras": _ItemsBombDict({"x": 1}),
@@ -155,10 +162,13 @@ class IterationBombRouteTests(unittest.TestCase):
         })
         _starlette(row)
         self.assertEqual(row["file"], "a.conf")
-        self.assertIsNone(row["extras"])
+        self.assertEqual(row["extras"], {"x": 1})
         self.assertEqual(row["listens"], [8080])
 
-    def test_nested_iter_bomb_sequence_collapses_the_field_not_the_row(self):
+    def test_nested_iter_bomb_sequence_keeps_the_real_elements(self):
+        # Same rank for sequences: ``list.__iter__`` unbound dodges the
+        # subclass bomb, so the real elements survive instead of the whole
+        # field collapsing.
         row = nginx_svc._jsonable({
             "file": "a.conf",
             "server_names": _IterBombList(["nas.local"]),
@@ -166,7 +176,7 @@ class IterationBombRouteTests(unittest.TestCase):
         })
         _starlette(row)
         self.assertEqual(row["file"], "a.conf")
-        self.assertIsNone(row["server_names"])
+        self.assertEqual(row["server_names"], ["nas.local"])
         self.assertEqual(row["listens"], [8080])
 
 
