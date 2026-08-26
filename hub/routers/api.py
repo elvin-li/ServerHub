@@ -19,6 +19,38 @@ class Action(BaseModel):
     action: str
 
 
+def _message_text(value) -> str:
+    """One renderable message part from a run_action result.
+
+    Leftover bytes / non-finite floats / ``\\ud800`` were already absorbed;
+    a ``str()`` RecursionError still re-raised out of the shaping and 500'd
+    POST /api/action — the bulk route's ``_as_text`` contract.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    elif value is None:
+        return ""
+    elif isinstance(value, float):
+        try:
+            finite = float.__float__(value)
+        except Exception:
+            return ""
+        if finite != finite or finite in (float("inf"), float("-inf")):
+            return ""
+        value = str(finite)
+    else:
+        try:
+            value = str(value)
+        except RecursionError:
+            try:
+                value = type(value).__name__
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+    return value.encode("utf-8", "replace").decode("utf-8")
+
+
 def _visible_status(request: Request, *, force: bool = False) -> dict:
     username = auth.request_username(request)
     is_admin = bool(username and auth.is_admin(username))
@@ -108,7 +140,12 @@ def api_action(a: Action, request: Request):
             raise api_error("auth.admin_required")
     rc, out, err = actions.run_action(a.target, a.action)
     invalidate_status()
-    ok = rc == 0
+    try:
+        ok = rc == 0
+    except Exception:
+        # An int-subclass ``__eq__`` bomb rc from an action seam reads as
+        # failure — the bulk route's per-id contract — never a 500.
+        ok = False
     # run_action raises before touching anything on an unknown target or a
     # disallowed action, so reaching record() means the command really ran;
     # the outcome rides along rather than gating the record — a failed stop
@@ -121,16 +158,21 @@ def api_action(a: Action, request: Request):
         action=a.action,
         ok=bool(ok),
     )
-    raw = out if ok else (err or out or f"exit {rc}")
-    if isinstance(raw, (bytes, bytearray)):
-        message = raw.decode("utf-8", "replace")
-    elif isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        message = ""
-    else:
-        message = "" if raw is None else str(raw)
     # Leftover ``\\ud800`` / bytes / inf from a VM/action helper used to
     # 500 the menubar's POST /api/action under Starlette's UTF-8 encoder.
-    message = message.encode("utf-8", "replace").decode("utf-8")
+    # Shaped through _message_text rather than raw truth tests: a
+    # ``__bool__`` bomb in ``err or out`` and the ``f"exit {rc}"`` int->str
+    # digit-cap ValueError on an over-cap rc both 500'd this echo while the
+    # bulk route rode the very same shapes as per-id failures.
+    if ok:
+        message = _message_text(out)
+    else:
+        message = _message_text(err) or _message_text(out)
+        if not message:
+            try:
+                message = f"exit {rc}"
+            except Exception:
+                message = "exit (unrenderable code)"
     return JSONResponse(
         {"ok": bool(ok), "message": message},
         status_code=200 if ok else 500,

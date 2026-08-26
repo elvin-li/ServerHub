@@ -49,10 +49,16 @@ _adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
 _ADAPTIVE_TTL = 60.0
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -94,12 +100,23 @@ def _jsonable(value, depth: int = 0):
     passed through untouched: CPython's int->str digit limit then
     ValueError'd ``json.dumps`` itself, 500ing GET /api/status,
     GET /api/services and GET /api/services/{id}/detail.
+    Nested subclass bombs (bound ``items``/``decode``/``__iter__``/``__str__``
+    raising) still blew the probes themselves, so one poisoned collector row
+    500'd the same three routes — hence the unbound base-type calls below,
+    the modules5 convention.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -108,17 +125,28 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs used to 500 the status/services routes.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -126,8 +154,17 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -311,6 +348,15 @@ def _build_status() -> dict:
     except Exception:
         apps = []
     services = _rows(apps) + scripts + launchd + containers + vms
+    # Scrub each collector row up front, not only in the final payload
+    # sweep: one poisoned row (a dict-subclass ``.get``/``items`` bomb, an
+    # iterbomb ports list, a ``__str__``-bomb int port, a hash-bomb str id
+    # hitting the known-names set, a ``__bool__``-bomb port, an ``__eq__``
+    # bomb state in the problems filter) used to raise out of the scans
+    # below and 500 a cold GET /api/status and GET /api/services.  The
+    # hardened ``_jsonable`` reads through unbound base-type calls, so the
+    # bomb costs only its own junk fields and the row's real data survives.
+    services = [_jsonable(s) for s in services]
 
     # Adaptive: orphan listeners not covered by known services
     if adaptive_on:
@@ -340,7 +386,9 @@ def _build_status() -> dict:
         except Exception:
             orphans = []
         if isinstance(orphans, list):
-            services.extend(orphans)
+            # Same per-row scrub as the collector rows above; ``list.extend``
+            # of a list subclass falls back to its (bombable) ``__iter__``.
+            services.extend(_jsonable(o) for o in list.__iter__(orphans))
 
     # Defensive counts: always include core keys; unknown states get their own bucket.
     groups, counts = {}, {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
@@ -567,6 +615,9 @@ def _stamp_locale(status: dict) -> dict:
         loc = panel_locale()
     except Exception:
         loc = status.get("locale") or "zh-CN"
-    if status.get("locale") != loc:
+    current = status.get("locale")
+    # Type-gated compare: a leftover planted in the cache whose ``__ne__``
+    # raises must restamp and scrub, not 500 the cache-hit path.
+    if type(current) is not str or current != loc:
         status["locale"] = loc
     return _jsonable(status)
