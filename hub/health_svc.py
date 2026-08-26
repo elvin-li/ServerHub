@@ -88,8 +88,18 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass planted in
+            # the cache, or a raw Immich/Ollama check row that bypasses
+            # ``_check``): nothing to salvage from it, but its *siblings*
+            # must survive — pre-fix this raised out of ``_serve_cached`` and
+            # out of the final collection pass and 500'd GET
+            # /api/health/checks (the nginx_svc/smart_test_svc._jsonable rule).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if isinstance(k, (bytes, bytearray)):
                 k = k.decode("utf-8", "replace")
             elif not isinstance(k, str):
@@ -100,7 +110,13 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: a list
+            # subclass whose ``__iter__`` raises drops alone, never the
+            # payload or the route.
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -524,9 +540,15 @@ def _serve_cached(hit: dict) -> dict:
         dirty = cleaned != hit
     except Exception:
         dirty = True
-    if dirty:
+    if not dirty:
+        return hit
+    try:
         hit.clear()
         hit.update(cleaned)
+    except Exception:
+        # A dict subclass whose clear/update raises (a planted poisoned
+        # snapshot): serve the cleaned copy rather than 500 the TTL hit.
+        return cleaned
     return hit
 
 
@@ -647,9 +669,29 @@ def _collect_checks() -> dict:
     )
 
     def _as_checks(rows):
-        return rows if isinstance(rows, list) else []
+        if not isinstance(rows, list):
+            return []
+        try:
+            # Materialize: ``isinstance`` passes for a list *subclass*, and
+            # one whose ``__iter__`` raises used to blow up ``checks.extend``
+            # after the fan-out — ``_safe`` only covers the probe call, not a
+            # lazily-raising return value — and 500 GET /api/health/checks
+            # (the nginx_svc.overview rule).
+            return list(rows)
+        except Exception:
+            return []
 
-    if not isinstance(running_labels, (set, frozenset, list, tuple)):
+    try:
+        # A plain frozenset, not the object the probe answered: a set/list
+        # subclass whose ``__iter__`` or ``__contains__`` raises silently
+        # dropped every brew launchd re-check and KeepAlive warning through
+        # their per-row guards.
+        running_labels = (
+            frozenset(running_labels)
+            if isinstance(running_labels, (set, frozenset, list, tuple))
+            else frozenset()
+        )
+    except Exception:
         running_labels = frozenset()
 
     # OrbStack / docker
@@ -666,43 +708,45 @@ def _collect_checks() -> dict:
     # key ports
     checks.extend(_as_checks(port_checks))
 
-    # brew critical
-    if isinstance(brew_states, list):
-        # Per-row guard, not one try spanning the loop: a single poisoned row
-        # (an over-cap hex-YAML/JSON int in name or status, whose bare str()
-        # is ValueError past CPython's digit cap) used to raise out of the
-        # loop-wide try and silently drop every later brew check —
-        # postgresql@18 included, the exact row this page exists to show
-        # when Immich's database is down.  _as_text's guarded str() probe
-        # coerces the renderable and absorbs the unrenderable to "".
-        for s in brew_states:
-            try:
-                if not isinstance(s, dict):
-                    continue
-                n = _as_text(s.get("name"))
-                # postgresql@18 is a *separate* cluster (:5433) holding the
-                # Immich database; @17 (:5432) holds TeslaMate.  Checking only
-                # @17 reports "database fine" while Immich's DB is down.
-                if n not in ("postgresql@17", "postgresql@18", "mosquitto", "grafana"):
-                    continue
-                st = _as_text(s.get("status")).lower()
-                ok = st in ("started", "running")
-                if not ok and st in ("none", ""):
-                    # brew reports "none" when a formula is running under a
-                    # LaunchAgent rather than `brew services`.  Re-check the
-                    # listing already taken above instead of spawning
-                    # launchctl per service.
-                    if f"homebrew.mxcl.{n}" in running_labels:
-                        ok, st = True, "running (launchd)"
-                checks.append(_check(
-                    f"brew_{n}", f"Homebrew {n}",
-                    "error" if n.startswith("postgres") else "warn",
-                    ok,
-                    st or "unknown",
-                    f"brew services start {n}" if not ok else "",
-                ))
-            except Exception:
+    # brew critical — through _as_checks: an iterbomb list subclass passed
+    # the previous bare isinstance gate and raised out of the loop header
+    # itself, 500ing GET /api/health/checks.
+    #
+    # Per-row guard, not one try spanning the loop: a single poisoned row
+    # (an over-cap hex-YAML/JSON int in name or status, whose bare str()
+    # is ValueError past CPython's digit cap) used to raise out of the
+    # loop-wide try and silently drop every later brew check —
+    # postgresql@18 included, the exact row this page exists to show
+    # when Immich's database is down.  _as_text's guarded str() probe
+    # coerces the renderable and absorbs the unrenderable to "".
+    for s in _as_checks(brew_states):
+        try:
+            if not isinstance(s, dict):
                 continue
+            n = _as_text(s.get("name"))
+            # postgresql@18 is a *separate* cluster (:5433) holding the
+            # Immich database; @17 (:5432) holds TeslaMate.  Checking only
+            # @17 reports "database fine" while Immich's DB is down.
+            if n not in ("postgresql@17", "postgresql@18", "mosquitto", "grafana"):
+                continue
+            st = _as_text(s.get("status")).lower()
+            ok = st in ("started", "running")
+            if not ok and st in ("none", ""):
+                # brew reports "none" when a formula is running under a
+                # LaunchAgent rather than `brew services`.  Re-check the
+                # listing already taken above instead of spawning
+                # launchctl per service.
+                if f"homebrew.mxcl.{n}" in running_labels:
+                    ok, st = True, "running (launchd)"
+            checks.append(_check(
+                f"brew_{n}", f"Homebrew {n}",
+                "error" if n.startswith("postgres") else "warn",
+                ok,
+                st or "unknown",
+                f"brew services start {n}" if not ok else "",
+            ))
+        except Exception:
+            continue
 
     # Homebrew python upgrades delete Cellar paths while KeepAlive PIDs
     # keep listening; TCP still answers so the services table looks green.
@@ -794,15 +838,26 @@ def _collect_checks() -> dict:
     # Worker-thread liveness — in-memory, deliberately outside the fan-out.
     checks.extend(_as_checks(_worker_checks()))
 
-    errors = sum(
-        1 for c in checks
-        if isinstance(c, dict) and not c.get("ok") and c.get("level") == "error"
-    )
-    warns = sum(
-        1 for c in checks
-        if isinstance(c, dict) and not c.get("ok") and c.get("level") == "warn"
-    )
-    oks = sum(1 for c in checks if isinstance(c, dict) and c.get("ok"))
+    def _row_flags(c):
+        """``(ok, level)`` of a row this function does not own, or None.
+
+        The raw Immich/Ollama rows bypass ``_check``, so a dict-subclass row
+        whose ``.get`` (or its value's ``__bool__``) raises used to blow up
+        these sums after every probe had already answered — the whole
+        collection 500'd at summary time.  ``_as_text`` on level: an
+        unrenderable over-cap int must compare as "", not raise.
+        """
+        if not isinstance(c, dict):
+            return None
+        try:
+            return bool(c.get("ok")), _as_text(c.get("level"))
+        except Exception:
+            return None
+
+    flags = [f for f in (_row_flags(c) for c in checks) if f is not None]
+    errors = sum(1 for ok, level in flags if not ok and level == "error")
+    warns = sum(1 for ok, level in flags if not ok and level == "warn")
+    oks = sum(1 for ok, _level in flags if ok)
     v = _jsonable({
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "summary": {"ok": oks, "warn": warns, "error": errors, "total": len(checks)},
