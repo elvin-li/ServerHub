@@ -344,10 +344,13 @@ class BrewListSubclassBombStaysImmuneTests(unittest.TestCase):
         names = sorted(r["id"] for r in resp.json()["services"])
         self.assertEqual(names, ["a", "b"])
 
-    def test_live_items_bomb_costs_the_rows_never_the_request(self):
+    def test_live_items_bomb_rows_now_render_never_500(self):
+        # brew7 upgraded this pin: brew_cache._json_safe now reads dict rows
+        # through the unbound ``dict.items`` view, so the row's real pairs
+        # survive its own ``items`` bomb instead of costing every brew row.
         resp = self._get_live([_ItemsBombDict(name="a", status="started")])
         self.assertEqual(resp.status_code, 200, resp.text[:300])
-        self.assertEqual(resp.json()["services"], [])
+        self.assertEqual([r["id"] for r in resp.json()["services"]], ["a"])
 
     def test_primed_snapshot_bombs_never_500_either_page(self):
         for row in (
