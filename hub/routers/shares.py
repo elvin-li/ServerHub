@@ -256,8 +256,10 @@ def open_system_settings(request: Request):
     result = _service_result(shares_svc.open_system_settings())
     if not result.get("ok"):
         # A confirmed-vanished ``open`` is the coded 503, not the 500 that
-        # blames System Settings itself.
-        if result.get("error") == "system_tool_missing":
+        # blames System Settings itself.  _utf8_text before the ``==``: a
+        # leftover subclass error value whose ``__eq__`` raises used to
+        # detonate this very probe into a raw 500.
+        if _utf8_text(result.get("error")) == "system_tool_missing":
             raise api_error("shares.system_tool_missing")
         raise api_error("shares.settings_open_failed")
     return _ok_payload(result)
@@ -310,7 +312,12 @@ def _share_directory(path: str) -> str:
                 continue
             try:
                 shared.add(str(Path(str(raw)).resolve()))
-            except (OSError, ValueError, TypeError, RuntimeError):
+            except Exception:
+                # Any exception, not just the four Path shapes: a leftover
+                # ``__str__`` bomb raising something else used to escape into
+                # the outer catch and abort the walk, so every share point
+                # *after* the hostile row was lost and a legitimate directory
+                # answered the acl_not_share / sharing_missing lie.
                 continue
     except Exception:
         # A walk dying mid-iteration keeps the share points already
@@ -339,7 +346,18 @@ def share_acl(path: str, request: Request):
         state = share_acl_svc.read_acl(resolved)
     except share_acl_svc.ShareAclError as error:
         raise api_error(error.code)
-    return {**state, "users": share_acl_svc.local_users()}
+    # _plain_result before the ``{**state}`` merge: a leftover dict-subclass
+    # state whose ``keys()``/``__iter__`` raises takes dict-unpacking's slow
+    # path and used to 500 the route out of the merge itself; junk shapes
+    # earn the coded read failure.  _jsonable before Starlette: a lone
+    # ``\\ud800`` or over-cap already-int leftover in the state or the user
+    # rows used to 500 the encoder where every sibling route answers with
+    # the field dropped or the text scrubbed (the _ok_payload rule this GET
+    # missed).
+    plain = _plain_result(state)
+    if plain is None:
+        raise api_error("shares.acl_read_failed")
+    return _jsonable({**plain, "users": share_acl_svc.local_users()})
 
 
 @router.put("/api/shares/acl")

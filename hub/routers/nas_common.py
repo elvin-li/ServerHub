@@ -73,7 +73,13 @@ def _utf8_text(value) -> str:
     except Exception:
         return ""
     try:
-        return text.encode("utf-8", "replace").decode("utf-8")
+        # Unbound base encode (the modules6 rule share_acl_svc already
+        # follows): ``str()`` of a subclass whose ``__str__`` answers *self*
+        # skips CPython's exact-str copy, so a leftover bound ``encode`` bomb
+        # dropped the real text to "" — and with it a coded error string
+        # ("cancelled", "exists", …) degraded to the generic admin.failed /
+        # shares.operation_failed 500 in place of its mapped refusal.
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
     except Exception:
         return ""
 
@@ -139,12 +145,28 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
+        # Unbound base ``__iter__`` (the modules5 rule at sequence rank): a
+        # subclass whose bound ``__iter__`` raises — or answers an iterator
+        # that bombs mid-walk — used to drop the whole field to None even
+        # though the real C-level storage still held every element.
+        base = (
+            list if isinstance(value, list)
+            else tuple if isinstance(value, tuple)
+            else set if isinstance(value, set)
+            else frozenset
+        )
         try:
-            return [_jsonable(v, depth + 1) for v in value]
+            rows = base.__iter__(value)
         except Exception:
-            # Same class as the mapping above, at sequence rank: only this
-            # field drops, never the payload or the route.
             return None
+        out = []
+        try:
+            for v in rows:
+                out.append(_jsonable(v, depth + 1))
+        except Exception:
+            # A walk dying mid-iteration keeps the elements already coerced.
+            pass
+        return out
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -265,10 +287,23 @@ def raise_service_error(result: dict, mapping: dict[str, str]) -> dict:
     error = (_utf8_text(raw_error) if _truthy(raw_error) else "") or "failed"
     code = mapping.get(error)
     if code:
-        raise api_error(code, **{
-            k: v for k, v in result.items()
-            if k not in ("ok", "error")
-            and isinstance(k, str)
-            and isinstance(v, (str, int, float))
-        })
+        # Per-field laundering before api_error: the old comprehension probed
+        # ``k not in ("ok", "error")`` *first*, so a leftover subclass key
+        # whose ``__eq__`` raises blew the coded refusal while it was being
+        # built — and a str-subclass value whose bound ``encode`` raises (or
+        # an int subclass whose ``__str__`` raises a non-ValueError) rode the
+        # isinstance gate into errors._jsonable_param's bound calls and 500'd
+        # the same coded body one layer down.  _utf8_text / _jsonable answer
+        # exact types, so the encoder walk downstream cannot detonate.
+        params = {}
+        for k, v in dict.items(result):
+            if not isinstance(k, str) or not isinstance(v, (str, int, float)):
+                continue
+            key = _utf8_text(k)
+            if key in ("ok", "error"):
+                continue
+            cleaned = _jsonable(v)
+            if isinstance(cleaned, (str, int, float)):
+                params[key] = cleaned
+        raise api_error(code, **params)
     return raise_for_admin_result(result)

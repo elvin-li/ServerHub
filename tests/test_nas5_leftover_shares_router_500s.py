@@ -268,13 +268,17 @@ class OkPayloadHostileShapeTests(unittest.TestCase):
         _starlette(body)
         self.assertEqual(body, {"ok": True})
 
-    def test_iter_bomb_sequence_value_collapses_the_field(self):
+    def test_iter_bomb_sequence_value_salvages_its_storage(self):
+        # shares7 upgraded the sanitizer to the unbound base ``__iter__``
+        # walk: the hostile override cannot fire, so the real C-level
+        # storage survives instead of collapsing to None.  The original
+        # point stands either way: the route answers 200.
         resp = _create({"ok": True, "members": _IterBombList(["a"]), "count": 1})
         self.assertEqual(resp.status_code, 200, resp.text[:200])
         body = resp.json()
         _starlette(body)
         self.assertIs(body["ok"], True)
-        self.assertIsNone(body["members"])
+        self.assertEqual(body["members"], ["a"])
         self.assertEqual(body["count"], 1)
 
     def test_system_service_ok_payload_is_cleaned(self):
