@@ -189,7 +189,11 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode this line to a 500 — at value, nested and mapping-key rank,
+    # through the dataclass arm, and as a ``by_category`` group key.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
