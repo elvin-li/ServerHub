@@ -151,7 +151,16 @@ def api_maintenance():
     ]
 
 
-@router.post("/api/maintenance/{tid}/run")
+# ``{tid:path}``, not ``{tid}``: task ids come straight from services.yaml and
+# may contain ``/`` (``id: brew/upgrade``).  The SPA percent-encodes the id,
+# but ASGI servers decode ``%2F`` back to ``/`` before routing, so a
+# single-segment matcher can never see such an id — the list offered a Run
+# button for a task whose run route answered the SPA fallback's 405, and
+# whose log poll answered its HTML 404 (the "listed id the run route can
+# never match" class the surrogate-id scrub already fixed).  tid is only ever
+# a mapping key here (never a filesystem path or argv), so the greedy match
+# is safe.
+@router.post("/api/maintenance/{tid:path}/run")
 def api_maintenance_run(tid: str, request: Request = None):
     task = jobs.maintenance_tasks().get(tid)
     if not task:
@@ -168,6 +177,6 @@ def api_maintenance_run(tid: str, request: Request = None):
     return {"ok": True, "message": "Task started"}
 
 
-@router.get("/api/maintenance/{tid}/log")
+@router.get("/api/maintenance/{tid:path}/log")
 def api_maintenance_log(tid: str):
     return jobs.job_log(tid)
