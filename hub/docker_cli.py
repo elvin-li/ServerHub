@@ -14,10 +14,16 @@ from hub.util import safe_json_loads, sh
 SENSITIVE = re.compile(r"(PASSWORD|SECRET|TOKEN|API_KEY|KEY|PASS|CREDENTIAL)", re.I)
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -27,12 +33,16 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
+    # returns self keeps the subclass, so a bound ``.encode`` bomb in a
+    # poisoned job-row field used to raise here and 500 GET /api/stacks
+    # (the modules5 unbound convention, like hub.audit._utf8_text).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value) -> str:
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif value is None:
         return ""
     else:
@@ -45,7 +55,8 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode — same subclass ``.encode`` bomb note as _utf8_text.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -63,6 +74,16 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # in a poisoned job-row ``rc`` used to blow the digit-cap
+                # probe below (only ValueError was caught) and 500
+                # GET /api/stacks and GET /api/stacks/jobs/{id} — the
+                # modules5 unbound convention (hub.status/_modules twins).
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -71,13 +92,21 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``/
+                # ``__ne__`` bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a subclass ``.decode`` bomb cannot fire.
+        return _decode_bytes(value)
     if isinstance(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
@@ -90,7 +119,7 @@ def _jsonable(value, depth: int = 0):
         out = {}
         for k, v in value.items():
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)

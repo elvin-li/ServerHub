@@ -92,6 +92,30 @@ def _truthy(value) -> bool:
         return False
 
 
+def _plain_text(value) -> str | None:
+    """A ``_cjobs`` string field as an *exact* ``str``, or None.
+
+    The isinstance gates on the job scans stop non-str junk, but a leftover
+    str-*subclass* field in a poisoned row passes them and detonates on the
+    first operator that consults the subclass: ``==`` used to raise out of
+    the ``stack_job_log`` fallback scan (the reflected operand gives the
+    subclass ``__eq__`` priority even when the plain str is on the left),
+    ``bool()`` (``__len__``) out of the ``latest_stack_jobs`` truthiness
+    check, and ``hash()`` out of its ``by[sid]`` insert — each one a 500 on
+    GET /api/stacks or GET /api/stacks/jobs/{id} until the panel restarted.
+    ``str.__str__`` copies through the C-level storage, so an override
+    cannot fire (the docker_cli._jsonable unbound convention).
+    """
+    if type(value) is str:
+        return value
+    if isinstance(value, str):
+        try:
+            return str.__str__(value)
+        except Exception:
+            return None
+    return None
+
+
 def _row_running(value) -> bool:
     """Whether a (possibly junk) ``_cjobs`` row counts as a live job."""
     row = _plain_job(value)
@@ -1825,22 +1849,32 @@ def stack_job_log(job_id: str) -> dict:
     if not isinstance(job_id, str):
         return missing
     # _plain_job: a dict-subclass row whose .get() raised used to 500 here.
-    j = _plain_job(_cjobs.get(job_id))
+    try:
+        j = _plain_job(_cjobs.get(job_id))
+    except Exception:
+        # The lookup itself can detonate: a leftover str-subclass KEY whose
+        # ``__eq__`` raises is compared against the queried id when their
+        # hashes collide (same string content), and the bomb raised out of
+        # ``dict.get`` — a raw 500 on the one poll that named the poisoned
+        # job.  The fallback scan below re-finds it through _plain_text.
+        j = None
     if j is None:
         # also allow latest job for stack
         for k, v in reversed(list(_cjobs.items())):
             row = _plain_job(v)
             if row is None:
                 continue
-            sid = row.get("stack_id")
-            # isinstance-gated str compares: a leftover ``__eq__``-bomb
-            # stack_id (or key) in ANY row used to raise out of this scan
-            # and 500 the poll for every other job.
-            if ((isinstance(sid, str) and sid == job_id)
-                    or (isinstance(k, str) and k == job_id)):
+            # _plain_text, not bare isinstance gates: a str-*subclass*
+            # ``__eq__``-bomb stack_id (or key) in ANY row passed the gate
+            # and still raised out of this scan — the reflected operand
+            # gives the subclass priority even with the plain str on the
+            # left — and 500'd the poll for every other job.
+            sid = _plain_text(row.get("stack_id"))
+            key = _plain_text(k)
+            if sid == job_id or (key is not None and key == job_id):
                 j = row
-                if isinstance(k, str):
-                    job_id = k
+                if key is not None:
+                    job_id = key
                 break
     if j is None:
         return {"running": False, "rc": None, "log": "(not started yet)",
@@ -1871,8 +1905,11 @@ def latest_stack_jobs() -> list:
         row = _plain_job(v)
         if row is None:
             continue
-        sid = row.get("stack_id")
-        if isinstance(sid, str) and sid:
+        # _plain_text: a str-subclass stack_id in a poisoned row used to
+        # detonate the truthiness check (``__len__`` bomb) or the ``by[sid]``
+        # insert (``__hash__`` bomb) and 500 GET /api/stacks.
+        sid = _plain_text(row.get("stack_id"))
+        if sid:
             by[sid] = {**job_public(k, row)}
     return list(by.values())
 
