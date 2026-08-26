@@ -52,7 +52,11 @@ def shutdown_executor() -> None:
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 Tools JSON."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode: a subclass ``.decode`` bomb riding a
+        # cross-module row (a disk power_state, say) used to raise here
+        # and 500 GET /api/tools/hardware.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -65,7 +69,12 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return value.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        # str() of a subclass copies to an exact str, but a ``__str__``
+        # override may *return* a str subclass whose ``encode`` bombs.
+        return ""
 
 
 def _sh(cmd, timeout=10, **kwargs):
@@ -655,14 +664,37 @@ def _renderable_number(value):
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to blow the digit-cap probe below (only ValueError was
+                # caught) and 500 GET /api/tools/hardware.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                value = float.__float__(value)
+            except Exception:
+                return None
         return value if math.isfinite(value) else None
     return None
+
+
+def _safe_flag(value, *, tri: bool = False):
+    """``bool(value)`` that a leftover ``__bool__`` bomb cannot raise through."""
+    if tri and value is None:
+        return None
+    try:
+        return bool(value)
+    except Exception:
+        return None if tri else False
 
 
 def _power_disk_row(d) -> dict | None:
@@ -674,17 +706,22 @@ def _power_disk_row(d) -> dict | None:
     degrade to ""), ``size_gb`` through the renderable-number probe, and the
     two flags through ``bool``, so a poisoned row costs itself one field
     rather than the whole cached payload.
+
+    Reads are unbound (``dict.get``): a dict-subclass row whose bound
+    ``get()`` raises still passes the isinstance gate, and the bomb used to
+    escape into ``fan_out`` — which re-raises on iteration — and 500
+    GET /api/tools/hardware.  Same for ``__bool__`` bombs on the two flags.
     """
     if not isinstance(d, dict):
         return None
-    ssd = d.get("ssd")
+    ssd = dict.get(d, "ssd")
     return {
-        "id": _as_text(d.get("id")),
-        "name": _as_text(d.get("name")),
-        "size_gb": _renderable_number(d.get("size_gb")),
-        "ssd": None if ssd is None else bool(ssd),
-        "power_state": _as_text(d.get("power_state")),
-        "system": bool(d.get("system")),
+        "id": _as_text(dict.get(d, "id")),
+        "name": _as_text(dict.get(d, "name")),
+        "size_gb": _renderable_number(dict.get(d, "size_gb")),
+        "ssd": _safe_flag(ssd, tri=True),
+        "power_state": _as_text(dict.get(d, "power_state")),
+        "system": _safe_flag(dict.get(d, "system")),
     }
 
 
@@ -725,7 +762,13 @@ def _hardware_profile_uncached() -> dict:
         # 5-minute TTL with the four profiler sections wiped alongside.
         out = []
         for d in rows:
-            row = _power_disk_row(d)
+            try:
+                row = _power_disk_row(d)
+            except Exception:
+                # Last-ditch: a bomb the field scrubs miss costs its own row,
+                # never the batch (fan_out re-raises on iteration, which
+                # would wipe the profiler sections alongside).
+                row = None
             if row is not None:
                 out.append(row)
         return out
