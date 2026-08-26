@@ -108,6 +108,38 @@ def is_local_http_origin(raw: str) -> bool:
     return local_http_origin(raw) is not None
 
 
+def _coerce_text(value) -> str | None:
+    """*value* as an exact ``str`` for parsing, or ``None`` when it cannot be.
+
+    The bare ``str(raw or "")`` these helpers used reflected into the
+    leftover itself: an over-cap YAML hex/octal int raised CPython's
+    4300-digit ``str()`` ValueError, and a subclass ``__bool__``/``__str__``
+    bomb raised whatever it liked — either escaped every gate built on
+    :func:`_url_parts` / :func:`_utf8_host` instead of answering "not a
+    URL / not a hostname".
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        if type(value) is str:
+            return value
+        try:
+            # Base copy through the C-level storage so a subclass
+            # ``__str__``/``encode`` override cannot fire downstream.
+            return str.__str__(value)
+        except Exception:
+            return None
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return bytes(value).decode("utf-8", "replace")
+        except Exception:
+            return None
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
 def _utf8_host(host: str) -> str | None:
     """Strip brackets and reject leftovers that cannot be a hostname.
 
@@ -115,7 +147,10 @@ def _utf8_host(host: str) -> str | None:
     branch of :func:`local_connect_peer` / :func:`notify_connect_peer` and
     500'd the later UTF-8 encode (or ``create_connection``).
     """
-    host = str(host or "").strip("[]").lower()
+    host = _coerce_text(host)
+    if host is None:
+        return None
+    host = host.strip("[]").lower()
     if not host or "\x00" in host:
         return None
     try:
@@ -131,7 +166,10 @@ def _url_parts(raw: str):
     ``urlsplit('http://[::1')`` and ``http://[]`` raise ValueError on 3.12.
     Notify save used to 500 POST /api/alerts/channels on a torn IPv6 paste.
     """
-    text = str(raw or "").strip()
+    text = _coerce_text(raw)
+    if text is None:
+        return None
+    text = text.strip()
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:

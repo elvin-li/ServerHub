@@ -31,7 +31,9 @@ def shutdown_executor() -> None:
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # bytes(...) first: a bytes subclass whose decode() bombs (the
+        # modules5 class) must not raise out of the sanitizer.
+        return bytes(value).decode("utf-8", "replace")
     try:
         text = str(value)
     except RecursionError:
@@ -48,9 +50,19 @@ def _as_text(value) -> str:
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
+        # bytes(...) first: a bytes subclass whose decode() bombs (the
+        # modules5 class) must not raise out of the sanitizer.
+        return bytes(value).decode("utf-8", "replace")
+    if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except Exception:
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        return _utf8_text(value)
     if value is None or isinstance(value, (dict, list, tuple, set, bool)):
         return ""
     try:
@@ -65,17 +77,74 @@ def _finite_number(value, default=None):
         return default
     if isinstance(value, int):
         try:
+            # Base coercion to an exact int first: an int *subclass* whose
+            # ``__index__``/``__str__`` bombs (the modules5 class) used to
+            # raise past the ValueError-only digit-cap catch and 500
+            # GET /api/settings/thresholds and /other.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # A >4300-digit leftover int is unrenderable by json.dumps
             # (CPython's int->str digit cap) — fall back like inf.
             return default
         return value
     if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except Exception:
+            return default
         if value != value or value in (float("inf"), float("-inf")):
             return default
         return value
     return default
+
+
+def _truthy(value) -> bool:
+    """Guarded ``bool(...)``: a leftover ``__bool__``/``__len__`` bomb in a
+    stored flag must degrade to False, never raise out of a settings read."""
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _as_map(value) -> dict:
+    """A plain-dict copy of *value*, or ``{}``.
+
+    ``dict(subclass)`` copies through CPython's C-level storage, bypassing
+    a leftover's overridden ``.get``/``.items``/``keys`` (the bomb class
+    usage5/json5 sealed elsewhere), so every read on the returned map is on
+    a plain dict.
+    """
+    if not isinstance(value, dict):
+        return {}
+    try:
+        return dict(value)
+    except Exception:
+        return {}
+
+
+def _settings_map() -> dict:
+    """Laundered ``settings`` mapping off ``cfg()`` for the readers here.
+
+    ``cfg().get("settings") or {}`` reflected into the leftover itself
+    twice: a config root that is a dict *subclass* with a bombing ``.get``
+    raised on the read, and a ``settings`` value whose ``__bool__`` bombs
+    raised on the ``or`` — each a raw 500 on GET /api/settings/other (the
+    same reads inside get_management_access degraded that section of the
+    Settings bundle to an error row).
+    """
+    try:
+        data = cfg()
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return _as_map(dict.get(data, "settings"))
 
 
 def _json_bool(value, default: bool = True) -> bool:
@@ -85,10 +154,18 @@ def _json_bool(value, default: bool = True) -> bool:
 def _json_atom(value):
     """Drop leftover inf/bytes/dates/sets/``\\ud800`` so Starlette cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # bytes(...) first: a bytes subclass whose decode() bombs (the
+        # modules5 class) must not raise out of the sanitizer.
+        return bytes(value).decode("utf-8", "replace")
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except Exception:
+            return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
@@ -105,8 +182,11 @@ def _json_atom(value):
         return _json_atom(stamped)
     if isinstance(value, int) and not isinstance(value, bool):
         try:
+            # Base coercion first: an int subclass ``__index__``/``__str__``
+            # bomb used to raise past the ValueError-only digit-cap catch.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
@@ -133,25 +213,43 @@ def _json_tree(value, depth: int = 0):
         return value
     if isinstance(value, int):
         try:
+            # Base coercion first: an int subclass ``__index__``/``__str__``
+            # bomb used to raise past the ValueError-only digit-cap catch.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return None
     if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except Exception:
+            return None
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
         return value
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # bytes(...) first: a bytes subclass whose decode() bombs (the
+        # modules5 class) must not raise out of the sanitizer.
+        return bytes(value).decode("utf-8", "replace")
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        try:
+            items = list(value.items())
+        except Exception:
+            # A dict *subclass* whose items() raises must not 500 the
+            # settings bundle — drop the node like an unrenderable scalar;
+            # healthy siblings around it are untouched.
+            return None
+        for k, v in items:
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = bytes(k).decode("utf-8", "replace")
             else:
                 try:
                     k = str(k)
@@ -160,7 +258,13 @@ def _json_tree(value, depth: int = 0):
             out[_utf8_text(k)] = _json_tree(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_tree(v, depth + 1) for v in value]
+        try:
+            seq = list(value)
+        except Exception:
+            # A list/set subclass whose __iter__ raises drops to null rather
+            # than raising out of the encode; the structure survives.
+            return None
+        return [_json_tree(v, depth + 1) for v in seq]
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -501,9 +605,10 @@ def _panel_update_snapshot() -> dict:
 
 def get_management_access() -> dict:
     """Unraid Management Access style summary."""
-    s = cfg().get("settings") or {}
-    if not isinstance(s, dict):
-        s = {}
+    # The old ``cfg().get("settings") or {}`` read was dead (nothing below
+    # consumed it) and reflected into a leftover dict-subclass ``.get`` /
+    # ``__bool__`` bomb — degrading this whole section of the Settings
+    # bundle to an error row.
     auth = settings_section("auth")
     username = _json_atom(auth.get("username"))
     if not isinstance(username, str) or not username:
@@ -512,7 +617,7 @@ def get_management_access() -> dict:
     # GET /api/settings/system and the Management Access tile.
     cleaned = _json_tree({
         "panel_port": 8086,
-        "auth_enabled": bool(auth.get("enabled")),
+        "auth_enabled": _truthy(auth.get("enabled")),
         "allow_localhost": _json_bool(auth.get("allow_localhost", True), True),
         "username": username,
         "host_ip": host_ip(),
@@ -555,7 +660,7 @@ def get_thresholds() -> dict:
         # >4300-digit int key ValueError'd the encoder's key stringify —
         # both 500'd GET /api/settings/thresholds.
         if isinstance(k, (bytes, bytearray)):
-            k = k.decode("utf-8", "replace")
+            k = bytes(k).decode("utf-8", "replace")
         elif not isinstance(k, str):
             try:
                 k = str(k)
@@ -576,27 +681,37 @@ def get_thresholds() -> dict:
 
 def get_other_settings() -> dict:
     """Unraid Other Settings + OMV-style toggles."""
-    s = cfg().get("settings") or {}
-    if not isinstance(s, dict):
-        s = {}
+    # _settings_map, not ``cfg().get("settings") or {}``: a leftover config
+    # root / settings map that is a dict subclass with a bombing ``.get`` /
+    # ``__bool__`` used to 500 GET /api/settings/other on the very first
+    # read (the json5 bomb class, already laundered in settings_api).
+    s = _settings_map()
     alias = settings_section("ip_aliases")
     ips = alias.get("ips")
     clean_ips = []
     if isinstance(ips, list):
-        for item in ips:
+        try:
+            items = list(ips)
+        except Exception:
+            # A list *subclass* whose __iter__ raises passes the isinstance
+            # gate; iterating it 500'd GET /api/settings/other.
+            items = []
+        for item in items:
             text = _json_atom(item)
             if isinstance(text, str) and text:
                 clean_ips.append(text)
     netmask = _json_atom(alias.get("netmask")) or "255.255.255.255"
     if not isinstance(netmask, str):
         netmask = "255.255.255.255"
+    # _as_text first, then membership: the raw tuple compare gave a
+    # str-subclass ``__eq__`` bomb (and any non-str leftover's reflected
+    # ``__eq__``) priority — a raw 500 where every sibling degraded fine.
+    resource_mode = _as_text(s.get("resource_mode"))
     return {
         "adaptive": _json_bool(s.get("adaptive", True), True),
         "metrics_interval": _finite_number(s.get("metrics_interval"), 90),
         "alert_interval": _finite_number(s.get("alert_interval"), 90),
-        "resource_mode": (
-            s.get("resource_mode") if s.get("resource_mode") in ("low", "high") else "low"
-        ),
+        "resource_mode": resource_mode if resource_mode in ("low", "high") else "low",
         "ip_aliases": {
             "auto_bind": _json_bool(alias.get("auto_bind", True), True),
             "prefer_wired": _json_bool(alias.get("prefer_wired", True), True),
