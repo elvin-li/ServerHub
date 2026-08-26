@@ -63,27 +63,59 @@ DSCACHEUTIL = "/usr/bin/dscacheutil"
 DIG = "/usr/bin/dig"
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/system/network cannot UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+        return _decode_bytes(value)
+    if value is None:
         return ""
-    else:
-        try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
-            # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
-            return ""
     try:
-        return value.encode("utf-8", "replace").decode("utf-8")
+        value = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
     except Exception:
+        # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
         return ""
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode this line into a 500 on every ``_sh`` consumer (the whole
+    # Network page inherits this scrub through ``_sh``).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule: the truth tests hidden in
+    ``bool(s.get("auto_bind", True))`` / ``settings.get("enabled", False)``
+    used to detonate a junk stored value whose ``__bool__`` raises and 500
+    GET /api/system/network/alias/auto and GET/POST failover.  Fails closed
+    to False — a bomb flag is junk, not consent to rebind interfaces or to
+    toggle the Wi-Fi radio.
+    """
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that survives a leftover ``__bool__`` bomb."""
+    try:
+        return value if value else fallback
+    except Exception:
+        return fallback
 
 
 def _sh(cmd, timeout=10, **kwargs):
@@ -94,7 +126,11 @@ def _sh(cmd, timeout=10, **kwargs):
 
 def _hex_netmask_to_dotted(mask: str) -> str:
     """0xffffff00 → 255.255.255.0"""
-    if not isinstance(mask, str):
+    if type(mask) is not str:
+        # Exact-type gate, not isinstance: a str-*subclass* leftover runs its
+        # own ``startswith`` through the probe below, and a bomb there used
+        # to 500 the interface parsers.  ``_as_text`` launders it to an
+        # exact str (and still covers the bytes/None/date leftovers).
         mask = _as_text(mask)
     if not mask:
         return ""
@@ -868,9 +904,13 @@ def _coerce_int(value, default: int) -> int:
     """
     try:
         coerced = int(value)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         # YAML ``.inf`` / ``.nan``: ``int(inf)`` is OverflowError, not ValueError,
-        # and both settings readers sit on GET /api/system/network.
+        # and both settings readers sit on GET /api/system/network.  Broader
+        # than the (TypeError, ValueError, OverflowError) net it replaces:
+        # ``int()`` reflects into the stored value's own ``__int__`` /
+        # ``__index__`` / ``__trunc__``, and a leftover bomb there raised
+        # straight past the tuple and 500'd the same GETs.
         return default
     try:
         str(coerced)
@@ -887,14 +927,24 @@ def _alias_settings() -> dict:
     from hub.config import settings_section
 
     s = settings_section("ip_aliases")
-    ips = s.get("ips") or []
+    # ``_pick`` / unbound base views throughout: ``settings_section`` launders
+    # the *section* to an exact dict, but the nested values are whatever an
+    # in-process caller last stored, and a subclass ``__bool__`` /
+    # ``replace`` / ``__iter__`` bomb there used to raise out of this reader
+    # and 500 GET /api/system/network/alias/auto, the alias PUT/run routes
+    # and the autobind loop at once.
+    # No truth test on ``ips`` at all: the ``or []`` this replaces only
+    # existed to turn None into [], which the isinstance ladder already does
+    # — and it ran a list-subclass ``__bool__`` bomb whose real elements the
+    # unbound iteration below can still read.
+    ips = s.get("ips")
     if isinstance(ips, str):
-        ips = [x.strip() for x in ips.replace(",", " ").split() if x.strip()]
+        ips = str.split(str.replace(ips, ",", " "))
     elif not isinstance(ips, list):
         ips = []
     # sanitize
     clean = []
-    for ip in ips:
+    for ip in list.__iter__(ips):
         # `_as_text` is the str() probe: a YAML hex/octal int past CPython's
         # 4300-digit cap raises ValueError from bare ``str(ip)`` and used to
         # 500 GET /api/system/network/alias/auto (and silently skip every
@@ -909,11 +959,11 @@ def _alias_settings() -> dict:
     if not _valid_ip(netmask):
         netmask = "255.255.255.255"
     return {
-        "auto_bind": bool(s.get("auto_bind", True)),
+        "auto_bind": _truthy(s.get("auto_bind", True)),
         "ips": clean,
         "netmask": netmask,
-        "interval": _coerce_int(s.get("interval") or 60, 60),
-        "prefer_wired": bool(s.get("prefer_wired", True)),
+        "interval": _coerce_int(_pick(s.get("interval"), 60), 60),
+        "prefer_wired": _truthy(s.get("prefer_wired", True)),
     }
 
 
@@ -921,13 +971,15 @@ def _failover_settings() -> dict:
     from hub.config import settings_section
 
     settings = settings_section("network_failover")
+    # Same nested-bomb rule as ``_alias_settings``: these truth tests used to
+    # 500 GET /api/system/network/failover and POST /failover/run.
     return {
-        "enabled": bool(settings.get("enabled", False)),
-        "power_save_wifi": bool(settings.get("power_save_wifi", True)),
-        "interval": max(10, min(300, _coerce_int(settings.get("interval") or 15, 15))),
-        "fail_threshold": max(1, min(10, _coerce_int(settings.get("fail_threshold") or 2, 2))),
-        "recover_threshold": max(1, min(10, _coerce_int(settings.get("recover_threshold") or 2, 2))),
-        "probe_timeout_ms": max(500, min(5000, _coerce_int(settings.get("probe_timeout_ms") or 1200, 1200))),
+        "enabled": _truthy(settings.get("enabled", False)),
+        "power_save_wifi": _truthy(settings.get("power_save_wifi", True)),
+        "interval": max(10, min(300, _coerce_int(_pick(settings.get("interval"), 15), 15))),
+        "fail_threshold": max(1, min(10, _coerce_int(_pick(settings.get("fail_threshold"), 2), 2))),
+        "recover_threshold": max(1, min(10, _coerce_int(_pick(settings.get("recover_threshold"), 2), 2))),
+        "probe_timeout_ms": max(500, min(5000, _coerce_int(_pick(settings.get("probe_timeout_ms"), 1200), 1200))),
     }
 
 
@@ -1649,12 +1701,17 @@ def _valid_ip(ip: str) -> bool:
     Unicode digits pass ``str.isdigit()`` (``١`` / ``²``) and used to
     ValueError ``int()`` or become a leftover "valid" octet the same way
     non-ASCII dword hosts did in http_guard.
+
+    Unbound base decode/strip/split: a bytes-subclass ``decode`` bomb or a
+    str-subclass ``strip``/``split`` bomb from an in-process caller used to
+    raise straight out of this validator (the octet probes below already run
+    on the exact strs ``str.split`` returns).
     """
     if isinstance(ip, (bytes, bytearray)):
-        ip = ip.decode("utf-8", "replace")
+        ip = _decode_bytes(ip)
     elif not isinstance(ip, str):
         return False
-    parts = ip.strip().split(".")
+    parts = str.split(str.strip(ip), ".")
     if len(parts) != 4:
         return False
     for p in parts:
