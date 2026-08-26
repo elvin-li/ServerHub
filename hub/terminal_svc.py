@@ -147,10 +147,16 @@ def _resolve_cwd(requested: str | None) -> str:
     ``cd`` anywhere the user can — it just keeps a stale tab from failing every
     command against a directory that has since been deleted.
     """
-    for candidate in (requested, _terminal_cfg().get("cwd"), _home_dir()):
+    # _cfg_value, not ``candidate or ""``: a leftover configured cwd with a
+    # bombing ``__bool__`` used to raise out of the bare truthiness probe —
+    # a 500 on POST /api/terminal/run and an unhandled exception out of the
+    # PTY handshake before the session was even reserved.
+    for candidate in (requested, _cfg_value(_terminal_cfg(), "cwd"), _home_dir()):
         # _config_text: a leftover hex-int cwd from YAML used to ValueError
-        # the bare str() here (POST /api/terminal/run and the PTY handshake).
-        value = _config_text(candidate or "").strip()
+        # the bare str() here (POST /api/terminal/run and the PTY handshake);
+        # it also returns an *exact* str, so a leftover subclass ``.strip()``
+        # bomb cannot raise here either.
+        value = _config_text(candidate).strip()
         if not value:
             continue
         try:
@@ -168,6 +174,30 @@ def _terminal_cfg() -> dict:
     return dict(settings_section("terminal"))
 
 
+def _cfg_truthy(value) -> bool:
+    """``bool(value)`` that a leftover ``__bool__``/``__len__`` bomb cannot
+    raise through.
+
+    ``settings.terminal`` values are laundered into a plain dict, but the
+    *values* survive as-is: a leftover subclass whose ``__bool__`` raises
+    used to blow every bare truthiness probe (``host_enabled``, the
+    ``value or fallback`` chains) — a 500 on GET /api/terminal and
+    POST /api/terminal/run, and an unhandled exception straight out of the
+    PTY WebSocket handshake.  An unreadable truthiness is treated as unset,
+    which for the ``host_enabled`` RCE gate is also the safe default.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _cfg_value(section: dict, key: str):
+    """``section.get(key) or None`` without a bare truthiness probe."""
+    value = dict.get(section, key)
+    return value if _cfg_truthy(value) else None
+
+
 def _config_text(value) -> str:
     """``str(value)`` for a config scalar, or "" when it cannot be rendered.
 
@@ -175,22 +205,32 @@ def _config_text(value) -> str:
     parsing has no digit limit), so a bare ``str()`` on a leftover
     ``settings.terminal.cwd``/``shell`` raised ValueError before any sanitizer
     ran — a 500 on GET /api/terminal and POST /api/terminal/run.
+
+    Always returns an *exact* ``str``: a leftover str subclass used to ride
+    through the ``isinstance`` pass untouched, and its bombing ``.strip()``
+    then raised out of ``_resolve_cwd`` — a 500 on POST /api/terminal/run and
+    an unhandled exception out of the PTY handshake.
     """
     if value is None:
         return ""
     if isinstance(value, str):
-        return value
+        if type(value) is str:
+            return value
+        # Unbound base copy: drops the subclass (and its method bombs).
+        return str.__str__(value)
     try:
-        return str(value)
+        text = str(value)
     except Exception:
         # ValueError past the digit cap; RecursionError from a leftover
         # self-referencing __str__.  Either way the scalar is unusable.
         return ""
+    # A subclass ``__str__`` may hand back another subclass instance.
+    return text if type(text) is str else str.__str__(text)
 
 
 def host_enabled() -> bool:
     """True when the operator has explicitly switched the host shell on."""
-    return bool(_terminal_cfg().get("host_enabled", False))
+    return _cfg_truthy(_terminal_cfg().get("host_enabled", False))
 
 
 def status() -> dict:
@@ -199,10 +239,12 @@ def status() -> dict:
     # _config_text: a leftover YAML ``cwd: 0xFFF…`` is an int past the 4300
     # digit str cap — the bare str() 500'd GET /api/terminal before the
     # payload ever reached the sanitizer.  Unrenderable values fall back.
-    cwd = _config_text(tc.get("cwd") or "")
+    # _cfg_value, not ``tc.get(...) or ""``: a leftover value with a bombing
+    # ``__bool__`` used to raise out of the bare truthiness probe — a 500.
+    cwd = _config_text(_cfg_value(tc, "cwd"))
     payload = {
         "host_enabled": host_enabled(),
-        "shell": _config_text(tc.get("shell") or "") or _default_shell(),
+        "shell": _config_text(_cfg_value(tc, "shell")) or _default_shell(),
         "cwd": cwd or _home_dir(),
         "default_timeout": DEFAULT_TIMEOUT,
         "max_timeout": MAX_TIMEOUT,
@@ -266,10 +308,16 @@ def _duration_ms(started, ended) -> int:
     return ms if ms >= 0 else 0
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -279,6 +327,10 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
+    if type(text) is not str:
+        # A subclass ``__str__`` may hand back another subclass whose bound
+        # ``.encode`` bombs; the unbound base copy drops the override.
+        text = str.__str__(text)
     return text.encode("utf-8", "replace").decode("utf-8")
 
 
@@ -290,12 +342,22 @@ def _jsonable(value, depth: int = 0):
     a lone-surrogate command used to raise out of ``_audit`` after the
     command had already run.  A leftover ``\\ud800`` *key* on an audit line
     still 500'd GET /api/terminal/history (values were scrubbed, keys were not).
+    Nested subclass bombs (bound ``items``/``decode``/``__iter__``/``__str__``
+    raising) still blew the probes themselves — hence the unbound base-type
+    calls below, the modules5 convention every sibling service already uses.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -304,17 +366,28 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, str):
+        # Unbound base view: a dict subclass whose ``items()`` raises used
+        # to blow the walk itself.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -322,8 +395,17 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot raise and the real elements still survive.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -561,7 +643,9 @@ def run_host(
     tc = _terminal_cfg()
     # _config_text: a leftover hex-int shell from YAML used to ValueError the
     # bare str() here, 500'ing the run before the command ever started.
-    shell = _config_text(tc.get("shell") or "") or _default_shell()
+    # _cfg_value: a leftover shell with a bombing ``__bool__`` used to raise
+    # out of the bare ``or`` truthiness probe the same way.
+    shell = _config_text(_cfg_value(tc, "shell")) or _default_shell()
     start_cwd = _resolve_cwd(cwd)
 
     result = _run([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd)
