@@ -38,7 +38,7 @@ from hub.host_address import default_interface
 from hub.launchd_cache import loaded_labels
 from hub.macos_admin import run_admin_sequence, sudo_capture
 from hub.paths import DATA_DIR
-from hub.secure_io import replace_secret_text
+from hub.secure_io import drop_leftover_nonfile, replace_secret_text
 from hub.util import fan_out, read_text_capped, sh
 
 #: Leftover multi-MB ``/etc/pf.conf`` / LaunchDaemon plist used to OOM
@@ -76,6 +76,26 @@ LAUNCH_DAEMON_DIR = Path("/Library/LaunchDaemons")
 PF_MARKER = "# ServerHub WireGuard NAT"
 
 _STAGE_DIR = DATA_DIR
+
+
+def _stage_file(path: Path, content: str) -> bool:
+    """Write a staging file under data/, clearing an empty leftover occupant.
+
+    Every remediation stages its payload here before the privileged copy.  A
+    leftover directory occupying one of these fixed names (``pf.conf.check``,
+    ``pf.conf.staged``, ``pf-anchor-wireguard``, the two LaunchDaemon plists)
+    made :func:`replace_secret_text`'s final ``os.replace`` raise
+    IsADirectoryError — a raw 500 out of POST /api/wireguard/remediate before
+    any privileged step ran.  An empty leftover is removed and the write
+    self-heals; anything else reports False so the caller answers its coded
+    failure instead.
+    """
+    drop_leftover_nonfile(path)
+    try:
+        replace_secret_text(path, content)
+        return True
+    except OSError:
+        return False
 
 
 def _as_text(value) -> str:
@@ -1093,7 +1113,10 @@ def _validate_pf_conf(body: str, anchor_path: Path) -> dict:
     """
     probe_body = body.replace(f'from "{PF_ANCHOR_PATH}"', f'from "{anchor_path}"')
     probe = _STAGE_DIR / "pf.conf.check"
-    replace_secret_text(probe, probe_body)
+    if not _stage_file(probe, probe_body):
+        # Nothing was parsed, so this is not a pf.conf verdict: flag it so
+        # the caller reports the write failure rather than "pf.conf invalid".
+        return {"ok": False, "message": "", "stage_failed": str(probe)}
     rc, out, err = sh([PFCTL, "-n", "-f", str(probe)], timeout=15)
     if rc == 0:
         return {"ok": True, "message": ""}
@@ -1123,7 +1146,8 @@ def install_nat() -> dict:
 
     anchor_body = render_anchor(subnet, egress)
     staged_anchor = _STAGE_DIR / "pf-anchor-wireguard"
-    replace_secret_text(staged_anchor, anchor_body)
+    if not _stage_file(staged_anchor, anchor_body):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged_anchor)}
 
     try:
         current = read_text_capped(PF_CONF, _PF_CONF_CAP, errors="replace")
@@ -1132,11 +1156,14 @@ def install_nat() -> dict:
 
     desired = render_pf_conf(current)
     check = _validate_pf_conf(desired, staged_anchor)
+    if check.get("stage_failed"):
+        return {"ok": False, "error": "stage_write_failed", "path": check["stage_failed"]}
     if not check["ok"]:
         return {"ok": False, "error": "pf_conf_invalid", "message": check["message"]}
 
     staged_conf = _STAGE_DIR / "pf.conf.staged"
-    replace_secret_text(staged_conf, desired)
+    if not _stage_file(staged_conf, desired):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged_conf)}
 
     commands = [
         ["/bin/mkdir", "-p", str(PF_ANCHOR_DIR)],
@@ -1174,6 +1201,12 @@ def remove_nat() -> dict:
     if _anchor_reference_lines(current) or PF_MARKER in current:
         desired = "\n".join(_without_our_lines(current)).strip("\n") + "\n"
         check = _validate_pf_conf(desired, PF_ANCHOR_PATH)
+        if check.get("stage_failed"):
+            return {
+                "ok": False,
+                "error": "stage_write_failed",
+                "path": check["stage_failed"],
+            }
         if not check["ok"]:
             return {
                 "ok": False,
@@ -1181,7 +1214,8 @@ def remove_nat() -> dict:
                 "message": check["message"],
             }
         staged = _STAGE_DIR / "pf.conf.staged"
-        replace_secret_text(staged, desired)
+        if not _stage_file(staged, desired):
+            return {"ok": False, "error": "stage_write_failed", "path": str(staged)}
         commands += [
             [CP, str(PF_CONF), f"{PF_CONF}.serverhub.bak"],
             [CP, str(staged), str(PF_CONF)],
@@ -1211,7 +1245,8 @@ def install_daemon() -> dict:
     daemon = daemon_state()
     target = Path(daemon["plist_path"])
     staged = _STAGE_DIR / f"{daemon['label']}.plist"
-    replace_secret_text(staged, _daemon_plist_body())
+    if not _stage_file(staged, _daemon_plist_body()):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged)}
 
     commands: list[list[str]] = []
     if daemon["loaded"] or daemon["installed"]:
@@ -1321,7 +1356,8 @@ def install_wstunnel(*, restrict_to: str | None = None) -> dict:
         return {"ok": False, "error": "bad_wstunnel_target", "target": dest[:60]}
 
     staged = _STAGE_DIR / f"{wireguard_wstunnel.LABEL}.plist"
-    replace_secret_text(staged, body)
+    if not _stage_file(staged, body):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged)}
     target = wireguard_wstunnel.PLIST_PATH
     result = run_admin_sequence(
         [

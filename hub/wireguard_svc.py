@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -103,6 +104,30 @@ _REGISTRY_CAP = 256 * 1024
 #: Serialises read-modify-write of the server config *across processes*.
 _LOCK_PATH = DATA_DIR / "wireguard.lock"
 
+#: In-process fallback when the flock file cannot be opened at all; weaker
+#: than the flock (it does not see the other process) but strictly better
+#: than refusing every peer change outright.
+_LOCK_FALLBACK = threading.Lock()
+
+
+def _lock_fd() -> int | None:
+    """flock fd for :data:`_LOCK_PATH`, or None when a leftover node blocks it.
+
+    A leftover directory occupying ``data/wireguard.lock`` made the bare
+    ``os.open`` raise EISDIR — a raw 500 out of every peer mutation (create,
+    batch, delete, import, PSK toggle) before any validation ran, exactly the
+    class :func:`hub.config._file_lock` already degrades for services.yaml.
+    An *empty* leftover (directory or FIFO) is cleared so the cross-process
+    lock self-heals; anything that still cannot be opened (a non-empty
+    directory, EIO on a dying mount) reports None and the caller falls back.
+    """
+    drop_leftover_nonfile(_LOCK_PATH)
+    try:
+        _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        return os.open(_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+
 
 @contextmanager
 def conf_lock() -> Iterator[None]:
@@ -123,14 +148,31 @@ def conf_lock() -> Iterator[None]:
     The slow part -- pushing the result into the running interface -- is
     deliberately left outside: it re-reads the whole config from disk, so running
     it after another writer's change still applies a consistent file.
+
+    A leftover node at the lock path, or EIO out of ``os.open``/``flock`` on a
+    dying mount, degrades to the in-process fallback lock rather than a raw
+    500: the peer change is still serialised within this process, and refusing
+    it entirely would not protect anything the broken lock file was guarding.
     """
-    fd = os.open(_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = _lock_fd()
+    if fd is None:
+        with _LOCK_FALLBACK:
+            yield
+        return
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            with _LOCK_FALLBACK:
+                yield
+            return
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
         os.close(fd)
 
@@ -377,8 +419,14 @@ def settings() -> dict:
 
 def save_settings(patch: dict) -> dict:
     """Persist a subset of the WireGuard settings after validating each field."""
-    raw = cfg().get("settings")
-    stored = raw.get("wireguard") if isinstance(raw, dict) else None
+    # Unbound ``dict.get``, the settings_section lesson: a leftover config
+    # root (or ``settings`` map) that is a dict *subclass* with a bombing
+    # ``.get`` raised straight out of the bare method calls here and 500'd
+    # PUT /api/wireguard/settings — plus POST /api/wireguard/remediate for
+    # the wstunnel targets, whose uninstall/stabilize paths save settings.
+    data = cfg()
+    raw = dict.get(data, "settings") if isinstance(data, dict) else None
+    stored = dict.get(raw, "wireguard") if isinstance(raw, dict) else None
     current = dict(stored) if isinstance(stored, dict) else {}
     for key, value in (patch or {}).items():
         if key not in DEFAULTS:
@@ -1340,7 +1388,17 @@ def _write_conf(peers: list[dict]) -> Path:
             pass
     # Atomic publish: write_secret_text O_TRUNC'd the live file (private
     # key included) if the process died mid-write.
-    replace_secret_text(path, body)
+    drop_leftover_nonfile(path)
+    try:
+        replace_secret_text(path, body)
+    except OSError:
+        # A leftover *non-empty* directory occupying wg0.conf (an empty one
+        # is cleared above) makes the final os.replace raise
+        # IsADirectoryError, which used to escape as a raw 500 out of every
+        # peer mutation after validation had already passed.  The coded 503
+        # names the file so the operator removes the occupant; nothing was
+        # persisted, so the registry and the config stay consistent.
+        raise WireGuardError("wg.write_failed", path=str(path)[:120])
     return path
 
 
@@ -1820,7 +1878,17 @@ def apply_live() -> dict:
     staged = DATA_DIR / f"{interface}.sync.conf"
     # Reused every sync; O_TRUNC mid-write left a torn private-key file
     # that ``wg syncconf`` then applied.
-    replace_secret_text(staged, stripped)
+    drop_leftover_nonfile(staged)
+    try:
+        replace_secret_text(staged, stripped)
+    except OSError:
+        # A leftover non-empty directory at data/wg0.sync.conf used to raise
+        # IsADirectoryError out of os.replace — a raw 500 on POST
+        # /api/wireguard/sync, and on every peer mutation whose apply step
+        # runs after the change was already persisted.  The dict shape keeps
+        # peer routes answering 200 with applied=false, and /sync answers
+        # its coded wg.sync_failed.
+        return {"ok": False, "error": "stage_unwritable"}
 
     rc, _, err = sh(["/usr/bin/sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30)
     if rc == 0:

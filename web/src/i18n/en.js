@@ -2654,6 +2654,7 @@ export default {
       peer_unknown: 'Peer {pubkey} was not created by this panel',
       peer_not_reissuable: 'Peer {pubkey} has no stored private key, so its config cannot be regenerated — delete it and enrol the device again',
       sync_failed: 'The running interface could not be reloaded',
+      write_failed: 'Could not write {path} — something else occupies that path; remove it and retry',
       bad_format: 'Unsupported export format: {format}',
       confirm_required: 'Revoking a peer requires explicit confirmation',
     },

@@ -2650,6 +2650,7 @@ export default {
       peer_unknown: '客户端 {pubkey} 不是本面板创建的',
       peer_not_reissuable: '客户端 {pubkey} 未保存私钥，无法重新生成配置 — 请删除后重新添加设备',
       sync_failed: '无法重载正在运行的接口',
+      write_failed: '无法写入 {path} — 该路径被其他内容占用，请移除后重试',
       bad_format: '不支持的导出格式：{format}',
       confirm_required: '吊销客户端需要明确确认',
     },
