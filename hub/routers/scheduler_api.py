@@ -154,7 +154,15 @@ def _audit_fields(record: dict) -> dict:
         "cron": record.get("cron"),
         "enabled": record.get("enabled"),
     }
-    if record.get("type") == "command":
+    # Guarded equality, the _matches_id shape: ``==`` reflects into the
+    # stored value's own ``__eq__``, and a leftover eq-bomb ``type`` on a
+    # journalled job used to raise here and 500 the audited mutation
+    # (delete / enable / run-now) after validation had already passed.
+    try:
+        is_command = record.get("type") == "command"
+    except Exception:
+        is_command = False
+    if is_command:
         # _plain_dict, not a bare isinstance: a leftover dict-subclass
         # ``params`` whose ``.get()`` raised used to 500 the audited
         # mutation (delete / enable / run-now) after validation had
