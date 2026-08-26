@@ -67,8 +67,17 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass in a
+            # privileged result): there is nothing to salvage from it, but
+            # its *siblings* must survive — pre-fix this raised out of
+            # raise_for_admin_result and 500'd the POST NAS routes (the
+            # ups_svc/nginx_svc._jsonable rule).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if not isinstance(k, str):
                 try:
                     k = str(k)
@@ -77,7 +86,12 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the payload or the route.
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -131,7 +145,11 @@ def raise_for_admin_result(result: dict) -> dict:
     if result.get("ok"):
         cleaned = _jsonable(result)
         return cleaned if isinstance(cleaned, dict) else {"ok": True}
-    code = _ADMIN_ERRORS.get(str(result.get("error") or "failed"), "admin.failed")
+    # _utf8_text, not str(): a leftover *already-int* error field past
+    # CPython's int->str digit cap (YAML/plist hex loads uncapped through
+    # ``int(x, 16)``) made the bare str() raise the digit-cap ValueError out
+    # of the route — an unhandled 500 in place of the coded admin.failed.
+    code = _ADMIN_ERRORS.get(_utf8_text(result.get("error") or "failed") or "failed", "admin.failed")
     # The command's stderr tail (e.g. wg-quick's own failure line) rides along as
     # ``detail``: the SPA appends it to the translated message, and the generic
     # "operation failed" text stops hiding the actual cause.
@@ -153,11 +171,19 @@ def raise_service_error(result: dict, mapping: dict[str, str]) -> dict:
     if result.get("ok"):
         cleaned = _jsonable(result)
         return cleaned if isinstance(cleaned, dict) else {"ok": True}
-    error = str(result.get("error") or "failed")
+    # Same str() probe as raise_for_admin_result: an over-cap already-int
+    # error field must earn the coded fallback, not the digit-cap ValueError.
+    error = _utf8_text(result.get("error") or "failed") or "failed"
     code = mapping.get(error)
     if code:
+        try:
+            extras = list(result.items())
+        except Exception:
+            # A dict subclass whose items() raises still answered .get()
+            # above; the coded refusal must not lose to its hostile extras.
+            extras = []
         raise api_error(code, **{
-            k: v for k, v in result.items()
+            k: v for k, v in extras
             if k not in ("ok", "error")
             and isinstance(k, str)
             and isinstance(v, (str, int, float))

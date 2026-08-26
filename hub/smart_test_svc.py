@@ -477,8 +477,17 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass in a
+            # run_admin result or a poisoned history row): nothing to
+            # salvage, but its *siblings* must survive — pre-fix this raised
+            # out of abort_test/_load_history and 500'd the SMART routes
+            # (the ups_svc/nginx_svc._jsonable rule).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
@@ -487,7 +496,12 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the payload or the route.
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
