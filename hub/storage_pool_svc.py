@@ -179,7 +179,21 @@ def _candidates() -> list[dict]:
 
     out: list[dict] = []
     volumes = storage_svc.list_volumes()
-    for vol in volumes if isinstance(volumes, list) else []:
+    if not isinstance(volumes, list):
+        volumes = []
+    try:
+        volumes = list(volumes)
+    except Exception:
+        # A volume listing that passes the isinstance gate but refuses
+        # *iteration* (odd list subclass from the seam) used to raise out of
+        # this loop and 500 every pool route at once — GET /api/storage/pool,
+        # plan, save, and clear *after* its config write had already landed —
+        # the ups_svc/storage_svc/usage_svc materialize-under-guard rule this
+        # module missed.  No candidates is the honest degrade: the overview
+        # reports members as missing, and the mutations answer their coded
+        # refusals instead of a bare 500.
+        volumes = []
+    for vol in volumes:
         if not isinstance(vol, dict):
             continue
         if vol.get("kind") not in POOLABLE_KINDS:
