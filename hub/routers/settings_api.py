@@ -153,7 +153,9 @@ def _cfg_map():
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # bytes(...) first: a bytes subclass whose decode() bombs (the
+        # modules5 class) must not raise out of the sanitizer.
+        return bytes(value).decode("utf-8", "replace")
     try:
         text = str(value)
     except RecursionError:
@@ -182,20 +184,33 @@ def _jsonable(value, depth: int = 0):
         return value
     if isinstance(value, int):
         try:
+            # Base coercion to an exact int: an int *subclass* whose
+            # ``__index__``/``__str__`` bombs (the modules5 class) used to
+            # raise past the ValueError-only digit-cap catch and 500
+            # GET /api/settings when it rode a stack port / groups entry.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
         return value
     if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except Exception:
+            return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # bytes(...) first: a bytes subclass whose decode() bombs (the
+        # modules5 class) must not raise out of the sanitizer.
+        return bytes(value).decode("utf-8", "replace")
     if isinstance(value, dict):
         out = {}
         try:
@@ -207,7 +222,7 @@ def _jsonable(value, depth: int = 0):
             return None
         for k, v in items:
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = bytes(k).decode("utf-8", "replace")
             elif not isinstance(k, str):
                 try:
                     k = str(k)
@@ -247,13 +262,23 @@ def _finite(value, default):
         return default
     if isinstance(value, int):
         try:
+            # Base coercion to an exact int first: an int *subclass* whose
+            # ``__index__``/``__str__`` bombs used to raise past the
+            # ValueError-only catch and 500 GET /api/settings.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # A >4300-digit leftover interval is unrenderable by json.dumps
             # (CPython's int->str digit cap) — fall back like inf.
             return default
         return value
     if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except Exception:
+            return default
         if value != value or value in (float("inf"), float("-inf")):
             return default
         return value
@@ -267,12 +292,19 @@ def _epoch(value, default: int = 0) -> int:
         return default
     if isinstance(value, int):
         try:
+            # Base coercion first: a subclass ``__index__``/``__str__`` bomb
+            # used to raise past the ValueError-only digit-cap catch.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # A >4300-digit epoch cannot be JSON-encoded (int->str digit cap).
             return default
         return value
     if isinstance(value, float):
+        try:
+            value = float.__float__(value)
+        except Exception:
+            return default
         if value != value or value in (float("inf"), float("-inf")):
             return default
         try:
@@ -281,12 +313,31 @@ def _epoch(value, default: int = 0) -> int:
             return default
     try:
         return int(value)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # ``int()`` of an arbitrary leftover dispatches into its own
+        # ``__int__``/``__index__``, whose bomb is not one of the three
+        # usual conversion errors.
         return default
 
 
 def _flag(value, default: bool = True) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _truthy(value) -> bool:
+    """Guarded ``bool(...)`` for has_* / enabled flags.
+
+    ``bool(notify.get("enabled"))`` reflects into the stored value's own
+    ``__bool__``/``__len__``; a leftover bomb there (the modules5 class)
+    used to 500 GET /api/settings where every healthy sibling around it
+    rendered fine.
+    """
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
 
 
 def _json_list(value) -> list:
@@ -314,6 +365,21 @@ def _public_settings() -> dict:
     aliases = _jsonable(_as_map(s.get("ip_aliases")))
     if not isinstance(aliases, dict):
         aliases = {}
+    # ``password and password != "change-me"`` reflects into the leftover's
+    # own ``__bool__`` / ``__ne__``; a subclass bomb there used to 500 the
+    # whole render.  The probe is best-effort: an unanswerable leftover
+    # reads as "no password set", never as a raw 500.
+    password = auth.get("password")
+    try:
+        password_set = bool(password) and password != "change-me"
+    except Exception:
+        password_set = False
+    # _text first, then membership: ``s.get("resource_mode") in ("low",
+    # "high")`` gives a str-*subclass* ``__eq__`` bomb reflected priority,
+    # and a float/int bomb the same — each used to 500 GET /api/settings.
+    # _text answers an exact str, so the tuple compare cannot dispatch into
+    # a leftover override; non-str leftovers default to "low" as before.
+    resource_mode = _text(s.get("resource_mode"))
     return {
         "host_ip": _text(host_ip()),
         "host_ip_config": _text(configured_host()),
@@ -323,18 +389,17 @@ def _public_settings() -> dict:
             # with the dedicated mode-0600 token instead.
             "allow_localhost": False,
             "username": _text(auth.get("username"), "admin"),
-            "has_password": bool(auth.get("password_hash") or (auth.get("password") and auth.get("password") != "change-me")),
+            "has_password": _truthy(auth.get("password_hash")) or password_set,
         },
         "notify": {
-            "enabled": bool(notify.get("enabled")),
-            "include_warn": bool(notify.get("include_warn")),
+            "enabled": _truthy(notify.get("enabled")),
+            "include_warn": _truthy(notify.get("include_warn")),
             "notify_resolve": _flag(notify.get("notify_resolve", True), True),
             "ha_url": _text(notify.get("ha_url"), "http://localhost:8123"),
             "ha_service": _text(notify.get("ha_service"), "notify.notify"),
-            "has_token": bool(notify.get("ha_token")),
-            "has_webhook": bool(
-                notify.get("ha_webhook_url") or notify.get("webhook_url")
-            ),
+            "has_token": _truthy(notify.get("ha_token")),
+            "has_webhook": _truthy(notify.get("ha_webhook_url"))
+            or _truthy(notify.get("webhook_url")),
         },
         "ui": {
             "locale": locale,
@@ -343,9 +408,7 @@ def _public_settings() -> dict:
         },
         "metrics_interval": _finite(s.get("metrics_interval", 90), 90),
         "alert_interval": _finite(s.get("alert_interval", 90), 90),
-        "resource_mode": (
-            s.get("resource_mode") if s.get("resource_mode") in ("low", "high") else "low"
-        ),
+        "resource_mode": resource_mode if resource_mode in ("low", "high") else "low",
         "adaptive": _flag(s.get("adaptive", True), True),
         "thresholds": {
             "enabled": _flag(thresholds.get("enabled", True), True),
@@ -365,7 +428,7 @@ def _public_settings() -> dict:
         # Host terminal is RCE on this machine, so it ships off and the UI needs
         # to know the current state to render the gate honestly.
         "terminal": {
-            "host_enabled": bool(_as_map(s.get("terminal")).get("host_enabled", False)),
+            "host_enabled": _truthy(_as_map(s.get("terminal")).get("host_enabled", False)),
         },
         "ollama": {
             # settings_text, not _text: a hand-edited numeric YAML value
