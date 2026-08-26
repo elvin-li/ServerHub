@@ -2732,6 +2732,7 @@ export default {
       invalid_resource_mode: 'Invalid resource mode: {mode}',
       empty_patch: 'No settings changes were provided',
       save_failed: 'The configuration file could not be saved',
+      config_unreadable: 'services.yaml cannot be read back; fix or restore it before saving',
     },
     metrics: {
       bad_window: 'until must be greater than since',

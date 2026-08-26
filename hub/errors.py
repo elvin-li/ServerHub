@@ -240,6 +240,12 @@ CODES: dict[str, tuple[int, str]] = {
     "settings.invalid_resource_mode": (400, "invalid resource mode: {mode}"),
     "settings.empty_patch": (400, "empty patch"),
     "settings.save_failed": (503, "the configuration file could not be saved"),
+    # services.yaml exists but cannot be read back (grown past the 1MB read
+    # cap by a hand edit or a restored backup, torn to non-UTF-8 bytes,
+    # unparseable, or replaced whole by a stray paste).  Refusing the write
+    # is what keeps the on-disk file recoverable; a 503 names the dependency,
+    # not the input — the notify.secrets_unreadable shape for the main config.
+    "settings.config_unreadable": (503, "services.yaml cannot be read back; fix or restore it before saving"),
     "metrics.bad_window": (400, "until must be greater than since"),
     "metrics.bad_range": (400, "invalid range (expected e.g. 48h, 30d, 1y)"),
     "actions.bad_process_name": (400, "invalid application process name"),

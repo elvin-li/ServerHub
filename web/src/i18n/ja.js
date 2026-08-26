@@ -2726,6 +2726,7 @@ export default {
       invalid_resource_mode: '無効なリソースモードです: {mode}',
       empty_patch: '設定の変更が指定されていません',
       save_failed: '設定ファイルを保存できませんでした',
+      config_unreadable: 'services.yaml を読み取れません。修復または復元してから保存してください',
     },
     metrics: {
       bad_window: 'until は since より後である必要があります',

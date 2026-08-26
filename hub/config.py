@@ -192,8 +192,10 @@ def _as_config(data) -> dict:
 def _read_disk() -> dict:
     """Parse services.yaml straight from disk, bypassing the mtime cache.
 
-    Used inside the write lock so a mutation merges onto what is actually stored
-    now, not onto a snapshot this process may have taken minutes ago.
+    Reader shape: anything unreadable or unparseable degrades to ``{}`` so a
+    page can still render defaults.  :func:`mutate` must NOT use this — its
+    write-back would persist that ``{}`` as the new config — it reads through
+    :func:`_read_disk_for_mutate`, which refuses instead.
     """
     try:
         return _as_config(
@@ -212,6 +214,60 @@ def _read_disk() -> dict:
         # load_yaml_int_capped drops that one scalar so a mutate() on this
         # snapshot cannot wipe every sibling key from services.yaml.
         return {}
+
+
+def _read_disk_for_mutate() -> dict:
+    """The read side of :func:`mutate`: refuse rather than wipe.
+
+    :func:`_read_disk`'s corrupt-document ``{}`` is the right shape for
+    *readers* — a route that cannot parse the file can still render defaults.
+    Under :func:`mutate` that same ``{}`` became the snapshot the mutator
+    patched and :func:`_save_full_locked` wrote back: a services.yaml that
+    was merely *unreadable* (grown past the 1MB read cap by a hand edit or a
+    restored ``services.yaml.bak.*``, torn to non-UTF-8 bytes by power loss,
+    over-deep, genuinely unparseable, or replaced whole by a stray paste)
+    was silently rewritten as ``{}``-plus-patch with an HTTP 200 — the admin
+    account, apps, stacks and bookmarks all gone.  Worse, for the oversize
+    case even the pre-save backup was skipped (``copy_secret_file`` reads
+    capped and its OSError is deliberately swallowed), so that wipe had no
+    pre-image to recover from.  Refuse with the coded 503 instead; the file
+    the operator could still fix stays byte-identical on disk.
+
+    A *missing* file stays writable — first-run setup creates the config
+    through this path — and an empty or comments-only file parses to ``{}``
+    legitimately.  A leftover non-file node (directory/FIFO squatting the
+    path) also proceeds: it holds no YAML to lose, and
+    :func:`_save_full_locked` already knows how to clear it.
+    """
+    try:
+        regular = stat.S_ISREG(os.stat(YAML_PATH).st_mode)
+    except (OSError, ValueError):
+        # Missing, dangling symlink, or a name the filesystem cannot even
+        # represent (UnicodeEncodeError is a ValueError): nothing readable
+        # sits there, so there is nothing this save could destroy.
+        regular = False
+    if not regular:
+        return {}
+    try:
+        text = read_text_capped(YAML_PATH, _YAML_CAP)
+    except FileNotFoundError:
+        # Vanished between the stat and the read: same as missing.
+        return {}
+    except (OSError, UnicodeDecodeError):
+        raise api_error("settings.config_unreadable")
+    try:
+        data = load_yaml_int_capped(text) or {}
+    except (
+        UnicodeDecodeError, yaml.YAMLError, RecursionError,
+        TypeError, ValueError, AttributeError, KeyError,
+    ):
+        raise api_error("settings.config_unreadable")
+    if not isinstance(data, dict):
+        # A whole-document paste (a compose file, a bare list) is content the
+        # operator can still rescue by hand; overwriting it with settings
+        # would not be.
+        raise api_error("settings.config_unreadable")
+    return _as_config(data)
 
 
 #: Minimal config written on first run.  Without this a fresh install raises
@@ -596,9 +652,14 @@ def mutate(mutator) -> dict:
     mutates it in place. This is the safe way to change one key: the read and the
     write happen inside one lock, so a concurrent ServerHub cannot interleave and
     lose the change (or have its own change lost). Returns the written config.
+
+    Raises the coded 503 ``settings.config_unreadable`` when services.yaml
+    exists but cannot be read back (oversize, torn, unparseable): patching a
+    ``{}`` fallback snapshot and writing it out used to *persist* the wipe of
+    every sibling key with an HTTP 200 — see :func:`_read_disk_for_mutate`.
     """
     with _write_lock, _file_lock():
-        data = _read_disk()
+        data = _read_disk_for_mutate()
         mutator(data)
         _save_full_locked(data)
         return data
