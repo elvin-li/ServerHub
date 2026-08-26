@@ -9,7 +9,6 @@ import asyncio
 import errno
 import mimetypes
 import os
-import shutil
 import stat
 import subprocess
 import time
@@ -571,6 +570,87 @@ def mkdir(path: str, name: str, root_id: str | None = None) -> dict:
     return {"ok": True, "path": _as_text(dest)}
 
 
+def _rmtree_iterative(top: Path) -> None:
+    """Remove directory *top* and its subtree without Python-level recursion.
+
+    CPython 3.12 ``shutil.rmtree`` descends one Python frame per directory
+    level, so a leftover ~1000-deep tree — buildable one level at a time
+    through POST /api/files/mkdir, or dropped by a runaway script or a tar
+    bomb of relative paths — raised RecursionError mid-walk.  That is not
+    OSError, so it escaped :func:`delete_path`'s except arms and answered a
+    raw HTTP 500 after part of the tree was already gone, and every retry
+    500'd the same way.
+
+    Same walk shape as shutil's safe-fd path — ``O_NOFOLLOW`` descent via
+    ``dir_fd`` so a symlink swapped in mid-delete is unlinked, never
+    followed, and parent fds stay open so a moved ancestor cannot redirect
+    the deletion — but with an explicit frame stack.  The depth bound
+    becomes the process fd limit; running into it is OSError (EMFILE),
+    which callers already map to the coded error.  Raises OSError exactly
+    like ``shutil.rmtree(ignore_errors=False)``; entries that vanish
+    mid-walk are treated as already deleted rather than raised, because a
+    concurrent deletion is this operation's goal, not its failure.
+    """
+    o_dir = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+    top_fd = os.open(top, o_dir)
+    # One frame per open directory: (fd, scandir iterator, name in parent,
+    # parent fd).  The top frame has no parent; it is rmdir'd by path.
+    frames: list[tuple[int, object, str | None, int | None]] = []
+
+    def _push(fd: int, name: str | None, parent_fd: int | None) -> None:
+        try:
+            it = os.scandir(fd)
+        except BaseException:
+            os.close(fd)
+            raise
+        frames.append((fd, it, name, parent_fd))
+
+    try:
+        _push(top_fd, None, None)
+        while frames:
+            fd, it, name, parent_fd = frames[-1]
+            entry = next(it, None)
+            if entry is None:
+                frames.pop()
+                it.close()
+                os.close(fd)
+                try:
+                    if parent_fd is None:
+                        os.rmdir(top)
+                    else:
+                        os.rmdir(name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+                continue
+            try:
+                st = os.lstat(entry.name, dir_fd=fd)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                try:
+                    child = os.open(entry.name, o_dir, dir_fd=fd)
+                except FileNotFoundError:
+                    continue
+                _push(child, entry.name, fd)
+            else:
+                try:
+                    os.unlink(entry.name, dir_fd=fd)
+                except FileNotFoundError:
+                    pass
+    finally:
+        # Only reached with frames left when an OSError is propagating;
+        # release the walk's fds so the coded-error path does not leak them.
+        for fd, it, _name, _parent in frames:
+            try:
+                it.close()
+            except Exception:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def delete_path(path: str, root_id: str | None = None) -> dict:
     p = _resolve_safe(path, root_id)
     # never delete roots themselves
@@ -582,17 +662,17 @@ def delete_path(path: str, root_id: str | None = None) -> dict:
         # exists-then-unlink raced: a file removed between the check and the
         # syscall raised FileNotFoundError and 500'd the Files page.
         if p.is_dir() and not p.is_symlink():
-            shutil.rmtree(p)
+            _rmtree_iterative(p)
         else:
             p.unlink()
     except FileNotFoundError:
-        raise api_error("files.not_found")
+        raise api_error("files.not_found", path=str(p)[:200])
     except NotADirectoryError:
         # is_dir() then rmtree: the path became a file in the gap.
         try:
             p.unlink()
         except FileNotFoundError:
-            raise api_error("files.not_found")
+            raise api_error("files.not_found", path=str(p)[:200])
         except OSError:
             raise api_error("files.permission_denied", path=str(p))
     except OSError:
@@ -694,15 +774,19 @@ def rename_path(path: str, new_name: str, root_id: str | None = None) -> dict:
     except FileExistsError:
         raise api_error("files.dest_exists")
     except FileNotFoundError:
-        # Source vanished between resolve and rename.
-        raise api_error("files.not_found")
+        # Source vanished between resolve and rename.  Pass the path: the
+        # ``files.not_found`` template interpolates ``{path}``, and raising
+        # bare left the literal placeholder in the message the SPA shows
+        # (there is no err.files.not_found locale key, so the English
+        # fallback is exactly what the operator reads).
+        raise api_error("files.not_found", path=str(p)[:200])
     except OSError as exc:
         if exc.errno == errno.EEXIST:
             raise api_error("files.dest_exists")
         if exc.errno in {errno.ENOTEMPTY, errno.EISDIR}:
             raise api_error("files.dest_exists")
         if exc.errno == errno.ENOENT:
-            raise api_error("files.not_found")
+            raise api_error("files.not_found", path=str(p)[:200])
         raise api_error("files.permission_denied", path=str(p))
     return {"ok": True, "path": _as_text(dest), "from": _as_text(p)}
 
