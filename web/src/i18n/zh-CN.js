@@ -2683,6 +2683,7 @@ export default {
       acl_bad_level: '访问级别只能是 无权限 / 只读 / 读写',
       sharing_missing: '这台主机上缺少 macOS 共享工具（sharing）',
       acl_tool_missing: '这台主机上缺少 macOS 的 ACL 工具',
+      system_tool_missing: '这台主机上缺少此操作所需的 macOS 系统工具',
     },
     catalog: {
       no_free_port: '从 {port} 起已没有可用的主机端口',

@@ -71,6 +71,7 @@ def _raise_service_error(result: dict, *, service: str = "") -> None:
         # password dialog that cannot help.
         "sharing_missing": "shares.sharing_missing",
         "acl_tool_missing": "shares.acl_tool_missing",
+        "system_tool_missing": "shares.system_tool_missing",
         # Shared admin codes so the SPA's password dialog handles every feature
         # the same way.
         "password_required": "admin.password_required",
@@ -206,6 +207,10 @@ def open_system_settings(request: Request):
     _require_admin_browser(request)
     result = shares_svc.open_system_settings()
     if not result.get("ok"):
+        # A confirmed-vanished ``open`` is the coded 503, not the 500 that
+        # blames System Settings itself.
+        if result.get("error") == "system_tool_missing":
+            raise api_error("shares.system_tool_missing")
         raise api_error("shares.settings_open_failed")
     return result
 
@@ -245,6 +250,13 @@ def _share_directory(path: str) -> str:
         except (OSError, ValueError, TypeError, RuntimeError):
             continue
     if resolved not in shared:
+        # With the sharing CLI gone the listing cannot answer at all, so
+        # "not a share point" would be a 400 lie — the same family as the
+        # update/remove 404 lie.  Fresh disk probe on this failure path
+        # only: an honestly empty share set with the CLI on disk keeps the
+        # honest refusal.
+        if not shared and not shares_svc._sharing_on_disk():
+            raise api_error("shares.sharing_missing")
         raise api_error("shares.acl_not_share")
     return resolved
 
