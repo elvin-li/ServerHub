@@ -53,6 +53,7 @@ installing anything remains an explicit admin action.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import re
 import shutil
@@ -110,7 +111,12 @@ CODES.setdefault(
 CODES.setdefault("catalog_remote.admin_required", (403, "administrator access is required"))
 CODES.setdefault(
     "catalog_remote.write_failed",
-    (500, "could not write the remote catalog: {reason}"),
+    # 503 like the other could-not-write-the-disk states
+    # (settings.save_failed, compose.save_failed,
+    # cloudflared.plist_write_failed): a blocked remote-catalog directory is
+    # a dependency state, not a server defect — the 500 it replaced read
+    # like a crash to the SPA's error toast.
+    (503, "could not write the remote catalog: {reason}"),
 )
 
 #: Audit event names (kept local: hub/audit.py is shared with parallel work).
@@ -175,7 +181,15 @@ def _fetch(url: str, max_bytes: int) -> bytes:
     try:
         with _opener.open(req, timeout=FETCH_TIMEOUT) as resp:
             data = resp.read(max_bytes + 1)
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (
+        urllib.error.URLError, http.client.HTTPException, OSError, ValueError,
+    ) as exc:
+        # http.client.HTTPException is neither OSError nor ValueError:
+        # ``InvalidURL`` (a nonnumeric port such as ``https://[::1]:x``, or a
+        # space / %00-unquoted control byte in the host or path) propagates
+        # raw out of ``urlopen`` — one stored junk URL used to 500 every
+        # POST /api/catalog/remote/check, and one hostile manifest entry
+        # path used to 500 the whole sync instead of costing only itself.
         raise _FetchError(_as_text(exc)) from exc
     if len(data) > max_bytes:
         raise _TooLargeError(f"response exceeds {max_bytes} bytes")
@@ -195,12 +209,27 @@ def validate_source_url(url: str) -> str:
         # POST /api/catalog/remote/check instead of this coded 400.
         parts = urllib.parse.urlsplit(url)
         hostname = parts.hostname
+        # .port re-parses the netloc tail: a nonnumeric or out-of-range port
+        # ("https://[::1]:x", "https://h:-1") is ValueError *here*, where it
+        # earns this coded 400.  Unchecked, PUT accepted such a URL and every
+        # POST /api/catalog/remote/check after it raised
+        # http.client.InvalidURL out of the fetch as a raw 500 — until the
+        # operator somehow guessed to clear the stored source.
+        parts.port
     except ValueError:
         raise api_error("catalog_remote.bad_url")
     # HTTPS-only, no embedded credentials: the URL is stored in services.yaml
     # and echoed by the status API, so a user:pass@host form would persist a
     # secret in plain sight (and Basic-auth sources are not supported anyway).
     if parts.scheme != "https" or not hostname or "@" in parts.netloc:
+        raise api_error("catalog_remote.bad_url")
+    # http.client refuses hosts carrying space / control bytes
+    # (InvalidURL, not OSError), and urllib.request *unquotes* the host
+    # before connecting, so a %-escape ("https://example.com%00/") smuggles
+    # exactly those bytes past urlsplit.  No real https host contains
+    # either, so refuse them with the same coded 400 as every other junk URL
+    # instead of persisting a source every later check 500s on.
+    if "%" in hostname or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in hostname):
         raise api_error("catalog_remote.bad_url")
     # Same IMDS / link-local block as notify webhooks.  An administrator
     # pointing the catalog at ``https://169.254.169.254/`` is SSRF, not a
