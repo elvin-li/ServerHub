@@ -146,6 +146,19 @@ def top_processes(limit: int = 25) -> list:
     # One shared `ps aux` (hub/proc_cache.py).  The row cache above stays: it holds
     # the *parsed and sorted* rows, which the shared table deliberately does not.
     lines = ps_lines()
+    if isinstance(lines, list):
+        # Exact-list copy through the unbound base read: a leftover
+        # list-subclass table whose bound ``__len__`` / ``__getitem__``
+        # raises passes the isinstance gate, and the bomb used to blow
+        # ``len(lines)`` / ``lines[1:]`` below and 500
+        # GET /api/system/processes.  (An ``__iter__`` bomb was already
+        # neutralized by the slice; these two were not.)
+        lines = list.__getitem__(lines, slice(None))
+    else:
+        try:
+            lines = list(lines)
+        except Exception:
+            return []
     if len(lines) < 2:
         return []
     rows = []
@@ -1323,11 +1336,23 @@ def net_dns_lookup(name: str) -> dict:
         seen = set()
         for fam, _, _, _, sockaddr in infos:
             ip = sockaddr[0]
+            # Raw membership first so an unhashable leftover stays the coded
+            # failure below (TypeError lands in the except like any other
+            # resolver fault) instead of being coerced into a junk answer.
             if ip in seen:
                 continue
             seen.add(ip)
+            # getaddrinfo answers are str, but this boundary echoed
+            # ``sockaddr[0]`` raw: a leftover >4300-digit int (int->str digit
+            # cap ValueError), lone-surrogate str (UnicodeEncodeError) or
+            # non-finite float (allow_nan=False) used to 500 the Starlette
+            # render of POST /api/tools/net/dns.  Scrub; an unrenderable ip
+            # costs its own row, never the lookup.
+            ip_text = _as_text(ip)[:64]
+            if not ip_text:
+                continue
             results.append({
-                "ip": ip,
+                "ip": ip_text,
                 "family": "IPv6" if fam == socket.AF_INET6 else "IPv4",
             })
     except Exception as e:
