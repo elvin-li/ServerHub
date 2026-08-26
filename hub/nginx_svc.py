@@ -48,6 +48,25 @@ def _sh_message(err, out, fallback: str = "") -> str:
     return (_as_text(err) or _as_text(out) or fallback).strip()
 
 
+def _sh_triple(cmd, timeout: int) -> tuple:
+    """Spawn with the unpack inside the guard (the brew_svc.service_action rule).
+
+    ``test_config``/``reload_nginx`` do not own the runner: the production
+    ``sh`` never raises and always answers ``(rc, out, err)``, but a patched
+    or odd one (the same class ``_sh_message`` guards at value rank) can
+    raise outright or answer a wrong-arity tuple / bare None — both used to
+    ride to Starlette uncaught and 500 POST /api/nginx/test and /reload.
+    Degrade to the failure triple instead; the vanished-CLI classification
+    stays with the callers, disk-confirmed, so a raise whose text merely
+    reads "not found" is never misclassified while nginx is still on disk.
+    """
+    try:
+        rc, out, err = sh(cmd, timeout=timeout)
+    except Exception as exc:
+        return -1, "", _as_text(exc)
+    return rc, out, err
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
 
@@ -241,7 +260,7 @@ def test_config() -> dict:
         raise api_error("nginx.conf_missing")
     # ``sh`` swallows FileNotFoundError / TimeoutExpired; a missing binary
     # used to 500 Settings → Reload instead of returning a coded failure.
-    rc, out, err = sh([NGINX_BIN, "-t", "-c", str(NGINX_CONF)], timeout=15)
+    rc, out, err = _sh_triple([NGINX_BIN, "-t", "-c", str(NGINX_CONF)], timeout=15)
     # bytes/None from a patched or odd `sh` used to TypeError when Reload
     # concatenated the probe text onto a str prefix.
     message = _sh_message(err, out)
@@ -256,7 +275,7 @@ def reload_nginx() -> dict:
             "ok": False,
             "message": "Invalid configuration; not reloaded\n" + _as_text(t.get("message")),
         }
-    rc, out, err = sh(
+    rc, out, err = _sh_triple(
         [NGINX_BIN, "-c", str(NGINX_CONF), "-s", "reload"], timeout=15,
     )
     if rc != 0:
@@ -264,7 +283,7 @@ def reload_nginx() -> dict:
         # not a launchd kickstart aimed at a binary that is gone.
         _raise_if_cli_vanished(rc, _sh_message(err, out))
         uid = os.getuid()
-        rc2, out2, err2 = sh(
+        rc2, out2, err2 = _sh_triple(
             ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"],
             timeout=30,
         )
