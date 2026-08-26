@@ -200,13 +200,28 @@ def scan_roots() -> list[dict]:
     # None/int leftover used to TypeError GET /api/storage/usage.
     if not isinstance(incoming, (list, tuple)):
         incoming = []
+    try:
+        incoming = list(incoming)
+    except Exception:
+        # A roots listing that refuses *iteration* (odd list subclass passing
+        # the isinstance gate above) used to raise out of this loop and 500
+        # GET /api/storage/usage, /tree, /largest and /duplicates — the
+        # ups_svc/storage_svc materialize-under-guard rule.  The volumes and
+        # shares below still contribute their roots.
+        incoming = []
     for entry in incoming:
         if not isinstance(entry, dict):
             continue
         path = entry.get("path")
         if not isinstance(path, str) or not path:
             continue
-        add(str(entry.get("id") or "root"), str(entry.get("name") or ""), path)
+        # _as_text is a str() probe, not a bare str(): a leftover root id or
+        # name that is *already* a >4300-digit int (YAML/plist hex loads with
+        # int(x, 16), exempt from the int(str) parse cap) made the old bare
+        # str() raise the digit-cap ValueError out of scan_roots and 500
+        # every usage route; sane numeric ids keep their string form.
+        rid = _as_text(entry.get("id") or "root") or "root"
+        add(rid, _as_text(entry.get("name") or ""), path)
 
     volumes = Path("/Volumes")
     try:
@@ -234,6 +249,13 @@ def scan_roots() -> list[dict]:
         # Share enumeration is a convenience here, never a hard dependency.
         listed = []
     if not isinstance(listed, (list, tuple)):
+        listed = []
+    try:
+        listed = list(listed)
+    except Exception:
+        # Same class as the roots listing above: a share listing that passes
+        # the isinstance gate but refuses iteration must cost the shares
+        # section, never the request — the roots already gathered survive.
         listed = []
     for share in listed:
         if not isinstance(share, dict):
