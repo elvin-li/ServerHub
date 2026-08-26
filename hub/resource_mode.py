@@ -18,7 +18,27 @@ def resource_mode() -> str:
         settings = {}
     if not isinstance(settings, dict):
         settings = {}
-    v = settings.get("resource_mode") or DEFAULT
+    # ``dict.get`` under a guard, not the bound ``.get``: a leftover settings
+    # map that is a dict *subclass* with a bombing ``.get`` passes the
+    # isinstance gate above, and this helper runs on *every* ``full_status``
+    # call (``_status_ttl`` → ``is_high``, cache hit included) — one bomb
+    # used to 500 GET /api/status and POST /api/alerts/check unconditionally.
+    try:
+        v = settings.get("resource_mode")
+    except Exception:
+        try:
+            v = dict.get(settings, "resource_mode")
+        except Exception:
+            v = None
+    if isinstance(v, str) and type(v) is not str:
+        # Exact-str copy: a str-subclass value whose ``__eq__`` raises used
+        # to detonate the ``v in ALLOWED`` membership below.
+        try:
+            v = str.__str__(v)
+        except Exception:
+            v = None
+    if not isinstance(v, str) or not v:
+        return DEFAULT
     return v if v in ALLOWED else DEFAULT
 
 
