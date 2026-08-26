@@ -61,23 +61,47 @@ def _load_json(name: str):
 def _safe_int(raw, default: int = 0) -> int:
     if isinstance(raw, bool) or raw is None:
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return default
+    if isinstance(raw, int) and type(raw) is not int:
+        # Base coercion to an exact int: a subclass ``__int__``/``__str__``
+        # bomb used to blow int() / the digit-cap probe below, wiping the
+        # whole snapshot to the minimal brief.
+        try:
+            raw = int.__index__(raw)
+        except Exception:
+            return default
+    if isinstance(raw, float):
+        if type(raw) is not float:
+            # Base coercion first: a float-subclass ``__eq__`` bomb used to
+            # blow the NaN/inf probes below, outside every catch.
+            try:
+                raw = float.__float__(raw)
+            except Exception:
+                return default
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return default
     try:
         value = int(raw)
         # An *already-int* leftover past CPython's int->str digit cap (YAML /
         # plist hex loads uncapped) passes int() but blows every later str()
         # — fallback_brief's f-strings and the JSON encoder both 500'd.
         str(value)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # Exception, not (TypeError, ValueError, OverflowError): an object
+        # whose ``__int__`` raises anything else escaped the narrow tuple.
         return default
     return value
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -87,7 +111,62 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode a catalog path straight to a 500 on GET /api/assistant/catalog.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
+
+
+def _truthy(value) -> bool:
+    """``bool()`` that cannot raise: a subclass ``__bool__``/``__len__`` bomb
+    is just falsy.  ``fallback_brief`` runs inside the router's own error
+    fallback, where a re-raise is a guaranteed 500."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _dget(mapping, key):
+    """Mapping read that survives a dict-subclass ``get`` bomb.
+
+    The ups/ollama settings rule: ``dict.get`` reads the real storage
+    underneath the override, so a subclass that only poisoned its method
+    keeps its sane data.  Non-dicts answer ``None``.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except Exception:
+        try:
+            return dict.get(mapping, key)
+        except Exception:
+            return None
+
+
+def _exact_number(raw):
+    """Exact ``int``/``float`` or ``None`` — a numeric-subclass comparison
+    bomb (``__ge__``/``__eq__``) cannot ride a threshold check."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        if type(raw) is not int:
+            try:
+                raw = int.__index__(raw)
+            except Exception:
+                return None
+        return raw
+    if isinstance(raw, float):
+        if type(raw) is not float:
+            try:
+                raw = float.__float__(raw)
+            except Exception:
+                return None
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return None
+        return raw
+    return None
 
 
 def _jsonable(value, depth: int = 0):
@@ -104,6 +183,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: an int-subclass truthiness /
+                # comparison bomb used to survive this walk untouched, then
+                # 500 fallback_brief and suggest_panels *inside the router's
+                # own error fallback* — twice, with nothing above to catch it.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -112,17 +200,29 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__ge__`` bomb
+                # used to survive the NaN/inf probes, then 500 the disk
+                # threshold in suggest_panels on both raises of the turn.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a nested dict-subclass ``items()`` bomb used to
+        # wipe the whole snapshot to the minimal brief.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -134,8 +234,17 @@ def _jsonable(value, depth: int = 0):
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot raise and the real elements still survive.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -164,8 +273,13 @@ def _panel_id(raw) -> str:
     if isinstance(raw, bool) or not isinstance(raw, int):
         return ""
     try:
-        return str(raw)
-    except ValueError:
+        # int.__index__ first: an int-subclass ``__str__`` bomb that raised
+        # anything but the digit-cap ValueError escaped the old bare str()
+        # here and 500'd POST /api/assistant/ask via suggest_panels' by-id
+        # map — inside the router's error fallback too.  The base coercion
+        # keeps the renderable value instead of dropping the row.
+        return str(int.__index__(raw))
+    except Exception:
         return ""
 
 
@@ -224,13 +338,19 @@ def normalize_locale(raw: str | None) -> str:
 
 
 def _title(panel: dict, locale: str) -> str:
-    titles = panel.get("title") if isinstance(panel.get("title"), dict) else {}
+    # _dget, not bound ``.get``: a dict-subclass ``get`` bomb as the title
+    # map used to raise out of suggest_panels — inside the router's error
+    # fallback too, which nothing above catches: a raw 500.
+    raw_titles = _dget(panel, "title")
+    titles = raw_titles if isinstance(raw_titles, dict) else {}
     # _utf8_text with fallthrough, not one bare str(): an over-cap already-int
     # title (>4300 digits — the int->str digit cap) used to ValueError out of
     # catalog()/match_panels()/resolve_path(), which wiped the whole Cmd+K
     # catalog to [] and silently degraded find/page turns to the generic brief.
-    for candidate in (titles.get(locale), titles.get("en"), panel.get("id")):
-        if not candidate:
+    for candidate in (_dget(titles, locale), _dget(titles, "en"), _dget(panel, "id")):
+        # ``is None`` + _truthy, not bare ``not candidate``: a subclass
+        # truthiness bomb must skip the candidate, never raise.
+        if candidate is None or not _truthy(candidate):
             continue
         text = _utf8_text(candidate)
         if text:
@@ -239,9 +359,10 @@ def _title(panel: dict, locale: str) -> str:
 
 
 def _blurb(panel_id: str, locale: str) -> str:
-    row = _BLURBS.get(panel_id) or {}
-    for candidate in (row.get(locale), row.get("en")):
-        if not candidate:
+    raw_row = _BLURBS.get(panel_id)
+    row = raw_row if isinstance(raw_row, dict) else {}
+    for candidate in (_dget(row, locale), _dget(row, "en")):
+        if candidate is None or not _truthy(candidate):
             continue
         text = _utf8_text(candidate)
         if text:
@@ -258,30 +379,36 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
     if raw != "/" and raw.endswith("/"):
         raw = raw.rstrip("/")
     hit = None
+    # _dget + the _utf8_text coercion, not bound ``.get`` and a raw ``==``:
+    # a dict-subclass ``get`` bomb or a str-subclass ``__eq__`` bomb on one
+    # row used to kill the page turn for *every* row at once.
     for panel in PANELS:
         if not isinstance(panel, dict):
             continue
-        if panel.get("path") == raw:
+        pth = _dget(panel, "path")
+        if isinstance(pth, str) and _utf8_text(pth) == raw:
             hit = panel
             break
     if hit is None:
         for panel in PANELS:
             if not isinstance(panel, dict):
                 continue
-            pth = panel.get("path")
-            if isinstance(pth, str) and pth != "/" and raw.startswith(pth + "/"):
-                hit = panel
-                break
+            pth = _dget(panel, "path")
+            if isinstance(pth, str):
+                text = _utf8_text(pth)
+                if text != "/" and raw.startswith(text + "/"):
+                    hit = panel
+                    break
     if hit is None:
         return None
     # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used to
     # lose the page turn's ``here`` context even though its path matched.
-    pid, pth = _panel_id(hit.get("id")), hit.get("path")
+    pid, pth = _panel_id(_dget(hit, "id")), _dget(hit, "path")
     if not pid or not isinstance(pth, str):
         return None
     return {
         "id": pid,
-        "path": pth,
+        "path": _utf8_text(pth),
         "title": _title(hit, loc),
         "blurb": _blurb(pid, loc),
     }
@@ -297,24 +424,29 @@ def catalog(locale: str | None = None) -> list[dict]:
         # to vanish from the Cmd+K catalog (the numeric-YAML-ids rule).  The
         # path stays a str gate — it is the SPA navigation target, and a
         # non-string path is junk the palette cannot open.
-        pid = _panel_id(panel.get("id"))
-        path = panel.get("path")
-        aliases = panel.get("aliases")
+        pid = _panel_id(_dget(panel, "id"))
+        path = _dget(panel, "path")
+        aliases = _dget(panel, "aliases")
         if not pid or not isinstance(path, str):
             continue
         if not isinstance(aliases, list):
             aliases = []
         out.append({
             "id": pid,
-            "path": path,
+            # _utf8_text, not the raw value: a str-subclass path whose
+            # ``__str__`` answers itself carried its bound ``encode`` bomb
+            # through the route's try into the final _jsonable and 500'd
+            # GET /api/assistant/catalog.
+            "path": _utf8_text(path),
             "title": _title(panel, loc),
             # ``a is not None``: the parse_int hook maps an over-cap number
             # literal to None; a "None" alias must not start matching queries.
             # _utf8_text, not bare str(): an over-cap *already-int* alias used
             # to ValueError here and wipe the whole catalog to [] — drop just
             # the unrenderable alias, like its inf float sibling.
+            # list.__iter__: a subclass iterator bomb drops nothing but itself.
             "aliases": [
-                text for a in aliases
+                text for a in list.__iter__(aliases)
                 if a is not None and (text := _utf8_text(a))
             ],
         })
@@ -325,17 +457,20 @@ def _score_panel(panel: dict, needle: str, locale: str) -> int:
     if not needle:
         return 0
     title = _title(panel, locale).lower()
-    path = str(panel.get("path") or "").lower()
-    raw_aliases = panel.get("aliases")
+    # _dget + a str gate, not ``str(panel.get("path") or "")``: a subclass
+    # ``get`` or truthiness bomb must score zero, not raise out of the find.
+    raw_path = _dget(panel, "path")
+    path = _utf8_text(raw_path).lower() if isinstance(raw_path, str) else ""
+    raw_aliases = _dget(panel, "aliases")
     # _utf8_text, not bare str(): an over-cap already-int alias used to
     # ValueError out of match_panels() and turn every find into the brief.
     aliases = [
-        text.lower() for a in raw_aliases
+        text.lower() for a in list.__iter__(raw_aliases)
         if a is not None and (text := _utf8_text(a))
     ] if isinstance(raw_aliases, list) else []
     # _panel_id, not bare str(): callers gate rows on the probe, but this
     # comparison must not be the one bare int->str left to re-raise.
-    if needle == title or needle == _panel_id(panel.get("id")) or needle == path.lstrip("/"):
+    if needle == title or needle == _panel_id(_dget(panel, "id")) or needle == path.lstrip("/"):
         return 100
     if needle in aliases:
         return 90
@@ -368,7 +503,7 @@ def match_panels(query: str, locale: str | None = None, limit: int = 6) -> list[
             continue
         # _panel_id, not an isinstance(pid, str) gate: a find used to skip a
         # numeric-id row even when the query hit its alias dead-on.
-        pid, pth = _panel_id(panel.get("id")), panel.get("path")
+        pid, pth = _panel_id(_dget(panel, "id")), _dget(panel, "path")
         if not pid or not isinstance(pth, str):
             continue
         score = _score_panel(panel, needle, loc)
@@ -376,7 +511,9 @@ def match_panels(query: str, locale: str | None = None, limit: int = 6) -> list[
             continue
         scored.append((score, {
             "id": pid,
-            "path": pth,
+            # _utf8_text: the dedupe set below hashes this value, and a
+            # str-subclass ``__hash__`` bomb must not raise out of the find.
+            "path": _utf8_text(pth),
             "title": _title(panel, loc),
             "score": score,
         }))
@@ -421,37 +558,57 @@ def build_snapshot() -> dict:
     from hub.status import full_status, peek_status
 
     try:
-        status = peek_status() or full_status()
+        status = peek_status()
+        # Unbound ``dict.__len__``, not the bare ``or`` truthiness: a
+        # dict-subclass ``__bool__`` bomb on the cached snapshot used to
+        # fall into this except and wipe every field even though the real
+        # rows were right there.
+        if not (isinstance(status, dict) and dict.__len__(status)):
+            status = full_status()
     except Exception:
         status = {}
     if not isinstance(status, dict):
         status = {}
-    system = status.get("system") if isinstance(status.get("system"), dict) else {}
-    counts = status.get("counts") if isinstance(status.get("counts"), dict) else {}
+    # _dget, not bound ``.get``: a dict-subclass ``get`` bomb used to raise
+    # out of here and wipe the whole snapshot to the minimal brief.
+    system = _dget(status, "system")
+    system = system if isinstance(system, dict) else {}
+    counts = _dget(status, "counts")
+    counts = counts if isinstance(counts, dict) else {}
+    raw_problems = _dget(status, "problems")
     problems = []
-    for row in (status.get("problems") if isinstance(status.get("problems"), list) else [])[:8]:
+    if isinstance(raw_problems, list):
+        # list.__iter__: a subclass iterator bomb drops nothing but itself.
+        rows = [row for row in list.__iter__(raw_problems)][:8]
+    else:
+        rows = []
+    for row in rows:
         if not isinstance(row, dict):
             continue
+        detail = _dget(row, "detail")
+        name = _dget(row, "name")
+        if not _truthy(name):
+            name = _dget(row, "id")
         problems.append({
-            "name": row.get("name") or row.get("id"),
-            "state": row.get("state"),
+            "name": name,
+            "state": _dget(row, "state"),
             # _utf8_text, not bare str(): a >4300-digit leftover detail used
             # to ValueError here and lose the whole snapshot.
-            "detail": _utf8_text(row.get("detail") or "")[:80],
+            "detail": _utf8_text(detail if detail is not None else "")[:80],
         })
     snap: dict[str, Any] = {
-        "load": system.get("load"),
-        "cpu_load_pct": system.get("load_pct"),
-        "mem_used_pct": system.get("mem_used_pct"),
-        "mem_total_gb": system.get("mem_total_gb"),
-        "disk_root_pct": system.get("disk_pct"),
+        "load": _dget(system, "load"),
+        "cpu_load_pct": _dget(system, "load_pct"),
+        "mem_used_pct": _dget(system, "mem_used_pct"),
+        "mem_total_gb": _dget(system, "mem_total_gb"),
+        "disk_root_pct": _dget(system, "disk_pct"),
         # _utf8_text, not a bare f-string: a >4300-digit leftover disk size
         # used to ValueError the int->str here and lose the whole snapshot.
-        "disk_root": f"{_utf8_text(system.get('disk_used_gb'))}/{_utf8_text(system.get('disk_total_gb'))} GB",
-        "uptime": system.get("uptime"),
-        "engine_up": status.get("engine_up"),
+        "disk_root": f"{_utf8_text(_dget(system, 'disk_used_gb'))}/{_utf8_text(_dget(system, 'disk_total_gb'))} GB",
+        "uptime": _dget(system, "uptime"),
+        "engine_up": _dget(status, "engine_up"),
         "counts": {
-            key: _safe_int(counts.get(key)) for key in ("ok", "warn", "down", "stopped")
+            key: _safe_int(_dget(counts, key)) for key in ("ok", "warn", "down", "stopped")
         },
         "problems": problems,
     }
@@ -482,43 +639,60 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     """Pages that match the current snapshot — no model required."""
     loc = normalize_locale(locale)
     wanted: list[str] = []
-    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
-    if _safe_int(counts.get("down")) or _safe_int(counts.get("warn")):
+    # Everything here runs a second time inside the router's own error
+    # fallback with the same snapshot; a raise there is a guaranteed 500.
+    counts = _dget(snapshot, "counts")
+    counts = counts if isinstance(counts, dict) else {}
+    if _safe_int(_dget(counts, "down")) or _safe_int(_dget(counts, "warn")):
         wanted.extend(["services", "health", "logs"])
-    disk = snapshot.get("disk_root_pct")
-    if isinstance(disk, (int, float)) and disk >= 85:
+    # _exact_number, not a raw ``>=`` on the snapshot value: a float-subclass
+    # ``__ge__`` bomb used to raise out of this threshold on both passes of
+    # the turn and 500 POST /api/assistant/ask.
+    disk = _exact_number(_dget(snapshot, "disk_root_pct"))
+    if disk is not None and disk >= 85:
         wanted.append("main")
-    ollama = snapshot.get("ollama") if isinstance(snapshot.get("ollama"), dict) else {}
-    if ollama and not ollama.get("reachable"):
+    ollama = _dget(snapshot, "ollama")
+    ollama = ollama if isinstance(ollama, dict) else {}
+    if _truthy(ollama) and not _truthy(_dget(ollama, "reachable")):
         wanted.append("ollama")
-    ups = snapshot.get("ups") if isinstance(snapshot.get("ups"), dict) else {}
+    ups = _dget(snapshot, "ups")
+    ups = ups if isinstance(ups, dict) else {}
     # _utf8_text, not a bare set-membership on the raw value: an unhashable
     # leftover source (a YAML ``source: [battery]`` list, or a dict) used to
     # TypeError this ``in {...}`` — and the router's error fallback calls
     # suggest_panels again with the same poisoned snapshot, so the raise
     # escaped everything and 500'd POST /api/assistant/ask.  The probe
     # coerces a bytes leftover to its text and drops junk shapes.
-    if _utf8_text(ups.get("source")) in {"battery", "ups"}:
+    if _utf8_text(_dget(ups, "source")) in {"battery", "ups"}:
         wanted.append("dashboard")
     if not wanted:
         wanted.extend(["dashboard", "health"])
     # _panel_id keys the map the same way catalog()/match_panels() gate rows,
     # and the emitted id is the coerced text — never the raw (possibly int)
-    # value, which _jsonable would null out past the digit cap.
+    # value, which _jsonable would null out past the digit cap.  _dget, not
+    # bound ``.get``: a dict-subclass ``get`` bomb on one row used to 500
+    # the whole turn from right here.
     by_id = {
         pid: panel
         for panel in PANELS
-        if isinstance(panel, dict) and (pid := _panel_id(panel.get("id")))
+        if isinstance(panel, dict) and (pid := _panel_id(_dget(panel, "id")))
     }
     out: list[dict] = []
     seen: set[str] = set()
     for panel_id in wanted:
         panel = by_id.get(panel_id)
-        path = panel.get("path") if panel else None
-        if not panel or not isinstance(path, str) or path in seen:
+        # ``is None``, not truthiness: a dict-subclass ``__bool__`` bomb on
+        # the row must not raise out of the guard itself.
+        path = _dget(panel, "path") if panel is not None else None
+        if panel is None or not isinstance(path, str):
             continue
-        seen.add(path)
-        out.append({"id": panel_id, "path": path, "title": _title(panel, loc)})
+        # _utf8_text before the dedupe set: a str-subclass ``__hash__`` bomb
+        # used to raise out of this membership probe on both passes.
+        text = _utf8_text(path)
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append({"id": panel_id, "path": text, "title": _title(panel, loc)})
     return out
 
 
@@ -528,7 +702,10 @@ def _brief_cell(value, *, keep_zero: bool = False) -> str:
     router's own error fallback, which is a guaranteed 500."""
     if value is None:
         return "—"
-    if not keep_zero and not value:
+    # _truthy, not bare ``not value``: an int-subclass ``__bool__`` bomb as
+    # the load cell used to raise here — inside the router's error fallback
+    # too, which nothing above catches: a raw 500.
+    if not keep_zero and not _truthy(value):
         return "—"
     return _utf8_text(value) or "—"
 
@@ -536,22 +713,30 @@ def _brief_cell(value, *, keep_zero: bool = False) -> str:
 def fallback_brief(snapshot: dict, locale: str | None = None) -> str:
     """English template status when Ollama is down.  The SPA localizes this."""
     del locale  # locale is applied by the drawer; keep the signature stable.
-    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
-    engine = "on" if snapshot.get("engine_up") else "off"
-    raw_problems = snapshot.get("problems")
-    problems = [p for p in raw_problems if isinstance(p, dict)] if isinstance(raw_problems, list) else []
+    # This whole function runs inside the router's own error fallback, so a
+    # raise anywhere below is a guaranteed 500: _dget instead of bound
+    # ``.get``, _truthy instead of bare truthiness.
+    counts = _dget(snapshot, "counts")
+    counts = counts if isinstance(counts, dict) else {}
+    # _truthy: an int-subclass ``__bool__`` bomb as engine_up used to raise
+    # out of this conditional on both passes of the turn.
+    engine = "on" if _truthy(_dget(snapshot, "engine_up")) else "off"
+    raw_problems = _dget(snapshot, "problems")
+    problems = [
+        p for p in list.__iter__(raw_problems) if isinstance(p, dict)
+    ] if isinstance(raw_problems, list) else []
     lines = [
-        f"Overview: load {_brief_cell(snapshot.get('load'))} (~{_brief_cell(snapshot.get('cpu_load_pct'), keep_zero=True)}%)"
-        f" · memory used {_brief_cell(snapshot.get('mem_used_pct'), keep_zero=True)}%"
-        f" · root disk {_brief_cell(snapshot.get('disk_root_pct'), keep_zero=True)}%"
-        f" ({_brief_cell(snapshot.get('disk_root'))}) · up {_brief_cell(snapshot.get('uptime'))}",
-        f"Services: {_safe_int(counts.get('ok'))} ok · {_safe_int(counts.get('warn'))} warn"
-        f" · {_safe_int(counts.get('down'))} down · Docker {engine}",
+        f"Overview: load {_brief_cell(_dget(snapshot, 'load'))} (~{_brief_cell(_dget(snapshot, 'cpu_load_pct'), keep_zero=True)}%)"
+        f" · memory used {_brief_cell(_dget(snapshot, 'mem_used_pct'), keep_zero=True)}%"
+        f" · root disk {_brief_cell(_dget(snapshot, 'disk_root_pct'), keep_zero=True)}%"
+        f" ({_brief_cell(_dget(snapshot, 'disk_root'))}) · up {_brief_cell(_dget(snapshot, 'uptime'))}",
+        f"Services: {_safe_int(_dget(counts, 'ok'))} ok · {_safe_int(_dget(counts, 'warn'))} warn"
+        f" · {_safe_int(_dget(counts, 'down'))} down · Docker {engine}",
     ]
     if problems:
         lines.append("Needs attention:")
         lines.extend(
-            f"- {_brief_cell(p.get('name'))} · {_brief_cell(p.get('state'))} · {_brief_cell(p.get('detail'))}"
+            f"- {_brief_cell(_dget(p, 'name'))} · {_brief_cell(_dget(p, 'state'))} · {_brief_cell(_dget(p, 'detail'))}"
             for p in problems[:6]
         )
     else:
