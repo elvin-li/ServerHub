@@ -472,7 +472,7 @@ def _has_control_chars(text: str) -> bool:
     return any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
 
 
-def set_channel_secrets(cid: str, values: dict) -> None:
+def set_channel_secrets(cid: str, values: dict, *, require: tuple = ()) -> None:
     """Merge secret values for one channel.  Empty string deletes a field.
 
     ``None`` means "leave unchanged", so the API can accept a partial edit
@@ -482,6 +482,14 @@ def set_channel_secrets(cid: str, values: dict) -> None:
     a telegram token pasted with a trailing ``\\n`` makes urllib raise with the
     full request URL — token included — in the exception text, which then
     lands verbatim in a 0644 error log.  No legitimate secret contains one.
+
+    *require* names secrets the merged map must still hold, checked under the
+    same lock **before** anything lands on disk.  update_channel used to
+    persist a ``""`` clear first and only then 400 on its after-write check —
+    the "rejected" edit had already destroyed the stored webhook/telegram
+    credential, and every later alert dispatch on that channel failed with a
+    warn-level log line nobody reads: the channel looked configured in the UI
+    while delivering nothing.
     """
     # file_lock as well as _secrets_lock: the two panel processes sharing
     # data/ (packaged .app + LaunchAgent) both edit this file, and a write
@@ -512,6 +520,9 @@ def set_channel_secrets(cid: str, values: dict) -> None:
                 cur.pop(key, None)
             else:
                 cur[key] = value
+        for field in require or ():
+            if not cur.get(field):
+                raise api_error("notify.missing_field", field=str(field))
         if cur:
             data[cid] = cur
         else:
