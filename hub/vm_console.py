@@ -489,6 +489,21 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
         })
         reason, sent, received = await bridge(websocket, reader, writer)
     finally:
+        # Release and audit *before* any await: a cancellation landing in
+        # this teardown (server shutdown/reload tearing the handler task
+        # down mid-bridge) re-raises CancelledError out of ``await
+        # writer.wait_closed()`` — it is a BaseException, so the ``except
+        # Exception`` guard did not hold it — and ``release_session`` never
+        # ran.  With MAX_SESSIONS_PER_VM=1 that leaked reservation kept the
+        # VM's console answering the coded too_many_sessions until restart.
+        release_session(session.session_id)
+        terminal_svc._audit({
+            "ts": terminal_svc._now(), "event": "vm_console_end",
+            "session": session.session_id, "console": target.console_id,
+            "who": user, "reason": reason,
+            "duration_ms": terminal_svc._duration_ms(started, time.monotonic()),
+            "bytes_from_client": sent, "bytes_to_client": received,
+        })
         if writer is not None:
             try:
                 writer.close()
@@ -498,14 +513,6 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
                 await writer.wait_closed()
             except Exception:
                 pass
-        release_session(session.session_id)
-        terminal_svc._audit({
-            "ts": terminal_svc._now(), "event": "vm_console_end",
-            "session": session.session_id, "console": target.console_id,
-            "who": user, "reason": reason,
-            "duration_ms": terminal_svc._duration_ms(started, time.monotonic()),
-            "bytes_from_client": sent, "bytes_to_client": received,
-        })
         try:
             await websocket.close(code=1000 if reason == "console_closed" else 1001)
         except Exception:

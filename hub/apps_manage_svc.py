@@ -1681,9 +1681,13 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         from hub import vms_svc
         if action_name == "uninstall":
             action_name = "delete"
-        if action_name == "suspend":
-            action_name = "pause"  # map
-        # map restart
+        if action_name == "pause":
+            # "suspend" is the verb vms_svc speaks (``utmctl suspend``); the
+            # mapping used to run the other way (suspend → "pause", an action
+            # no backend has), so the Apps-page suspend button on a running
+            # UTM VM — offered by _vm_actions — always answered the coded
+            # vms.utm_unsupported_action 400 instead of suspending.
+            action_name = "suspend"
         return vms_svc.vm_action(source_id, action_name)
 
     raise api_error("apps.unknown_kind", kind=kind)
