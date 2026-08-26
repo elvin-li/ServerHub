@@ -58,6 +58,13 @@ def _jsonable(value, depth: int = 0):
     byte counters that each parse under the cap) still passed through
     untouched: CPython's int->str digit limit then ValueError'd
     ``json.dumps`` itself.
+
+    A leftover dict-*subclass* planted in the peek cache whose ``.items()``
+    raised (usage5's row-bomb class, one level below the shape bombs) used
+    to raise straight out of this sanitizer and 500 GET /api/system/sensors;
+    same for a list subclass whose ``__iter__`` raised, and for an object
+    whose ``isoformat`` attribute *access* raised (property bomb /
+    ``__getattr__`` raising non-AttributeError past getattr's default).
     """
     if depth > 32:
         return None
@@ -80,6 +87,13 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a subclass method bomb cannot fire.
+            try:
+                value = dict(value)
+            except Exception:
+                return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, (str, bytes, bytearray)):
@@ -90,8 +104,18 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        try:
+            items = list(value)
+        except Exception:
+            # Leftover sequence subclass whose __iter__ raises.
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -281,9 +305,23 @@ def _parse_size_to_gb(token: str) -> float | None:
 
 def _cpu_and_mem_from_top_cached() -> dict:
     now = time.time()
-    if _top_cache["v"] is not None and now - _top_cache["t"] < _top_ttl():
-        return _top_cache["v"]
+    hit = _top_cache["v"]
+    if hit is not None and now - _top_cache["t"] < _top_ttl():
+        # Plain-dict the hit: a leftover dict-subclass planted in the top
+        # cache used to pass ``or {}`` truthiness / ``.get()`` bombs straight
+        # into _collect_sensors_uncached and 500 GET /api/system/sensors;
+        # a leftover non-dict fell through to AttributeError the same way.
+        # A poisoned hit re-collects instead.
+        if type(hit) is dict:
+            return hit
+        if isinstance(hit, dict):
+            try:
+                return dict(hit)
+            except Exception:
+                pass
     value = _cpu_and_mem_from_top() or {}
+    if not isinstance(value, dict):
+        value = {}
     _top_cache.update(t=now, v=value)
     return value
 
@@ -852,7 +890,11 @@ def collect_light() -> dict:
 
 
 def collect_sensors(force: bool = False) -> dict:
-    if not force and _cache["v"] and time.time() - _cache["t"] < _sensors_ttl():
+    # ``is not None``, not truthiness: a leftover dict-subclass planted in
+    # the cache whose ``__bool__`` raised used to 500 GET /api/system/sensors
+    # before _jsonable ever saw it (peek_sensors was already immune because
+    # it tests ``is not None``).
+    if not force and _cache["v"] is not None and time.time() - _cache["t"] < _sensors_ttl():
         # Re-sanitize: leftover inf / ``\ud800`` planted in the cache used
         # to 500 GET /api/system/sensors (the light peek already re-sanitized).
         cleaned = _jsonable(_cache["v"])
@@ -861,7 +903,7 @@ def collect_sensors(force: bool = False) -> dict:
     with _refresh_lock:
         # Single-flight: concurrent dashboard/metrics callers share one sample.
         # Coalesce back-to-back force=True (metrics + UI) within 1s.
-        age = time.time() - _cache["t"] if _cache["v"] else 1e9
+        age = time.time() - _cache["t"] if _cache["v"] is not None else 1e9
         if _cache["v"] is not None and ((not force and age < _sensors_ttl()) or age < 1.0):
             cleaned = _jsonable(_cache["v"])
             return cleaned if isinstance(cleaned, dict) else {}

@@ -56,6 +56,25 @@ def _ncpu() -> int:
     return n
 
 
+def _plain_dict(value) -> dict | None:
+    """*value* as a plain ``dict``, or None.
+
+    A leftover dict-*subclass* snapshot (usage5's row-bomb class: passes the
+    isinstance gate, then ``.get()`` / ``__bool__`` raises) used to kill the
+    sampler tick past metrics4's shape guards — the jsonl row was silently
+    lost and maybe_rollup() skipped with it.  ``dict()`` copies through the
+    C-level storage, so an overridden method cannot fire.
+    """
+    if type(value) is dict:
+        return value
+    if isinstance(value, dict):
+        try:
+            return dict(value)
+        except Exception:
+            return None
+    return None
+
+
 def _sensors_snapshot() -> dict | None:
     """Reuse a warm full sample, otherwise a light one — never spawn ``top``.
 
@@ -65,8 +84,11 @@ def _sensors_snapshot() -> dict | None:
     """
     try:
         from hub import sensors_svc
-        hit = sensors_svc.peek_sensors()
-        if isinstance(hit, dict):
+        # _plain_dict, not a bare isinstance: a leftover dict-subclass hit
+        # whose .get()/__bool__ raised used to pass the gate and kill the
+        # tick in _sample() one call later.
+        hit = _plain_dict(sensors_svc.peek_sensors())
+        if hit is not None:
             return hit
         from hub.resource_mode import is_high
         if is_high():
@@ -77,14 +99,16 @@ def _sensors_snapshot() -> dict | None:
         # verbatim, and _sample()'s snapshot.get() AttributeError killed the
         # tick — no jsonl row and no maybe_rollup() pass until the cache
         # expired.
-        return snap if isinstance(snap, dict) else None
+        return _plain_dict(snap)
     except Exception:
         return None
 
 
 def _cpu_used_quick(sensors: dict | None = None) -> float | None:
     """Lightweight CPU used % without full top if sensors cache warm."""
-    s = sensors if sensors is not None else _sensors_snapshot()
+    # _plain_dict on a caller-provided snapshot: a leftover dict-subclass
+    # whose .get() raised escaped the numeric-only except below.
+    s = _plain_dict(sensors) if sensors is not None else _sensors_snapshot()
     try:
         # isinstance, not truthiness: a leftover non-dict snapshot used to
         # AttributeError .get() past the numeric-only except below.
@@ -285,6 +309,14 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a leftover subclass method bomb
+            # cannot fire (same guard as sensors_svc._jsonable).
+            try:
+                value = dict(value)
+            except Exception:
+                return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, (str, bytes, bytearray)):
@@ -295,8 +327,18 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        try:
+            items = list(value)
+        except Exception:
+            # Leftover sequence subclass whose __iter__ raises.
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -349,8 +391,10 @@ def sample_ts(raw) -> int | None:
 def record_sample(sample: dict | None = None, *, immediate: bool = False) -> dict:
     """Record one sample. Batched to disk unless immediate=True."""
     global _last_sample
-    if sample is not None and not isinstance(sample, dict):
-        sample = None
+    if sample is not None:
+        # _plain_dict: a caller-provided dict-subclass whose __bool__ raised
+        # used to blow up the ``sample or`` truthiness below and lose the row.
+        sample = _plain_dict(sample)
     s = _jsonable(sample or _sample())
     if not isinstance(s, dict):
         s = {"t": sample_ts(time.time()) or 0}
