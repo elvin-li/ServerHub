@@ -57,6 +57,49 @@ def _job_epoch() -> int:
         return 0
 
 
+def _plain_job(value) -> dict | None:
+    """A ``_cjobs`` row as a plain ``dict``, or None.
+
+    Rows this module writes are already plain (the AST test pins the two
+    writers), but the store outlives requests and a leftover dict-*subclass*
+    row (passes the isinstance gate, then ``.get()`` raises) used to 500
+    GET /api/stacks and GET /api/stacks/jobs/{id} — and raise inside the
+    single-runner mutex scan — until the panel restarted.  ``dict()`` copies
+    through the C-level storage, so an overridden method cannot fire; a
+    subclass whose copy itself raises is junk and drops.  Same guard as
+    hub.jobs._plain_dict.
+    """
+    if type(value) is dict:
+        return value
+    if isinstance(value, dict):
+        try:
+            return dict(value)
+        except Exception:
+            return None
+    return None
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    Fails closed to False: a bomb row is junk, not a live job, so treating
+    it as "running" would wedge the single-runner mutex forever (the
+    hub.jobs._truthy rule).
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _row_running(value) -> bool:
+    """Whether a (possibly junk) ``_cjobs`` row counts as a live job."""
+    row = _plain_job(value)
+    if row is None:
+        return False
+    return _truthy(row.get("running"))
+
+
 def _evict_old_jobs() -> None:
     """Drop the oldest finished jobs until the store fits JOB_HISTORY_MAX.
 
@@ -69,10 +112,7 @@ def _evict_old_jobs() -> None:
     """
     if len(_cjobs) <= JOB_HISTORY_MAX:
         return
-    for key in [
-        k for k, v in _cjobs.items()
-        if not (isinstance(v, dict) and v.get("running"))
-    ]:
+    for key in [k for k, v in _cjobs.items() if not _row_running(v)]:
         if len(_cjobs) <= JOB_HISTORY_MAX:
             break
         _cjobs.pop(key, None)
@@ -91,7 +131,10 @@ def _register_job(tid: str, *, stack_id: str, action: str) -> dict:
     stack_id = stack_id if isinstance(stack_id, str) else ""
     action = action if isinstance(action, str) else str(action or "")
     with _cjobs_lock:
-        if any(isinstance(j, dict) and j.get("running") for j in _cjobs.values()):
+        # _row_running, not a bare ``j.get("running")``: a leftover
+        # dict-subclass row (or a __bool__-bomb value) used to 500 every
+        # job-starting route through this mutex scan.
+        if any(_row_running(j) for j in _cjobs.values()):
             raise api_error("container.job_running")
         _cjobs[tid] = {
             "running": True,
@@ -1762,52 +1805,87 @@ def _job_field(value) -> str | None:
     return _as_text(value) if isinstance(value, str) else None
 
 
+def _job_log_lines(raw) -> list:
+    """The iterable items of a job-row ``log`` field.  Never raises.
+
+    ``list()`` through the C storage: a leftover list-subclass whose
+    ``__iter__`` raises used to 500 the log route past the isinstance gate
+    (the hub.jobs._log_lines rule).
+    """
+    if not isinstance(raw, list):
+        return []
+    try:
+        return list(raw)
+    except Exception:
+        return []
+
+
 def stack_job_log(job_id: str) -> dict:
+    missing = {"running": False, "rc": None, "log": "(not started yet)", "job_id": ""}
     if not isinstance(job_id, str):
-        return {"running": False, "rc": None, "log": "(not started yet)", "job_id": ""}
-    j = _cjobs.get(job_id)
-    if not isinstance(j, dict):
+        return missing
+    # _plain_job: a dict-subclass row whose .get() raised used to 500 here.
+    j = _plain_job(_cjobs.get(job_id))
+    if j is None:
         # also allow latest job for stack
-        j = None
         for k, v in reversed(list(_cjobs.items())):
-            if not isinstance(v, dict):
+            row = _plain_job(v)
+            if row is None:
                 continue
-            if v.get("stack_id") == job_id or k == job_id:
-                j = v
-                job_id = k
+            sid = row.get("stack_id")
+            # isinstance-gated str compares: a leftover ``__eq__``-bomb
+            # stack_id (or key) in ANY row used to raise out of this scan
+            # and 500 the poll for every other job.
+            if ((isinstance(sid, str) and sid == job_id)
+                    or (isinstance(k, str) and k == job_id)):
+                j = row
+                if isinstance(k, str):
+                    job_id = k
                 break
-    if not isinstance(j, dict):
+    if j is None:
         return {"running": False, "rc": None, "log": "(not started yet)",
                 "job_id": _as_text(job_id)}
-    raw_log = j.get("log") if isinstance(j.get("log"), list) else []
-    return {"running": j.get("running"), "rc": j.get("rc"), "started": j.get("started"),
-            "finished": j.get("finished"),
-            "log": "\n".join(_as_text(x) for x in raw_log) or "(waiting for output…)",
-            "job_id": _as_text(job_id),
-            "stack_id": _job_field(j.get("stack_id")),
-            "action": _job_field(j.get("action")),
-            # machine-readable failure class (container.engine_down) so the
-            # SPA can translate instead of rendering raw daemon stderr
-            "code": _job_field(j.get("code"))}
+    payload = {
+        # _truthy / _jsonable: a __bool__-bomb ``running``, an over-cap-digit
+        # ``rc`` and a lone-surrogate ``started`` in a poisoned row all used
+        # to 500 Starlette's encoder; the log join already scrubbed items but
+        # the scalar fields were echoed raw.
+        "running": _truthy(j.get("running")), "rc": j.get("rc"),
+        "started": j.get("started"), "finished": j.get("finished"),
+        "log": "\n".join(_as_text(x) for x in _job_log_lines(j.get("log")))
+               or "(waiting for output…)",
+        "job_id": _as_text(job_id),
+        "stack_id": _job_field(j.get("stack_id")),
+        "action": _job_field(j.get("action")),
+        # machine-readable failure class (container.engine_down) so the
+        # SPA can translate instead of rendering raw daemon stderr
+        "code": _job_field(j.get("code"))}
+    cleaned = _jsonable(payload)
+    return cleaned if isinstance(cleaned, dict) else missing
 
 
 def latest_stack_jobs() -> list:
     # return recent unique by stack
     by = {}
     for k, v in _cjobs.items():
-        if not isinstance(v, dict):
+        row = _plain_job(v)
+        if row is None:
             continue
-        sid = v.get("stack_id")
+        sid = row.get("stack_id")
         if isinstance(sid, str) and sid:
-            by[sid] = {**job_public(k, v)}
+            by[sid] = {**job_public(k, row)}
     return list(by.values())
 
 
 def job_public(jid, j):
-    if not isinstance(j, dict):
+    j = _plain_job(j)
+    if j is None:
         j = {}
-    return {"job_id": _as_text(jid),
-            "stack_id": _job_field(j.get("stack_id")),
-            "action": _job_field(j.get("action")),
-            "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished"),
-            "code": _job_field(j.get("code"))}
+    payload = {"job_id": _as_text(jid),
+               "stack_id": _job_field(j.get("stack_id")),
+               "action": _job_field(j.get("action")),
+               "running": _truthy(j.get("running")), "rc": j.get("rc"),
+               "finished": j.get("finished"),
+               "code": _job_field(j.get("code"))}
+    cleaned = _jsonable(payload)
+    return cleaned if isinstance(cleaned, dict) else {"job_id": _as_text(jid)}
