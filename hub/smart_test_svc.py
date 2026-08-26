@@ -253,6 +253,23 @@ def _device_nodes() -> list[str]:
     return nodes or ["/dev/disk0"]
 
 
+def _known_nodes() -> set[str]:
+    """The device list as a membership set, junk entries dropped.
+
+    This module does not own the provider (tests and tooling patch
+    ``_device_nodes``): a listing carrying an *unhashable* entry (a list, a
+    dict row) made the bare ``set(_device_nodes())`` in start_test /
+    abort_test / set_schedule TypeError — a 500 on POST /api/smart/test
+    where every junk *device argument* already earns the coded
+    ``bad_device`` refusal.  Non-str entries can never match a validated
+    ``/dev/diskN`` node, so they drop rather than raise.
+    """
+    try:
+        return {n for n in _device_nodes() if isinstance(n, str)}
+    except Exception:
+        return set()
+
+
 def _selftest_raw(device: str) -> tuple[int, str, str]:
     """Raw ``smartctl -l selftest`` output for *device*.
 
@@ -414,10 +431,16 @@ def _in_progress(device: str, caps_raw: tuple[int, str, str] | None = None) -> d
 
 # ── history journal ──────────────────────────────────────────────────────────
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -433,7 +456,7 @@ def _utf8_text(value) -> str:
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; parsers and JSON need text."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif value is None:
         return ""
     else:
@@ -461,6 +484,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules._jsonable rule):
+                # a subclass ``__str__`` bomb in a run_admin result or a
+                # patched-loader history row used to blow the digit-cap
+                # probe below and 500 the SMART routes.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -469,16 +501,27 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         try:
-            items = list(value.items())
+            # Unpacking inside the same try: a subclass ``items()`` that
+            # *answers* but yields non-pairs used to raise out of the loop
+            # header below — past the guard — and 500 POST /api/smart/abort
+            # exactly like the items bomb this try already absorbed.
+            items = [(k, v) for k, v in value.items()]
         except Exception:
             # A mapping that refuses iteration (odd dict subclass in a
             # run_admin result or a poisoned history row): nothing to
@@ -488,7 +531,12 @@ def _jsonable(value, depth: int = 0):
             return None
         out = {}
         for k, v in items:
-            if not isinstance(k, (str, bytes, bytearray)):
+            if isinstance(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -502,7 +550,13 @@ def _jsonable(value, depth: int = 0):
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the payload or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself and
+        # 500'd GET /api/smart.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -583,11 +637,26 @@ def _schedule_cfg() -> dict:
     # non-mapping used to AttributeError ``.get`` here — through
     # ``get_schedule()`` that 500'd GET /api/smart, and the same raise
     # escaped ``schedule_due()`` inside the scheduler tick.
-    settings = cfg().get("settings")
+    data = cfg()
+    if not isinstance(data, dict):
+        return {}
+    # Unbound ``dict.get`` at every rank, and a plain-dict copy of the
+    # answer: a dict *subclass* whose ``.get`` or ``__bool__`` raises (the
+    # config.py cfg()-reader rule) passed every isinstance gate here, then
+    # 500'd GET /api/smart out of ``get_schedule()``'s own ``stored.get`` —
+    # and the same raise escaped ``schedule_due()`` inside the scheduler
+    # tick, silently stopping every scheduled self-test.  ``dict(...)``
+    # copies the raw storage without calling any overridden method.
+    settings = dict.get(data, "settings")
     if not isinstance(settings, dict):
         return {}
-    stored = settings.get("smart_schedule") or {}
-    return stored if isinstance(stored, dict) else {}
+    stored = dict.get(settings, "smart_schedule")
+    if not isinstance(stored, dict):
+        return {}
+    try:
+        return dict(stored)
+    except Exception:
+        return {}
 
 
 def _schedule_text(value) -> str:
@@ -675,7 +744,7 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
     kind = (_schedule_text(kind) or "short").strip().lower()
     if kind not in TEST_KINDS:
         return {"ok": False, "error": "bad_kind"}
-    known = set(_device_nodes())
+    known = _known_nodes()
     cleaned = [
         node
         for node in (_schedule_text(d) for d in (devices or []))
@@ -821,7 +890,7 @@ def start_test(device: str, kind: str) -> dict:
     # numeric keeps behaving as its string form (the raid_svc._req_text
     # convention).
     node = _schedule_text(device).strip()
-    if not _DEV_RE.match(node) or node not in set(_device_nodes()):
+    if not _DEV_RE.match(node) or node not in _known_nodes():
         return {"ok": False, "error": "bad_device"}
     test = _schedule_text(kind).strip().lower()
     if test not in TEST_KINDS:
@@ -855,8 +924,19 @@ def start_test(device: str, kind: str) -> dict:
             return {"ok": False, "error": "smartctl_missing", "device": node}
         # No passwordless rule: ask macOS for one-shot authorization instead.
         admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
-        ok = bool(admin.get("ok")) if isinstance(admin, dict) else False
-        message = _as_text((admin or {}).get("message") if isinstance(admin, dict) else "")
+        # Unbound ``dict.get`` and a guarded bool: this function does not
+        # own the run_admin result (tests and tooling patch it), and a dict
+        # subclass whose ``.get``/``__bool__`` raises — or an ``ok`` value
+        # with a ``__bool__`` bomb — used to 500 POST /api/smart/test after
+        # the operator had already typed the admin password.
+        ok = False
+        message = ""
+        if isinstance(admin, dict):
+            try:
+                ok = bool(dict.get(admin, "ok"))
+            except Exception:
+                ok = False
+            message = _as_text(dict.get(admin, "message"))
     else:
         ok = True
         message = (_as_text(out) or _as_text(err)).strip()
@@ -884,7 +964,7 @@ def abort_test(device: str) -> dict:
     # Same probe as start_test: a bare str() of an over-cap already-int
     # device was the digit-cap ValueError, not the coded ``bad_device``.
     node = _schedule_text(device).strip()
-    if not _DEV_RE.match(node) or node not in set(_device_nodes()):
+    if not _DEV_RE.match(node) or node not in _known_nodes():
         return {"ok": False, "error": "bad_device"}
     flags = list(device_type(node))
     rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-X", *flags, node], timeout=30)

@@ -25,10 +25,16 @@ _PLIST_CAP = 256 * 1024
 _refresh_lock = threading.Lock()
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -43,7 +49,7 @@ def _utf8_text(value) -> str:
 
 def _as_text(value) -> str:
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif value is None:
         return ""
     else:
@@ -72,6 +78,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules._jsonable rule):
+                # a subclass ``__str__`` bomb planted in the cache snapshot
+                # used to blow the digit-cap probe below and 500 GET
+                # /api/health/checks on every TTL hit.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -80,16 +95,27 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         try:
-            items = list(value.items())
+            # Unpacking inside the same try: a subclass ``items()`` that
+            # *answers* but yields non-pairs used to raise out of the loop
+            # header below — past the guard — and 500 GET /api/health/checks
+            # exactly like the items bomb this try already absorbed.
+            items = [(k, v) for k, v in value.items()]
         except Exception:
             # A mapping that refuses iteration (odd dict subclass planted in
             # the cache, or a raw Immich/Ollama check row that bypasses
@@ -101,7 +127,10 @@ def _jsonable(value, depth: int = 0):
         out = {}
         for k, v in items:
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
             elif not isinstance(k, str):
                 try:
                     k = str(k)
@@ -117,7 +146,13 @@ def _jsonable(value, depth: int = 0):
             # subclass whose ``__iter__`` raises drops alone, never the
             # payload or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself and
+        # 500'd GET /api/health/checks.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
