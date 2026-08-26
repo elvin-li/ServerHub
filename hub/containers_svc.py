@@ -410,10 +410,30 @@ def _field_text(value, fallback: str = "") -> str:
     if value is None or isinstance(value, bool):
         return fallback
     if isinstance(value, float):
+        if type(value) is not float:
+            # Base coercion to an exact float: a leftover float-*subclass*
+            # whose ``__eq__`` (or ``__float__``) bombs used to detonate the
+            # finite probe below and 500 GET /api/stacks and GET
+            # /api/compose/{id} — the docker_cli._jsonable unbound convention
+            # (its ``float.__float__`` twin).
+            try:
+                value = float.__float__(value)
+            except Exception:
+                return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
     if isinstance(value, int):
+        if type(value) is not int:
+            # Base coercion to an exact int: a leftover int-*subclass* whose
+            # ``__str__`` raises something other than the digit-cap ValueError
+            # (a bombing ``__str__``/``__index__``) slipped past the
+            # ValueError-only guard below and 500'd the same routes.  Same
+            # ``int.__index__`` launder as docker_cli._jsonable's ``rc`` field.
+            try:
+                value = int.__index__(value)
+            except Exception:
+                return fallback
         try:
             return str(value)
         except ValueError:
@@ -1586,7 +1606,14 @@ def _stack_paths() -> list[dict]:
     """Resolve compose stacks from config + auto-scan Services/*."""
     stacks = []
     seen = set()
-    raw = cfg().get("stacks")
+    # dict.get, not ``cfg().get``: a leftover cfg() root that is a dict
+    # *subclass* with a bombing ``.get`` used to raise straight out of this
+    # reader and 500 GET /api/stacks, GET /api/compose/{id} and every
+    # stack-job start — the config.settings_section / override / panel_locale
+    # convention (the unbound builtin reads the C-level storage, bypassing the
+    # override at no copy cost).
+    data = cfg()
+    raw = dict.get(data, "stacks") if isinstance(data, dict) else None
     if isinstance(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
