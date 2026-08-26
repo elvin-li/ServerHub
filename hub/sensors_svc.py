@@ -159,6 +159,14 @@ def _sysctl_int(value) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
+        if type(value) is not int:
+            # Base coercion before the ``>= 0`` probe: a leftover int
+            # subclass whose comparison methods raise (the modules5 bomb
+            # class) used to escape this helper's callers.
+            try:
+                value = int.__index__(value)
+            except Exception:
+                return None
         return value if value >= 0 else None
     text = _as_text(value).strip()
     if not text.isdigit():
@@ -173,10 +181,15 @@ def _sysctl_int(value) -> int | None:
 
 
 def _finite_float(value) -> float | None:
-    """float from a sensor token, or None for inf/NaN/overflow."""
+    """float from a sensor token, or None for inf/NaN/overflow.
+
+    Exception, not the three usual conversion errors: ``float()`` of a
+    leftover float-subclass dispatches into its own ``__float__``, whose
+    modules5 bomb used to raise out of every parser leg that funnels here.
+    """
     try:
         n = float(value)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return None
     if n != n or n in (float("inf"), float("-inf")):
         return None
@@ -707,6 +720,14 @@ def _nonneg_bytes(value) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
+        if type(value) is not int:
+            # Base coercion before the range probe: a leftover int subclass
+            # whose comparison methods raise (the modules5 bomb class) used
+            # to blow ``0 <= value`` and escape the GPU leg's guards.
+            try:
+                value = int.__index__(value)
+            except Exception:
+                return None
         return value if 0 <= value <= 2**62 else None
     n = _finite_float(value)
     if n is None:
