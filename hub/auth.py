@@ -47,12 +47,91 @@ _LOGIN_WINDOW = 300.0
 _LOGIN_SWEEP_AT = 512
 
 
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule: the truth test hidden in
+    ``a.get(key) or default`` used to detonate a junk config value whose
+    ``__bool__`` raises and 500 login / status.  Fails closed to False —
+    a bomb value is junk, not a credential or a name.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that a leftover ``__bool__`` bomb cannot 500."""
+    return value if _truthy(value) else fallback
+
+
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule, which these auth readers never
+    got: ``isinstance(x, dict)`` passes an odd subclass whose ``get``
+    raises, and one such block planted as the config root / ``settings`` /
+    ``settings.auth`` used to raise out of :func:`_auth_cfg` and 500
+    GET /api/auth/status, POST /api/auth/login and — through
+    ``verify_session`` — every route behind a session cookie at once.
+    ``dict.get`` reads the real storage underneath the override, so a
+    subclass that only poisoned its method keeps its sane data.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except Exception:
+        try:
+            return dict.get(mapping, key)
+        except Exception:
+            return None
+
+
+def _mapping_items(mapping) -> list:
+    """(key, value) pairs that a dict-subclass ``items()`` bomb cannot 500.
+
+    ``dict.items`` reads the C-level storage underneath the override (the
+    modules5 unbound convention), so a poisoned ``session_epochs`` mapping
+    keeps its real logout counters instead of 500ing every login.
+    """
+    if not isinstance(mapping, dict):
+        return []
+    try:
+        return list(mapping.items())
+    except Exception:
+        try:
+            return list(dict.items(mapping))
+        except Exception:
+            return []
+
+
+def _iter_list(value):
+    """Unbound ``list.__iter__`` (the modules rule): a list-subclass
+    ``__iter__`` bomb as ``accounts`` / ``resources`` used to raise out of
+    the walk and 500 login; the real elements still come through."""
+    return list.__iter__(value)
+
+
 def _auth_cfg() -> dict:
-    settings = cfg().get("settings")
-    if not isinstance(settings, dict):
+    """``settings.auth`` as a *plain* mapping — hostile subclasses laundered.
+
+    Bound ``.get`` on the config root / settings block used to detonate a
+    leftover dict-subclass ``.get`` bomb (see :func:`_mapping_get`), and the
+    block itself is copied through ``dict(...)`` — the C-level storage, same
+    as ``config.settings_section`` — so every downstream ``a.get(...)`` and
+    ``or`` truth test in this module reads plain data.  Nested values
+    (``session_epochs``, ``accounts`` rows) keep their own guards.
+    """
+    settings = _mapping_get(cfg(), "settings")
+    auth = _mapping_get(settings, "auth")
+    if not isinstance(auth, dict):
         return {}
-    auth = settings.get("auth")
-    return auth if isinstance(auth, dict) else {}
+    try:
+        return dict(auth)
+    except Exception:
+        return {}
 
 
 def _epoch_key(key) -> str:
@@ -83,7 +162,9 @@ def _epoch_count(raw) -> int:
         return 0
     try:
         value = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # TypeError/ValueError/OverflowError for ordinary junk, plus a
+        # leftover ``__int__`` / ``__index__`` bomb — junk counts as 0.
         return 0
     try:
         str(value)
@@ -107,7 +188,7 @@ def _clean_epochs(raw) -> dict:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, int] = {}
-    for k, v in raw.items():
+    for k, v in _mapping_items(raw):
         key = _epoch_key(k)
         if not key:
             continue
@@ -198,8 +279,20 @@ def _auth_block(data: dict) -> tuple[dict, dict]:
 
 
 def _account_rows(auth_cfg: dict) -> list[dict]:
-    rows = auth_cfg.get("accounts") if isinstance(auth_cfg, dict) else None
-    return [dict(e) for e in rows if isinstance(e, dict)] if isinstance(rows, list) else []
+    rows = _mapping_get(auth_cfg, "accounts")
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    # Unbound iteration + a guarded dict() copy: a list-subclass __iter__
+    # bomb, or a row whose own keys()/__iter__ raises, costs itself only.
+    for e in _iter_list(rows):
+        if not isinstance(e, dict):
+            continue
+        try:
+            out.append(dict(e))
+        except Exception:
+            continue
+    return out
 
 
 def _utf8(text: str) -> bytes:
@@ -215,10 +308,15 @@ def _cfg_text(raw) -> str:
     ``settings.auth`` loads fine and then ValueError'd ``str()`` — every
     login attempt (``accounts()``), the unclaimed GET /api/auth/status
     (``suggested_setup_username``) and ``setup_token_mode`` returned 500.
+
+    Broad catch, not just ValueError (the ``backups._cfg_text`` rule): a
+    leftover int-subclass ``__str__`` bomb as a ``session_epochs`` key used
+    to raise past the digit-cap guard and 500 every login through
+    :func:`_session_epoch`.
     """
     try:
         return str(raw)
-    except ValueError:
+    except Exception:
         return ""
 
 
@@ -280,12 +378,14 @@ def accounts() -> dict[str, dict]:
     a = _auth_cfg()
     out: dict[str, dict] = {}
 
-    legacy_name = _cfg_text(a.get("username") or "admin").strip() or "admin"
+    # _pick, not ``or``: a leftover value whose ``__bool__`` raises used to
+    # detonate the truth test and 500 every login and cookie check.
+    legacy_name = _cfg_text(_pick(a.get("username"), "admin")).strip() or "admin"
     if not _utf8_ok(legacy_name):
         # Lone-surrogate leftover: keep the hash under the default name so
         # setup/status can still JSON-encode a suggested username.
         legacy_name = "admin"
-    legacy_hash = _cfg_text(a.get("password_hash") or a.get("password") or "")
+    legacy_hash = _cfg_text(_pick(a.get("password_hash"), _pick(a.get("password"), "")))
     if legacy_hash and ":" not in legacy_name:
         out[legacy_name] = {
             "username": legacy_name,
@@ -297,25 +397,29 @@ def accounts() -> dict[str, dict]:
     rows = a.get("accounts")
     if not isinstance(rows, list):
         rows = []
-    for raw in rows:
+    # _iter_list / _mapping_get / _pick: a list-subclass ``__iter__`` bomb as
+    # the accounts list, a dict-subclass ``.get`` bomb as one row, and a
+    # ``__bool__`` bomb in any field each used to 500 every login instead of
+    # costing (at most) the one poisoned row.
+    for raw in _iter_list(rows):
         if not isinstance(raw, dict):
             continue
-        name = _cfg_text(raw.get("username") or "").strip()
+        name = _cfg_text(_pick(_mapping_get(raw, "username"), "")).strip()
         if not name or ":" in name or not _utf8_ok(name):
             continue
-        role = _cfg_text(raw.get("role") or ROLE_MEMBER)
+        role = _cfg_text(_pick(_mapping_get(raw, "role"), ROLE_MEMBER))
         if role not in ROLES:
             role = ROLE_MEMBER
-        raw_res = raw.get("resources")
+        raw_res = _mapping_get(raw, "resources")
         resources = [
-            _cfg_text(r) for r in raw_res
+            _cfg_text(r) for r in _iter_list(raw_res)
             if _cfg_text(r).strip() and _utf8_ok(_cfg_text(r))
         ] if isinstance(raw_res, list) else []
         # An explicit entry wins over the legacy pair for the same name, so
         # promoting the admin into the accounts list is a safe migration.
         out[name] = {
             "username": name,
-            "password_hash": _cfg_text(raw.get("password_hash") or ""),
+            "password_hash": _cfg_text(_pick(_mapping_get(raw, "password_hash"), "")),
             "role": role,
             "resources": resources,
         }
@@ -374,12 +478,17 @@ def may_use_resource(username: str | None, resource: str | None) -> bool:
 
 
 def _auth_is_claimed(auth_cfg: dict) -> bool:
-    """Whether this auth mapping already has a usable credential."""
+    """Whether this auth mapping already has a usable credential.
+
+    _mapping_get / _truthy / _pick: a ``.get`` or ``__bool__`` bomb here
+    used to 500 the unauthenticated GET /api/auth/status.  A junk bomb
+    value reads as "no credential", same as any other unusable leftover.
+    """
     if not isinstance(auth_cfg, dict):
         return False
-    if auth_cfg.get("password_hash"):
+    if _truthy(_mapping_get(auth_cfg, "password_hash")):
         return True
-    return _cfg_text(auth_cfg.get("password") or "") not in ("", "change-me")
+    return _cfg_text(_pick(_mapping_get(auth_cfg, "password"), "")) not in ("", "change-me")
 
 
 def setup_required() -> bool:
@@ -388,7 +497,7 @@ def setup_required() -> bool:
 
 def suggested_setup_username() -> str:
     """First-run username for GET /api/auth/status.  Must be JSON-encodable."""
-    raw = _cfg_text(_auth_cfg().get("username") or "admin").strip() or "admin"
+    raw = _cfg_text(_pick(_auth_cfg().get("username"), "admin")).strip() or "admin"
     return raw if _utf8_ok(raw) else "admin"
 
 
@@ -497,7 +606,9 @@ def setup_token() -> str:
 
 
 def setup_token_mode() -> str:
-    mode = _cfg_text((_auth_cfg() or {}).get("setup_token_mode") or "auto").strip().lower()
+    # _pick, not ``or``: a leftover ``__bool__``-bomb value here 500'd the
+    # unauthenticated GET /api/auth/status through setup_token_required().
+    mode = _cfg_text(_pick(_auth_cfg().get("setup_token_mode"), "auto")).strip().lower()
     return mode if mode in SETUP_TOKEN_MODES else "auto"
 
 
@@ -835,10 +946,10 @@ def _verify_scrypt(encoded: str, password: str) -> bool:
 
 def verify_password(password: str) -> bool:
     a = _auth_cfg()
-    encoded = _cfg_text(a.get("password_hash") or "")
+    encoded = _cfg_text(_pick(a.get("password_hash"), ""))
     if encoded.startswith("scrypt$"):
         return _verify_scrypt(encoded, password)
-    legacy = _cfg_text(a.get("password") or "")
+    legacy = _cfg_text(_pick(a.get("password"), ""))
     return bool(legacy and legacy != "change-me" and constant_time_equals(password, legacy))
 
 
@@ -874,7 +985,7 @@ def verify_account_password(username: str | None, password: str) -> bool:
     # Only the legacy admin pair may carry a plaintext password from very old
     # configs; accounts-list entries are always created hashed.
     if str(acct.get("role")) == ROLE_ADMIN:
-        legacy = _cfg_text(_auth_cfg().get("password") or "")
+        legacy = _cfg_text(_pick(_auth_cfg().get("password"), ""))
         return bool(
             legacy and legacy != "change-me" and constant_time_equals(password, legacy)
         )
@@ -1037,7 +1148,7 @@ def set_account_password(username: str, password: str) -> None:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError("password_too_short")
     in_accounts_list = any(
-        _cfg_text(raw.get("username") or "").strip() == name
+        _cfg_text(_pick(raw.get("username"), "")).strip() == name
         for raw in _account_rows(_auth_cfg())
     )
     if not in_accounts_list:
@@ -1179,8 +1290,11 @@ def _session_epoch(username: str) -> int:
     if not isinstance(epochs, dict):
         return 0
     target = str(username)
+    # _mapping_items, not epochs.items(): a dict-subclass ``items()`` bomb
+    # planted as this mapping used to 500 every login and cookie check via
+    # account_session_version.
     matches = [
-        _epoch_count(v) for k, v in epochs.items() if _epoch_key(k) == target
+        _epoch_count(v) for k, v in _mapping_items(epochs) if _epoch_key(k) == target
     ]
     return max(matches) if matches else 0
 
@@ -1621,7 +1735,7 @@ def require_auth(
         # The configured legacy username is admin even when accounts() has not
         # yet materialised a hash (setup-adjacent tests and a half-written
         # config); is_admin() alone would fail closed in that window.
-        legacy_name = _cfg_text(_auth_cfg().get("username") or "admin").strip() or "admin"
+        legacy_name = _cfg_text(_pick(_auth_cfg().get("username"), "admin")).strip() or "admin"
         if verify_account_password(credentials.username, credentials.password) and (
             is_admin(credentials.username)
             or constant_time_equals(credentials.username, legacy_name)
