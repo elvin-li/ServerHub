@@ -285,20 +285,40 @@ _STR_CAP = 64 * 1024
 
 
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    Every read here goes through *unbound base-type* calls (``bytes.decode``,
+    ``str.encode``), the same shape as ``tools_svc._as_text``: a subclass
+    overriding ``decode``/``encode``/``__str__`` to raise used to blow this
+    scrub from inside record()'s shaping — outside the (ValueError, TypeError,
+    RecursionError) net — and 500 the request being audited.
+    """
     if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
-    else:
+        base = bytes if isinstance(value, bytes) else bytearray
         try:
-            text = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            text = base.decode(value, "utf-8", "replace")
         except Exception:
             return ""
-        text = text.encode("utf-8", "replace").decode("utf-8")
+    else:
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = str(value)
+            except RecursionError:
+                try:
+                    return type(value).__name__
+                except Exception:
+                    return ""
+            except Exception:
+                return ""
+        try:
+            # str() may hand back a *subclass* instance (it only checks the
+            # type, it does not copy), so the scrub itself must not trust
+            # bound methods either.
+            text = str.encode(text, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            return ""
     if len(text) > _STR_CAP:
         # Same marker shape as util.py's log tailer.  Slicing is by code
         # point, so the scrubbed text cannot gain a torn surrogate here.
@@ -318,8 +338,13 @@ def _jsonable(value, depth: int = 0):
         return value
     if isinstance(value, int):
         try:
+            # Shed a subclass first: an int subclass whose ``__str__`` raised
+            # (anything, not just ValueError) used to escape this probe and
+            # 500 the request record() was auditing.  ``int.__index__`` is the
+            # unbound base slot, so an override cannot reach it.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # Past CPython's int->str digit cap the encoder cannot render the
             # number at all — json.dumps raises the same ValueError.  YAML/plist
             # hex text loads uncapped (``int(x, 16)`` is a power-of-two base),
@@ -331,14 +356,26 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+        try:
+            # Base coercion before the finite probes: a float subclass whose
+            # ``__ne__``/``__eq__`` raised used to blow ``value != value``.
+            value = float.__float__(value)
+            if value != value or value in (float("inf"), float("-inf")):
+                return None
+        except Exception:
             return None
         return value
     if isinstance(value, (str, bytes, bytearray)):
         return _utf8_text(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        try:
+            # Unbound base read: a dict-subclass ``items()`` bomb must cost
+            # this field, never the audit line (or the request behind it).
+            items = list(dict.items(value))
+        except Exception:
+            return out
+        for k, v in items:
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
@@ -346,9 +383,22 @@ def _jsonable(value, depth: int = 0):
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    for base in (list, tuple, set, frozenset):
+        if isinstance(value, base):
+            try:
+                # Same shape as the dict read: subclass ``__iter__`` bombs
+                # bypass the base slot, so the real elements still list.
+                seq = list(base.__iter__(value))
+            except Exception:
+                return []
+            return [_jsonable(v, depth + 1) for v in seq]
+    try:
+        # getattr, guarded: a leftover object whose ``__getattr__`` (or an
+        # ``isoformat`` property) raises non-AttributeError used to escape
+        # the default and 500 out of record()'s shaping.
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -402,13 +452,31 @@ def redact(value: Any, _depth: int = 0) -> Any:
     if _depth > 32:
         return None
     if isinstance(value, dict):
-        return {
-            k: redact(v, _depth + 1)
-            for k, v in value.items()
-            if not _is_secret_key(k)
-        }
-    if isinstance(value, (list, tuple)):
-        return [redact(v, _depth + 1) for v in value]
+        try:
+            # Unbound base read, like _jsonable's: redact() runs before
+            # record()'s swallow-all, so a dict-subclass ``items()`` bomb in
+            # a nested detail used to raise out of the request being audited.
+            items = list(dict.items(value))
+        except Exception:
+            return None
+        out = {}
+        for k, v in items:
+            if _is_secret_key(k):
+                continue
+            try:
+                out[k] = redact(v, _depth + 1)
+            except Exception:
+                # A key whose ``__hash__`` re-raises on the rebuild costs
+                # itself, never the sibling fields.
+                continue
+        return out
+    for base in (list, tuple):
+        if isinstance(value, base):
+            try:
+                seq = list(base.__iter__(value))
+            except Exception:
+                return []
+            return [redact(v, _depth + 1) for v in seq]
     return value
 
 
@@ -455,11 +523,14 @@ def record(event: str, /, **fields: Any) -> dict:
             "event": _utf8_text(event),
             **extra,
         })
-    except (ValueError, TypeError, RecursionError):
+    except Exception:
         # Shaping runs before the swallow-all below, so a poisoned field
         # shape it cannot handle must degrade to a minimal line — losing the
         # detail is acceptable, raising into (or losing) the sign-in being
-        # audited is not.
+        # audited is not.  Exception, not the old (ValueError, TypeError,
+        # RecursionError) shortlist: a leftover subclass bomb raises whatever
+        # it likes, and this module's first guarantee is that logging never
+        # breaks the request.
         entry = None
     if not isinstance(entry, dict):
         entry = {
@@ -496,9 +567,11 @@ def record(event: str, /, **fields: Any) -> dict:
             if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
                 os.chmod(AUDIT_PATH, 0o600)
             _trim(AUDIT_PATH)
-    except (OSError, TypeError, ValueError, RecursionError):
+    except Exception:
         # An unwritable or unencodable log must never turn a valid sign-in
-        # into a 500. RecursionError: leftover nested audit row is not ValueError.
+        # into a 500.  Exception (was OSError/TypeError/ValueError/
+        # RecursionError): the write path crosses locks, stat and chmod, and
+        # any surprise there belongs to the log, not to the request.
         pass
     return entry
 
