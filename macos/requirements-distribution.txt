@@ -1,4 +1,4 @@
-# ServerHub 3.9.1 backend-only distribution lock for CPython 3.12 arm64 macOS.
+# ServerHub 3.9.2 backend-only distribution lock for CPython 3.12 arm64 macOS.
 # Keep every direct and transitive runtime dependency exact. The distribution
 # builder installs wheels with --no-deps so an unlisted package cannot drift.
 annotated-doc==0.0.4
