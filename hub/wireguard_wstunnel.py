@@ -166,9 +166,15 @@ def read_plist(path: Path | None = None) -> dict[str, str]:
     target = path or PLIST_PATH
     try:
         data = plistlib.loads(read_bytes_capped(target, _PLIST_CAP))
-    except (OSError, plistlib.InvalidFileException, ValueError, RecursionError):
-        # RecursionError: leftover deeply-nested LaunchDaemon plist is not
-        # ValueError; GET /api/wireguard and GET /api/system/network used to 500.
+    except Exception:
+        # An enumerated tuple is a losing game against plistlib's XML path
+        # (the files_svc lesson): a torn or truncated LaunchDaemon plist
+        # raises xml.parsers.expat.ExpatError, a junk <date> raises
+        # AttributeError, a stray <key> outside any dict raises IndexError,
+        # and a deeply-nested plist raises RecursionError — none of which the
+        # old (OSError, InvalidFileException, ValueError, RecursionError)
+        # tuple fully covered, so GET /api/wireguard, /api/wireguard/settings
+        # and /api/wireguard/readiness used to 500 on a half-written plist.
         return {"listen": "", "restrict_to": ""}
     if not isinstance(data, dict):
         return {"listen": "", "restrict_to": ""}
