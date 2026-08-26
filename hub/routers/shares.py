@@ -7,8 +7,36 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 
 from hub import audit, auth, shares_svc
 from hub.errors import api_error
+from hub.routers.nas_common import _jsonable, _utf8_text
 
 router = APIRouter(tags=["shares"])
+
+
+def _service_result(result) -> dict:
+    """Coerce a leftover non-dict service result into the coded failure.
+
+    Every route below reads ``result.get("ok")`` and hands the payload to
+    Starlette verbatim, so a leftover ``None`` from a privileged helper
+    AttributeError'd the route as a raw 500 — the exact class
+    ``nas_common.raise_for_admin_result`` already guards for the newer NAS
+    routers.  The coded ``shares.operation_failed`` is the honest answer.
+    """
+    return result if isinstance(result, dict) else {"ok": False, "error": "failed"}
+
+
+def _ok_payload(result: dict) -> dict:
+    """A successful result through the shared sanitizer before Starlette.
+
+    The share routes pasted the service result into the response body
+    verbatim, so a leftover the encoder cannot take — a lone ``\\ud800`` in a
+    key or value, an over-cap already-int (YAML/plist hex loads uncapped
+    through ``int(x, 16)``), or a collection that passes ``isinstance`` but
+    refuses iteration — 500'd the whole route where every NAS sibling answers
+    with the field dropped or the text scrubbed (the ``nas_common._jsonable``
+    rule this router missed).
+    """
+    cleaned = _jsonable(result)
+    return cleaned if isinstance(cleaned, dict) else {"ok": True}
 
 
 class SMBCreate(BaseModel):
@@ -57,7 +85,12 @@ def _client(request: Request) -> str:
 
 
 def _raise_service_error(result: dict, *, service: str = "") -> None:
-    error = str(result.get("error") or "failed")
+    # _utf8_text, not str(): a leftover *already-int* error field past
+    # CPython's int->str digit cap (YAML/plist hex loads uncapped through
+    # ``int(x, 16)``) made the bare str() raise the digit-cap ValueError out
+    # of the route — an unhandled 500 in place of the coded refusal (the
+    # nas_common.raise_for_admin_result rule this copy predates).
+    error = _utf8_text(result.get("error") or "failed") or "failed"
     code = {
         "cancelled": "shares.authorization_cancelled",
         "unavailable": "shares.authorization_unavailable",
@@ -115,7 +148,7 @@ def shares():
 def create_share(body: SMBCreate, request: Request):
     username = _require_admin_browser(request)
     try:
-        result = shares_svc.create_smb_share(**body.model_dump())
+        result = _service_result(shares_svc.create_smb_share(**body.model_dump()))
     except shares_svc.ShareValidationError as error:
         raise api_error(error.code)
     outcome = "success" if result.get("ok") else "failure"
@@ -134,14 +167,16 @@ def create_share(body: SMBCreate, request: Request):
     )
     if not result.get("ok"):
         _raise_service_error(result)
-    return result
+    return _ok_payload(result)
 
 
 @router.put("/api/shares/smb/{record_name}")
 def update_share(record_name: str, body: SMBUpdate, request: Request):
     username = _require_admin_browser(request)
     try:
-        result = shares_svc.update_smb_share(record_name, **body.model_dump())
+        result = _service_result(
+            shares_svc.update_smb_share(record_name, **body.model_dump())
+        )
     except shares_svc.ShareValidationError as error:
         raise api_error(error.code)
     _audit_change(
@@ -156,7 +191,7 @@ def update_share(record_name: str, body: SMBUpdate, request: Request):
     )
     if not result.get("ok"):
         _raise_service_error(result)
-    return result
+    return _ok_payload(result)
 
 
 @router.delete("/api/shares/smb/{record_name}")
@@ -165,7 +200,7 @@ def delete_share(record_name: str, request: Request, confirm: bool = False):
     if confirm is not True:
         raise api_error("shares.confirm_required")
     try:
-        result = shares_svc.remove_smb_share(record_name)
+        result = _service_result(shares_svc.remove_smb_share(record_name))
     except shares_svc.ShareValidationError as error:
         raise api_error(error.code)
     _audit_change(
@@ -178,7 +213,7 @@ def delete_share(record_name: str, request: Request, confirm: bool = False):
     )
     if not result.get("ok"):
         _raise_service_error(result)
-    return result
+    return _ok_payload(result)
 
 
 @router.put("/api/shares/system/{service_id}")
@@ -188,7 +223,7 @@ def set_system_service(
     request: Request,
 ):
     username = _require_admin_browser(request)
-    result = shares_svc.set_system_service(service_id, body.enabled)
+    result = _service_result(shares_svc.set_system_service(service_id, body.enabled))
     _audit_change(
         audit.SYSTEM_SHARING_CHANGED,
         request,
@@ -199,20 +234,20 @@ def set_system_service(
     )
     if not result.get("ok"):
         _raise_service_error(result, service=service_id)
-    return result
+    return _ok_payload(result)
 
 
 @router.post("/api/shares/open-system-settings")
 def open_system_settings(request: Request):
     _require_admin_browser(request)
-    result = shares_svc.open_system_settings()
+    result = _service_result(shares_svc.open_system_settings())
     if not result.get("ok"):
         # A confirmed-vanished ``open`` is the coded 503, not the 500 that
         # blames System Settings itself.
         if result.get("error") == "system_tool_missing":
             raise api_error("shares.system_tool_missing")
         raise api_error("shares.settings_open_failed")
-    return result
+    return _ok_payload(result)
 
 
 # ── per-user share access (filesystem ACLs) ──────────────────────────────────
@@ -288,7 +323,9 @@ def share_acl_put(body: ShareAclPut, request: Request):
     username = _require_admin_browser(request)
     resolved = _share_directory(body.path)
     try:
-        result = share_acl_svc.set_user_access(resolved, body.username, body.level)
+        result = _service_result(
+            share_acl_svc.set_user_access(resolved, body.username, body.level)
+        )
     except share_acl_svc.ShareAclError as error:
         raise api_error(error.code)
     _audit_change(
@@ -303,4 +340,4 @@ def share_acl_put(body: ShareAclPut, request: Request):
     )
     if not result.get("ok"):
         _raise_service_error(result)
-    return result
+    return _ok_payload(result)
