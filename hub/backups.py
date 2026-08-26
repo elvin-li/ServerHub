@@ -412,13 +412,58 @@ def _cfg_text(value) -> str | None:
     return text
 
 
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule: the truth test hidden in
+    ``entry.get(key) or ""`` used to detonate a junk config value whose
+    ``__bool__`` raises and 500 GET /api/backups.  Fails closed to False —
+    a bomb value is junk, not a name.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule, which these cfg-readers never
+    got: ``isinstance(x, dict)`` passes an odd subclass whose ``get``
+    raises, and one such block planted as ``backups`` / ``config_archive``
+    / a postgres entry used to raise out of :func:`pg_targets` /
+    :func:`config_archive_extra_paths` and 500 GET /api/backups,
+    POST /api/backups/postgres and POST /api/backups/configs at once.
+    ``dict.get`` reads the real storage underneath the override.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except Exception:
+        try:
+            return dict.get(mapping, key)
+        except Exception:
+            return None
+
+
+def _iter_list(value):
+    """Unbound base iteration over a list (the ``hub.modules._jsonable``
+    rule): a list-subclass ``__iter__`` bomb planted as
+    ``backups.postgres`` / ``agent_keywords`` / ``extra_paths`` used to
+    raise out of the ``for`` and 500 the route; the real elements still
+    come through."""
+    return list.__iter__(value)
+
+
 def _backups_cfg() -> dict:
-    raw = cfg().get("backups")
+    raw = _mapping_get(cfg(), "backups")
     return raw if isinstance(raw, dict) else {}
 
 
 def _config_archive_cfg() -> dict:
-    raw = _backups_cfg().get("config_archive")
+    raw = _mapping_get(_backups_cfg(), "config_archive")
     return raw if isinstance(raw, dict) else {}
 
 
@@ -431,33 +476,41 @@ def pg_targets(raw: list | None = None) -> list[dict]:
     the role named after the database.
     """
     if raw is None:
-        raw = _backups_cfg().get("postgres")
+        raw = _mapping_get(_backups_cfg(), "postgres")
     if not isinstance(raw, list):
         return []
     out: list[dict] = []
     seen: set[str] = set()
-    for entry in raw:
+    for entry in _iter_list(raw):
         if not isinstance(entry, dict):
             continue
         # _cfg_text, not str(): a YAML hex over-cap int or lone-surrogate
         # value in any of these fields used to raise out of this loop and
         # 500 GET /api/backups instead of dropping the one bad entry.
-        fields = {
-            key: _cfg_text(entry.get(key) or "")
-            for key in ("id", "db", "host", "user", "password_env")
-        }
+        # _mapping_get / _truthy, not ``entry.get(key) or ""``: a
+        # dict-subclass ``.get`` bomb or a value whose ``__bool__`` raises
+        # used to 500 the same routes instead of costing its entry.
+        fields = {}
+        for key in ("id", "db", "host", "user", "password_env"):
+            value = _mapping_get(entry, key)
+            fields[key] = _cfg_text(value if _truthy(value) else "")
         if any(v is None for v in fields.values()):
             continue
         tid = fields["id"].strip()
         db = fields["db"].strip()
         host = fields["host"].strip() or "localhost"
         user = fields["user"].strip() or db
-        port_raw = entry.get("port", 5432)
+        port_raw = _mapping_get(entry, "port")
         try:
             # None/"" mean "unset" and take the default; 0 is a typo, not a port.
             # YAML ``port: .inf`` used to OverflowError GET /api/backups.
             port = int(5432 if port_raw in (None, "") else port_raw)
         except (TypeError, ValueError, OverflowError):
+            continue
+        except Exception:
+            # A leftover comparison / __int__ bomb in ``port`` (the ``in``
+            # check runs the value's ``__eq__``) is the same "drop this
+            # entry", never a 500 out of GET /api/backups.
             continue
         if not _PG_ID_RE.fullmatch(tid) or tid in seen or not db:
             continue
@@ -551,13 +604,17 @@ def _pg_env(target: dict) -> dict:
     # that stubs ``backups.cfg`` also stubs the overlay.  ``maintenance_env()``
     # always goes back to ``hub.config.cfg`` and would silently pick up the
     # live services.yaml PATH instead.
-    settings = cfg().get("settings")
-    raw = settings.get("maintenance_env") if isinstance(settings, dict) else {}
+    # _mapping_get / dict.items: a dict-subclass ``.get`` / ``items()``
+    # bomb in settings used to be swallowed by the broad catch around the
+    # dump and reported as its failure ("leftover .get bomb") — a lie that
+    # blamed pg_dump for a config leftover the dump never even read.
+    settings = _mapping_get(cfg(), "settings")
+    raw = _mapping_get(settings, "maintenance_env")
     if isinstance(raw, dict):
         # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
         # used to UnicodeEncodeError Popen on POST /api/backups.
         env.update({
-            _as_text(k): _as_text(v) for k, v in raw.items() if _as_text(k)
+            _as_text(k): _as_text(v) for k, v in dict.items(raw) if _as_text(k)
         })
     password = _pg_password(target["id"])
     if not password and target["password_env"]:
@@ -1363,9 +1420,9 @@ def agent_keywords() -> tuple[str, ...]:
     reason: a malformed list must degrade to the defaults, not to nothing.
     """
     merged = list(DEFAULT_AGENT_KEYWORDS)
-    extras = _config_archive_cfg().get("agent_keywords")
+    extras = _mapping_get(_config_archive_cfg(), "agent_keywords")
     if isinstance(extras, list):
-        for kw in extras:
+        for kw in _iter_list(extras):
             if isinstance(kw, str):
                 kw = kw.strip()
                 if kw and kw not in merged:
@@ -1383,10 +1440,10 @@ def config_archive_extra_paths() -> list[Path]:
     file does not silently fall out of the configuration.
     """
     out: list[Path] = []
-    raw = _config_archive_cfg().get("extra_paths")
+    raw = _mapping_get(_config_archive_cfg(), "extra_paths")
     if not isinstance(raw, list):
         return out
-    for entry in raw:
+    for entry in _iter_list(raw):
         if not isinstance(entry, str) or not entry.strip():
             continue
         try:
