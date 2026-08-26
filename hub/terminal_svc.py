@@ -791,6 +791,22 @@ def execute(
     raise api_error("terminal.bad_target", target=tgt)
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole line, so one absurd number in a single
+    audit entry (a hand-edited ``ts``/``rc``, a restored backup) used to make
+    :func:`recent_audit` skip the entire row — silently hiding a command line
+    from the only record of what was typed into a root-capable shell.  The
+    hook loads the huge literal as None and the rest of the row survives.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def recent_audit(limit: int = 50) -> list[dict]:
     """Tail of the audit log, newest last.  Used by the Terminal history pane."""
     if isinstance(limit, bool) or limit is None:
@@ -810,7 +826,7 @@ def recent_audit(limit: int = 50) -> list[dict]:
     out: list[dict] = []
     for raw in lines:
         try:
-            parsed = safe_json_loads(raw)
+            parsed = safe_json_loads(raw, parse_int=_capped_json_int)
         except (ValueError, RecursionError):
             continue
         if isinstance(parsed, dict):
