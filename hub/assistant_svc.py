@@ -492,7 +492,13 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     if ollama and not ollama.get("reachable"):
         wanted.append("ollama")
     ups = snapshot.get("ups") if isinstance(snapshot.get("ups"), dict) else {}
-    if ups.get("source") in {"battery", "ups"}:
+    # _utf8_text, not a bare set-membership on the raw value: an unhashable
+    # leftover source (a YAML ``source: [battery]`` list, or a dict) used to
+    # TypeError this ``in {...}`` — and the router's error fallback calls
+    # suggest_panels again with the same poisoned snapshot, so the raise
+    # escaped everything and 500'd POST /api/assistant/ask.  The probe
+    # coerces a bytes leftover to its text and drops junk shapes.
+    if _utf8_text(ups.get("source")) in {"battery", "ups"}:
         wanted.append("dashboard")
     if not wanted:
         wanted.extend(["dashboard", "health"])
