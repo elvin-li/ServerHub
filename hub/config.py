@@ -564,6 +564,17 @@ def _save_full_locked(data: dict) -> None:
                     old.unlink()
                 except OSError:
                     pass
+    text = _dump(data)
+    if len(text) > _YAML_CAP:
+        # A config larger than the read cap can never be loaded back: every
+        # later cfg()/_read_disk() would answer {} — the admin account and
+        # every sibling setting gone from the panel's view — and the next
+        # mutate() would persist that wipe from the empty snapshot.  One
+        # unbounded notify-channel value used to do exactly this with a
+        # single 200 response.  Refusing the save keeps the on-disk file
+        # (and everything in it) intact; read_text_capped compares
+        # characters, so len() is the right unit.
+        raise api_error("settings.save_failed")
     # services.yaml carries service credentials, tunnel tokens and admin
     # passwords.  The previous write_text()+chmod() left the staging file
     # world-readable at the default umask for the whole duration of the
@@ -571,7 +582,7 @@ def _save_full_locked(data: dict) -> None:
     # file is now 0600 from the moment it first exists.  The replace stays
     # atomic, so a reader never observes a half-written config.
     try:
-        secure_io.replace_secret_text(YAML_PATH, _dump(data))
+        secure_io.replace_secret_text(YAML_PATH, text)
     except OSError:
         # Leftover nonempty directory / EIO replacing the file must not 500.
         raise api_error("settings.save_failed")

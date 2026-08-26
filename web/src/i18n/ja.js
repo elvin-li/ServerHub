@@ -2582,6 +2582,11 @@ export default {
       no_match: '一致する通知チャンネルがありません',
       type_immutable: 'チャンネル {id} のタイプは変更できません — 削除して作り直してください',
       secret_control_chars: '{field} に制御文字が含まれています（改行やタブを貼り付けていませんか?）',
+      value_too_long: '{field} が長すぎます（最大 {max} 文字）',
+      list_too_long: '{field} の項目数が多すぎます（最大 {max} 件）',
+      too_many: '通知チャンネルが多すぎます。使っていないチャンネルを削除してください',
+      secrets_too_large: '保存される通知シークレットがサイズ上限を超えます。使っていないチャンネルを削除してください',
+      secrets_unreadable: '保存済みの通知シークレットを読み取れません。data/notify-credentials.json を修復または削除してください',
     },
     ups: {
       empty_patch: '設定パッチが空です',

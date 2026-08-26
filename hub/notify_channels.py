@@ -27,6 +27,7 @@ raises.
 """
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -61,6 +62,12 @@ _log = logging.getLogger("serverhub.notify")
 SECRETS_FILE = DATA_DIR / "notify-credentials.json"
 #: Leftover multi-MB notify-credentials.json used to OOM GET /api/alerts/channels.
 _SECRETS_CAP = 256 * 1024
+#: Longest single secret value the API accepts.  Unbounded, one 300KB
+#: "webhook URL" pushed the whole file past _SECRETS_CAP: every later read
+#: answered {} (all channels lost their has_* flags and their sends), and the
+#: next innocent write rewrote the file from that empty snapshot — wiping
+#: every sibling channel's secrets.  4KB is far beyond any real token or URL.
+_SECRET_VALUE_MAX = 4096
 _secrets_lock = threading.Lock()
 
 #: Network budget per channel.  A dead SMTP server or webhook endpoint must
@@ -415,6 +422,41 @@ def _load_secrets() -> dict[str, dict]:
     return cleaned if isinstance(cleaned, dict) else {}
 
 
+def _require_secrets_readable() -> None:
+    """Refuse a secrets *write* while the stored file cannot be read back.
+
+    ``set_channel_secrets`` merges onto whatever :func:`_load_secrets`
+    returned.  When the file *exists* but is unreadable — grown past
+    ``_SECRETS_CAP`` (OSError EFBIG), a dying mount (EIO), lost permissions
+    (EACCES), a torn write leaving non-UTF-8 bytes, or corrupt JSON — that
+    snapshot is ``{}``, and the merge used to rewrite the file from it:
+    one innocent channel edit silently wiped every sibling channel's
+    stored secrets.  The rows are still on disk and recoverable by hand,
+    so the write is refused with a coded 503 instead.
+
+    A *missing* file and a leftover non-regular node (FIFO / directory /
+    socket, surfaced as OSError EINVAL by ``read_text_capped``) hold no
+    sibling rows to preserve: those still start from ``{}``, and
+    ``_write_secrets`` replaces the leftover node as before.  The read
+    paths (``channel_secrets``, ``dispatch``) keep degrading to ``{}`` —
+    they can never destroy anything.
+    """
+    try:
+        text = read_text_capped(SECRETS_FILE, _SECRETS_CAP, encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except UnicodeDecodeError:
+        raise api_error("notify.secrets_unreadable")
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.EINVAL:
+            return
+        raise api_error("notify.secrets_unreadable")
+    try:
+        safe_json_loads(text, parse_int=_capped_json_int)
+    except (ValueError, RecursionError):
+        raise api_error("notify.secrets_unreadable")
+
+
 def _secret_map(data: dict, cid: str) -> dict:
     raw = data.get(cid)
     return dict(raw) if isinstance(raw, dict) else {}
@@ -446,6 +488,7 @@ def set_channel_secrets(cid: str, values: dict) -> None:
     # from a stale snapshot used to erase the other process's change — or
     # resurrect credentials a concurrent delete had just removed.
     with _secrets_lock, secure_io.file_lock(SECRETS_FILE):
+        _require_secrets_readable()
         data = _load_secrets()
         cur = _secret_map(data, cid)
         for key, value in (values or {}).items():
@@ -459,6 +502,12 @@ def set_channel_secrets(cid: str, values: dict) -> None:
                 continue
             if _has_control_chars(value):
                 raise api_error("notify.secret_control_chars", field=str(key))
+            if len(value) > _SECRET_VALUE_MAX:
+                # An unbounded value used to push the whole file past the
+                # read cap — see _SECRET_VALUE_MAX.  Refused before anything
+                # lands on disk, so the siblings stay readable.
+                raise api_error("notify.value_too_long",
+                                field=str(key), max=_SECRET_VALUE_MAX)
             if value == "":
                 cur.pop(key, None)
             else:
@@ -467,6 +516,18 @@ def set_channel_secrets(cid: str, values: dict) -> None:
             data[cid] = cur
         else:
             data.pop(cid, None)
+        # Never persist a document the loader will refuse to read back:
+        # a merged file past _SECRETS_CAP makes every later _load_secrets
+        # answer {} — all channels lose their secrets in one write.  The
+        # probe mirrors _write_secrets' exact dump (indent included);
+        # read_text_capped compares characters, so len() is the right unit.
+        try:
+            payload = json.dumps(_json_safe(data), ensure_ascii=False,
+                                 indent=2, allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            payload = ""
+        if len(payload) + 1 > _SECRETS_CAP:
+            raise api_error("notify.secrets_too_large")
         _write_secrets(data)
 
 

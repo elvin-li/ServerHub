@@ -2588,6 +2588,11 @@ export default {
       no_match: 'No notification channel matched',
       type_immutable: 'The type of channel {id} cannot be changed — delete it and create a new one',
       secret_control_chars: '{field} contains control characters (a pasted newline or tab?)',
+      value_too_long: '{field} is too long (max {max} characters)',
+      list_too_long: '{field} has too many entries (max {max})',
+      too_many: 'Too many notification channels — remove unused channels first',
+      secrets_too_large: 'The stored notification secrets would exceed the size limit — remove unused channels first',
+      secrets_unreadable: 'The stored notification secrets cannot be read; fix or remove data/notify-credentials.json first',
     },
     ups: {
       empty_patch: 'The settings patch is empty',
