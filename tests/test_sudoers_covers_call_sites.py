@@ -36,6 +36,7 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 from hub import paths as _paths  # noqa: E402
+from hub import power_svc as _power_svc  # noqa: E402
 from hub import wireguard_svc as _wireguard_svc  # noqa: E402
 from hub.sudoers_policy import (  # noqa: E402  (needs sys.path above)
     FORBIDDEN,
@@ -72,6 +73,9 @@ CONSTANTS = {
     "LAUNCHCTL": "/bin/launchctl",
     "NS": "/usr/sbin/networksetup",
     "NFSD": "/sbin/nfsd",
+    # System path, not a Homebrew-pinned one: the runtime constant is the
+    # same path the sudoers template grants.
+    "PMSET": _power_svc.PMSET,
     "DISKUTIL": "/usr/sbin/diskutil",
     "TMUTIL": "/usr/bin/tmutil",
     "MDUTIL": "/usr/bin/mdutil",

@@ -20,11 +20,17 @@ from __future__ import annotations
 import re
 import threading
 import time
+from pathlib import Path
+
 from hub.errors import api_error
 from hub.host_address import default_interface, host_ip
 from hub.util import LazyPool, port_open, sh
 
 _pool = LazyPool(3, "hub-power")
+
+#: The binary every power probe and mutation spawns.  Module-level so the
+#: vanished-CLI probe re-checks the exact path the spawn used.
+PMSET = "/usr/bin/pmset"
 
 
 def shutdown_executor() -> None:
@@ -136,8 +142,28 @@ def _host_ip() -> str:
 
 # ─── Wake-on-LAN (womp) ──────────────────────────────────────────────────────
 
+def _pmset_missing(rc, err) -> bool:
+    """Whether an ``sh()`` result means pmset itself is gone.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real pmset exit.  The sentinel alone must not classify:
+    rc -1 is also what a timeout or a signal-killed run reports, so the disk
+    is re-probed *on this failure path only* (the identity ``_scutil_missing``
+    / vms ``_cli_missing`` rule — a successful spawn never pays the stat).
+    Timeouts keep their own sentinel and are deliberately not classified;
+    a permission failure is a real pmset exit and never matches.
+    """
+    if rc != -1 or _as_text(err).strip() != "not found":
+        return False
+    try:
+        return not Path(PMSET).is_file()
+    except (OSError, ValueError):
+        # An unreadable /usr/bin must not upgrade the failure to a 503.
+        return False
+
+
 def _womp_enabled() -> bool | None:
-    rc, out, _ = sh(["/usr/bin/pmset", "-g"], timeout=5)
+    rc, out, _ = sh([PMSET, "-g"], timeout=5)
     if rc != 0:
         return None
     m = re.search(r"\bwomp\s+(\d)", _as_text(out))
@@ -146,9 +172,16 @@ def _womp_enabled() -> bool | None:
 
 def set_wol(enabled: bool) -> dict:
     val = "1" if enabled else "0"
-    rc, out, err = sh(["/usr/bin/pmset", "-a", "womp", val], timeout=8)
+    rc, out, err = sh([PMSET, "-a", "womp", val], timeout=8)
     if rc != 0:
-        rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "womp", val], timeout=8)
+        if _pmset_missing(rc, err):
+            # A vanished pmset used to answer ok:false with a message telling
+            # the operator to run ``sudo pmset -a womp`` by hand — blaming
+            # privileges for a binary the disk confirm just proved is gone
+            # (the sudo fallback below cannot spawn it either).  Coded so the
+            # panel can say what actually happened.
+            raise api_error("power.pmset_missing")
+        rc, out, err = sh(["/usr/bin/sudo", "-n", PMSET, "-a", "womp", val], timeout=8)
     ok = rc == 0
     msg = (_as_text(out) or _as_text(err)).strip()
     if not ok:
@@ -195,7 +228,7 @@ _last_power = {"action": None, "at": 0.0}
 def _do_power(action: str) -> None:
     """Run the actual power command (in a delayed thread)."""
     if action == "sleep":
-        sh(["/usr/bin/pmset", "sleepnow"], timeout=10)
+        sh([PMSET, "sleepnow"], timeout=10)
         return
     verb = "shut down" if action == "shutdown" else "restart"
     # Prefer osascript (no sudo). Fall back to `sudo -n shutdown`.

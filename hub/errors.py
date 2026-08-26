@@ -415,7 +415,20 @@ CODES: dict[str, tuple[int, str]] = {
     "power.bad_key": (400, "unsupported power setting: {key}"),
     "power.bad_value": (400, "value must be an integer"),
     "power.value_range": (400, "value is out of range 0–180"),
+    # pmset vanished from disk between boot and the WOL toggle (confirmed by a
+    # fresh on-disk probe on the failure path).  503 like the other tool-absent
+    # states (identity.scutil_missing, network.networksetup_missing) — the old
+    # shape was an ok:false answer whose message told the operator to run
+    # ``sudo pmset`` by hand, blaming privileges for a binary that is gone.
+    "power.pmset_missing": (503, "pmset is missing on this host"),
     "identity.bad_name": (400, "computer name is invalid"),
+    # comment / host_ip are persisted into services.yaml.  Unbounded, a
+    # multi-MB value used to be refused only by the whole-file save cap as a
+    # settings.save_failed 503 — blaming the disk for oversized input (and a
+    # value just under the cap crowded every sibling writer toward it).  400
+    # like the other persisted-value caps (vms.name_too_long,
+    # notify.value_too_long).
+    "identity.value_too_long": (400, "{field} is too long (max {max} characters)"),
     # scutil vanished from disk between boot and the rename (confirmed by a
     # fresh on-disk probe on the failure path).  503 like the other
     # tool-absent states (raid.diskutil_missing, vms.utm_unavailable) — the
