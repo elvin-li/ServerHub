@@ -401,12 +401,17 @@ def _log_relpath(path: Path) -> str:
 def _immich_key() -> str:
     p = HUB / "config" / "immich_api_key"
     try:
-        # Cap the read: leftover multi-MB junk used to OOM GET /api/photoshub.
-        # strict: ``errors=replace`` turned a torn key into a truthy string and
-        # GET /api/photoshub claimed Immich was configured.  UnicodeDecodeError
-        # is already the missing-key path below.
-        with p.open(encoding="utf-8") as fh:
-            return fh.read(4096).strip()
+        # read_text_capped, not a bare ``p.open()``: a leftover FIFO occupying
+        # the key file used to park ``open()`` until a writer appeared —
+        # hanging GET /api/photoshub/config (and every Immich call) forever
+        # instead of raising the OSError this handler already eats.  The cap
+        # also refuses leftover multi-MB junk that used to OOM GET
+        # /api/photoshub — and refuses it as *missing* (EFBIG) rather than
+        # truncating it into a truthy 4096-char junk key that made
+        # ``has_api_key`` claim Immich was configured.
+        # strict: ``errors=replace`` turned a torn key into a truthy string;
+        # UnicodeDecodeError is already the missing-key path below.
+        return read_text_capped(p, 4096, encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return ""
 

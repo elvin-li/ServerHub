@@ -195,10 +195,13 @@ def worker_pid() -> int | None:
     try:
         # Line 1 is the pid; start-worker-native.sh writes the process' `lstart`
         # on line 2 so a recycled pid can be told apart from the real worker.
-        # Cap the read: ``read_text()`` of a leftover multi-MB pidfile used
-        # to OOM GET /api/photoshub.
-        with open(WORKER_PID, encoding="utf-8", errors="replace") as fh:
-            raw = fh.read(256)
+        # read_text_capped, not a bare ``open()``: a leftover FIFO occupying
+        # the pidfile used to park ``open()`` until a writer appeared —
+        # wedging GET /api/health forever instead of raising the OSError this
+        # handler already eats.  The cap also refuses a leftover multi-MB
+        # pidfile (EFBIG lands in the same OSError arm) that ``read_text()``
+        # used to load whole.
+        raw = read_text_capped(WORKER_PID, 256, encoding="utf-8", errors="replace")
         # Cap leaves a str; index lines, not characters — raw[1] was the digit
         # after the first pid char and always failed the lstart match.
         lines = raw.splitlines()
