@@ -72,7 +72,11 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares/acl."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode (the brew6 rule): a leftover bytes-subclass
+        # whose bound ``.decode`` raises used to escape read_acl untyped and
+        # 500 GET /api/shares/acl past the share gate.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -86,6 +90,35 @@ def _as_text(value) -> str:
         except Exception:
             return ""
     return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _plain_result(result) -> dict:
+    """A privileged-helper result as a plain dict with a real bool ``ok``.
+
+    A leftover dict-*subclass* result from ``run_admin_sequence`` (the
+    jobs/metrics row-bomb class: passes an isinstance gate, then ``.get()``
+    raises) used to 500 PUT /api/shares/acl right out of
+    ``if not result.get("ok")`` — and again out of the ``{**result, ...}``
+    merge below it.  ``dict()`` copies through the C-level storage, so an
+    overridden method cannot fire; junk shapes degrade to the coded failure.
+    """
+    if isinstance(result, dict):
+        try:
+            plain = dict(result)
+        except Exception:
+            return {"ok": False, "error": "failed"}
+    else:
+        return {"ok": False, "error": "failed"}
+    plain["ok"] = _truthy(plain.get("ok"))
+    return plain
 
 
 class ShareAclError(Exception):
@@ -353,17 +386,22 @@ def set_user_access(path: str, username: str, level: str) -> dict:
     if before["owned_by_panel"]:
         result = _run_unprivileged(commands)
         if not result.get("ok") and result.get("error") == "needs_root":
-            result = macos_admin.run_admin_sequence(commands)
+            result = _plain_result(macos_admin.run_admin_sequence(commands))
     else:
-        result = macos_admin.run_admin_sequence(commands)
+        result = _plain_result(macos_admin.run_admin_sequence(commands))
     if not result.get("ok"):
-        error = result.get("error") or "failed"
+        # isinstance + _truthy, not a bare ``or``: a leftover non-str error
+        # field (or a ``__bool__``-bomb one) used to raise out of the
+        # fallback chain / the ``==`` probe below.
+        raw_error = result.get("error")
+        error = raw_error if isinstance(raw_error, str) and raw_error else "failed"
         # A chmod confirmed vanished by a fresh disk probe answers the coded
         # 503, not the generic 500 sharing failure.  Only the generic failure
         # shape is eligible — timeouts and authorization outcomes (cancelled,
         # password_required, …) keep their original shape.
         if error == "failed":
-            message = _as_text(result.get("message") or "").lower()
+            raw_message = result.get("message")
+            message = (_as_text(raw_message) if _truthy(raw_message) else "").lower()
             if any(marker in message for marker in _VANISH_MARKERS) and not _tool_on_disk(CHMOD):
                 return {"ok": False, "error": "acl_tool_missing"}
         return {**result, "error": error}

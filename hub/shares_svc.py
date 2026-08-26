@@ -83,7 +83,11 @@ class ShareValidationError(ValueError):
 def _as_text(value) -> str:
     """``sharing`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode (the brew6 rule): a leftover bytes-subclass
+        # whose bound ``.decode`` raises used to escape list_smb_shares'
+        # parse guards and 500 GET /api/shares/acl through the share gate.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -97,6 +101,35 @@ def _as_text(value) -> str:
         except Exception:
             return ""
     return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _plain_result(result) -> dict:
+    """A privileged-helper result as a plain dict with a real bool ``ok``.
+
+    A leftover dict-*subclass* result from run_admin / run_admin_sequence
+    (the jobs/metrics row-bomb class: passes an isinstance gate, then
+    ``.get()`` raises) used to 500 every share mutation right out of
+    ``if not result.get("ok")``, and a ``__bool__``-bomb ``ok`` value blew
+    the same read.  ``dict()`` copies through the C-level storage, so an
+    overridden method cannot fire; junk shapes degrade to the coded failure.
+    """
+    if isinstance(result, dict):
+        try:
+            plain = dict(result)
+        except Exception:
+            return {"ok": False, "error": "failed"}
+    else:
+        return {"ok": False, "error": "failed"}
+    plain["ok"] = _truthy(plain.get("ok"))
+    return plain
 
 
 def _field_value(line: str, key: str) -> str | None:
@@ -693,10 +726,15 @@ _VANISH_MARKERS = ("command not found", "no such file or directory", "not found"
 def _admin_failure(
     result: dict, *, sharing_cli: bool = False, system_tool: str | None = None,
 ) -> dict:
+    # _truthy before the ``or``: a leftover ``__bool__``-bomb error/message
+    # value used to raise out of the fallback chain itself (callers hand in
+    # a _plain_result copy, so the ``.get`` reads themselves are safe).
+    raw_error = result.get("error")
+    raw_message = result.get("message")
     failure = {
         "ok": False,
-        "error": result.get("error") or "failed",
-        "message": result.get("message") or "",
+        "error": raw_error if _truthy(raw_error) else "failed",
+        "message": raw_message if _truthy(raw_message) else "",
     }
     # A sharing CLI that vanished between the listing and the spawn used to
     # surface as the generic 500 "the macOS sharing operation failed", which
@@ -754,7 +792,7 @@ def create_smb_share(
         )
     # One sequence, one authorization: the dscl attribute writes ride the same
     # admin approval as the share creation itself.
-    result = run_admin_sequence(commands)
+    result = _plain_result(run_admin_sequence(commands))
     if not result.get("ok"):
         return _admin_failure(result, sharing_cli=True)
     return _verify_share_state(
@@ -794,7 +832,7 @@ def update_smb_share(
     commands += _time_machine_commands(
         record, time_machine=time_machine, quota_gb=quota, current=current,
     )
-    result = run_admin_sequence(commands)
+    result = _plain_result(run_admin_sequence(commands))
     if not result.get("ok"):
         return _admin_failure(result, sharing_cli=True)
     return _verify_share_state(
@@ -810,7 +848,7 @@ def remove_smb_share(record_name: str) -> dict:
         if not _sharing_on_disk():
             return {"ok": False, "error": "sharing_missing"}
         return {"ok": False, "error": "not_found"}
-    result = run_admin([SHARING, "-r", record])
+    result = _plain_result(run_admin([SHARING, "-r", record]))
     if not result.get("ok"):
         return _admin_failure(result, sharing_cli=True)
     if _find_share(record):
@@ -1016,7 +1054,7 @@ def set_system_service(service_id: str, enabled: bool) -> dict:
     if current["enabled"] is enabled:
         return {"ok": True, "service": current}
 
-    result = run_admin_sequence(_SERVICE_COMMANDS[service_id](enabled))
+    result = _plain_result(run_admin_sequence(_SERVICE_COMMANDS[service_id](enabled)))
     actual = next(item for item in system_services() if item["id"] == service_id)
     if actual["enabled"] is enabled:
         return {"ok": True, "service": actual}
