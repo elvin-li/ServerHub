@@ -207,10 +207,22 @@ def _key_text(value) -> str | None:
     """
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return None
-    try:
-        s = value if isinstance(value, str) else str(value)
-    except ValueError:
-        return None
+    if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules5 rule): an
+                # int-subclass ``__str__`` bomb riding ``service:`` used
+                # to raise past the ValueError-only catch below and 500
+                # GET /api/bookmarks out of ``_resolve_backend``'s lookup.
+                value = int.__index__(value)
+            except Exception:
+                return None
+        try:
+            s = str(value)
+        except ValueError:
+            return None
+    else:
+        s = value
     return _utf8_text(s) or None
 
 
@@ -512,10 +524,16 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
     }
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -525,7 +543,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode this line to a 500 — through ``_jsonable``'s str branch and
+    # ``_key_text``'s lookup path alike.  ``str.encode`` reads the C-level
+    # storage and always answers an exact str after the decode round-trip.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -542,6 +565,14 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (modules5): a subclass
+                # ``__str__`` bomb used to blow the digit-cap probe below
+                # with a non-ValueError and 500 the route at encode time.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -552,13 +583,20 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         try:
             items = list(value.items())
@@ -569,7 +607,14 @@ def _jsonable(value, depth: int = 0):
             # 500'd GET /api/bookmarks (the ups_svc/nginx_svc rule).
             return None
         out = {}
-        for k, v in items:
+        for pair in items:
+            try:
+                # Guarded unpack: an ``items()`` that answers non-pairs
+                # (``[1, 2]``) used to TypeError here, outside the list()
+                # try just above, and 500 the route at encode time.
+                k, v = pair
+            except Exception:
+                continue
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
@@ -589,7 +634,12 @@ def _jsonable(value, depth: int = 0):
             # dict branch — the bomb drops alone, siblings keep rendering.
             return None
         return [_jsonable(v, depth + 1) for v in vals]
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a leftover
+        # ``__getattr__`` that raises anything else 500'd the final scrub.
+        iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
@@ -661,7 +711,18 @@ def list_bookmarks() -> dict:
             name = ov.get("name")
             if not _truthy(name):
                 name = sid
-            if not any(isinstance(l, dict) and l.get("url") == ov["url"] for l in links):
+            # Laundered compare: the raw side of ``==`` is a link url that
+            # survived resolve_value's all-or-nothing fallback, and a str
+            # *subclass* ``__eq__`` bomb there is called first even when it
+            # sits on the right (subclass reflected-first rule) — pre-fix a
+            # 500 out of this dedupe.  ``_utf8_text`` answers an exact str.
+            ov_url = ov["url"]
+            if not any(
+                isinstance(l, dict)
+                and isinstance(l.get("url"), str)
+                and _utf8_text(l.get("url")) == ov_url
+                for l in links
+            ):
                 links.append({
                     "name": name,
                     "url": ov["url"],
@@ -726,7 +787,13 @@ def list_bookmarks() -> dict:
         if not isinstance(link, dict):
             continue
         u = link.get("url")
-        if not isinstance(u, str) or not u or u in seen:
+        if not isinstance(u, str) or not u:
+            continue
+        # Exact-str copy before the set: a raw-kept str subclass whose
+        # ``__hash__`` raises (or is None — the classic unhashable-membership
+        # leftover) used to 500 the route out of ``u in seen`` / ``seen.add``.
+        u = _utf8_text(u)
+        if not u or u in seen:
             continue
         if i in preassigned:
             ordered.append(preassigned[i])
