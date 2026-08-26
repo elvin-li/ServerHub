@@ -445,6 +445,14 @@ def diagnostics() -> dict:
         root_disk_pct = 0.0
     if not math.isfinite(root_disk_free_gb):
         root_disk_free_gb = 0.0
+    try:
+        metrics_points = len(metrics.history(60))
+    except Exception:
+        # A leftover history table that refuses ``len()`` (a list-subclass
+        # ``__len__`` bomb, an unsized answer) used to raise here — the one
+        # unguarded cross-module read left in this collector — and 500
+        # GET /api/system/diagnostics after every probe had answered.
+        metrics_points = 0
     return {
         "hostname": _as_text(hostname),
         "platform": _as_text(plat),
@@ -466,7 +474,7 @@ def diagnostics() -> dict:
         "python": _as_text(platform.python_version()),
         "host_ip": ip,
         "docker_df": df,
-        "metrics_points": len(metrics.history(60)),
+        "metrics_points": metrics_points,
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "version": __version__,
     }
@@ -1482,13 +1490,70 @@ def flush_dns() -> dict:
 
 # ─── LaunchAgents (broader than timers) ──────────────────────────────────────
 
+def _truthy(value) -> bool:
+    """Guarded ``bool(...)``: a leftover ``__bool__``/``__len__`` bomb in a
+    parsed plist value must degrade to False, never raise out of the
+    launchd readers into a raw 500."""
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _plist_map(pl) -> dict | None:
+    """Plain-dict copy of a parsed plist, or None.
+
+    ``dict(subclass)`` copies through CPython's C-level storage, bypassing
+    a leftover's overridden ``.get``/``items``/``keys`` (the host6 _as_map
+    rule): a parser answer that is a dict *subclass* with a bombing bound
+    ``.get`` passed the old ``isinstance(pl, dict)`` gate and raised out of
+    the field reads — a raw 500 on GET /api/system/scheduler and
+    GET /api/tools/agents.
+    """
+    if not isinstance(pl, dict):
+        return None
+    try:
+        return dict(pl)
+    except Exception:
+        return None
+
+
+def _args_text(args, cap: int) -> str:
+    """ProgramArguments joined for display.  Never raises.
+
+    Exact-list copy through the unbound base read (the top_processes rule):
+    a leftover ProgramArguments that is a list *subclass* whose bound
+    ``__iter__`` bombs passed the isinstance gate and blew the join —
+    a raw 500 on both launchd views; the real elements sit readable in the
+    C-level storage and survive.
+    """
+    if not isinstance(args, list):
+        return ""
+    try:
+        items = list.__getitem__(args, slice(None))
+    except Exception:
+        return ""
+    return " ".join(_as_text(a) for a in items)[:cap]
+
+
 def _plist_int(raw):
     if isinstance(raw, bool) or raw is None:
         return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
+    if isinstance(raw, int):
+        try:
+            # Base coercion to an exact int first: an int *subclass* whose
+            # ``__int__``/``__index__`` bombs used to raise past the
+            # enumerated catch below and 500 the launchd views.
+            value = int.__index__(raw)
+        except Exception:
+            return None
+    else:
+        try:
+            value = int(raw)
+        except Exception:
+            return None
     try:
         # ``int()`` of an int is not length-capped: XML plists load
         # ``<integer>0x…</integer>`` through ``int(raw, 16)``, which CPython's
@@ -1504,12 +1569,28 @@ def _plist_int(raw):
 
 
 def _plist_jsonable(value, depth: int = 0):
-    """Drop inf/nan/``\\ud800`` so Starlette's allow_nan=False encoder cannot 500."""
+    """Drop inf/nan/``\\ud800`` so Starlette's allow_nan=False encoder cannot 500.
+
+    Coercions run on the *base* types (the storage7 unbound rule): every
+    bound dispatch here — ``value.items()``, iteration, ``value.decode``,
+    the bare ``str()`` digit-cap probe — reflected into a leftover
+    subclass's own override, and a calendar carrying an items()-bomb dict,
+    an ``__iter__``-bomb list, a decode()-bomb bytes or an
+    ``__index__``/``__str__``-bomb int answered a raw 500 on
+    GET /api/system/scheduler where its plain-typed siblings rendered fine.
+    """
     if depth > 8:
         return None
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to raise a non-ValueError past the digit-cap probe.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -1520,16 +1601,53 @@ def _plist_jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float, matching the int arm.
+                value = float.__float__(value)
+            except Exception:
+                return None
         return value if math.isfinite(value) else None
     if isinstance(value, str):
         return _as_text(value)
     if isinstance(value, dict):
-        return {_as_text(k): _plist_jsonable(v, depth + 1) for k, v in value.items()}
+        # Unbound base view: ``dict.items`` reads the real C-level storage,
+        # so the salvageable keys of an items()-bomb subclass survive.
+        try:
+            items = list(dict.items(value))
+        except Exception:
+            return None
+        out = {}
+        for k, v in items:
+            out[_as_text(k)] = _plist_jsonable(v, depth + 1)
+        return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_plist_jsonable(v, depth + 1) for v in value]
+        if isinstance(value, list):
+            base = list
+        elif isinstance(value, tuple):
+            base = tuple
+        elif isinstance(value, set):
+            base = set
+        else:
+            base = frozenset
+        try:
+            # Unbound base iteration (the ``dict.items`` rule at sequence
+            # rank): a subclass whose bound ``__iter__`` raises drops to
+            # None only when even the base storage refuses.
+            items = list(base.__iter__(value))
+        except Exception:
+            return None
+        return [_plist_jsonable(v, depth + 1) for v in items]
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")[:200]
-    iso = getattr(value, "isoformat", None)
+        # Unbound base decode: a bytes subclass whose bound ``.decode``
+        # bombs must not raise out of the sanitizer.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")[:200]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # A raising ``isoformat`` property used to blow the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -1560,27 +1678,28 @@ def launchd_timers() -> list:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         except Exception:
             continue
-        if not isinstance(pl, dict):
+        # Laundered plain-dict copy, then plain reads: a dict-*subclass*
+        # parser answer with a bombing bound ``.get`` used to raise out of
+        # the field reads below and 500 GET /api/system/scheduler.
+        pl = _plist_map(pl)
+        if pl is None:
             continue
-        label = pl.get("Label") or Path(path).stem
-        if not isinstance(label, str):
+        label = pl.get("Label")
+        # No bare ``or`` fallback: it dispatched into a leftover Label's own
+        # ``__bool__``, and the bomb 500'd both launchd views.
+        if not isinstance(label, str) or not label:
             label = Path(path).stem
         label = _as_text(label)
         interval = _plist_int(pl.get("StartInterval"))
         calendar = pl.get("StartCalendarInterval")
-        if not interval and not calendar:
+        if not interval and not _truthy(calendar):
             continue
-        args = pl.get("ProgramArguments")
-        program = (
-            " ".join(_as_text(a) for a in args)[:120]
-            if isinstance(args, list) else ""
-        )
         items.append({
             "label": label,
             "path": _as_text(path),
             "interval_sec": interval,
             "calendar": _plist_jsonable(calendar),
-            "program": _as_text(program),
+            "program": _args_text(pl.get("ProgramArguments"), 120),
         })
     return items
 
@@ -1611,33 +1730,33 @@ def launchd_agents_summary() -> dict:
                 "label": _as_text(path.stem), "path": _as_text(path), "error": "parse",
             })
             continue
-        if not isinstance(pl, dict):
+        # Laundered plain-dict copy + guarded bools: a dict-subclass parser
+        # answer with a bombing ``.get``, or a ``__bool__``-bomb
+        # RunAtLoad/KeepAlive/Disabled/calendar value, used to raise out of
+        # these reads and 500 GET /api/tools/agents.
+        pl = _plist_map(pl)
+        if pl is None:
             items.append({
                 "label": _as_text(path.stem), "path": _as_text(path), "error": "parse",
             })
             continue
-        label = pl.get("Label") or path.stem
-        if not isinstance(label, str):
+        label = pl.get("Label")
+        if not isinstance(label, str) or not label:
             label = path.stem
-        run_at = bool(pl.get("RunAtLoad"))
+        run_at = _truthy(pl.get("RunAtLoad"))
         keep = pl.get("KeepAlive")
         interval = _plist_int(pl.get("StartInterval"))
         calendar = pl.get("StartCalendarInterval")
-        disabled = bool(pl.get("Disabled"))
-        args = pl.get("ProgramArguments")
-        program = (
-            " ".join(_as_text(a) for a in args)[:100]
-            if isinstance(args, list) else ""
-        )
+        disabled = _truthy(pl.get("Disabled"))
         items.append({
             "label": _as_text(label),
             "path": _as_text(path),
             "run_at_load": run_at,
-            "keep_alive": bool(keep) if not isinstance(keep, dict) else True,
+            "keep_alive": _truthy(keep) if not isinstance(keep, dict) else True,
             "interval_sec": interval,
-            "calendar": bool(calendar),
+            "calendar": _truthy(calendar),
             "disabled": disabled,
-            "program": _as_text(program),
+            "program": _args_text(pl.get("ProgramArguments"), 100),
         })
     return {
         "count": len(items),

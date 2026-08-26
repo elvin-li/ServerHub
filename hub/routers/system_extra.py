@@ -7,7 +7,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from hub import audit, auth, network_svc, tools_svc, vm_console, vms_svc
+from hub import audit, auth, network_svc, system_settings_svc, tools_svc, vm_console, vms_svc
 from hub.docker_cli import engine_up, peek_engine
 from hub.errors import api_error
 from hub.resource_mode import is_high
@@ -490,7 +490,15 @@ def system_diagnostics():
 
 @router.get("/api/system/scheduler")
 def system_scheduler():
-    return {"timers": tools_svc.launchd_timers()}
+    # _json_tree, not a raw passthrough (the /api/scheduler alias rule from
+    # host6): this route used to hand the timer rows straight to Starlette
+    # while both scheduler siblings sanitized the same data — a leftover
+    # ``\ud800`` label, an over-cap plist int or a subclass row bomb
+    # answered a raw 500 here and a 200 there.
+    timers = system_settings_svc._json_tree(tools_svc.launchd_timers())
+    if not isinstance(timers, list):
+        timers = []
+    return {"timers": timers}
 
 
 @router.get("/api/docker/df")
