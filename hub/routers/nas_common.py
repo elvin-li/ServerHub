@@ -164,6 +164,22 @@ def _jsonable(value, depth: int = 0):
     except Exception:
         return None
 
+def result_ok(result) -> bool:
+    """Safe ``bool(result.get("ok"))`` for the routes' audit fields.
+
+    Every nas_storage mutation recorded ``ok=bool(result.get("ok"))`` on the
+    *raw* service result before :func:`raise_service_error` laundered it, so
+    a leftover ``None`` (AttributeError), a dict-*subclass* result whose
+    bound ``.get`` raises, or a ``__bool__``-bomb ``ok`` value 500'd the
+    route at the audit line — one line ahead of the funnel that already
+    knows how to answer coded.  Same laundering, fails False.
+    """
+    plain = _plain_result(result)
+    if plain is None:
+        return False
+    return _truthy(plain.get("ok"))
+
+
 #: run_admin() error string → API error code.
 _ADMIN_ERRORS = {
     "cancelled": "admin.cancelled",

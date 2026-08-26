@@ -21,6 +21,7 @@ from hub.routers.nas_common import (
     client_host,
     raise_service_error,
     require_admin_browser,
+    result_ok,
 )
 
 router = APIRouter(tags=["nas-storage"])
@@ -78,7 +79,7 @@ def api_nfs_save(body: NfsSaveBody, request: Request):
         client=client_host(request),
         action="save",
         count=len(body.entries),
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     # An nfsd confirmed vanished by a fresh disk probe answers the coded 503,
     # not the generic 500 "the privileged macOS operation failed" that sends
@@ -95,7 +96,7 @@ def api_nfs_server(body: NfsServerActionBody, request: Request):
         username=username,
         client=client_host(request),
         action=body.action,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, {
         "bad_action": "nfs.bad_action",
@@ -160,7 +161,7 @@ def _raid_call(fn, request: Request, action: str, **kwargs):
         username=username,
         client=client_host(request),
         action=action,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
         **{k: v for k, v in kwargs.items() if k != "confirm_phrase"},
     )
     # A diskutil confirmed vanished by a fresh disk probe answers the coded
@@ -270,7 +271,7 @@ def api_snapshot_create(request: Request):
         username=username,
         client=client_host(request),
         action="create",
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     # A tmutil confirmed vanished by a fresh disk probe answers the coded
     # 503, not the generic 500 "the privileged macOS operation failed" that
@@ -281,7 +282,24 @@ def api_snapshot_create(request: Request):
 def _known_mount(mount: str) -> str:
     """Reject a volume the snapshot service does not report."""
     value = str(mount or "/").strip() or "/"
-    if value not in set(snapshots_svc.snapshot_mounts()):
+    # Guarded materialization (the users_svc rule): a leftover list-subclass
+    # listing whose ``__iter__`` bomb fired at the old ``set(...)`` build —
+    # or an unhashable row inside an ordinary list — used to 500
+    # POST /api/snapshots/delete and /thin out of the gate itself.  "/" is
+    # pinned because snapshot_mounts always reports the boot volume first,
+    # so it stays operable while a hostile listing drops row by row.
+    known = {"/"}
+    try:
+        rows = iter(snapshots_svc.snapshot_mounts())
+    except Exception:
+        rows = iter(())
+    try:
+        for row in rows:
+            if isinstance(row, str):
+                known.add(row)
+    except Exception:
+        pass
+    if value not in known:
         raise api_error("snapshot.bad_mount", mount=value[:80])
     return value
 
@@ -304,7 +322,7 @@ def api_snapshot_delete(body: SnapshotDeleteBody, request: Request):
         client=client_host(request),
         action=action,
         mount=mount,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, {
         "bad_token": "snapshot.bad_token",
@@ -325,7 +343,7 @@ def api_snapshot_thin(body: SnapshotThinBody, request: Request):
         action="thin",
         mount=mount,
         urgency=body.urgency,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, {
         "bad_urgency": "snapshot.bad_urgency",
@@ -343,7 +361,7 @@ def api_time_machine_action(body: TimeMachineActionBody, request: Request):
         username=username,
         client=client_host(request),
         action=f"tm_{body.action}",
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, {
         "bad_action": "snapshot.bad_action",
@@ -405,7 +423,7 @@ def api_smart_test(body: SmartTestBody, request: Request):
         client=client_host(request),
         device=body.device,
         kind=body.kind,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, _SMART_ERRORS)
 
@@ -419,7 +437,7 @@ def api_smart_abort(body: SmartAbortBody, request: Request):
         username=username,
         client=client_host(request),
         device=body.device,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, _SMART_ERRORS)
 
@@ -437,7 +455,7 @@ def api_smart_schedule(body: SmartScheduleBody, request: Request):
         interval=body.interval,
         kind=body.kind,
         devices=",".join(body.devices or []),
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(
         result, {"bad_interval": "smart.bad_interval", "bad_kind": "smart.bad_kind"}
@@ -483,7 +501,7 @@ def api_storage_spotlight(body: SpotlightBody, request: Request):
         client=client_host(request),
         volume=body.volume,
         enabled=body.enabled,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     # An mdutil confirmed vanished by a fresh disk probe answers the coded
     # 503, not the generic 500 "the privileged macOS operation failed" that
@@ -499,11 +517,22 @@ def api_nfs_preview():
     """The exact ``/etc/exports`` body a save would install, for review first."""
     entries = nfs_svc.read_exports()
     lines = []
-    if isinstance(entries, list):
-        for e in entries:
+    # Guarded iteration + the unbound ``dict.get`` view: a leftover
+    # list-subclass table whose ``__iter__`` raises, or a dict-subclass row
+    # whose bound ``.get`` raises (both pass ``isinstance``), used to 500
+    # the preview instead of rendering the salvageable lines.
+    try:
+        rows = iter(entries) if isinstance(entries, list) else iter(())
+    except Exception:
+        rows = iter(())
+    try:
+        for e in rows:
             if not isinstance(e, dict):
                 continue
-            raw = _utf8_text(e.get("raw"))
+            raw = _utf8_text(dict.get(e, "raw"))
             if raw:
                 lines.append(raw)
+    except Exception:
+        # A walk dying mid-iteration keeps the lines already collected.
+        pass
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""))
