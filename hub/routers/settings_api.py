@@ -116,7 +116,38 @@ _ALLOWED_DENSITY = {"compact", "comfortable", "cozy"}
 
 
 def _as_map(v):
-    return v if isinstance(v, dict) else {}
+    """A plain-dict view of *v*, or ``{}``.
+
+    ``dict(v)``, not ``v`` itself: a leftover ``cfg()`` section that is a dict
+    *subclass* whose ``.get`` / ``.items`` / ``__bool__`` raises passes the
+    ``isinstance(v, dict)`` gate and then 500'd every ``auth.get(...)`` /
+    ``notify.get(...)`` read below (the bomb class usage5/metrics5/bookmarks5
+    sealed elsewhere).  ``dict(subclass)`` copies through CPython's C-level
+    storage, bypassing the overridden methods, so the returned map answers
+    ``.get`` normally.  Nested *values* that are themselves bombs are handled
+    by :func:`_jsonable`.
+    """
+    if not isinstance(v, dict):
+        return {}
+    try:
+        return dict(v)
+    except Exception:
+        return {}
+
+
+def _cfg_map():
+    """Laundered top-level config snapshot for the settings render.
+
+    ``cfg()`` normally returns a plain dict, but a leftover whose top level is
+    a dict subclass with a bombing ``.get`` used to 500 the very first
+    ``cfg().get("settings")``; launder it once here so every access below is
+    on a plain dict.
+    """
+    try:
+        data = cfg()
+    except Exception:
+        return {}
+    return _as_map(data)
 
 
 def _utf8_text(value) -> str:
@@ -167,7 +198,14 @@ def _jsonable(value, depth: int = 0):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        try:
+            items = list(value.items())
+        except Exception:
+            # A dict *subclass* whose items() raises (or a Mapping bomb) must
+            # not 500 Starlette's encoder — drop the whole node like an
+            # unrenderable scalar; healthy siblings around it are untouched.
+            return None
+        for k, v in items:
             if isinstance(k, (bytes, bytearray)):
                 k = k.decode("utf-8", "replace")
             elif not isinstance(k, str):
@@ -178,7 +216,13 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            seq = list(value)
+        except Exception:
+            # A list/set subclass whose __iter__ raises drops to null rather
+            # than 500ing the encode; the surrounding structure survives.
+            return None
+        return [_jsonable(v, depth + 1) for v in seq]
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -251,9 +295,8 @@ def _json_list(value) -> list:
 
 
 def _public_settings() -> dict:
-    s = cfg().get("settings") or {}
-    if not isinstance(s, dict):
-        s = {}
+    data = _cfg_map()
+    s = _as_map(data.get("settings"))
     auth = _as_map(s.get("auth"))
     notify = _as_map(s.get("notify"))
     ui = _as_map(s.get("ui"))
@@ -271,7 +314,6 @@ def _public_settings() -> dict:
     aliases = _jsonable(_as_map(s.get("ip_aliases")))
     if not isinstance(aliases, dict):
         aliases = {}
-    data = cfg()
     return {
         "host_ip": _text(host_ip()),
         "host_ip_config": _text(configured_host()),
