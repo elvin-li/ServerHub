@@ -146,6 +146,29 @@ def _jsonable(value, depth: int = 0):
     return None
 
 
+def _panel_id(raw) -> str:
+    """Catalog row identity as text; ``""`` drops the row.
+
+    The ``jobs._task_id`` rule.  The strict ``isinstance(pid, str)`` gate
+    silently wiped a numeric-id row (a hand-edited ``"id": 42`` — or a YAML /
+    plist loader swap, which loads hex/octal *already-int* and uncapped) from
+    every assistant answer at once: GET /api/assistant/catalog lost the Cmd+K
+    row, ``match_panels`` stopped matching its aliases, and a page turn on its
+    path lost the ``here`` context.  A renderable int coerces through the
+    ``str()`` probe; an over-cap leftover — whose ``str()`` raises the same
+    digit-cap ValueError ``json.dumps`` would — drops only its row.  bool
+    passes ``isinstance(int)`` and must not become ``"True"``.
+    """
+    if isinstance(raw, str):
+        return _utf8_text(raw).strip()
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
+
+
 def _load_object(name: str) -> dict:
     data = _load_json(name)
     return data if isinstance(data, dict) else {}
@@ -175,8 +198,13 @@ _BRIEF_RE = _compile(_INTENTS.get("brief"))
 _QUESTION_RE = _compile(_INTENTS.get("question"))
 _PAGE_RE = _compile(_INTENTS.get("page"))
 _panel_word = _INTENTS.get("panel_word")
+# ``w is not None`` + _utf8_text, not bare str(): the parse_int hook maps an
+# over-cap number literal to None, and str(None) minted a "none" panel word
+# that blanked the literal query "none"; an *already-int* over-cap leftover
+# (a future loader swap) would ValueError the whole import.
 _PANEL_WORDS = tuple(
-    str(w).lower() for w in _panel_word
+    text.lower() for w in _panel_word
+    if w is not None and (text := _utf8_text(w))
 ) if isinstance(_panel_word, list) else ()
 PANELS: tuple[dict[str, Any], ...] = tuple(_load_list("assistant_panels.json"))
 _BLURBS: dict[str, dict[str, str]] = {
@@ -246,8 +274,10 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
                 break
     if hit is None:
         return None
-    pid, pth = hit.get("id"), hit.get("path")
-    if not isinstance(pid, str) or not isinstance(pth, str):
+    # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used to
+    # lose the page turn's ``here`` context even though its path matched.
+    pid, pth = _panel_id(hit.get("id")), hit.get("path")
+    if not pid or not isinstance(pth, str):
         return None
     return {
         "id": pid,
@@ -263,10 +293,14 @@ def catalog(locale: str | None = None) -> list[dict]:
     for panel in PANELS:
         if not isinstance(panel, dict):
             continue
-        pid = panel.get("id")
+        # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used
+        # to vanish from the Cmd+K catalog (the numeric-YAML-ids rule).  The
+        # path stays a str gate — it is the SPA navigation target, and a
+        # non-string path is junk the palette cannot open.
+        pid = _panel_id(panel.get("id"))
         path = panel.get("path")
         aliases = panel.get("aliases")
-        if not isinstance(pid, str) or not isinstance(path, str):
+        if not pid or not isinstance(path, str):
             continue
         if not isinstance(aliases, list):
             aliases = []
@@ -299,7 +333,9 @@ def _score_panel(panel: dict, needle: str, locale: str) -> int:
         text.lower() for a in raw_aliases
         if a is not None and (text := _utf8_text(a))
     ] if isinstance(raw_aliases, list) else []
-    if needle == title or needle == str(panel.get("id") or "") or needle == path.lstrip("/"):
+    # _panel_id, not bare str(): callers gate rows on the probe, but this
+    # comparison must not be the one bare int->str left to re-raise.
+    if needle == title or needle == _panel_id(panel.get("id")) or needle == path.lstrip("/"):
         return 100
     if needle in aliases:
         return 90
@@ -330,8 +366,10 @@ def match_panels(query: str, locale: str | None = None, limit: int = 6) -> list[
     for panel in PANELS:
         if not isinstance(panel, dict):
             continue
-        pid, pth = panel.get("id"), panel.get("path")
-        if not isinstance(pid, str) or not isinstance(pth, str):
+        # _panel_id, not an isinstance(pid, str) gate: a find used to skip a
+        # numeric-id row even when the query hit its alias dead-on.
+        pid, pth = _panel_id(panel.get("id")), panel.get("path")
+        if not pid or not isinstance(pth, str):
             continue
         score = _score_panel(panel, needle, loc)
         if score <= 0:
@@ -458,10 +496,13 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
         wanted.append("dashboard")
     if not wanted:
         wanted.extend(["dashboard", "health"])
+    # _panel_id keys the map the same way catalog()/match_panels() gate rows,
+    # and the emitted id is the coerced text — never the raw (possibly int)
+    # value, which _jsonable would null out past the digit cap.
     by_id = {
         pid: panel
         for panel in PANELS
-        if isinstance(panel, dict) and isinstance((pid := panel.get("id")), str)
+        if isinstance(panel, dict) and (pid := _panel_id(panel.get("id")))
     }
     out: list[dict] = []
     seen: set[str] = set()
@@ -471,7 +512,7 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
         if not panel or not isinstance(path, str) or path in seen:
             continue
         seen.add(path)
-        out.append({"id": panel["id"], "path": path, "title": _title(panel, loc)})
+        out.append({"id": panel_id, "path": path, "title": _title(panel, loc)})
     return out
 
 
