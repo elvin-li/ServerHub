@@ -111,10 +111,26 @@ def _cron_field_tokens(expr) -> list[str]:
     (``True``, a job mapping) used to stringify into garbage too.
     """
     if isinstance(expr, (list, tuple)):
-        if len(expr) != 5:
+        try:
+            # list() through the C storage, then len() on the plain copy: a
+            # leftover list-subclass whose ``__iter__``/``__len__`` raised
+            # used to escape next_run_ts's (ValueError, RecursionError) net
+            # and 500 GET /api/scheduler/jobs.
+            parts = list(expr)
+        except Exception as e:
+            raise ValueError(
+                "a cron expression has five fields: min hour dom month dow"
+            ) from e
+        if len(parts) != 5:
             raise ValueError("a cron expression has five fields: min hour dom month dow")
         try:
-            return [str(part).strip() for part in expr]
+            # Unbound str.strip on the str() result: ``str()`` of a subclass
+            # whose ``__str__`` returns self keeps the subclass, so a bound
+            # ``.strip()`` returning (or being) a bomb handed _parse_field a
+            # token whose ``split``/``__len__`` raised past this except —
+            # outside every caller's ValueError net — and 500'd the same
+            # route.  The unbound view also yields exact-str tokens.
+            return [str.strip(str(part)) for part in parts]
         except Exception as e:
             # ValueError is the one signal every caller catches.  A leftover
             # cyclic YAML field used to RecursionError GET /api/scheduler/jobs
@@ -223,7 +239,13 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
+    # returns self keeps the subclass, so a bound ``.encode`` bomb in a
+    # leftover job id/name/params value used to raise here — outside the
+    # try — and 500 GET /api/scheduler/jobs (and drop the run-journal
+    # record from _record_run's shaping).  The modules6/docker6 unbound
+    # convention, like hub.docker_cli._utf8_text.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):

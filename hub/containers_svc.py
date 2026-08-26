@@ -427,7 +427,10 @@ def _field_text(value, fallback: str = "") -> str:
     if isinstance(value, str):
         text = value
     elif isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover bytes-subclass ``.decode`` bomb in
+        # a stack/override field used to 500 GET /api/stacks here.
+        base = bytes if isinstance(value, bytes) else bytearray
+        text = base.decode(value, "utf-8", "replace")
     elif isinstance(value, (dict, list, tuple, set, frozenset)):
         return fallback
     else:
@@ -435,6 +438,12 @@ def _field_text(value, fallback: str = "") -> str:
             text = str(value)
         except Exception:
             return fallback
+    # Exact-str copy through the C storage: ``str()`` of a subclass whose
+    # ``__str__`` returns self keeps the subclass (and the str branch above
+    # never converted at all), so a bound ``.encode`` / ``__len__`` bomb in
+    # a leftover stack id/name used to detonate on the two lines below and
+    # 500 GET /api/stacks (the docker6 _plain_text convention).
+    text = str.__str__(text)
     if not text:
         return fallback
     return text.encode("utf-8", "replace").decode("utf-8")
@@ -449,10 +458,18 @@ def _str_list(raw) -> list[str]:
     """Stack ``containers:`` as strings.  ``.inf`` / a scalar leftover must not 500."""
     if not isinstance(raw, list):
         return []
+    try:
+        # list() through the C storage: a leftover list-subclass whose
+        # ``__iter__`` raises used to 500 GET /api/stacks past the gate.
+        rows = list(raw)
+    except Exception:
+        return []
     out = []
-    for n in raw:
-        if not isinstance(n, str) or not n:
+    for n in rows:
+        if not isinstance(n, str):
             continue
+        # _field_text, not a raw ``not n`` truthiness probe: a str-subclass
+        # item whose ``__len__`` raised used to 500 the same routes.
         text = _field_text(n)
         if text:
             out.append(text)
@@ -1569,14 +1586,37 @@ def _stack_paths() -> list[dict]:
     """Resolve compose stacks from config + auto-scan Services/*."""
     stacks = []
     seen = set()
-    for s in cfg().get("stacks") or []:
-        if not isinstance(s, dict):
+    raw = cfg().get("stacks")
+    if isinstance(raw, list):
+        try:
+            # list() through the C storage: a leftover list-subclass whose
+            # ``__iter__`` raises used to 500 GET /api/stacks and every
+            # stack-job start.
+            rows = list(raw)
+        except Exception:
+            rows = []
+    else:
+        rows = []
+    for s in rows:
+        # _plain_job's C-level dict copy, not a bare isinstance gate: a
+        # leftover dict-subclass row whose ``.get()`` raised used to 500
+        # GET /api/stacks and POST /api/stacks/{id}/run one line later.
+        s = _plain_job(s)
+        if s is None:
             continue
         path = s.get("path")
+        if isinstance(path, str):
+            # Exact-str copy: a str-subclass path whose ``__len__`` raised
+            # used to detonate the truthiness probe below.
+            path = str.__str__(path)
         if isinstance(path, str) and path:
             try:
                 p = Path(path)
-                compose_name = s.get("compose_file") or "docker-compose.yml"
+                # No bare ``or`` over the raw value: a leftover
+                # ``__bool__``-bomb ``compose_file`` used to 500 here.
+                compose_name = s.get("compose_file")
+                if isinstance(compose_name, str):
+                    compose_name = str.__str__(compose_name)
                 if not isinstance(compose_name, str) or not compose_name:
                     compose_name = "docker-compose.yml"
                 compose = p / compose_name
@@ -1623,7 +1663,9 @@ def _stack_paths() -> list[dict]:
             except (OSError, ValueError, RuntimeError):
                 # Path.resolve() raises RuntimeError on a leftover symlink loop.
                 seen.add(str(p))
-        elif s.get("containers"):
+        elif _truthy(s.get("containers")):
+            # _truthy: a ``__bool__``-bomb ``containers`` value is junk, not
+            # a stack — it used to 500 the listing instead of dropping.
             # One _field_text probe does both jobs: it scrubs the lone
             # surrogate a YAML ``id: "\ud800"`` loads as (its raw form used
             # to 500 GET /api/stacks on Starlette's UTF-8 encode), and it
