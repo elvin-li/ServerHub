@@ -47,7 +47,11 @@ def list_users() -> list:
         return []
     try:
         iterator = iter(entries)
-    except TypeError:
+    except Exception:
+        # Not just TypeError: a directory-service handle that dies *at* the
+        # start of the walk raises OSError(EIO) from __iter__ — one step
+        # earlier than the mid-iteration death below — and used to 500
+        # GET /api/users instead of answering the empty page.
         return []
     try:
         for u in iterator:
