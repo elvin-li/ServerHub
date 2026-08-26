@@ -62,7 +62,13 @@ def api_docker_info():
 @router.get("/api/scheduler")
 def api_scheduler():
     """Dedicated scheduler endpoint (alias of system/scheduler with Unraid naming)."""
-    timers = launchd_timers()
+    # _json_tree, not a raw passthrough: this alias used to hand the timer
+    # rows straight to Starlette while GET /api/settings/scheduler sanitized
+    # the same data — a leftover ``\ud800`` label or an over-cap plist int
+    # answered a raw 500 here and a 200 there.
+    timers = system_settings_svc._json_tree(launchd_timers())
+    if not isinstance(timers, list):
+        timers = []
     return {
         "timers": timers,
         "count": len(timers),
