@@ -164,12 +164,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    try:
-        return text.encode("utf-8", "replace").decode("utf-8")
-    except Exception:
-        # A str-subclass ``__str__`` returning itself keeps the subclass, so
-        # ``.encode`` can still be an overridden bomb.
-        return ""
+    # Unbound str.encode, not text.encode (the jobs6/json6 convention):
+    # ``str(x)`` of a str subclass whose ``__str__`` returns itself keeps the
+    # subclass, so the bound ``.encode`` dispatched into a leftover override
+    # — the old catch answered "" and silently dropped the real model name /
+    # log tail out of GET /api/ollama/pull/log and the pull_running 409.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -895,7 +895,11 @@ def _pull_log_lines(raw) -> list[str]:
     in-memory row TypeError'd ``str.join`` out of GET /api/ollama/pull/log.
     """
     if isinstance(raw, str):
-        return [raw] if raw else []
+        # Unbound base length, not ``if raw``: truthiness of a str *subclass*
+        # dispatches into its own ``__bool__``/``__len__``, and a leftover
+        # bomb there used to 500 GET /api/ollama/pull/log raw — the one
+        # subclass shape the ollama6 sweep missed.
+        return [raw] if str.__len__(raw) else []
     if not isinstance(raw, (list, tuple)):
         return []
     base = list if isinstance(raw, list) else tuple
