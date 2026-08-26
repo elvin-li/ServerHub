@@ -720,11 +720,28 @@ def mutate(mutator) -> dict:
         return data
 
 
-def deep_merge(base: dict, patch: dict) -> dict:
+def deep_merge(base: dict, patch: dict, _merging: frozenset = frozenset()) -> dict:
+    """Merge *patch* onto a deep copy of *base*, dict-by-dict.
+
+    Cycle-guarded by identity along the current merge path: a recursive YAML
+    anchor (``ip_aliases: &a {self: *a}``) survives ``yaml.safe_load`` and
+    ``settings_section``, so a handler that copies its stored section and
+    writes it back through :func:`update_settings` hands this function a
+    patch that contains itself.  The recursion then never terminated —
+    ``copy.deepcopy`` is memo'd against cycles, but this walk was not — and
+    PUT /api/system/network/alias/auto answered a RecursionError 500 instead
+    of saving.  On re-entering a dict already being merged the base copy wins
+    unchanged (there is nothing new underneath: it is the same mapping).  The
+    guard is per-path, not global, so a non-cyclic alias reused by two
+    sibling keys still merges into both.
+    """
     out = copy.deepcopy(base)
+    if id(patch) in _merging:
+        return out
+    _merging = _merging | {id(patch)}
     for k, v in patch.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = deep_merge(out[k], v)
+            out[k] = deep_merge(out[k], v, _merging)
         else:
             out[k] = v
     return out
