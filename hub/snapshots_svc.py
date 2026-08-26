@@ -530,7 +530,15 @@ _TM_ACTIONS = {
 
 def time_machine_action(action: str) -> dict:
     """Run a Time Machine control verb through the authorization sheet."""
-    argv = _TM_ACTIONS.get((action or "").strip().lower())
+    # _as_text is a str() probe, not an isinstance gate: the route hands the
+    # verb over as str through Pydantic, but the service is also called
+    # in-process, and a leftover non-str action AttributeError'd ``.strip()``
+    # (a 500) where the coded ``bad_action`` refusal is the contract — the
+    # raid_svc._req_text / smart_test_svc._schedule_text convention this
+    # module already applies to delete_snapshot's token.  An over-cap
+    # already-int (YAML/plist hex loads uncapped through ``int(x, 16)``)
+    # coerces to "" and earns the same refusal.
+    argv = _TM_ACTIONS.get(_as_text(action).strip().lower())
     if not argv:
         return {"ok": False, "error": "bad_action"}
     result = run_admin(argv, timeout=180)
