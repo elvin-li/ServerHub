@@ -564,8 +564,10 @@ def get_disk_settings() -> dict:
         )
     except Exception:
         power, storage, power_disks = {}, ({}, []), []
-    if not isinstance(power, dict):
-        power = {}
+    # _as_map, not the bare isinstance gate: a leftover dict-*subclass*
+    # power snapshot with a bombing ``.get`` passed the gate and raised on
+    # the disksleep read — a raw 500 on GET /api/settings/disk.
+    power = _as_map(power)
     if isinstance(storage, (tuple, list)) and len(storage) >= 2:
         smart, disks = storage[0], storage[1]
     else:
@@ -578,19 +580,29 @@ def get_disk_settings() -> dict:
     for d in power_disks[:20]:
         if not isinstance(d, dict):
             continue
+        # Launder each row: a power-disk row that is a dict subclass with a
+        # bombing ``.get`` (the jobs/metrics row-bomb class) used to raise
+        # out of the field reads below and 500 GET /api/settings/disk.
+        d = _as_map(d)
         rows.append({
             "id": _json_atom(d.get("id")),
             "name": _json_atom(d.get("name")) or _json_atom(d.get("id")),
             "power_state": _json_atom(d.get("power_state")),
             "size_gb": _finite_number(d.get("size_gb")),
         })
-    return {
+    cleaned = _json_tree({
+        # ``smart`` used to pass through raw — the one section of this
+        # payload the sanitizer never touched.  A leftover ``\ud800`` /
+        # over-cap int / non-UTF-8 bytes / items()-bomb subclass inside the
+        # SMART snapshot 500'd GET /api/settings/disk while the same data
+        # rendered fine inside the bundle (which _json_tree's everything).
         "disksleep_minutes": _finite_number(power.get("disksleep")),
         "smart": smart,
         "disk_count": len(disks) or len(power_disks),
         "power_disks": rows,
         "hint": "Sleep / wake HDDs from the Storage Array page; this adjusts the system disksleep policy.",
-    }
+    })
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _panel_update_snapshot() -> dict:
@@ -730,10 +742,23 @@ def get_other_settings() -> dict:
     }
 
 
+def _first_truthy(mapping: dict, *keys):
+    """First truthy ``mapping[key]``, with a leftover ``__bool__`` bomb in a
+    value degrading to "not it" instead of raising out of the ``or`` chain."""
+    for key in keys:
+        value = mapping.get(key)
+        if _truthy(value):
+            return value
+    return None
+
+
 def get_scheduler_summary() -> dict:
     try:
+        # ``list(...)`` inside the same try: a timers value that is a list
+        # *subclass* whose ``__iter__``/``__getitem__``/``__len__`` bombs
+        # passed the old ``or []`` and blew the slice / len below.
         from hub.tools_svc import launchd_timers
-        timers = launchd_timers() or []
+        timers = list(launchd_timers() or [])
     except Exception as e:
         # leftover ``str(e)`` RecursionError / ``\\ud800`` used to 500 GET /api/settings.
         return {"timers": [], "count": 0, "error": _as_text(e)}
@@ -741,11 +766,17 @@ def get_scheduler_summary() -> dict:
     for t in timers[:40]:
         if not isinstance(t, dict):
             continue
+        # Launder the row: a timer row that is a dict subclass with a bombing
+        # ``.get`` passed the isinstance gate and raised out of the field
+        # reads — a raw 500 on GET /api/settings/scheduler.  The bare ``or``
+        # chains reflected into a leftover value's own ``__bool__`` the same
+        # way; _first_truthy keeps the fallback order without the dispatch.
+        t = _as_map(t)
         slim.append({
-            "label": _json_atom(t.get("label") or t.get("id") or t.get("name")),
-            "interval": _finite_number(t.get("interval") or t.get("StartInterval")),
-            "calendar": _json_tree(t.get("calendar") or t.get("StartCalendarInterval")),
-            "path": _json_atom(t.get("path") or t.get("plist")),
+            "label": _json_atom(_first_truthy(t, "label", "id", "name")),
+            "interval": _finite_number(_first_truthy(t, "interval", "StartInterval")),
+            "calendar": _json_tree(_first_truthy(t, "calendar", "StartCalendarInterval")),
+            "path": _json_atom(_first_truthy(t, "path", "plist")),
         })
     return {
         "timers": slim,
@@ -832,14 +863,22 @@ def _diag_host() -> dict:
     Goes through ``identity_svc.platform_string`` rather than ``platform.platform()``
     so that this and the ``identity`` section beside it -- which also wants it -- share
     one answer instead of racing to shell out twice.
-    """
-    from hub.identity_svc import platform_string
 
-    return {
-        "platform": _as_text(platform_string()),
-        "python": _as_text(platform.python_version()),
-        "hostname": _as_text(platform.node()),
-    }
+    Absorbs its own failure like every ``_diag_*`` sibling: this header rides
+    the same fan-out as the sections, whose ``ex.map`` re-raises on iteration,
+    so a raise here used to 500 the whole GET /api/diagnostics — the one
+    collector in the wave without the try the module docstring promises.
+    """
+    try:
+        from hub.identity_svc import platform_string
+
+        return {
+            "platform": _as_text(platform_string()),
+            "python": _as_text(platform.python_version()),
+            "hostname": _as_text(platform.node()),
+        }
+    except Exception as e:
+        return {"platform": "", "python": "", "hostname": "", "host_error": _as_text(e)}
 
 
 def _diag_identity() -> dict:
