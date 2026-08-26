@@ -3115,6 +3115,7 @@ export default {
       token_fetch_failed: 'トンネルトークンを取得できませんでした: {error}',
       invalid_token: 'Cloudflare トンネルトークンが無効です。Zero Trust → Tunnels から eyJ で始まるコネクタートークンを貼り付けてください',
       start_failed: 'トンネルプロセスは起動直後に終了しました: {error}',
+      plist_write_failed: 'トンネル用 LaunchAgent の plist を書き込めませんでした: {error}',
       no_token: 'トンネルトークンがまだ保存されていません',
       invalid_name: 'トンネル名が無効です（英数字と . _ - のみ使用できます）',
       login_required: '先に Cloudflare にログインしてください',

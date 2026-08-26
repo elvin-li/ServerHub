@@ -3117,6 +3117,7 @@ export default {
       token_fetch_failed: '无法获取隧道 token：{error}',
       invalid_token: 'Cloudflare 隧道 Token 无效；请从 Zero Trust → Tunnels 粘贴以 eyJ 开头的连接器令牌',
       start_failed: '隧道进程启动后立即退出：{error}',
+      plist_write_failed: '无法写入隧道 LaunchAgent plist：{error}',
       no_token: '尚未保存隧道令牌',
       invalid_name: '隧道名无效（仅字母数字 ._-）',
       login_required: '请先登录 Cloudflare',

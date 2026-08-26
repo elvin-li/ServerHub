@@ -391,6 +391,7 @@ CODES: dict[str, tuple[int, str]] = {
     "cloudflared.token_fetch_failed": (400, 'could not fetch the tunnel token: {error}'),
     "cloudflared.invalid_token": (400, 'invalid Cloudflare tunnel token; paste the connector token from Zero Trust → Tunnels (it starts with eyJ)'),
     "cloudflared.start_failed": (503, 'the tunnel process died after start: {error}'),
+    "cloudflared.plist_write_failed": (503, 'could not write the tunnel LaunchAgent plist: {error}'),
     "cloudflared.no_token": (400, 'no tunnel token saved yet'),
     "cloudflared.invalid_name": (400, 'invalid tunnel name (letters, digits, . _ - only)'),
     "cloudflared.login_required": (400, 'sign in to Cloudflare first'),
