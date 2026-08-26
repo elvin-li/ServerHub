@@ -129,23 +129,30 @@ def _ups_status() -> dict:
     return ups_svc.ups_status()
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """Exception/subprocess text that cannot RecursionError leftover ``str(e)``."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+        return _decode_bytes(value)
+    if value is None:
         return ""
-    else:
+    try:
+        value = str(value)
+    except RecursionError:
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            return type(value).__name__
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
+    # Unbound base encode: a str-subclass ``.encode`` bomb cannot raise out
+    # of the laundering pass itself.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
@@ -185,12 +192,23 @@ def _jsonable(value, depth: int = 0):
     onto disk from ``_save_state``.
     A >4300-digit leftover int still passed through untouched: CPython's
     int->str digit limit then ValueError'd ``json.dumps`` itself.
+    A *subclass* scalar still ran its own dunders through the probes: an int
+    ``__str__`` bomb, a float ``__eq__`` bomb, a bytes ``decode`` bomb and a
+    str ``encode`` bomb (value or key) each used to raise out of this scrub
+    (the hub.modules unbound-base rule).
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -199,13 +217,26 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
+        # str() then unbound base encode: a str-subclass ``encode`` bomb
+        # used to raise out of the surrogate laundering itself.
+        try:
+            value = str(value)
+        except Exception:
+            return None
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         try:
             items = list(value.items())
@@ -216,8 +247,17 @@ def _jsonable(value, depth: int = 0):
             # route (the nginx_svc._jsonable rule).
             return None
         out = {}
-        for k, v in items:
-            if not isinstance(k, str):
+        for pair in items:
+            # Per-pair unpack guard: a torn non-pair row from a subclass
+            # ``items()`` used to ValueError out of the loop head and take
+            # every sane sibling pair down with it.
+            try:
+                k, v = pair
+            except Exception:
+                continue
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -226,8 +266,14 @@ def _jsonable(value, depth: int = 0):
             # ``"\ud800…"`` key in the state file's steps/last used to 500
             # Starlette's UTF-8 encode of GET /api/ups — and _save_state's own
             # encode failed the same way, so every _mutate silently stopped
-            # persisting while the poisoned key sat there.
-            k = k.encode("utf-8", "replace").decode("utf-8")
+            # persisting while the poisoned key sat there.  str() + unbound
+            # base encode also keeps a str-subclass ``encode`` bomb key from
+            # raising out of the laundering itself.
+            try:
+                k = str(k)
+            except Exception:
+                continue
+            k = str.encode(k, "utf-8", "replace").decode("utf-8")
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -237,7 +283,12 @@ def _jsonable(value, depth: int = 0):
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the row or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -552,17 +603,29 @@ def _cfg_text(value) -> str:
     int->str digit-cap ValueError — 500ing GET /api/ups/shutdown/plan and
     POST /api/ups/shutdown/drill, i.e. the whole UPS settings form.  An
     unrenderable scalar reads as "no value" (the backups pg_targets rule);
-    a sane numeric id keeps its old ``str()`` coercion.
+    a sane numeric id keeps its old ``str()`` coercion.  An int-*subclass*
+    ``__str__`` bomb escaped the digit-cap ``except ValueError`` and 500'd
+    GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill out of the
+    script/stack pickers; the unbound base coercion renders its real value.
     """
     if isinstance(value, bool) or value is None:
         return ""
     if isinstance(value, int):
         try:
-            return str(value)
-        except ValueError:
+            # Unbound base coercion first, so the str() probe never runs a
+            # subclass ``__str__``; past the digit cap it stays ValueError.
+            return str(int.__index__(value))
+        except Exception:
             return ""
     if isinstance(value, str):
-        return value
+        if type(value) is str:
+            return value
+        try:
+            # Base copy: a str subclass carrying a __str__/__format__ bomb
+            # must not ride into f-string renders downstream.
+            return str(value)
+        except Exception:
+            return ""
     try:
         return str(value)
     except Exception:
