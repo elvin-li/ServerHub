@@ -127,10 +127,34 @@ CODES.setdefault("ollama.bad_label", (400, "invalid launchd label: {label}"))
 LABEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule, which the pull store never got: a junk
+    in-memory ``running`` value whose ``__bool__`` raised used to 500
+    GET /api/ollama/pull/log, POST /api/ollama/pull *and*
+    POST /api/ollama/models/delete at once.  Fails closed to False — a bomb
+    row is junk, not a live pull, so treating it as "running" would wedge
+    the single-pull mutex forever.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a bytes-subclass ``.decode`` bomb used to
+        # escape here and 500 GET /api/ollama/pull/log via _jsonable.
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -140,7 +164,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return text.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        # A str-subclass ``__str__`` returning itself keeps the subclass, so
+        # ``.encode`` can still be an overridden bomb.
+        return ""
 
 
 def _jsonable(value, depth: int = 0):
@@ -156,6 +185,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules5 rule): an int
+                # subclass ``__str__`` bomb in a junk pull row used to blow
+                # the digit-cap probe below (only ValueError was caught) and
+                # 500 GET /api/ollama/pull/log raw.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             # A >4300-digit int (a hex plist/YAML leftover dodges the
             # str->int digit cap on parse) passes this coercer untouched and
@@ -165,18 +203,28 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``/
+                # ``__ne__`` bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a dict-subclass ``items()`` bomb in a junk
+        # pull-row value used to 500 GET /api/ollama/pull/log raw — the
+        # hub.jobs/_modules ``dict`` guard this walker never got.
+        for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)
@@ -185,8 +233,18 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a sequence-subclass ``__iter__``
+                # bomb cannot 500 and the real elements still survive.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property /
+        # ``__getattr__`` bomb still raised out of the probe itself and
+        # 500'd GET /api/ollama/pull/log raw.
+        iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
@@ -220,10 +278,13 @@ def _safe_int(raw, default: int = 0) -> int:
 
 def _as_text(value) -> str:
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif not isinstance(value, str):
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str-subclass ``.encode`` bomb planted as a
+    # settings value used to raise out of every ``base_url()`` caller —
+    # a raw 500 on the daemon POSTs and a whole-page coded 500 on status.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def settings_text(value) -> str:
@@ -241,24 +302,67 @@ def settings_text(value) -> str:
         return _as_text(value)
     if value is None or isinstance(value, bool):
         return ""
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
     if not isinstance(value, (int, float)):
         return ""
+    if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes (the modules5 rule).
+            value = float.__float__(value)
+        except Exception:
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
     try:
+        # ValueError: the int->str digit cap on an over-cap hex/octal YAML
+        # leftover.  Anything else: str() of an int/float *subclass*
+        # dispatches to its overridden ``__str__``, whose bomb used to raise
+        # out of every base_url()/discover_label() caller.
         text = str(value)
-    except ValueError:
+    except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
+
+
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule: ``isinstance(x, dict)`` passes an
+    odd subclass whose ``get`` raises, and one such settings block used to
+    raise out of ``base_url()`` into every daemon POST (a lying 502) and take
+    GET /api/ollama/status down whole.  ``dict.get`` reads the real storage
+    underneath the override.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except Exception:
+        try:
+            return dict.get(mapping, key)
+        except Exception:
+            return None
 
 
 def _settings() -> dict:
     # Read through this module's ``cfg`` so tests can patch it.
     # A leftover list/string settings (same shape that 500'd /api/ups) must
-    # not AttributeError on .get("ollama").
-    settings = cfg().get("settings")
-    raw = settings.get("ollama") if isinstance(settings, dict) else None
-    return raw if isinstance(raw, dict) else {}
+    # not AttributeError on .get("ollama"); a dict-*subclass* block whose
+    # ``.get`` raises must not blow the read either (_mapping_get), and the
+    # returned mapping is copied to a plain dict so the callers' own ``.get``
+    # cannot be the next bomb — ``dict()`` copies through the C-level
+    # storage, ignoring overridden methods.
+    raw = _mapping_get(_mapping_get(cfg(), "settings"), "ollama")
+    if not isinstance(raw, dict):
+        return {}
+    if type(raw) is dict:
+        return raw
+    try:
+        return dict(raw)
+    except Exception:
+        return {}
 
 
 def configured_url() -> str:
@@ -770,7 +874,9 @@ def pull_state() -> dict:
     inf ``rc`` (or one past the int->str digit cap) 500'd the encoder there.
     """
     state = _jsonable({
-        "running": bool(_pull.get("running")),
+        # _truthy, not bool(): a __bool__-bomb leftover used to 500 this
+        # route (and take GET /api/ollama/status to a coded 500) raw.
+        "running": _truthy(_pull.get("running")),
         "rc": _pull.get("rc"),
         "model": _pull.get("model"),
         "started": _pull.get("started"),
@@ -792,12 +898,20 @@ def _pull_log_lines(raw) -> list[str]:
         return [raw] if raw else []
     if not isinstance(raw, (list, tuple)):
         return []
+    base = list if isinstance(raw, list) else tuple
+    try:
+        # Unbound base iteration: a list-subclass ``__iter__`` bomb used to
+        # 500 GET /api/ollama/pull/log past the isinstance gate (the
+        # hub.jobs._log_lines rule), and the real lines still survive.
+        items = list(base.__iter__(raw))
+    except Exception:
+        return []
     out: list[str] = []
-    for item in raw:
+    for item in items:
         if isinstance(item, str):
             out.append(item)
         elif isinstance(item, (bytes, bytearray)):
-            out.append(item.decode("utf-8", "replace"))
+            out.append(_decode_bytes(item))
     return out
 
 
@@ -822,8 +936,15 @@ def start_pull(name: str) -> dict:
     if not binary:
         raise api_error("ollama.not_installed")
     with _pull_lock:
-        if _pull["running"]:
-            raise api_error("ollama.pull_running", model=_pull.get("model") or "")
+        # _truthy + is-None probe: a leftover __bool__-bomb ``running`` (or
+        # ``model``, via the truth test hidden in ``or``) used to 500 this
+        # POST raw instead of starting/refusing the pull.
+        if _truthy(_pull.get("running")):
+            busy = _pull.get("model")
+            raise api_error(
+                "ollama.pull_running",
+                model=_utf8_text(busy) if busy is not None else "",
+            )
         _pull.update(
             running=True, rc=None, model=name,
             started=strftime_now("%H:%M:%S"), finished=None,
@@ -854,10 +975,16 @@ def delete_model(name: str) -> dict:
     if not binary:
         raise api_error("ollama.not_installed")
     with _pull_lock:
-        if _pull["running"]:
+        if _truthy(_pull.get("running")):
             # rm during a pull of the same blob corrupts neither, but the
             # combination has no legitimate use; keep the story simple.
-            raise api_error("ollama.pull_running", model=_pull.get("model") or "")
+            # _truthy + is-None probe: the same __bool__-bomb leftovers that
+            # 500'd POST /api/ollama/pull used to 500 this route too.
+            busy = _pull.get("model")
+            raise api_error(
+                "ollama.pull_running",
+                model=_utf8_text(busy) if busy is not None else "",
+            )
     log: list[str] = []
     rc = run_watchdog([binary, "rm", name], timeout=RM_TIMEOUT, log=log, env=_cli_env())
     status.invalidate()
