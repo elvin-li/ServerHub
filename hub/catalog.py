@@ -29,7 +29,7 @@ from hub.docker_cli import engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import CODES, api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER, user_home
-from hub.util import fan_out, read_text_capped, run_capped
+from hub.util import fan_out, read_bytes_capped, read_text_capped, run_capped
 
 TEMPLATES = BASE / "templates"
 
@@ -339,10 +339,13 @@ def host_languages() -> tuple[str, ...]:
     if cached and cached[0] == mtime:
         return cached[1]
     try:
-        with _GLOBAL_PREFS.open("rb") as fh:
-            blob = fh.read(_PREFS_CAP + 1)
-        if len(blob) > _PREFS_CAP:
-            raise OSError(errno.EFBIG, "file exceeds read cap", str(_GLOBAL_PREFS))
+        # read_bytes_capped, not a bare open(): stat() answers fine for a
+        # leftover FIFO occupying .GlobalPreferences.plist, and the plain open
+        # that followed parked until a writer appeared — hanging GET
+        # /api/catalog (the store overview reads the host languages) forever.
+        # The capped reader opens O_NONBLOCK, refuses non-regular files, and
+        # keeps the oversize refusal as OSError(EFBIG).
+        blob = read_bytes_capped(_GLOBAL_PREFS, _PREFS_CAP)
         prefs = plistlib.loads(blob)
         raw = prefs.get("AppleLanguages") if isinstance(prefs, dict) else []
     except Exception:

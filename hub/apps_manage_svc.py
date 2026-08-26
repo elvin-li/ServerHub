@@ -18,7 +18,7 @@ from hub.docker_cli import _jsonable, docker, engine_up, inspect_object, looks_c
 from hub.errors import api_error, exc_detail, soft_fail
 from hub.host_address import host_ip
 from hub.paths import DOCKER, user_home
-from hub.util import cached_snapshot, fan_out, run_capped, sh, strftime_now, tail_file_lines
+from hub.util import cached_snapshot, fan_out, read_bytes_capped, run_capped, sh, strftime_now, tail_file_lines
 
 
 def _default_services_root() -> Path:
@@ -34,11 +34,14 @@ _PLIST_CAP = 256 * 1024
 
 def _plist_dict(path: Path) -> dict | None:
     try:
-        with path.open("rb") as fh:
-            raw = fh.read(_PLIST_CAP + 1)
+        # read_bytes_capped, not a bare open(): a plain open of a leftover FIFO
+        # occupying ``*.plist`` parks until a writer appears, which hung
+        # GET /api/apps/managed (and detail/logs via _launchd_apps) forever.
+        # The capped reader opens O_NONBLOCK, refuses non-regular files with
+        # the OSError this except already turns into "no plist", and keeps the
+        # oversize cap as OSError(EFBIG).
+        raw = read_bytes_capped(path, _PLIST_CAP)
     except OSError:
-        return None
-    if len(raw) > _PLIST_CAP:
         return None
     try:
         data = plistlib.loads(raw)
