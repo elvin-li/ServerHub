@@ -1052,9 +1052,17 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     from hub import secure_io
     try:
         pl = plistlib.loads(read_bytes_capped(FB_PLIST, _PLIST_CAP))
-    except (OSError, ValueError, OverflowError, RecursionError):
-        # RecursionError: leftover deeply-nested LaunchAgent plist is not
-        # ValueError; POST /api/files/filebrowser/ondemand used to 500.
+    except Exception:
+        # An enumerated tuple is a losing game against plistlib's XML path:
+        # a torn or invalid-UTF-8 plist raises xml.parsers.expat.ExpatError,
+        # a junk <date> raises AttributeError, and a stray <key> outside any
+        # <dict> raises IndexError — none of them ValueError, so every one
+        # escaped the previous (OSError, ValueError, OverflowError,
+        # RecursionError) arm and 500'd POST /api/files/filebrowser/ondemand
+        # raw.  The try wraps only the capped read + parse (the coded raise
+        # sits outside it), and any parse failure means the same one thing —
+        # not a usable LaunchAgent — so swallow broadly like the sibling
+        # reader _plist_keepalive() and the repo's other plist readers.
         raise api_error("files.fb_bad_plist")
     if not isinstance(pl, dict):
         raise api_error("files.fb_bad_plist")
