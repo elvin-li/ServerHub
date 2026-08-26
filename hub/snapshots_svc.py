@@ -59,7 +59,15 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the nas_common._utf8_text / modules6 rule):
+    # ``str()`` of a subclass whose ``__str__`` answers *self* skips
+    # CPython's exact-str copy, so the old bound ``value.encode(...)`` ran
+    # the subclass override — a leftover encode bomb in sh() output raised
+    # out of _plist and 500'd GET /api/snapshots, out of create_snapshot's
+    # message join and 500'd POST /api/snapshots/create, and out of
+    # _jsonable's nested key/value coercion and 500'd
+    # POST /api/timemachine/action.  The base pair answers an exact str.
+    return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
 
 
 def _jsonable(value, depth: int = 0):
