@@ -138,13 +138,17 @@ class OkPayloadIterationBombTests(unittest.TestCase):
         self.assertEqual(body["log"], {"a": 1})
         self.assertEqual(body["name"], "com.apple.TimeMachine.2026-08-25")
 
-    def test_iter_bomb_sequence_value_collapses_the_field(self):
+    def test_iter_bomb_sequence_value_salvages_its_storage(self):
+        # shares7 upgraded the sanitizer to the unbound base ``__iter__``
+        # walk: the hostile override cannot fire, so the real C-level
+        # storage survives instead of collapsing to None.  The original
+        # point stands either way: the route answers 200.
         resp = self._create({"ok": True, "tokens": _IterBombList(["x"])})
         self.assertEqual(resp.status_code, 200, resp.text[:200])
         body = resp.json()
         _starlette(body)
         self.assertIs(body["ok"], True)
-        self.assertIsNone(body["tokens"])
+        self.assertEqual(body["tokens"], ["x"])
 
 
 class FailureResultHostileShapeTests(unittest.TestCase):
@@ -452,7 +456,10 @@ class NasCommonJsonableIterationContractTests(unittest.TestCase):
         self.assertEqual(row["extras"], {"x": 1})
         self.assertEqual(row["port"], 2049)
 
-    def test_iter_bomb_collapses_the_field_not_the_row(self):
+    def test_iter_bomb_salvages_the_field_not_the_row(self):
+        # shares7 upgraded the sanitizer to the unbound base ``__iter__``
+        # walk: the hostile override cannot fire, so the real C-level
+        # storage survives instead of collapsing to None.
         row = nas_common._jsonable({
             "ok": True,
             "clients": _IterBombList(["10.0.0.0/24"]),
@@ -460,7 +467,7 @@ class NasCommonJsonableIterationContractTests(unittest.TestCase):
         })
         _starlette(row)
         self.assertIs(row["ok"], True)
-        self.assertIsNone(row["clients"])
+        self.assertEqual(row["clients"], ["10.0.0.0/24"])
         self.assertEqual(row["count"], 1)
 
     def test_top_level_items_bomb_ok_result_still_answers_ok(self):
