@@ -75,7 +75,10 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str subclass whose ``__str__`` returns *self*
+    # keeps its bound ``encode`` bomb through the coercion above and used to
+    # raise out of the shared df/diskutil reads.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _disk_token(value) -> str:
@@ -92,7 +95,9 @@ def _disk_token(value) -> str:
         value = bytes(value).decode("utf-8", "replace")
     if not isinstance(value, str):
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: same self-``__str__`` encode-bomb class as
+    # ``_as_text`` above — the token must scrub, never raise.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _whole_id(value) -> str:

@@ -120,7 +120,12 @@ def _text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a subclass whose ``__str__`` returns *self* keeps
+    # its type through the str() coercion above, and its bound ``encode``
+    # bomb used to raise out of here — a bare 500 when the value rode the
+    # ``sh`` seam into the sleep/eject/wake log lines on
+    # POST /api/storage/disks/{id}/power.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _req_text(raw) -> str:
@@ -150,7 +155,9 @@ def _req_text(raw) -> str:
         raw = str(raw)
     except Exception:
         return ""
-    return raw.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a subclass whose ``__str__`` returns *self*
+    # survives the str() coercion above with its bound ``encode`` bomb live.
+    return str.encode(raw, "utf-8", "replace").decode("utf-8")
 
 
 def _dev_exists(node: str) -> bool:

@@ -284,7 +284,15 @@ def _ident(value) -> str:
         # A str-subclass ``encode`` bomb: the identifier cannot be
         # verified UTF-8-safe, so it reads as absent like the surrogate.
         return ""
-    return value
+    if type(value) is str:
+        return value
+    try:
+        # Base copy that bypasses a self-returning ``__str__`` override: a
+        # subclass whose ``encode`` behaves could still carry ``__eq__``/
+        # ``__hash__`` bombs into the set membership and de-dupe below.
+        return str.__str__(value)
+    except Exception:
+        return ""
 
 
 def _text(value) -> str:
@@ -340,7 +348,12 @@ def _text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a subclass whose ``__str__`` returns *self* keeps
+    # its type through the str() coercion above, and its bound ``encode``
+    # bomb used to raise out of here — a bare 500 when the value rode the
+    # ``sh`` seam into POST /api/storage/manage/{id}'s log lines, and the
+    # confirmed-erase path's VolumeName read.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _req_text(raw) -> str:
@@ -372,7 +385,16 @@ def _req_text(raw) -> str:
         except Exception:
             # The digit-cap ValueError, or a leftover whose __str__ raises.
             return ""
-    return raw
+    if type(raw) is str:
+        return raw
+    try:
+        # Base copy that bypasses a self-returning ``__str__`` override:
+        # a str-subclass ``__bool__`` bomb returned raw here used to raise
+        # out of the erase path's ``_req_text(name) or vol_name`` fallback
+        # for in-process callers.  Surrogates survive the copy, as above.
+        return str.__str__(raw)
+    except Exception:
+        return ""
 
 
 def _opt_bool(value):
@@ -618,9 +640,15 @@ def list_managed_volumes() -> list[dict]:
                     continue
             # still record whole disk summary
             if is_whole:
-                info = _diskutil_info(ident)
-                size = _size_bytes(node.get("Size") or info.get("TotalSize"))
-                content = _text(node.get("Content") or info.get("Content"))
+                # _plain_info: a dict-subclass leftover in the info cache
+                # whose ``.get`` raises used to drop this node (with a
+                # single disk, the whole listing) on the first field read.
+                info = _plain_info(_diskutil_info(ident))
+                # _size_bytes / _text each candidate before ``or``: the bare
+                # ``a or b`` chain reflected into a leftover value's own
+                # ``__bool__`` and dropped the node for one bad field.
+                size = _size_bytes(node.get("Size")) or _size_bytes(info.get("TotalSize"))
+                content = _text(node.get("Content")) or _text(info.get("Content"))
                 # Synthetic APFS containers (not in physical list) are system-side
                 synth = bool(physical_wholes) and ident not in physical_wholes
                 is_sys = (
@@ -634,7 +662,7 @@ def list_managed_volumes() -> list[dict]:
                 out.append({
                     "id": ident,
                     "device": f"/dev/{ident}",
-                    "name": _text(info.get("MediaName") or info.get("IORegistryEntryName")) or ident,
+                    "name": _text(info.get("MediaName")) or _text(info.get("IORegistryEntryName")) or ident,
                     "volume_name": _text(info.get("VolumeName")),
                     "whole_disk": ident,
                     "is_whole": True,
@@ -654,10 +682,12 @@ def list_managed_volumes() -> list[dict]:
             return
 
         # leaf volume / partition
-        info = _diskutil_info(ident)
-        size = _size_bytes(node.get("Size") or info.get("TotalSize"))
-        mount = _text(info.get("MountPoint") or node.get("MountPoint"))
-        content = _text(node.get("Content") or info.get("Content"))
+        # Same _plain_info / split-``or`` treatment as the whole-disk
+        # summary above, for the same one-bad-field node drops.
+        info = _plain_info(_diskutil_info(ident))
+        size = _size_bytes(node.get("Size")) or _size_bytes(info.get("TotalSize"))
+        mount = _text(info.get("MountPoint")) or _text(node.get("MountPoint"))
+        content = _text(node.get("Content")) or _text(info.get("Content"))
         fs_type = (
             _text(info.get("FilesystemType"))
             or _text(info.get("FilesystemName"))
@@ -687,7 +717,7 @@ def list_managed_volumes() -> list[dict]:
             "id": ident,
             "device": f"/dev/{ident}",
             "name": name,
-            "volume_name": _text(info.get("VolumeName") or node.get("VolumeName")),
+            "volume_name": _text(info.get("VolumeName")) or _text(node.get("VolumeName")),
             "whole_disk": w,
             "is_whole": False,
             "size_bytes": size,
