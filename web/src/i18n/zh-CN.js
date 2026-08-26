@@ -2584,6 +2584,11 @@ export default {
       no_match: '没有匹配的通知渠道',
       type_immutable: '渠道 {id} 的类型不能修改——请删除后重新创建',
       secret_control_chars: '{field} 包含控制字符（可能粘贴进了换行或制表符）',
+      value_too_long: '{field} 过长（最多 {max} 个字符）',
+      list_too_long: '{field} 的条目过多（最多 {max} 条）',
+      too_many: '通知渠道数量过多——请先删除不再使用的渠道',
+      secrets_too_large: '保存的通知密钥将超出大小上限——请先删除不再使用的渠道',
+      secrets_unreadable: '无法读取已保存的通知密钥；请先修复或删除 data/notify-credentials.json',
     },
     ups: {
       empty_patch: '设置补丁为空',

@@ -490,6 +490,17 @@ CODES: dict[str, tuple[int, str]] = {
     "notify.no_match": (404, "no notification channel matched"),
     "notify.type_immutable": (400, "the type of channel {id} cannot be changed; delete it and create a new one"),
     "notify.secret_control_chars": (400, "{field} contains control characters (a pasted newline or tab?)"),
+    # Unbounded channel values used to grow services.yaml (config fields) or
+    # notify-credentials.json (secrets) past their read caps — after which
+    # every read answered {} and the next write wiped every sibling row.
+    "notify.value_too_long": (400, "{field} is too long (max {max} characters)"),
+    "notify.list_too_long": (400, "{field} has too many entries (max {max})"),
+    "notify.too_many": (400, "too many notification channels — remove unused channels first"),
+    "notify.secrets_too_large": (400, "the stored notification secrets would exceed the size limit — remove unused channels first"),
+    # The credentials file exists but cannot be read back (oversized, torn,
+    # or a dying disk).  Refusing the write is what keeps the sibling
+    # channels' secrets on disk; a 503 names the dependency, not the input.
+    "notify.secrets_unreadable": (503, "the stored notification secrets cannot be read; fix or remove data/notify-credentials.json first"),
     # ── UPS / battery ────────────────────────────────────────────────────────
     "ups.empty_patch": (400, "the settings patch is empty"),
     "ups.policy_no_condition": (400, "enable at least one trigger condition (battery % or minutes remaining) before enabling the shutdown policy"),
