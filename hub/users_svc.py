@@ -9,7 +9,11 @@ import grp
 def _pwd_text(value) -> str:
     """JSON-encodable pwd/grp field.  Leftover bytes / ``\\ud800`` used to 500 GET /api/users."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode (the brew6 rule): a leftover bytes-subclass
+        # field whose bound ``.decode`` raises used to escape mid-row and
+        # silently drop every healthy pwd row after it.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         value = ""
     else:
@@ -22,7 +26,11 @@ def _pwd_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the modules6 rule): ``str()`` of a subclass whose
+    # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
+    # bound ``encode`` bomb rode this line out of the row walk and cost every
+    # healthy row after the poisoned one.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def list_users() -> list:
