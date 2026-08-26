@@ -167,6 +167,13 @@ CODES: dict[str, tuple[int, str]] = {
     "storage_pool.bad_policy": (400, "unknown placement policy: {policy}"),
     "storage_pool.no_members": (400, "select at least one volume for the pool"),
     "storage_pool.not_poolable": (400, "{mount} cannot join a pool (system or unmounted)"),
+    # The pool name is persisted into services.yaml.  Unbounded, a multi-MB
+    # label was refused only by the whole-file save cap as a
+    # settings.save_failed 503 — blaming the disk for oversized input — and a
+    # label just under the cap ballooned services.yaml toward the 1MB read
+    # cap for every sibling writer.  400 like the other persisted-value caps
+    # (vms.name_too_long, identity.value_too_long, disk.name_required).
+    "storage_pool.name_too_long": (400, "the pool name is too long (max {max} characters)"),
     "files.fb_no_plist": (404, "local.filebrowser.plist not found"),
     "files.fb_bad_plist": (500, "local.filebrowser.plist is not a valid LaunchAgent"),
     # ── macOS administrator authorization ───────────────────────────────────

@@ -231,7 +231,7 @@
     <div class="tile" style="margin-bottom:12px">
       <div class="field-grid">
         <label for="pool-name">{{ t('pool.name_label') }}</label>
-        <input id="pool-name" v-model="poolName" type="text" :placeholder="t('pool.name_ph')" />
+        <input id="pool-name" v-model="poolName" type="text" maxlength="64" :placeholder="t('pool.name_ph')" />
 
         <label for="pool-policy">{{ t('pool.policy_label') }}</label>
         <select id="pool-policy" v-model="policy">
