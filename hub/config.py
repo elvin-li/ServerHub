@@ -94,19 +94,36 @@ def _file_lock():
 
     A leftover directory named ``.services.yaml.lock``, or EIO creating it,
     must not 500 PUT /api/settings — fall back to the in-process write lock.
+
+    Taking (or releasing) the flock gets the same degrade as creating it:
+    EIO/ENOLCK out of ``fcntl.flock`` on a dying mount under data/ used to
+    raise raw OSError out of every mutate() — POST /api/storage/pool/save
+    and /clear answered a bare 500 after validation had already passed,
+    while the identical failure one syscall earlier (``os.open``) already
+    fell back cleanly.
     """
     fd = _lock_fd()
     if fd is None:
         yield
         return
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            yield
+            return
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 #: Top-level keys every route indexes with ``.get`` / ``.items``.  A hand-edit
@@ -614,7 +631,17 @@ def _save_full_locked(data: dict) -> None:
             #
             # Sorted by name, which is sound because the suffix is a fixed-width
             # epoch: lexicographic and numeric order coincide.
-            baks = sorted(DATA_DIR.glob("services.yaml.bak.*"), reverse=True)
+            #
+            # The scandir under glob() re-raises EIO/ESTALE on a dying data/
+            # mount.  The pre-image copy just landed and the new config is
+            # about to be written — losing the *retention trim* is
+            # housekeeping, but the raw OSError used to 500 the save that had
+            # otherwise succeeded (POST /api/storage/pool/save was the found
+            # route; every mutate() shares this path).
+            try:
+                baks = sorted(DATA_DIR.glob("services.yaml.bak.*"), reverse=True)
+            except OSError:
+                baks = []
             for old in baks[BACKUP_RETENTION:]:
                 try:
                     old.unlink()
