@@ -14,7 +14,10 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from hub import cli_args
-from hub.docker_cli import _jsonable, docker, engine_up, inspect_object, looks_cli_vanished, looks_engine_down
+from hub.docker_cli import (
+    _jsonable, cli_on_disk, docker, engine_up, inspect_object,
+    looks_cli_vanished, looks_engine_down,
+)
 from hub.errors import api_error, exc_detail, soft_fail
 from hub.host_address import host_ip
 from hub.paths import DOCKER, user_home
@@ -63,7 +66,54 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode — ``str()`` of a str subclass whose ``__str__``
+    # returns self keeps the subclass, so a bound ``.encode`` bomb could
+    # still fire here (the modules5 unbound convention, like docker_cli).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ups_svc convention: ``isinstance(x, dict)`` passes an odd subclass
+    whose ``get`` raises, and one such ``list_containers()`` /
+    ``list_all_vms()`` payload used to raise out of ``_container_rows`` /
+    ``_vm_detail`` and 500 the Apps detail, logs and autostart-action
+    routes.  ``dict.get`` reads the real storage underneath the override,
+    so a subclass that only poisoned its method keeps its sane data.
+    """
+    if not isinstance(mapping, dict):
+        return default
+    return dict.get(mapping, key, default)
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (jobs)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _clean_rows(raw) -> list[dict]:
+    """Laundered dict rows from another service's list payload.
+
+    ``_jsonable`` copies a dict subclass through the C-level storage and
+    scrubs every nested value, so a leftover ``.get``/``items``/``__bool__``
+    /``__eq__`` bomb — or a >4300-digit int, a lone surrogate, raw bytes —
+    in one row cannot raise out of the loops (or Starlette's encoder)
+    downstream.  ``list.__iter__`` walks the real storage of a list
+    subclass whose own ``__iter__`` raises (the modules convention).  A
+    row that is not a dict at all costs itself, never its siblings.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for row in list.__iter__(raw):
+        cleaned = _jsonable(row) if isinstance(row, dict) else None
+        if isinstance(cleaned, dict):
+            out.append(cleaned)
+    return out
 
 
 def _as_text(value) -> str:
@@ -204,23 +254,23 @@ def _docker_stacks() -> list[dict]:
     items = []
     try:
         from hub import containers_svc
-        stacks = containers_svc.list_stacks()
+        # _clean_rows: one hostile row (subclass ``.get``/``__bool__`` bomb,
+        # huge int, surrogate) used to raise out of this loop and cost the
+        # whole docker section of the Apps page via _collect's fallback.
+        stacks = _clean_rows(containers_svc.list_stacks())
     except Exception:
-        stacks = []
-    if not isinstance(stacks, list):
         stacks = []
     # map stack path → containers via compose project label or cwd
     containers = []
     try:
         from hub import containers_svc
-        raw_c = containers_svc.list_containers(with_stats=False).get("containers") or []
-        containers = raw_c if isinstance(raw_c, list) else []
+        containers = _container_rows(
+            containers_svc.list_containers(with_stats=False)
+        )
     except Exception:
         pass
 
     for s in stacks:
-        if not isinstance(s, dict):
-            continue
         sid = s.get("id") if isinstance(s.get("id"), str) else ""
         raw_path = s.get("path") if isinstance(s.get("path"), str) else ""
         if not sid:
@@ -424,8 +474,14 @@ def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
             # The DOCKER binary vanished between the _exists() gate above and
             # this spawn: run_capped's exact ``(-1, "not found")`` sentinel,
             # which used to fall through as an uncoded ``ok: false`` the SPA
-            # cannot translate.
-            rc == -1 and looks_cli_vanished(text)
+            # cannot translate.  The sentinel is any FileNotFoundError spawn
+            # — a stack directory (the compose cwd) deleted between the
+            # _exists(p) gate and the spawn raises identically — so the
+            # binary must be confirmed gone from disk before it reads as a
+            # vanished CLI (the compose_svc / actions convention): with the
+            # CLI still present and the engine merely off, the coded 503
+            # pointed the operator at the wrong remedy.
+            rc == -1 and looks_cli_vanished(text) and not cli_on_disk()
         )
         if rc != 0 and unreachable and not engine_up(force=True):
             # Every Apps-page compose action (up/stop/restart/pull/logs) used
@@ -480,13 +536,17 @@ def _inspect(name: str) -> tuple[int, str]:
 
 
 def _container_rows(payload) -> list:
-    """``list_containers()`` rows, or [] when the payload is the wrong shape.
+    """``list_containers()`` rows, laundered, or [] for the wrong shape.
 
     A list leftover (or ``containers: 5``) used to raise on ``.get`` /
-    ``for c in 5`` and 500 the Apps detail and logs pages.
+    ``for c in 5`` and 500 the Apps detail and logs pages.  _mapping_get +
+    _clean_rows: a dict-subclass payload whose ``.get`` bombs, a
+    list-subclass ``containers`` whose ``__iter__`` bombs, and per-row
+    subclass ``.get`` / value ``__bool__``/``__eq__`` bombs all still
+    500'd GET /api/apps/managed/detail, GET /api/apps/managed/logs and
+    the POST /api/apps/managed/action autostart branch after that.
     """
-    rows = payload.get("containers") if isinstance(payload, dict) else []
-    return rows if isinstance(rows, list) else []
+    return _clean_rows(_mapping_get(payload, "containers"))
 
 
 def _docker_detail(source_id: str) -> dict:
@@ -683,12 +743,13 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
 
 def _native_apps(force: bool = False) -> list[dict]:
     from hub import native_catalog
-    raw = native_catalog.list_native_apps(force=force)
-    if not isinstance(raw, list):
-        raw = []
+    # _clean_rows: one hostile row (subclass ``.get``/``__bool__`` bomb, a
+    # huge int, a lone surrogate) used to raise out of this loop and cost
+    # the whole native section of the Apps page via _collect's fallback.
+    raw = _clean_rows(native_catalog.list_native_apps(force=force))
     installed = [
         a for a in raw
-        if isinstance(a, dict) and a.get("installed") and isinstance(a.get("id"), str)
+        if a.get("installed") and isinstance(a.get("id"), str)
     ]
 
     # Both autostart lookups used to be issued *inside* the per-app loop, so a
@@ -752,11 +813,19 @@ def _native_apps(force: bool = False) -> list[dict]:
         # map brew package → autostart from brew services / launchd
         auto = None
         auto_id = None
-        if a.get("package") and a.get("method") in ("brew_formula", "brew_cask"):
-            auto_id = f"brew:{a['package']}"
-            auto = brew_autostart.get(a["package"])
-        elif a.get("launchd_label") or a.get("id") in ("native-filebrowser", "native-homeassistant"):
-            label = a.get("launchd_label") or (
+        # isinstance(str) gates: a leftover junk ``package`` /
+        # ``launchd_label`` (a dict or list from a torn native listing) is
+        # unhashable, and the ``.get`` lookups below used to raise
+        # TypeError — costing the whole native section via _collect.
+        pkg_name = a.get("package")
+        launchd_label = a.get("launchd_label")
+        if not isinstance(launchd_label, str):
+            launchd_label = ""
+        if isinstance(pkg_name, str) and pkg_name and a.get("method") in ("brew_formula", "brew_cask"):
+            auto_id = f"brew:{pkg_name}"
+            auto = brew_autostart.get(pkg_name)
+        elif launchd_label or a.get("id") in ("native-filebrowser", "native-homeassistant"):
+            label = launchd_label or (
                 "local.filebrowser" if a.get("id") == "native-filebrowser" else "com.homeassistant.core"
             )
             auto_id = f"launchd:{label}"
@@ -853,10 +922,14 @@ def _native_detail(source_id: str) -> dict:
     app = next((a for a in native_catalog.NATIVE_APPS if a["id"] == source_id), None)
     if not app:
         raise api_error("apps.native_not_found")
+    # _clean_rows: a subclass ``.get``/``__eq__`` bomb row, or a value
+    # ``__bool__`` bomb behind ``listed.get("running")`` below, used to 500
+    # GET /api/apps/managed/detail for every native app while the listing
+    # itself rendered fine.
     listed = next(
         (
-            a for a in native_catalog.list_native_apps(force=True)
-            if isinstance(a, dict) and a.get("id") == source_id
+            a for a in _clean_rows(native_catalog.list_native_apps(force=True))
+            if a.get("id") == source_id
         ),
         {},
     )
@@ -1116,7 +1189,12 @@ def _launchd_detail(label: str) -> dict:
     listed = next((item for item in _launchd_apps() if item.get("source_id") == label), None)
     if not listed:
         raise api_error("apps.launchd_not_found")
-    preview = services_uninstall_svc.preview(label)
+    # Laundered like every other cross-module payload merged into a detail
+    # page: a subclass ``.get`` bomb or ``__bool__`` bomb value in the
+    # uninstall preview must cost its field, never the whole detail route.
+    preview = _jsonable(services_uninstall_svc.preview(label))
+    if not isinstance(preview, dict):
+        preview = {}
     return {
         **listed,
         "program": preview.get("program") or "",
@@ -1169,14 +1247,22 @@ def _launchd_logs(label: str, lines: int = 120) -> dict:
 
 # ─── VMs ─────────────────────────────────────────────────────────────────────
 
+def _vm_rows(payload) -> list[dict]:
+    """``list_all_vms()`` rows, laundered.
+
+    A dict-subclass payload whose ``.get`` bombs, per-row subclass
+    ``.get``/``__eq__`` bombs, a list-subclass ``ips`` whose ``__iter__``
+    bombs, and value ``__bool__`` bombs behind ``v.get("state") or ""``
+    all still 500'd GET /api/apps/managed/detail for VMs (and cost the
+    whole VM section of the inventory via _collect's fallback).
+    """
+    return _clean_rows(_mapping_get(payload, "vms"))
+
+
 def _vms() -> list[dict]:
     from hub import vms_svc
-    data = vms_svc.list_all_vms()
     items = []
-    raw = data.get("vms") if isinstance(data, dict) else []
-    for v in raw if isinstance(raw, list) else []:
-        if not isinstance(v, dict):
-            continue
+    for v in _vm_rows(vms_svc.list_all_vms()):
         state = v.get("state") or v.get("status") or "unknown"
         running = state in ("ok", "running", "started")
         vid = v.get("id") or v.get("uuid") or v.get("name")
@@ -1227,13 +1313,10 @@ def _vm_actions(v: dict) -> list[str]:
 
 def _vm_detail(source_id: str) -> dict:
     from hub import vms_svc
-    data = vms_svc.list_all_vms()
-    raw = data.get("vms") if isinstance(data, dict) else []
     v = next(
         (
-            x for x in (raw if isinstance(raw, list) else [])
-            if isinstance(x, dict)
-            and (x.get("id") or x.get("uuid") or x.get("name")) == source_id
+            x for x in _vm_rows(vms_svc.list_all_vms())
+            if (x.get("id") or x.get("uuid") or x.get("name")) == source_id
         ),
         None,
     )
@@ -1448,11 +1531,14 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         if kind == "docker":
             # enable for all containers in stack / or single container name
             from hub import containers_svc
-            containers = containers_svc.list_containers(with_stats=False).get("containers") or []
+            # _container_rows: the raw ``.get("containers") or []`` on a
+            # dict-subclass payload (or hostile rows) used to 500
+            # POST /api/apps/managed/action before any toggle ran.
+            containers = _container_rows(
+                containers_svc.list_containers(with_stats=False)
+            )
             related = []
-            for c in containers if isinstance(containers, list) else []:
-                if not isinstance(c, dict):
-                    continue
+            for c in containers:
                 cid = str(c.get("id") or "")
                 if (
                     str(c.get("project") or "") == source_id
@@ -1470,8 +1556,11 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                 if not ident:
                     continue
                 r = autostart_svc.set_docker_autostart(ident, enabled)
-                results.append(f"{ident}: {r.get('message')}")
-                ok = ok and r.get("ok")
+                # _mapping_get/_truthy/_as_text: the toggle result is another
+                # module's payload — a subclass ``.get`` bomb or ``__bool__``
+                # bomb here used to 500 the action after toggles already ran.
+                results.append(f"{ident}: {_as_text(_mapping_get(r, 'message'))}")
+                ok = ok and _truthy(_mapping_get(r, "ok"))
             return {"ok": ok, "message": "\n".join(results)[-2000:], "autostart": enabled}
         if kind == "launchd":
             return autostart_svc.set_launchd_autostart(source_id, enabled)

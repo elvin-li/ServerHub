@@ -441,6 +441,14 @@ class ComposeActionEngineDownHttpTests(_AppsSandbox):
         patched = mock.patch.object(apps_manage_svc, "DOCKER", sys.executable)
         patched.start()
         self.addCleanup(patched.stop)
+        # cli_on_disk stubbed: the sentinel only classifies once the binary
+        # is confirmed gone from disk (the compose_svc convention), and the
+        # verdict must not depend on the suite machine's own docker binary.
+        patched = mock.patch.object(
+            apps_manage_svc, "cli_on_disk", return_value=False
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
 
     def _action(self, rc, msg, engine_up_answer, action="stop"):
         probe = mock.Mock(return_value=engine_up_answer)

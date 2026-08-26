@@ -188,6 +188,14 @@ class ComposeCmdVanishedCliTests(unittest.TestCase):
         patched = mock.patch.object(apps_manage_svc, "DOCKER", sys.executable)
         patched.start()
         self.addCleanup(patched.stop)
+        # cli_on_disk stubbed: the sentinel only classifies once the binary
+        # is confirmed gone from disk (the compose_svc convention), and the
+        # verdict must not depend on the suite machine's own docker binary.
+        patched = mock.patch.object(
+            apps_manage_svc, "cli_on_disk", return_value=False
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
 
     def _cmd(self, rc, msg, engine_up_answer):
         probe = mock.Mock(return_value=engine_up_answer)
@@ -199,6 +207,22 @@ class ComposeCmdVanishedCliTests(unittest.TestCase):
         ):
             r = apps_manage_svc._compose_cmd(str(self.compose), "stop")
         return r, probe
+
+    def test_sentinel_with_the_binary_still_on_disk_stays_raw(self):
+        """The vanished-cwd twin of the sentinel: CLI still on disk means
+        the coded 503 would point the operator at the wrong remedy."""
+        probe = mock.Mock(return_value=False)
+        with (
+            mock.patch.object(
+                apps_manage_svc, "run_capped", return_value=(-1, "not found")
+            ),
+            mock.patch.object(apps_manage_svc, "engine_up", probe),
+            mock.patch.object(apps_manage_svc, "cli_on_disk", return_value=True),
+        ):
+            r = apps_manage_svc._compose_cmd(str(self.compose), "stop")
+        self.assertNotIn("code", r)
+        self.assertEqual(r["message"], "not found")
+        probe.assert_not_called()
 
     def test_vanished_cli_sentinel_becomes_the_coded_soft_fail(self):
         r, probe = self._cmd(-1, "not found", engine_up_answer=False)

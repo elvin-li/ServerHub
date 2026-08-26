@@ -25,7 +25,7 @@ from fastapi import HTTPException
 from hub import catalog_remote
 from hub import cli_args
 from hub import secure_io
-from hub.docker_cli import engine_up, looks_cli_vanished, looks_engine_down
+from hub.docker_cli import _jsonable, cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import CODES, api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER, user_home
@@ -177,7 +177,10 @@ def _plain_str(value, default: str = "") -> str:
         except Exception:
             return default
     try:
-        return text.encode("utf-8", "replace").decode("utf-8")
+        # Unbound base encode — ``str()`` of a str subclass whose ``__str__``
+        # returns self keeps the subclass, so a bound ``.encode`` bomb could
+        # still fire (the modules5 unbound convention, like docker_cli).
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
     except Exception:
         return default
 
@@ -797,7 +800,16 @@ def catalog_overview() -> dict:
         lambda collect: collect(), [docker_templates, native_apps], max_workers=2
     )
     docker = [d for d in docker if isinstance(d, dict)]
-    native = [a for a in native if isinstance(a, dict)]
+    # Laundered through _jsonable: the native listing is another module's
+    # payload and it is merged into this response verbatim.  A dict-subclass
+    # row whose ``.get`` bombs (or a value ``__bool__``/``__eq__``/``__str__``
+    # bomb reached by the installed filter and the sort key below), a
+    # >4300-digit int, raw bytes, or a lone-surrogate name all used to 500
+    # GET /api/catalog — either right here or later in Starlette's encoder.
+    native = [
+        row for row in (_jsonable(a) for a in native if isinstance(a, dict))
+        if isinstance(row, dict)
+    ]
     # Prefer native: if Cloudflared brew is installed, steer away from Docker twin
     native_ids_installed = {
         a["id"] for a in native if a.get("installed") and isinstance(a.get("id"), str)
@@ -1391,7 +1403,14 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             # generated passwords) reported as an uncoded two-word
             # ``message: "not found"`` the SPA cannot translate.
             unreachable = looks_engine_down(msg) or (
-                rc == -1 and looks_cli_vanished(msg)
+                # The sentinel is any FileNotFoundError spawn — a dest_dir
+                # (the compose cwd) that vanished between mkdir and the
+                # spawn raises identically — so the binary must be confirmed
+                # gone from disk before the sentinel reads as a vanished CLI
+                # (the compose_svc / actions convention): with the CLI still
+                # present and the engine merely off, the keep-the-stack 503
+                # pointed the operator at the wrong remedy.
+                rc == -1 and looks_cli_vanished(msg) and not cli_on_disk()
             )
             if unreachable and not engine_up(force=True):
                 # Same shape as the missing-CLI branch just above: the compose
@@ -1541,7 +1560,15 @@ def uninstall_template(
     joined = "\n".join(logs)
     if (
         not down_ok
-        and (looks_engine_down(joined) or looks_cli_vanished(joined))
+        # The vanished-CLI sentinel only classifies once the binary is
+        # confirmed gone from disk (the compose_svc / actions convention):
+        # any FileNotFoundError spawn collapses into the same "not found",
+        # so a dest_dir that vanished mid-request with the CLI still on
+        # disk keeps the ordinary uninstall path instead of the 503.
+        and (
+            looks_engine_down(joined)
+            or (looks_cli_vanished(joined) and not cli_on_disk())
+        )
         and not engine_up(force=True)
     ):
         # ``down`` did nothing: the containers, networks and volumes this

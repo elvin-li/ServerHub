@@ -133,6 +133,12 @@ class _CatalogSandbox(unittest.TestCase):
                 lambda tid, dest=None: self.registered.clear(),
             ),
             mock.patch.object(catalog, "_port_is_bound", lambda port: False),
+            # cli_on_disk is stubbed so the verdict never depends on whether
+            # the machine running the suite happens to have a docker binary:
+            # the sentinel only reads as a vanished CLI once the binary is
+            # confirmed gone from disk (a vanished *cwd* raises the same
+            # FileNotFoundError) — the compose_svc convention.
+            mock.patch.object(catalog, "cli_on_disk", return_value=False),
         ]
         for p in patches:
             p.start()
@@ -196,6 +202,23 @@ class CatalogInstallCliVanishedTests(_CatalogSandbox):
             r = catalog.install_template(self.tid, {})
         self.assertEqual(r["ok"], False)
         self.assertNotIn("code", r)
+        probe.assert_not_called()
+
+    def test_sentinel_with_the_binary_still_on_disk_is_not_a_missing_cli(self):
+        """The FileNotFoundError was the stack directory, not the CLI: the
+        keep-the-stack 503 here sent the operator to start an engine that
+        was not the problem, so the ordinary rollback path rules."""
+        probe = mock.Mock(return_value=False)
+        with (
+            mock.patch.object(catalog, "run_capped", return_value=MISSING),
+            mock.patch.object(catalog, "engine_up", probe),
+            mock.patch.object(catalog, "cli_on_disk", return_value=True),
+        ):
+            r = catalog.install_template(self.tid, {})
+        self.assertEqual(r["ok"], False)
+        self.assertNotIn("code", r)
+        self.assertFalse(self.dest_dir.exists(), "real failures keep rolling back")
+        # The message-pattern gate fails first, so no probe is spawned.
         probe.assert_not_called()
 
     def test_a_real_nonzero_exit_reading_not_found_stays_raw(self):
@@ -277,6 +300,21 @@ class CatalogUninstallCliVanishedTests(_CatalogSandbox):
         self.assertIn("ok", r)
         probe.assert_not_called()
 
+    def test_sentinel_with_the_binary_still_on_disk_is_not_a_missing_cli(self):
+        """A vanished cwd (same FileNotFoundError sentinel) with the CLI
+        still on disk keeps the ordinary uninstall path instead of the
+        engine-down 503 that points at the wrong remedy."""
+        probe = mock.Mock(return_value=False)
+        with (
+            mock.patch.object(catalog, "run_capped", return_value=MISSING),
+            mock.patch.object(catalog, "engine_up", probe),
+            mock.patch.object(catalog, "cli_on_disk", return_value=True),
+        ):
+            r = catalog.uninstall_template(self.tid, remove_data=True, confirm=True)
+        self.assertIn("ok", r)
+        # The message-pattern gate fails first, so no probe is spawned.
+        probe.assert_not_called()
+
 
 class AppsComposeCliVanishedTests(unittest.TestCase):
     """_compose_cmd (Apps start/stop/restart/update/logs): coded soft-fail."""
@@ -297,6 +335,9 @@ class AppsComposeCliVanishedTests(unittest.TestCase):
         patches = [
             mock.patch.object(apps_manage_svc, "SERVICES_ROOT", self.services),
             mock.patch.object(apps_manage_svc, "DOCKER", str(self.docker_bin)),
+            # Stubbed so the verdict never depends on the suite machine's
+            # own docker binary (the compose_svc convention).
+            mock.patch.object(apps_manage_svc, "cli_on_disk", return_value=False),
         ]
         for p in patches:
             p.start()
@@ -351,6 +392,23 @@ class AppsComposeCliVanishedTests(unittest.TestCase):
             result = apps_manage_svc.logs("docker:mystack")
         self.assertEqual(result["ok"], False)
         self.assertEqual(result["code"], "container.engine_down")
+
+    def test_sentinel_with_the_binary_still_on_disk_is_not_a_missing_cli(self):
+        """A stack directory (the compose cwd) that vanished mid-request
+        raises the same FileNotFoundError sentinel; with the CLI still on
+        disk the raw result rules, not the engine-down soft-fail."""
+        probe = mock.Mock(return_value=False)
+        with (
+            mock.patch.object(apps_manage_svc, "run_capped", return_value=MISSING),
+            mock.patch.object(apps_manage_svc, "engine_up", probe),
+            mock.patch.object(apps_manage_svc, "cli_on_disk", return_value=True),
+        ):
+            result = apps_manage_svc.action("docker:mystack", "stop")
+        self.assertEqual(result["ok"], False)
+        self.assertNotIn("code", result)
+        self.assertEqual(result["message"], "not found")
+        # The message-pattern gate fails first, so no probe is spawned.
+        probe.assert_not_called()
 
 
 class ComposeValidateCliVanishedTests(unittest.TestCase):
