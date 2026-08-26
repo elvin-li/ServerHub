@@ -258,6 +258,104 @@ class TargetEdgeTests(_WsCase):
         self._assert_sessions_release()
 
 
+class CancelledTeardownTests(_WsCase):
+    """The live leftover this sweep found: a cancellation landing in the
+    bridge teardown (server shutdown/reload cancelling the handler task
+    mid-bridge) re-raised CancelledError out of ``await writer.wait_closed()``
+    — a BaseException the ``except Exception`` guard did not hold — and
+    ``release_session`` never ran.  With MAX_SESSIONS_PER_VM=1 the leaked
+    reservation kept that VM's console answering the coded too_many_sessions
+    until the process restarted.  The release now runs before any await."""
+
+    def test_cancelled_bridge_releases_the_session_reservation(self):
+        import asyncio
+
+        _uuid = _UUID
+
+        class _FakeWs:
+            """Just enough WebSocket for console_websocket's happy path."""
+
+            def __init__(self, ticket: str):
+                self.query_params = {"ticket": ticket}
+                self.accepted = asyncio.Event()
+
+            async def accept(self):
+                self.accepted.set()
+
+            async def receive(self):
+                await asyncio.sleep(3600)  # parked until cancelled
+
+            async def send_bytes(self, data):
+                return None
+
+            async def close(self, code=1000):
+                return None
+
+        async def _serve_until_eof(reader, writer):
+            # Drain to EOF then close, so server.wait_closed() (which waits
+            # for active connections on 3.12+) cannot outlive the bridge.
+            with contextlib.suppress(Exception):
+                await reader.read()
+            with contextlib.suppress(Exception):
+                writer.close()
+
+        async def _parked_wait_closed(_writer):
+            # A teardown await that does not finish promptly: the exact spot
+            # where a shutdown's second cancellation used to land and skip
+            # release_session (CancelledError is not an Exception).
+            await asyncio.sleep(3600)
+
+        async def scenario():
+            server = await asyncio.start_server(
+                _serve_until_eof, "127.0.0.1", 0,
+            )
+            port = server.sockets[0].getsockname()[1]
+            self._allow(port)
+            target = vm_console.resolve_target(f"utm:{_uuid}")
+            issued = vm_console.issue_ticket(
+                target, user="admin", session_token="session-token",
+            )
+            ws = _FakeWs(issued["ticket"])
+
+            async def auth(_ws):
+                return ("session-token", "admin")
+
+            with (
+                mock.patch(
+                    "hub.websocket_security.authenticate_websocket", auth,
+                ),
+                mock.patch.object(vms_svc, "utm_vm_running", return_value=True),
+                mock.patch.object(audit, "record"),
+                mock.patch.object(
+                    asyncio.StreamWriter, "wait_closed", _parked_wait_closed,
+                ),
+            ):
+                task = asyncio.create_task(
+                    vm_console.console_websocket(ws, f"utm:{_uuid}")
+                )
+                await asyncio.wait_for(ws.accepted.wait(), timeout=10)
+                with vm_console._lock:
+                    self.assertEqual(len(vm_console._sessions), 1)
+                # Shutdown semantics: cancel the handler, give the teardown a
+                # tick to reach its awaits, then cancel again — as an ASGI
+                # server abandoning tasks that did not finish does.
+                task.cancel()
+                await asyncio.sleep(0.05)
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=10)
+            server.close()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(server.wait_closed(), timeout=5)
+
+        asyncio.run(scenario())
+        with vm_console._lock:
+            self.assertEqual(
+                vm_console._sessions, {},
+                "cancelled bridge must release its session reservation",
+            )
+
+
 class HostileTicketTests(_WsCase):
     def test_hostile_ticket_values_answer_coded_invalid_ticket(self):
         self._allow(5900)

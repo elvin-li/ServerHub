@@ -78,8 +78,8 @@ class AppsVmSuspendDispatchTests(unittest.TestCase):
         with p[0], p[1], p[2], p[3], p[4], p[5]:
             resp = self.client.get("/api/apps/managed?force=true")
         self.assertEqual(resp.status_code, 200, resp.text[:200])
-        vms = resp.json().get("vms") or []
-        row = next(v for v in vms if v["id"] == "vm:Ubuntu")
+        items = resp.json().get("items") or []
+        row = next(v for v in items if v.get("id") == "vm:Ubuntu")
         self.assertIn("suspend", row["actions"])
 
     def test_suspend_reaches_utmctl_suspend(self):
