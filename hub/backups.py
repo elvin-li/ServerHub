@@ -297,6 +297,24 @@ def _tool_on_disk(tool) -> bool:
         return False
 
 
+def _exit_text(rc) -> str:
+    """``exit <rc>`` for result messages, or ``exit unknown`` when *rc* cannot
+    be rendered at all (the brew_svc rule).
+
+    Past CPython's 4300-digit int->str cap the bare f-string raises the
+    digit-cap ValueError.  In ``_backup_immich_script`` that render sat
+    outside every try and 500'd POST /api/backups/immich after the run had
+    already finished; the postgres dump's broad catch kept the 200 but
+    answered with CPython's digit-cap internals as the whole message.  The
+    compose stop/start/config and tar renders feed the scheduler journal
+    through the same f-strings.
+    """
+    try:
+        return f"exit {rc}"
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        return "exit unknown"
+
+
 def _cli_vanished(rc, text, tool) -> bool:
     """Whether a ``run_capped`` result means the job's own binary is gone.
 
@@ -1077,7 +1095,7 @@ def _backup_immich_script() -> dict:
         # created-check above stays raw on purpose — it compares glob
         # results with glob results.
         "path": _as_text(BACKUP_ROOT / latest["name"]) if ok and latest else None,
-        "message": (text or f"exit {rc}")[:500],
+        "message": (text or _exit_text(rc))[:500],
         "size_mb": latest["size_mb"] if ok and latest else 0,
     }
 
@@ -1296,7 +1314,7 @@ def _dump_one_postgres(target: dict) -> dict:
             # dump used to 500 POST /api/backups/postgres at Starlette's
             # UTF-8 encode.  _discard/_prune above keep the raw Path.
             "path": _as_text(dest) if ok else None,
-            "message": (text or f"exit {rc}")[:500],
+            "message": (text or _exit_text(rc))[:500],
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
     except HTTPException:
@@ -1469,7 +1487,7 @@ def _stack_mounts(compose_path: str, workdir: str | None) -> tuple[list[str], li
         cap=_COMPOSE_JSON_CAP,
     )
     if rc != 0 or not out.strip():
-        return [], [], (err or out or f"compose config exit {rc}").strip()[:300]
+        return [], [], (err or out or f"compose config {_exit_text(rc)}").strip()[:300]
     try:
         # parse_int hook: one leftover >4300-digit number anywhere in the
         # resolved config (a label, an x- extension) used to ValueError the
@@ -1617,7 +1635,7 @@ def recover_interrupted_stack_backups() -> list[dict]:
             )
             started = rc == 0
             detail = "restarted" if started else (
-                f"compose start exit {rc}: {(err or out).strip()[:200]}"
+                f"compose start {_exit_text(rc)}: {(err or out).strip()[:200]}"
             )
         log.warning("interrupted stack backup found for %s: %s", stack_id, detail)
         try:
@@ -1722,7 +1740,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
             # finally-restart below keys off "stop was attempted", not rc.
             stopped = True
             if rc != 0:
-                log.append(f"!! compose stop exit {rc}: {(err or out).strip()[:200]}")
+                log.append(f"!! compose stop {_exit_text(rc)}: {(err or out).strip()[:200]}")
 
         # No early returns inside this try: the result must be assembled after
         # the finally has run, or it could not truthfully report `restarted`.
@@ -1767,7 +1785,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
             archive_ok = rc == 0 and size > 0
             if not archive_ok:
                 error = "archive_failed"
-                message = (err or out or f"tar exit {rc}").strip()[:300]
+                message = (err or out or f"tar {_exit_text(rc)}").strip()[:300]
                 log.append(f"!! archive failed: {message}")
             else:
                 message = f"archived {len(binds)} bind mount(s), {len(volumes)} volume(s)"
@@ -1781,7 +1799,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
                                      timeout=300)
             restarted = rc == 0
             if not restarted:
-                log.append(f"!! compose start exit {rc}: {(err or out).strip()[:200]}")
+                log.append(f"!! compose start {_exit_text(rc)}: {(err or out).strip()[:200]}")
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
         if dest is not None and not archive_ok:
