@@ -872,9 +872,20 @@ def _write_launchagent_token() -> Path:
         "WorkingDirectory": str(STATE_DIR),
         "EnvironmentVariables": _launch_env(),
     }
-    secure_io.replace_bytes(
-        PLIST, plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
-    )
+    # A leftover directory occupying the plist path made os.replace raise
+    # IsADirectoryError out of replace_bytes and 500 POST /start,
+    # /start-token and /restart (and the Apps autostart toggle).  Drop an
+    # empty leftover so the start self-heals; anything the drop cannot
+    # remove (a non-empty directory) stays a coded 503.
+    secure_io.drop_leftover_nonfile(PLIST)
+    try:
+        secure_io.replace_bytes(
+            PLIST, plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
+        )
+    except OSError as e:
+        raise api_error(
+            "cloudflared.plist_write_failed", error=_as_text(e) or "error"
+        )
     return PLIST
 
 

@@ -3121,6 +3121,7 @@ export default {
       token_fetch_failed: 'could not fetch the tunnel token: {error}',
       invalid_token: 'invalid Cloudflare tunnel token; paste the connector token from Zero Trust → Tunnels (it starts with eyJ)',
       start_failed: 'the tunnel process died after start: {error}',
+      plist_write_failed: 'could not write the tunnel LaunchAgent plist: {error}',
       no_token: 'no tunnel token saved yet',
       invalid_name: 'invalid tunnel name (letters, digits, . _ - only)',
       login_required: 'sign in to Cloudflare first',
