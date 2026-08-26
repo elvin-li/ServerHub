@@ -71,6 +71,7 @@ CONSTANTS = {
     "SYSCTL": "/usr/sbin/sysctl",
     "LAUNCHCTL": "/bin/launchctl",
     "NS": "/usr/sbin/networksetup",
+    "IFCONFIG": "/sbin/ifconfig",
     "NFSD": "/sbin/nfsd",
     "DISKUTIL": "/usr/sbin/diskutil",
     "TMUTIL": "/usr/bin/tmutil",
