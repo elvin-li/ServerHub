@@ -345,6 +345,61 @@ class SmartScheduleSubclassBombTests(unittest.TestCase):
                 self.assertIsInstance(smart_test_svc.schedule_due(), bool)
 
 
+class SmartScheduleUnreadableConfigStaysImmuneTests(unittest.TestCase):
+    """PUT /api/smart/schedule over torn services.yaml: coded 503, file intact.
+
+    Re-checked, already immune: the schedule save funnels into
+    ``config.mutate`` → ``_read_disk_for_mutate``, which refuses an
+    unreadable config with ``settings.config_unreadable`` instead of
+    rewriting the file from the ``{}`` fallback.
+    """
+
+    def setUp(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from hub import config
+
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.yaml = self.dir / "services.yaml"
+        for target, value in (
+            ("YAML_PATH", self.yaml),
+            ("DATA_DIR", self.dir),
+            ("BASE", self.dir),
+            ("_LOCK_PATH", self.dir / ".services.yaml.lock"),
+            ("_cfg", {"mtime": None, "data": {}}),
+        ):
+            patched = mock.patch.object(config, target, value)
+            patched.start()
+            self.addCleanup(patched.stop)
+        self.addCleanup(config.reload_cfg)
+        self.addCleanup(smart_test_svc.invalidate)
+
+    def test_torn_config_answers_503_and_keeps_the_file(self):
+        from hub import config
+
+        torn = b"settings:\n  ok: tr" + b"\x00\xff\xfe\x80" * 8
+        self.yaml.write_bytes(torn)
+        config.reload_cfg()
+        with (
+            mock.patch.object(
+                nas_storage, "require_admin_browser", return_value="admin"),
+            mock.patch.object(
+                smart_test_svc, "_device_nodes", return_value=["/dev/disk0"]),
+        ):
+            response = _client().put(
+                "/api/smart/schedule",
+                json={"interval": "daily", "kind": "short",
+                      "devices": ["/dev/disk0"]},
+            )
+        self.assertEqual(response.status_code, 503, response.text[:300])
+        self.assertEqual(
+            response.json()["detail"]["code"], "settings.config_unreadable")
+        self.assertEqual(self.yaml.read_bytes(), torn)
+
+
 class SmartHistoryRowBombTests(unittest.TestCase):
     """History rows this module does not own must render, never 500."""
 
