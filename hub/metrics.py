@@ -38,8 +38,10 @@ def _ncpu() -> int:
     if cached is not None and now - _ncpu_cache["t"] < _NCPU_TTL:
         try:
             n = int(cached)
-        except (TypeError, ValueError, OverflowError):
-            # Leftover planted ``n: .inf`` OverflowError'd ``int(inf)``.
+        except Exception:
+            # Leftover planted ``n: .inf`` OverflowError'd ``int(inf)``;
+            # Exception because ``int()`` of a leftover subclass dispatches
+            # into its own ``__int__``/``__index__`` bomb.
             n = 0
         if n > 0:
             return n
@@ -48,7 +50,7 @@ def _ncpu() -> int:
     n = macos_sysctl.sysctl_int("hw.ncpu", timeout=2, sh=sh)
     try:
         n = int(n) if n is not None else 1
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         n = 1
     if n <= 0:
         n = 1
@@ -112,9 +114,12 @@ def _cpu_used_quick(sensors: dict | None = None) -> float | None:
     try:
         # isinstance, not truthiness: a leftover non-dict snapshot used to
         # AttributeError .get() past the numeric-only except below.
+        # Exception, not the three usual conversion errors: ``float()`` of a
+        # leftover float-subclass field dispatches into its own ``__float__``,
+        # whose modules5 bomb killed the sampler tick past metrics5's guards.
         if isinstance(s, dict) and s.get("cpu_used_pct") is not None:
             return float(s["cpu_used_pct"])
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         pass
     try:
         load1 = os.getloadavg()[0]
@@ -159,7 +164,9 @@ def _sample() -> dict:
         if s.get("cpu_used_pct") is not None:
             try:
                 cpu_used = min(100.0, max(0.0, float(s["cpu_used_pct"])))
-            except (TypeError, ValueError, OverflowError):
+            except Exception:
+                # Exception: a leftover float-subclass ``__float__`` bomb in
+                # the snapshot is not one of the three conversion errors.
                 pass
         gpu = s.get("gpu")
         if isinstance(gpu, dict):
@@ -170,7 +177,9 @@ def _sample() -> dict:
                     v = float(raw)
                     if v == v and v not in (float("inf"), float("-inf")):
                         gpu_util_pct = round(min(100.0, max(0.0, v)), 1)
-                except (TypeError, ValueError, OverflowError):
+                except Exception:
+                    # Exception: a leftover float-subclass ``__float__`` bomb
+                    # is not one of the three conversion errors.
                     pass
 
     if not sensors_hit or mem_free is None:
@@ -264,10 +273,19 @@ def flush_pending() -> None:
         _flush_buf_locked()
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # _decode_bytes, not value.decode: a leftover bytes-subclass whose
+        # bound ``decode`` raised (modules5's bomb class) used to escape
+        # _jsonable entirely — as a value and as a mapping key.
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -287,12 +305,30 @@ def _jsonable(value, depth: int = 0):
     down ``GET /api/metrics`` at encode time.  A leftover ``\\ud800`` string
     or key still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
     ``t`` is handled separately by :func:`sample_ts`.
+
+    The remaining bound probes still blew on the modules5 subclass-bomb
+    classes (already neutralized in sensors_svc._jsonable, never ported
+    here): an int subclass whose ``__str__`` raises (only ValueError was
+    caught around the digit-cap probe), a float subclass whose
+    ``__eq__``/``__float__`` raises (the NaN probe and the inf
+    tuple-membership probe both call it), and a bytes/bytearray subclass
+    whose ``decode`` raises — as a value and as a mapping key.  Each used
+    to raise straight out of this sanitizer, killing the sampler tick in
+    record_sample() and escaping latest_sample()'s alert path.  Hence the
+    unbound base-type coercions below, the modules5 convention.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -301,13 +337,20 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
@@ -327,12 +370,12 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        try:
-            items = list(value)
-        except Exception:
-            # Leftover sequence subclass whose __iter__ raises.
-            return None
-        return [_jsonable(v, depth + 1) for v in items]
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements (``list(value)`` dispatched
+                # into the override and threw the payload away with it).
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -374,6 +417,14 @@ def sample_ts(raw) -> int | None:
                 return None
     if not isinstance(raw, (int, float)):
         return None
+    # Base coercion first: ``float(raw)`` / ``int(raw)`` dispatch into a
+    # subclass ``__float__`` / ``__int__`` / ``__trunc__``, whose modules5
+    # bomb is none of the errors caught below and used to escape.
+    if type(raw) not in (int, float):
+        try:
+            raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
+        except Exception:
+            return None
     # A leftover 400-digit ``t`` (or ``?since=`` of the same) used to
     # OverflowError ``float(raw)`` / ``time.time() - since`` on the range path.
     try:
@@ -453,9 +504,11 @@ def history(minutes: int = 60) -> list:
     now = sample_ts(time.time()) or 0
     try:
         span = int(minutes) * 60
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         # Leftover ``minutes: .inf`` / ``int(time.time())`` on inf used to
-        # OverflowError GET /api/metrics.
+        # OverflowError GET /api/metrics.  Exception, not the three usual
+        # conversion errors: ``int()`` of a leftover subclass dispatches
+        # into its own ``__int__``/``__index__``, whose bomb is neither.
         span = 3600
     if span < 0:
         span = 3600
