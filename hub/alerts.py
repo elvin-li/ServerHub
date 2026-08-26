@@ -163,8 +163,22 @@ def _alert_ts(raw) -> int | None:
     if isinstance(raw, bool) or raw is None:
         return None
     if isinstance(raw, int):
+        if type(raw) is not int:
+            try:
+                # Base coercion to an exact int: an int-subclass leftover with
+                # a ``__str__``/``__eq__`` bomb must not ride into the payload.
+                raw = int.__index__(raw)
+            except Exception:
+                return None
         return raw
     if isinstance(raw, float):
+        if type(raw) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__`` bomb
+                # used to blow the NaN/inf probes below.
+                raw = float.__float__(raw)
+            except Exception:
+                return None
         if raw != raw or raw in (float("inf"), float("-inf")):
             return None
         try:
@@ -172,6 +186,13 @@ def _alert_ts(raw) -> int | None:
         except OverflowError:
             return None
     if isinstance(raw, str):
+        if type(raw) is not str:
+            try:
+                # Exact-str copy so a subclass ``strip``/``__eq__`` bomb
+                # never runs on the probes below.
+                raw = str.__str__(raw)
+            except Exception:
+                return None
         text = raw.strip()
         if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
             try:
@@ -185,10 +206,19 @@ def _alert_ts(raw) -> int | None:
     return None
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a bytes-subclass ``.decode`` bomb riding a
+        # poisoned check row used to raise straight out of the sanitizer
+        # and 500 POST /api/alerts/check.
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -198,7 +228,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
+    # skips CPython's exact-str copy above and used to carry its bound
+    # ``encode`` bomb into this very scrub — a raw 500 on the alerts routes.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable_alert(value, depth: int = 0):
@@ -207,16 +242,35 @@ def _jsonable_alert(value, depth: int = 0):
     Leftover YAML ``name: 2026-08-19`` / ``kind: .inf`` used to land in the
     ``check_once`` payload and 500 POST /api/alerts/check at encode time.
     A leftover ``\\ud800`` in alerts.jsonl still 500'd GET /api/alerts.
+
+    Probes run on the *base* types (the modules5 unbound convention): a
+    subclass ``items()`` / ``__iter__`` / ``__str__`` / ``__eq__`` /
+    ``decode`` bomb, or a raising ``isoformat`` property, riding a row one
+    of the check feeders (ups_policy.sweep, freshness_svc.check_freshness,
+    stale_runtime.remediate) handed back used to raise out of this very
+    sanitizer in ``check_once``'s final sweep — the one spot no try/except
+    covers — and 500 POST /api/alerts/check.
     """
     if depth > 32:
         return None
+    if isinstance(value, bool) or value is None:
+        return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a dict-subclass ``items()`` bomb cannot 500,
+        # and the real entries in its C-level storage still walk.
+        for k, v in dict.items(value):
             if not isinstance(k, str):
                 # str() probe, not an isinstance gate: the gate silently
                 # dropped every numeric YAML/plist key (``123: …``) from the
@@ -230,12 +284,22 @@ def _jsonable_alert(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable_alert(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable_alert(v, depth + 1) for v in value]
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.
+                return [_jsonable_alert(v, depth + 1) for v in base.__iter__(value)]
     if isinstance(value, str):
         return _utf8_text(value)
-    if isinstance(value, bool) or value is None:
-        return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # raising anything but ValueError escaped the digit-cap
+                # probe below and 500'd the route.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -244,8 +308,13 @@ def _jsonable_alert(value, depth: int = 0):
             return None
         return value
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    iso = getattr(value, "isoformat", None)
+        return _decode_bytes(value)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -273,9 +342,23 @@ def _service_id(raw) -> str:
     ``id: [foo]`` used to TypeError ``services[sid]``.
     """
     if isinstance(raw, str):
-        return raw
+        if type(raw) is str:
+            return raw
+        try:
+            # Exact-str copy: a str-subclass id whose ``__hash__``/``__eq__``
+            # raises used to detonate the ``services[sid]`` dict insert.
+            return str.__str__(raw)
+        except Exception:
+            return ""
     if isinstance(raw, bool) or not isinstance(raw, int):
         return ""
+    if type(raw) is not int:
+        try:
+            # Base coercion first: an int-subclass ``__str__`` bomb raising
+            # anything but ValueError escaped the digit-cap catch below.
+            raw = int.__index__(raw)
+        except Exception:
+            return ""
     try:
         return str(raw)
     except ValueError:
@@ -572,10 +655,12 @@ def _format_alert(template: str, **kw) -> str:
     """
     try:
         return _utf8_text(template.format(**kw))
-    except (KeyError, IndexError, ValueError, TypeError, RecursionError, OverflowError):
-        # RecursionError: leftover recursive ``__format__``/``__str__`` is not
-        # ValueError; that used to abort the SMART pass (and 500 the check
-        # when the sweep wrapper was not in place). OverflowError: leftover inf.
+    except Exception:
+        # Exception, not an enumerated tuple: ``str.format`` dispatches into
+        # each value's own ``__format__``/``__str__``, and a subclass bomb
+        # there raises whatever it likes (a RuntimeError escaped the old
+        # KeyError/IndexError/ValueError/TypeError/RecursionError/
+        # OverflowError list and aborted the SMART pass).
         out = template
         for key, val in kw.items():
             try:
@@ -611,8 +696,23 @@ def _as_epoch(raw, default: int = 0) -> int:
     if isinstance(raw, bool) or raw is None:
         return default
     if isinstance(raw, int):
+        if type(raw) is not int:
+            try:
+                # Base coercion to an exact int: a subclass arithmetic/compare
+                # bomb must not ride into the cooldown math.
+                raw = int.__index__(raw)
+            except Exception:
+                return default
         return raw
     if isinstance(raw, float):
+        if type(raw) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__`` bomb
+                # (a leftover patched ``time.time`` included) used to blow the
+                # NaN/inf probes below.
+                raw = float.__float__(raw)
+            except Exception:
+                return default
         if raw != raw or raw in (float("inf"), float("-inf")):
             return default
         try:
@@ -620,6 +720,11 @@ def _as_epoch(raw, default: int = 0) -> int:
         except (OverflowError, ValueError):
             return default
     if isinstance(raw, str):
+        if type(raw) is not str:
+            try:
+                raw = str.__str__(raw)
+            except Exception:
+                return default
         text = raw.strip()
         if not text:
             return default

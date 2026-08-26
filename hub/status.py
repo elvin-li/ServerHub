@@ -55,6 +55,28 @@ def _decode_bytes(value) -> str:
     return base.decode(value, "utf-8", "replace")
 
 
+def _cfg_value(key, default=None):
+    """One top-level config read that a leftover cfg() bomb cannot 500.
+
+    ``cfg()`` normally returns a plain dict, but a leftover whose root is a
+    dict *subclass* with a bombing ``.get`` used to raise out of the bare
+    ``cfg().get(...)`` reads in ``_build_status`` — 500ing a cold
+    GET /api/status *and* POST /api/alerts/check, which calls
+    ``full_status`` before any of its per-check try/excepts exist.
+    ``dict.get`` reads the C-level storage underneath the override.
+    """
+    try:
+        data = cfg()
+    except Exception:
+        return default
+    if not isinstance(data, dict):
+        return default
+    try:
+        return dict.get(data, key, default)
+    except Exception:
+        return default
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
@@ -68,7 +90,13 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
+    # skips CPython's exact-str copy above and used to carry its bound
+    # ``encode`` bomb into this scrub — 500ing GET /api/status and (via the
+    # ``full_status`` call in check_once) POST /api/alerts/check.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _name_text(raw) -> str:
@@ -330,8 +358,18 @@ def _remember_port(ports: set, value) -> None:
 
 
 def _build_status() -> dict:
-    raw_settings = cfg().get("settings")
-    adaptive_on = (raw_settings if isinstance(raw_settings, dict) else {}).get("adaptive", True)
+    raw_settings = _cfg_value("settings")
+    if isinstance(raw_settings, dict):
+        # Plain-dict copy (C-level storage): a leftover ``settings`` map that
+        # is a dict subclass whose ``.get`` raises passed the isinstance gate
+        # and 500'd the very first read of a cold build.
+        try:
+            raw_settings = dict(raw_settings)
+        except Exception:
+            raw_settings = {}
+    else:
+        raw_settings = {}
+    adaptive_on = raw_settings.get("adaptive", True)
     f_l = _pool.submit(discover_launchd)
     f_d = _pool.submit(discover_containers)
     f_v = _pool.submit(discover_vms)
@@ -404,7 +442,7 @@ def _build_status() -> dict:
         if st not in counts:
             counts[st] = 0
         counts[st] += 1
-    raw_order = cfg().get("groups_order")
+    raw_order = _cfg_value("groups_order")
     # Names via the str() probe.  ``_as_config`` leaves this list unfiltered
     # (it is not a list of mappings); a nested dict used to TypeError on
     # ``g in groups``, and the old ``isinstance(g, str)`` gate silently lost
@@ -611,10 +649,26 @@ def _stamp_locale(status: dict) -> dict:
     """
     if not isinstance(status, dict):
         return _jsonable(status)
+    if type(status) is not dict:
+        # Plain-dict copy first (C-level storage): a leftover cached snapshot
+        # that is a dict *subclass* whose ``.get``/``__setitem__`` raises used
+        # to 500 every cache-hit ``full_status`` — GET /api/status and
+        # POST /api/alerts/check alike — before ``_jsonable``'s unbound walk
+        # ever ran.  A subclass whose copy itself raises is junk: degrade to
+        # the empty snapshot rather than the route.
+        try:
+            status = dict(status)
+        except Exception:
+            return _jsonable({})
     try:
         loc = panel_locale()
     except Exception:
-        loc = status.get("locale") or "zh-CN"
+        try:
+            loc = status.get("locale") or "zh-CN"
+        except Exception:
+            loc = "zh-CN"
+        if not isinstance(loc, str):
+            loc = "zh-CN"
     current = status.get("locale")
     # Type-gated compare: a leftover planted in the cache whose ``__ne__``
     # raises must restamp and scrub, not 500 the cache-hit path.

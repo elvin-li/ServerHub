@@ -678,7 +678,13 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
+    # skips CPython's exact-str copy above and used to carry its bound
+    # ``encode`` bomb into this scrub — raising out of dispatch()'s
+    # never-raises paths (POST /api/alerts/test, the alert thread's sweep).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _json_safe(value, depth: int = 0):
