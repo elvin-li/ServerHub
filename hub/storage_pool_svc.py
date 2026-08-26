@@ -178,7 +178,15 @@ def _candidates() -> list[dict]:
     from hub import storage_svc
 
     out: list[dict] = []
-    volumes = storage_svc.list_volumes()
+    try:
+        volumes = storage_svc.list_volumes()
+    except Exception:
+        # The pool4 guard below covered *iteration* but not the call: a
+        # list_volumes that raised outright (a seam replacement, a leftover
+        # that slips its own guards) still 500'd every pool route at once —
+        # clear *after* its config write had already landed.  Same honest
+        # degrade as the iteration bomb: no candidates, members read missing.
+        volumes = []
     if not isinstance(volumes, list):
         volumes = []
     try:
@@ -196,24 +204,31 @@ def _candidates() -> list[dict]:
     for vol in volumes:
         if not isinstance(vol, dict):
             continue
-        if vol.get("kind") not in POOLABLE_KINDS:
+        try:
+            # Per-row guard, same class as the iteration bomb above: a dict
+            # *subclass* passes the isinstance gate with a ``.get`` that
+            # raises, and one such row used to cost all four pool routes.
+            # Dropping the hostile row keeps its healthy siblings rendering.
+            if vol.get("kind") not in POOLABLE_KINDS:
+                continue
+            mount = _text(vol.get("mount"))
+            if not mount:
+                continue
+            disk_id = _text(vol.get("disk_id")) or None
+            out.append(
+                {
+                    "mount": mount,
+                    "device": _text(vol.get("device")),
+                    "disk_id": disk_id,
+                    "filesystem": _text(vol.get("filesystem")),
+                    "total_gb": _finite_float(vol.get("total_gb")),
+                    "used_gb": _finite_float(vol.get("used_gb")),
+                    "avail_gb": _finite_float(vol.get("avail_gb")),
+                    "pct": _finite_int(vol.get("pct")),
+                }
+            )
+        except Exception:
             continue
-        mount = _text(vol.get("mount"))
-        if not mount:
-            continue
-        disk_id = _text(vol.get("disk_id")) or None
-        out.append(
-            {
-                "mount": mount,
-                "device": _text(vol.get("device")),
-                "disk_id": disk_id,
-                "filesystem": _text(vol.get("filesystem")),
-                "total_gb": _finite_float(vol.get("total_gb")),
-                "used_gb": _finite_float(vol.get("used_gb")),
-                "avail_gb": _finite_float(vol.get("avail_gb")),
-                "pct": _finite_int(vol.get("pct")),
-            }
-        )
     out.sort(key=lambda v: v["mount"])
     return out
 
