@@ -768,7 +768,12 @@ def peek_sensors() -> dict | None:
     """
     v = _cache["v"]
     if v is not None and time.time() - _cache["t"] < _sensors_ttl():
-        return _jsonable(v)
+        cleaned = _jsonable(v)
+        # Same isinstance guard as collect_sensors' cache hit: a leftover
+        # non-dict planted in the cache used to escape here verbatim —
+        # GET /api/system/sensors?light=1 answered a JSON array, and the
+        # metrics sampler then AttributeError'd on snapshot.get().
+        return cleaned if isinstance(cleaned, dict) else None
     return None
 
 

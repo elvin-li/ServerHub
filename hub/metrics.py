@@ -66,12 +66,18 @@ def _sensors_snapshot() -> dict | None:
     try:
         from hub import sensors_svc
         hit = sensors_svc.peek_sensors()
-        if hit is not None:
+        if isinstance(hit, dict):
             return hit
         from hub.resource_mode import is_high
         if is_high():
-            return sensors_svc.collect_sensors()
-        return sensors_svc.collect_light()
+            snap = sensors_svc.collect_sensors()
+        else:
+            snap = sensors_svc.collect_light()
+        # A leftover non-dict planted in the sensors cache used to come back
+        # verbatim, and _sample()'s snapshot.get() AttributeError killed the
+        # tick — no jsonl row and no maybe_rollup() pass until the cache
+        # expired.
+        return snap if isinstance(snap, dict) else None
     except Exception:
         return None
 
@@ -80,7 +86,9 @@ def _cpu_used_quick(sensors: dict | None = None) -> float | None:
     """Lightweight CPU used % without full top if sensors cache warm."""
     s = sensors if sensors is not None else _sensors_snapshot()
     try:
-        if s and s.get("cpu_used_pct") is not None:
+        # isinstance, not truthiness: a leftover non-dict snapshot used to
+        # AttributeError .get() past the numeric-only except below.
+        if isinstance(s, dict) and s.get("cpu_used_pct") is not None:
             return float(s["cpu_used_pct"])
     except (TypeError, ValueError, OverflowError):
         pass
@@ -104,12 +112,20 @@ def _sample() -> dict:
     load_pct = round(min(200.0, load1 / ncpu * 100), 1) if ncpu else None
 
     net_rx = net_tx = None
-    sensors_hit = bool(s)
-    if s:
-        net = s.get("network") or {}
+    sensors_hit = isinstance(s, dict) and bool(s)
+    if sensors_hit:
+        # isinstance, not ``or {}``: a leftover truthy non-dict ``network`` /
+        # ``memory`` in the snapshot ("down", a list) used to AttributeError
+        # .get() here, killing the sampler tick — the jsonl row was silently
+        # lost and maybe_rollup() was skipped with it.
+        net = s.get("network")
+        if not isinstance(net, dict):
+            net = {}
         net_rx = net.get("rx_bps")
         net_tx = net.get("tx_bps")
-        m = s.get("memory") or {}
+        m = s.get("memory")
+        if not isinstance(m, dict):
+            m = {}
         if m.get("pressure_used_pct") is not None:
             mem_used_pct = m["pressure_used_pct"]
             mem_free = m.get("pressure_free_pct", mem_free)
