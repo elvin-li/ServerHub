@@ -284,8 +284,12 @@ class PoolRowProtocolBombPins(unittest.TestCase):
         # The poisoned-method-but-real-storage rows keep rendering.
         self.assertIn("/Volumes/F", mounts)
         self.assertIn("/Volumes/G", mounts)
+        # Since the pool7 unbound-base sweep, the str-subclass encode-bomb
+        # mount renders through ``str.encode`` (the real path underneath the
+        # override) instead of dropping the row.
+        self.assertIn("/Volumes/D", mounts)
         # The protocol-bomb rows drop alone.
-        for gone in ("/Volumes/A", "/Volumes/B", "/Volumes/C", "/Volumes/D"):
+        for gone in ("/Volumes/A", "/Volumes/B", "/Volumes/C"):
             self.assertNotIn(gone, mounts)
 
     def test_save_next_to_the_bomb_rows_still_lands(self):

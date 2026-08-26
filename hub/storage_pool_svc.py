@@ -75,28 +75,53 @@ def _pool_config() -> dict:
 
     Absent configuration is the normal state: the panel should show the
     candidate disks and let the operator decide, not invent a pool.
+
+    ``dict.get`` / ``list.__iter__``, not the bound methods (the
+    ``settings_section`` convention this reader predates): ``cfg()`` parses
+    YAML to exact types, but the nested values are whatever an in-process
+    caller last stored, and a dict-*subclass* settings map (or pool block)
+    with a bombing ``.get`` / ``__bool__`` — or a list-subclass ``members``
+    whose ``__iter__`` raises — used to detonate this reader and 500 all
+    four pool routes at once (GET /api/storage/pool, plan, save, and clear
+    *after* its config write had already landed).  The unbound builtins read
+    the C-level storage underneath the override, so only the truly hostile
+    value degrades to its default.  The ``or {}`` truth tests are gone for
+    the same reason: they only existed to turn None into ``{}``, which the
+    isinstance gates already do, and they ran a subclass ``__bool__``.
     """
-    raw = (cfg().get("settings") or {}).get("storage_pool") or {}
+    # Guarded like settings_section: a snapshot provider that raises used to
+    # escape this reader and 500 every pool route.
+    try:
+        data = cfg()
+    except Exception:
+        data = {}
+    settings = dict.get(data, "settings") if isinstance(data, dict) else None
+    raw = dict.get(settings, "storage_pool") if isinstance(settings, dict) else None
     if not isinstance(raw, dict):
         raw = {}
-    members_raw = raw.get("members")
+    members_raw = dict.get(raw, "members")
     members = []
     if isinstance(members_raw, list):
-        for m in members_raw:
+        for m in list.__iter__(members_raw):
             text = _text(m).strip()
             if text:
                 members.append(text)
-    policy = _text(raw.get("policy")) or DEFAULT_POLICY
+    policy = _text(dict.get(raw, "policy")) or DEFAULT_POLICY
     if policy not in PLACEMENT_POLICIES:
         policy = DEFAULT_POLICY
     try:
-        min_free = float(raw.get("min_free_gb") or 0)
-    except (TypeError, ValueError, OverflowError):
+        # ``except Exception``, not the (TypeError, ValueError, OverflowError)
+        # tuple: ``float()`` reflects into the stored value's own
+        # ``__float__``, and the ``or 0`` runs its ``__bool__`` — a leftover
+        # subclass bomb in either used to raise past the tuple and 500 the
+        # same four routes.
+        min_free = float(dict.get(raw, "min_free_gb") or 0)
+    except Exception:
         min_free = 0.0
     if min_free != min_free or min_free in (float("inf"), float("-inf")):
         min_free = 0.0
     return {
-        "name": _text(raw.get("name")) or "pool",
+        "name": _text(dict.get(raw, "name")) or "pool",
         "members": members,
         "policy": policy,
         "min_free_gb": min_free,
@@ -116,36 +141,78 @@ def _text(raw) -> str:
     vanished from the view entirely — not even listed as missing.  Only an
     over-cap leftover (YAML hex/octal loads uncapped; its str() is the same
     digit-cap ValueError json.dumps would raise) still reads as "".
+
+    Unbound-base scrubs throughout (the modules5/cf7 convention): a leftover
+    *subclass* passes every isinstance gate here wearing its own protocol
+    overrides, and through ``_pool_config`` each of these used to raise out
+    of this coercer and 500 all four pool routes at once — an int-subclass
+    ``__str__`` bomb (the bare ``str()`` reflected into it and RuntimeError
+    is not the digit-cap ValueError), a float-subclass ``__eq__`` bomb (the
+    nan/inf probes ran it), a str-subclass self-``__str__`` ``encode`` bomb
+    (the bound encode dispatched into the override), a bytes-subclass
+    ``__bytes__``/``decode`` bomb, a list-subclass ``__bool__`` /
+    ``__getitem__`` bomb, a bare ``__eq__`` bomb (the old
+    ``raw in (None, False, True, "")`` tuple probe), and an ``isoformat``
+    ``__getattr__`` bomb.  ``int.__index__`` / ``str.encode`` /
+    ``bytes.decode`` / ``list.__getitem__`` read the real content underneath
+    the override, so the real text still renders and only the truly
+    unrenderable degrades to "".
     """
     if isinstance(raw, (list, tuple)):
-        raw = raw[0] if raw else ""
-    if isinstance(raw, (bytes, bytearray)):
-        raw = bytes(raw).decode("utf-8", "replace")
-    elif isinstance(raw, bool):
-        return ""
-    elif isinstance(raw, int):
+        base = list if isinstance(raw, list) else tuple
         try:
-            return str(raw)
-        except ValueError:
+            raw = base.__getitem__(raw, 0) if base.__len__(raw) else ""
+        except Exception:
             return ""
-    elif isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+    if isinstance(raw, (bytes, bytearray)):
+        base = bytes if isinstance(raw, bytes) else bytearray
+        try:
+            return base.decode(raw, "utf-8", "replace")
+        except Exception:
+            return ""
+    if isinstance(raw, bool):
         return ""
-    elif raw in (None, False, True, "") or isinstance(raw, (dict, set, frozenset)):
+    if isinstance(raw, int):
+        try:
+            # int.__index__ launders a subclass to an exact int ahead of the
+            # digit-cap probe; str() of that exact int cannot reflect back
+            # into a leftover ``__str__`` override.
+            return str(int.__index__(raw))
+        except Exception:
+            return ""
+    if isinstance(raw, float):
+        # Every exact float already read as "" (nan/inf via the explicit
+        # probe, finite via the no-isoformat fall-through); stating it as
+        # one branch removes the ``!=`` / ``in`` equality probes a subclass
+        # ``__eq__`` bomb used to detonate.
         return ""
-    elif not isinstance(raw, str):
-        iso = getattr(raw, "isoformat", None)
-        if callable(iso):
-            try:
-                stamped = iso()
-            except Exception:
-                return ""
-            # isoformat() is usually a str; a leftover that returns inf
-            # used to TypeError ``.encode`` on GET /api/storage/pool.
-            if stamped is raw:
-                return ""
+    if raw is None or isinstance(raw, (dict, set, frozenset)):
+        return ""
+    if not isinstance(raw, str):
+        try:
+            iso = getattr(raw, "isoformat", None)
+        except Exception:
+            return ""
+        if not callable(iso):
+            return ""
+        try:
+            stamped = iso()
+        except Exception:
+            return ""
+        # isoformat() is usually a str; a leftover that returns inf
+        # used to TypeError ``.encode`` on GET /api/storage/pool.
+        if stamped is raw:
+            return ""
+        try:
             return _text(stamped)
+        except RecursionError:
+            # A leftover isoformat *chain* (A stamps B, B stamps A) is not
+            # caught by the identity probe above.
+            return ""
+    try:
+        return str.encode(raw, "utf-8", "replace").decode("utf-8")
+    except Exception:
         return ""
-    return raw.encode("utf-8", "replace").decode("utf-8")
 
 
 def _finite_float(raw) -> float:
