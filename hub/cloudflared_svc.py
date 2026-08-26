@@ -882,7 +882,14 @@ def _write_launchagent_token() -> Path:
         secure_io.replace_bytes(
             PLIST, plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
         )
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        # ValueError: a leftover surrogateescape HOME (a non-UTF-8 home
+        # directory decoded by os.environ) reaches this payload through
+        # _launch_env / the HOME-derived paths, and plistlib.dumps raises
+        # UnicodeEncodeError — not OSError — which used to 500 POST /start,
+        # /start-token, /restart and the Apps autostart toggle.  launchd
+        # could never load such a plist anyway, so it is the same coded 503
+        # as any other unwritable-plist state.
         raise api_error(
             "cloudflared.plist_write_failed", error=_as_text(e) or "error"
         )
@@ -1128,9 +1135,10 @@ def login_start() -> dict:
     cwd = str(CF_HOME) if _path_is_dir(CF_HOME) else None
     global _login_proc
     _close_login_proc()
+    bin_path = _bin()
     try:
         proc = subprocess.Popen(
-            [_bin(), "tunnel", "login"],
+            [bin_path, "tunnel", "login"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1141,6 +1149,15 @@ def login_start() -> dict:
             stdin=subprocess.DEVNULL,
         )
     except (OSError, ValueError, TypeError, RecursionError) as e:
+        # Same class _cli_vanished handles for sh(): _bin() probed the disk,
+        # so a cloudflared uninstalled between that probe and the spawn is
+        # FileNotFoundError here, and the uncoded ok:false message blamed
+        # "the login" instead of the missing binary.  The disk re-check runs
+        # only on this failure path and keeps every other spawn failure —
+        # including a FileNotFoundError for a vanished cwd while the binary
+        # is still present — as the raw result rather than inventing a lie.
+        if isinstance(e, FileNotFoundError) and not _path_is_file(Path(bin_path)):
+            raise api_error("cloudflared.not_installed")
         return {
             "ok": False,
             "message": "Could not start cloudflared login: " + (_as_text(e) or "error"),
