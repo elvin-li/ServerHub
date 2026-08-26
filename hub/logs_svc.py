@@ -1,6 +1,7 @@
 """Central log tail from configured sources."""
 from __future__ import annotations
 
+import datetime
 import os
 from pathlib import Path
 
@@ -58,9 +59,23 @@ def _config_text(value) -> str | None:
     ValueError ``json.dumps`` would raise — returns None so only its
     field/entry drops.  bool passes ``isinstance(int)`` and must not
     become ``"True"``.
+
+    bytes and date/datetime follow the same accepted-verbatim history:
+    the original panel published them through FastAPI's encoder (bytes
+    strict-decoded — 500ing the listing on invalid UTF-8 — and dates as
+    isoformat), so the strict gate silently hid sources that used to
+    list.  bytes replace-decode (never 500), dates keep the isoformat
+    text the encoder used to publish.
     """
     if isinstance(value, str):
         return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        try:
+            return str(value.isoformat())
+        except Exception:
+            return None
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     try:
@@ -103,7 +118,17 @@ def _log_path_allowed(path: Path) -> bool:
     return not files_svc.is_protected(path) and not files_svc.is_protected(resolved)
 
 
-def log_sources() -> list:
+def _entries() -> list[tuple[Path, dict]]:
+    """(raw path, published row) per usable configured source.
+
+    The published row scrubs lone surrogates out of every field (they
+    would 500 Starlette's UTF-8 encode), so the row's ``path`` text
+    cannot be trusted to re-open the file: a surrogateescape name — one
+    weird byte in an on-disk filename — listed as ``exists: true`` yet
+    its scrubbed U+FFFD text names nothing, and the tail answered
+    "(file does not exist)" for a file the listing had just stat'ed.
+    The tail therefore reads through the raw ``Path`` kept here.
+    """
     sources = cfg().get("log_sources")
     if not isinstance(sources, list) or not sources:
         home = user_home()
@@ -121,8 +146,14 @@ def log_sources() -> list:
         raw_id = _config_text(s.get("id"))
         if not raw_id:
             continue
+        raw_path = s["path"]
+        if isinstance(raw_path, (bytes, bytearray)):
+            # A bytes path (os.listdir(b"...") leftover) used to stringify
+            # to the garbage relative name ``b'/…'``; fsdecode keeps the
+            # surrogateescape text that names the real on-disk file.
+            raw_path = os.fsdecode(bytes(raw_path))
         try:
-            p = Path(os.path.expanduser(str(s["path"])))
+            p = Path(os.path.expanduser(str(raw_path)))
         except (OSError, ValueError, TypeError, RuntimeError):
             # RuntimeError: leftover HOME unset on a ``~/…`` log path.
             # ValueError: an over-cap int path is the digit-cap ``str()``.
@@ -140,14 +171,18 @@ def log_sources() -> list:
             name = sid
         else:
             name = _utf8_text(name)
-        out.append({
+        out.append((p, {
             "id": sid,
             "name": name,
             "path": _utf8_text(p),
             "exists": exists,
             "size": size,
-        })
+        }))
     return out
+
+
+def log_sources() -> list:
+    return [row for _, row in _entries()]
 
 
 def _clamp_lines(raw, default: int = 200) -> int:
@@ -176,10 +211,25 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
         return {"id": _utf8_text(source_id), "name": name, "path": _utf8_text(path),
                 "exists": False, "size": 0, "log": "(file does not exist)", "lines": 0}
 
-    try:
-        p = Path(str(meta.get("path") or ""))
-    except (OSError, ValueError, TypeError):
-        raise api_error("logs.read_failed")
+    # Read through the raw Path the listing stat'ed, not the published text:
+    # the row's ``path`` is scrubbed for Starlette's UTF-8 encode, so a
+    # surrogateescape name (one non-UTF-8 byte in the filename) listed as
+    # ``exists: true`` yet its U+FFFD text named nothing — the tail answered
+    # "(file does not exist)" for a file the listing had just stat'ed.  The
+    # raw Path is taken only when its published row matches the looked-up
+    # one (same id, same path text); a caller that stubbed ``log_sources``
+    # keeps the historical text-derived behavior.  Last match wins, like
+    # the dict comprehension above.
+    p = None
+    meta_path = meta.get("path")
+    for raw, row in _entries():
+        if row["id"] == source_id and row["path"] == meta_path:
+            p = raw
+    if p is None:
+        try:
+            p = Path(str(meta_path or ""))
+        except (OSError, ValueError, TypeError):
+            raise api_error("logs.read_failed")
     if not _log_path_allowed(p):
         raise api_error("logs.protected")
     try:
@@ -215,5 +265,19 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
                 "exists": True, "size": file_size,
                 "log": _utf8_text("\n".join(parts)),
                 "lines": len(parts)}
+    except FileNotFoundError:
+        # Rotation race: the file passed the is_file gate above, then was
+        # rotated/unlinked before the open.  A fresh disk probe on the
+        # failure path (the vanished-CLI rule) decides the answer: gone
+        # for real is the same missing-200 the listing gives, not a 500
+        # blaming the server for logrotate doing its job.  A bizarre
+        # ENOENT while the probe still sees the file keeps read_failed.
+        try:
+            still_there = p.is_file()
+        except (OSError, ValueError):
+            still_there = False
+        if not still_there:
+            return _missing(p)
+        raise api_error("logs.read_failed")
     except Exception:
         raise api_error("logs.read_failed")
