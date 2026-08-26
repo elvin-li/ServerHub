@@ -2879,6 +2879,7 @@ export default {
       unknown_root: 'Unknown root: {root_id}',
       upload_too_large: 'Exceeds the {max_mb}MB upload limit',
       upload_would_overwrite: 'A file named {name} already exists',
+      upload_write_failed: 'The uploaded file could not be written: {error}',
     },
     terminal: {
       host_disabled: 'The host terminal is off. Enable it in Settings → Terminal — it grants full command access to this machine.',

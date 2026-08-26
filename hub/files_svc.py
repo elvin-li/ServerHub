@@ -19,7 +19,7 @@ from fastapi import UploadFile
 from fastapi.responses import StreamingResponse
 
 from hub.config import settings_section
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 from hub.host_address import host_ip
 from hub.paths import AGENTS_DIR, BASE, STATE_ROOT, UID, user_home
 from hub.util import read_bytes_capped, sh, utf8_env
@@ -184,7 +184,12 @@ def _finite_int(value, default: int = 0) -> int:
     try:
         value = int(value)
         float(value)
-    except (TypeError, ValueError, OverflowError, OSError):
+    except Exception:
+        # (TypeError, ValueError, OverflowError, OSError) are the ordinary
+        # conversion failures.  The broad arm also eats a leftover int
+        # *subclass* whose ``__int__``/``__index__`` raises (the modules5
+        # bomb class): planted as ``max_upload_mb``, its RuntimeError used
+        # to escape the named tuple and 500 POST /api/files/upload raw.
         return default
     return value
 
@@ -270,7 +275,21 @@ def _exists(p: Path) -> bool:
 def default_roots() -> list[dict]:
     """Allowlisted roots. Configurable via settings.files.roots."""
     custom = _settings().get("roots")
-    if isinstance(custom, list) and custom:
+    if isinstance(custom, list):
+        # Materialised once, guarded: settings_section() launders the section
+        # mapping but not the values inside it, so a leftover list *subclass*
+        # whose ``__iter__`` (or ``__len__``, via the old truthiness test)
+        # raises used to 500 GET /api/files and /api/files/list — and with
+        # them every route, because _resolve_safe() starts here.  The bomb
+        # cannot yield its rows, so it degrades to the default candidates
+        # like an absent key.
+        try:
+            custom = list(custom)
+        except Exception:
+            custom = []
+    else:
+        custom = []
+    if custom:
         out = []
         for r in custom:
             try:
@@ -476,7 +495,13 @@ def list_dir(path: str | None = None, root_id: str | None = None) -> dict:
     except OSError:
         # Dying FUSE/SMB mounts raise EIO / EINVAL rather than PermissionError.
         raise api_error("files.permission_denied", path=str(p))
-    show_hidden = bool(_settings().get("show_hidden"))
+    try:
+        # bool(), guarded: a leftover ``show_hidden`` whose ``__bool__``
+        # raises (the bookmarks5 BoolBomb class) used to escape here and
+        # 500 GET /api/files/list after the directory was already read.
+        show_hidden = bool(_settings().get("show_hidden"))
+    except Exception:
+        show_hidden = False
     for c in children:
         if c.name.startswith(".") and not show_hidden:
             continue
@@ -940,14 +965,41 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
                 if written > max_bytes:
                     raise api_error("files.upload_too_large", max_mb=max_mb)
                 await asyncio.to_thread(f.write, chunk)
-        except BaseException:
+            # The close sits INSIDE the guarded region: it flushes the
+            # buffered tail, so ENOSPC/EIO surfaces here as readily as in
+            # write() — and used to escape this function raw (see below)
+            # with the torn file left on disk.
             await asyncio.to_thread(f.close)
+        except BaseException:
+            try:
+                # No-op when the failure came from f.close() itself:
+                # BufferedWriter closes the raw fd even when its flush
+                # raises, and a second close() on a closed file returns.
+                await asyncio.to_thread(f.close)
+            except OSError:
+                pass
             try:
                 await asyncio.to_thread(dest.unlink)
             except OSError:
                 pass
             raise
-        await asyncio.to_thread(f.close)
+    except OSError as exc:
+        # A failing disk write (ENOSPC on a full volume, EIO on a dying
+        # FUSE/SMB mount) is OSError out of write()/close() — none of the
+        # except arms mapped it, so POST /api/files/upload answered a raw
+        # uncoded 500 after validation had already passed.  503 like
+        # compose.save_failed / settings.save_failed: a disk that cannot
+        # be written is a dependency state, not a defect in the upload.
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            await asyncio.to_thread(dest.unlink)
+        except OSError:
+            pass
+        raise api_error("files.upload_write_failed", error=exc_detail(exc))
     except BaseException:
         if fd >= 0:
             try:

@@ -125,6 +125,12 @@ CODES: dict[str, tuple[int, str]] = {
     "files.upload_too_large": (400, "exceeds the {max_mb}MB upload limit"),
     "files.upload_would_overwrite": (409, "a file named {name} already exists"),
     "files.bad_filename": (400, "invalid file name"),
+    # The disk write itself failed mid-upload (ENOSPC on a full volume, EIO
+    # on a dying FUSE/SMB mount).  503 like compose.save_failed /
+    # settings.save_failed: a disk that cannot be written is a dependency
+    # state, not a defect in the upload — the raw OSError used to escape as
+    # an uncoded HTTP 500 after validation had already passed.
+    "files.upload_write_failed": (503, "the uploaded file could not be written: {error}"),
     # ── service uninstall ───────────────────────────────────────────────────
     "services.uninstall_unknown": (404, "no launch agent named {id}"),
     "services.uninstall_not_supported": (400, "{id} is not an uninstallable launch agent"),

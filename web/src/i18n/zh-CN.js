@@ -2875,6 +2875,7 @@ export default {
       unknown_root: '未知根目录：{root_id}',
       upload_too_large: '超过上传限制 {max_mb}MB',
       upload_would_overwrite: '已存在同名文件 {name}',
+      upload_write_failed: '上传的文件无法写入磁盘：{error}',
     },
     terminal: {
       host_disabled: '宿主机终端未开启。请在「设置 → 终端」中开启；它将获得对本机的完整命令权限。',
