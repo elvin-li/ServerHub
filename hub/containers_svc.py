@@ -1058,8 +1058,8 @@ def start_update_container_job(name: str) -> dict:
                         stack_hit = s
                         break
                 if stack_hit:
-                    cf = stack_hit["compose_path"]
-                    wd = stack_hit["path"]
+                    # os-level text for the spawn (see start_stack_job).
+                    wd, cf = _stack_io_paths(stack_hit)
                     for cmd in (
                         [DOCKER, "compose", "-f", cf, "pull"],
                         [DOCKER, "compose", "-f", cf, "up", "-d", "--force-recreate"],
@@ -1373,11 +1373,21 @@ def rename_container(name: str, new_name: str) -> dict:
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
-def create_run_container(body: dict) -> dict:
-    """docker run -d with common options from panel form."""
+def build_run_args(body: dict) -> tuple[list, str, str]:
+    """Validate *body* and build the ``docker run`` argv.  No side effects.
+
+    Factored out of :func:`create_run_container` so recreate flows can run
+    every gate *before* their destructive stop/rm.  ``docker_update_ports``
+    used to stop and remove the container first and only then reach these
+    checks — a container name past the panel's 64-char form cap (legal for
+    docker, routine for compose-generated names) or a digest-pinned image
+    past the 201-char image cap turned "edit ports" into "destroy the
+    container": the coded 400 arrived after ``docker rm`` and nothing was
+    ever recreated.
+
+    Returns ``(argv-after-"docker", image, name)``.
+    """
     import re
-    if not engine_up():
-        raise api_error("container.engine_down")
     # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
     # used to 500 POST /api/containers/run.
     image = _as_text(body.get("image") or "").strip()
@@ -1429,7 +1439,14 @@ def create_run_container(body: dict) -> dict:
         args += _as_text(cmd).strip().split()
     elif isinstance(cmd, list):
         args += [_as_text(x) for x in cmd if _as_text(x)]
+    return args, image, name
 
+
+def create_run_container(body: dict) -> dict:
+    """docker run -d with common options from panel form."""
+    if not engine_up():
+        raise api_error("container.engine_down")
+    args, image, name = build_run_args(body)
     rc, out, err = docker(*args, timeout=180)
     invalidate_status()
     out, err = _as_text(out), _as_text(err)
@@ -1523,6 +1540,14 @@ def _stack_paths() -> list[dict]:
                 "path": _field_text(str(p)),
                 "compose_file": _field_text(compose.name) if present else None,
                 "compose_path": _field_text(str(compose)) if present else None,
+                # The os-level text that actually names the file.  The
+                # published ``path``/``compose_path`` fields are scrubbed for
+                # Starlette's UTF-8 encode, so a surrogateescape name (one
+                # non-UTF-8 byte in a directory name) published text that
+                # named nothing on disk — same class as the logs tail miss.
+                # ``list_stacks`` strips these before rows are published.
+                "os_path": str(p),
+                "os_compose_path": str(compose) if present else None,
                 "containers": _str_list(s.get("containers")),
                 "source": "config",
             })
@@ -1548,6 +1573,8 @@ def _stack_paths() -> list[dict]:
                 "path": None,
                 "compose_file": None,
                 "compose_path": None,
+                "os_path": None,
+                "os_compose_path": None,
                 "containers": _str_list(s.get("containers")),
                 "source": "config",
             })
@@ -1577,10 +1604,34 @@ def _stack_paths() -> list[dict]:
             "path": _field_text(str(comp.parent)),
             "compose_file": _field_text(comp.name),
             "compose_path": _field_text(str(comp)),
+            # Scan names come straight off the filesystem, so this is the
+            # branch where the os text and the scrubbed text actually differ:
+            # glob returns surrogateescape strs for non-UTF-8 bytes, and the
+            # scrubbed twin (``?`` replacement) named a file that does not
+            # exist — GET /api/compose/{id} answered ``no_compose_file`` for
+            # a compose the scan had just found, and a stack run could act on
+            # a *sibling* directory whose name really contains the ``?``.
+            "os_path": str(comp.parent),
+            "os_compose_path": str(comp),
             "containers": [],
             "source": "scan",
         })
     return stacks
+
+
+def _stack_io_paths(stack: dict) -> tuple[str | None, str | None]:
+    """(workdir, compose file) os-level text for I/O against *stack*.
+
+    Falls back to the published scrubbed fields so callers that build stack
+    dicts by hand (tests, tooling) keep their historical behavior.
+    """
+    workdir = stack.get("os_path")
+    if not isinstance(workdir, str) or not workdir:
+        workdir = stack.get("path")
+    compose = stack.get("os_compose_path")
+    if not isinstance(compose, str) or not compose:
+        compose = stack.get("compose_path")
+    return workdir, compose
 
 
 def list_stacks() -> list:
@@ -1617,6 +1668,11 @@ def list_stacks() -> list:
         s["running_containers"] = found
         running_ok = any(by_name.get(n, {}).get("raw_state") == "running" for n in found)
         s["status"] = "ok" if running_ok else ("exists" if found else "idle")
+        # The os-level twins may carry lone surrogates (that is their whole
+        # point) and would 500 Starlette's UTF-8 encode of GET /api/stacks;
+        # rows publish only the scrubbed path fields.
+        s.pop("os_path", None)
+        s.pop("os_compose_path", None)
     return stacks
 
 
@@ -1645,8 +1701,12 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
     tid = f"stack-{stack_id}-{action}-{_job_epoch()}"
     j0 = _register_job(tid, stack_id=stack_id, action=action)
 
-    compose_path = stack["compose_path"]
-    workdir = stack["path"]
+    # I/O runs against the os-level path text, not the published scrubbed
+    # twin: for a surrogateescape directory name the scrubbed text names a
+    # different (usually nonexistent, possibly *sibling*) file.  ``as_argv``
+    # still refuses argv it cannot encode, so a genuinely unspawnable name
+    # fails closed in the job log instead of acting on the wrong compose.
+    workdir, compose_path = _stack_io_paths(stack)
 
     def run():
         j = j0
