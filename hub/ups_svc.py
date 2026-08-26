@@ -98,8 +98,16 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass): there is
+            # nothing to salvage from it, but its *siblings* must survive —
+            # pre-fix this raised out of ups_status()'s scrub and 500'd
+            # GET /api/ups (the nginx_svc._jsonable rule).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if not isinstance(k, str):
                 try:
                     k = str(k)
@@ -112,7 +120,12 @@ def _jsonable(value, depth: int = 0):
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the row or the route.
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -257,7 +270,14 @@ def _normalized_shutdown(raw: dict | None) -> dict:
     """
     out = dict(SHUTDOWN_DEFAULTS)
     if isinstance(raw, dict):
-        out.update({k: v for k, v in raw.items() if k in SHUTDOWN_DEFAULTS})
+        try:
+            items = list(raw.items())
+        except Exception:
+            # A shutdown block that refuses iteration (odd dict subclass
+            # passing the isinstance gate) used to raise out of this merge
+            # and 500 GET /api/ups; the defaults are the honest degrade.
+            items = []
+        out.update({k: v for k, v in items if k in SHUTDOWN_DEFAULTS})
     # Explicit null still means "condition off"; leftover inf must not leak
     # into GET /api/ups (Starlette allow_nan=False) or fire the policy.
     if out.get("trigger_pct") is not None:
@@ -272,9 +292,16 @@ def ups_settings() -> dict:
     raw = settings.get("ups") if isinstance(settings, dict) else None
     if not isinstance(raw, dict):
         raw = {}
+    try:
+        raw_items = list(raw.items())
+    except Exception:
+        # settings.ups that refuses iteration: same class as the shutdown
+        # block below — pre-fix the comprehension raised and 500'd
+        # GET /api/ups instead of falling back to the defaults.
+        raw_items = []
     out = dict(UPS_DEFAULTS)
     out.update({
-        k: v for k, v in raw.items()
+        k: v for k, v in raw_items
         if k in UPS_DEFAULTS and k != "shutdown" and v is not None
     })
     if "alerts_enabled" in out:
