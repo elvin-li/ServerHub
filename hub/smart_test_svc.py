@@ -577,7 +577,16 @@ def history(limit: int = 100) -> list[dict]:
 # ── schedule ─────────────────────────────────────────────────────────────────
 
 def _schedule_cfg() -> dict:
-    stored = ((cfg().get("settings") or {}).get("smart_schedule") or {})
+    # isinstance gate on ``settings`` itself, not just on the stored block:
+    # the real cfg() normalizes ``settings: []`` at the top level, but this
+    # module does not own the provider (tests and tooling patch it), and a
+    # non-mapping used to AttributeError ``.get`` here — through
+    # ``get_schedule()`` that 500'd GET /api/smart, and the same raise
+    # escaped ``schedule_due()`` inside the scheduler tick.
+    settings = cfg().get("settings")
+    if not isinstance(settings, dict):
+        return {}
+    stored = settings.get("smart_schedule") or {}
     return stored if isinstance(stored, dict) else {}
 
 
