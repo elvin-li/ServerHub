@@ -65,23 +65,32 @@ LOGIN_URL_FILE = STATE_DIR / "login.url"
 _login_proc: subprocess.Popen | None = None
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so cloudflared JSON cannot UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+        return _decode_bytes(value)
+    if value is None:
         return ""
-    else:
+    try:
+        value = str(value)
+    except RecursionError:
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            return type(value).__name__
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode this line into a 500 (the tunnels_error arm of GET /status
+    # and login_start's failure message were the live carriers).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 #: Cloudflare connector tokens always start with ``eyJ`` (base64 of ``{"``).
@@ -321,12 +330,27 @@ def _jsonable_state(value, depth: int = 0):
     ``name: 2026-08-19`` / ``!!binary`` / ``!!set`` still leaked
     ``datetime.date`` / bytes / set into GET /api/cloudflared/status
     (``active_tunnel`` / ``mode``) because this walker returned them as-is.
+    A *subclass* leftover from an in-process caller still ran its own
+    dunders through these probes (the modules5 unbound-base rule this
+    walker never got): a dict ``items()`` bomb or a triples ``items()``,
+    an int ``__str__`` bomb, a float ``__eq__`` bomb, a bytes ``decode``
+    bomb, a str ``encode`` bomb (value or key), a sequence ``__iter__``
+    bomb, and an ``isoformat`` property / ``__getattr__`` bomb each used
+    to raise out of the scrub and 500 GET /api/cloudflared/status,
+    POST /restart and POST /uninstall-service.
     """
     if depth > 16:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -337,30 +361,61 @@ def _jsonable_state(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
+        # str() then unbound base encode: a str-subclass ``encode`` bomb
+        # used to raise out of the surrogate laundering itself.
+        try:
+            value = str(value)
+        except Exception:
+            return None
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot 500, and the real entries still survive.
+        for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
-            # Leftover ``\\ud800`` keys used to 500 GET /api/cloudflared/status.
-            k = k.encode("utf-8", "replace").decode("utf-8")
+            # Leftover ``\\ud800`` keys used to 500 GET /api/cloudflared/status
+            # — and a str-subclass key whose ``encode`` raises blew the
+            # laundering itself, so both go through str() + the unbound
+            # base encode.
+            try:
+                k = str(k)
+            except Exception:
+                continue
+            k = str.encode(k, "utf-8", "replace").decode("utf-8")
             out[k] = _jsonable_state(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable_state(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.
+                return [_jsonable_state(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -759,6 +814,14 @@ def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required")
     """Tunnel name/UUID that cannot be read as a cloudflared option."""
     # Nested non-strings in serverhub-state.json used to raise ``.strip``.
     if isinstance(value, int) and not isinstance(value, bool):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: an int-subclass ``__str__``
+                # bomb from an in-process caller used to raise a
+                # non-ValueError past the digit-cap net below and 500.
+                value = int.__index__(value)
+            except Exception:
+                raise api_error("cloudflared.invalid_name")
         # ``tunnel_name: 123`` written unquoted by an operator script parses
         # as an int; the plain isinstance gate below silently refused to
         # restart tunnel "123".  str() probe, so an over-cap leftover stays a
@@ -771,7 +834,9 @@ def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required")
         if value in (None, ""):
             raise api_error(empty_code)
         raise api_error("cloudflared.invalid_name")
-    text = value.strip()
+    # Unbound base strip: a str-subclass ``strip`` bomb cannot 500, and the
+    # result is an exact str for the safety gates below.
+    text = str.strip(value)
     if not text:
         raise api_error(empty_code)
     if not cli_args.is_safe_positional(text):
@@ -1393,9 +1458,28 @@ def route_dns(tunnel: str, hostname: str) -> dict:
 
 
 def logs(lines: int = 120) -> dict:
+    # Base coercions ahead of the probes: an int-subclass ``__bool__`` bomb
+    # (the ``or`` below) or a float-subclass ``__eq__`` bomb (the NaN/inf
+    # probe) passed by an in-process caller used to raise past the numeric
+    # except net and 500.  The HTTP route is pydantic-typed, so this only
+    # guards direct calls.
+    if isinstance(lines, int) and not isinstance(lines, bool) and type(lines) is not int:
+        try:
+            lines = int.__index__(lines)
+        except Exception:
+            lines = 120
+    elif isinstance(lines, float) and type(lines) is not float:
+        try:
+            lines = float.__float__(lines)
+        except Exception:
+            lines = 120
     try:
         n = int(lines or 120)
     except (TypeError, ValueError, OverflowError):
+        n = 120
+    except Exception:
+        # A junk ``__bool__``/``__int__`` bomb on a non-numeric leftover is
+        # not one of the numeric conversion errors.
         n = 120
     if isinstance(lines, float) and (
         lines != lines or lines in (float("inf"), float("-inf"))
