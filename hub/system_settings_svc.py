@@ -13,11 +13,11 @@ import json
 import platform
 import re
 import time
-from hub import __version__
+from hub import __version__, power_svc
 from hub.config import cfg, settings_section
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
-from hub.errors import soft_fail
+from hub.errors import api_error, soft_fail
 from hub.secure_io import replace_bytes
 from hub.util import LazyPool, cached_snapshot, fan_out, sh, strftime_now, ttl_memo
 
@@ -404,9 +404,17 @@ def set_power_pref(key: str, value: int) -> dict:
         return soft_fail("power.bad_value")
     if value < 0 or value > 180:
         return soft_fail("power.value_range")
-    rc, out, err = sh(["/usr/bin/pmset", "-a", key, str(value)], timeout=8)
+    rc, out, err = sh([power_svc.PMSET, "-a", key, str(value)], timeout=8)
     if rc != 0:
-        rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", key, str(value)], timeout=8)
+        if power_svc._pmset_missing(rc, err):
+            # A vanished pmset used to answer ok:false with a message telling
+            # the operator to run ``sudo pmset -a`` by hand — blaming
+            # privileges for a binary the disk confirm just proved is gone
+            # (the sudo fallback below cannot spawn it either).  Coded 503
+            # like set_wol; the sentinel alone never classifies, and the disk
+            # probe runs on this failure path only.
+            raise api_error("power.pmset_missing")
+        rc, out, err = sh(["/usr/bin/sudo", "-n", power_svc.PMSET, "-a", key, str(value)], timeout=8)
     msg = _as_text(out) or _as_text(err)
     if rc != 0:
         msg = (msg or "failed") + f" · run manually: sudo pmset -a {key} {value}"
