@@ -310,6 +310,23 @@ def list_utm_vms(force: bool = False) -> list[dict]:
     return list(_utm_snapshot(force))
 
 
+def _capped_json_int(digits: str):
+    """``json.loads`` *parse_int* hook that survives >4300-digit literals.
+
+    ``json.loads`` of a number past CPython's digit cap raises ValueError —
+    NOT JSONDecodeError — for the whole document, so one leftover huge field
+    in ``orbctl list -f json`` used to throw away every machine's JSON row
+    (uuid, distro, console capability) and fall to the degraded text listing
+    — or to nothing when that second spawn failed too.  A number past the
+    cap cannot be rendered by any JSON encoder anyway, so it loads as None
+    and only its own field is lost (the docker_cli.parse_int_capped drop).
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _list_orb_machines_uncached() -> list[dict]:
     if not _orb_available():
         return []
@@ -319,7 +336,7 @@ def _list_orb_machines_uncached() -> list[dict]:
     out = _as_text(out)
     if rc == 0 and out.strip().startswith(("[", "{")):
         try:
-            data = safe_json_loads(out)
+            data = safe_json_loads(out, parse_int=_capped_json_int)
         except (TypeError, ValueError, RecursionError):
             # RecursionError: leftover deeply-nested ``orbctl list -f json``
             # is not ValueError; GET /api/vms used to 500.
