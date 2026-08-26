@@ -52,7 +52,11 @@ def shutdown_executor() -> None:
 def _as_text(value) -> str:
     """JSON-encodable scutil/sysctl field.  Leftover ``\\ud800`` used to 500 GET /api/identity."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode (the brew6 rule): a leftover bytes-subclass
+        # whose bound ``.decode`` raises used to escape untyped and 500
+        # GET /api/identity.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -65,7 +69,24 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the modules6 rule): ``str()`` of a subclass whose
+    # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
+    # bound ``encode`` bomb in sh output rode this line to a raw 500 on
+    # GET /api/identity.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that a leftover ``__bool__`` bomb cannot 500."""
+    return value if _truthy(value) else fallback
 
 
 def _encodable(text: str) -> bool:
@@ -124,8 +145,19 @@ def get_identity() -> dict:
     tz = _result(f_tz, "") or ""
     platform_name = _result(f_platform, "") or ""
     host_ip = _result(f_ip, "") or ""
-    raw = cfg().get("settings")
-    s = raw if isinstance(raw, dict) else {}
+    # dict.get + a laundered copy (the config.settings_section rule): a
+    # leftover dict-*subclass* planted as the config root or the settings
+    # block passes ``isinstance`` and its bound ``.get`` bomb used to raise
+    # straight out of this read and 500 GET /api/identity.
+    root = cfg()
+    raw = dict.get(root, "settings") if isinstance(root, dict) else None
+    if isinstance(raw, dict):
+        try:
+            s = dict(raw)
+        except Exception:
+            s = {}
+    else:
+        s = {}
     # Fallbacks (platform.node / machine, configured_host) used to skip
     # `_as_text`; leftover ``\ud800`` there 500'd GET /api/identity.
     return {
@@ -137,7 +169,9 @@ def get_identity() -> dict:
         "arch": _as_text(platform.machine()),
         "host_ip": _as_text(host_ip),
         "host_ip_config": _as_text(configured_host()),
-        "comment": _as_text(s.get("server_comment") or s.get("description") or ""),
+        # _pick, not ``or``: a leftover ``__bool__``-bomb comment value used
+        # to detonate the truth test itself and 500 GET /api/identity.
+        "comment": _as_text(_pick(s.get("server_comment"), _pick(s.get("description"), ""))),
         "timezone": _as_text(tz),
     }
 
@@ -211,9 +245,11 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
                 # lost.  Coded so the panel can say what actually happened.
                 raise api_error("identity.scutil_missing")
             # Leftover ``\ud800`` in scutil stderr used to 500 PUT /api/identity.
+            # _pick, not ``or``: a ``__bool__``-bomb stderr used to raise out
+            # of the fallback chain itself before _as_text could scrub it.
             msgs.append(
                 "Setting ComputerName needs administrator privileges: "
-                + _as_text(err or out)
+                + _as_text(_pick(err, out))
             )
         else:
             msgs.append("ComputerName set")

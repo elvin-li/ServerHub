@@ -89,7 +89,11 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the modules6 rule): ``str()`` of a subclass whose
+    # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
+    # bound ``encode`` bomb in sh output rode this line to a raw 500 on GET
+    # and PUT /api/shares/acl (read_acl, local_users and the failure funnels).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _truthy(value) -> bool:
@@ -98,6 +102,11 @@ def _truthy(value) -> bool:
         return bool(value)
     except Exception:
         return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that a leftover ``__bool__`` bomb cannot 500."""
+    return value if _truthy(value) else fallback
 
 
 def _plain_result(result) -> dict:
@@ -228,7 +237,10 @@ def read_acl(path: str) -> dict:
         # An ls confirmed vanished by a fresh disk probe answers the coded
         # 503, not the 500 "the ACL could not be read" that blames the
         # directory.  Probe on this failure path only.
-        lowered = _as_text(error or output).lower()
+        # _pick, not ``or``: a leftover ``__bool__``-bomb stderr used to
+        # detonate the truth test itself and 500 GET and PUT /api/shares/acl
+        # past every coded refusal.
+        lowered = _as_text(_pick(error, output)).lower()
         if any(marker in lowered for marker in _VANISH_MARKERS) and not _tool_on_disk(LS):
             raise ShareAclError("shares.acl_tool_missing")
         raise ShareAclError("shares.acl_read_failed")
@@ -352,7 +364,9 @@ def _run_unprivileged(commands: list[list[str]]) -> dict:
         if rc != 0:
             # int/bytes/date leftovers used to AttributeError ``.strip`` /
             # TypeError ``"denied" in bytes`` on PUT /api/shares/acl.
-            message = _as_text(err or out or "failed").strip()[:200]
+            # _pick, not ``or``: a ``__bool__``-bomb stderr used to raise out
+            # of the fallback chain itself before _as_text could scrub it.
+            message = _as_text(_pick(err, _pick(out, "failed"))).strip()[:200]
             lowered = message.lower()
             if "operation not permitted" in lowered or "permission denied" in lowered:
                 return {"ok": False, "error": "needs_root", "message": message}

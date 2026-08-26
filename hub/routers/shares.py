@@ -289,17 +289,33 @@ def _share_directory(path: str) -> str:
     except (OSError, ValueError, TypeError, RuntimeError):
         raise api_error("shares.bad_path")
     shared = set()
-    for share in shares_svc.list_smb_shares(include_sizes=False):
-        # dict.get, not share.get: a leftover dict-subclass row whose bound
-        # ``.get`` raised used to 500 GET and PUT /api/shares/acl out of the
-        # gate itself (the jobs/metrics row-bomb class).
-        raw = dict.get(share, "path") if isinstance(share, dict) else None
-        if not _truthy(raw):
-            continue
-        try:
-            shared.add(str(Path(str(raw)).resolve()))
-        except (OSError, ValueError, TypeError, RuntimeError):
-            continue
+    try:
+        listing = shares_svc.list_smb_shares(include_sizes=False)
+    except Exception:
+        listing = []
+    try:
+        # Guarded iter() (the users_svc rule): a leftover list-subclass
+        # listing whose ``__iter__`` bomb fired *at* the walk used to raise
+        # out of the gate itself and 500 GET and PUT /api/shares/acl.
+        rows = iter(listing)
+    except Exception:
+        rows = iter(())
+    try:
+        for share in rows:
+            # dict.get, not share.get: a leftover dict-subclass row whose bound
+            # ``.get`` raised used to 500 GET and PUT /api/shares/acl out of the
+            # gate itself (the jobs/metrics row-bomb class).
+            raw = dict.get(share, "path") if isinstance(share, dict) else None
+            if not _truthy(raw):
+                continue
+            try:
+                shared.add(str(Path(str(raw)).resolve()))
+            except (OSError, ValueError, TypeError, RuntimeError):
+                continue
+    except Exception:
+        # A walk dying mid-iteration keeps the share points already
+        # collected; the resolve below then answers from what is known.
+        pass
     if resolved not in shared:
         # With the sharing CLI gone the listing cannot answer at all, so
         # "not a share point" would be a 400 lie — the same family as the
