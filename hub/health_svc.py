@@ -177,17 +177,28 @@ def _nginx_pair() -> list[dict]:
     try:
         ngx = nginx_overview()
         ok = bool(ngx.get("running"))
+        # _as_text per field, not the bare f-string: this function does not
+        # own the overview dict, and an already-int over-cap pid/site_count
+        # leftover (YAML/plist hex loads uncapped) ValueError'd str() inside
+        # the pair-wide try — a *running* nginx then collapsed into the
+        # combined not-installed error row, the digit-cap exception text as
+        # its detail, and the config-syntax sibling silently vanished.
         pair = [_check(
             "nginx", "System Nginx gateway",
             "error", ok,
-            f"running pid={ngx.get('pid')} · sites {ngx.get('site_count')}" if ok else "not running",
+            (
+                f"running pid={_as_text(ngx.get('pid')) or '?'}"
+                f" · sites {_as_text(ngx.get('site_count')) or '?'}"
+            ) if ok else "not running",
             "launchctl kickstart -k gui/$(id -u)/local.system-nginx" if not ok else "",
         )]
         t = nginx_test()
         pair.append(_check(
             "nginx_conf", "Nginx config syntax",
             "error", t.get("ok"),
-            (t.get("message") or "")[:160],
+            # `(message or "")[:160]` TypeError'd a leftover int message into
+            # the same pair-wide collapse.
+            _as_text(t.get("message"))[:160],
             "Check ~/Services/nginx/conf.d/" if not t.get("ok") else "",
         ))
         return pair
@@ -294,6 +305,12 @@ def _smart_checks() -> list[dict]:
     ask for a password nobody can type and the health card would go blank.
     """
     rc, out, _ = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-H", "/dev/disk0"], timeout=10)
+    # The production sh always decodes (utf-8, replace), but this function
+    # does not own the provider (nginx_svc guards the same class with
+    # ``_sh_message``): bytes stdout from a patched/odd sh TypeError'd
+    # ``"PASSED" in out.upper()`` and _safe swallowed the raise — the SMART
+    # row silently vanished instead of rendering.
+    out = _as_text(out)
     if rc in (0, 4) and out:
         ok = "PASSED" in out.upper() or "OK" in out.upper()
         return [_check(
@@ -515,7 +532,18 @@ def _serve_cached(hit: dict) -> dict:
 
 def _fresh_snapshot() -> dict | None:
     hit = _cache["v"]
-    if not isinstance(hit, dict) or time.time() - _cache["t"] >= _TTL:
+    if not isinstance(hit, dict):
+        return None
+    try:
+        # A leftover over-cap int (or garbage) planted in _cache["t"] made
+        # this subtraction OverflowError/TypeError and 500'd GET
+        # /api/health/checks on every request; the sibling ``v`` poisonings
+        # were already re-sanitized by _serve_cached.  Treat an unusable
+        # timestamp as expired: _collect_checks rewrites both keys.
+        expired = time.time() - _cache["t"] >= _TTL
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if expired:
         return None
     return _serve_cached(hit)
 
