@@ -155,8 +155,12 @@ def _audit_fields(record: dict) -> dict:
         "enabled": record.get("enabled"),
     }
     if record.get("type") == "command":
-        params = record.get("params")
-        fields["command"] = params.get("command") if isinstance(params, dict) else None
+        # _plain_dict, not a bare isinstance: a leftover dict-subclass
+        # ``params`` whose ``.get()`` raised used to 500 the audited
+        # mutation (delete / enable / run-now) after validation had
+        # already passed.
+        params = scheduler_svc._plain_dict(record.get("params"))
+        fields["command"] = params.get("command") if params else None
     return fields
 
 

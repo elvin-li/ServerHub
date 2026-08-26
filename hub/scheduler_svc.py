@@ -115,9 +115,13 @@ def _cron_field_tokens(expr) -> list[str]:
             raise ValueError("a cron expression has five fields: min hour dom month dow")
         try:
             return [str(part).strip() for part in expr]
-        except RecursionError as e:
-            # Leftover cyclic YAML field used to RecursionError
-            # GET /api/scheduler/jobs via next_run_ts (not ValueError).
+        except Exception as e:
+            # ValueError is the one signal every caller catches.  A leftover
+            # cyclic YAML field used to RecursionError GET /api/scheduler/jobs
+            # via next_run_ts; a field item whose ``str()`` raised anything
+            # else (a ``__str__`` bomb, an over-cap int's digit-limit
+            # ValueError is already covered) still escaped next_run_ts's
+            # (ValueError, RecursionError) net and 500'd the same route.
             raise ValueError(
                 "a cron expression has five fields: min hour dom month dow"
             ) from e
@@ -244,6 +248,15 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a leftover nested dict-subclass bomb
+            # (a ``params`` row whose .items() raised) used to 500
+            # GET /api/scheduler/jobs (same guard as hub.jobs._jsonable).
+            try:
+                value = dict(value)
+            except Exception:
+                return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, str):
@@ -254,8 +267,18 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        try:
+            items = list(value)
+        except Exception:
+            # Leftover nested sequence subclass whose __iter__ raises.
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -341,10 +364,45 @@ def next_run_ts(expr: str | list | tuple, after_ts: float | None = None) -> int 
 
 # ── job storage (services.yaml → schedules:) ─────────────────────────────────
 
+def _plain_dict(value) -> dict | None:
+    """*value* as a plain ``dict``, or None.
+
+    A leftover dict-*subclass* row (the same bomb class hub.jobs._plain_dict
+    guards the Maintenance routes against: passes the isinstance gate, then
+    ``.get()`` / ``dict()``'s ``keys()`` fallback raises) used to 500
+    GET /api/scheduler/jobs from :func:`list_jobs`'s bare ``dict(j)`` copy.
+    ``dict()`` on a plain-iter subclass copies through the C-level storage;
+    when the subclass overrides ``__iter__``/``keys`` the copy itself raises,
+    so the row is junk and drops.
+    """
+    if type(value) is dict:
+        return value
+    if isinstance(value, dict):
+        try:
+            return dict(value)
+        except Exception:
+            return None
+    return None
+
+
 def list_jobs() -> list[dict]:
     raw = cfg().get("schedules")
-    rows = raw if isinstance(raw, list) else []
-    return [dict(j) for j in rows if isinstance(j, dict)]
+    if isinstance(raw, list):
+        try:
+            # list() through the C storage: a leftover list-subclass whose
+            # __iter__ raises used to 500 GET /api/scheduler/jobs (the same
+            # guard hub.jobs.maintenance_tasks applies to its rows).
+            rows = list(raw)
+        except Exception:
+            rows = []
+    else:
+        rows = []
+    out: list[dict] = []
+    for j in rows:
+        row = _plain_dict(j)
+        if row is not None:
+            out.append(row)
+    return out
 
 
 def _matches_id(job: dict, job_id) -> bool:
@@ -357,9 +415,16 @@ def _matches_id(job: dict, job_id) -> bool:
     enable/update/delete/run-now on the running job mis-404'd
     ``scheduler.not_found`` while the engine kept firing it, leaving no way to
     stop the job through the API.
+
+    The raw equality is guarded: a leftover ``__eq__``-bomb id value on ANY
+    sibling row used to raise out of :func:`get_job`'s scan and 500 every
+    DELETE / PUT / enable / run-now — for jobs whose own records were fine.
     """
-    if job.get("id") == job_id:
-        return True
+    try:
+        if job.get("id") == job_id:
+            return True
+    except Exception:
+        pass
     if not job_id or not isinstance(job_id, str):
         return False
     coerced = _job_id(job)
@@ -634,7 +699,12 @@ def _job_id(job: dict) -> str:
         except (OverflowError, ValueError):
             return ""
     if isinstance(raw, str):
-        return raw.strip()
+        # Through _utf8_text, not a bare ``raw.strip()``: the encode/decode
+        # round trip yields a plain ``str``, so a leftover str-*subclass* id
+        # whose overridden ``strip()`` (or ``__hash__``, once the id becomes
+        # a ``_running`` set member) raised can no longer 500
+        # GET /api/scheduler/jobs.  Same coercion hub.jobs._task_id applies.
+        return _utf8_text(raw).strip()
     return ""
 
 
