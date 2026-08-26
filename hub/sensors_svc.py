@@ -34,7 +34,12 @@ def _as_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(value, str):
+        return ""
+    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
+    # skips CPython's exact-str copy above and used to carry its bound
+    # ``encode`` bomb into this scrub — the status.py convention.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _utf8_text(value) -> str:
@@ -50,7 +55,13 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
+    # skips CPython's exact-str copy above and used to carry its bound
+    # ``encode`` bomb into this scrub — 500ing GET /api/system/sensors on the
+    # cache-hit path, the light peek, and the cold collect's final sweep.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
