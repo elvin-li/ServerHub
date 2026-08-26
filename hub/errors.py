@@ -391,6 +391,17 @@ CODES: dict[str, tuple[int, str]] = {
     # host tool.
     "network.networksetup_missing": (503, 'networksetup is missing on this host'),
     "network.ifconfig_missing": (503, 'ifconfig is missing on this host'),
+    # The same confirmed-vanished rule for the remaining host tools the alias
+    # / failover / dns-lookup flows spawn: the disk probe runs on the spawn
+    # sentinel failure path only, and a present-but-failing tool keeps its
+    # honest answer.  Before these codes, a vanished /sbin/route churned the
+    # managed aliases and answered 200 "local route still broken", a vanished
+    # /sbin/ping read as "gateway unreachable" and switched the Wi-Fi radio
+    # on, and a vanished dscacheutil+dig pair answered 200 "not found" — which
+    # reads like the host does not resolve.
+    "network.route_missing": (503, 'the route tool is missing on this host'),
+    "network.ping_missing": (503, 'ping is missing on this host'),
+    "network.lookup_tools_missing": (503, 'the DNS lookup tools (dscacheutil/dig) are missing on this host'),
     "network.bad_profile": (400, 'profile must be one of: wifi | ethernet | wifi_only | ethernet_only'),
     "network.invalid_device": (400, 'invalid interface name: {device}'),
     "network.device_not_found": (404, 'no such interface: {device}'),

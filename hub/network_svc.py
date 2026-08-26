@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
+
 from hub import cli_args
 from hub.docker_cli import docker, engine_up, inspect_object
 from hub.errors import api_error, exc_detail
@@ -52,6 +54,13 @@ NS = "/usr/sbin/networksetup"
 #: Module-level so the vanished-CLI probe re-checks the exact path the
 #: alias/interface spawns used (the identity ``SCUTIL`` convention).
 IFCONFIG = "/sbin/ifconfig"
+#: Same convention for the remaining host tools the alias / failover /
+#: dns-lookup flows spawn: the confirmed-vanished disk probes below must
+#: re-check the exact path the spawn used.
+ROUTE = "/sbin/route"
+PING = "/sbin/ping"
+DSCACHEUTIL = "/usr/bin/dscacheutil"
+DIG = "/usr/bin/dig"
 
 
 def _as_text(value) -> str:
@@ -567,6 +576,32 @@ def set_service_order(services: list[str]) -> dict:
     }
 
 
+def _cli_gone(path: str) -> bool:
+    """Fresh disk probe: True only for a confirmed-absent binary at *path*.
+
+    Run on a failure path only (the identity ``_scutil_missing`` / docker
+    ``cli_on_disk`` rule — a successful spawn never pays the stat).  An
+    unreadable parent directory (EIO/ESTALE on a dying mount) must not
+    upgrade the failure to the coded 503, so a stat that raises reads as
+    "still present".
+    """
+    try:
+        return not Path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _spawn_sentinel(rc, out: str, err: str) -> bool:
+    """True when ``(rc, out, err)`` is ``sh``'s FileNotFoundError sentinel.
+
+    ``run_capped``/``sh`` collapse every failed spawn of a missing binary
+    into exactly ``(-1, "", "not found")`` — never a real CLI exit.  A
+    genuine run whose output merely reads "not found" is disambiguated by
+    the :func:`_cli_gone` disk confirm every caller pairs with this check.
+    """
+    return rc == -1 and (err or out or "").strip() == "not found"
+
+
 def _networksetup_missing() -> bool:
     """Whether an empty service listing means networksetup itself is gone.
 
@@ -579,11 +614,7 @@ def _networksetup_missing() -> bool:
     500 that blames the server — or, on the per-service mutation routes, a
     404 that blames the caller's service name.
     """
-    try:
-        return not Path(NS).is_file()
-    except (OSError, ValueError):
-        # An unreadable /usr/sbin must not upgrade the failure to a 503.
-        return False
+    return _cli_gone(NS)
 
 
 def _ifconfig_missing() -> bool:
@@ -595,11 +626,7 @@ def _ifconfig_missing() -> bool:
     host tool.  Same rule: the disk is probed on the empty-listing failure
     path only, and only a confirmed-absent binary answers the coded 503.
     """
-    try:
-        return not Path(IFCONFIG).is_file()
-    except (OSError, ValueError):
-        # An unreadable /sbin must not upgrade the failure to a 503.
-        return False
+    return _cli_gone(IFCONFIG)
 
 
 def switch_profile(profile: str) -> dict:
@@ -1036,7 +1063,18 @@ def find_ip_locations(ip: str, addresses: list | None = None) -> list[dict]:
 
 def _alias_local_route(ip: str) -> dict:
     """Return whether macOS considers an alias a real local address."""
-    rc, out, err = _sh(["/sbin/route", "-n", "get", ip], timeout=5)
+    rc, out, err = _sh([ROUTE, "-n", "get", ip], timeout=5)
+    if _spawn_sentinel(rc, out, err) and _cli_gone(ROUTE):
+        # A vanished /sbin/route made every lookup read "not found", so
+        # POST /alias/auto/run tore the alias down and re-added it every
+        # pass, then answered 200 "local route still broken" — churning the
+        # alias and blaming the route for a missing host tool.  Same rule as
+        # the networksetup/ifconfig probes: disk-confirmed on the spawn
+        # sentinel failure path only, and a present-but-failing route keeps
+        # the honest repair answer.  The status readers wrap this call
+        # (alias_auto_status catches into the row; overview wraps in _safe),
+        # so only the mutating routes surface the coded 503.
+        raise api_error("network.route_missing")
     interface = ""
     flags = ""
     if rc == 0:
@@ -1227,6 +1265,11 @@ def alias_auto_status() -> dict:
         """Never raises: one bad route lookup should not drop the whole page."""
         try:
             return _alias_local_route(ip)
+        except HTTPException as exc:
+            # exc_detail, not str(): the lookup can now raise the coded
+            # network.route_missing HTTPException, and str() on that renders
+            # the detail dict's Python repr into this 200 status row.
+            return {"ok": False, "reason": "route lookup failed: " + exc_detail(exc)}
         except Exception as exc:  # noqa: BLE001 - surfaced in the row
             return {"ok": False, "reason": "route lookup failed: " + _as_text(exc)}
 
@@ -1324,7 +1367,7 @@ def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None)
     ms = _coerce_int(timeout_ms, 1200)
     rc, out, err = _sh(
         [
-            "/sbin/ping", "-c", "1", "-W", str(ms),
+            PING, "-c", "1", "-W", str(ms),
             "-S", ip, gateway,
         ],
         timeout=max(3, ms // 1000 + 2),
@@ -1389,6 +1432,23 @@ def network_failover_tick(force: bool = False) -> dict:
             # the interface table — blaming the link for a missing host
             # tool.  Disk-confirmed on the empty-table failure path only.
             raise api_error("network.ifconfig_missing")
+        if (
+            not healthy
+            and any(
+                isinstance(probe_result, dict)
+                and probe_result.get("reason") == "not found"
+                for probe_result in probes
+            )
+            and _cli_gone(PING)
+        ):
+            # A probe that reached the ping spawn and got ``sh``'s vanished
+            # sentinel is not an unreachable gateway.  Before this raise, a
+            # vanished /sbin/ping read every wired link as dead: the tick
+            # switched the Wi-Fi radio ON and answered 200 mode wifi_backup
+            # — mutating radio state over a missing host tool.  The raise
+            # sits before the wifi read/action on purpose, and the
+            # background loop's own try wraps the tick.
+            raise api_error("network.ping_missing")
         wifi = wifi_power_status()
         action = None
         action_result = None
@@ -1697,9 +1757,21 @@ def dns_resolve(host: str) -> dict:
     host = (host or "").strip()
     if not _valid_lookup_target(host):
         raise api_error("network.invalid_hostname")
-    rc, out, err = _sh(["/usr/bin/dscacheutil", "-q", "host", "-a", "name", host], timeout=8)
+    rc, out, err = _sh([DSCACHEUTIL, "-q", "host", "-a", "name", host], timeout=8)
     if rc != 0 or not out.strip():
-        rc2, out2, err2 = _sh(["/usr/bin/dig", "+short", host], timeout=8)
+        rc2, out2, err2 = _sh([DIG, "+short", host], timeout=8)
+        if (
+            _spawn_sentinel(rc, out, err)
+            and _spawn_sentinel(rc2, out2, err2)
+            and _cli_gone(DSCACHEUTIL)
+            and _cli_gone(DIG)
+        ):
+            # Both resolvers answered the vanished-spawn sentinel and both
+            # are confirmed off disk: the 200 ok:false "not found" body this
+            # used to return reads like the host does not resolve.  Either
+            # tool still on disk — including present-but-empty answers —
+            # keeps the honest lookup result.
+            raise api_error("network.lookup_tools_missing")
         return {
             "ok": rc2 == 0 and bool(out2.strip()),
             "host": host,
