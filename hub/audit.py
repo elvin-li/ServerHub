@@ -272,21 +272,38 @@ _PUBLIC_EXCEPTIONS = (
     "publickey",
 )
 
+#: Longest string one field may contribute to a trail line.  Unbounded: a
+#: caller auditing a whole payload (a 300 KB shell-job command was the found
+#: case) wrote a line wider than any tail window.  _trim reads the last
+#: ``MAX_LINES * 1024`` bytes and refuses to rewrite when that window holds
+#: no complete line, so one runaway line past it turns the trail append-only
+#: forever — unbounded disk growth on the one file that must stay bounded
+#: unattended.  64 KB keeps the largest legitimate field (a pasted script,
+#: a compose fragment) intact while keeping every line far inside the
+#: windows both the trim and the reader use.
+_STR_CAP = 64 * 1024
+
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    try:
-        text = str(value)
-    except RecursionError:
+        text = value.decode("utf-8", "replace")
+    else:
         try:
-            return type(value).__name__
+            text = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
         except Exception:
             return ""
-    except Exception:
-        return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+        text = text.encode("utf-8", "replace").decode("utf-8")
+    if len(text) > _STR_CAP:
+        # Same marker shape as util.py's log tailer.  Slicing is by code
+        # point, so the scrubbed text cannot gain a torn surrogate here.
+        text = text[:_STR_CAP] + " …[truncated]"
+    return text
 
 
 def _jsonable(value, depth: int = 0):
@@ -317,10 +334,8 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if isinstance(value, (str, bytes, bytearray)):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
@@ -498,7 +513,15 @@ def recent(limit: int = 100) -> list[dict]:
         # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/audit/auth.
         if not AUDIT_PATH.exists():
             return []
-        lines = tail_file_lines(AUDIT_PATH, n)
+        # The byte window must match what _trim legitimately keeps
+        # (MAX_LINES * 1024), not tail_file_lines' 256 KB default.  With the
+        # smaller window, one leftover fat line at the tail put the seek
+        # mid-line and the torn-row prefix-drop then discarded every complete
+        # row in the window — GET /api/audit/auth answered an empty trail
+        # while intact sign-in rows sat on disk right before the fat line.
+        # The same undersizing quietly under-filled honest requests: 500 rows
+        # of ~1 KB each need ~500 KB, so limit=500 returned ~250.
+        lines = tail_file_lines(AUDIT_PATH, n, max_bytes=MAX_LINES * 1024)
     except OSError:
         return []
     out: list[dict] = []
