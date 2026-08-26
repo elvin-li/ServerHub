@@ -436,7 +436,19 @@ def _plain_dict(value) -> dict | None:
 
 
 def list_jobs() -> list[dict]:
-    raw = cfg().get("schedules")
+    # Guarded like storage_pool_svc._pool_config: a cfg() snapshot provider
+    # that raises used to escape this reader and 500 GET /api/scheduler/jobs
+    # and every job mutation's get_job scan at once.
+    try:
+        data = cfg()
+    except Exception:
+        data = {}
+    # dict.get, not the bound method: cfg() parses YAML to exact types, but
+    # the snapshot is whatever an in-process caller last stored, and a
+    # dict-*subclass* config root with a bombing ``.get`` used to detonate
+    # here and 500 the same routes.  The unbound builtin reads the C-level
+    # storage underneath the override.
+    raw = dict.get(data, "schedules") if isinstance(data, dict) else None
     if isinstance(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
@@ -923,12 +935,31 @@ def _alert_on_failure(job: dict, entry: dict) -> None:
             level="warn",
             alert_id=f"schedule:{jid}",
             message=(
-                f"scheduled task '{job.get('name') or jid}' failed "
+                # _job_label: the bare ``or`` ran a leftover name value's
+                # ``__bool__``; the bomb was swallowed by the except below
+                # but silently dropped the alert the streak had earned.
+                f"scheduled task '{_job_label(job, jid)}' failed "
                 f"{count} times in a row (last exit {entry.get('rc')})"
             ),
         )
     except Exception:
         pass
+
+
+def _job_label(job: dict, jid: str):
+    """The job's display name, or its id.
+
+    The bare ``job.get("name") or jid`` ran a leftover name value's own
+    ``__bool__``; a subclass bomb there raised out of :func:`_execute`'s
+    entry build — *after* the runner had finished — so the run journalled
+    nothing and the "Never raises" contract broke.  The rendered value
+    itself is _jsonable's problem, not this helper's.
+    """
+    try:
+        name = job.get("name")
+        return name if name else jid
+    except Exception:
+        return jid
 
 
 def _execute(job: dict, trigger: str) -> dict:
@@ -941,7 +972,7 @@ def _execute(job: dict, trigger: str) -> dict:
         if jid in _running:
             entry = {
                 "ts": _epoch_int(started), "end": _epoch_int(started), "job": jid,
-                "name": job.get("name") or jid, "type": job.get("type"),
+                "name": _job_label(job, jid), "type": job.get("type"),
                 "trigger": trigger, "status": "skipped", "rc": None,
                 "tail": "previous run still in progress", "duration": 0,
             }
@@ -967,7 +998,7 @@ def _execute(job: dict, trigger: str) -> dict:
     status = "ok" if rc == 0 else ("timeout" if rc == 124 else "failed")
     entry = {
         "ts": _epoch_int(started), "end": _epoch_int(ended), "job": jid,
-        "name": job.get("name") or jid, "type": job.get("type"),
+        "name": _job_label(job, jid), "type": job.get("type"),
         "trigger": trigger, "status": status, "rc": rc,
         "tail": "\n".join(log)[-TAIL_CHARS:],
         "duration": _finite_duration(ended, started),
@@ -1066,7 +1097,10 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
         launched.append(jid)
         threading.Thread(
             target=_execute, args=(job, "schedule"), daemon=True,
-            name=f"sched-{job.get('id')}",
+            # jid, not the raw id: the f-string ran a leftover id value's
+            # own __format__/__str__, and a subclass bomb there aborted the
+            # whole tick — every *other* job's matching minute was lost.
+            name=f"sched-{jid}",
         ).start()
     return launched
 
