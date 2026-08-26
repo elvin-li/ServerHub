@@ -214,6 +214,29 @@ def _read_disk() -> dict:
         return {}
 
 
+def _disk_oversized() -> bool:
+    """True when services.yaml is a regular file larger than the read cap.
+
+    This is the one *unreadable* state where the bytes on disk are real,
+    intact config we must not clobber -- unlike a torn/nested/bad-tag file
+    (genuinely corrupt, healed by rewriting from ``{}``) or a directory
+    occupying the path.  ``read_text_capped`` raises ``OSError(EFBIG)`` for it,
+    so :func:`_read_disk` returns ``{}``; a :func:`mutate` then merges its
+    change onto that empty base and ``_save_full_locked`` writes a tiny file,
+    silently wiping the admin credential, every app and every stack -- and the
+    capped ``copy_secret_file`` pre-image cannot back the oversized file up
+    first.  On the auth surface this is worse than data loss: ``cfg()`` reads
+    ``{}`` so the panel reports "setup required", and POST /api/auth/setup would
+    re-claim the install and destroy the real admin with one unauthenticated
+    request.  Detected by stat (no read) so it costs nothing on the hot path.
+    """
+    try:
+        st = os.stat(YAML_PATH)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_size > _YAML_CAP
+
+
 #: Minimal config written on first run.  Without this a fresh install raises
 #: FileNotFoundError inside cfg() and *every* API route returns 500, because
 #: services.yaml was previously expected to already exist on disk.
@@ -598,6 +621,13 @@ def mutate(mutator) -> dict:
     lose the change (or have its own change lost). Returns the written config.
     """
     with _write_lock, _file_lock():
+        if _disk_oversized():
+            # The on-disk config is intact but larger than the read cap, so
+            # _read_disk() sees {} and this mutation would overwrite the whole
+            # real file (admin credential, apps, stacks) with a tiny one --
+            # a silent wipe, and a first-run re-claim through /api/auth/setup.
+            # Refuse; the file stays intact until it is repaired by hand.
+            raise api_error("settings.save_failed")
         data = _read_disk()
         mutator(data)
         _save_full_locked(data)
