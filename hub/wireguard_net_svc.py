@@ -99,14 +99,25 @@ def _stage_file(path: Path, content: str) -> bool:
 
 
 def _as_text(value) -> str:
-    """Drop leftover ``\\ud800`` so GET /api/wireguard/readiness cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+    """Drop leftover ``\\ud800`` so GET /api/wireguard/readiness cannot UTF-8 500.
+
+    Unbound through the base types: a bytes-subclass whose bound ``.decode``
+    raises, or a str-subclass whose ``__str__`` returns itself and whose
+    bound ``.encode`` raises, used to detonate this launderer — the readiness
+    probes run under ``fan_out``, which re-raises, so one poisoned ``sh``
+    stream 500'd the whole page.
+    """
+    if isinstance(value, bytes):
+        text = bytes.decode(value, "utf-8", "replace")
+    elif isinstance(value, bytearray):
+        text = bytearray.decode(value, "utf-8", "replace")
+    elif isinstance(value, str):
+        text = value
     elif value is None:
         return ""
     else:
         try:
-            value = str(value)
+            text = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
@@ -114,7 +125,7 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _default_wan_interface() -> str:
