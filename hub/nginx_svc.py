@@ -83,8 +83,16 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return bytes(value).decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass): there is
+            # nothing to salvage from it, but its *siblings* must survive —
+            # pre-fix this raised out of the comprehension in overview() and
+            # 500'd GET /api/nginx, wiping the sane rows beside it.
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
@@ -94,7 +102,12 @@ def _jsonable(value, depth: int = 0):
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the row or the route.
+            return None
     return _as_text(value)
 
 
@@ -172,7 +185,24 @@ def overview() -> dict:
     # surrogate keys/values and already-int over-cap numbers used to 500 the
     # encode.  Non-dict rows are dropped before site_count counts them — the
     # SPA keys the table on ``s.file``.
-    sites = [_jsonable(s) for s in sites if isinstance(s, dict)]
+    #
+    # Materialize before scrubbing: ``isinstance(sites, list)`` passes for a
+    # list *subclass*, and one whose ``__iter__`` raises used to blow up the
+    # comprehension outside the try above and 500 GET /api/nginx.  Row-level
+    # isolation after that: a row whose scrub collapses (a mapping that
+    # refuses ``items()``) drops alone — pre-fix it took every sane sibling
+    # site down with the 500.
+    try:
+        rows = list(sites)
+    except Exception:
+        rows = []
+    sites = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        scrubbed = _jsonable(row)
+        if isinstance(scrubbed, dict):
+            sites.append(scrubbed)
     # The shared listing (hub/launchd_cache.py) rather than this module's own
     # `launchctl list`: the health page calls this *and* two other readers of the
     # same listing, so the bundle used to spawn three of them.
