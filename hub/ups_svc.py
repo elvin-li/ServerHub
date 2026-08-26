@@ -47,12 +47,18 @@ _REMAIN_RE = re.compile(r"(\d+):(\d{2})\s+remaining")
 _SOURCE_RE = re.compile(r"now drawing from\s+'([^']+)'", re.I)
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """pmset stdout as text.  Leftover ``str()`` RecursionError used to 500 GET /api/ups."""
     if isinstance(value, str):
         text = value
     elif isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     elif value is None:
         return ""
     else:
@@ -65,7 +71,9 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str-subclass ``.encode`` bomb used to raise out
+    # of the laundering pass itself.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -76,12 +84,23 @@ def _jsonable(value, depth: int = 0):
     ``datetime.date`` / bytes / set into the GET /api/ups body.
     A >4300-digit leftover int still passed through untouched: CPython's
     int->str digit limit then ValueError'd ``json.dumps`` itself.
+    A *subclass* scalar still ran its own dunders through the probes: an int
+    ``__str__`` bomb, a float ``__eq__`` bomb, a bytes ``decode`` bomb and a
+    str ``encode`` bomb (value or key) each used to raise out of this scrub
+    and 500 GET /api/ups — the hub.modules unbound-base rule.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -90,13 +109,26 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
+        # str() then unbound base encode: a str-subclass ``encode`` bomb
+        # used to raise out of the surrogate laundering itself.
+        try:
+            value = str(value)
+        except Exception:
+            return None
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         try:
             items = list(value.items())
@@ -107,16 +139,31 @@ def _jsonable(value, depth: int = 0):
             # GET /api/ups (the nginx_svc._jsonable rule).
             return None
         out = {}
-        for k, v in items:
-            if not isinstance(k, str):
+        for pair in items:
+            # Per-pair unpack guard: a torn non-pair row from a subclass
+            # ``items()`` used to ValueError out of the loop head and 500
+            # GET /api/ups with every sane sibling pair.
+            try:
+                k, v = pair
+            except Exception:
+                continue
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             # A str *key* skipped the string sanitizer: a leftover lone
             # surrogate in a settings key used to 500 Starlette's UTF-8
-            # encode of GET /api/ups (the hub.errors._jsonable_param rule).
-            k = k.encode("utf-8", "replace").decode("utf-8")
+            # encode of GET /api/ups — and a str-subclass key whose
+            # ``encode`` raises blew the laundering itself, so both go
+            # through str() + the unbound base encode.
+            try:
+                k = str(k)
+            except Exception:
+                continue
+            k = str.encode(k, "utf-8", "replace").decode("utf-8")
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -126,7 +173,12 @@ def _jsonable(value, depth: int = 0):
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the row or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -135,7 +187,7 @@ def _jsonable(value, depth: int = 0):
         except Exception:
             pass
     try:
-        return str(value).encode("utf-8", "replace").decode("utf-8")
+        return _as_text(value)
     except Exception:
         return None
 
@@ -167,16 +219,37 @@ def _finite_int(raw, default: int | None):
 
     A 400-digit leftover integer is a valid ``int`` but ``float()`` OverflowError's
     it — the shutdown trigger comparison used to 500 GET /api/ups/shutdown/plan.
+    A float-*subclass* ``__eq__`` bomb blew the NaN/inf probe outside the
+    ``try``, and an object whose ``__int__`` raises something other than
+    Type/Value/OverflowError escaped it — both used to 500 GET /api/ups
+    through ``low_battery_pct`` / ``trigger_pct``.
     """
     if isinstance(raw, bool) or raw is None:
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return default
+    if isinstance(raw, float):
+        try:
+            # Base coercion to an exact float, so the NaN/inf probe below
+            # never runs a subclass ``__eq__``.
+            raw = float.__float__(raw)
+        except Exception:
+            return default
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return default
+    if isinstance(raw, int) and type(raw) is not int:
+        try:
+            # Base coercion: an int subclass whose ``__int__``/``__str__``
+            # raises must fall back, not 500.
+            raw = int.__index__(raw)
+        except Exception:
+            return default
     try:
         n = int(raw)
         float(n)
         return n
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # int() runs the value's own __int__/__index__/__trunc__: a leftover
+        # conversion bomb raising outside Type/Value/OverflowError is the
+        # same unreadable value, never a 500.
         return default
 
 
