@@ -2873,6 +2873,7 @@ export default {
       unknown_root: '不明なルート: {root_id}',
       upload_too_large: 'アップロード上限 {max_mb}MB を超えています',
       upload_would_overwrite: '{name} という名前のファイルが既に存在します',
+      upload_write_failed: 'アップロードしたファイルを書き込めませんでした: {error}',
     },
     terminal: {
       host_disabled: 'ホストターミナルは無効です。「設定 → ターミナル」で有効化してください。このマシンへの完全なコマンド権限が付与されます。',
