@@ -2893,6 +2893,7 @@ export default {
       bad_policy: '未知的写入策略：{policy}',
       no_members: '请至少选择一块硬盘',
       not_poolable: '{mount} 不能加入存储池（系统盘或未挂载）',
+      name_too_long: '存储池名称过长（最多 {max} 个字符）',
     },
     vm_console: {
       browser_session_required: '虚拟机控制台需要浏览器会话',

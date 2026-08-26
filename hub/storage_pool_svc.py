@@ -49,6 +49,14 @@ POOLABLE_KINDS = frozenset({"external", "data", "other"})
 PLACEMENT_POLICIES = ("most-free", "least-used-pct", "round-robin")
 DEFAULT_POLICY = "most-free"
 
+#: Display-label cap, matching the accounts/apikeys/disk/vms name caps.  The
+#: name is persisted into services.yaml: unbounded, a multi-MB label was
+#: refused only by the whole-file save cap as a settings.save_failed 503
+#: (blaming the disk for oversized input), and a label just under that cap
+#: landed with HTTP 200 and ballooned services.yaml toward the 1MB read cap
+#: every sibling writer shares.
+_NAME_CAP = 64
+
 #: A pool view is derived from `df` output, which is cheap but not free, and the
 #: page polls.  Short TTL: mounts appear and vanish on user action.
 _TTL = 5.0
@@ -467,6 +475,10 @@ def save_pool(mounts: list[str], policy: str = DEFAULT_POLICY, name: str = "",
     # name made ``str()`` ValueError, and a leftover ``\ud800`` name would be
     # persisted raw into services.yaml; scrub before writing, not after.
     clean_name = _text(name).strip() or "pool"
+    # Cap after the scrub: the scrubbed text is what would be persisted, and
+    # code points are the unit the config read cap compares.
+    if len(clean_name) > _NAME_CAP:
+        raise api_error("storage_pool.name_too_long", max=_NAME_CAP)
     try:
         floor = max(0.0, float(min_free_gb or 0))
     except (TypeError, ValueError, OverflowError):

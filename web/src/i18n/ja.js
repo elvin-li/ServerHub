@@ -2891,6 +2891,7 @@ export default {
       bad_policy: '不明な配置ポリシー: {policy}',
       no_members: 'ディスクを 1 台以上選択してください',
       not_poolable: '{mount} はプールに追加できません（システムまたは未マウント）',
+      name_too_long: 'プール名が長すぎます（最大 {max} 文字）',
     },
     vm_console: {
       browser_session_required: 'VM コンソールにはブラウザセッションが必要です',

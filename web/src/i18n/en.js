@@ -2897,6 +2897,7 @@ export default {
       bad_policy: 'Unknown placement policy: {policy}',
       no_members: 'Select at least one disk',
       not_poolable: '{mount} cannot join a pool (system volume or not mounted)',
+      name_too_long: 'The pool name is too long (max {max} characters)',
     },
     vm_console: {
       browser_session_required: 'A browser session is required for VM consoles',
