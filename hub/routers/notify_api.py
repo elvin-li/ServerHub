@@ -192,7 +192,12 @@ def create_channel(body: ChannelBody, request: Request):
     # leave orphaned secrets under this id; a new channel must never silently
     # inherit them, so the slate is wiped before the new values land.
     notify_channels.drop_channel_secrets(cid)
-    notify_channels.set_channel_secrets(cid, secrets_patch)
+    # require= rejects a missing mandatory secret before the write; the
+    # after-write check below stays as the backstop for a write the disk
+    # swallowed (EIO), where "created" would otherwise mean "secretless".
+    notify_channels.set_channel_secrets(
+        cid, secrets_patch, require=_spec_for(body.type)["secret_required"]
+    )
     try:
         _require_secrets(cid, body.type)
     except Exception:
@@ -219,7 +224,14 @@ def update_channel(cid: str, body: ChannelBody, request: Request):
     if str(existing.get("type")) != body.type:
         raise api_error("notify.type_immutable", id=cid)
     record, secrets_patch = _validated_record(body, cid)
-    notify_channels.set_channel_secrets(cid, secrets_patch)
+    # require= refuses inside the secrets lock, before the write: clearing a
+    # mandatory secret (``secrets: {"url": ""}``) used to persist the wipe
+    # and *then* 400 on the after-write check — the "rejected" edit left the
+    # channel secretless, and every later alert dispatch on it failed
+    # silently.  The after-write check stays as the dying-disk backstop.
+    notify_channels.set_channel_secrets(
+        cid, secrets_patch, require=_spec_for(body.type)["secret_required"]
+    )
     _require_secrets(cid, body.type)
     notify_channels.save_channel(record)
     audit.record(audit.NOTIFY_CHANNEL_UPDATED,
