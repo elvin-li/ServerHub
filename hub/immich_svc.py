@@ -65,10 +65,16 @@ REDIS_PORT = 6379
 PG_PORT = 5433
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -82,9 +88,15 @@ def _utf8_text(value) -> str:
 
 
 def _as_text(value) -> str:
-    """docker ps / ping leftovers: bytes used to TypeError ``partition`` / ``in``."""
+    """docker ps / ping leftovers: bytes used to TypeError ``partition`` / ``in``.
+
+    Unbound decode: a bytes-*subclass* ``decode`` bomb from the same sh seam
+    used to raise out of ``run_checks`` — collapsing the whole Immich block of
+    GET /api/health/checks into one "check failed" row, wiping the sane
+    sibling checks with the poisoned one.
+    """
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif not isinstance(value, str):
         return ""
     return value.encode("utf-8", "replace").decode("utf-8")
@@ -95,12 +107,25 @@ def _jsonable(value, depth: int = 0):
 
     Inf in a leftover ping body was already dropped; a leftover ``\\ud800`` in
     docker ps / ping text still 500'd GET /api/health at UTF-8 encode time.
+
+    Probes are unbound base-type calls (``int.__index__``, ``float.__float__``,
+    ``bytes``/``bytearray.decode``, ``dict.items``, ``base.__iter__``, guarded
+    getattr — the modules5 convention): the *bound* probes this carried before
+    blew on the subclass-bomb classes, and a raise out of here wiped the whole
+    Immich section of GET /api/health/checks to one collapsed row.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -111,18 +136,27 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot 500 and the real entries still survive.
+        for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)
@@ -131,8 +165,17 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / ``__getattr__`` raising non-AttributeError past
+        # getattr's default.
+        iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
