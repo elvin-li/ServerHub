@@ -122,7 +122,11 @@ class OkPayloadIterationBombTests(unittest.TestCase):
                 return_value=result))
             return _client().post("/api/snapshots/create")
 
-    def test_items_bomb_value_collapses_the_field_not_the_route(self):
+    def test_items_bomb_value_salvages_its_storage_not_a_500(self):
+        # shares6 upgraded the sanitizer to the modules5 unbound
+        # ``dict.items`` view: the hostile override cannot fire, so the real
+        # C-level storage survives instead of collapsing to None.  The
+        # original point stands either way: the route answers 200.
         resp = self._create({
             "ok": True, "name": "com.apple.TimeMachine.2026-08-25",
             "log": _ItemsBombDict({"a": 1}),
@@ -131,7 +135,7 @@ class OkPayloadIterationBombTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertIs(body["ok"], True)
-        self.assertIsNone(body["log"])
+        self.assertEqual(body["log"], {"a": 1})
         self.assertEqual(body["name"], "com.apple.TimeMachine.2026-08-25")
 
     def test_iter_bomb_sequence_value_collapses_the_field(self):
@@ -434,7 +438,10 @@ class InProcessStrProbeTests(unittest.TestCase):
 class NasCommonJsonableIterationContractTests(unittest.TestCase):
     """The shared sanitizer's field-isolation contract (fails pre-fix)."""
 
-    def test_items_bomb_collapses_the_field_not_the_row(self):
+    def test_items_bomb_salvages_the_field_not_the_row(self):
+        # shares6 upgraded the sanitizer to the modules5 unbound
+        # ``dict.items`` view: the hostile override cannot fire, so the real
+        # C-level storage survives instead of collapsing to None.
         row = nas_common._jsonable({
             "ok": True,
             "extras": _ItemsBombDict({"x": 1}),
@@ -442,7 +449,7 @@ class NasCommonJsonableIterationContractTests(unittest.TestCase):
         })
         _starlette(row)
         self.assertIs(row["ok"], True)
-        self.assertIsNone(row["extras"])
+        self.assertEqual(row["extras"], {"x": 1})
         self.assertEqual(row["port"], 2049)
 
     def test_iter_bomb_collapses_the_field_not_the_row(self):
@@ -457,12 +464,13 @@ class NasCommonJsonableIterationContractTests(unittest.TestCase):
         self.assertEqual(row["count"], 1)
 
     def test_top_level_items_bomb_ok_result_still_answers_ok(self):
-        # raise_for_admin_result: .get() works on the subclass, _jsonable
-        # collapses the unreadable mapping to None, and the route must still
-        # answer {"ok": True} rather than 500.
+        # raise_for_admin_result: .get() works on the subclass and the route
+        # must answer ok rather than 500.  Since shares6 the unbound
+        # ``dict.items`` view salvages the real storage, so the sibling key
+        # rides along instead of being collapsed away with the bomb.
         cleaned = nas_common.raise_for_admin_result(
             _ItemsBombDict({"ok": True, "x": 1}))
-        self.assertEqual(cleaned, {"ok": True})
+        self.assertEqual(cleaned, {"ok": True, "x": 1})
         _starlette(cleaned)
 
 
