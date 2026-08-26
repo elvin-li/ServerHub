@@ -94,7 +94,11 @@ _LEASE = 4096
 def _as_text(value) -> str:
     """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 usage JSON."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode (the modules5 / nas_common rule): a leftover
+        # bytes-subclass whose bound ``.decode`` raises used to 500
+        # GET /api/storage/usage out of _spotlight_query.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -865,9 +869,17 @@ def _spotlight_query(volume: str) -> tuple[int, str]:
     """
     try:
         rc, text, err = sh([MDUTIL, "-s", volume], timeout=8)
+        # ``_as_text(text) or _as_text(err)``, never ``text or err``: the old
+        # bare ``or`` on the raw output sat *outside* this guard and called
+        # ``__bool__`` on the leftover — a bool-bomb (or decode-bomb bytes
+        # subclass) in sh() output raised out of fan_out and 500'd
+        # GET /api/storage/usage and POST /api/storage/spotlight.  Everything
+        # now happens under the guard, and rc is base-coerced so an odd
+        # int subclass cannot bomb the ``rc == 0`` reads downstream.
+        blob = (_as_text(text) or _as_text(err)).strip()
+        return (int.__index__(rc) if isinstance(rc, int) else 1), blob
     except Exception as exc:  # noqa: BLE001
         return 1, _as_text(exc)
-    return rc, _as_text(text or err).strip()
 
 
 def spotlight_status() -> list[dict]:
@@ -957,7 +969,26 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     result = run_admin([MDUTIL, "-i", "on" if enabled else "off", target], timeout=60)
     if not isinstance(result, dict):
         return {"ok": False, "error": "failed"}
-    if result.get("ok"):
+    try:
+        # dict() copies through the C-level storage (nas_common._plain_result
+        # rule): a dict-*subclass* result whose ``.get`` or ``__setitem__``
+        # raises passed the isinstance gate above and 500'd
+        # POST /api/storage/spotlight before the router funnel's own
+        # laundering could run.  A subclass whose copy itself raises is junk.
+        result = dict(result)
+    except Exception:
+        return {"ok": False, "error": "failed"}
+    try:
+        ok = bool(result.get("ok"))
+    except Exception:
+        # A ``__bool__``-bomb ok value reads as failure (nas_common._truthy
+        # rule) instead of raising out of the service as a 500 — and the
+        # unreadable flag must not ride along either: the route reads
+        # ``bool(result.get("ok"))`` for its audit row, where the same bomb
+        # would just fire one frame later.
+        ok = False
+        result["ok"] = False
+    if ok:
         result["volume"] = target
         result["enabled"] = bool(enabled)
         return result
@@ -969,8 +1000,12 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     # (``password_required`` / ``password_incorrect`` / ``unavailable``) keep
     # their original shape.  The probe runs only on this failure path, never
     # on a successful toggle.
-    if result.get("error") == "failed":
-        message = _as_text(result.get("message") or "").lower()
+    # _as_text on both reads, no bare ``or``: a ``__bool__``-bomb message (or
+    # an error value with a hostile reflected ``__eq__``) on this failure
+    # path used to raise out of the vanish classification and 500 the route
+    # in place of the coded refusal.
+    if _as_text(result.get("error")) == "failed":
+        message = _as_text(result.get("message")).lower()
         if any(marker in message for marker in _VANISH_MARKERS) and not _mdutil_on_disk():
             return {"ok": False, "error": "mdutil_missing"}
     return result

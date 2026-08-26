@@ -40,7 +40,13 @@ _CACHE_TTL = 20.0
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/snapshots."""
     if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
+        # Unbound base decode (the modules5 / nas_common rule): the old
+        # ``bytes(value)`` copy consulted a subclass ``__bytes__``, so a
+        # leftover bytes-subclass bomb in sh() output raised out of _plist
+        # and 500'd GET /api/snapshots.  The base method reads the real
+        # buffer and no override can fire.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -67,6 +73,16 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules5 / nas_common
+                # rule): an int-subclass ``__str__`` bomb in a run_admin
+                # result raised a non-ValueError past the digit-cap probe
+                # below and 500'd POST /api/snapshots/* and
+                # /api/timemachine/action.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -75,13 +91,24 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a float-subclass
+                # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf probes
+                # below and 500 the same mutation routes.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _as_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a bytes-subclass whose bound ``.decode``
+        # raises used to 500 the mutation routes out of _admin_result.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
     if isinstance(value, dict):
         try:
             items = list(value.items())
@@ -92,7 +119,14 @@ def _jsonable(value, depth: int = 0):
             # POST /api/snapshots/* (the ups_svc/nginx_svc._jsonable rule).
             return None
         out = {}
-        for k, v in items:
+        for pair in items:
+            try:
+                k, v = pair
+            except Exception:
+                # An items() that yields non-pairs: the two-target unpack
+                # used to happen outside the guard above and 500 the same
+                # routes — the torn row drops, its sibling pairs survive.
+                continue
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
@@ -494,12 +528,15 @@ def delete_all_snapshots(mount: str) -> dict:
     if not tokens:
         return {"ok": True, "deleted": 0, "message": "no deletable snapshots"}
     commands = [[TMUTIL, "deletelocalsnapshots", token] for token in tokens]
-    result = run_admin_sequence(commands, timeout=600)
+    # Launder *before* the ok read: ``result.get("ok")`` on the raw
+    # run_admin_sequence payload used to fire a dict-subclass ``.get`` bomb
+    # (and the ``if`` a ``__bool__``-bomb ok) and 500 POST /api/snapshots/delete
+    # ahead of the scrub — _admin_result always answers a plain dict.
+    result = _admin_result(run_admin_sequence(commands, timeout=600))
     invalidate()
-    if isinstance(result, dict) and result.get("ok"):
-        result = dict(result)
+    if result.get("ok"):
         result["deleted"] = len(tokens)
-    return _admin_result(result)
+    return result
 
 
 def thin_snapshots(mount: str, urgency: int = 1) -> dict:
