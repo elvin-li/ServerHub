@@ -103,14 +103,22 @@ def _validate(commands: Sequence[Sequence[str]]) -> str | None:
     """Shared argv hygiene; returns the joined shell command or an error code."""
     if not commands or any(not command for command in commands):
         return None
-    if any("\x00" in str(part) for command in commands for part in command):
+    try:
+        rendered = [[str(part) for part in command] for command in commands]
+    except Exception:
+        # A leftover argv part whose str() raises — an *already-int* past
+        # CPython's int->str digit cap (YAML/plist hex loads uncapped through
+        # ``int(x, 16)``), or a hostile __str__ — can never be a valid argv.
+        # The bare str() used to raise the digit-cap ValueError out of
+        # run_admin and 500 the caller unhandled; ``invalid_command`` is the
+        # coded refusal every other malformed argv already earns.
+        return None
+    if any("\x00" in part for command in rendered for part in command):
         return None
     # A semicolon is intentional: some idempotent launchctl commands report an
     # error when the requested state already exists.  The caller always verifies
     # the resulting system state instead of trusting this process status alone.
-    return "; ".join(
-        shlex.join([str(part) for part in command]) for command in commands
-    )
+    return "; ".join(shlex.join(command) for command in rendered)
 
 
 #: Privileged CLIs (``tmutil``, ``diskutil``, ``wg-quick``) can chatter for the

@@ -863,7 +863,14 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     """Turn Spotlight indexing on or off for one volume (requires authorization)."""
     from hub.macos_admin import run_admin
 
-    target = str(volume or "").strip()
+    # _as_text is a str() probe, not an isinstance gate: the route hands the
+    # volume over as str through Pydantic, but the service is also called
+    # in-process, and a leftover YAML/plist hex int arrives *already-int*
+    # (``int(x, 16)`` is exempt from CPython's 4300-digit parse cap) — the
+    # bare ``str()`` here raised the int->str digit-cap ValueError where
+    # every other junk volume earns the coded ``bad_volume`` refusal (the
+    # raid_svc._req_text / smart_test_svc._schedule_text convention).
+    target = _as_text(volume).strip()
     known = {
         v.get("volume")
         for v in spotlight_status()
