@@ -83,8 +83,16 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass in a
+            # run_admin result): nothing to salvage, but its *siblings* must
+            # survive — pre-fix this raised out of _admin_result and 500'd
+            # POST /api/snapshots/* (the ups_svc/nginx_svc._jsonable rule).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
@@ -93,7 +101,12 @@ def _jsonable(value, depth: int = 0):
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the payload or the route.
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -108,9 +121,43 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _tmutil_on_disk() -> bool:
+    """Fresh disk probe for the mutation-failure path only (raid/nfs/vms rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /usr/bin is not confirmably carrying tmutil.
+    """
+    try:
+        return Path(TMUTIL).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+#: What a spawn of a gone binary reads like through run_admin / sh: the
+#: shell's own refusal (``sh: /usr/bin/tmutil: command not found`` / ``No
+#: such file or directory``) or sh()'s FileNotFoundError sentinel (``not
+#: found``).  Purely a message-pattern gate: classification additionally
+#: requires the fresh :func:`_tmutil_on_disk` probe, and only the generic
+#: ``failed`` shape is eligible — timeouts, cancelled sheets and password
+#: failures keep their original shape.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
 def _admin_result(result) -> dict:
     cleaned = _jsonable(result) if isinstance(result, dict) else {}
-    return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
+    if not isinstance(cleaned, dict):
+        return {"ok": False, "error": "failed"}
+    # A tmutil that vanished between boot and the mutation (an OS update
+    # mid-flight, a dying system volume) used to surface as the generic 500
+    # ``admin.failed`` — "the privileged macOS operation failed" sends the
+    # operator back to a password dialog that cannot help.  Every sibling
+    # NAS CLI (nfsd, diskutil, smartctl, mdutil) already answers its coded
+    # 503; the probe runs only on this failure path, never on a success.
+    if not cleaned.get("ok") and cleaned.get("error") == "failed":
+        message = _as_text(cleaned.get("message") or "").lower()
+        if any(marker in message for marker in _VANISH_MARKERS) and not _tmutil_on_disk():
+            return {"ok": False, "error": "tmutil_missing"}
+    return cleaned
 
 
 def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
@@ -416,10 +463,17 @@ def create_snapshot() -> dict:
 
 def delete_snapshot(mount: str, date_token: str) -> dict:
     """Delete one dated local snapshot from *mount* (requires authorization)."""
-    if not _SNAP_DATE.fullmatch(date_token or ""):
+    # _as_text is a str() probe, not an isinstance gate: the route hands the
+    # token over as str through Pydantic, but the service is also called
+    # in-process, and a non-str leftover TypeError'd fullmatch (a 500) where
+    # the coded ``bad_token`` refusal is the contract.  An over-cap
+    # already-int (YAML/plist hex loads uncapped through ``int(x, 16)``)
+    # scrubs to "" and earns the same refusal.
+    token = _as_text(date_token)
+    if not _SNAP_DATE.fullmatch(token):
         return {"ok": False, "error": "bad_token"}
     result = run_admin(
-        [TMUTIL, "deletelocalsnapshots", date_token],
+        [TMUTIL, "deletelocalsnapshots", token],
         timeout=180,
     )
     invalidate()

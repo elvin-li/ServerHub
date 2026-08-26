@@ -2973,6 +2973,7 @@ export default {
       bad_urgency: '快照清理力度须为 1-4',
       bad_mount: '未知的卷：{mount}',
       confirm_required: '删除还原点需要明确确认',
+      tmutil_missing: '此主机上缺少 tmutil',
     },
     usage: {
       bad_volume: '未知的卷',

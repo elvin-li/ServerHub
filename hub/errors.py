@@ -210,6 +210,12 @@ CODES: dict[str, tuple[int, str]] = {
     "snapshot.bad_action": (400, "unsupported Time Machine action: {action}"),
     "snapshot.bad_urgency": (400, "snapshot thinning urgency must be 1-4"),
     "snapshot.bad_mount": (400, "unknown volume: {mount}"),
+    # Confirmed-vanished tmutil (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (nfs.nfsd_missing,
+    # raid.diskutil_missing, smart.smartctl_missing, usage.mdutil_missing) —
+    # the old shape was the generic admin.failed 500, which sent the operator
+    # back to a password dialog that cannot help.
+    "snapshot.tmutil_missing": (503, "tmutil is missing on this host"),
     # ── SMART self-tests ────────────────────────────────────────────────────
     "smart.bad_device": (400, "unknown disk device"),
     "smart.bad_kind": (400, "unsupported self-test type"),

@@ -19,7 +19,6 @@ from hub.errors import api_error
 from hub.routers.nas_common import (
     _utf8_text,
     client_host,
-    raise_for_admin_result,
     raise_service_error,
     require_admin_browser,
 )
@@ -273,7 +272,10 @@ def api_snapshot_create(request: Request):
         action="create",
         ok=bool(result.get("ok")),
     )
-    return raise_for_admin_result(result)
+    # A tmutil confirmed vanished by a fresh disk probe answers the coded
+    # 503, not the generic 500 "the privileged macOS operation failed" that
+    # sends the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {"tmutil_missing": "snapshot.tmutil_missing"})
 
 
 def _known_mount(mount: str) -> str:
@@ -304,7 +306,11 @@ def api_snapshot_delete(body: SnapshotDeleteBody, request: Request):
         mount=mount,
         ok=bool(result.get("ok")),
     )
-    return raise_service_error(result, {"bad_token": "snapshot.bad_token"})
+    return raise_service_error(result, {
+        "bad_token": "snapshot.bad_token",
+        # Confirmed-vanished tmutil (fresh disk probe on the failure path).
+        "tmutil_missing": "snapshot.tmutil_missing",
+    })
 
 
 @router.post("/api/snapshots/thin")
@@ -321,7 +327,11 @@ def api_snapshot_thin(body: SnapshotThinBody, request: Request):
         urgency=body.urgency,
         ok=bool(result.get("ok")),
     )
-    return raise_service_error(result, {"bad_urgency": "snapshot.bad_urgency"})
+    return raise_service_error(result, {
+        "bad_urgency": "snapshot.bad_urgency",
+        # Confirmed-vanished tmutil (fresh disk probe on the failure path).
+        "tmutil_missing": "snapshot.tmutil_missing",
+    })
 
 
 @router.post("/api/timemachine/action")
@@ -335,7 +345,11 @@ def api_time_machine_action(body: TimeMachineActionBody, request: Request):
         action=f"tm_{body.action}",
         ok=bool(result.get("ok")),
     )
-    return raise_service_error(result, {"bad_action": "snapshot.bad_action"})
+    return raise_service_error(result, {
+        "bad_action": "snapshot.bad_action",
+        # Confirmed-vanished tmutil (fresh disk probe on the failure path).
+        "tmutil_missing": "snapshot.tmutil_missing",
+    })
 
 
 # ── SMART self-tests ─────────────────────────────────────────────────────────

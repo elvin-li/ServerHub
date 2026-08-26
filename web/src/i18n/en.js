@@ -2977,6 +2977,7 @@ export default {
       bad_urgency: 'Snapshot thinning urgency must be 1-4',
       bad_mount: 'Unknown volume: {mount}',
       confirm_required: 'Deleting a restore point requires explicit confirmation',
+      tmutil_missing: 'tmutil is missing on this host',
     },
     usage: {
       bad_volume: 'Unknown volume',

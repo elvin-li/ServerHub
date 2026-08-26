@@ -2971,6 +2971,7 @@ export default {
       bad_urgency: 'スナップショット削除の強度は 1〜4 で指定してください',
       bad_mount: '不明なボリューム：{mount}',
       confirm_required: '復元ポイントの削除には明示的な確認が必要です',
+      tmutil_missing: 'このホストに tmutil がありません',
     },
     usage: {
       bad_volume: '不明なボリュームです',
