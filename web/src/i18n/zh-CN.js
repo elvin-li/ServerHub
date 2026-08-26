@@ -3052,10 +3052,12 @@ export default {
       bad_key: '不支持的电源设置：{key}',
       bad_value: '值必须是整数',
       value_range: '值必须在 0–180 之间',
+      pmset_missing: '此主机上缺少 pmset 工具',
     },
     identity: {
       bad_name: '计算机名称无效',
       scutil_missing: '此主机上缺少 scutil 工具',
+      value_too_long: '{field} 过长（最多 {max} 个字符）',
     },
     autostart: {
       self_protected: '{label} 是 ServerHub 面板自身的开机任务，不能从这里关闭；请使用设置页的「登录时启动」开关。',

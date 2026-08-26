@@ -3050,10 +3050,12 @@ export default {
       bad_key: '未対応の電源設定です: {key}',
       bad_value: '値は整数である必要があります',
       value_range: '値は 0〜180 の範囲で指定してください',
+      pmset_missing: 'このホストには pmset がありません',
     },
     identity: {
       bad_name: 'コンピュータ名が正しくありません',
       scutil_missing: 'このホストには scutil がありません',
+      value_too_long: '{field} が長すぎます（最大 {max} 文字）',
     },
     autostart: {
       self_protected: '{label} は ServerHub パネル自身のログインタスクのため、ここでは無効化できません。設定ページの「ログイン時に起動」スイッチを使用してください。',
