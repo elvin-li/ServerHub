@@ -410,10 +410,27 @@ def _field_text(value, fallback: str = "") -> str:
     if value is None or isinstance(value, bool):
         return fallback
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a leftover float-subclass
+                # ``__eq__``/``__ne__`` bomb in a stack id/name/group used to
+                # blow the NaN/inf probes below and 500 GET /api/stacks (the
+                # docker_cli._jsonable unbound convention).
+                value = float.__float__(value)
+            except Exception:
+                return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: an int-subclass ``__str__``
+                # bomb used to blow the digit-cap probe below (only
+                # ValueError was caught) and 500 the same routes.
+                value = int.__index__(value)
+            except Exception:
+                return fallback
         try:
             return str(value)
         except ValueError:
@@ -546,10 +563,24 @@ def _build_container_list() -> tuple[bool, list]:
         project = p[6] if len(p) > 6 else ""
         service = p[7] if len(p) > 7 else ""
         size = p[8] if len(p) > 8 else ""
-        ov = resolve_value(override(name))
+        try:
+            # Guarded: a leftover str-subclass override KEY whose ``__eq__``
+            # raises detonates inside ``dict.get`` when its hash collides
+            # with this container's name, and a dict-subclass ``items()`` /
+            # list-subclass ``__iter__`` bomb nested in an override value
+            # raises out of ``resolve_value``'s walk — each one used to 500
+            # GET /api/containers and GET /api/stacks until services.yaml
+            # was hand-edited.  A bombed override is junk; the row lists
+            # without it.
+            ov = resolve_value(override(name))
+        except Exception:
+            ov = {}
         if not isinstance(ov, dict):
             ov = {}
-        if ov.get("hide"):
+        # _truthy, not a bare truth test: a ``__bool__``-bomb ``hide`` used
+        # to 500 the same listings.  Fails open to "show" — junk is not a
+        # hide instruction.
+        if _truthy(ov.get("hide")):
             continue
         if state == "running" and "unhealthy" in status:
             st = "warn"
@@ -1586,7 +1617,19 @@ def _stack_paths() -> list[dict]:
     """Resolve compose stacks from config + auto-scan Services/*."""
     stacks = []
     seen = set()
-    raw = cfg().get("stacks")
+    # dict.get through the C storage, with both the snapshot provider and
+    # the lookup guarded: a leftover cfg() root that is a dict *subclass*
+    # with a bombing ``.get`` (or a str-subclass key whose ``__eq__`` raises
+    # on hash collision with "stacks") used to 500 GET /api/stacks and
+    # POST /api/stacks/{id}/run — the backups6 ``_mapping_get`` class.
+    try:
+        data = cfg()
+    except Exception:
+        data = None
+    try:
+        raw = dict.get(data, "stacks") if isinstance(data, dict) else None
+    except Exception:
+        raw = None
     if isinstance(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
