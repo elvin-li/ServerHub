@@ -164,11 +164,22 @@ def _plain_str(value, default: str = "") -> str:
     if isinstance(value, str):
         text = value
     elif isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
+        base = bytes if isinstance(value, bytes) else bytearray
+        text = base.decode(value, "utf-8", "replace")
     elif isinstance(value, bool) or value is None:
         return default
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return default
+    elif isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return default
+        if value != value or value in (float("inf"), float("-inf")):
+            return default
+        text = str(value)
     elif isinstance(value, (dict, list, tuple, set, frozenset)):
         return default
     else:
@@ -219,13 +230,17 @@ def _plain_ports(raw) -> list:
         return []
     out: list = []
     for port in raw:
-        if port is None or port == "" or isinstance(port, bool):
-            continue
-        if isinstance(port, float) and (
-            port != port or port in (float("inf"), float("-inf"))
-        ):
+        if port is None or isinstance(port, bool):
             continue
         if isinstance(port, int):
+            if type(port) is not int:
+                try:
+                    # Base coercion to an exact int: a subclass ``__str__``
+                    # bomb used to blow the digit-cap probe below (only
+                    # ValueError was caught).
+                    port = int.__index__(port)
+                except Exception:
+                    continue
             # YAML hex/octal ints dodge CPython's int(str) digit cap, so a
             # leftover ``ports: [0xfff…]`` arrives as a >4300-digit int that
             # renders nowhere: ``str(port_spec)`` in the url_hint fallback and
@@ -238,6 +253,16 @@ def _plain_ports(raw) -> list:
                 continue
             out.append(port)
         else:
+            if isinstance(port, float):
+                if type(port) is not float:
+                    try:
+                        # Base coercion: a subclass ``__eq__`` bomb used to
+                        # blow the NaN/inf probes below.
+                        port = float.__float__(port)
+                    except Exception:
+                        continue
+                if port != port or port in (float("inf"), float("-inf")):
+                    continue
             text = _plain_str(port)
             if text:
                 out.append(text)

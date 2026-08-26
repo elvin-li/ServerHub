@@ -245,7 +245,21 @@ def source_url() -> str:
     from hub.config import settings_section
 
     section = settings_section("catalog_remote")
-    return str(section.get("url") or "").strip()
+    url = section.get("url")
+    if not isinstance(url, str):
+        # _as_text, not bare str(): YAML hex/octal int spellings dodge the
+        # decimal digit-cap loader, so a hand-edited ``url: 0xfff…`` arrives
+        # in the config as a >4300-digit int whose ``str()`` is the
+        # digit-cap ValueError — it fired here and 500'd
+        # GET /api/catalog/remote and every POST /api/catalog/remote/check
+        # until the operator repaired services.yaml by hand.  Unrenderable
+        # junk degrades to junk text validate_source_url refuses with its
+        # coded 400 (or, empty, "no source configured").  A real *str* is
+        # returned untouched: laundering a lone-surrogate URL here would
+        # turn it into a fetchable replacement-char host instead of the
+        # coded bad_url refusal.
+        url = _as_text(url)
+    return url.strip()
 
 
 def set_source_url(url: str, operator: str = "", client: str = "") -> dict:
@@ -267,7 +281,9 @@ def set_source_url(url: str, operator: str = "", client: str = "") -> dict:
 def _as_text(value) -> str:
     """Exception text that cannot RecursionError leftover ``str(exc)`` or UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -280,40 +296,79 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
+    # returns self keeps the subclass, so a bound ``.encode`` bomb could
+    # still fire (the modules5 unbound convention, like docker_cli).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
-    """Drop leftover inf/NaN/``\\ud800`` so GET /api/catalog/remote cannot 500."""
+    """Drop leftover inf/NaN/``\\ud800`` so GET /api/catalog/remote cannot 500.
+
+    Base-type coercions throughout (``dict(...)`` copy, ``list(...)`` copy,
+    ``int.__index__``, ``float.__float__``, unbound ``str.encode`` /
+    ``bytes.decode``): a nested subclass whose ``items``/``__iter__``/
+    ``__eq__``/``__str__``/``encode``/``decode`` bombs used to raise out of
+    this launderer instead of costing only the poisoned value — the
+    docker_cli/jobs ``_jsonable`` convention.
+    """
     if depth > 32:
         return None
+    if isinstance(value, bool) or value is None:
+        return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a nested dict-subclass bomb cannot fire.
+            try:
+                value = dict(value)
+            except Exception:
+                return None
         out = {}
         for k, v in value.items():
             if isinstance(k, (bytes, bytearray)):
-                key = k.decode("utf-8", "replace")
+                base = bytes if isinstance(k, bytes) else bytearray
+                key = base.decode(k, "utf-8", "replace")
             else:
                 try:
                     key = k if isinstance(k, str) else str(k)
                 except Exception:
                     continue
             try:
-                key = key.encode("utf-8", "replace").decode("utf-8")
+                key = str.encode(key, "utf-8", "replace").decode("utf-8")
             except Exception:
                 continue
             out[key] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            items = list(value)
+        except Exception:
+            # Leftover nested sequence subclass whose __iter__ raises.
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
     if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, bool) or value is None:
-        return value
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to blow the digit-cap probe below (only ValueError
+                # was caught).
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -322,8 +377,14 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    iso = getattr(value, "isoformat", None)
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf

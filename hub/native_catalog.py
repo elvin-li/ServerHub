@@ -96,13 +96,24 @@ def _brew_env() -> dict:
 def _as_text(value) -> str:
     """Subprocess leftovers (bytes/None/int/``\\ud800``) must not 500 native listing/install."""
     if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
+        base = bytes if isinstance(value, bytes) else bytearray
+        text = base.decode(value, "utf-8", "replace")
     elif isinstance(value, str):
         text = value
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
     elif value is None:
         return ""
+    elif isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        text = str(value)
     else:
         try:
             text = str(value)
@@ -113,7 +124,9 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str subclass whose ``__str__`` returns self
+    # keeps its bound ``.encode`` bomb live (the modules5 unbound convention).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _exists(path: Path) -> bool:

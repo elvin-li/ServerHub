@@ -13,11 +13,22 @@ from ..errors import api_error
 def _as_text(value) -> str:
     """Drop leftover inf / ``\\ud800`` so POST /api/apps/credentials cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
+    elif isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        value = str(value)
     else:
         try:
             value = str(value)
@@ -28,7 +39,10 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
+    # returns self keeps the subclass, so a bound ``.encode`` bomb could
+    # still fire (the modules5 unbound convention).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 router = APIRouter(tags=["catalog"])
