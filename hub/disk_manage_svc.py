@@ -428,7 +428,14 @@ def list_managed_volumes() -> list[dict]:
     # Each probe returns the empty value the serial version would have produced
     # rather than raising, which is what `fan_out` requires.
     def probe_tree() -> dict:
-        found = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=5)
+        try:
+            found = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=5)
+        except Exception:
+            # _plist guards its own body, but the probe must not raise either:
+            # fan_out re-raises on iteration, and a raising tree read used to
+            # cost GET /api/storage/manage a bare 500 (the pool5 guard-the-call
+            # rule) where an empty listing is the honest degrade.
+            return {}
         return found if isinstance(found, dict) else {}
 
     # Three of the four now come from hub.disk_snapshot, shared with the power
@@ -440,10 +447,19 @@ def list_managed_volumes() -> list[dict]:
     def probe_physical() -> set[str]:
         # Real physical whole disks (disk0, external HDDs) vs synthetic APFS
         # containers (disk1/2/3…).
-        return set(physical_whole_disks())
+        try:
+            return set(physical_whole_disks())
+        except Exception:
+            # Same guard-the-call rule as probe_tree: a raising shared read
+            # degrades to "no physical list", which the synth checks below
+            # already treat as unknown, instead of 500ing the listing.
+            return set()
 
     def probe_root_df() -> set[str]:
-        return set(root_devices())
+        try:
+            return set(root_devices())
+        except Exception:
+            return set()
 
     def probe_root_info() -> dict:
         try:
@@ -467,6 +483,14 @@ def list_managed_volumes() -> list[dict]:
     # Physical store of APFS container
     stores = root_details.get("APFSPhysicalStores") or []
     if isinstance(stores, list):
+        try:
+            # Materialize under a guard: a list *subclass* passes the
+            # isinstance gate with an ``__iter__`` that raises (the
+            # storage4/pool4 iteration-bomb class) and used to raise out of
+            # this loop — a bare 500 on GET /api/storage/manage.
+            stores = list(stores)
+        except Exception:
+            stores = []
         for s in stores:
             if not isinstance(s, dict):
                 continue
@@ -480,7 +504,15 @@ def list_managed_volumes() -> list[dict]:
     system_wholes.add("disk0")
 
     raw_disks = pl.get("AllDisksAndPartitions")
-    all_disks = [n for n in raw_disks if isinstance(n, dict)] if isinstance(raw_disks, list) else []
+    if isinstance(raw_disks, list):
+        try:
+            # Same iteration-bomb class as the stores list above: the
+            # comprehension itself used to 500 the whole listing.
+            all_disks = [n for n in raw_disks if isinstance(n, dict)]
+        except Exception:
+            all_disks = []
+    else:
+        all_disks = []
     out = []
 
     def walk(node: dict, whole: str | None = None):
@@ -497,7 +529,13 @@ def list_managed_volumes() -> list[dict]:
         children = [c for c in (parts + apfs_vols) if isinstance(c, dict)]
         if children:
             for ch in children:
-                walk(ch, w if is_whole else whole or w)
+                try:
+                    walk(ch, w if is_whole else whole or w)
+                except Exception:
+                    # A hostile child (dict subclass whose ``.get`` raises —
+                    # the pool5 class) drops alone; its siblings and the
+                    # parent's own summary row below keep rendering.
+                    continue
             # still record whole disk summary
             if is_whole:
                 info = _diskutil_info(ident)
@@ -595,12 +633,21 @@ def list_managed_volumes() -> list[dict]:
     def _identifiers(node: dict) -> list[str]:
         if not isinstance(node, dict):
             return []
-        ident = _ident(node.get("DeviceIdentifier"))
+        try:
+            ident = _ident(node.get("DeviceIdentifier"))
+        except Exception:
+            # Same pool5 class as the walk: a dict subclass whose ``.get``
+            # raises passed the isinstance gate and 500'd the prefetch pass
+            # before the walk (and its own per-node guard) even started.
+            return []
         if not ident:
             return []
         found = [ident]
-        parts = node.get("Partitions") if isinstance(node.get("Partitions"), list) else []
-        apfs = node.get("APFSVolumes") if isinstance(node.get("APFSVolumes"), list) else []
+        try:
+            parts = node.get("Partitions") if isinstance(node.get("Partitions"), list) else []
+            apfs = node.get("APFSVolumes") if isinstance(node.get("APFSVolumes"), list) else []
+        except Exception:
+            return found
         for ch in parts + apfs:
             if isinstance(ch, dict):
                 found.extend(_identifiers(ch))
@@ -609,7 +656,14 @@ def list_managed_volumes() -> list[dict]:
     _prefetch_disk_info([n for d in all_disks for n in _identifiers(d)])
 
     for d in all_disks:
-        walk(d)
+        try:
+            walk(d)
+        except Exception:
+            # One hostile top-level node costs its own subtree, never the
+            # listing: pre-fix it raised out of this loop and answered a
+            # bare 500 on GET /api/storage/manage while every healthy
+            # sibling disk was droppable collateral.
+            continue
 
     # de-dupe by id
     seen = set()

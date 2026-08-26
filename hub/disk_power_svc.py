@@ -544,7 +544,24 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     disk_id = _req_text(disk_id).strip()
     if not DISK_RE.match(disk_id):
         raise api_error("disk_power.invalid_id")
-    disks = {d["id"]: d for d in list_power_disks()}
+    # Row-shape guard: ``_describe_disk`` always yields complete dicts, but
+    # the listing sits behind a ttl_memo whose cached value can be a leftover
+    # from a seam.  A non-dict row, a row without ``id`` or with an
+    # unhashable one used to KeyError/TypeError this dict build — a bare 500
+    # on POST /api/storage/disks/{id}/power where every junk *request* value
+    # already earns its coded refusal.
+    disks = {}
+    try:
+        rows = list(list_power_disks() or [])
+    except Exception:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            disks[row["id"]] = row
+        except (KeyError, TypeError):
+            continue
     d = disks.get(disk_id)
     if not d:
         # An *empty* listing is diskutil's own failure signature — a healthy
@@ -557,9 +574,24 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
         if not disks and not _diskutil_on_disk():
             raise api_error("disk_power.diskutil_missing")
         raise api_error("disk_power.not_found", disk=disk_id)
-    if d["system"] or not d["can_sleep"]:
+    # Fail closed on an unreadable row: a leftover row missing ``system`` /
+    # ``can_sleep`` (or a dict subclass whose ``.get`` raises — the pool5
+    # class) must never be slept or ejected, and it used to KeyError here
+    # as a bare 500 instead of the coded refusal.
+    try:
+        protected = bool(d.get("system")) or not d.get("can_sleep")
+    except Exception:
+        protected = True
+    if protected:
         raise api_error("disk_power.protected")
-    node = d["device"]
+    # A row without a device node falls back to the validated id —
+    # ``disk_id`` already matched DISK_RE — and ``_req_text`` scrubs a
+    # leftover surrogate before the value reaches subprocess argv.
+    try:
+        node = _req_text(d.get("device")).strip()
+    except Exception:
+        node = ""
+    node = node or f"/dev/{disk_id}"
     log = []
 
     # 1) Always unmount first (safe, keeps device node for wake)

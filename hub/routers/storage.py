@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from hub import audit, auth, disk_manage_svc, disk_power_svc, storage_pool_svc, storage_svc
@@ -97,13 +97,30 @@ def storage(light: bool = False):
 
 @router.get("/api/storage/disks")
 def storage_disks():
-    return {"disks": _rendered(disk_power_svc.list_power_disks())}
+    # Same degrade the full page gives this section: a listing that raises
+    # outright (a dying disk under the shared reads, a leftover that slips
+    # the service's own guards) used to answer a bare 500 here while
+    # GET /api/storage already reported it as ``power_error``.
+    try:
+        return {"disks": _rendered(disk_power_svc.list_power_disks())}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"disks": [], "error": _as_text(e)}
 
 
 @router.get("/api/storage/manage")
 def storage_manage():
     """List volumes/partitions for mount/format management."""
-    return _rendered(disk_manage_svc.overview())
+    # Mirrors the full page's ``managed`` fallback for the same reason as
+    # the disks route above: the section route must not be weaker than the
+    # page that embeds it.
+    try:
+        return _rendered(disk_manage_svc.overview())
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"volumes": [], "count": 0, "error": _as_text(e)}
 
 
 class DiskPowerBody(BaseModel):

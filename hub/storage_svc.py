@@ -710,8 +710,30 @@ def storage_overview() -> dict:
     # Leftover non-dict rows TypeError'd ``v["kind"]``; leftover incomplete
     # dicts then KeyError'd ``total_gb`` / leaked inf / ``\\ud800`` into
     # Starlette's encoder on GET /api/storage.
-    vols = [row for v in vols if (row := _volume_row(v)) is not None]
-    disks = [d for d in (_jsonable(x) for x in disks) if isinstance(d, dict)]
+    #
+    # Per-row guard, the storage_pool_svc._candidates rule: a dict *subclass*
+    # passes ``isinstance`` with a ``.get`` that raises, and one such row
+    # used to raise out of _volume_row — a bare 500 on GET /api/storage?light
+    # and the whole-page error wipe on the full route — while every healthy
+    # sibling row was droppable collateral.  The hostile row drops alone.
+    clean_vols = []
+    for v in vols:
+        try:
+            row = _volume_row(v)
+        except Exception:
+            continue
+        if row is not None:
+            clean_vols.append(row)
+    vols = clean_vols
+    clean_disks = []
+    for x in disks:
+        try:
+            d = _jsonable(x)
+        except Exception:
+            continue
+        if isinstance(d, dict):
+            clean_disks.append(d)
+    disks = clean_disks
     system_vols = [v for v in vols if v.get("kind") == "system"]
     external_vols = [v for v in vols if v.get("kind") == "external"]
     other_vols = [
