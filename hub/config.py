@@ -423,12 +423,24 @@ def settings_section(name: str) -> dict:
 
 def _env_text(value) -> str:
     """subprocess env keys/values. Leftover ``str()`` RecursionError / ``\\ud800``
-    used to 500 POST backups and maintenance jobs (Popen UTF-8 argv/env)."""
+    used to 500 POST backups and maintenance jobs (Popen UTF-8 argv/env).
+
+    Unbound base-type calls only (``bytes.decode`` / ``str.encode``, the
+    audit._utf8_text convention): a leftover subclass overriding ``decode``
+    or ``encode`` to raise used to blow this scrub from inside every job
+    thread that merges ``maintenance_env`` — the container-update runner
+    died *before* its try block and left its row running forever — instead
+    of degrading that one entry.
+    """
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        base = bytes if isinstance(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            return ""
     elif value is None:
         return ""
-    else:
+    elif not isinstance(value, str):
         try:
             value = str(value)
         except RecursionError:
@@ -438,7 +450,10 @@ def _env_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def maintenance_env() -> dict:
