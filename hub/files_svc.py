@@ -152,9 +152,23 @@ def _settings() -> dict:
 
 
 def _as_text(value) -> str:
-    """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 Files JSON."""
+    """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 Files JSON.
+
+    Unbound base-type calls only (the config._env_text / audit._utf8_text
+    convention): ``str(value)`` answers *self* for a str subclass whose
+    ``__str__`` returns self, so the final scrub used to run the subclass's
+    own bound ``encode`` — and a leftover encode bomb riding a configured
+    root's ``id``/``name`` raised out of this launderer and dropped the whole
+    root row instead of degrading the one value.  Same for a bytes subclass
+    overriding ``decode``.  ``str.encode(value, ...)`` reads the C-level
+    storage, bypassing the override at no copy cost.
+    """
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        base = bytes if isinstance(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            return ""
     elif value is None:
         return ""
     else:
@@ -167,7 +181,12 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(value, str):
+        return ""
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _finite_int(value, default: int = 0) -> int:
@@ -302,18 +321,40 @@ def default_roots() -> list[dict]:
                         "name": _as_text(p.name or str(p)) or "root",
                         "path": _as_text(p),
                     })
-                elif isinstance(r, dict) and r.get("path"):
-                    p = _try_resolve(r["path"])
+                elif isinstance(r, dict):
+                    # Unbound ``dict.get`` (the settings_section convention):
+                    # a leftover dict *subclass* row whose bound ``.get`` /
+                    # ``__getitem__`` raises used to blow up here — and when
+                    # the bomb raised anything outside the old (OSError,
+                    # ValueError, TypeError, RuntimeError) arm (a KeyError
+                    # get-bomb, say) it escaped the per-row guard entirely
+                    # and 500'd every Files route, because _resolve_safe()
+                    # starts at default_roots().  The unbound builtin reads
+                    # the C-level storage, so the row now *serves* instead
+                    # of dropping — its keys are real; only the override is
+                    # hostile.
+                    raw_path = dict.get(r, "path")
+                    if not raw_path:
+                        continue
+                    p = _try_resolve(raw_path)
                     if p is None:
                         continue
-                    rid = _root_label(r.get("id")) or _as_text(p.name) or "root"
-                    rname = _root_label(r.get("name")) or _as_text(p.name or str(p)) or "root"
+                    rid = _root_label(dict.get(r, "id")) or _as_text(p.name) or "root"
+                    rname = (
+                        _root_label(dict.get(r, "name"))
+                        or _as_text(p.name or str(p))
+                        or "root"
+                    )
                     out.append({
                         "id": rid,
                         "name": rname,
                         "path": _as_text(p),
                     })
-            except (OSError, ValueError, TypeError, RuntimeError):
+            except Exception:
+                # Broad like the list() guard above: whatever a bombing row
+                # value raises (a ``__bool__`` bomb on the path value is not
+                # bound to any exception type), the cost is that one row,
+                # never the whole Files page.
                 continue
         return [x for x in out if _is_dir(Path(x["path"]))]
     candidates = [
