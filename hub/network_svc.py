@@ -9,7 +9,7 @@ from typing import Any
 
 from hub import cli_args
 from hub.docker_cli import docker, engine_up, inspect_object
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
 from hub.service_signatures import unescape_proc_name
@@ -495,6 +495,14 @@ def set_wifi_power(on: bool) -> dict:
     arg = "on" if on else "off"
     devices = _wifi_devices()
     if not devices:
+        if not hardware_ports() and _networksetup_missing():
+            # A vanished networksetup empties the hardware-port listing, so
+            # POST /wifi/{state} used to answer 200 "No Wi-Fi adapter found"
+            # — blaming the adapter for a missing host tool.  Same rule as
+            # its dhcp/manual/dns/enabled/order siblings: the disk is probed
+            # on the empty-listing failure path only, and a listing that
+            # names ports (just no Wi-Fi one) keeps the honest answer.
+            raise api_error("network.networksetup_missing")
         return {"ok": False, "on": None, "device": None, "message": "No Wi-Fi adapter found"}
     device = devices[0]
     rc, out, err = _sh([NS, "-setairportpower", device, arg], timeout=10)
@@ -696,7 +704,11 @@ def switch_profile(profile: str) -> dict:
         time.sleep(1.5)  # allow link/DHCP to settle slightly
         alias_r = ensure_aliases_on_preferred(force=True)
     except Exception as e:
-        alias_r = {"ok": False, "message": _as_text(e)}
+        # exc_detail, not str(): the rebind can now raise the coded
+        # network.ifconfig_missing HTTPException (ifconfig vanished after
+        # the service listing succeeded), and str() on that renders the
+        # detail dict's Python repr into this non-critical step's message.
+        alias_r = {"ok": False, "message": exc_detail(e)}
     record("rebind aliases", alias_r, critical=False)
 
     return {
@@ -1077,6 +1089,17 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
         result["message"] = "No managed IPs configured (settings.ip_aliases.ips)"
         return result
     if not preferred:
+        # "Check the Ethernet cable" is only honest while the listing tools
+        # exist.  A vanished /sbin/ifconfig empties interfaces() and a
+        # vanished networksetup empties the service order, and either way
+        # POST /alias/auto/run used to answer 200 with this message —
+        # blaming the cable for a missing host tool.  Both disk probes run
+        # on this no-candidate failure path only (the a11y4
+        # _validate_device/_validate_service rule).
+        if not interfaces() and _ifconfig_missing():
+            raise api_error("network.ifconfig_missing")
+        if not _network_service_order_entries() and _networksetup_missing():
+            raise api_error("network.networksetup_missing")
         result["ok"] = False
         result["message"] = "No usable preferred network (check the Ethernet cable / Wi-Fi)"
         return result
@@ -1326,6 +1349,13 @@ def network_failover_tick(force: bool = False) -> dict:
             return result
 
         wired = _wired_devices()
+        if not wired and not hardware_ports() and _networksetup_missing():
+            # An empty hardware-port listing with networksetup confirmed
+            # absent is the tool gone, not a Mac without wired adapters —
+            # POST /failover/run used to answer 200 ok:false with the nested
+            # "No Wi-Fi adapter found" lie.  The background loop wraps this
+            # tick in its own try, so the coded raise only reaches HTTP.
+            raise api_error("network.networksetup_missing")
         iface_map = {iface.get("name"): iface for iface in interfaces()}
 
         def probe(item) -> dict:
@@ -1353,6 +1383,12 @@ def network_failover_tick(force: bool = False) -> dict:
         # first.
         probes = fan_out(probe, wired)
         healthy = next((probe_result for probe_result in probes if probe_result.get("ok")), None)
+        if not healthy and wired and not iface_map and _ifconfig_missing():
+            # networksetup still lists wired adapters, but every probe read
+            # "link or IPv4 not ready" because a vanished ifconfig emptied
+            # the interface table — blaming the link for a missing host
+            # tool.  Disk-confirmed on the empty-table failure path only.
+            raise api_error("network.ifconfig_missing")
         wifi = wifi_power_status()
         action = None
         action_result = None
