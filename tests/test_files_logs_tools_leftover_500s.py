@@ -99,6 +99,9 @@ class LogsTailLeftoverTests(unittest.TestCase):
         json.dumps(got, allow_nan=False)
 
     def test_bytes_name_is_json_safe(self):
+        # A bytes name decodes to its text (the original panel published it
+        # through FastAPI's encoder) instead of silently falling back to the
+        # id; the property this pin guards is that the row stays JSON-safe.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "app.log"
             path.write_text("x\n", encoding="utf-8")
@@ -106,7 +109,7 @@ class LogsTailLeftoverTests(unittest.TestCase):
                 "log_sources": [{"id": "app", "name": b"bytes", "path": str(path)}],
             }):
                 rows = logs_svc.log_sources()
-        self.assertEqual(rows[0]["name"], "app")
+        self.assertEqual(rows[0]["name"], "bytes")
         json.dumps(rows, allow_nan=False)
 
     def test_home_runtimeerror_does_not_500_default_sources(self):
