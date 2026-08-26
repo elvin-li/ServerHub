@@ -21,10 +21,48 @@ from hub import auth
 from hub.errors import api_error
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _plain_result(result) -> dict | None:
+    """*result* as a plain ``dict``, or None.
+
+    A leftover dict-*subclass* result from a privileged helper (the
+    jobs/metrics row-bomb class: passes the ``isinstance`` gate, then
+    ``.get()`` raises) used to 500 the NAS routes right out of
+    ``result.get("ok")``.  ``dict()`` copies through the C-level storage, so
+    an overridden method cannot fire; a subclass whose copy itself raises is
+    junk and drops.
+    """
+    if type(result) is dict:
+        return result
+    if isinstance(result, dict):
+        try:
+            return dict(result)
+        except Exception:
+            return None
+    return None
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover bytes-subclass whose bound
+        # ``.decode`` raises used to 500 the shares/NAS failure funnels.
+        return _decode_bytes(value)
+    if value is None:
+        return ""
     try:
         text = str(value)
     except RecursionError:
@@ -47,6 +85,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules5 rule): a
+                # subclass ``__str__`` bomb used to raise a non-ValueError
+                # past the digit-cap probe below and 500 the privileged
+                # ok payload.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -59,26 +106,32 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
-        try:
-            items = list(value.items())
-        except Exception:
-            # A mapping that refuses iteration (odd dict subclass in a
-            # privileged result): there is nothing to salvage from it, but
-            # its *siblings* must survive — pre-fix this raised out of
-            # raise_for_admin_result and 500'd the POST NAS routes (the
-            # ups_svc/nginx_svc._jsonable rule).
-            return None
         out = {}
-        for k, v in items:
-            if not isinstance(k, str):
+        # Unbound base view (the modules5 rule): a dict subclass whose
+        # ``items()`` raises *or yields non-pairs* used to 500 the routes —
+        # the raise inside the old ``list(value.items())`` was caught, but
+        # the two-target unpack of a non-pair row happened outside the try.
+        # ``dict.items`` reads the real C-level storage, so the salvageable
+        # keys still survive.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -92,7 +145,13 @@ def _jsonable(value, depth: int = 0):
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the payload or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself and
+        # 500'd the privileged ok payload.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -140,20 +199,29 @@ def raise_for_admin_result(result: dict) -> dict:
     """
     # Leftover None / inf from a privileged helper AttributeError'd GET/POST
     # NAS routes; leftover inf / ``\\ud800`` in an ok payload 500'd the encoder.
-    if not isinstance(result, dict):
+    # _plain_result, not a bare isinstance: a dict-*subclass* result whose
+    # ``.get`` raised used to 500 the funnel one line later, and a
+    # ``__bool__``-bomb ``ok`` value blew the truthiness read itself.
+    result = _plain_result(result)
+    if result is None:
         raise api_error("admin.failed")
-    if result.get("ok"):
+    if _truthy(result.get("ok")):
         cleaned = _jsonable(result)
         return cleaned if isinstance(cleaned, dict) else {"ok": True}
     # _utf8_text, not str(): a leftover *already-int* error field past
     # CPython's int->str digit cap (YAML/plist hex loads uncapped through
     # ``int(x, 16)``) made the bare str() raise the digit-cap ValueError out
     # of the route — an unhandled 500 in place of the coded admin.failed.
-    code = _ADMIN_ERRORS.get(_utf8_text(result.get("error") or "failed") or "failed", "admin.failed")
+    # _truthy before the ``or``: a ``__bool__``-bomb error value used to
+    # raise out of the fallback chain itself.
+    raw_error = result.get("error")
+    error = _utf8_text(raw_error) if _truthy(raw_error) else ""
+    code = _ADMIN_ERRORS.get(error or "failed", "admin.failed")
     # The command's stderr tail (e.g. wg-quick's own failure line) rides along as
     # ``detail``: the SPA appends it to the translated message, and the generic
     # "operation failed" text stops hiding the actual cause.
-    detail = _utf8_text(result.get("message") or "").strip()[:300]
+    raw_message = result.get("message")
+    detail = (_utf8_text(raw_message) if _truthy(raw_message) else "").strip()[:300]
     if detail:
         raise api_error(code, detail=detail)
     raise api_error(code)
@@ -166,24 +234,23 @@ def raise_service_error(result: dict, mapping: dict[str, str]) -> dict:
     (``bad_action``, ``bad_device``, …).  Anything not listed falls back to the
     shared authorization codes.
     """
-    if not isinstance(result, dict):
+    # Same laundering as raise_for_admin_result: a dict-subclass result whose
+    # ``.get`` / ``items()`` raised — or a ``__bool__``-bomb ``ok`` value —
+    # used to 500 the funnel in place of the coded refusal.
+    result = _plain_result(result)
+    if result is None:
         raise api_error("admin.failed")
-    if result.get("ok"):
+    if _truthy(result.get("ok")):
         cleaned = _jsonable(result)
         return cleaned if isinstance(cleaned, dict) else {"ok": True}
     # Same str() probe as raise_for_admin_result: an over-cap already-int
     # error field must earn the coded fallback, not the digit-cap ValueError.
-    error = _utf8_text(result.get("error") or "failed") or "failed"
+    raw_error = result.get("error")
+    error = (_utf8_text(raw_error) if _truthy(raw_error) else "") or "failed"
     code = mapping.get(error)
     if code:
-        try:
-            extras = list(result.items())
-        except Exception:
-            # A dict subclass whose items() raises still answered .get()
-            # above; the coded refusal must not lose to its hostile extras.
-            extras = []
         raise api_error(code, **{
-            k: v for k, v in extras
+            k: v for k, v in result.items()
             if k not in ("ok", "error")
             and isinstance(k, str)
             and isinstance(v, (str, int, float))

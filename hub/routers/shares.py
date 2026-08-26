@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 
 from hub import audit, auth, shares_svc
 from hub.errors import api_error
-from hub.routers.nas_common import _jsonable, _utf8_text
+from hub.routers.nas_common import _jsonable, _plain_result, _truthy, _utf8_text
 
 router = APIRouter(tags=["shares"])
 
@@ -20,8 +20,18 @@ def _service_result(result) -> dict:
     AttributeError'd the route as a raw 500 — the exact class
     ``nas_common.raise_for_admin_result`` already guards for the newer NAS
     routers.  The coded ``shares.operation_failed`` is the honest answer.
+
+    ``_plain_result`` + ``_truthy``, not the bare isinstance the first fix
+    used: a leftover dict-*subclass* result whose ``.get`` raised passed the
+    gate and 500'd the very next line, and a ``__bool__``-bomb ``ok`` value
+    blew the routes' own ``if not result.get("ok")`` reads.  The laundered
+    copy carries a real bool ``ok`` so every downstream read is safe.
     """
-    return result if isinstance(result, dict) else {"ok": False, "error": "failed"}
+    plain = _plain_result(result)
+    if plain is None:
+        return {"ok": False, "error": "failed"}
+    plain["ok"] = _truthy(plain.get("ok"))
+    return plain
 
 
 def _ok_payload(result: dict) -> dict:
@@ -89,8 +99,11 @@ def _raise_service_error(result: dict, *, service: str = "") -> None:
     # CPython's int->str digit cap (YAML/plist hex loads uncapped through
     # ``int(x, 16)``) made the bare str() raise the digit-cap ValueError out
     # of the route — an unhandled 500 in place of the coded refusal (the
-    # nas_common.raise_for_admin_result rule this copy predates).
-    error = _utf8_text(result.get("error") or "failed") or "failed"
+    # nas_common.raise_for_admin_result rule this copy predates).  _truthy
+    # before the ``or``: a ``__bool__``-bomb error value used to raise out
+    # of the fallback chain itself.
+    raw_error = result.get("error")
+    error = (_utf8_text(raw_error) if _truthy(raw_error) else "") or "failed"
     code = {
         "cancelled": "shares.authorization_cancelled",
         "unavailable": "shares.authorization_unavailable",
@@ -277,8 +290,11 @@ def _share_directory(path: str) -> str:
         raise api_error("shares.bad_path")
     shared = set()
     for share in shares_svc.list_smb_shares(include_sizes=False):
-        raw = share.get("path") if isinstance(share, dict) else None
-        if not raw:
+        # dict.get, not share.get: a leftover dict-subclass row whose bound
+        # ``.get`` raised used to 500 GET and PUT /api/shares/acl out of the
+        # gate itself (the jobs/metrics row-bomb class).
+        raw = dict.get(share, "path") if isinstance(share, dict) else None
+        if not _truthy(raw):
             continue
         try:
             shared.add(str(Path(str(raw)).resolve()))
