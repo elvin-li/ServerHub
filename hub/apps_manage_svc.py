@@ -11,9 +11,11 @@ import plistlib
 import re
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from hub import cli_args
 from hub.docker_cli import _jsonable, docker, engine_up, inspect_object, looks_cli_vanished, looks_engine_down
-from hub.errors import api_error, soft_fail
+from hub.errors import api_error, exc_detail, soft_fail
 from hub.host_address import host_ip
 from hub.paths import DOCKER, user_home
 from hub.util import cached_snapshot, fan_out, run_capped, sh, strftime_now, tail_file_lines
@@ -1272,8 +1274,17 @@ def _vm_logs(source_id: str, lines: int = 80) -> dict:
             "log": log,
             "source": "vm-status",
         }
+    except HTTPException:
+        # apps.vm_not_found (the row vanished between the list and the logs
+        # click) used to be swallowed into ``str(e)`` — the Python dict repr
+        # ``404: {'code': …}`` that the logs modal rendered verbatim.  The
+        # coded 404 is what the SPA translates, exactly as the launchd
+        # branch already answers for a vanished agent.
+        raise
     except Exception as e:
-        return {"ok": False, "log": _as_text(e)}
+        # exc_detail, not bare str(e): a leftover ``\ud800`` / RecursionError
+        # in a backend message must cost the message, never the modal.
+        return {"ok": False, "log": exc_detail(e)}
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -1387,10 +1398,16 @@ def detail(app_id: str) -> dict:
 
 def logs(app_id: str, lines: int = 120) -> dict:
     kind, _, source_id = app_id.partition(":")
-    if not source_id and app_id.startswith("native-"):
-        kind, source_id = "native", app_id
-    if source_id:
-        source_id = cli_args.require_positional(source_id, label="app id")
+    if not source_id:
+        # Same bare-id rule as detail(): an empty source used to fall through
+        # — ``_docker_logs("")`` prefix-matched *every* container, so
+        # GET /api/apps/managed/logs?id=docker answered the whole fleet's
+        # logs concatenated for an id that names nothing.
+        if app_id.startswith("native-"):
+            kind, source_id = "native", app_id
+        else:
+            raise api_error("apps.bad_id")
+    source_id = cli_args.require_positional(source_id, label="app id")
     try:
         lines = max(20, min(int(lines or 120), 500))
     except (TypeError, ValueError, OverflowError):
@@ -1410,10 +1427,15 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
     """start|stop|restart|update|uninstall|suspend|autostart_on|autostart_off"""
     action_name = (action_name or "").strip().lower()
     kind, _, source_id = app_id.partition(":")
-    if not source_id and app_id.startswith("native-"):
-        kind, source_id = "native", app_id
-    if source_id:
-        source_id = cli_args.require_positional(source_id, label="app id")
+    if not source_id:
+        # Same bare-id rule as detail(): an empty source used to fall
+        # through and act on the Services root itself (``docker compose``
+        # at ~/Services, autostart across every prefix-matched container).
+        if app_id.startswith("native-"):
+            kind, source_id = "native", app_id
+        else:
+            raise api_error("apps.bad_id")
+    source_id = cli_args.require_positional(source_id, label="app id")
     invalidate_inventory()
 
     # Autostart toggles
