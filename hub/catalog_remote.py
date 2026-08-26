@@ -187,18 +187,27 @@ def validate_source_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return ""
-    parts = urllib.parse.urlsplit(url)
+    try:
+        # urlsplit itself raises ValueError on an unbracketable netloc
+        # ("https://[boo", "https://x@["), and .hostname re-validates the
+        # bracket form.  A pasted URL or a hand-edited services.yaml used to
+        # escape as a raw 500 out of PUT /api/catalog/remote and
+        # POST /api/catalog/remote/check instead of this coded 400.
+        parts = urllib.parse.urlsplit(url)
+        hostname = parts.hostname
+    except ValueError:
+        raise api_error("catalog_remote.bad_url")
     # HTTPS-only, no embedded credentials: the URL is stored in services.yaml
     # and echoed by the status API, so a user:pass@host form would persist a
     # secret in plain sight (and Basic-auth sources are not supported anyway).
-    if parts.scheme != "https" or not parts.hostname or "@" in parts.netloc:
+    if parts.scheme != "https" or not hostname or "@" in parts.netloc:
         raise api_error("catalog_remote.bad_url")
     # Same IMDS / link-local block as notify webhooks.  An administrator
     # pointing the catalog at ``https://169.254.169.254/`` is SSRF, not a
     # template source.
     from hub.http_guard import is_allowed_notify_host
 
-    if not is_allowed_notify_host(parts.hostname):
+    if not is_allowed_notify_host(hostname):
         raise api_error("catalog_remote.bad_url")
     return url
 
@@ -644,8 +653,15 @@ def _entry_url(index_url: str, entry: dict) -> str:
     hosts, even over HTTPS.
     """
     rel = str(entry.get("path") or entry.get("url") or f"{entry.get('id')}.yml")
-    resolved = urllib.parse.urljoin(index_url, rel)
-    a, b = urllib.parse.urlsplit(resolved), urllib.parse.urlsplit(index_url)
+    try:
+        resolved = urllib.parse.urljoin(index_url, rel)
+        a, b = urllib.parse.urlsplit(resolved), urllib.parse.urlsplit(index_url)
+    except ValueError:
+        # A manifest entry path like ``//[boo/x.yml`` makes urljoin/urlsplit
+        # raise "Invalid IPv6 URL" — one hostile entry used to 500 the whole
+        # POST /api/catalog/remote/check instead of costing only itself as
+        # the per-entry bad_url rejection.
+        return ""
     if a.scheme != "https" or a.netloc != b.netloc:
         return ""
     return resolved
