@@ -241,7 +241,15 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
         # although no read was ever attempted.  Give the same answer the
         # listing gives.
         return _missing(p)
-    except (OSError, RuntimeError):
+    except RuntimeError:
+        # Symlink loop: ``resolve()`` signals it as RuntimeError, not
+        # OSError.  The listing reports the same source ``exists: false``
+        # (``is_file`` ignores ELOOP), and a loop can never name a readable
+        # file — like the NUL path, the tail used to answer it with a coded
+        # 500 although no read was ever attempted.  Same answer as the
+        # listing.
+        return _missing(p)
+    except OSError:
         raise api_error("logs.read_failed")
     if not _log_path_allowed(p):
         raise api_error("logs.protected")
@@ -265,13 +273,19 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
                 "exists": True, "size": file_size,
                 "log": _utf8_text("\n".join(parts)),
                 "lines": len(parts)}
-    except FileNotFoundError:
-        # Rotation race: the file passed the is_file gate above, then was
-        # rotated/unlinked before the open.  A fresh disk probe on the
-        # failure path (the vanished-CLI rule) decides the answer: gone
-        # for real is the same missing-200 the listing gives, not a 500
-        # blaming the server for logrotate doing its job.  A bizarre
-        # ENOENT while the probe still sees the file keeps read_failed.
+    except OSError:
+        # Race between the is_file gate above and the open: the file was
+        # rotated/unlinked (FileNotFoundError), or a non-regular node — a
+        # FIFO, device, socket, directory, even a symlink loop — was
+        # swapped onto the name (EINVAL/ENXIO/EISDIR/ELOOP out of
+        # ``tail_file_lines``, which refuses to read anything that is not
+        # a regular file).  A fresh disk probe on the failure path (the
+        # vanished-CLI rule) decides the answer: a name that no longer
+        # holds a regular file gets the same missing-200 the listing
+        # gives, not a 500 blaming the server for logrotate (or a leftover
+        # FIFO) doing its thing.  While the probe still sees a real file —
+        # ghost ENOENT, EACCES, or O_NOFOLLOW refusing a symlink swapped
+        # over the resolved name — read_failed stands.
         try:
             still_there = p.is_file()
         except (OSError, ValueError):
