@@ -170,10 +170,16 @@ MODULES: list[ModuleInfo] = [
 ]
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     try:
         text = str(value)
     except RecursionError:
@@ -201,6 +207,13 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -209,18 +222,28 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a nested dict subclass whose ``items()``
+        # raises or yields non-pairs used to 500 GET /api/modules — the
+        # top-level ``dict(m)`` copy only neutralizes the row itself.
+        for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)
@@ -229,8 +252,17 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
