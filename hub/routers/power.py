@@ -97,6 +97,9 @@ def _set_screen_sharing(request: Request, enabled: bool) -> dict:
         "cancelled": "shares.authorization_cancelled",
         "unavailable": "shares.authorization_unavailable",
         "verification_failed": "shares.verification_failed",
+        # Confirmed-vanished launchctl (fresh disk probe on the failure path
+        # in shares_svc): the coded 503, not the generic 500.
+        "system_tool_missing": "shares.system_tool_missing",
         "password_required": "admin.password_required",
         "password_incorrect": "admin.password_incorrect",
     }.get(error, "shares.operation_failed")

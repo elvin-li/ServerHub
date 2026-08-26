@@ -82,6 +82,9 @@ CODES: dict[str, tuple[int, str]] = {
     # only).  503 like the other tool-absent states (raid.diskutil_missing,
     # smart.smartctl_missing, usage.mdutil_missing).
     "shares.sharing_missing": (503, "the macOS sharing tool is missing on this host"),
+    # Confirmed-vanished systemsetup / launchctl / AssetCacheManagerUtil /
+    # open (fresh disk probe on the failure path only).
+    "shares.system_tool_missing": (503, "a macOS system tool required for this operation is missing on this host"),
     # ── per-user share access (filesystem ACLs) ─────────────────────────────
     "shares.acl_not_share": (400, "this directory is not a current SMB share point"),
     "shares.acl_read_failed": (500, "the directory's access control list could not be read"),

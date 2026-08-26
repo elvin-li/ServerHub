@@ -664,16 +664,20 @@ def _time_machine_commands(
     return commands
 
 
-def _sharing_on_disk() -> bool:
+def _tool_on_disk(path: str) -> bool:
     """Fresh disk probe for the mutation-failure paths only (raid/vms rule).
 
     ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
     that cannot even answer for /usr/sbin is not confirmably carrying it.
     """
     try:
-        return Path(SHARING).is_file()
+        return Path(path).is_file()
     except (OSError, ValueError):
         return False
+
+
+def _sharing_on_disk() -> bool:
+    return _tool_on_disk(SHARING)
 
 
 #: What a spawn of a gone binary reads like through run_admin / sh: the
@@ -686,7 +690,9 @@ def _sharing_on_disk() -> bool:
 _VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
 
 
-def _admin_failure(result: dict, *, sharing_cli: bool = False) -> dict:
+def _admin_failure(
+    result: dict, *, sharing_cli: bool = False, system_tool: str | None = None,
+) -> dict:
     failure = {
         "ok": False,
         "error": result.get("error") or "failed",
@@ -696,10 +702,16 @@ def _admin_failure(result: dict, *, sharing_cli: bool = False) -> dict:
     # surface as the generic 500 "the macOS sharing operation failed", which
     # sends the operator back to a password dialog that cannot help.  The
     # coded 503 fires only on this failure path, after a fresh disk probe.
-    if sharing_cli and failure["error"] == "failed":
+    # ``system_tool`` is the same rule for the system-service toggles, whose
+    # vanished systemsetup/launchctl/AssetCacheManagerUtil used to answer the
+    # generic 500 "authorization failed" — after the password was spent.
+    if failure["error"] == "failed" and (sharing_cli or system_tool):
         message = _as_text(failure["message"]).lower()
-        if any(marker in message for marker in _VANISH_MARKERS) and not _sharing_on_disk():
-            return {"ok": False, "error": "sharing_missing"}
+        if any(marker in message for marker in _VANISH_MARKERS):
+            if sharing_cli and not _sharing_on_disk():
+                return {"ok": False, "error": "sharing_missing"}
+            if system_tool and not _tool_on_disk(system_tool):
+                return {"ok": False, "error": "system_tool_missing"}
     return failure
 
 
@@ -971,6 +983,15 @@ def system_services() -> list[dict]:
     ]
 
 
+#: The binary each toggle actually spawns, for the confirmed-vanish probe on
+#: the failure path.  screen_sharing runs launchctl twice; one probe covers it.
+_SERVICE_TOOLS = {
+    "remote_login": SYSTEMSETUP,
+    "remote_apple_events": SYSTEMSETUP,
+    "content_caching": ASSET_CACHE,
+    "screen_sharing": LAUNCHCTL,
+}
+
 _SERVICE_COMMANDS = {
     "remote_login": lambda enabled: [[SYSTEMSETUP, "-setremotelogin", "on" if enabled else "off"]],
     "remote_apple_events": lambda enabled: [[SYSTEMSETUP, "-setremoteappleevents", "on" if enabled else "off"]],
@@ -1000,7 +1021,11 @@ def set_system_service(service_id: str, enabled: bool) -> dict:
     if actual["enabled"] is enabled:
         return {"ok": True, "service": actual}
     if not result.get("ok"):
-        return _admin_failure(result)
+        # A systemsetup/launchctl/AssetCacheManagerUtil that vanished before
+        # the spawn used to surface as the generic 500 "authorization failed"
+        # — after the operator already typed the administrator password.  The
+        # coded 503 fires only on this failure path, after a fresh disk probe.
+        return _admin_failure(result, system_tool=_SERVICE_TOOLS[service_id])
     return {"ok": False, "error": "verification_failed", "service": actual}
 
 
@@ -1008,10 +1033,15 @@ def open_system_settings() -> dict:
     rc, output, error = sh([OPEN, SETTINGS_URL], timeout=12)
     if rc != 0:
         rc, output, error = sh([OPEN, "-a", "System Settings"], timeout=12)
-    return {
-        "ok": rc == 0,
-        "message": _as_text(error or output)[-300:],
-    }
+    message = _as_text(error or output)[-300:]
+    if rc != 0:
+        # A vanished /usr/bin/open used to answer the 500 "System Settings
+        # could not be opened", blaming the app for a missing tool.  Coded
+        # 503 only after the fresh disk probe on this failure path; every
+        # other failure keeps its shape.
+        if any(marker in message.lower() for marker in _VANISH_MARKERS) and not _tool_on_disk(OPEN):
+            return {"ok": False, "error": "system_tool_missing", "message": message}
+    return {"ok": rc == 0, "message": message}
 
 
 def shares_overview() -> dict:

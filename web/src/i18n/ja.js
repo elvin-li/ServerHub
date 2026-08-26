@@ -2681,6 +2681,7 @@ export default {
       acl_bad_level: 'アクセスレベルは なし / 読み取りのみ / 読み書き のいずれかです',
       sharing_missing: 'このホストには macOS の共有ツール（sharing）がありません',
       acl_tool_missing: 'このホストには macOS の ACL ツールがありません',
+      system_tool_missing: 'この操作に必要な macOS のシステムツールがこのホストにありません',
     },
     catalog: {
       no_free_port: '{port} 以上に空きホストポートがありません',

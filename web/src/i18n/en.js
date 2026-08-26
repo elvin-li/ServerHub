@@ -2687,6 +2687,7 @@ export default {
       acl_bad_level: 'The access level must be none, read or read & write',
       sharing_missing: 'The macOS sharing tool is missing on this host',
       acl_tool_missing: 'The macOS ACL tools are missing on this host',
+      system_tool_missing: 'A macOS system tool required for this operation is missing on this host',
     },
     catalog: {
       no_free_port: 'No free host port is available at or above {port}',
