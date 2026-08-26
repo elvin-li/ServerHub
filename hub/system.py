@@ -17,10 +17,16 @@ def shutdown_executor() -> None:
 _smart_cache = {"t": 0.0, "v": None}
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif value is None:
         return ""
     else:
@@ -46,12 +52,30 @@ def _jsonable(value, depth: int = 0):
     A >4300-digit leftover int in the SMART cache still passed through
     untouched: CPython's int->str digit limit then ValueError'd
     ``json.dumps`` itself.
+
+    The bound probes still blew on the modules5 subclass-bomb classes: an
+    int subclass whose ``__str__`` raises, a float subclass whose
+    ``__eq__``/``__ne__`` raises, a bytes subclass whose ``decode`` raises
+    (as a value and as a mapping key), a dict subclass whose ``items()``
+    raises, a sequence subclass whose ``__iter__`` raises, and an object
+    whose ``isoformat`` *access* raises (getattr's default only swallows
+    AttributeError).  One such bomb in the SMART cache raised out of
+    ``collect_system`` and the status build's fallback silently wiped the
+    whole ``system`` tile — load, disk and uptime died with the poison.
+    Hence the unbound base-type calls below, the modules5 convention.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -60,17 +84,28 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _as_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot raise and the real entries still survive.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                k = _decode_bytes(k)
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -78,8 +113,17 @@ def _jsonable(value, depth: int = 0):
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
