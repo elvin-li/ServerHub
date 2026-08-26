@@ -1334,9 +1334,25 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         except (TypeError, ValueError, OverflowError, RecursionError):
             redacted_json = "{}"
         readme += ["## Variables (secrets redacted)", "```json", redacted_json, "```"]
-        (dest_dir / "README.serverhub.md").write_text(
-            "\n".join(readme), encoding="utf-8", errors="replace",
-        )
+        try:
+            # replace_bytes, not a bare write_text(): install never removes a
+            # pre-existing ~/Services/<id>/ (it may hold user data), so a
+            # leftover FIFO occupying README.serverhub.md in a pre-seeded
+            # directory reached the plain open — which parks until a reader
+            # appears — hanging POST /api/catalog/{id}/install forever after
+            # the compose file and stack registration had already landed.
+            # The tmp+os.replace write never opens the squatting node and
+            # atomically swaps the FIFO out.  A leftover non-empty
+            # *directory* by that name still refuses os.replace as OSError:
+            # the README is advisory documentation, so it costs only itself
+            # (the bootstrap_files convention above), never the install the
+            # operator's variables and minted passwords are riding on.
+            secure_io.replace_bytes(
+                dest_dir / "README.serverhub.md",
+                "\n".join(readme).encode("utf-8", "replace"),
+            )
+        except OSError:
+            pass
 
         _register_stack(template_id, meta.get("name") or template_id, dest_dir)
 
