@@ -42,6 +42,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from hub import config
 from hub.app_factory import create_app
 from hub.auth import require_auth
 from hub.routers import settings_api
@@ -223,6 +224,62 @@ class JsonableUnitPins(unittest.TestCase):
         laundered = settings_api._as_map(GetBomb(a=1, b=2))
         self.assertEqual(laundered, {"a": 1, "b": 2})
         self.assertEqual(laundered.get("a"), 1)
+
+
+class ConfigReaderBombPins(unittest.TestCase):
+    """``hub.config``'s cfg()-readers: a dict-subclass bomb at the root or a
+    section holder used to raise straight out of the hot helpers, and any
+    route that did not happen to wrap the call inherited the 500 (found live
+    on GET /api/system/network/alias/auto through ``settings_section``)."""
+
+    def _with_cfg(self, value):
+        return mock.patch.object(config, "cfg", return_value=value)
+
+    def test_settings_section_survives_root_and_section_get_bombs(self):
+        for value in (GetBomb(settings={}), {"settings": GetBomb()}):
+            with self.subTest(value=type(value).__name__), self._with_cfg(value):
+                self.assertEqual(config.settings_section("ip_aliases"), {})
+
+    def test_settings_section_launders_the_returned_section(self):
+        with self._with_cfg({"settings": {"ip_aliases": GetBomb(ips=["1"])}}):
+            section = config.settings_section("ip_aliases")
+        self.assertEqual(section.get("ips"), ["1"])
+
+    def test_settings_section_healthy_passthrough(self):
+        with self._with_cfg({"settings": {"ui": {"locale": "ja"}}}):
+            self.assertEqual(config.settings_section("ui"), {"locale": "ja"})
+
+    def test_override_survives_root_and_section_get_bombs(self):
+        for value in (GetBomb(overrides={}), {"overrides": GetBomb()}):
+            with self.subTest(value=type(value).__name__), self._with_cfg(value):
+                self.assertEqual(config.override("sid"), {})
+
+    def test_override_launders_and_passes_through(self):
+        with self._with_cfg({"overrides": {"s1": GetBomb(name="keep")}}):
+            self.assertEqual(config.override("s1").get("name"), "keep")
+
+    def test_panel_locale_survives_bombs_and_reads_the_real_locale(self):
+        for value in (GetBomb(settings={}), {"settings": GetBomb()}):
+            with self.subTest(value=type(value).__name__), self._with_cfg(value):
+                self.assertEqual(config.panel_locale(), "zh-CN")
+        with self._with_cfg({"settings": {"ui": {"locale": "ja"}}}):
+            self.assertEqual(config.panel_locale(), "ja")
+
+
+class AliasAutoStatusHttpPin(unittest.TestCase):
+    """The live HTTP surface where the ``settings_section`` bomb escaped."""
+
+    def test_get_alias_auto_survives_a_cfg_root_get_bomb(self):
+        app = create_app()
+        app.dependency_overrides[require_auth] = lambda: None
+        self.addCleanup(app.dependency_overrides.clear)
+        client = TestClient(app, raise_server_exceptions=False)
+        with mock.patch.object(config, "cfg",
+                               return_value=GetBomb(settings={})):
+            resp = client.get("/api/system/network/alias/auto")
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+        json.dumps(resp.json(), ensure_ascii=False,
+                   allow_nan=False).encode("utf-8")
 
 
 if __name__ == "__main__":

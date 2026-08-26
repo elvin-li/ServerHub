@@ -398,11 +398,27 @@ def settings_section(name: str) -> dict:
     like ``notify: []`` used to 500 the alerter, Settings, file manager, and
     every job that merged ``maintenance_env``.
     """
-    s = cfg().get("settings")
+    # ``dict.get(...)``, not ``s.get(...)``: ``cfg()`` normally returns a plain
+    # dict, but a leftover whose ``settings`` map (or the config root) is a
+    # dict *subclass* with a bombing ``.get`` used to raise straight out of
+    # this hot helper — and every route that reads a nested section
+    # (ip_aliases/notify/thresholds/terminal/ollama…) inherited the 500 unless
+    # it happened to wrap the call.  The unbound builtin reads the C-level
+    # storage, bypassing the override at no copy cost; the returned section is
+    # laundered with ``dict(...)`` so the caller's own ``.get`` is safe too.
+    data = cfg()
+    if not isinstance(data, dict):
+        return {}
+    s = dict.get(data, "settings")
     if not isinstance(s, dict):
         return {}
-    raw = s.get(name)
-    return raw if isinstance(raw, dict) else {}
+    raw = dict.get(s, name)
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        return dict(raw)
+    except Exception:
+        return {}
 
 
 def _env_text(value) -> str:
@@ -436,11 +452,23 @@ def maintenance_env() -> dict:
 
 
 def override(sid):
-    ov = cfg().get("overrides")
+    # dict.get, not .get: a leftover cfg() whose root / overrides map is a
+    # dict subclass with a bombing .get must not raise out of this reader
+    # (services and bookmarks call it per row); the returned override is
+    # laundered so the caller's own .get is safe too.
+    data = cfg()
+    if not isinstance(data, dict):
+        return {}
+    ov = dict.get(data, "overrides")
     if not isinstance(ov, dict):
         return {}
-    val = ov.get(sid, {})
-    return val if isinstance(val, dict) else {}
+    val = dict.get(ov, sid, {})
+    if not isinstance(val, dict):
+        return {}
+    try:
+        return dict(val)
+    except Exception:
+        return {}
 
 
 def set_override(sid: str, patch: dict) -> dict:
@@ -716,10 +744,15 @@ def panel_locale() -> str:
     ``zh-Hans-CN``, so a first-match would keep the menu in English while
     the panel is zh-CN.
     """
-    settings = cfg().get("settings")
-    ui = settings.get("ui") if isinstance(settings, dict) else None
+    # dict.get, not .get: a leftover cfg() root / settings map that is a dict
+    # subclass with a bombing .get must not 500 the menu-bar locale probe
+    # (GET /api/status reads this on a cold cache).
+    data = cfg()
+    settings = dict.get(data, "settings") if isinstance(data, dict) else None
+    ui = dict.get(settings, "ui") if isinstance(settings, dict) else None
     ui = ui if isinstance(ui, dict) else {}
     try:
+        _locale_raw = dict.get(ui, "locale")
         # Guarded str(), not a bare one: a hand-edited YAML hex/octal locale
         # (``locale: 0xF…``) parses uncapped through ``int(x, 16)`` and the
         # bare ``str()`` raised CPython's 4300-digit ValueError here.  That
@@ -727,7 +760,7 @@ def panel_locale() -> str:
         # last-good snapshot to fall back to on first boot) and the member
         # status/services filters the same way.  A numeric YAML ``locale:
         # 2023`` still coerces and falls through to the default below.
-        raw = str(ui.get("locale") or DEFAULT_UI_LOCALE).strip()
+        raw = str(_locale_raw or DEFAULT_UI_LOCALE).strip()
     except ValueError:
         return DEFAULT_UI_LOCALE
     if raw in UI_LOCALES:
