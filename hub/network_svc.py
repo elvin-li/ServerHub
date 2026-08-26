@@ -1852,9 +1852,6 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
         p = str(p).strip()
         if p and re.match(r"^[0-9.:\-/tcpudp]+$", p):
             port_list.append(p)
-    # stop & remove then run
-    docker("stop", container, timeout=90)
-    docker("rm", container, timeout=60)
     body = {
         "image": image,
         "name": container,
@@ -1866,6 +1863,17 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
         "privileged": bool(host.get("Privileged")),
         "command": cfg_.get("Cmd"),
     }
+    # Run every recreate gate BEFORE the destructive stop/rm.  The gates
+    # used to live only inside create_run_container, *after* ``docker rm``:
+    # a container name past the panel's 64-char form cap (legal for docker,
+    # routine for compose-generated names) or a digest-pinned image past the
+    # 201-char cap answered the coded 400 with the container already
+    # destroyed and nothing recreated.  Validation raising here leaves the
+    # container untouched.
+    containers_svc.build_run_args(body)
+    # stop & remove then run
+    docker("stop", container, timeout=90)
+    docker("rm", container, timeout=60)
     return containers_svc.create_run_container(body)
 
 

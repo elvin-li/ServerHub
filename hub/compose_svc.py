@@ -70,9 +70,43 @@ def _find_stack(stack_id: str) -> dict:
     raise api_error("compose.unknown_stack", stack=stack_id)
 
 
+def _io_compose_path(s: dict):
+    """The os-level compose path text for file I/O against stack *s*.
+
+    The published ``compose_path`` is scrubbed for Starlette's UTF-8 encode,
+    so for a surrogateescape directory name (one non-UTF-8 byte on disk) its
+    ``?``-replacement text names nothing: GET /api/compose/{id} answered 400
+    ``no_compose_file`` for a compose the stack scan had just globbed, and a
+    save would have written a brand-new ``?``-named tree beside the real one.
+    Same convention as the logs tail: read through the raw name the listing
+    found, publish the scrubbed text.
+    """
+    path = s.get("os_compose_path")
+    if isinstance(path, str) and path:
+        return path
+    return s.get("compose_path")
+
+
+def _spawnable_dir(text):
+    """*text* when it can ride in a subprocess argv, else None.
+
+    ``cli_args.as_argv`` refuses argv it cannot UTF-8-encode, so a
+    surrogateescape working directory would fail ``docker compose config``
+    with the opaque ``invalid argv`` sentinel.  Falling back to None lets
+    ``validate_compose_text`` use its clean ~/Services default instead.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return text
+
+
 def get_compose(stack_id: str) -> dict:
     s = _find_stack(stack_id)
-    path = s.get("compose_path")
+    path = _io_compose_path(s)
     if not isinstance(path, str) or not path:
         raise api_error("container.no_compose_file")
     try:
@@ -113,7 +147,7 @@ def get_compose(stack_id: str) -> dict:
 
 def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     s = _find_stack(stack_id)
-    path = s.get("compose_path")
+    path = _io_compose_path(s)
     if not isinstance(path, str) or not path:
         raise api_error("container.no_compose_file")
     if isinstance(content, (bytes, bytearray)):
@@ -135,7 +169,10 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
         # allow only under ~/Services
         raise api_error("compose.path_forbidden")
     if validate:
-        v = validate_compose_text(content, cwd=str(p.parent))
+        # _spawnable_dir: a surrogateescape parent cannot ride in argv, so the
+        # check runs from the clean ~/Services default instead of failing the
+        # whole save with as_argv's opaque "invalid argv" sentinel.
+        v = validate_compose_text(content, cwd=_spawnable_dir(str(p.parent)))
         if not v.get("ok"):
             _raise_validation_failure(v)
     # A compose file carries the generated database and admin passwords for the
@@ -169,7 +206,16 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
         # remount) instead of a generic server error.
         raise api_error("compose.save_failed", detail=exc_detail(exc, 200))
     inv()
-    return {"ok": True, "path": str(p), "message": "Saved", "backup": str(bak)}
+    # The write went through the raw os-level name; the *response* body must
+    # be UTF-8-encodable, so the echoed paths are scrubbed like every other
+    # published path field (a lone surrogate here 500'd the save that had
+    # already succeeded on disk).
+    return {
+        "ok": True,
+        "path": _utf8_text(str(p)),
+        "message": "Saved",
+        "backup": _utf8_text(str(bak)),
+    }
 
 
 def _raise_validation_failure(v: dict):
@@ -283,8 +329,18 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
 
 
 def validate_stack(stack_id: str) -> dict:
+    s = _find_stack(stack_id)
     data = get_compose(stack_id)
-    return validate_compose_text(data["content"], cwd=data.get("path"))
+    # cwd from the os-level directory text, never the published scrubbed
+    # twin: validate_compose_text mkdir()s its working directory, so the
+    # ``?``-replacement text of a surrogateescape stack directory used to
+    # *create a brand-new sibling tree* next to the real stack on every
+    # validate click.  A genuinely unspawnable raw name falls back to the
+    # clean ~/Services default via _spawnable_dir.
+    workdir = s.get("os_path")
+    if not isinstance(workdir, str) or not workdir:
+        workdir = s.get("path")
+    return validate_compose_text(data["content"], cwd=_spawnable_dir(workdir))
 
 
 def create_stack(stack_id: str, name: str | None, content: str) -> dict:
