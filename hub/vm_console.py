@@ -108,6 +108,22 @@ def _allowlist() -> dict[str, Any]:
     return allowlist if isinstance(allowlist, dict) else {}
 
 
+def _exact_str(value) -> str:
+    """Exact-str copy without calling any overridable method.
+
+    surrogatepass keeps the comparison faithful to what was stored; every
+    caller then runs bound ``.strip()`` / ``.lower()`` safely.
+    """
+    if type(value) is str:
+        return value
+    try:
+        return str.encode(value, "utf-8", "surrogatepass").decode(
+            "utf-8", "surrogatepass"
+        )
+    except Exception:
+        return ""
+
+
 def _probe_text(value) -> str:
     """Comparable text for an allowlist key / protocol field.
 
@@ -118,13 +134,19 @@ def _probe_text(value) -> str:
     ValueError out of ``_entry_for`` / ``resolve_target`` — a 500 on the
     console session mint, and an empty UTM listing via ``capability()``.
     ``!!binary`` keys decode instead of comparing as ``"b'…'"``.
+
+    Hands back an *exact* str (unbound base decode, exact-str copies): a
+    str-subclass leftover used to ride out with its bound ``.strip()`` /
+    ``.lower()`` bombs live, and a bytes-subclass ``__bytes__``/``decode``
+    bomb raised out of the ``bytes(value)`` copy — both 500'd the mint.
     """
     if isinstance(value, str):
-        return value
+        return _exact_str(value)
     if isinstance(value, (bytes, bytearray)):
-        return bytes(value).decode("utf-8", "replace")
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
     try:
-        return str(value)
+        return _exact_str(str(value))
     except Exception:
         return ""
 
@@ -132,22 +154,36 @@ def _probe_text(value) -> str:
 def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
     allowlist = _allowlist()
     wanted = _probe_text(vm_uuid).strip().lower()
-    for key, value in allowlist.items():
+    # Unbound dict.items and a laundered entry: settings_section only
+    # launders the top-level section, so a leftover allowlist that is a dict
+    # *subclass* (bombing ``items()``) or an entry with a bombing ``.get``
+    # used to 500 the console-session mint out of resolve_target.
+    for key, value in dict.items(allowlist):
         if _probe_text(key).strip().lower() == wanted:
-            return value if isinstance(value, dict) else None
+            if not isinstance(value, dict):
+                return None
+            try:
+                return dict(value)
+            except Exception:
+                return None
     return None
 
 
 def _as_host_text(value) -> str:
     """Allowlist host as text.  YAML ``!!binary`` is bytes; leftover numbers are not hosts."""
     if isinstance(value, (bytes, bytearray)):
+        base = bytes if isinstance(value, bytes) else bytearray
         try:
-            value = bytes(value).decode("utf-8")
+            value = base.decode(value, "utf-8")
         except UnicodeDecodeError:
+            return ""
+        except Exception:
             return ""
     if not isinstance(value, str):
         return ""
-    return value.strip()
+    # Exact-str copy before the bound .strip(): a str-subclass leftover's
+    # strip bomb used to 500 the mint out of _is_loopback/resolve_target.
+    return _exact_str(value).strip()
 
 
 def _is_loopback(host: str) -> bool:

@@ -83,13 +83,26 @@ def _cli_missing(rc, err, binary) -> bool:
     return not _bin_present(binary)
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/vms cannot UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
+        # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+        # bomb, and the bound ``.decode`` was the subclass's own — either one
+        # 500'd the action reply (``_utm_action`` message assembly runs
+        # outside every listing catch).
+        value = _decode_bytes(value)
     elif value is None:
         return ""
-    else:
+    elif not isinstance(value, str):
+        # str instances skip str(): a subclass ``__str__`` bomb would trade
+        # the real text for "", and a ``__str__`` that answers *self* skips
+        # CPython's exact-str copy anyway.
         try:
             value = str(value)
         except RecursionError:
@@ -99,7 +112,12 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the hub.modules._utf8_text rule): a str subclass
+    # carrying a bound ``encode`` bomb rode this line to a 500 on
+    # POST /api/vms/{id}/action and threw away the whole UTM listing on
+    # GET /api/vms.  The round-trip also hands back an exact str, so the
+    # ``.strip()`` / ``or`` that follow cannot hit another override.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _display_text(value, fallback: str = "") -> str:
@@ -111,10 +129,26 @@ def _display_text(value, fallback: str = "") -> str:
     if value is None or isinstance(value, bool):
         return fallback
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__float__``
+                # bomb used to blow the overflow probe, and one *lying*
+                # about a >4300-digit value smuggled it into ``str()``,
+                # whose digit-cap ValueError 500'd the caller.
+                value = int.__index__(value)
+            except Exception:
+                return fallback
         try:
             float(value)
         except OverflowError:
@@ -123,14 +157,17 @@ def _display_text(value, fallback: str = "") -> str:
     if isinstance(value, str):
         return _as_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, (dict, list, tuple, set, frozenset)):
         return fallback
     try:
         text = str(value)
     except Exception:
         return fallback
-    return _as_text(text) if text else fallback
+    # Scrub before the truthiness test: ``str()`` may hand back a subclass
+    # (a ``__str__`` answering *self*) whose ``__bool__`` raises.
+    text = _as_text(text)
+    return text if text else fallback
 
 
 def _optional_text(value) -> str | None:
@@ -140,9 +177,20 @@ def _optional_text(value) -> str | None:
 
 def _id_text(value, fallback: str) -> str:
     """Machine id/uuid from leftover orbctl JSON: Infinity/objects are not ids."""
-    if isinstance(value, str) and value:
-        return _as_text(value)
+    if isinstance(value, str):
+        # Scrub before the truthiness test: a str-subclass ``__bool__`` bomb
+        # used to raise out of ``_orb_item`` and cost the whole listing.
+        text = _as_text(value)
+        return text if text else fallback
     if isinstance(value, int) and not isinstance(value, bool):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__float__``
+                # bomb (or one lying about a >4300-digit value, whose
+                # ``str()`` then ValueError'd on the digit cap) cannot 500.
+                value = int.__index__(value)
+            except Exception:
+                return fallback
         try:
             float(value)
         except OverflowError:
@@ -152,28 +200,61 @@ def _id_text(value, fallback: str) -> str:
 
 
 def _jsonable(value, depth: int = 0):
-    """Drop leftover inf/bytes/huge ints/``\\ud800`` so Starlette cannot 500 GET /api/vms."""
+    """Drop leftover inf/bytes/huge ints/``\\ud800`` so Starlette cannot 500 GET /api/vms.
+
+    Subclass bombs (the hub.modules._jsonable unbound convention this copy
+    never got) each 500'd GET /api/vms straight through this final guard: a
+    dict row whose ``items()`` raises, a container whose ``__iter__``
+    raises, a float whose ``__eq__`` blows the NaN/inf probes, an int whose
+    ``__float__`` blows the overflow probe (or lies past it, so the encoder
+    itself ValueError'd on a >4300-digit render), bytes whose ``decode``
+    raises, a str carrying a bound ``encode`` bomb, and an ``isoformat``
+    probe on an object whose ``__getattr__`` raises (getattr's default only
+    swallows AttributeError).
+    """
     if depth > 32:
         return None
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return None
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
-        out = {}
-        for k, v in value.items():
-            try:
-                key = k if isinstance(k, (str, bytes, bytearray)) else str(k)
-            except Exception:
-                continue
-            key = _as_text(key)
-            out[key] = _jsonable(v, depth + 1)
-        return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
     if isinstance(value, bool) or value is None:
         return value
+    if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                value = float.__float__(value)
+            except Exception:
+                return None
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return _decode_bytes(value)
+    if isinstance(value, dict):
+        out = {}
+        # Unbound base view: a dict-subclass row whose ``items()`` raises
+        # cannot 500, and the real storage underneath still comes through.
+        for k, v in dict.items(value):
+            if isinstance(k, (bytes, bytearray)):
+                key = _decode_bytes(k)
+            elif isinstance(k, str):
+                key = k
+            else:
+                try:
+                    key = str(k)
+                except Exception:
+                    continue
+            out[_as_text(key)] = _jsonable(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             float(value)
         except OverflowError:
@@ -181,7 +262,12 @@ def _jsonable(value, depth: int = 0):
         return value
     if isinstance(value, str):
         return _as_text(value)
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -202,7 +288,16 @@ def _listing_rows(probe) -> list:
         rows = probe()
     except Exception:
         return []
-    return list(rows) if isinstance(rows, (list, tuple)) else []
+    for base in (list, tuple):
+        if isinstance(rows, base):
+            try:
+                # Unbound base iteration, inside the guard: ``list(rows)``
+                # ran *outside* the try, so a leftover subclass ``__iter__``
+                # bomb re-raised through ``fan_out`` and 500'd GET /api/vms.
+                return [row for row in base.__iter__(rows)]
+            except Exception:
+                return []
+    return []
 
 
 def _probe_port(port) -> bool | None:
@@ -474,21 +569,27 @@ def discover_vms() -> list:
     for v in _listing_rows(list_utm_vms) + _listing_rows(list_orb_machines):
         if not isinstance(v, dict):
             continue
-        actions = []
-        if v.get("state") == "ok":
+        # Unbound dict.get, and laundered text for the ``==`` / ``or``
+        # probes: a leftover dict-subclass row with a bombing ``.get`` (or a
+        # state/group whose reflected ``__eq__`` / ``__bool__`` raises) used
+        # to take the whole status feed with it.  The emitted values are
+        # sealed by the final ``_jsonable`` pass.
+        state = _display_text(dict.get(v, "state"), "")
+        if state == "ok":
             actions = ["restart", "stop"]
         else:
             actions = ["start"]
+        group = _display_text(dict.get(v, "group"), "")
         items.append({
-            "id": v.get("id"),
+            "id": dict.get(v, "id"),
             "kind": "vm",
-            "name": v.get("name"),
-            "state": v.get("state"),  # ok | warn | stopped | down
-            "detail": v.get("detail"),
-            "url": v.get("url"),
-            "group": v.get("group") or "Virtual Machines",
+            "name": dict.get(v, "name"),
+            "state": dict.get(v, "state"),  # ok | warn | stopped | down
+            "detail": dict.get(v, "detail"),
+            "url": dict.get(v, "url"),
+            "group": group or "Virtual Machines",
             "actions": actions,
-            "backend": v.get("backend"),
+            "backend": dict.get(v, "backend"),
         })
     return _jsonable(items) or []
 
@@ -586,11 +687,27 @@ def _parse_id(vm_id: str) -> tuple[str, str]:
         machines = list_orb_machines()
     except Exception:
         machines = []
-    for m in machines if isinstance(machines, list) else []:
+    if isinstance(machines, list):
+        try:
+            machines = [m for m in list.__iter__(machines)]
+        except Exception:
+            machines = []
+    else:
+        machines = []
+    for m in machines:
         if not isinstance(m, dict):
             continue
-        if m.get("orb_name") == raw or m.get("id") == raw:
-            return "orb", _argv_name(m.get("orb_name") or raw)
+        # Unbound dict.get and str.__eq__ against the exact request text: a
+        # leftover dict-subclass row (bombing ``.get``) or a str-subclass
+        # value (reflected ``__eq__`` / ``__bool__`` bomb) used to 500 the
+        # action instead of answering the coded vms.bad_id.
+        orb_name = dict.get(m, "orb_name")
+        row_id = dict.get(m, "id")
+        if (isinstance(orb_name, str) and str.__eq__(raw, orb_name) is True) or (
+            isinstance(row_id, str) and str.__eq__(raw, row_id) is True
+        ):
+            name_text = _as_text(orb_name) if isinstance(orb_name, str) else ""
+            return "orb", _argv_name(name_text or raw)
     return "utm", _argv_name(raw)
 
 
@@ -685,12 +802,21 @@ def utm_vm_running(vm_uuid: str) -> bool:
         vms = list_utm_vms(force=True)
     except Exception:
         return False
-    for vm in vms if isinstance(vms, list) else []:
+    if isinstance(vms, list):
+        try:
+            vms = [vm for vm in list.__iter__(vms)]
+        except Exception:
+            return False
+    else:
+        return False
+    for vm in vms:
         if not isinstance(vm, dict):
             continue
-        if str(vm.get("uuid") or "").strip().lower() != uuid:
+        # Unbound dict.get + _as_text: a leftover dict-subclass row used to
+        # raise out of the console-session mint instead of the coded 404.
+        if _as_text(dict.get(vm, "uuid")).strip().lower() != uuid:
             continue
-        return _utm_status(str(vm.get("id") or "")) in ("started", "running")
+        return _utm_status(_as_text(dict.get(vm, "id"))) in ("started", "running")
     return False
 
 
