@@ -195,19 +195,35 @@ def _decode_bytes(value) -> str:
 
 
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    The scrub itself goes through the *unbound* base method
+    (``str.encode``, the audit._utf8_text convention): ``str()`` may hand
+    back a subclass instance (it only checks the type, it does not copy)
+    when ``__str__`` returns ``self``, so a leftover str-subclass whose
+    ``encode`` raised used to blow this scrub from outside every net and
+    500 GET /api/maintenance and the log route.  The unbound call also
+    guarantees an *exact* ``str`` return, so callers' own ``.strip()`` /
+    ``.replace()`` / truth tests cannot hit a subclass override either.
+    """
     if isinstance(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    try:
-        text = str(value)
-    except RecursionError:
+    if isinstance(value, str):
+        text = value
+    else:
         try:
-            return type(value).__name__
+            text = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
         except Exception:
             return ""
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -467,7 +483,14 @@ def _row_running(j) -> bool:
 def start_job(task):
     task = _plain_dict(task)
     tid = task.get("id") if task is not None else None
-    if not isinstance(tid, str) or not tid:
+    if not isinstance(tid, str):
+        return None
+    # Exact-str copy before the emptiness probe and the ``_jobs`` insert:
+    # a leftover str-*subclass* id (tools_svc hands start_job its own
+    # dicts) whose ``__bool__`` / ``__hash__`` raised used to blow ``not
+    # tid`` or the mapping insert straight into the calling route.
+    tid = _utf8_text(tid)
+    if not tid:
         return None
     with _jobs_lock:
         if any(_row_running(j) for j in _jobs.values()):
