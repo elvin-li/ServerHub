@@ -347,9 +347,28 @@ def list_jobs() -> list[dict]:
     return [dict(j) for j in rows if isinstance(j, dict)]
 
 
+def _matches_id(job: dict, job_id) -> bool:
+    """Whether *job* is the record an API path names.
+
+    Raw equality first (the historic shape), then the same ``str()`` coercion
+    :func:`_job_id` applies.  A hand-edited numeric YAML ``id: 123`` is listed
+    — and *fired by the engine* — as ``"123"``, but the lookups here compared
+    with raw ``==``, so the path string never matched the stored int: every
+    enable/update/delete/run-now on the running job mis-404'd
+    ``scheduler.not_found`` while the engine kept firing it, leaving no way to
+    stop the job through the API.
+    """
+    if job.get("id") == job_id:
+        return True
+    if not job_id or not isinstance(job_id, str):
+        return False
+    coerced = _job_id(job)
+    return bool(coerced) and coerced == job_id
+
+
 def get_job(job_id: str) -> dict | None:
     for j in list_jobs():
-        if j.get("id") == job_id:
+        if _matches_id(j, job_id):
             return j
     return None
 
@@ -383,7 +402,7 @@ def save_job(record: dict, *, mode: str = "upsert") -> bool:
             jobs = []
             data["schedules"] = jobs
         for i, j in enumerate(jobs):
-            if isinstance(j, dict) and j.get("id") == record["id"]:
+            if isinstance(j, dict) and _matches_id(j, record["id"]):
                 if mode == "create":
                     raise _NoChange
                 jobs[i] = record
@@ -404,7 +423,7 @@ def delete_job(job_id: str) -> bool:
 
     def apply(data: dict) -> None:
         jobs = data.get("schedules") or []
-        kept = [j for j in jobs if not (isinstance(j, dict) and j.get("id") == job_id)]
+        kept = [j for j in jobs if not (isinstance(j, dict) and _matches_id(j, job_id))]
         found["hit"] = len(kept) != len(jobs)
         data["schedules"] = kept
 
@@ -428,7 +447,7 @@ def set_enabled(job_id: str, enabled: bool) -> dict | None:
         jobs = data.get("schedules")
         rows = jobs if isinstance(jobs, list) else []
         for j in rows:
-            if isinstance(j, dict) and j.get("id") == job_id:
+            if isinstance(j, dict) and _matches_id(j, job_id):
                 j["enabled"] = bool(enabled)
                 hit.update(j)
                 return

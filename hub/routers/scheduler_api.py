@@ -122,6 +122,11 @@ def _public_job(job: dict, last=_LAST_UNSET) -> dict:
     """
     out = dict(job)
     jid = scheduler_svc._job_id(job)
+    if jid:
+        # Serve the identity the mutation routes match: a numeric YAML id
+        # is fired (and journalled) as its str() form, so the row must carry
+        # that same string or the UI's enable/delete/run URLs 404.
+        out["id"] = jid
     out["next_run"] = (
         scheduler_svc.next_run_ts(job.get("cron")) if scheduler_svc.job_enabled(job) else None
     )
