@@ -764,7 +764,7 @@ def exc_detail(exc, cap: int = 200) -> str:
         detail = exc.detail
         picked = detail.get("message") if detail.get("params") else detail.get("code")
         if isinstance(picked, str) and picked:
-            return picked.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
+            return str.encode(picked, "utf-8", "replace").decode("utf-8")[: max(0, cap)]
     try:
         text = str(exc)
     except Exception:
@@ -774,7 +774,11 @@ def exc_detail(exc, cap: int = 200) -> str:
             text = str(text)
         except Exception:
             return "error"
-    return text.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
+    # Unbound base encode: ``str(exc)`` hands back the exception's *message
+    # object* when it is already a str — a str-subclass ``encode`` bomb riding
+    # an exception message used to raise out of the coded-error path itself
+    # and turn the coded response into an uncoded 500.
+    return str.encode(text, "utf-8", "replace").decode("utf-8")[: max(0, cap)]
 
 
 def api_error(code: str, /, **params) -> HTTPException:

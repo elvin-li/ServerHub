@@ -72,19 +72,28 @@ def _decode_bytes(value) -> str:
 
 
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    Unbound ``str.encode`` (the ``_decode_bytes`` convention): a str-subclass
+    ``encode`` bomb from the sh seam used to raise through the *bound* encode
+    here, out of ``run_checks``, and collapse the whole Immich block of GET
+    /api/health/checks into one "check failed" row.  A str instance also
+    skips ``str()`` entirely, so a subclass ``__str__`` bomb keeps its real
+    text instead of degrading to "".
+    """
     if isinstance(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    try:
-        text = str(value)
-    except RecursionError:
+    if not isinstance(value, str):
         try:
-            return type(value).__name__
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
         except Exception:
             return ""
-    except Exception:
-        return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value) -> str:
@@ -99,7 +108,8 @@ def _as_text(value) -> str:
         value = _decode_bytes(value)
     elif not isinstance(value, str):
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str-subclass ``encode`` bomb cannot 500.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
