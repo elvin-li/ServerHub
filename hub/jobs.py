@@ -133,7 +133,21 @@ def run_watchdog(argv, *, timeout, log, env=None, cwd=None):
                         total -= len(log.pop(0))
             finally:
                 watchdog.cancel()
-                _reap()
+                # stdout EOF usually means the child is done, but it may not
+                # have been reaped yet.  Killing the group immediately is a
+                # SIGTERM race against a child that closed its pipe and is
+                # still finishing up: a maintenance/scheduler command that
+                # closed stdout before its last step finished rc -15 instead
+                # of its real exit code (the same leftover race
+                # containers_svc._stream_job_command already fixed).  Wait
+                # first; only reap if it is actually still running.
+                if p.poll() is None:
+                    try:
+                        p.wait(timeout=2)
+                        # After stdout EOF the child is normally exiting; this
+                        # wait is the reap, not a second blocking pipe read.
+                    except subprocess.TimeoutExpired:
+                        _reap()
         if timed_out.is_set():
             return 124
         return p.returncode if p.returncode is not None else -1
