@@ -199,14 +199,25 @@ ACTIVE_WINDOW = 180
 STALE_WINDOW = 900
 
 def _as_text(value) -> str:
-    """``wg`` leftovers used to leak ``bytes``/None/``\\ud800`` into JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+    """``wg`` leftovers used to leak ``bytes``/None/``\\ud800`` into JSON.
+
+    Unbound through the base types (the brew_svc/docker_cli convention): a
+    leftover bytes-subclass whose bound ``.decode`` raises, or a str-subclass
+    whose ``__str__`` returns itself and whose bound ``.encode`` raises, used
+    to detonate this launderer instead of costing only the poisoned value —
+    a raw 500 out of GET /api/wireguard, /readiness and POST /ping.
+    """
+    if isinstance(value, bytes):
+        text = bytes.decode(value, "utf-8", "replace")
+    elif isinstance(value, bytearray):
+        text = bytearray.decode(value, "utf-8", "replace")
+    elif isinstance(value, str):
+        text = value
     elif value is None:
         return ""
     else:
         try:
-            value = str(value)
+            text = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
@@ -214,7 +225,7 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _path_exists(path) -> bool:
@@ -253,9 +264,50 @@ def _conf_int(raw, fallback) -> int:
 
 
 def _nonfinite(value) -> bool:
-    return isinstance(value, float) and (
-        value != value or value in (float("inf"), float("-inf"))
-    )
+    if not isinstance(value, float):
+        return False
+    try:
+        # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+        # bomb used to raise out of the NaN/inf probes below and 500 the
+        # caller instead of costing only the poisoned value.
+        value = float.__float__(value)
+    except Exception:
+        return True
+    return value != value or value in (float("inf"), float("-inf"))
+
+
+def _plain_int(value):
+    """Exact int, or None when *value* cannot safely become one.
+
+    Base-type coercions throughout (``int.__index__``, ``float.__float__``,
+    text via :func:`_as_text`): a stored numeric-subclass whose ``__int__`` /
+    ``__index__`` / ``__eq__`` raises used to blow the bare ``int(...)`` in
+    :func:`settings` — a raw 500 on GET /api/wireguard, GET
+    /api/wireguard/settings and /readiness, on a value the range check below
+    would have rejected anyway.  Over-cap digit runs (CPython's 4300-digit
+    str->int cap) degrade to None the same way.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        try:
+            return int.__index__(value)
+        except Exception:
+            return None
+    if isinstance(value, float):
+        try:
+            value = float.__float__(value)
+        except Exception:
+            return None
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return int(value)
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return int(_as_text(value).strip())
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
 
 
 def _usable_network(value):
@@ -366,27 +418,33 @@ def settings() -> dict:
     stored = settings_section("wireguard")
     merged = dict(DEFAULTS)
     for key, value in stored.items():
-        if key not in merged:
-            continue
-        # False is a real stored value for wstunnel_enabled; only skip blanks.
-        if value in (None, ""):
-            continue
-        # YAML `.inf` used to OverflowError on listen_port/mtu, or leak into
-        # the JSON body (endpoint/dns) and 500 under allow_nan=False.
-        if _nonfinite(value):
+        if key not in merged or value is None:
             continue
         # YAML leftover ``endpoint: 2026-08-19`` / ``!!binary`` / ``!!set``
         # used to leak into GET /api/wireguard and GET /api/wireguard/settings
         # under Starlette's encoder (this payload never went through _jsonable).
+        #
+        # Type-gated per key, and *before* any probe that calls into the
+        # value: the old ``value in (None, "")`` blank test invoked a stored
+        # subclass's ``__eq__``, and the bytes launder called its bound
+        # ``.decode`` — either bomb was a raw 500 out of every settings read.
         expected = DEFAULTS[key]
         if isinstance(expected, bool):
-            if not isinstance(value, bool):
-                continue
-        elif isinstance(expected, str):
-            if isinstance(value, (bytes, bytearray)):
-                value = value.decode("utf-8", "replace")
-            elif not isinstance(value, str):
-                continue
+            # bool cannot be subclassed, so a surviving value is exact.
+            # False is a real stored value for wstunnel_enabled; keep it.
+            if isinstance(value, bool):
+                merged[key] = value
+            continue
+        if isinstance(expected, str):
+            if isinstance(value, (str, bytes, bytearray)):
+                # _as_text launders surrogates, bytes, and subclass
+                # encode/decode bombs into an exact str; blanks keep the
+                # default, as before.
+                text = _as_text(value)
+                if text:
+                    merged[key] = text
+            continue
+        # Numeric keys: kept raw here, coerced and range-checked below.
         merged[key] = value
     iface = str(merged["interface"])
     if not _IFACE_RE.match(iface):
@@ -398,17 +456,16 @@ def settings() -> dict:
     # exempt), so ``listen_port: 0x<4300+ digits>`` parsed here as an over-cap
     # int and then ValueError'd ``json.dumps`` itself — GET /api/wireguard,
     # GET /api/wireguard/settings and the Network overview's wstunnel snapshot
-    # all 500'd on a value the write path would have rejected.
+    # all 500'd on a value the write path would have rejected.  _plain_int
+    # rather than a bare int(): a numeric-subclass ``__int__``/``__index__``
+    # bomb raised past the old (TypeError, ValueError, OverflowError) tuple.
     for key, low, high in (
         ("listen_port", 1, 65535),
         ("mtu", 576, 1500),
         ("keepalive", 0, 3600),
     ):
-        try:
-            number = int(merged[key])
-            if not (low <= number <= high):
-                number = DEFAULTS[key]
-        except (TypeError, ValueError, OverflowError):
+        number = _plain_int(merged[key])
+        if number is None or not (low <= number <= high):
             number = DEFAULTS[key]
         merged[key] = number
     for key, value in merged.items():
