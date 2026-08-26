@@ -207,8 +207,16 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A mapping that refuses iteration (odd dict subclass): there is
+            # nothing to salvage from it, but its *siblings* must survive —
+            # the raise used to ride out of drill()'s scrub and 500 the
+            # route (the nginx_svc._jsonable rule).
+            return None
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             if not isinstance(k, str):
                 try:
                     k = str(k)
@@ -223,7 +231,12 @@ def _jsonable(value, depth: int = 0):
             out[k] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except Exception:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the row or the route.
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -244,9 +257,11 @@ def _service_states() -> dict[str, str]:
     out: dict[str, str] = {}
     try:
         groups = full_status(force=False).get("groups") or []
+        # Materialize under the guard: a list *subclass* passes the
+        # isinstance gate but one whose ``__iter__`` raises used to abort
+        # this reader mid-scan and wipe every sibling's state with it.
+        groups = list(groups) if isinstance(groups, list) else []
     except Exception:
-        groups = []
-    if not isinstance(groups, list):
         groups = []
     for g in groups:
         if not isinstance(g, dict):
@@ -254,10 +269,22 @@ def _service_states() -> dict[str, str]:
         services = g.get("services") or []
         if not isinstance(services, list):
             continue
+        try:
+            services = list(services)
+        except Exception:
+            # One group's services refusing iteration drops that group
+            # alone; the states already collected keep their rows honest.
+            continue
         for s in services:
-            if not isinstance(s, dict) or s.get("id") is None:
+            if not isinstance(s, dict):
                 continue
-            out[str(s.get("id"))] = str(s.get("state") or "unknown")
+            # str() probe, not a bare render: an already-int over-cap id or
+            # state (YAML hex) used to ValueError here and drop every
+            # sibling service's state along with its own.
+            sid = _cfg_text(s.get("id"))
+            if not sid:
+                continue
+            out[sid] = _cfg_text(s.get("state")) or "unknown"
     return out
 
 
@@ -423,27 +450,40 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     """
     policy = policy if policy is not None else shutdown_settings()
     steps: list[dict] = []
+    # Materialize inside the guard: a list *subclass* passes isinstance but
+    # one whose ``__iter__`` raises used to blow up the scrub comprehension
+    # *outside* this try and 500 GET /api/ups/shutdown/plan and
+    # POST /api/ups/shutdown/drill (the nginx overview() rule).
     try:
-        stacks = _list_stacks()
+        stacks = [s for s in _list_stacks() if isinstance(s, dict)]
     except Exception:
         stacks = []
-    stacks = [s for s in stacks if isinstance(s, dict)]
-    by_id = {str(s.get("id")): s for s in stacks}
+    # _cfg_text probe, not a bare str(): an already-int over-cap id (YAML
+    # hex, exempt from the digit cap) in one row used to ValueError here and
+    # wipe every sane sibling out of the plan with the 500.
+    by_id: dict[str, dict] = {}
+    for s in stacks:
+        sid = _cfg_text(s.get("id"))
+        if sid and sid not in by_id:
+            by_id[sid] = s
     wanted = policy.get("stacks")
     if isinstance(wanted, list):
-        ordered = [str(x) for x in wanted]
+        ordered = [_cfg_text(x) for x in wanted]
     else:  # "all"
-        ordered = [str(s.get("id")) for s in stacks]
+        ordered = [_cfg_text(s.get("id")) for s in stacks]
     # Dedupe, first occurrence wins: steps are addressed by (kind, id) in the
     # state file, so a duplicated id would leave one entry forever unresolved.
+    # An id with no renderable text cannot be addressed at all and drops.
     seen: set[str] = set()
-    ordered = [sid for sid in ordered if not (sid in seen or seen.add(sid))]
+    ordered = [sid for sid in ordered if sid and not (sid in seen or seen.add(sid))]
     for sid in ordered:
         stack = by_id.get(sid)
         steps.append({
             "kind": "stack",
             "id": sid,
-            "name": str((stack or {}).get("name") or sid),
+            # Same probe for the label: an over-cap int name falls back to
+            # the id instead of 500ing the whole plan.
+            "name": _cfg_text((stack or {}).get("name")) or sid,
             "running": bool(stack and stack.get("status") == "ok"),
             "known": stack is not None,
         })
@@ -451,8 +491,8 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     # that happens to match a stack id is a different step, not a duplicate.
     seen_svc: set[str] = set()
     raw_scripts = policy.get("stop_scripts")
-    script_ids = [str(x) for x in (raw_scripts if isinstance(raw_scripts, list) else [])]
-    script_ids = [sid for sid in script_ids if not (sid in seen_svc or seen_svc.add(sid))]
+    script_ids = [_cfg_text(x) for x in (raw_scripts if isinstance(raw_scripts, list) else [])]
+    script_ids = [sid for sid in script_ids if sid and not (sid in seen_svc or seen_svc.add(sid))]
     if script_ids:
         try:
             states = _service_states()
@@ -506,15 +546,21 @@ def _catalog() -> dict:
     the form needs the full menu — every compose stack (configured or
     auto-scanned) and every script entry from services.yaml.
     """
+    # Same materialize-under-guard as build_plan: an iteration-refusing
+    # list subclass from the seam used to 500 the plan/drill routes.
     try:
-        stacks = _list_stacks()
+        stacks = [s for s in _list_stacks() if isinstance(s, dict)]
     except Exception:
         stacks = []
-    stacks = [s for s in stacks if isinstance(s, dict)]
     from hub.config import cfg
     scripts = []
-    raw_scripts = cfg().get("scripts")
-    if not isinstance(raw_scripts, list):
+    try:
+        raw_scripts = cfg().get("scripts")
+        # A scripts list whose iteration raises passed the isinstance gate
+        # and 500'd the catalog the same way; an unreadable list means an
+        # empty picker, never a dead settings form.
+        raw_scripts = list(raw_scripts) if isinstance(raw_scripts, list) else []
+    except Exception:
         raw_scripts = []
     for s in raw_scripts:
         if not isinstance(s, dict):
@@ -531,12 +577,21 @@ def _catalog() -> dict:
             # so the form marks these rather than hiding them.
             "has_stop": bool(s.get("stop")),
         })
+    stack_rows = []
+    for s in stacks:
+        # _cfg_text probe, matching the scripts side above: one row whose
+        # already-int over-cap id/name (YAML hex) fails str() drops alone
+        # instead of 500ing the whole picker catalog with its siblings.
+        sid = _cfg_text(s.get("id"))
+        if not sid:
+            continue
+        stack_rows.append({
+            "id": sid,
+            "name": _cfg_text(s.get("name")) or sid,
+            "running": s.get("status") == "ok",
+        })
     return {
-        "stacks": [
-            {"id": str(s.get("id")), "name": str(s.get("name") or s.get("id")),
-             "running": s.get("status") == "ok"}
-            for s in stacks
-        ],
+        "stacks": stack_rows,
         "scripts": scripts,
     }
 
