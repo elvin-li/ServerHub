@@ -30,6 +30,41 @@ from hub.util import fan_out, run_bytes, sh, ttl_memo
 # Whole-disk identifiers only
 DISK_RE = re.compile(r"^disk\d+$")
 
+#: Every sleep / eject / wake below shells out to this one binary.
+DISKUTIL = "/usr/sbin/diskutil"
+
+#: What a spawn of a gone binary reads like: sh()'s FileNotFoundError
+#: sentinel (``not found``) or a wrapper shell's own refusal.  Purely a
+#: message-pattern gate — diskutil's genuine failures can contain "not
+#: found" too, so classification additionally requires the fresh
+#: :func:`_diskutil_on_disk` probe (the raid_svc rule).
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
+def _diskutil_on_disk() -> bool:
+    """Fresh disk probe for the failure path only (raid_svc rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a
+    disk that cannot even answer for /usr/sbin is not confirmably carrying
+    the binary.
+    """
+    try:
+        return Path(DISKUTIL).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _vanished_spawn(rc: int, out: str, err: str) -> bool:
+    """True when a diskutil failure reads like the binary itself is gone.
+
+    Callers must still confirm with :func:`_diskutil_on_disk`: with the
+    binary on disk the raw failure is the truth and keeps its own message.
+    """
+    if rc == 0:
+        return False
+    blob = f"{out}\n{err}".lower()
+    return any(marker in blob for marker in _VANISH_MARKERS)
+
 
 def _text(value) -> str:
     """Plist display field as a JSON-safe string.
@@ -255,10 +290,14 @@ def _power_state(disk_id: str, volumes: list, info: dict, probe: bool = True) ->
         return "spun_down"
     if rc == 2 or "STANDBY" in text:
         return "spun_down"
-    if rc == -1:
+    if rc == -1 and text.strip().lower() != "not found":
         # The probe timed out: the device is present but refuses to answer,
         # which is exactly what a spun-down disk behind a USB bridge does.
         # Report it as parked rather than holding the whole listing hostage.
+        # sh()'s vanished-binary sentinel (the exact "not found" body) is
+        # excluded: with no smartctl the disk was never probed at all, and
+        # this reading used to park every unmounted disk on such a host —
+        # unmounted-but-present ("idle" below) is all that is actually known.
         return "spun_down"
     # unmounted but present
     if info.get("Ejectable") or info.get("Removable") or info.get("RemovableMedia"):
@@ -508,6 +547,15 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     disks = {d["id"]: d for d in list_power_disks()}
     d = disks.get(disk_id)
     if not d:
+        # An *empty* listing is diskutil's own failure signature — a healthy
+        # Mac always lists at least disk0 — so only then can the miss be the
+        # binary rather than the disk.  The fresh disk probe runs on this
+        # failure path alone; with diskutil still on disk the 404 below is
+        # the truth.  Pre-fix a vanished diskutil emptied the listing and
+        # every sleep/eject answered "disk not found: diskN", sending the
+        # operator to check a cable that was never the problem.
+        if not disks and not _diskutil_on_disk():
+            raise api_error("disk_power.diskutil_missing")
         raise api_error("disk_power.not_found", disk=disk_id)
     if d["system"] or not d["can_sleep"]:
         raise api_error("disk_power.protected")
@@ -527,6 +575,13 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     invalidate_disk_info()
     invalidate_power_disks()
     if rc != 0:
+        # A diskutil that vanished between the listing and the spawn used to
+        # surface as HTTP 200 ``{"ok": false, "message": "not found"}`` — a
+        # body that reads like a missing *disk*.  Coded 503 only after the
+        # fresh disk probe confirms the binary is really gone; a genuine
+        # unmount failure (binary present) keeps its own message.
+        if _vanished_spawn(rc, out, err) and not _diskutil_on_disk():
+            raise api_error("disk_power.diskutil_missing")
         return {
             "ok": False,
             "action": mode,
@@ -545,6 +600,9 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
         # after the unmount above -- the earlier invalidation predates it.
         invalidate_disk_info()
         invalidate_power_disks()
+        # Same vanished-diskutil rule as the unmount leg above.
+        if rc2 != 0 and _vanished_spawn(rc2, out2, err2) and not _diskutil_on_disk():
+            raise api_error("disk_power.diskutil_missing")
         ok = rc2 == 0
         return {
             "ok": ok,
@@ -631,6 +689,11 @@ def wake_disk(disk_id: str) -> dict:
     # disk and its children now reports the wrong mount point.
     invalidate_disk_info()
     invalidate_power_disks()
+    # Same vanished-diskutil rule as sleep_disk: only a vanished-looking
+    # mountDisk failure whose binary a fresh disk probe confirms gone becomes
+    # the coded 503; a real mount failure keeps its own message.
+    if rc2 != 0 and _vanished_spawn(rc2, out2, err2) and not _diskutil_on_disk():
+        raise api_error("disk_power.diskutil_missing")
     ok = rc2 == 0
     return {
         "ok": ok,

@@ -2847,6 +2847,7 @@ export default {
       unsupported_fs: 'サポートされていないファイルシステム {fs}。選択肢：{choices}',
       whole_disk_only: 'ディスク全体の消去は diskN のみ対象です',
       invalid_device: '無効なデバイス id です: {device}',
+      diskutil_missing: 'このホストに diskutil がありません',
     },
     files: {
       bad_filename: 'ファイル名が不正です',
@@ -3091,6 +3092,7 @@ export default {
       unknown_action: '不明なディスク電源操作です: {action}',
       invalid_id: 'ディスク id が無効です',
       not_found: 'ディスクが見つかりません: {disk}',
+      diskutil_missing: 'このホストに diskutil がありません',
     },
     apps: {
       bad_id: 'id は kind:source 形式で指定してください（例: docker:plex / native:native-redis / launchd:label / vm:uuid）',

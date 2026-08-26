@@ -552,7 +552,15 @@ class TestCodedErrors(unittest.TestCase):
             disk_power_svc.wake_disk("not-a-disk")
         self.assertEqual(raised.exception.detail["code"], "disk_power.invalid_id")
 
-        with patch.object(disk_power_svc, "list_power_disks", return_value=[]):
+        # A genuine miss: the listing answered (so diskutil is alive) and the
+        # disk is simply not in it.  An *empty* listing on a host whose fresh
+        # disk probe says diskutil is gone is the coded 503
+        # disk_power.diskutil_missing instead — pinned in
+        # test_array4_leftover_diskutil_vanished_503.
+        with patch.object(
+            disk_power_svc, "list_power_disks",
+            return_value=[{"id": "disk0", "system": True, "can_sleep": False}],
+        ):
             with self.assertRaises(HTTPException) as raised:
                 disk_power_svc.sleep_disk("disk99")
         self.assertEqual(raised.exception.detail["code"], "disk_power.not_found")
