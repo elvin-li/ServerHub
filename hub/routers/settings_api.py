@@ -448,9 +448,17 @@ def _public_settings() -> dict:
             "label": ollama_svc.settings_text(ollama.get("label")).strip(),
         },
         "paths": {"docker": _text(DOCKER), "orb": _text(ORB)},
-        "stacks": _json_list(data.get("stacks") or []),
-        "log_sources": _json_list(data.get("log_sources") or []),
-        "groups_order": _json_list(data.get("groups_order") or []),
+        # No ``or []``: the truthiness probe reflects into the stored value's
+        # own ``__bool__``/``__len__``, so a leftover bomb riding ``stacks`` /
+        # ``log_sources`` / ``groups_order`` (a non-list ``__bool__`` bomb, a
+        # list *subclass* whose ``__len__`` raises, a dict-subclass
+        # ``__bool__`` bomb) used to 500 GET /api/settings before _json_list
+        # ever saw it.  _json_list already answers ``[]`` for None and every
+        # non-list leftover, and degrades an unanswerable list subclass to
+        # ``[]`` through _jsonable's guarded ``list(...)``.
+        "stacks": _json_list(data.get("stacks")),
+        "log_sources": _json_list(data.get("log_sources")),
+        "groups_order": _json_list(data.get("groups_order")),
         "version": __version__,
     }
 

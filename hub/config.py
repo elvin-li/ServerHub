@@ -406,7 +406,16 @@ def settings_section(name: str) -> dict:
     # it happened to wrap the call.  The unbound builtin reads the C-level
     # storage, bypassing the override at no copy cost; the returned section is
     # laundered with ``dict(...)`` so the caller's own ``.get`` is safe too.
-    data = cfg()
+    #
+    # The ``cfg()`` call itself is guarded like ``settings_api._cfg_map`` /
+    # ``system_settings_svc._settings_map``: a snapshot provider that raises
+    # used to escape this helper and 500 GET /api/settings/other and
+    # /api/settings/thresholds while GET /api/settings (whose reads go through
+    # the guarded siblings) answered 200 over the very same failure.
+    try:
+        data = cfg()
+    except Exception:
+        return {}
     if not isinstance(data, dict):
         return {}
     s = dict.get(data, "settings")
