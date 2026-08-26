@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -682,8 +683,28 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
 def _hash_file(path: Path, *, partial: bool) -> str | None:
     """SHA-256 of the first chunk, or of the whole file when *partial* is False."""
     digest = hashlib.sha256()
+    fd = -1
     try:
-        with open(path, "rb") as fh:
+        # O_NONBLOCK + the regular-file check (the files_svc read rule): the
+        # walk only queues regular files, but the hash stages run after the
+        # whole walk finished, and a leftover FIFO occupying the path by then
+        # used to park the plain open() until a writer appeared — hanging a
+        # fan_out worker and GET /api/storage/usage/duplicates with it, past
+        # every budget (the deadline cannot fire inside a blocked syscall).
+        # O_NONBLOCK changes nothing for reads of a regular file, and
+        # O_NOFOLLOW refuses a symlink swapped in over the same window (the
+        # walk never followed one).  A non-regular occupant costs its own
+        # hash, exactly like an unreadable file, never the request.
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1  # fdopen owns the descriptor now
             if partial:
                 digest.update(fh.read(_HASH_CHUNK))
             else:
@@ -696,6 +717,12 @@ def _hash_file(path: Path, *, partial: bool) -> str | None:
         # ValueError: leftover ``\\ud800`` in a FUSE name. open() encodes
         # strictly; the duplicates walk used to 500 GET /api/storage/usage/duplicates.
         return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     return digest.hexdigest()
 
 
