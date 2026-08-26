@@ -47,10 +47,24 @@ def _json_safe(value):
     still passed through, so a non-finite or bytes leftover 500'd GET
     ``/api/brew/services`` the same way.  A leftover ``\\ud800`` in ``name``
     still 500'd the UTF-8 encode.
+
+    Base-type coercions throughout (``int.__index__``, ``float.__float__``,
+    unbound ``str.encode`` / ``bytes.decode``): a leftover subclass whose
+    ``__str__``/``__eq__``/``encode``/``decode`` raises used to raise out of
+    this launderer instead of costing only the poisoned value — the
+    docker_cli/modules ``_jsonable`` convention.
     """
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to blow the digit-cap probe below (only ValueError
+                # was caught).
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -61,16 +75,31 @@ def _json_safe(value):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base encode: a str-subclass ``.encode`` bomb cannot fire.
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    if isinstance(value, bytes):
+        return bytes.decode(value, "utf-8", "replace")
+    if isinstance(value, bytearray):
+        return bytearray.decode(value, "utf-8", "replace")
     if isinstance(value, (list, tuple, set, frozenset)):
         return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / ``__getattr__`` raising non-AttributeError past
+        # getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -175,11 +204,19 @@ def list_services() -> list:
         rc, out, err = sh([BREW, "services", "list"], timeout=20)
     except Exception:
         return items
-    if rc != 0:
+    # This tail runs outside the try above, so a leftover numeric-subclass rc
+    # whose ``__ne__`` raises used to 500 GET /api/brew/services from the
+    # fallback path; _plain_rc's unbound base calls dodge the override and a
+    # non-numeric rc reads as failure.
+    if _plain_rc(rc) != 0:
         return []
-    if isinstance(out, (bytes, bytearray)):
-        out = out.decode("utf-8", "replace")
-    elif not isinstance(out, str):
+    if isinstance(out, (str, bytes, bytearray)):
+        # _as_text, not bound ``.decode``/raw str: a bytes-subclass whose
+        # ``decode`` raises (or a str-subclass whose ``splitlines`` does)
+        # used to 500 the same fallback; the unbound base calls yield an
+        # exact, surrogate-scrubbed str.
+        out = _as_text(out)
+    else:
         return items
     for line in out.splitlines()[1:]:
         parts = line.split()

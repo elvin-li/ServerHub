@@ -46,17 +46,74 @@ CODES.setdefault(
 
 
 def _as_text(value) -> str:
-    """JSON-safe leftover. ``\\ud800`` in brew/Popen messages used to 500 autostart JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+    """JSON-safe leftover. ``\\ud800`` in brew/Popen messages used to 500 autostart JSON.
+
+    Unbound through the base types, like brew_svc._as_text: a leftover
+    bytes-subclass whose bound ``.decode`` raises (or a str-subclass whose
+    ``.encode`` does — including one minted by a self-``__str__``) used to
+    raise out of the launchctl log tail below and 500 POST /api/apps/autostart.
+    """
+    if isinstance(value, bytes):
+        text = bytes.decode(value, "utf-8", "replace")
+    elif isinstance(value, bytearray):
+        text = bytearray.decode(value, "utf-8", "replace")
+    elif isinstance(value, str):
+        text = value
     elif value is None:
         return ""
     else:
         try:
-            value = str(value)
+            text = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
+
+
+def _plain_rc(value):
+    """Exact-type launchctl/brew rc for the post-spawn tails below.
+
+    The vanished-brew sentinel check in :func:`set_brew_autostart` and the
+    ``ok`` render must run *outside* the spawn try (its broad except used to
+    swallow the coded 503 raise), so a leftover numeric-subclass rc whose
+    ``__eq__`` raises used to 500 POST /api/apps/autostart after the run had
+    already finished — the exact class brew_svc.service_action sealed, left
+    over in this sibling.  Unbound base-type calls dodge the override;
+    anything non-numeric degrades to None.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        try:
+            return int.__index__(value)
+        except Exception:
+            return None
+    if isinstance(value, float):
+        try:
+            return float.__float__(value)
+        except Exception:
+            return None
+    return None
+
+
+def _rc_note(op: str, rc) -> str:
+    """``{op} rc={rc}`` for the launchctl toggle message, whatever rc's shape.
+
+    A leftover over-cap rc (hex-minted ints dodge CPython's str->int digit
+    cap) used to ValueError the f-string and 500 POST /api/apps/autostart
+    after launchctl had already run; subclass rc bombs degrade via _plain_rc.
+    """
+    rc = _plain_rc(rc)
+    if rc is None:
+        return f"{op} rc=unknown"
+    try:
+        return f"{op} rc={rc}"
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        return f"{op} rc=unknown"
 
 
 def _exists(path: Path) -> bool:
@@ -331,6 +388,11 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
         return {"ok": False, "message": "action failed"}
     except Exception as e:
         return {"ok": False, "message": _as_text(e) or "action failed"}
+    # Exact-type rc before the comparisons below: they run outside the try
+    # (deliberately, so the coded 503 raise cannot be swallowed), which meant
+    # a leftover numeric-subclass rc whose ``__eq__`` raises 500'd the toggle
+    # after brew had already run — the class service_action's tail sealed.
+    rc = _plain_rc(rc)
     if rc == -1 and msg == "not found":
         # run_capped reports a FileNotFoundError spawn as (-1, "not found") —
         # a sentinel, never a real brew exit.  Homebrew vanished between the
@@ -490,16 +552,21 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
 
     dom = _uid_domain()
     logs = []
+    # ``_as_text(out) or _as_text(err)``, not ``_as_text(out or err)``: the
+    # bare ``or`` asked the raw value for truth, so a leftover str-subclass
+    # ``__bool__`` bomb from a hostile sh 500'd the toggle before the text
+    # was ever laundered.  ``_rc_note`` renders the rc fallback: an over-cap
+    # rc used to ValueError the bare f-string here too.
     if enabled:
         # bootout then bootstrap to pick up RunAtLoad
         sh(["/bin/launchctl", "bootout", f"{dom}/{label}"], timeout=8)
         rc, out, err = sh(["/bin/launchctl", "bootstrap", dom, str(path)], timeout=10)
-        logs.append(_as_text(out or err) or f"bootstrap rc={rc}")
+        logs.append(_as_text(out) or _as_text(err) or _rc_note("bootstrap", rc))
         sh(["/bin/launchctl", "enable", f"{dom}/{label}"], timeout=5)
         sh(["/bin/launchctl", "kickstart", "-k", f"{dom}/{label}"], timeout=10)
     else:
         rc, out, err = sh(["/bin/launchctl", "bootout", f"{dom}/{label}"], timeout=10)
-        logs.append(_as_text(out or err) or f"bootout rc={rc}")
+        logs.append(_as_text(out) or _as_text(err) or _rc_note("bootout", rc))
         # disable for session
         sh(["/bin/launchctl", "disable", f"{dom}/{label}"], timeout=5)
 

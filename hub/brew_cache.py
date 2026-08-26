@@ -55,8 +55,14 @@ _DISK_CAP = 256 * 1024
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
+    # Unbound through the base types, like brew_svc._as_text: a leftover
+    # bytes-subclass whose bound ``.decode`` raises (or a str-subclass whose
+    # ``.encode`` does) used to raise out of _services_from_output and cost
+    # the whole fresh snapshot instead of nothing.
+    if isinstance(value, bytes):
+        text = bytes.decode(value, "utf-8", "replace")
+    elif isinstance(value, bytearray):
+        text = bytearray.decode(value, "utf-8", "replace")
     elif isinstance(value, str):
         text = value
     elif value is None:
@@ -71,7 +77,7 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _json_safe(value, depth: int = 0):
@@ -81,12 +87,28 @@ def _json_safe(value, depth: int = 0):
     field with Inf/bytes still landed in the snapshot, so ``_write_disk``
     silently skipped (allow_nan=False) and any caller that returned the
     row 500'd.  A leftover ``\\ud800`` in ``name`` still 500'd the UTF-8 encode.
+
+    Base-type coercions throughout (unbound ``dict.items`` / ``__iter__``,
+    ``int.__index__``, ``float.__float__``, unbound ``str.encode`` /
+    ``bytes.decode``): a leftover subclass whose ``items``/``__iter__``/
+    ``__eq__``/``__str__``/``encode``/``decode`` bombs used to raise out of
+    ``_copy_items`` and wipe every brew row from the whole snapshot instead
+    of costing only the poisoned value — the docker_cli/modules ``_jsonable``
+    convention.
     """
     if depth > 16:
         return None
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to blow the digit-cap probe below (only ValueError
+                # was caught).
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -98,18 +120,33 @@ def _json_safe(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base encode: a str-subclass ``.encode`` bomb cannot fire.
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    if isinstance(value, bytes):
+        return bytes.decode(value, "utf-8", "replace")
+    if isinstance(value, bytearray):
+        return bytearray.decode(value, "utf-8", "replace")
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                key = k.decode("utf-8", "replace")
+        # Unbound base view: reads the C-level storage, so a dict-subclass
+        # row whose ``items``/``keys``/``__iter__``/``get`` raises still
+        # yields its real pairs.
+        for k, v in dict.items(value):
+            if isinstance(k, bytes):
+                key = bytes.decode(k, "utf-8", "replace")
+            elif isinstance(k, bytearray):
+                key = bytearray.decode(k, "utf-8", "replace")
             else:
                 try:
                     key = k if isinstance(k, str) else str(k)
@@ -121,14 +158,23 @@ def _json_safe(value, depth: int = 0):
                 except Exception:
                     continue
             try:
-                key = key.encode("utf-8", "replace").decode("utf-8")
+                key = str.encode(key, "utf-8", "replace").decode("utf-8")
             except Exception:
                 continue
             out[key] = _json_safe(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_safe(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot fire and the real elements still survive.
+                return [_json_safe(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / ``__getattr__`` raising non-AttributeError past
+        # getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -163,7 +209,9 @@ def _copy_items(items) -> list[dict]:
     if not isinstance(items, list):
         return []
     cleaned = []
-    for x in items:
+    # Unbound base iteration: a primed list-subclass ``__iter__`` bomb
+    # cannot cost the snapshot its real rows.
+    for x in list.__iter__(items):
         if not isinstance(x, dict):
             continue
         row = _json_safe(x)
