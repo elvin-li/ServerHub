@@ -275,6 +275,16 @@ def _validate_username(username: str) -> str:
         raise ShareAclError("shares.acl_bad_user")
     known = {user["username"] for user in local_users()}
     if name not in known:
+        # With dscl gone from disk, local_users() degrades to [] (the GET
+        # keeps its ACL data and just shows an empty picker), so a
+        # well-formed grant used to answer the 400 "unknown local macOS
+        # user" — blaming the operator's pick for a vanished CLI.  Same
+        # bar as routers/shares._share_directory's sharing_missing: the
+        # fresh disk probe runs on this empty-listing failure path only,
+        # and an honestly empty picker with dscl on disk keeps the
+        # honest refusal.
+        if not known and not _tool_on_disk(DSCL):
+            raise ShareAclError("shares.acl_tool_missing")
         raise ShareAclError("shares.acl_bad_user")
     return name
 
