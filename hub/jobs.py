@@ -156,6 +156,38 @@ def run_watchdog(argv, *, timeout, log, env=None, cwd=None):
         return -1
 
 
+def _plain_dict(value) -> dict | None:
+    """*value* as a plain ``dict``, or None.
+
+    A leftover dict-*subclass* row (the usage5/metrics5 row-bomb class:
+    passes the isinstance gate, then ``.get()`` / ``.items()`` / ``__bool__``
+    raises) used to 500 all three Maintenance routes — GET /api/maintenance
+    via job_state, the log route via job_log, and POST run via start_job's
+    mutex scan.  ``dict()`` copies through the C-level storage, so an
+    overridden method cannot fire.
+    """
+    if type(value) is dict:
+        return value
+    if isinstance(value, dict):
+        try:
+            return dict(value)
+        except Exception:
+            return None
+    return None
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    Fails closed to False: a bomb row is junk, not a live job, so treating
+    it as "running" would wedge the single-runner mutex forever.
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
@@ -203,6 +235,14 @@ def _jsonable(value, depth: int = 0):
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if isinstance(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a leftover subclass method bomb
+            # cannot fire (same guard as metrics/sensors _jsonable).
+            try:
+                value = dict(value)
+            except Exception:
+                return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, (str, bytes, bytearray)):
@@ -213,8 +253,18 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        try:
+            items = list(value)
+        except Exception:
+            # Leftover sequence subclass whose __iter__ raises.
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -245,9 +295,18 @@ def _task_id(raw) -> str:
     ``\\ud800`` id was listed with the scrubbed ``?`` form while the key kept the
     raw surrogate — POST /api/maintenance/{tid}/run could never match the
     id the list showed, and the mapping itself was not UTF-8 encodable.
+
+    Newlines get the same treatment: Starlette's ``{tid:path}`` convertor is
+    ``.*`` compiled without DOTALL, and ``.`` matches every decoded path
+    character *except* ``\\n`` — so a YAML literal-block / ``"a\\nb"`` id was
+    listed with a Run button whose percent-encoded ``%0A`` request could
+    never match the run or log route (the maint4 slash-id class again; every
+    other control character routes fine).  The id is only ever a mapping
+    key, so folding the newline to a space keeps the task runnable.
     """
     if isinstance(raw, str):
-        return _utf8_text(raw).strip()
+        text = _utf8_text(raw).replace("\r\n", "\n").replace("\n", " ")
+        return text.strip()
     if isinstance(raw, bool) or not isinstance(raw, int):
         return ""
     try:
@@ -259,13 +318,25 @@ def _task_id(raw) -> str:
 def maintenance_tasks():
     out = {}
     raw = cfg().get("maintenance")
-    for t in raw if isinstance(raw, list) else []:
-        if not isinstance(t, dict):
+    if isinstance(raw, list):
+        try:
+            # list() through the C storage: a leftover list-subclass whose
+            # __iter__ raises used to 500 GET /api/maintenance.
+            rows = list(raw)
+        except Exception:
+            rows = []
+    else:
+        rows = []
+    for t in rows:
+        # _plain_dict, not a bare isinstance: a leftover dict-subclass row
+        # whose .get() raised used to 500 the list route one line later.
+        row = _plain_dict(t)
+        if row is None:
             continue
-        tid = _task_id(t.get("id"))
+        tid = _task_id(row.get("id"))
         if not tid:
             continue
-        row = dict(t)
+        row = dict(row)
         row["id"] = tid
         cleaned = _jsonable(row)
         if isinstance(cleaned, dict):
@@ -279,11 +350,13 @@ def job_state(tid):
     empty = {"running": False, "rc": None, "finished": None}
     if not isinstance(tid, str):
         return empty
-    j = _jobs.get(tid, {})
-    if not isinstance(j, dict):
+    # _plain_dict + _truthy: a leftover dict-subclass row (or a __bool__-bomb
+    # ``running`` value) used to 500 GET /api/maintenance for every task.
+    j = _plain_dict(_jobs.get(tid))
+    if j is None:
         return empty
     cleaned = _jsonable({
-        "running": bool(j.get("running")),
+        "running": _truthy(j.get("running")),
         "rc": j.get("rc"),
         "finished": j.get("finished"),
     })
@@ -293,8 +366,9 @@ def job_state(tid):
 def get_job(tid):
     if not isinstance(tid, str):
         return None
-    j = _jobs.get(tid)
-    return j if isinstance(j, dict) else None
+    # The plain-dict copy also neutralises a subclass .get() bomb for the
+    # only caller (job_log); rows this module writes are already plain.
+    return _plain_dict(_jobs.get(tid))
 
 
 def _log_lines(raw) -> list[str]:
@@ -303,8 +377,14 @@ def _log_lines(raw) -> list[str]:
         return [raw] if raw else []
     if not isinstance(raw, (list, tuple)):
         return []
+    try:
+        # A leftover list-subclass whose __iter__ raises used to 500 the
+        # log route past the isinstance gate.
+        items = list(raw)
+    except Exception:
+        return []
     out: list[str] = []
-    for item in raw:
+    for item in items:
         if isinstance(item, str):
             out.append(item)
         elif isinstance(item, (bytes, bytearray)):
@@ -326,7 +406,7 @@ def job_log(tid):
         return missing
     text = "\n".join(_log_lines(j.get("log")))
     cleaned = _jsonable({
-        "running": bool(j.get("running")),
+        "running": _truthy(j.get("running")),
         "rc": j.get("rc"),
         "started": j.get("started"),
         "finished": j.get("finished"),
@@ -335,12 +415,26 @@ def job_log(tid):
     return cleaned if isinstance(cleaned, dict) else missing
 
 
+def _row_running(j) -> bool:
+    """Whether a (possibly junk) ``_jobs`` row counts as a live job.
+
+    ``isinstance(j, dict) and j.get("running")`` let a leftover dict-subclass
+    row raise from ``.get()`` — or a ``__bool__``-bomb value raise inside
+    ``any()`` — and 500 POST /api/maintenance/{tid}/run for every task.
+    """
+    row = _plain_dict(j)
+    if row is None:
+        return False
+    return _truthy(row.get("running"))
+
+
 def start_job(task):
-    tid = task.get("id") if isinstance(task, dict) else None
+    task = _plain_dict(task)
+    tid = task.get("id") if task is not None else None
     if not isinstance(tid, str) or not tid:
         return None
     with _jobs_lock:
-        if any(isinstance(j, dict) and j.get("running") for j in _jobs.values()):
+        if any(_row_running(j) for j in _jobs.values()):
             raise api_error("jobs.already_running")
         _jobs[tid] = {"running": True, "rc": None, "log": [],
                       "started": strftime_now("%H:%M:%S"), "finished": None}
