@@ -438,4 +438,7 @@ def api_wireguard_remediate(body: WgRemediateBody, request: Request):
         "bad_wstunnel_url": "wg.bad_wstunnel_url",
         "bad_wstunnel_target": "wg.bad_wstunnel_target",
         "wstunnel_install_unverified": "wg.wstunnel_install_unverified",
+        # A leftover node occupying a staging file under data/ is a coded
+        # 503 naming the path, not a raw IsADirectoryError 500.
+        "stage_write_failed": "wg.write_failed",
     })

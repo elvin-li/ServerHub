@@ -304,6 +304,10 @@ CODES: dict[str, tuple[int, str]] = {
         409, "peer {pubkey} has no stored private key, so its config cannot be regenerated",
     ),
     "wg.sync_failed": (500, "the running interface could not be reloaded"),
+    # A leftover non-empty directory occupying wg0.conf or a data/ staging
+    # file: nothing was written, so removing the occupant and retrying is
+    # the whole repair — a dependency problem, not an input one, hence 503.
+    "wg.write_failed": (503, "could not write {path}; remove whatever occupies that path and retry"),
     "wg.confirm_required": (400, "revoking a peer requires confirm=true"),
     "wg.bad_format": (400, "unsupported export format: {format}"),
     # ── containers / compose ────────────────────────────────────────────────

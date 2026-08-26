@@ -2648,6 +2648,7 @@ export default {
       peer_unknown: 'ピア {pubkey} はこのパネルで作成されたものではありません',
       peer_not_reissuable: 'ピア {pubkey} は秘密鍵が保存されていないため設定を再生成できません — 削除して端末を再登録してください',
       sync_failed: '稼働中のインターフェースを再読み込みできませんでした',
+      write_failed: '{path} に書き込めませんでした — 別のものがそのパスを占有しています。取り除いてから再試行してください',
       bad_format: 'サポートされていない書き出し形式: {format}',
       confirm_required: 'ピアの失効には明示的な確認が必要です',
     },
