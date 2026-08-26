@@ -1657,7 +1657,17 @@ def recover_interrupted_stack_backups() -> list[dict]:
             marker.unlink()
         except OSError:
             pass
-        recovered.append({"stack": stack_id, "started": started, "detail": detail})
+        # _as_text on both: an undecodable marker *filename* (os
+        # surrogateescape) or a ``\ud800`` escape in the marker JSON put lone
+        # surrogates in this row, and the returned list feeds JSON encoders
+        # the same way every other result in this module does.  The raw
+        # stack_id above stays raw on purpose — _find_stack must keep
+        # matching a stack whose own id carries the same surrogates.
+        recovered.append({
+            "stack": _as_text(stack_id),
+            "started": started,
+            "detail": _as_text(detail),
+        })
     return recovered
 
 
