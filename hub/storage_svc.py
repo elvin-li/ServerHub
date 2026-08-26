@@ -37,16 +37,30 @@ SKIP_PREFIXES = (
 SKIP_FS = {"devfs", "autofs", "map"}
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_text(value) -> str:
     """JSON-safe text. Leftover ``\\ud800`` in a df mount / diskutil name
     used to 500 GET /api/storage under Starlette's UTF-8 encode.
     """
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif value is None:
         return ""
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
+    elif isinstance(value, float):
+        try:
+            # Base coercion first (the modules5 rule): a float-subclass
+            # ``__eq__`` bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except Exception:
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        value = str(value)
     elif isinstance(value, (list, tuple, dict, set, frozenset, bool)):
         return ""
     else:
@@ -201,6 +215,16 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules5 rule): a
+                # subclass ``__str__`` bomb used to raise a non-ValueError
+                # past the digit-cap probe below, out of the sequence
+                # guard, and blank the whole volume table to ``null`` on
+                # GET /api/storage.
+                value = int.__index__(value)
+            except Exception:
+                return None
         try:
             str(value)
         except ValueError:
@@ -209,28 +233,31 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below the same way.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _as_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # Unbound base decode: a leftover subclass ``.decode`` bomb used to
+        # raise past the old bound call and null the containing table.
+        return _decode_bytes(value)
     if isinstance(value, dict):
-        try:
-            items = list(value.items())
-        except Exception:
-            # A mapping that refuses iteration (odd dict subclass in a
-            # leftover row): nothing to salvage, but its *siblings* must
-            # survive — pre-fix this raised out of storage_overview and
-            # 500'd GET /api/storage?light (the snapshots_svc/raid_svc/
-            # smart_test_svc._jsonable rule the NAS sweep applied, which
-            # this copy missed).
-            return None
+        # Unbound base view (the modules5 rule the shares6/nas sweeps
+        # applied to every sibling ``_jsonable``): a dict subclass whose
+        # ``items()`` raises used to collapse to None here; ``dict.items``
+        # reads the real C-level storage, so the salvageable keys survive.
         out = {}
-        for k, v in items:
+        for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)
@@ -275,10 +302,22 @@ def _shared_pool(group: list) -> bool:
 
 def _json_gb(raw, ndigits: int = 1) -> float:
     """Finite GB/TB total. Two leftover ``1e308`` volumes summed to inf and
-    500'd GET /api/storage under Starlette's ``allow_nan=False`` encoder."""
+    500'd GET /api/storage under Starlette's ``allow_nan=False`` encoder.
+
+    ``except Exception``, not the three usual conversion errors: an
+    int-subclass ``__float__`` bomb rode a volume row's ``total_gb``
+    through ``_volume_row``'s str() probe untouched, then raised here out
+    of ``aggregate_capacity`` — a bare 500 on GET /api/storage?light.
+    """
+    if isinstance(raw, int) and not isinstance(raw, bool) and type(raw) is not int:
+        try:
+            # Base coercion first so the bombed subclass keeps its number.
+            raw = int.__index__(raw)
+        except Exception:
+            return 0.0
     try:
         value = round(float(raw), ndigits)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return 0.0
     if value != value or value in (float("inf"), float("-inf")):
         return 0.0
@@ -288,11 +327,20 @@ def _json_gb(raw, ndigits: int = 1) -> float:
 def _json_int(raw, default: int = 0) -> int:
     if isinstance(raw, bool) or raw is None:
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return default
+    if isinstance(raw, int) and type(raw) is not int:
+        try:
+            # Base coercion first so a bombed subclass keeps its number.
+            raw = int.__index__(raw)
+        except Exception:
+            return default
     try:
+        if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+            return default
+        # ``except Exception`` for the same reason as _json_gb: a subclass
+        # ``__int__``/``__eq__`` bomb is not one of the three usual
+        # conversion errors and used to raise out of the shaping loops.
         value = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return default
     try:
         str(value)
@@ -335,6 +383,17 @@ def _volume_row(raw) -> dict | None:
         if isinstance(val, bool) or val is None:
             row[key] = 0.0
         elif isinstance(val, int):
+            if type(val) is not int:
+                try:
+                    # Base coercion (the modules5 rule): an int subclass
+                    # wearing a ``__float__``/``__str__`` bomb used to ride
+                    # through this fast path untouched and blow up later in
+                    # aggregate_capacity / the encoder.
+                    val = int.__index__(val)
+                except Exception:
+                    row[key] = 0.0
+                    continue
+                row[key] = val
             try:
                 str(val)
             except ValueError:
@@ -342,7 +401,9 @@ def _volume_row(raw) -> dict | None:
                 # and ValueError'd Starlette's encoder on GET /api/storage.
                 row[key] = 0.0
         elif isinstance(val, float):
-            if val != val or val in (float("inf"), float("-inf")):
+            if type(val) is not float:
+                row[key] = _json_gb(val)
+            elif val != val or val in (float("inf"), float("-inf")):
                 row[key] = 0.0
         else:
             row[key] = _json_gb(val)

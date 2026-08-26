@@ -75,19 +75,43 @@ def _text(value) -> str:
     were not).  Leftover ``sh`` int/None used to TypeError slicing the
     sleep/wake log.  A leftover ``\\ud800`` name still 500'd the UTF-8
     encode of GET /api/storage/disks.
+
+    Subclass bombs (the modules5/tools5 class) go through unbound base
+    coercions: a float ``__eq__`` bomb used to blow the NaN probe and a
+    str-subclass ``encode`` bomb the final re-encode — a bare 500 when the
+    value rode an ``sh`` seam into the sleep/wake log lines.
     """
     if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
+        try:
+            value = value[0] if value else ""
+        except Exception:
+            return ""
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8", "replace")
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
-    elif value in (None, False, ""):
-        return ""
-    elif isinstance(value, (dict, set, frozenset)):
-        return ""
-    elif not isinstance(value, str):
+    elif isinstance(value, float):
         try:
+            value = float.__float__(value)
+        except Exception:
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        if value == 0.0:
+            # Pre-restructure parity: 0.0 matched the ``(None, False, "")``
+            # membership below (``0.0 == False``) and read as absent.
+            return ""
+        value = str(value)
+    else:
+        try:
+            if value in (None, False, ""):
+                return ""
+        except Exception:
+            # ``in`` reflects into the leftover's own ``__eq__``.
+            return ""
+        if isinstance(value, (dict, set, frozenset)):
+            return ""
+        try:
+            # str() also for str *subclasses*: it returns a base copy, so
+            # a subclass ``encode`` bomb cannot fire on the re-encode below.
             value = str(value)
         except RecursionError:
             try:
@@ -119,12 +143,13 @@ def _req_text(raw) -> str:
         return ""
     if isinstance(raw, (bytes, bytearray)):
         return bytes(raw).decode("utf-8", "replace")
-    if not isinstance(raw, str):
-        try:
-            raw = str(raw)
-        except Exception:
-            # The digit-cap ValueError, or a leftover whose __str__ raises.
-            return ""
+    try:
+        # str() also for str *subclasses* (base copy — a subclass ``encode``
+        # bomb cannot fire below); for everything else it is the digit-cap
+        # probe, or a leftover whose __str__ raises.
+        raw = str(raw)
+    except Exception:
+        return ""
     return raw.encode("utf-8", "replace").decode("utf-8")
 
 
@@ -558,12 +583,25 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     for row in rows:
         if not isinstance(row, dict):
             continue
+        if type(row) is not dict:
+            try:
+                # Base copy through the C-level storage (the nas_common
+                # ``_plain_result`` rule): a dict-subclass row whose
+                # ``__bool__``/``__len__`` raises passed the shape guards
+                # and then 500'd the old ``if not d`` truthiness probe on
+                # POST /api/storage/disks/{id}/power.  A subclass whose
+                # copy itself raises is junk and drops like a non-dict row.
+                row = dict(row)
+            except Exception:
+                continue
         try:
             disks[row["id"]] = row
-        except (KeyError, TypeError):
+        except Exception:
+            # KeyError/TypeError for shapeless ids — and any subclass
+            # ``__getitem__``/``__hash__`` bomb beyond those two.
             continue
     d = disks.get(disk_id)
-    if not d:
+    if d is None:
         # An *empty* listing is diskutil's own failure signature — a healthy
         # Mac always lists at least disk0 — so only then can the miss be the
         # binary rather than the disk.  The fresh disk probe runs on this

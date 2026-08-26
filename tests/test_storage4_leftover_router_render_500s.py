@@ -108,7 +108,12 @@ class StorageJsonableIterationContractTests(unittest.TestCase):
     field collapses to None, its siblings survive.
     """
 
-    def test_items_bomb_collapses_the_field_not_the_row(self):
+    def test_items_bomb_salvages_the_field_not_the_row(self):
+        # storage6 upgraded the sanitizer to the modules5 unbound
+        # ``dict.items`` view (the shares6/nas_common pattern): the hostile
+        # override cannot fire, so the real C-level storage survives instead
+        # of collapsing to None.  The original point stands either way: the
+        # row keeps rendering.
         row = storage_svc._jsonable({
             "mount": "/Volumes/Data",
             "extras": _ItemsBombDict({"x": 1}),
@@ -116,7 +121,7 @@ class StorageJsonableIterationContractTests(unittest.TestCase):
         })
         _starlette(row)
         self.assertEqual(row["mount"], "/Volumes/Data")
-        self.assertIsNone(row["extras"])
+        self.assertEqual(row["extras"], {"x": 1})
         self.assertEqual(row["pct"], 40)
 
     def test_iter_bomb_collapses_the_field_not_the_row(self):
@@ -144,7 +149,10 @@ class StorageLightIterationBombTests(unittest.TestCase):
                 storage_svc, "smart_devices", return_value=disks))
             return _client().get("/api/storage?light=true")
 
-    def test_items_bomb_smart_dict_collapses_not_the_route(self):
+    def test_items_bomb_smart_dict_salvages_not_the_route(self):
+        # storage6: the unbound ``dict.items`` view salvages the real
+        # storage, so the SMART block survives instead of collapsing to
+        # None.  The route answering 200 is the invariant either way.
         resp = self._light(volumes=[], disks=[
             {"device": "/dev/disk0", "id": "disk0",
              "smart": _ItemsBombDict({"health": "PASSED"})},
@@ -153,7 +161,7 @@ class StorageLightIterationBombTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertEqual(body["disks"][0]["device"], "/dev/disk0")
-        self.assertIsNone(body["disks"][0]["smart"])
+        self.assertEqual(body["disks"][0]["smart"], {"health": "PASSED"})
 
     def test_iter_bomb_smart_attrs_drop_alone(self):
         resp = self._light(volumes=[], disks=[
@@ -267,7 +275,9 @@ class StorageRouterSectionRenderTests(unittest.TestCase):
         self.assertEqual(body["disks"][0]["id"], "disk4")
         self.assertIsNone(body["disks"][0]["volumes"])
 
-    def test_manage_route_bomb_row_collapses_the_row(self):
+    def test_manage_route_bomb_row_salvages_the_row(self):
+        # storage6: the unbound ``dict.items`` view salvages the row's real
+        # storage instead of collapsing it to None.
         with mock.patch.object(
             storage_router.disk_manage_svc, "overview",
             return_value={"volumes": [_ItemsBombDict({"a": 1})], "count": 1},
@@ -277,7 +287,7 @@ class StorageRouterSectionRenderTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertEqual(body["count"], 1)
-        self.assertEqual(body["volumes"], [None])
+        self.assertEqual(body["volumes"], [{"a": 1}])
 
 
 class StorageMutationResultRenderTests(unittest.TestCase):
@@ -316,7 +326,9 @@ class StorageMutationResultRenderTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertIs(body["ok"], True)
-        self.assertIsNone(body["log"])
+        # storage6: the unbound ``dict.items`` view salvages the bombed log
+        # dict's real storage; the over-cap int still drops like inf.
+        self.assertEqual(body["log"], {"a": 1})
         self.assertIsNone(body["size_bytes"])
 
 
