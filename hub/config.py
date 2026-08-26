@@ -792,8 +792,20 @@ def panel_locale() -> str:
         # last-good snapshot to fall back to on first boot) and the member
         # status/services filters the same way.  A numeric YAML ``locale:
         # 2023`` still coerces and falls through to the default below.
-        raw = str(_locale_raw or DEFAULT_UI_LOCALE).strip()
-    except ValueError:
+        #
+        # ``except Exception``, not ValueError, and no ``_locale_raw or …``:
+        # the old ``or`` reflected into a leftover's own ``__bool__`` and the
+        # ValueError-only catch let that bomb (and any non-ValueError
+        # ``__str__`` bomb) raise straight out of this probe — the same cold
+        # GET /api/status 500 the digit cap already had.  ``str(x)`` of a str
+        # *subclass* whose ``__str__`` returns itself also keeps the
+        # subclass, so the bound ``.strip()`` / ``in`` / ``.lower()`` below
+        # dispatched into leftover overrides; launder to an exact str first.
+        raw = "" if _locale_raw is None else str(_locale_raw)
+        if type(raw) is not str:
+            raw = str.__str__(raw)
+        raw = raw.strip() or DEFAULT_UI_LOCALE
+    except Exception:
         return DEFAULT_UI_LOCALE
     if raw in UI_LOCALES:
         return raw

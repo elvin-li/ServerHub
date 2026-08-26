@@ -165,7 +165,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound str.encode, not text.encode: ``str(x)`` of a str *subclass*
+    # whose ``__str__`` returns itself keeps the subclass, so the bound
+    # ``.encode`` dispatched into a leftover override — a bomb there raised
+    # out of the sanitizer and 500'd GET /api/settings (a stack name /
+    # thresholds key was enough; the jobs6 class, sealed elsewhere).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):

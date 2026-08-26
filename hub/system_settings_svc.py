@@ -43,7 +43,12 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound str.encode, not text.encode: ``str(x)`` of a str *subclass*
+    # whose ``__str__`` returns itself keeps the subclass, so the bound
+    # ``.encode`` dispatched into a leftover override — a bomb there raised
+    # out of the sanitizer and 500'd GET /api/settings/other, /thresholds
+    # and /disk (the jobs6 class, sealed elsewhere).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value) -> str:
