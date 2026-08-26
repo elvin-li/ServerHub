@@ -645,6 +645,49 @@ def _profiler_report(entry) -> tuple[int, str]:
     return rc, text
 
 
+def _renderable_number(value):
+    """*value* as a number Starlette's allow_nan=False encoder can emit, or None.
+
+    Bool is an int; inf/nan are refused by the encoder; an over-cap int (YAML/
+    plist hex loads uncapped through ``int(x, 16)``) makes ``json.dumps`` itself
+    raise the int->str digit-cap ValueError, so probe with ``str()``.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            return None
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return None
+
+
+def _power_disk_row(d) -> dict | None:
+    """The hardware tab's subset of one disk-power row.  Never raises.
+
+    ``list_power_disks`` sanitizes its own fields today, but this boundary
+    trusted that cross-module contract wholesale: text fields go through
+    ``_as_text`` (numeric ids coerce via its str() probe; unrenderable ones
+    degrade to ""), ``size_gb`` through the renderable-number probe, and the
+    two flags through ``bool``, so a poisoned row costs itself one field
+    rather than the whole cached payload.
+    """
+    if not isinstance(d, dict):
+        return None
+    ssd = d.get("ssd")
+    return {
+        "id": _as_text(d.get("id")),
+        "name": _as_text(d.get("name")),
+        "size_gb": _renderable_number(d.get("size_gb")),
+        "ssd": None if ssd is None else bool(ssd),
+        "power_state": _as_text(d.get("power_state")),
+        "system": bool(d.get("system")),
+    }
+
+
 def _hardware_profile_uncached() -> dict:
     sections = {}
     # Keep only quick types — skip network/displays by default (slow & rarely needed)
@@ -671,19 +714,21 @@ def _hardware_profile_uncached() -> dict:
     def power_disks() -> list:
         try:
             from hub import disk_power_svc
-            return [
-                {
-                    "id": d.get("id"),
-                    "name": d.get("name"),
-                    "size_gb": d.get("size_gb"),
-                    "ssd": d.get("ssd"),
-                    "power_state": d.get("power_state"),
-                    "system": d.get("system"),
-                }
-                for d in disk_power_svc.list_power_disks()[:12]
-            ]
+            rows = disk_power_svc.list_power_disks()[:12]
         except Exception:
             return []
+        # Field-by-field, not pass-through: this boundary used to copy the six
+        # fields raw, so one leftover ``\ud800`` name / inf size_gb / bytes
+        # power_state in a single row 500'd GET /api/tools/hardware at
+        # Starlette's encode — outside the try above — and the poisoned
+        # payload then sat in _hw_cache, re-serving that 500 for the full
+        # 5-minute TTL with the four profiler sections wiped alongside.
+        out = []
+        for d in rows:
+            row = _power_disk_row(d)
+            if row is not None:
+                out.append(row)
+        return out
 
     # The disk listing is its own multi-level chain (which disks exist, what `/` sits
     # on, then one `diskutil info` per disk), and it waited for all four profiler
