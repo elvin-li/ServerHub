@@ -196,7 +196,17 @@ def scan_roots() -> list[dict]:
             "path": _as_text(text),
         })
 
-    incoming = files_svc.default_roots()
+    try:
+        incoming = files_svc.default_roots()
+    except Exception:
+        # The guard below covered *iteration* but not the call: a
+        # default_roots that raised outright (a seam replacement, a leftover
+        # that slips its own guards) still 500'd GET /api/storage/usage,
+        # /tree, /largest and /duplicates at once — the storage_pool_svc
+        # _candidates rule, one seam earlier than the iteration bomb.  The
+        # sibling seam (shares_svc.list_smb_shares) has carried this guard
+        # all along; the volumes and shares below still contribute.
+        incoming = []
     # None/int leftover used to TypeError GET /api/storage/usage.
     if not isinstance(incoming, (list, tuple)):
         incoming = []
@@ -212,16 +222,26 @@ def scan_roots() -> list[dict]:
     for entry in incoming:
         if not isinstance(entry, dict):
             continue
-        path = entry.get("path")
-        if not isinstance(path, str) or not path:
+        try:
+            # Per-row guard, the storage_pool_svc._candidates class: a dict
+            # *subclass* passes the isinstance gate with a ``.get`` that
+            # raises (or a value whose ``__bool__`` raises under the ``or``),
+            # and one such row used to 500 all four usage routes while every
+            # healthy sibling root was droppable collateral.  The hostile row
+            # drops alone; its siblings keep contributing.
+            path = entry.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            # _as_text is a str() probe, not a bare str(): a leftover root id
+            # or name that is *already* a >4300-digit int (YAML/plist hex
+            # loads with int(x, 16), exempt from the int(str) parse cap) made
+            # the old bare str() raise the digit-cap ValueError out of
+            # scan_roots and 500 every usage route; sane numeric ids keep
+            # their string form.
+            rid = _as_text(entry.get("id") or "root") or "root"
+            add(rid, _as_text(entry.get("name") or ""), path)
+        except Exception:
             continue
-        # _as_text is a str() probe, not a bare str(): a leftover root id or
-        # name that is *already* a >4300-digit int (YAML/plist hex loads with
-        # int(x, 16), exempt from the int(str) parse cap) made the old bare
-        # str() raise the digit-cap ValueError out of scan_roots and 500
-        # every usage route; sane numeric ids keep their string form.
-        rid = _as_text(entry.get("id") or "root") or "root"
-        add(rid, _as_text(entry.get("name") or ""), path)
 
     volumes = Path("/Volumes")
     try:
@@ -260,19 +280,26 @@ def scan_roots() -> list[dict]:
     for share in listed:
         if not isinstance(share, dict):
             continue
-        path = share.get("path")
-        # Path() TypeError'd a non-str share path and 500'd the usage page.
-        if not isinstance(path, str) or not path.startswith("/"):
+        try:
+            # Per-row guard, same class as the roots loop above: a dict
+            # subclass whose ``.get`` raises passed the isinstance gate and
+            # 500'd every usage route; the hostile share drops alone and its
+            # sibling shares keep contributing.
+            path = share.get("path")
+            # Path() TypeError'd a non-str share path and 500'd the usage page.
+            if not isinstance(path, str) or not path.startswith("/"):
+                continue
+            # _as_text is a str() probe, not an isinstance gate: a numeric
+            # leftover name keeps behaving as its string form, while a
+            # >4300-digit *already-int* (plist/YAML hex loads with int(x, 16),
+            # exempt from the int(str) parse cap) scrubs to "" and takes the
+            # fallback.  The old bare f-string/str() raised the digit-cap
+            # ValueError into the loop-wide except, which silently dropped
+            # every share after it from the usage roots.
+            name = _as_text(share.get("name"))
+            add(f"share-{name or 'share'}", name or path, path)
+        except Exception:
             continue
-        # _as_text is a str() probe, not an isinstance gate: a numeric
-        # leftover name keeps behaving as its string form, while a >4300-digit
-        # *already-int* (plist/YAML hex loads with int(x, 16), exempt from the
-        # int(str) parse cap) scrubs to "" and takes the fallback.  The old
-        # bare f-string/str() raised the digit-cap ValueError into the
-        # loop-wide except, which silently dropped every share after it from
-        # the usage roots.
-        name = _as_text(share.get("name"))
-        add(f"share-{name or 'share'}", name or path, path)
 
     return roots
 
