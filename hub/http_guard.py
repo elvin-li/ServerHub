@@ -141,6 +141,15 @@ def _url_parts(raw: str):
     try:
         parts = urlsplit(text)
         host = (parts.hostname or "").strip("[]").lower()
+        # .port re-parses the netloc tail lazily: a nonnumeric or
+        # out-of-range port ("http://127.0.0.1:x", ":-1", ":99999") passed
+        # every gate built on this helper, so PUT /api/settings persisted an
+        # ollama.url that urllib can never dial (http.client.InvalidURL on
+        # every later probe) and whose ``urlsplit(base_url()).port`` read
+        # ValueError'd ollama health_checks() outside its try — collapsing
+        # every Ollama health row into one generic "check failed".  Same
+        # probe-at-validation rule as catalog_remote.validate_source_url.
+        parts.port
     except (ValueError, UnicodeError):
         return None
     if "\x00" in text or "\x00" in host:
