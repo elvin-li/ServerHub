@@ -162,6 +162,10 @@ def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
         if _probe_text(key).strip().lower() == wanted:
             if not isinstance(value, dict):
                 return None
+            if type(value) is dict:
+                # The exact stored entry, not a copy: callers compare and
+                # cache it, and a plain dict has nothing to launder.
+                return value
             try:
                 return dict(value)
             except Exception:
