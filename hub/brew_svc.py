@@ -16,8 +16,13 @@ from hub.paths import BREW  # noqa: E402
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
+    # Unbound through the base types: a leftover bytes-subclass whose bound
+    # ``.decode`` raises (or a str-subclass whose ``.encode`` does) used to
+    # 500 the post-spawn tail of service_action, which runs outside its try.
+    if isinstance(value, bytes):
+        text = bytes.decode(value, "utf-8", "replace")
+    elif isinstance(value, bytearray):
+        text = bytearray.decode(value, "utf-8", "replace")
     elif isinstance(value, str):
         text = value
     elif value is None:
@@ -32,7 +37,7 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _json_safe(value):
@@ -76,6 +81,31 @@ def _json_safe(value):
         if stamped is value:
             return None
         return _json_safe(stamped)
+    return None
+
+
+def _plain_rc(value):
+    """Exact-type spawn rc for service_action's tail.
+
+    The vanished-brew sentinel check and the ``ok``/``exit`` rendering must
+    run *outside* the spawn try (its broad except used to swallow the coded
+    503 raise), so a leftover numeric-subclass rc whose ``__eq__`` /
+    ``__float__`` raises used to 500 POST /api/brew/services/{name}/action
+    after the run had already finished.  Unbound base-type calls dodge the
+    override; anything non-numeric degrades to None ("exit unknown").
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        try:
+            return int.__index__(value)
+        except Exception:
+            return None
+    if isinstance(value, float):
+        try:
+            return float.__float__(value)
+        except Exception:
+            return None
     return None
 
 
@@ -193,6 +223,7 @@ def service_action(name: str, action: str) -> dict:
         # Leftover ``\ud800`` in a raised message used to 500 the action
         # JSON the same way a leftover brew-list name 500'd the list.
         return {"ok": False, "message": _as_text(e)}
+    rc = _plain_rc(rc)
     if rc == -1 and _as_text(msg).strip() == "not found":
         # run_capped reports a FileNotFoundError spawn as (-1, "not found") —
         # a sentinel, never a real brew exit.  Homebrew vanished between the
@@ -218,13 +249,16 @@ def service_action(name: str, action: str) -> dict:
     # binary-capped helper) used to TypeError Starlette's encoder.
     text = _as_text(msg).strip()
     if not text:
-        try:
-            text = f"exit {rc}"
-        except (ValueError, TypeError, RecursionError, OverflowError):
-            # Past CPython's int->str digit cap an over-cap rc cannot be
-            # rendered at all; the f-string used to ValueError and 500
-            # POST /api/brew/services/{name}/action after the run finished.
+        if rc is None:
             text = "exit unknown"
+        else:
+            try:
+                text = f"exit {rc}"
+            except (ValueError, TypeError, RecursionError, OverflowError):
+                # Past CPython's int->str digit cap an over-cap rc cannot be
+                # rendered at all; the f-string used to ValueError and 500
+                # POST /api/brew/services/{name}/action after the run finished.
+                text = "exit unknown"
     return {
         "ok": rc == 0,
         "message": text,
