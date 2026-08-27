@@ -5,7 +5,7 @@ Keeps ServerHub feature surface discoverable and documentable.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 
 @dataclass
@@ -349,7 +349,23 @@ def _module_row(m) -> dict | None:
         try:
             row = asdict(m)
         except Exception:
-            return None
+            # Field-level salvage: ``asdict`` walks every field eagerly
+            # (``getattr`` then ``copy.deepcopy``), so one raising property
+            # on a leftover ``ModuleInfo`` subclass — or one nested value
+            # whose ``__reduce_ex__``/``__deepcopy__`` bombs — used to drop
+            # the *whole* row even though every other field was sane.  Pull
+            # each declared field individually; a bombed field vanishes
+            # alone and ``_jsonable`` still sanitizes whatever survives.
+            row = {}
+            for f in fields(ModuleInfo):
+                try:
+                    row[f.name] = getattr(m, f.name)
+                except Exception:
+                    continue
+            if not row:
+                # A lying ``__class__`` claiming ModuleInfo carries none of
+                # the declared fields — drop the impostor like before.
+                return None
     elif _isinst(m, dict):
         # No pre-copy: ``dict(m)`` on a subclass that overrides
         # ``__iter__`` abandons CPython's fast storage copy for the
@@ -374,9 +390,35 @@ def _module_row(m) -> dict | None:
     return row
 
 
+def _registry_entries() -> list:
+    """Snapshot the registry off its real storage; a leftover cannot 500.
+
+    ``for m in MODULES`` dispatched through the *bound* ``__iter__``, so a
+    leftover registry object — a list subclass whose ``__iter__`` raises or
+    answers a generator that bombs mid-walk, a dict/str subclass with the
+    same override, or a lying ``__class__`` impostor claiming ``list`` —
+    blew the very first opcode of the walk, outside any try, and rode out
+    of GET /api/modules as a raw 500 wiping the entire response.  The
+    unbound base ``__iter__`` reads the real C-level storage (the modules5
+    sequence rule at registry rank), so every genuine row still renders;
+    an impostor whose real layout the descriptor rejects fails closed to
+    an empty registry instead of a 500.
+    """
+    reg = MODULES
+    if type(reg) is list:
+        return list(reg)
+    for base in (list, tuple, set, frozenset):
+        if _isinst(reg, base):
+            try:
+                return list(base.__iter__(reg))
+            except Exception:
+                return []
+    return []
+
+
 def list_modules() -> list[dict]:
     out = []
-    for m in MODULES:
+    for m in _registry_entries():
         row = _module_row(m)
         if row is not None:
             out.append(row)
