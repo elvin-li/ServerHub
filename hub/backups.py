@@ -26,26 +26,35 @@ from hub.util import read_text_capped, run_capped, safe_json_loads, strftime_now
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isa(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
 def _as_text(value) -> str:
     """``run_capped`` leftovers arrive as bytes/None; JSON and ``.strip`` need text."""
-    if isinstance(value, (bytes, bytearray)):
-        value = _decode_bytes(value)
-    elif value is None:
-        return ""
-    else:
+    # _isa on the gate, try on the decode (the ollama10 rule): a lying
+    # ``__class__`` impostor (claims bytes, is not — the dash10/json9 shape)
+    # passed the bare isinstance and the unbound ``bytes.decode`` TypeError'd
+    # *inside* the broad catches around the immich/postgres/configs jobs —
+    # the successful artefact was ``_discard``'ed and the 200 lied ok:false
+    # with descriptor gibberish as the run's failure.  The impostor drops to
+    # "", so the message falls back to the honest ``_exit_text(rc)``.
+    if _isa(value, (bytes, bytearray)):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            return _decode_bytes(value)
         except Exception:
             return ""
+    if value is None:
+        return ""
+    try:
+        value = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except Exception:
+            return ""
+    except Exception:
+        return ""
     # Unbound base encode (the hub.modules._utf8_text rule): ``str()`` of a
     # subclass whose ``__str__`` answers *self* skips CPython's exact-str
     # copy, so a leftover bound ``encode`` bomb rode this line out of the
@@ -551,8 +560,23 @@ def _iter_list(value):
     rule): a list-subclass ``__iter__`` bomb planted as
     ``backups.postgres`` / ``agent_keywords`` / ``extra_paths`` used to
     raise out of the ``for`` and 500 the route; the real elements still
-    come through."""
-    return list.__iter__(value)
+    come through.
+
+    The unbound call runs in a try (the ollama10 rule): ``_isa`` lets a
+    *lying* ``__class__`` impostor through — a plain object whose
+    ``__class__`` property *returns* ``list`` passes ``isinstance``, and
+    the descriptor TypeError then detonated at the ``for`` itself, a bare
+    500 out of GET /api/backups, POST /api/backups/postgres (via
+    ``pg_targets``) and POST /api/backups/configs (via ``agent_keywords``
+    / ``config_archive_extra_paths``).  The impostor has no real list
+    storage to read, so it degrades to "no entries" — the same treat-as-
+    unset answer a raising ``__class__`` bomb already gets — and a real
+    list subclass still yields its real elements.
+    """
+    try:
+        return list(list.__iter__(value))
+    except Exception:
+        return []
 
 
 def _backups_cfg() -> dict:
@@ -714,11 +738,21 @@ def _pg_env(target: dict) -> dict:
     # blamed pg_dump for a config leftover the dump never even read.
     settings = _mapping_get(cfg(), "settings")
     raw = _mapping_get(settings, "maintenance_env")
-    if isinstance(raw, dict):
+    # _isa + a try around the unbound view: a raising ``__class__`` bomb
+    # detonated the bare isinstance, and a *lying* ``__class__`` dict
+    # impostor passed it and TypeError'd ``dict.items`` — both inside the
+    # broad catch around the dump, which ``_discard``'ed the successful
+    # artefact and reported descriptor gibberish as pg_dump's failure.
+    # A junk overlay is junk, not an environment: skip it, keep the dump.
+    if _isa(raw, dict):
+        try:
+            entries = list(dict.items(raw))
+        except Exception:
+            entries = []
         # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
         # used to UnicodeEncodeError Popen on POST /api/backups.
         env.update({
-            _as_text(k): _as_text(v) for k, v in dict.items(raw) if _as_text(k)
+            _as_text(k): _as_text(v) for k, v in entries if _as_text(k)
         })
     password = _pg_password(target["id"])
     if not password and target["password_env"]:
@@ -905,8 +939,14 @@ def _immich_latest() -> dict | None:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    # _isa on the gate, try on the decode: a raising ``__class__`` bomb
+    # detonated the bare isinstance; a lying ``__class__`` impostor (claims
+    # bytes, is not) TypeErrors the unbound decode and renders below.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            return ""
     try:
         text = str(value)
     except RecursionError:
@@ -941,9 +981,20 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate (the ollama10 parity): a raising ``__class__``
+    # bomb used to detonate the first bare isinstance; a *lying* ``__class__``
+    # impostor passes the gate and must drop at its unbound base call instead
+    # of riding the claimed rank into the encoder.
+    if value is None:
         return value
-    if isinstance(value, int):
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a lying ``__class__`` impostor (the
+        # dash10/json9 shape).  It used to be returned verbatim — every
+        # other liar drops at its unbound base call, but the bool gate had
+        # nothing to call — and the C-level JSON encoder then refused it.
+        return value if type(value) is bool else None
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -958,7 +1009,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -969,30 +1020,50 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except Exception:
+            return None
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises used
         # to 500 the page; the real storage underneath still comes through.
-        for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+        # The try is for a lying-``__class__`` dict impostor, which
+        # TypeErrors the unbound view itself.
+        try:
+            entries = list(dict.items(value))
+        except Exception:
+            return None
+        for k, v in entries:
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot 500 and the real elements still survive.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot 500 and the real elements still survive.  The
+                # try is for a lying-``__class__`` impostor, which
+                # TypeErrors the unbound iteration itself.
+                try:
+                    items = list(base.__iter__(value))
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
