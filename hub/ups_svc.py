@@ -89,6 +89,24 @@ def _decode_bytes(value) -> str:
     return base.decode(value, "utf-8", "replace")
 
 
+def _sh_triple(argv, timeout: int) -> tuple:
+    """The ``sh`` seam laundered to an exact ``(rc, out, err)`` shape.
+
+    ``rc, out, _ = sh(...)`` iterates whatever the seam handed back, so a
+    leftover sequence subclass whose ``__iter__`` raises, a torn two-field
+    result, or a patched ``sh`` that raises outright each used to blow the
+    unpack inside :func:`ups_snapshot` — a raw 500 on GET /api/ups?force=true
+    one step ahead of the ``_rc_int`` guards on the fields themselves.  An
+    unreadable result reads as pmset failure (no UPS is not an error), so
+    the route answers ``present: false`` instead.
+    """
+    try:
+        rc, out, err = sh(argv, timeout=timeout)
+        return rc, out, err
+    except Exception:
+        return -255, "", ""
+
+
 def _as_text(value) -> str:
     """pmset stdout as text.  Leftover ``str()`` RecursionError used to 500 GET /api/ups."""
     # _isa, not bare isinstance: a ``__class__``-property bomb handed
@@ -146,7 +164,14 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isa(value, bool):
+    # Identity, not ``_isa(value, bool)``: bool cannot be subclassed, so a
+    # real flag is one of the two singletons — but a *bool-liar* (a
+    # ``__class__`` property that *returns* bool on a plain object) passed
+    # the old gate and rode out of this scrub as itself, straight into
+    # Starlette's ``json.dumps`` for a 500 on GET /api/ups.  The liar now
+    # falls to the int rank below, where the unbound base coercion refuses
+    # it and it drops like any other unrenderable.
+    if value is None or type(value) is bool:
         return value
     if _isa(value, int):
         if type(value) is not int:
@@ -421,11 +446,13 @@ def ups_snapshot() -> dict:
     """Hardware state only; policy settings are merged in ups_status()."""
     # _rc_int on both probes: an rc-subclass ``__eq__`` bomb from a patched
     # or odd ``sh`` used to detonate the bare ``rc == 0`` reads here and 500
-    # GET /api/ups (the host9 identity_svc rule).
-    rc, out, _ = sh(["/usr/bin/pmset", "-g", "batt"], timeout=5)
+    # GET /api/ups (the host9 identity_svc rule).  _sh_triple on both calls:
+    # a torn or iteration-refusing seam result used to blow the unpack
+    # itself, one step ahead of those field guards.
+    rc, out, _ = _sh_triple(["/usr/bin/pmset", "-g", "batt"], timeout=5)
     snapshot = _parse_batt(out if _rc_int(rc) == 0 else "")
     if snapshot["present"]:
-        rc2, out2, _ = sh(["/usr/bin/pmset", "-g", "ups"], timeout=5)
+        rc2, out2, _ = _sh_triple(["/usr/bin/pmset", "-g", "ups"], timeout=5)
         snapshot["halt_levels"] = _parse_ups_thresholds(out2 if _rc_int(rc2) == 0 else "")
     else:
         snapshot["halt_levels"] = None
@@ -472,9 +499,18 @@ def _normalized_shutdown(raw: dict | None) -> dict:
 
 
 def ups_settings() -> dict:
+    # Guarded cfg(): a config root that raises on read (a dying seam or a
+    # patched loader) used to escape every _mapping_get below — the call
+    # itself sat outside any try — and 500 GET /api/ups, the plan/drill
+    # routes and PUT /api/ups/settings all at once.  No config reads as the
+    # defaults, the same degrade every other unreadable block gets.
+    try:
+        root = cfg()
+    except Exception:
+        root = None
     # _mapping_get at every rank: the ``.get`` bombs pass the isinstance
     # gates below, and this function backs four routes at once.
-    settings = _mapping_get(cfg(), "settings")
+    settings = _mapping_get(root, "settings")
     raw = _mapping_get(settings, "ups")
     # _isa: a ``__class__``-property bomb stored as settings.ups used to
     # detonate this gate ahead of the guarded items() read below.
@@ -534,5 +570,14 @@ def ups_status(force: bool = False) -> dict:
         merged = {**snap} if _isa(snap, dict) else {}
     except Exception:
         merged = {}
+    # Launder *before* the "settings" insert, not after: writing a str key
+    # into the raw copy probes every stored key that shares its hash, so a
+    # leftover hash-shadowing snapshot key (hashes like "settings", raising
+    # ``__eq__``) used to detonate the bare ``merged["settings"] = ...``
+    # itself and 500 GET /api/ups.  _jsonable rebuilds the mapping with
+    # exact-str keys first, so the insert only ever compares honest strings.
+    merged = _jsonable(merged)
+    if not _isa(merged, dict):
+        merged = {}
     merged["settings"] = ups_settings()
-    return _jsonable(merged)
+    return merged
