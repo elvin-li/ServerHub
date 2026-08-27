@@ -49,14 +49,57 @@ def shutdown_executor() -> None:
     _pool.shutdown()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property* —
+    planted as the stored server comment — detonated ``_as_text``'s bytes
+    gate itself and 500'd GET /api/identity (the dash9 host_address rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==``/``!=`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc == 0`` probes in ``get_identity``'s return dict — a raw 500
+    on GET /api/identity (the health9 / dash9 host_address rule).  ``-255``
+    is no honest exit status, so a bomb keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _as_text(value) -> str:
     """JSON-encodable scutil/sysctl field.  Leftover ``\\ud800`` used to 500 GET /api/identity."""
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode (the brew6 rule): a leftover bytes-subclass
-        # whose bound ``.decode`` raises used to escape untyped and 500
-        # GET /api/identity.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
+    decoded = None
+    # _isa, not a bare isinstance: a ``__class__``-property bomb planted as
+    # the stored comment used to detonate this gate one step ahead of the scrub.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode (the brew6 rule): a leftover bytes-subclass
+            # whose bound ``.decode`` raises used to escape untyped and 500
+            # GET /api/identity.  The try is for a *lying* ``__class__``
+            # (claims bytes, is not): the unbound call TypeErrors and the
+            # impostor renders like any other junk object below.
+            base = bytes if isinstance(value, bytes) else bytearray
+            decoded = base.decode(value, "utf-8", "replace")
+        except Exception:
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
     else:
@@ -73,7 +116,11 @@ def _as_text(value) -> str:
     # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
     # bound ``encode`` bomb in sh output rode this line to a raw 500 on
     # GET /api/identity.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # Only a lying-``__class__`` str impostor lands here: junk.
+        return ""
 
 
 def _truthy(value) -> bool:
@@ -148,10 +195,21 @@ def get_identity() -> dict:
     # dict.get + a laundered copy (the config.settings_section rule): a
     # leftover dict-*subclass* planted as the config root or the settings
     # block passes ``isinstance`` and its bound ``.get`` bomb used to raise
-    # straight out of this read and 500 GET /api/identity.
-    root = cfg()
-    raw = dict.get(root, "settings") if isinstance(root, dict) else None
-    if isinstance(raw, dict):
+    # straight out of this read and 500 GET /api/identity.  The try around
+    # ``cfg()`` itself and ``_isa`` on the root are the same rule one step
+    # earlier: a raising config read or a ``__class__``-property bomb as
+    # the root used to 500 the route before the laundering ever ran.
+    try:
+        root = cfg()
+    except Exception:
+        root = None
+    raw = None
+    if _isa(root, dict):
+        try:
+            raw = dict.get(root, "settings")
+        except Exception:
+            raw = None
+    if _isa(raw, dict):
         try:
             s = dict(raw)
         except Exception:
@@ -160,11 +218,13 @@ def get_identity() -> dict:
         s = {}
     # Fallbacks (platform.node / machine, configured_host) used to skip
     # `_as_text`; leftover ``\ud800`` there 500'd GET /api/identity.
+    # _rc_int on every probe: an rc-subclass ``__eq__`` bomb from a
+    # patched/odd ``sh`` used to detonate the bare ``rc == 0`` reads here.
     return {
-        "hostname": _as_text(hostname if rc == 0 else platform.node()),
-        "computer_name": _as_text(comp) if rc2 == 0 else "",
-        "local_hostname": _as_text(local) if rc3 == 0 else "",
-        "model": _as_text(model if rc4 == 0 else platform.machine()),
+        "hostname": _as_text(hostname if _rc_int(rc) == 0 else platform.node()),
+        "computer_name": _as_text(comp) if _rc_int(rc2) == 0 else "",
+        "local_hostname": _as_text(local) if _rc_int(rc3) == 0 else "",
+        "model": _as_text(model if _rc_int(rc4) == 0 else platform.machine()),
         "platform": _as_text(platform_name),
         "arch": _as_text(platform.machine()),
         "host_ip": _as_text(host_ip),

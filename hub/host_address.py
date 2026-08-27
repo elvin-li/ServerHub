@@ -262,7 +262,12 @@ def _cached_detection(now: float) -> str:
         value = _detect_cache["value"]
         try:
             age = now - float(_detect_cache["t"])
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
+            # Blanket, not the typed trio: a leftover planted in the ``t``
+            # slot whose ``__float__`` raises RuntimeError (the same bomb
+            # class its ``value`` sibling already absorbs below) used to
+            # escape the numeric catch and 500 every host_ip() consumer.
+            # Any unreadable stamp is a cache miss and re-detects.
             return ""
         # Guarded truthiness: the cache normally only ever holds the exact
         # str ``_detect_lan_ip_uncached`` writes, but a leftover whose
