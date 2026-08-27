@@ -10,7 +10,9 @@ import yaml
 
 from hub import cli_args, secure_io
 from hub.containers_svc import _field_text, _stack_paths
-from hub.docker_cli import cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
+from hub.docker_cli import (
+    _isa, _rc_int, cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down,
+)
 from hub.errors import api_error, exc_detail, soft_fail
 from hub.paths import DOCKER, user_home
 from hub.status import invalidate_status as inv
@@ -21,25 +23,39 @@ _COMPOSE_CAP = 1024 * 1024
 
 
 def _utf8_text(value) -> str:
-    """Drop leftover ``\\ud800`` so compose writes and Starlette cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
-    elif isinstance(value, str):
-        text = value
-    elif value is None:
+    """Drop leftover ``\\ud800`` so compose writes and Starlette cannot 500.
+
+    Every gate is ``_isa``, not a bare isinstance: a leftover reader-seam
+    value whose ``__class__`` is a *raising property* used to detonate the
+    bytes gate itself and 500 GET /api/compose/{id} and the validate/save
+    twins one step ahead of every scrub in this funnel (the nas8 rule).
+    The bytes decode is unbound through the base type, so a bytes-subclass
+    ``.decode`` bomb cannot fire and a lying-``__class__`` impostor
+    TypeErrors into the ``str()`` fallback instead of raising out.
+    """
+    if value is None:
         return ""
-    else:
+    if _isa(value, (bytes, bytearray)):
         try:
-            text = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            base = bytes if _isa(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
         except Exception:
             return ""
+    except Exception:
+        return ""
+    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
+    # returns self keeps the subclass, so a bound ``.encode`` bomb used to
+    # degrade the whole field to "" — and a lying-``__class__`` str impostor
+    # lands here as a non-str and drops (the modules5 unbound convention).
     try:
-        return text.encode("utf-8", "replace").decode("utf-8")
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
     except Exception:
         return ""
 
@@ -54,13 +70,55 @@ def _finite_mtime(value) -> int:
     already been read.  ``float()`` rejects anything beyond float range,
     the same junk test files_svc._finite_int, logs_svc._stat_size,
     usage_svc._safe_bytes and catalog._sig_int apply to their stat numbers.
+
+    ``except Exception``, not the four stat-flavored classes: ``int(...)``
+    dispatches into a subclass's ``__int__``/``__index__``/``__trunc__``,
+    so a leftover FUSE/SMB ``st_mtime`` riding an int- or float-*subclass*
+    whose coercion hook raises RuntimeError blew straight through the old
+    tuple and 500'd GET /api/compose/{id} (the docker10 ``_rc_int`` rule).
+    The result is re-coerced to an *exact* int through the unbound base
+    ``__index__``: a subclass ``__int__`` that answers self would otherwise
+    hand its ``__repr__`` bomb to the JSON encoder one funnel later.
     """
     try:
         value = int(value)
+        if type(value) is not int:
+            value = int.__index__(value)
         float(value)
-    except (TypeError, ValueError, OverflowError, OSError):
+    except Exception:
         return 0
     return value
+
+
+def _disk_text(value) -> str | None:
+    """A reader-seam return as an *exact* ``str``, or None for junk.
+
+    ``read_text_capped`` returns exact text, but the reader is a seam
+    (tests and tooling patch it — the files14 runner-seam rule) and
+    ``get_compose``/``save_compose`` consumed its return raw: a leftover
+    str-subclass whose ``__len__`` raises blew the ``size`` probe, a
+    ``__class__``-property bomb blew ``_utf8_text``'s old bare entry gate,
+    and a non-str (bytes/None/int) TypeError'd ``replace_secret_text``
+    inside a handler that only caught OSError — each one a raw 500 on
+    GET/PUT /api/compose/{id} and POST /api/compose/{id}/validate.
+    ``str.__str__`` copies through the C storage, so laundering cannot
+    itself detonate; bytes decode through the unbound base type; anything
+    else is junk and reads as "no usable text".
+    """
+    if type(value) is str:
+        return value
+    if _isa(value, (bytes, bytearray)):
+        try:
+            base = bytes if _isa(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
+    if _isa(value, str):
+        try:
+            return str.__str__(value)
+        except Exception:
+            return None
+    return None
 
 
 def _find_stack(stack_id: str) -> dict:
@@ -125,8 +183,21 @@ def get_compose(stack_id: str) -> dict:
     # OverflowError is not ValueError, so it escaped the handler above.
     # A huge *already-int* leftover slipped past that ``int(...)`` clamp
     # the same way it did in catalog/_templates_sig — _finite_mtime adds
-    # the float() junk test.
-    mtime = _finite_mtime(st.st_mtime)
+    # the float() junk test.  The attribute read itself is guarded too: a
+    # leftover stat wrapper whose ``st_mtime`` is a *raising property*
+    # used to detonate one line outside the try above and 500 the read.
+    try:
+        raw_mtime = st.st_mtime
+    except Exception:
+        raw_mtime = 0
+    mtime = _finite_mtime(raw_mtime)
+    # _disk_text: the reader seam's return is laundered once, and both the
+    # published content and its ``size`` come from the same exact-str copy —
+    # a str-subclass ``__len__`` bomb riding the raw text used to 500 the
+    # ``len()`` probe after the compose had already been read.
+    content = _disk_text(text)
+    if content is None:
+        raise api_error("container.no_compose_file")
     sid = _utf8_text(s.get("id")) if isinstance(s.get("id"), str) else ""
     if not sid:
         sid = "stack"
@@ -139,8 +210,8 @@ def get_compose(stack_id: str) -> dict:
         "name": name,
         "path": _utf8_text(stack_path) if isinstance(stack_path, str) else None,
         "compose_path": _utf8_text(path),
-        "content": _utf8_text(text),
-        "size": len(text),
+        "content": _utf8_text(content),
+        "size": len(content),
         "mtime": mtime,
     }
 
@@ -185,10 +256,16 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     try:
         # exists-then-read raced and FileNotFoundError 500'd the save.
         # A leftover directory at compose_path is IsADirectoryError (OSError).
-        secure_io.replace_secret_text(
-            bak,
-            read_text_capped(p, _COMPOSE_CAP, encoding="utf-8", errors="replace"),
+        # _disk_text between the read and the write: the reader is a seam,
+        # and a non-str leftover riding its return (bytes/None/int, a
+        # ``__class__``-property bomb) used to TypeError inside
+        # replace_secret_text — not OSError — and 500 the save.  Junk prior
+        # content is not worth backing up (the EFBIG rule); still save over it.
+        prior = _disk_text(
+            read_text_capped(p, _COMPOSE_CAP, encoding="utf-8", errors="replace")
         )
+        if prior is not None:
+            secure_io.replace_secret_text(bak, prior)
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -235,9 +312,14 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
     NamedTemporaryFile in ~/Services was born at the umask (0644 here) and
     held the same generated passwords as the live compose until unlink.
     """
-    if not isinstance(content, str) and not isinstance(content, (bytes, bytearray)):
+    # _isa, not bare isinstance: a leftover content whose ``__class__`` is a
+    # raising property used to detonate this gate outside the blanket try
+    # below (the nas8 rule); it now degrades to the coded YAML refusal.
+    if not _isa(content, str) and not _isa(content, (bytes, bytearray)):
         return {"ok": False, "message": "compose file must be a YAML mapping"}
     content = _utf8_text(content)
+    if not content:
+        return {"ok": False, "message": "compose file must be a YAML mapping"}
     if "!!python" in content.lower():
         return {"ok": False, "message": "python YAML tags are not allowed"}
     try:
@@ -282,6 +364,13 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
             env={**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")},
             cap=800,
         )
+        # _rc_int: the runner is a seam (tests and tooling patch it — the
+        # docker10 rule), and the raw rc fed the ``== 0`` / ``== -1`` probes
+        # below.  An int-subclass ``__eq__`` bomb was only saved by the
+        # blanket except (misreporting the bomb's repr as a YAML error), and
+        # junk must never read as the ``-1`` vanished-CLI sentinel: -255 is
+        # no honest exit status, so it stays a plain "invalid" verdict.
+        rc = _rc_int(rc)
         # Leftover bytes used to land in the JSON body; a leftover int
         # AttributeError'd .strip and was only saved by the blanket except.
         # _utf8_text, not a bare decode/str(): the "message" field goes to
