@@ -16,6 +16,7 @@ import subprocess
 import threading
 from pathlib import Path
 from uuid import uuid4
+from xml.parsers.expat import ExpatError
 
 from hub.config import cfg
 from hub.host_address import host_ip, resolve_value
@@ -300,11 +301,20 @@ def parse_time_machine_records(plist_text: str | bytes) -> dict[str, dict]:
     data = plist_text.encode() if isinstance(plist_text, str) else plist_text
     try:
         records = plistlib.loads(data)
-    except RecursionError as e:
-        # RecursionError: leftover deeply-nested SharePoints plist is not
-        # ValueError.  The live reader swallows Exception; this parser is
-        # also used on leftover dscl dumps and used to raise untyped.
-        raise ValueError("SharePoints plist is not an array") from e
+    except (ExpatError, plistlib.InvalidFileException, RecursionError) as e:
+        # A torn ``dscl -plist . -readall`` dump — unclosed / malformed XML
+        # that has already begun parsing — raises xml.parsers.expat.ExpatError,
+        # which is NOT a ValueError (``InvalidFileException`` from binary junk
+        # or empty output already is one, and a deeply-nested plist raises
+        # RecursionError).  This parser is public and documented to fail as
+        # ValueError — the sibling ``_json_shares`` normalize and the
+        # raid_svc._plist / snapshots_svc / files_svc rule — and its
+        # RecursionError case is already pinned, so the ExpatError escaping
+        # untyped broke that contract for any ValueError-catching caller.  The
+        # live reader masks it with ``except Exception``; normalising here
+        # closes the parser's own contract.  InvalidFileException is folded in
+        # too so the failure message is consistent.
+        raise ValueError("SharePoints plist is not readable") from e
     if not isinstance(records, list):
         raise ValueError("SharePoints plist is not an array")
     result: dict[str, dict] = {}
