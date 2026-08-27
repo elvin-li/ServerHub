@@ -196,6 +196,26 @@ def _plain_str(value, default: str = "") -> str:
         return default
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through.
+
+    The hub.jobs / hub.auth rule: CPython's ``isinstance`` reads the operand's
+    ``__class__`` whenever the real-type fast check misses, so a value whose
+    ``__class__`` is a raising property detonates a bare ``isinstance`` gate.
+    ``catalog_overview`` merges the *native* catalog's rows — another module's
+    payload — into GET /api/catalog, and the row filter's bare
+    ``isinstance(a, dict)`` ran before ``_jsonable`` could launder anything: a
+    single poisoned row raised straight out of the store overview instead of
+    being dropped while its siblings (and the whole docker half) survived.
+    A lying ``__class__`` (answers ``dict``) is not an error and still reports
+    its claim; ``_jsonable`` then copies it through the C-level storage.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _exists(path: Path) -> bool:
     try:
         return path.exists()
@@ -824,16 +844,20 @@ def catalog_overview() -> dict:
     docker, native = fan_out(
         lambda collect: collect(), [docker_templates, native_apps], max_workers=2
     )
-    docker = [d for d in docker if isinstance(d, dict)]
+    docker = [d for d in docker if _isinst(d, dict)]
     # Laundered through _jsonable: the native listing is another module's
     # payload and it is merged into this response verbatim.  A dict-subclass
     # row whose ``.get`` bombs (or a value ``__bool__``/``__eq__``/``__str__``
     # bomb reached by the installed filter and the sort key below), a
     # >4300-digit int, raw bytes, or a lone-surrogate name all used to 500
     # GET /api/catalog — either right here or later in Starlette's encoder.
+    # _isinst, not a bare isinstance: the row filter runs *before* _jsonable
+    # can launder anything, so a leftover row whose ``__class__`` is a raising
+    # property detonated this gate itself (the jobs/auth rule) — one poisoned
+    # row 500'd the whole store overview instead of costing only itself.
     native = [
-        row for row in (_jsonable(a) for a in native if isinstance(a, dict))
-        if isinstance(row, dict)
+        row for row in (_jsonable(a) for a in native if _isinst(a, dict))
+        if _isinst(row, dict)
     ]
     # Prefer native: if Cloudflared brew is installed, steer away from Docker twin
     native_ids_installed = {
