@@ -485,16 +485,53 @@ def candidate_devices() -> list[dict]:
     return out
 
 
+def _listing(provider) -> list:
+    """A listing provider's answer materialized under its own guard.
+
+    ``list_sets`` / ``candidate_devices`` build plain rows, but this module
+    does not own them (tests and tooling patch both), and a leftover listing
+    that passes ``isinstance`` yet refuses iteration — or a row missing its
+    own keys — used to blow ``overview()``'s counts *before* the route's
+    sanitizer could drop the unusable field, 500ing GET /api/raid (the
+    usage_svc.scan_roots / storage_pool_svc._candidates rule).
+    """
+    try:
+        rows = provider()
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+    try:
+        return [r for r in list.__iter__(rows) if isinstance(r, dict)]
+    except Exception:
+        return []
+
+
+def _flagged(rows: list, key: str) -> int:
+    """How many rows carry a truthy *key*; a hostile row counts as false."""
+    total = 0
+    for row in rows:
+        try:
+            if bool(dict.get(row, key)):
+                total += 1
+        except Exception:
+            continue
+    return total
+
+
 @cached_snapshot(_CACHE_TTL)
 def overview(force: bool = False) -> dict:
-    sets = list_sets()
+    sets = _listing(list_sets)
     data = {
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "sets": sets,
         "count": len(sets),
-        "degraded": sum(1 for s in sets if s["degraded"]),
-        "rebuilding": sum(1 for s in sets if s["rebuilding"]),
-        "candidates": candidate_devices(),
+        # dict.get + a guarded bool, not ``s["degraded"]``: a row that lost
+        # its own flag KeyError'd the count, and a leftover ``__bool__`` bomb
+        # detonated the truth test itself.
+        "degraded": _flagged(sets, "degraded"),
+        "rebuilding": _flagged(sets, "rebuilding"),
+        "candidates": _listing(candidate_devices),
         "levels": list(LEVELS),
         "filesystems": list(FILESYSTEMS),
     }

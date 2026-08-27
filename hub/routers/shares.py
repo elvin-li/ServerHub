@@ -154,7 +154,16 @@ def _audit_change(
 
 @router.get("/api/shares")
 def shares():
-    return shares_svc.shares_overview()
+    # The mutations below all clean their body through ``_ok_payload``; this
+    # read pasted the whole page payload in verbatim.  A leftover the encoder
+    # cannot take — a lone ``\ud800`` in a share or service name, an over-cap
+    # already-int quota (plist hex loads uncapped through ``int(x, 16)``), an
+    # ``inf`` ``size_mb`` from a garbled ``du``, or a listing that passes
+    # ``isinstance`` but refuses iteration — 500'd the entire shares page
+    # where every sibling answers with the field dropped or the text
+    # scrubbed (the nas_storage / storage ``_rendered`` rule).
+    cleaned = _jsonable(shares_svc.shares_overview())
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 @router.post("/api/shares/smb")

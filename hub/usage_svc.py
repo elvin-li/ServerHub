@@ -122,6 +122,14 @@ def _as_text(value) -> str:
     return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
 
 
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _safe_bytes(value) -> int:
     """Clamp a ``stat.st_size`` so ``inf``/None cannot 500 the JSON encoder.
 
@@ -967,6 +975,11 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     # every other junk volume earns the coded ``bad_volume`` refusal (the
     # raid_svc._req_text / smart_test_svc._schedule_text convention).
     target = _as_text(volume).strip()
+    # _truthy on the flag: the route hands over a Pydantic StrictBool, but
+    # the service is also called in-process, and a leftover ``__bool__``-bomb
+    # flag detonated the ``"on" if enabled else "off"`` argv choice — a raw
+    # raise where the coded refusals below are the contract.
+    wanted = _truthy(enabled)
     known = {
         v.get("volume")
         for v in spotlight_status()
@@ -974,7 +987,7 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     }
     if target not in known:
         return {"ok": False, "error": "bad_volume"}
-    result = run_admin([MDUTIL, "-i", "on" if enabled else "off", target], timeout=60)
+    result = run_admin([MDUTIL, "-i", "on" if wanted else "off", target], timeout=60)
     if not isinstance(result, dict):
         return {"ok": False, "error": "failed"}
     try:
@@ -998,7 +1011,7 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
         result["ok"] = False
     if ok:
         result["volume"] = target
-        result["enabled"] = bool(enabled)
+        result["enabled"] = wanted
         return result
     # An mdutil that vanished (OS update mid-flight, dying system volume) used
     # to surface as the generic 500 ``admin.failed`` — "the privileged macOS

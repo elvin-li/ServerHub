@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from hub import audit, nfs_svc, raid_svc, smart_test_svc, snapshots_svc, usage_svc
 from hub.errors import api_error
 from hub.routers.nas_common import (
+    _jsonable,
     _utf8_text,
     client_host,
     raise_service_error,
@@ -25,6 +26,23 @@ from hub.routers.nas_common import (
 )
 
 router = APIRouter(tags=["nas-storage"])
+
+
+def _rendered(payload):
+    """Read payload through the shared sanitizer before Starlette renders it.
+
+    Every *mutation* here already answers through ``raise_service_error``,
+    which cleans the body with ``nas_common._jsonable``; the read routes
+    pasted their service payload in verbatim.  A leftover the encoder cannot
+    take — a lone ``\\ud800`` in a plist name or an ``/etc/exports`` line, an
+    over-cap already-int (YAML/plist hex loads uncapped through
+    ``int(x, 16)``), an ``inf`` size or XID, or a collection that passes
+    ``isinstance`` but refuses iteration — 500'd the whole page where every
+    sibling answers with the field dropped or the text scrubbed.  Same fix
+    ``hub/routers/storage.py`` already carries for the disk pages this
+    router sits next to.
+    """
+    return _jsonable(payload)
 
 
 # ── NFS exports ──────────────────────────────────────────────────────────────
@@ -58,12 +76,12 @@ class NfsServerActionBody(BaseModel):
 
 @router.get("/api/nfs")
 def api_nfs(force: bool = False):
-    return nfs_svc.overview(force=force)
+    return _rendered(nfs_svc.overview(force=force))
 
 
 @router.get("/api/nfs/stats")
 def api_nfs_stats():
-    return nfs_svc.statistics()
+    return _rendered(nfs_svc.statistics())
 
 
 @router.post("/api/nfs/exports")
@@ -147,7 +165,7 @@ class RaidRemoveMemberBody(BaseModel):
 
 @router.get("/api/raid")
 def api_raid(force: bool = False):
-    return raid_svc.overview(force=force)
+    return _rendered(raid_svc.overview(force=force))
 
 
 def _raid_call(fn, request: Request, action: str, **kwargs):
@@ -259,7 +277,7 @@ class TimeMachineActionBody(BaseModel):
 
 @router.get("/api/snapshots")
 def api_snapshots(force: bool = False):
-    return snapshots_svc.overview(force=force)
+    return _rendered(snapshots_svc.overview(force=force))
 
 
 @router.post("/api/snapshots/create")
@@ -395,12 +413,12 @@ class SmartScheduleBody(BaseModel):
 
 @router.get("/api/smart")
 def api_smart(force: bool = False):
-    return smart_test_svc.overview(force=force)
+    return _rendered(smart_test_svc.overview(force=force))
 
 
 @router.get("/api/smart/history")
 def api_smart_history(limit: int = 100):
-    return {"history": smart_test_svc.history(limit)}
+    return {"history": _rendered(smart_test_svc.history(limit))}
 
 
 _SMART_ERRORS = {
@@ -473,22 +491,22 @@ class SpotlightBody(BaseModel):
 
 @router.get("/api/storage/usage")
 def api_storage_usage():
-    return usage_svc.overview()
+    return _rendered(usage_svc.overview())
 
 
 @router.get("/api/storage/usage/tree")
 def api_storage_usage_tree(path: str = "", root_id: str = ""):
-    return usage_svc.tree(path or None, root_id or None)
+    return _rendered(usage_svc.tree(path or None, root_id or None))
 
 
 @router.get("/api/storage/usage/largest")
 def api_storage_usage_largest(path: str = "", root_id: str = "", limit: int = 50):
-    return usage_svc.largest_files(path or None, root_id or None, limit)
+    return _rendered(usage_svc.largest_files(path or None, root_id or None, limit))
 
 
 @router.get("/api/storage/usage/duplicates")
 def api_storage_usage_duplicates(path: str = "", root_id: str = "", min_mb: float = 1.0):
-    return usage_svc.duplicates(path or None, root_id or None, min_mb)
+    return _rendered(usage_svc.duplicates(path or None, root_id or None, min_mb))
 
 
 @router.post("/api/storage/spotlight")

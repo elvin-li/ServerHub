@@ -458,9 +458,34 @@ def check_exports() -> dict:
     return {"ok": rc == 0, "detail": text[:600]}
 
 
+def _entry_rows(raw) -> list:
+    """The export table materialized under its own guard.
+
+    ``read_exports`` builds plain rows, but this module does not own the
+    provider (tests and tooling patch it), and a leftover listing that
+    passes ``isinstance`` yet refuses iteration — or whose ``__len__``
+    raises — used to blow ``overview()``'s own walk *before* the route's
+    sanitizer could drop the unusable field, 500ing GET /api/nfs (the
+    usage_svc.scan_roots / storage_pool_svc._candidates rule).  No entries
+    is the honest degrade: the page renders an empty table.
+    """
+    if not isinstance(raw, list):
+        return []
+    try:
+        return list(list.__iter__(raw))
+    except Exception:
+        return []
+
+
 @cached_snapshot(_CACHE_TTL)
 def overview(force: bool = False) -> dict:
-    entries = read_exports()
+    try:
+        entries = _entry_rows(read_exports())
+    except Exception:
+        # The guard above covers iteration but not the call itself: a
+        # read_exports that raises outright must cost the table, never
+        # the page.
+        entries = []
     status = _nfsd_status()
     data = {
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),

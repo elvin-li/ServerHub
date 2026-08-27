@@ -70,6 +70,14 @@ def _as_text(value) -> str:
     return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
 
 
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
 
@@ -438,7 +446,19 @@ def overview(force: bool = False) -> dict:
     of attached disks.
     """
 
-    mounts = snapshot_mounts()
+    # Materialized under its own guard, like the router's ``_known_mount``
+    # gate (nas6): this module does not own the provider (tests and tooling
+    # patch it), and a leftover listing that passes ``isinstance`` yet
+    # refuses iteration used to blow this walk *before* the route's
+    # sanitizer could help — a raw 500 on GET /api/snapshots.  "/" is pinned
+    # because snapshot_mounts always reports the boot volume first, so the
+    # page still renders while a hostile listing drops.
+    try:
+        mounts = [m for m in list(snapshot_mounts()) if isinstance(m, str)]
+    except Exception:
+        mounts = []
+    if "/" not in mounts:
+        mounts.insert(0, "/")
     # One `diskutil apfs listSnapshots` per volume, plus the Time Machine read that
     # used to sit as a serial tail after the whole loop. None of them depends on
     # another, so they all go in one wave: an uncached read now costs one probe
@@ -456,18 +476,31 @@ def overview(force: bool = False) -> dict:
     volumes = []
     total = 0
     for mount, snaps in zip(mounts, per_mount):
-        if not snaps and mount != "/":
-            # A non-APFS or snapshot-less external volume adds no signal.
+        # Per-volume guard, same class as the mount listing above: a hostile
+        # per-mount result (one that refuses ``len()`` or iteration, or a row
+        # missing its own keys) must cost its own volume row, never the page.
+        try:
+            rows = list(snaps) if isinstance(snaps, list) else []
+            if not rows and mount != "/":
+                # A non-APFS or snapshot-less external volume adds no signal.
+                continue
+            total += len(rows)
+            newest = rows[0] if rows else None
+            volumes.append({
+                "mount": mount,
+                "count": len(rows),
+                "snapshots": rows,
+                "newest": (
+                    _as_text(dict.get(newest, "date"))
+                    if isinstance(newest, dict) else ""
+                ),
+                "deletable": sum(
+                    1 for s in rows
+                    if isinstance(s, dict) and _truthy(dict.get(s, "deletable"))
+                ),
+            })
+        except Exception:
             continue
-        total += len(snaps)
-        newest = snaps[0] if snaps else None
-        volumes.append({
-            "mount": mount,
-            "count": len(snaps),
-            "snapshots": snaps,
-            "newest": newest["date"] if newest else "",
-            "deletable": sum(1 for s in snaps if s["deletable"]),
-        })
 
     data = {
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
@@ -529,10 +562,32 @@ def delete_all_snapshots(mount: str) -> dict:
     argv handed to the authorization sheet must be built from values this
     process validated, never from request data.
     """
-    tokens = [
-        s["date_token"] for s in list_snapshots(mount)
-        if s["deletable"] and _SNAP_DATE.fullmatch(s["date_token"] or "")
-    ]
+    # Guarded unbound walk with per-row reads, like ``overview()``'s mount
+    # gate: this module does not own the listing provider (tests and tooling
+    # patch it), and the old bare subscripts raised past the router — a
+    # listing that passes ``isinstance`` yet refuses iteration, or a row that
+    # lost its own ``date_token`` / ``deletable`` key, 500'd
+    # POST /api/snapshots/delete where "nothing deletable" is the honest
+    # answer.  A hostile row drops alone; its siblings still get deleted.
+    tokens = []
+    try:
+        listed = list_snapshots(mount)
+    except Exception:
+        listed = []
+    try:
+        rows = list.__iter__(listed) if isinstance(listed, list) else iter(())
+    except Exception:
+        rows = iter(())
+    try:
+        for s in rows:
+            if not isinstance(s, dict) or not _truthy(dict.get(s, "deletable")):
+                continue
+            token = _as_text(dict.get(s, "date_token"))
+            if _SNAP_DATE.fullmatch(token):
+                tokens.append(token)
+    except Exception:
+        # A walk dying mid-iteration keeps the tokens already collected.
+        pass
     if not tokens:
         return {"ok": True, "deleted": 0, "message": "no deletable snapshots"}
     commands = [[TMUTIL, "deletelocalsnapshots", token] for token in tokens]
