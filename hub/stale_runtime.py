@@ -140,10 +140,17 @@ def pid_exe_path(pid) -> str | None:
     if isinstance(pid, bool):
         # ``int(True)`` is 1: a leftover bool pid used to probe launchd
         # itself and answer /sbin/launchd for a process that never existed.
+        # ``isinstance``, deliberately: a real bool always matches the
+        # C-level exact-type check, and a *lying* ``__class__`` claiming
+        # bool is junk that reads fail-closed as unreadable here.
         return None
     try:
         n = int(pid)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # Total, not (TypeError, ValueError, OverflowError): a leftover pid
+        # whose ``__int__``/``__index__`` raises RuntimeError escaped the
+        # old tuple and rode scan() into the health fan-out, collapsing the
+        # stale-runtime row to the generic warn shape.
         return None
     if n <= 0:
         return None
@@ -232,10 +239,20 @@ def scan() -> list[dict]:
         label = _as_text(pl.get("Label") or path.stem) or _as_text(path.stem)
         if not label:
             continue
-        pid = listing.pid_for(label)
-        if not pid or isinstance(pid, bool):
+        try:
+            # Per-agent guard: ``pid_for`` on a leftover listing — or the
+            # ``not pid`` truthiness probe on a ``__bool__``-bomb pid —
+            # used to raise out of the whole scan, costing every healthy
+            # agent's row instead of the one poisoned entry.
+            pid = listing.pid_for(label)
+            if not pid or isinstance(pid, bool):
+                continue
+        except Exception:
             continue
-        exe = pid_exe_path(pid)
+        try:
+            exe = pid_exe_path(pid)
+        except Exception:
+            exe = None
         if not exe:
             continue
         try:
@@ -249,7 +266,9 @@ def scan() -> list[dict]:
             # A leftover over-cap already-int pid passes int() untouched and
             # the digit-cap ValueError then lands in the JSON encoder.
             str(pid_n)
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
+            # Total: a pid whose ``__int__`` raises RuntimeError must read
+            # as unknown (0), not drop the row it warns about.
             pid_n = 0
         stale.append({"label": label, "pid": pid_n, "exe": _as_text(exe)})
     return stale

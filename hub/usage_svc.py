@@ -155,6 +155,33 @@ def _truthy(value) -> bool:
         return False
 
 
+def _exact_str(value) -> str | None:
+    """*value* as an exact ``str`` (surrogates preserved), or None.
+
+    Unlike :func:`_as_text` this never scrubs: a real path read off
+    ``os.scandir`` carries surrogateescape'd bytes that must round-trip to
+    ``open()``.  What it does refuse is a str-*subclass* keeping its
+    overrides: a leftover whose ``__hash__`` answers a real key's bucket
+    while its ``__eq__`` raises detonates *every* later probe of that
+    bucket (the wave-10 hash-shadowing class), and one whose ``__lt__``
+    raises blows the sort it rides into.  The unbound base encode/decode
+    pair walks the real C-level buffer, so the copy carries no override; a
+    lying ``__class__`` claiming str fails the base call and reads as
+    not-text.
+    """
+    if type(value) is str:
+        return value
+    if not _isa(value, str):
+        return None
+    try:
+        return bytes.decode(
+            str.encode(value, "utf-8", "surrogatepass"),
+            "utf-8", "surrogatepass",
+        )
+    except Exception:
+        return None
+
+
 def _safe_bytes(value) -> int:
     """Clamp a ``stat.st_size`` so ``inf``/None cannot 500 the JSON encoder.
 
@@ -165,11 +192,19 @@ def _safe_bytes(value) -> int:
     /duplicates after the walk had already finished.  ``float()`` rejects
     anything beyond float range, the same junk test files_svc._finite_int
     and logs_svc._stat_size apply to their stat numbers.
+
+    The except is total, not the conversion tuple: a leftover ``st_size``
+    whose ``__int__``/``__index__`` *raises RuntimeError* (a raising
+    descriptor riding a poisoned stat result) sailed past the old
+    ``(TypeError, ValueError, OverflowError, OSError)`` list and out of the
+    walk loops, whose per-entry catches were just as narrow — a raw 500 on
+    /tree and a dead ``_walk_parallel`` worker on /largest and /duplicates.
+    Junk of any spelling reads as 0 bytes here.
     """
     try:
         n = int(value)
         float(n)
-    except (TypeError, ValueError, OverflowError, OSError):
+    except Exception:
         return 0
     return n if n > 0 else 0
 
@@ -533,34 +568,50 @@ def _walk_parallel(target: Path, budget: _Budget, make_sink, on_file, *,
     def run(_index: int):
         sink = make_sink()
         spender = budget.spender()
-        while True:
-            current = _next()
-            if current is None:
-                return sink
-            if spender.expired():
-                _stop()
-                return sink
-            subdirs: list[Path] = []
-            try:
-                with os.scandir(current) as it:
-                    for entry in it:
-                        if not spender.spend():
-                            _stop()
-                            return sink
-                        try:
-                            if entry.is_symlink():
+        # The backstop except is the difference between a degraded walk and
+        # a hung route: a worker that raises out of this loop never reaches
+        # the all-idle rule, so its siblings wait on the condition forever
+        # and the request hangs past every budget (the deadline cannot fire
+        # a thread parked in ``cond.wait``).  A leftover ``st_size`` whose
+        # ``__int__`` raises RuntimeError did exactly that to /largest and
+        # /duplicates: the per-entry catch below was a narrow tuple, the
+        # raise killed one worker, and the other three waited forever.
+        try:
+            while True:
+                current = _next()
+                if current is None:
+                    return sink
+                if spender.expired():
+                    _stop()
+                    return sink
+                subdirs: list[Path] = []
+                try:
+                    with os.scandir(current) as it:
+                        for entry in it:
+                            if not spender.spend():
+                                _stop()
+                                return sink
+                            try:
+                                if entry.is_symlink():
+                                    continue
+                                if entry.is_dir(follow_symlinks=False):
+                                    child = Path(entry.path)
+                                    if not _is_never_walk(child):
+                                        subdirs.append(child)
+                                elif entry.is_file(follow_symlinks=False):
+                                    on_file(entry, sink)
+                            except Exception:
+                                # Total, not (OSError, ValueError, TypeError):
+                                # a poisoned entry whose stat fields raise
+                                # RuntimeError must cost its own row, never
+                                # the worker (and with it the request).
                                 continue
-                            if entry.is_dir(follow_symlinks=False):
-                                child = Path(entry.path)
-                                if not _is_never_walk(child):
-                                    subdirs.append(child)
-                            elif entry.is_file(follow_symlinks=False):
-                                on_file(entry, sink)
-                        except (OSError, ValueError, TypeError):
-                            continue
-            except (OSError, PermissionError, ValueError, TypeError):
-                pass
-            _push(subdirs)
+                except Exception:
+                    pass
+                _push(subdirs)
+        except Exception:
+            _stop()
+            return sink
 
     # fan_out builds a pool of exactly len(items) threads here, which is what the
     # all-idle termination rule counts on.
@@ -596,9 +647,13 @@ def _dir_size(path: Path, spender: _Spender) -> tuple[int, int]:
                         elif entry.is_file(follow_symlinks=False):
                             total += _safe_bytes(entry.stat(follow_symlinks=False).st_size)
                             files += 1
-                    except (OSError, ValueError, TypeError):
+                    except Exception:
+                        # Total, matching _walk_parallel: a poisoned entry
+                        # raising RuntimeError out of a stat descriptor used
+                        # to escape the old tuple, ride fan_out's re-raise
+                        # and 500 GET /api/storage/usage/tree.
                         continue
-        except (OSError, PermissionError, ValueError, TypeError):
+        except Exception:
             continue
     return total, files
 
@@ -625,6 +680,11 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
     except NotADirectoryError:
         raise api_error("files.not_a_dir")
     except OSError:
+        raise api_error("files.permission_denied", path=str(target))
+    except Exception:
+        # A scandir iterator dying mid-listing with a non-OSError (a
+        # leftover FUSE seam raising RuntimeError) used to 500 the route
+        # raw; an unlistable directory is the permission_denied class.
         raise api_error("files.permission_denied", path=str(target))
 
     # Split the listing first, then size the directories concurrently.  Sizing
@@ -653,23 +713,38 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
                     "gb": _gb(size),
                     "files": 1,
                 })
-        except (OSError, ValueError, TypeError):
+        except Exception:
+            # Total, not (OSError, ValueError, TypeError): a poisoned entry
+            # whose ``name``/``path``/stat fields raise RuntimeError used to
+            # escape the tuple and 500 GET /api/storage/usage/tree; the
+            # hostile entry drops alone, its siblings keep rendering.
             continue
 
-    sizes = fan_out(
-        lambda e: _dir_size(Path(e.path), budget.spender()),
-        subdirs,
-        max_workers=_SCAN_WORKERS,
-    )
+    def _sized(e) -> tuple[int, int]:
+        # Guarded per subdir: ``Path(e.path)`` on a poisoned entry raised
+        # inside the fan_out worker, and fan_out re-raises on iteration —
+        # one hostile subdir used to 500 the whole tree listing.
+        try:
+            return _dir_size(Path(e.path), budget.spender())
+        except Exception:
+            return 0, 0
+
+    sizes = fan_out(_sized, subdirs, max_workers=_SCAN_WORKERS)
     for entry, (size, files) in zip(subdirs, sizes):
-        children.append({
-            "name": _as_text(entry.name),
-            "path": _as_text(entry.path),
-            "kind": "dir",
-            "bytes": size,
-            "gb": _gb(size),
-            "files": files,
-        })
+        try:
+            children.append({
+                "name": _as_text(entry.name),
+                "path": _as_text(entry.path),
+                "kind": "dir",
+                "bytes": size,
+                "gb": _gb(size),
+                "files": files,
+            })
+        except Exception:
+            # Same class one loop later: the row build reads the entry's
+            # properties again, and a raising descriptor here sat outside
+            # any guard.
+            continue
 
     children.sort(key=lambda c: c["bytes"], reverse=True)
     total = sum(c["bytes"] for c in children)
@@ -719,13 +794,26 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
         return {"seen": 0, "top": []}
 
     def _on_file(entry, sink: dict) -> None:
+        # One guard over every read, not just the stat call: a poisoned
+        # entry whose ``st_size`` / ``st_mtime`` / ``path`` descriptors
+        # raise RuntimeError used to escape the old bare ``except OSError``,
+        # kill its _walk_parallel worker and hang the request (see run()).
+        # _exact_str on the path: a str-subclass path keeping its overrides
+        # would ride the top tuples into ``found.sort`` and ``Path(p)``
+        # below; the base copy preserves surrogateescape'd bytes so a real
+        # odd filename still renders.
         try:
             st = entry.stat(follow_symlinks=False)
-        except OSError:
+            size = _safe_bytes(st.st_size)
+            path = _exact_str(entry.path)
+            mtime = st.st_mtime
+        except Exception:
+            return
+        if path is None:
             return
         sink["seen"] += 1
         top = sink["top"]
-        top.append((_safe_bytes(st.st_size), entry.path, st.st_mtime))
+        top.append((size, path, mtime))
         if len(top) > cap * 20:
             top.sort(key=lambda x: x[0], reverse=True)
             del top[cap:]
@@ -738,16 +826,23 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
     for size, p, mtime in found[:cap]:
         try:
             stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-        except (OverflowError, OSError, ValueError, TypeError):
-            # Corrupt mtimes (network FS, FAT) used to 500 this endpoint.
+        except Exception:
+            # Corrupt mtimes (network FS, FAT) used to 500 this endpoint;
+            # total, not a tuple: a poisoned mtime whose ``__float__``
+            # raises RuntimeError rode the top tuple past the old catch.
             stamp = ""
-        items.append({
-            "path": _as_text(p),
-            "name": _as_text(Path(p).name),
-            "bytes": size,
-            "gb": _gb(size),
-            "mtime": stamp,
-        })
+        try:
+            items.append({
+                "path": _as_text(p),
+                "name": _as_text(Path(p).name),
+                "bytes": size,
+                "gb": _gb(size),
+                "mtime": stamp,
+            })
+        except Exception:
+            # ``Path(p)`` on a junk path must cost its own row, not the
+            # report the walk already finished.
+            continue
     return {
         "path": _as_text(target),
         "items": items,
@@ -812,9 +907,16 @@ def _hash_group(paths: list[str], budget: _Budget, *, partial: bool) -> list[str
     which the caller treats the same way it treats an unreadable file.
     """
     def _one(p: str) -> str | None:
-        if budget.expired():
+        # Guarded whole: ``Path(p)`` sat *outside* _hash_file's try, so a
+        # junk path raised inside the fan_out worker and fan_out re-raises
+        # on iteration — one unhashable candidate must read as unreadable
+        # (None), never 500 GET /api/storage/usage/duplicates.
+        try:
+            if budget.expired():
+                return None
+            return _hash_file(Path(p), partial=partial)
+        except Exception:
             return None
-        return _hash_file(Path(p), partial=partial)
 
     return fan_out(_one, paths, max_workers=_SCAN_WORKERS)
 
@@ -841,12 +943,20 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
         return {}
 
     def _on_file(entry, sink: dict[int, list[str]]) -> None:
+        # Same guard as largest_files._on_file: every entry read under one
+        # total except (a raising stat descriptor used to kill the walk
+        # worker and hang the request), and the queued path is an exact-str
+        # base copy so the sort and ``sorted(matches)`` downstream run base
+        # comparisons only.
         try:
             size = _safe_bytes(entry.stat(follow_symlinks=False).st_size)
-        except OSError:
+            path = _exact_str(entry.path)
+        except Exception:
+            return
+        if path is None:
             return
         if size >= floor:
-            sink.setdefault(size, []).append(entry.path)
+            sink.setdefault(size, []).append(path)
 
     by_size: dict[int, list[str]] = {}
     for partial_sink in _walk_parallel(target, budget, _sink, _on_file):
@@ -1082,6 +1192,32 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
         result = dict(result)
     except Exception:
         return {"ok": False, "error": "failed"}
+    # Exact-str keys only (the wave-10 hash-shadowing rule): the plain copy
+    # above still *carries* a hostile key — a leftover str-subclass whose
+    # ``__hash__`` answers a real key's bucket while its ``__eq__`` raises
+    # detonated every later probe of that bucket: ``result["volume"] =
+    # target`` and ``result["enabled"]`` on the ok path, ``result.get("ok")``
+    # (and the ``result["ok"] = False`` *inside its own except handler*),
+    # and the ``result.get("error")`` / ``result.get("message")`` reads of
+    # the vanish classification — each a raw 500 on POST
+    # /api/storage/spotlight after run_admin had already answered, and the
+    # same bomb rode the returned dict into the route funnel's
+    # ``result.get("ok")``.  ``dict.items`` walks the C-level storage and
+    # ``_exact_str`` strips the overrides, so every bucket probe from here
+    # on runs base ``__hash__``/``__eq__``; a torn pair drops alone while
+    # its sibling keys keep serving.
+    plain: dict = {}
+    try:
+        for k, v in dict.items(result):
+            try:
+                key = _exact_str(k)
+                if key is not None:
+                    plain[key] = v
+            except Exception:
+                continue
+    except Exception:
+        return {"ok": False, "error": "failed"}
+    result = plain
     try:
         ok = bool(result.get("ok"))
     except Exception:
