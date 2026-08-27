@@ -2231,6 +2231,42 @@ def view_conf(reveal: bool = False) -> dict:
 PING = "/sbin/ping"
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a peer listing (or row) whose ``__class__`` is a *raising
+    property* detonated the gates in :func:`_ping_targets` themselves — a
+    raw 500 on POST /api/wireguard/ping where every other junk row already
+    drops silently.  A real subclass still matches through the C-level type
+    check (the smart_test_svc._isa rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _ping_rc(rc) -> int:
+    """Exact exit status for the ``==`` probes; a bomb reads as failure.
+
+    :func:`_ping_once` does not own ``sh`` (tests and tooling patch it), and
+    an rc-*subclass* whose ``__eq__`` raises used to detonate
+    ``rc == -1`` / ``rc == 0`` past the spawn try — ``fan_out`` re-raised it
+    and 500'd POST /api/wireguard/ping.  ``-255`` is no honest ping exit and
+    never the ``sh`` spawn sentinel, so a bomb reads as one unreachable peer,
+    never the tool-absent 503.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _ping_cli_gone() -> bool:
     """Fresh disk probe: True only for a confirmed-absent ``/sbin/ping``.
 
@@ -2269,6 +2305,10 @@ def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None, bool]:
         )
     except Exception:
         return False, None, False
+    # _ping_rc before any comparison: an rc-subclass ``__eq__`` bomb from a
+    # patched/odd sh detonated the sentinel probe below, past this
+    # function's spawn try — through fan_out, a raw 500 on the route.
+    rc = _ping_rc(rc)
     vanished = _ping_spawn_sentinel(rc, out, err)
     match = re.search(r"time=([\d.]+)\s*ms", _as_text(out))
     if not match:
@@ -2321,16 +2361,32 @@ def _ping_targets() -> list[tuple[dict, str]]:
         records = peer_records()
     except Exception:
         return []
-    if isinstance(records, list):
+    # _isa on both gates: a listing (or row) whose ``__class__`` is a
+    # raising property used to detonate the bare isinstance itself — the
+    # same raw 500 these gates exist to prevent.
+    if _isa(records, list):
         rows = list.__iter__(records)
     else:
+        # Guarded pull loop (the worker_health.problems rule): a generic
+        # iterable that answers iter() but raises mid-iteration used to blow
+        # the walk below past the per-row drops — rows already yielded
+        # survive, the bomb costs only its own tail.
         try:
-            rows = iter(records or [])
+            it = iter(records or [])
         except Exception:
             return []
+        pulled = []
+        while True:
+            try:
+                pulled.append(next(it))
+            except StopIteration:
+                break
+            except Exception:
+                break
+        rows = pulled
     targets: list[tuple[dict, str]] = []
     for record in rows:
-        if not isinstance(record, dict):
+        if not _isa(record, dict):
             continue
         # Unbound ``dict.get`` (the smart_test_svc._schedule_cfg rule): a
         # dict-subclass row whose ``.get`` raises must drop alone.

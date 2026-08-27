@@ -41,9 +41,29 @@ _lock = threading.Lock()
 _workers: dict[str, dict] = {}
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a planted entry/row whose ``__class__`` is a *raising
+    property* detonated the very gates below: out of ``snapshot()`` /
+    ``problems()`` (silently wiping the workers row from GET
+    /api/health/checks), out of ``beat()`` on the worker's own thread —
+    killing the loop this registry exists to watch — and out of
+    ``register()``/``loop_interval()`` on the sampler/alerter/scheduler
+    start path.  A real subclass still matches through the C-level type
+    check; only a value that cannot answer what it is takes the
+    non-matching branch (the smart_test_svc._isa rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a subclass ``.decode`` bomb registered as a
         # worker name used to raise out of snapshot() and silently wipe the
         # workers row from the health page.
@@ -70,7 +90,9 @@ def _coerce_interval(interval) -> float:
     Leftover YAML ``true`` is a bool subclass of int; ``float(True)`` is 1.0
     and used to mark the worker stale after three seconds.
     """
-    if isinstance(interval, bool) or interval is None:
+    # _isa: a ``__class__``-property bomb interval detonated this very gate
+    # out of register() on the worker's own thread.
+    if _isa(interval, bool) or interval is None:
         return 60.0
     try:
         # Base coercions before ``float()`` (the smart_test_svc._schedule_epoch
@@ -101,7 +123,9 @@ def loop_interval(raw, default: int = 90, *, minimum: int = 30, maximum: int = 8
     OverflowError ``int(inf)`` on the LaunchAgent thread (sampler / alerter)
     or kill the SMART scheduler on ``stop.wait(check_interval)``.
     """
-    if isinstance(raw, bool) or raw is None:
+    # _isa: a ``__class__``-property bomb raw detonated the gate itself on
+    # the sampler/alerter/scheduler start path instead of answering default.
+    if _isa(raw, bool) or raw is None:
         return default
     try:
         # Base coercions first (the _coerce_interval rule): a float-subclass
@@ -143,7 +167,9 @@ def _finite_beat(raw) -> float:
     trio — snapshot() raised and the workers row silently vanished from
     GET /api/health/checks (the health7 wipe class, one field over).
     """
-    if isinstance(raw, bool) or raw is None:
+    # _isa: a ``__class__``-property bomb beat detonated this gate out of
+    # snapshot() — the same wipe, one probe earlier.
+    if _isa(raw, bool) or raw is None:
         return 0.0
     try:
         if isinstance(raw, int):
@@ -163,8 +189,17 @@ def _coerce_now(now) -> float:
     if now is None:
         return _wall_now()
     try:
+        # Base coercions before ``float()`` (the _finite_beat rule): snapshot()
+        # is also called in-process with an explicit *now*, and a
+        # float-subclass ``__float__`` bomb raised RuntimeError past the old
+        # arithmetic trio — out of snapshot()/problems() where it silently
+        # wiped the workers row from GET /api/health/checks.
+        if isinstance(now, int) and not isinstance(now, bool):
+            now = int.__index__(now)
+        elif isinstance(now, float):
+            now = float.__float__(now)
         n = float(now)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return _wall_now()
     if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
         return _wall_now()
@@ -209,8 +244,15 @@ def beat(name: str) -> None:
     (the worker may have been unregistered by a concurrent ``stop_*``)."""
     with _lock:
         entry = _workers.get(_name_key(name))
-        if isinstance(entry, dict):
-            entry["beat"] = _wall_now()
+        # _isa + unbound ``dict.__setitem__``: a planted entry whose
+        # ``__class__`` is a raising property (or a dict subclass with a
+        # ``__setitem__`` bomb) used to raise out of beat() on the worker's
+        # own thread — killing the loop this registry exists to watch.
+        if _isa(entry, dict):
+            try:
+                dict.__setitem__(entry, "beat", _wall_now())
+            except Exception:
+                pass
 
 
 def unregister(name: str) -> None:
@@ -224,10 +266,17 @@ def snapshot(now: float | None = None) -> list[dict]:
     with _lock:
         items = []
         for name, entry in _workers.items():
-            if isinstance(entry, dict):
+            # _isa: a planted ``__class__``-property-bomb entry detonated
+            # this gate and silently wiped the workers row from GET
+            # /api/health/checks; the poisoned entry drops alone instead.
+            if _isa(entry, dict):
                 items.append((name, dict(entry)))
     out = []
-    for name, entry in sorted(items, key=lambda kv: str(kv[0])):
+    # _name_key, not bare str(): a planted name key that is an over-cap int
+    # (YAML/plist hex loads uncapped) ValueError'd the sort key itself, and a
+    # subclass ``__str__`` bomb raised the same way — snapshot() blew up and
+    # the workers row silently vanished from GET /api/health/checks.
+    for name, entry in sorted(items, key=lambda kv: _name_key(kv[0])):
         thread = entry.get("thread")
         try:
             alive = bool(thread is not None and thread.is_alive())
@@ -264,19 +313,36 @@ def problems(now: float | None = None, rows: list[dict] | None = None) -> list[s
     """
     if rows is None:
         rows = snapshot(now)
-    elif isinstance(rows, list):
+    elif _isa(rows, list):
         # Unbound base walk (the health_svc._as_checks rule): this function
         # does not own *rows*, and a list-subclass ``__iter__`` bomb used to
         # raise here and silently wipe the workers row from the health page.
+        # _isa on the gate itself: a ``__class__``-property-bomb rows object
+        # detonated the old bare isinstance the same way.
         rows = list.__iter__(rows)
     else:
+        # Materialize with a guarded pull loop: a generic iterable that
+        # *answers* iter() but raises mid-iteration used to blow the for
+        # loop below past the per-row guard — the rows already yielded
+        # survive, the bomb costs only its own tail.
         try:
-            rows = iter(rows)
+            it = iter(rows)
         except Exception:
             return []
+        collected = []
+        while True:
+            try:
+                collected.append(next(it))
+            except StopIteration:
+                break
+            except Exception:
+                break
+        rows = collected
     out = []
     for w in rows:
-        if not isinstance(w, dict):
+        # _isa: a ``__class__``-property-bomb row detonated the gate itself,
+        # outside the per-row try, and wiped the workers row.
+        if not _isa(w, dict):
             continue
         try:
             # Unbound ``dict.get`` and one Exception net per row: a

@@ -145,6 +145,29 @@ _device_type_locks_guard = threading.Lock()
 _DEVICE_WORKERS = 8
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``in`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__`` raises used to detonate ``rc == 0`` /
+    ``rc in (0, 4)`` — out of ``_device_nodes`` and
+    ``passwordless_available`` that was a raw 500 on GET /api/smart (both
+    run unguarded under ``overview``'s fan-out), and out of
+    ``_raw_smartctl`` / ``start_test``'s own spawn a raw 500 on
+    POST /api/smart/test where every junk answer already earns a coded
+    refusal.  ``-255`` is no honest smartctl exit and never the ``sh``
+    spawn sentinel, so a bomb keeps each caller's existing failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     """Run smartctl unprivileged, retrying under ``sudo -n`` on a denial.
 
@@ -154,13 +177,13 @@ def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     privileged retry.
     """
     rc, out, err = sh([SMARTCTL, *argv], timeout=timeout)
-    out, err = _as_text(out), _as_text(err)
+    rc, out, err = _rc_int(rc), _as_text(out), _as_text(err)
     blob = f"{out}\n{err}".lower()
     if rc not in (0, 4) and any(
         token in blob for token in ("permission", "operation not permitted", "access denied")
     ):
         rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, *argv], timeout=timeout)
-        out, err = _as_text(out), _as_text(err)
+        rc, out, err = _rc_int(rc), _as_text(out), _as_text(err)
     return rc, out, err
 
 
@@ -225,6 +248,9 @@ def _spawn_missing(rc: int, out, err) -> bool:
     permission denial or a genuine smartctl exit keeps its original
     fallback (the authorization sheet), never the tool-absent 503.
     """
+    # _rc_int: this predicate takes raw ``sh`` answers, and an rc-subclass
+    # ``__eq__`` bomb used to detonate the membership probe itself.
+    rc = _rc_int(rc)
     if rc in (0, 4):
         return False
     out_t, err_t = _as_text(out), _as_text(err)
@@ -237,13 +263,17 @@ def _spawn_missing(rc: int, out, err) -> bool:
 def passwordless_available() -> bool:
     """Whether ``sudo -n smartctl`` works, i.e. scheduled tests can run headless."""
     rc, _, _ = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-V"], timeout=6)
-    return rc == 0
+    # _rc_int: this runs unguarded inside overview()'s fan-out, and an
+    # rc-subclass ``__eq__`` bomb was a raw 500 on GET /api/smart.
+    return _rc_int(rc) == 0
 
 
 def _device_nodes() -> list[str]:
     """Physical whole disks, as ``/dev/diskN``."""
     rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=10)
-    out = _as_text(out)
+    # _rc_int: overview() reads this listing before any guard, and an
+    # rc-subclass ``__eq__`` bomb was a raw 500 on GET /api/smart.
+    rc, out = _rc_int(rc), _as_text(out)
     nodes: list[str] = []
     if rc == 0:
         for match in re.finditer(r"/dev/(disk\d+)\s", out):
@@ -895,7 +925,9 @@ def run_due_tests() -> dict:
         rc, out, err = sh(
             ["/usr/bin/sudo", "-n", SMARTCTL, "-t", schedule["kind"], *flags, device], timeout=60
         )
-        ok = rc in (0, 4)
+        # _rc_int — same rc-subclass ``__eq__``-bomb note as _raw_smartctl,
+        # on the scheduler tick.
+        ok = _rc_int(rc) in (0, 4)
         started += 1 if ok else 0
         _append_history({
             "ts": _now(),
@@ -992,6 +1024,9 @@ def start_test(device: str, kind: str) -> dict:
 
     flags = list(device_type(node))
     rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-t", test, *flags, node], timeout=60)
+    # _rc_int: an rc-subclass ``__eq__`` bomb detonated this membership
+    # probe — a raw 500 on POST /api/smart/test.
+    rc = _rc_int(rc)
     if rc not in (0, 4):
         # A vanished-looking spawn probes the disk before falling back to the
         # authorization sheet: capabilities may have answered from the
@@ -1049,6 +1084,9 @@ def abort_test(device: str) -> dict:
         return {"ok": False, "error": "bad_device"}
     flags = list(device_type(node))
     rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-X", *flags, node], timeout=30)
+    # _rc_int — same rc-subclass ``__eq__``-bomb note as start_test, on
+    # POST /api/smart/abort.
+    rc = _rc_int(rc)
     if rc not in (0, 4):
         # Same fresh-probe rule as start_test: only a vanished-looking spawn
         # whose binary a fresh disk probe confirms gone becomes the
