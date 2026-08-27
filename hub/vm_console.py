@@ -102,10 +102,53 @@ def console_id_for_utm(vm_uuid: str) -> str:
     return f"utm:{vm_uuid}"
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare type gates themselves — planted as the allowlist
+    map, an allowlist key, an entry, or an entry's protocol/host/port
+    value — and 500'd the console-session mint while ``capability()``
+    silently emptied the whole UTM listing.  A real subclass still matches
+    through the C-level type check (the storage_pool/vms_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Entry field read that a hostile mapping *key* cannot 500.
+
+    ``_entry_for``'s laundering ``dict(value)`` copy keeps hostile keys, so
+    a leftover str-subclass key whose hash shadows ``enabled`` / ``port`` /
+    ``host`` / ``protocol`` / ``view_only`` and whose ``__eq__`` raises
+    used to detonate the plain-dict ``entry.get`` probes in
+    ``resolve_target`` — a 500 on the mint, an emptied UTM listing via
+    ``capability()``.  Only the shadowed field degrades to its default.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
 def _allowlist() -> dict[str, Any]:
-    settings = settings_section("vm_console")
-    allowlist = settings.get("allowlist")
-    return allowlist if isinstance(allowlist, dict) else {}
+    # Guarded read: ``settings_section`` re-raises a cfg snapshot provider
+    # bomb (its try covers only the ``cfg()`` call, not the gates after),
+    # and the bare ``isinstance`` gate here detonated on an allowlist whose
+    # ``__class__`` is a raising property — both 500'd the mint and emptied
+    # the UTM listing via ``capability()``.
+    try:
+        settings = settings_section("vm_console")
+    except Exception:
+        return {}
+    allowlist = _mapping_get(settings, "allowlist")
+    return allowlist if _isa(allowlist, dict) else {}
 
 
 def _exact_str(value) -> str:
@@ -139,11 +182,14 @@ def _probe_text(value) -> str:
     str-subclass leftover used to ride out with its bound ``.strip()`` /
     ``.lower()`` bombs live, and a bytes-subclass ``__bytes__``/``decode``
     bomb raised out of the ``bytes(value)`` copy — both 500'd the mint.
+
+    ``_isa`` on the gates: a key/value whose ``__class__`` is a raising
+    property detonated the bare ``isinstance`` itself.
     """
-    if isinstance(value, str):
+    if _isa(value, str):
         return _exact_str(value)
-    if isinstance(value, (bytes, bytearray)):
-        base = bytes if isinstance(value, bytes) else bytearray
+    if _isa(value, (bytes, bytearray)):
+        base = bytes if _isa(value, bytes) else bytearray
         return base.decode(value, "utf-8", "replace")
     try:
         return _exact_str(str(value))
@@ -160,7 +206,9 @@ def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
     # used to 500 the console-session mint out of resolve_target.
     for key, value in dict.items(allowlist):
         if _probe_text(key).strip().lower() == wanted:
-            if not isinstance(value, dict):
+            # _isa: an entry whose ``__class__`` is a raising property
+            # detonated this bare gate ahead of the laundering below.
+            if not _isa(value, dict):
                 return None
             if type(value) is dict:
                 # The exact stored entry, not a copy: callers compare and
@@ -193,16 +241,18 @@ def _coerce_port(value) -> int | None:
     ``or``) or ``__int__`` bomb, so a poisoned ``port`` 500'd the mint and
     emptied the UTM listing.  Numbers are base-coerced (``int.__index__`` /
     ``float.__float__``) so a subclass override never runs; a string keeps its
-    exact-str copy before ``int()``.
+    exact-str copy before ``int()``.  ``_isa`` on the gates: a port whose
+    ``__class__`` is a raising property detonated the first bare
+    ``isinstance`` itself.
     """
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return None
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             return int.__index__(value)
         except Exception:
             return None
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 value = float.__float__(value)
@@ -214,7 +264,7 @@ def _coerce_port(value) -> int | None:
             return int(value)
         except (ValueError, OverflowError):
             return None
-    if isinstance(value, str):
+    if _isa(value, str):
         text = _exact_str(value).strip()
         if not text:
             return None
@@ -226,16 +276,20 @@ def _coerce_port(value) -> int | None:
 
 
 def _as_host_text(value) -> str:
-    """Allowlist host as text.  YAML ``!!binary`` is bytes; leftover numbers are not hosts."""
-    if isinstance(value, (bytes, bytearray)):
-        base = bytes if isinstance(value, bytes) else bytearray
+    """Allowlist host as text.  YAML ``!!binary`` is bytes; leftover numbers are not hosts.
+
+    ``_isa`` on the gates: a host whose ``__class__`` is a raising property
+    detonated the bare ``isinstance`` and 500'd the mint.
+    """
+    if _isa(value, (bytes, bytearray)):
+        base = bytes if _isa(value, bytes) else bytearray
         try:
             value = base.decode(value, "utf-8")
         except UnicodeDecodeError:
             return ""
         except Exception:
             return ""
-    if not isinstance(value, str):
+    if not _isa(value, str):
         return ""
     # Exact-str copy before the bound .strip(): a str-subclass leftover's
     # strip bomb used to 500 the mint out of _is_loopback/resolve_target.
@@ -279,29 +333,33 @@ def _is_loopback(host: str) -> bool:
 
 def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTarget | None:
     """Resolve a console_id to its configured loopback endpoint, or None."""
-    text = console_id.strip() if isinstance(console_id, str) else ""
+    text = console_id.strip() if _isa(console_id, str) else ""
     if not _CONSOLE_ID_RE.match(text):
         return None
     uuid = text.split(":", 1)[1]
     if vm_uuid is not None and uuid.lower() != str(vm_uuid).strip().lower():
         return None
     entry = _entry_for(uuid)
+    # ``_mapping_get`` for every field, not the plain-dict ``entry.get``:
+    # the laundering copy keeps hostile hash-shadowing keys, whose stored
+    # ``__eq__`` still ran during the bound get's probe — the mint 500'd,
+    # capability() emptied the listing.
     # ``_flag``: ``not entry.get("enabled")`` used to run a leftover value's
     # bombing ``__bool__`` (the mint 500'd, capability() emptied the listing).
-    if not entry or not _flag(entry.get("enabled")):
+    if not entry or not _flag(_mapping_get(entry, "enabled")):
         return None
     # ``entry.get("protocol") or "vnc"`` ran that value's ``__bool__`` too.
     # ``_flag`` keeps the old ``or`` default (a *falsy* protocol → vnc) while a
     # bombing ``__bool__`` reads as falsy rather than 500ing; a truthy-but-junk
     # value (e.g. a huge-int hex leftover) still laundered to "" and is refused.
-    raw_protocol = entry.get("protocol")
+    raw_protocol = _mapping_get(entry, "protocol")
     if not _flag(raw_protocol):
         protocol = "vnc"
     else:
         protocol = _probe_text(raw_protocol).strip().lower()
     if protocol != "vnc":
         return None
-    raw_host = entry.get("host")
+    raw_host = _mapping_get(entry, "host")
     # ``raw_host in (None, "")`` ran a str-subclass reflected ``__eq__`` bomb.
     # ``_as_host_text`` is already bomb-safe and returns a plain str; an
     # omitted (``is None``) or explicitly-blank host defaults to loopback,
@@ -309,13 +367,13 @@ def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTar
     # rather than being silently upgraded to the loopback default.
     host = _as_host_text(raw_host)
     if not host:
-        if raw_host is None or (isinstance(raw_host, str) and not _exact_str(raw_host)):
+        if raw_host is None or (_isa(raw_host, str) and not _exact_str(raw_host)):
             host = "127.0.0.1"
         else:
             return None
     # Bool is an int (``True`` → port 1).  JSON ``1e309`` / YAML ``port: .inf``
     # OverflowError ``int(inf)``; a 400-digit leftover int is not a TCP port.
-    port = _coerce_port(entry.get("port"))
+    port = _coerce_port(_mapping_get(entry, "port"))
     if port is None or not 1 <= port <= 65535 or not _is_loopback(host):
         return None
     return ConsoleTarget(
@@ -323,7 +381,7 @@ def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTar
         vm_uuid=uuid,
         protocol=protocol,
         host=host,
-        view_only=_flag(entry.get("view_only")),
+        view_only=_flag(_mapping_get(entry, "view_only")),
         port=port,
     )
 

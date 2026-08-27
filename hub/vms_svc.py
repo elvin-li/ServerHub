@@ -43,6 +43,102 @@ ORB_DISTROS = [
 ]
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare type gates themselves — planted as a listing return
+    (``_listing_rows`` raised through ``fan_out`` and 500'd GET /api/vms),
+    a row value or mapping key inside the final ``_jsonable`` pass, an
+    ``list_orb_machines`` return probed by ``_parse_id`` /
+    ``utm_vm_running`` (a 500 on the action and the console-session mint),
+    or a row in ``discover_vms``.  A real subclass still matches through
+    the C-level type check; only a value that cannot answer what it is
+    takes the non-matching branch (the storage_pool/system/status rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The ups_svc/storage_pool rule this module's unbound ``dict.get`` calls
+    never got: the unbound builtin bypasses a subclass ``.get`` override,
+    but the hash probe still runs the *stored keys'* own ``__eq__`` — a
+    leftover str-subclass key whose hash shadows the real key and whose
+    ``__eq__`` raises used to detonate ``dict.get`` in ``_parse_id`` /
+    ``utm_vm_running`` / ``discover_vms`` (a 500 on the action and the
+    console mint, a lost status feed).  Only the shadowed field degrades
+    to its default; sibling fields and rows keep their sane data.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _override(sid) -> dict:
+    """Per-row override read that a leftover config bomb cannot cost rows.
+
+    ``config.override`` reads ``cfg()`` bare, so a snapshot provider that
+    raises took the *whole* UTM/Orb listing with it (``_listing_rows``
+    swallowed the raise into ``[]``), and the laundering ``dict(val)`` copy
+    keeps hostile hash-shadowing keys — a bombing ``ov.get("hide")`` also
+    cost every row.  Here the read degrades to ``{}`` and each field is
+    fetched via :func:`_mapping_get`, so only the poisoned override is lost.
+    """
+    try:
+        ov = override(sid)
+    except Exception:
+        return {}
+    if type(ov) is dict:
+        return ov
+    if not _isa(ov, dict):
+        return {}
+    try:
+        return dict(ov)
+    except Exception:
+        return {}
+
+
+def _truthy(value) -> bool:
+    """Truthiness that a leftover value's ``__bool__`` bomb cannot 500."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _rc_int(value) -> int:
+    """Exact int from an ``sh()`` return code; junk reads as -1.
+
+    ``rc == 0`` / ``rc != -1`` ran a leftover int-subclass's own
+    ``__eq__`` / ``__ne__`` — one bombed rc from a poisoned runner 500'd
+    the action reply (the ``ok``/``message`` assembly runs outside every
+    listing catch) straight through ``_cli_missing``.  ``int.__index__``
+    reads the real value underneath a subclass override; anything that is
+    not an int at all reads as the spawn-failure sentinel.
+    """
+    if type(value) is int:
+        return value
+    if value is True:
+        return 1
+    if value is False:
+        return 0
+    if _isa(value, int):
+        try:
+            return int.__index__(value)
+        except Exception:
+            return -1
+    return -1
+
+
 def _bin_present(path) -> bool:
     if not path:
         return False
@@ -78,20 +174,23 @@ def _cli_missing(rc, err, binary) -> bool:
     follow via ``engine_up``.  The disk re-check runs only on this failure
     path (after the sentinel matched), never on a successful spawn.
     """
-    if rc != -1 or _as_text(err).strip() != "not found":
+    # _rc_int, not bare ``rc != -1``: a leftover int-subclass rc whose
+    # ``__ne__`` raises detonated the classifier itself, one line ahead of
+    # the disk re-check.
+    if _rc_int(rc) != -1 or _as_text(err).strip() != "not found":
         return False
     return not _bin_present(binary)
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isa(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/vms cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
         # bomb, and the bound ``.decode`` was the subclass's own — either one
         # 500'd the action reply (``_utm_action`` message assembly runs
@@ -99,7 +198,7 @@ def _as_text(value) -> str:
         value = _decode_bytes(value)
     elif value is None:
         return ""
-    elif not isinstance(value, str):
+    elif not _isa(value, str):
         # str instances skip str(): a subclass ``__str__`` bomb would trade
         # the real text for "", and a ``__str__`` that answers *self* skips
         # CPython's exact-str copy anyway.
@@ -125,10 +224,13 @@ def _display_text(value, fallback: str = "") -> str:
 
     ``name: .inf``, ``group: 2026-08-19``, ``!!binary`` and a ``!!set`` each
     used to leak into GET /api/vms and fail Starlette's allow_nan=False encoder.
+
+    ``_isa`` on every type gate, not bare ``isinstance``: a leftover whose
+    ``__class__`` is a raising property detonated the first gate itself.
     """
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return fallback
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -139,7 +241,7 @@ def _display_text(value, fallback: str = "") -> str:
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__float__``
@@ -154,11 +256,11 @@ def _display_text(value, fallback: str = "") -> str:
         except OverflowError:
             return fallback
         return str(value)
-    if isinstance(value, str):
+    if _isa(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, (dict, list, tuple, set, frozenset)):
+    if _isa(value, (dict, list, tuple, set, frozenset)):
         return fallback
     try:
         text = str(value)
@@ -177,12 +279,12 @@ def _optional_text(value) -> str | None:
 
 def _id_text(value, fallback: str) -> str:
     """Machine id/uuid from leftover orbctl JSON: Infinity/objects are not ids."""
-    if isinstance(value, str):
+    if _isa(value, str):
         # Scrub before the truthiness test: a str-subclass ``__bool__`` bomb
         # used to raise out of ``_orb_item`` and cost the whole listing.
         text = _as_text(value)
         return text if text else fallback
-    if isinstance(value, int) and not isinstance(value, bool):
+    if _isa(value, int) and not _isa(value, bool):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__float__``
@@ -211,12 +313,18 @@ def _jsonable(value, depth: int = 0):
     raises, a str carrying a bound ``encode`` bomb, and an ``isoformat``
     probe on an object whose ``__getattr__`` raises (getattr's default only
     swallows AttributeError).
+
+    ``_isa`` on every gate, not bare ``isinstance``: this pass runs
+    *outside* the ``_listing_rows`` catch, so a leftover row value — or a
+    mapping key — whose ``__class__`` is a raising property detonated the
+    first gate itself and 500'd GET /api/vms one line ahead of every scrub
+    below.
     """
     if depth > 32:
         return None
-    if isinstance(value, bool) or value is None:
+    if _isa(value, bool) or value is None:
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 value = float.__float__(value)
@@ -225,16 +333,16 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a dict-subclass row whose ``items()`` raises
         # cannot 500, and the real storage underneath still comes through.
         for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
+            if _isa(k, (bytes, bytearray)):
                 key = _decode_bytes(k)
-            elif isinstance(k, str):
+            elif _isa(k, str):
                 key = k
             else:
                 try:
@@ -243,13 +351,13 @@ def _jsonable(value, depth: int = 0):
                     continue
             out[_as_text(key)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot 500 and the real elements still survive.
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 value = int.__index__(value)
@@ -260,7 +368,7 @@ def _jsonable(value, depth: int = 0):
         except OverflowError:
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _as_text(value)
     try:
         iso = getattr(value, "isoformat", None)
@@ -289,7 +397,10 @@ def _listing_rows(probe) -> list:
     except Exception:
         return []
     for base in (list, tuple):
-        if isinstance(rows, base):
+        # _isa: a probe answering a leftover whose ``__class__`` is a
+        # raising property detonated this gate *outside* the try, re-raised
+        # through ``fan_out`` and 500'd GET /api/vms with both inventories.
+        if _isa(rows, base):
             try:
                 # Unbound base iteration, inside the guard: ``list(rows)``
                 # ran *outside* the try, so a leftover subclass ``__iter__``
@@ -316,7 +427,7 @@ def _list_utm_vms_uncached() -> list[dict]:
     if not _utm_available():
         return []
     rc, out, err = sh([UTMCTL, "list"], timeout=10)
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return []
     out = _as_text(out)
     # Parsed first, probed second, assembled third.  The per-VM work in the old
@@ -331,15 +442,19 @@ def _list_utm_vms_uncached() -> list[dict]:
         if len(parts) < 3:
             continue
         uuid, status, name = _as_text(parts[0]), _as_text(parts[1]), _as_text(parts[2])
-        ov = override(name) or override(uuid) or {}
-        if ov.get("hide"):
+        # _override / _mapping_get: a raising ``config.override`` (a cfg
+        # snapshot provider bomb) or a laundered override that kept a
+        # hash-shadowing key bomb used to raise out of this per-row loop and
+        # cost the *whole* UTM inventory via the ``_listing_rows`` catch.
+        ov = _override(name) or _override(uuid) or {}
+        if _truthy(_mapping_get(ov, "hide")):
             continue
         rows.append({"uuid": uuid, "status": status, "name": name, "ov": ov})
 
     # None where no port is configured, matching the previous conditional.
     probes = fan_out(
         lambda port: _probe_port(port) if port else None,
-        [row["ov"].get("port") for row in rows],
+        [_mapping_get(row["ov"], "port") for row in rows],
     )
 
     items = []
@@ -373,13 +488,13 @@ def _list_utm_vms_uncached() -> list[dict]:
             # renaming a VM must not move an allowlist entry to another machine.
             "console_id": vm_console.console_id_for_utm(uuid),
             "console": vm_console.capability(backend="utm", vm_uuid=uuid, running=started),
-            "name": _display_text(ov.get("name"), name) or name,
+            "name": _display_text(_mapping_get(ov, "name"), name) or name,
             "backend": "utm",
             "status": status,
             "state": state,
             "detail": f"UTM · {status}",
-            "url": _optional_text(ov.get("url")),
-            "group": _display_text(ov.get("group"), "UTM") or "UTM",
+            "url": _optional_text(_mapping_get(ov, "url")),
+            "group": _display_text(_mapping_get(ov, "group"), "UTM") or "UTM",
             "actions": actions,
             "ips": [],
         })
@@ -429,7 +544,7 @@ def _list_orb_machines_uncached() -> list[dict]:
     rc, out, err = sh([ORBCTL, "list", "-f", "json"], timeout=15)
     items: list[dict] = []
     out = _as_text(out)
-    if rc == 0 and out.strip().startswith(("[", "{")):
+    if _rc_int(rc) == 0 and out.strip().startswith(("[", "{")):
         try:
             data = safe_json_loads(out, parse_int=_capped_json_int)
         except (TypeError, ValueError, RecursionError):
@@ -469,7 +584,7 @@ def _list_orb_machines_uncached() -> list[dict]:
         except Exception:
             pass
     rc, out, err = sh([ORBCTL, "list"], timeout=15)
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return []
     # parse table: NAME  STATE  ...
     lines = [ln for ln in _as_text(out).splitlines() if ln.strip()]
@@ -502,8 +617,11 @@ def list_orb_machines(force: bool = False) -> list[dict]:
 
 def _orb_item(name: str, status: str, raw: dict) -> dict | None:
     name, status = _as_text(name), _as_text(status)
-    ov = override(f"orb-{name}") or override(name) or {}
-    if ov.get("hide"):
+    # _override / _mapping_get: same per-row degrade as the UTM builder — a
+    # raising override read or a hash-shadowing key bomb loses only this
+    # row's override, never the whole OrbStack inventory.
+    ov = _override(f"orb-{name}") or _override(name) or {}
+    if _truthy(_mapping_get(ov, "hide")):
         return None
     running = status in ("running", "started", "up")
     stopped = status in ("stopped", "stop", "exited", "created", "shutdown")
@@ -517,19 +635,19 @@ def _orb_item(name: str, status: str, raw: dict) -> dict | None:
         actions = ["stop", "restart", "shell", "delete", "rename"]
     else:
         actions = ["start", "delete", "clone", "rename"]
-    uuid = _id_text(raw.get("id"), name)
-    distro = raw.get("distro") or raw.get("image") or ""
+    uuid = _id_text(_mapping_get(raw, "id"), name)
+    distro = _mapping_get(raw, "distro") or _mapping_get(raw, "image") or ""
     return {
         "id": f"orb:{name}",
         "uuid": uuid,
-        "name": _display_text(ov.get("name"), name) or name,
+        "name": _display_text(_mapping_get(ov, "name"), name) or name,
         "orb_name": name,
         "backend": "orb",
         "status": status or "unknown",
         "state": state,
         "detail": f"OrbStack · {status or 'unknown'}",
-        "url": _optional_text(ov.get("url")),
-        "group": _display_text(ov.get("group"), "OrbStack Linux") or "OrbStack Linux",
+        "url": _optional_text(_mapping_get(ov, "url")),
+        "group": _display_text(_mapping_get(ov, "group"), "OrbStack Linux") or "OrbStack Linux",
         "actions": actions,
         "distro": _display_text(distro, ""),
         "ips": [],
@@ -567,29 +685,32 @@ def discover_vms() -> list:
     """Status feed format for services dashboard."""
     items = []
     for v in _listing_rows(list_utm_vms) + _listing_rows(list_orb_machines):
-        if not isinstance(v, dict):
+        if not _isa(v, dict):
             continue
-        # Unbound dict.get, and laundered text for the ``==`` / ``or``
-        # probes: a leftover dict-subclass row with a bombing ``.get`` (or a
-        # state/group whose reflected ``__eq__`` / ``__bool__`` raises) used
-        # to take the whole status feed with it.  The emitted values are
-        # sealed by the final ``_jsonable`` pass.
-        state = _display_text(dict.get(v, "state"), "")
+        # _mapping_get, and laundered text for the ``==`` / ``or`` probes: a
+        # leftover dict-subclass row with a bombing ``.get`` (unbound
+        # ``dict.get`` bypasses it), a hash-shadowing key bomb (the unbound
+        # builtin's probe still ran the stored key's ``__eq__``), a row whose
+        # ``__class__`` is a raising property (the bare ``isinstance`` gate
+        # detonated), or a state/group whose reflected ``__eq__`` /
+        # ``__bool__`` raises each used to take the whole status feed with
+        # it.  The emitted values are sealed by the final ``_jsonable`` pass.
+        state = _display_text(_mapping_get(v, "state"), "")
         if state == "ok":
             actions = ["restart", "stop"]
         else:
             actions = ["start"]
-        group = _display_text(dict.get(v, "group"), "")
+        group = _display_text(_mapping_get(v, "group"), "")
         items.append({
-            "id": dict.get(v, "id"),
+            "id": _mapping_get(v, "id"),
             "kind": "vm",
-            "name": dict.get(v, "name"),
-            "state": dict.get(v, "state"),  # ok | warn | stopped | down
-            "detail": dict.get(v, "detail"),
-            "url": dict.get(v, "url"),
+            "name": _mapping_get(v, "name"),
+            "state": _mapping_get(v, "state"),  # ok | warn | stopped | down
+            "detail": _mapping_get(v, "detail"),
+            "url": _mapping_get(v, "url"),
             "group": group or "Virtual Machines",
             "actions": actions,
-            "backend": dict.get(v, "backend"),
+            "backend": _mapping_get(v, "backend"),
         })
     return _jsonable(items) or []
 
@@ -687,7 +808,9 @@ def _parse_id(vm_id: str) -> tuple[str, str]:
         machines = list_orb_machines()
     except Exception:
         machines = []
-    if isinstance(machines, list):
+    # _isa: a listing return whose ``__class__`` is a raising property
+    # detonated the bare gate and 500'd the action ahead of the walk below.
+    if _isa(machines, list):
         try:
             machines = [m for m in list.__iter__(machines)]
         except Exception:
@@ -695,18 +818,20 @@ def _parse_id(vm_id: str) -> tuple[str, str]:
     else:
         machines = []
     for m in machines:
-        if not isinstance(m, dict):
+        if not _isa(m, dict):
             continue
-        # Unbound dict.get and str.__eq__ against the exact request text: a
-        # leftover dict-subclass row (bombing ``.get``) or a str-subclass
-        # value (reflected ``__eq__`` / ``__bool__`` bomb) used to 500 the
-        # action instead of answering the coded vms.bad_id.
-        orb_name = dict.get(m, "orb_name")
-        row_id = dict.get(m, "id")
-        if (isinstance(orb_name, str) and str.__eq__(raw, orb_name) is True) or (
-            isinstance(row_id, str) and str.__eq__(raw, row_id) is True
+        # _mapping_get and str.__eq__ against the exact request text: a
+        # leftover dict-subclass row (bombing ``.get``), a hash-shadowing
+        # key bomb (the unbound ``dict.get`` probe still ran the stored
+        # key's ``__eq__``), or a str-subclass value (reflected ``__eq__``
+        # / ``__bool__`` bomb) used to 500 the action instead of answering
+        # the coded vms.bad_id.
+        orb_name = _mapping_get(m, "orb_name")
+        row_id = _mapping_get(m, "id")
+        if (_isa(orb_name, str) and str.__eq__(raw, orb_name) is True) or (
+            _isa(row_id, str) and str.__eq__(raw, row_id) is True
         ):
-            name_text = _as_text(orb_name) if isinstance(orb_name, str) else ""
+            name_text = _as_text(orb_name) if _isa(orb_name, str) else ""
             return "orb", _argv_name(name_text or raw)
     return "utm", _argv_name(raw)
 
@@ -764,7 +889,7 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         ips = [ln.strip() for ln in text.splitlines() if ln.strip()]
         _invalidate()
         return {
-            "ok": rc == 0, "action": action, "id": ident, "ips": ips,
+            "ok": _rc_int(rc) == 0, "action": action, "id": ident, "ips": ips,
             "message": text or _as_text(err),
         }
     elif action == "rename":
@@ -778,14 +903,14 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         raise api_error("vms.utm_unavailable")
     _invalidate()
     return {
-        "ok": rc == 0, "action": action, "id": ident,
-        "message": _as_text(out) if rc == 0 else (_as_text(err) or _as_text(out)),
+        "ok": _rc_int(rc) == 0, "action": action, "id": ident,
+        "message": _as_text(out) if _rc_int(rc) == 0 else (_as_text(err) or _as_text(out)),
     }
 
 
 def _utm_status(name: str) -> str:
     rc, out, _ = sh([UTMCTL, "status", name], timeout=10)
-    return _as_text(out).strip() if rc == 0 else "unknown"
+    return _as_text(out).strip() if _rc_int(rc) == 0 else "unknown"
 
 
 def utm_vm_running(vm_uuid: str) -> bool:
@@ -802,7 +927,10 @@ def utm_vm_running(vm_uuid: str) -> bool:
         vms = list_utm_vms(force=True)
     except Exception:
         return False
-    if isinstance(vms, list):
+    # _isa: a listing return whose ``__class__`` is a raising property
+    # detonated this bare gate and 500'd the console-session mint (and the
+    # WebSocket upgrade's running re-check) instead of reading as absent.
+    if _isa(vms, list):
         try:
             vms = [vm for vm in list.__iter__(vms)]
         except Exception:
@@ -810,13 +938,15 @@ def utm_vm_running(vm_uuid: str) -> bool:
     else:
         return False
     for vm in vms:
-        if not isinstance(vm, dict):
+        if not _isa(vm, dict):
             continue
-        # Unbound dict.get + _as_text: a leftover dict-subclass row used to
-        # raise out of the console-session mint instead of the coded 404.
-        if _as_text(dict.get(vm, "uuid")).strip().lower() != uuid:
+        # _mapping_get + _as_text: a leftover dict-subclass row (bombing
+        # ``.get``) or a hash-shadowing key bomb riding the unbound
+        # ``dict.get`` probe used to raise out of the console-session mint
+        # instead of the coded 404.
+        if _as_text(_mapping_get(vm, "uuid")).strip().lower() != uuid:
             continue
-        return _utm_status(_as_text(dict.get(vm, "id"))) in ("started", "running")
+        return _utm_status(_as_text(_mapping_get(vm, "id"))) in ("started", "running")
     return False
 
 
@@ -851,7 +981,7 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
     elif action == "delete":
         # orbctl delete NAME -y if exists
         rc, out, err = sh([ORBCTL, "delete", ident, "-f"], timeout=180)
-        if rc != 0:
+        if _rc_int(rc) != 0:
             rc, out, err = sh([ORBCTL, "delete", ident], timeout=180)
     elif action == "clone":
         new_name = kwargs.get("name")
@@ -876,7 +1006,7 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         if _cli_missing(rc, err, ORBCTL):
             raise api_error("vms.orb_unavailable")
         return {
-            "ok": rc == 0, "action": "info", "id": ident,
+            "ok": _rc_int(rc) == 0, "action": "info", "id": ident,
             "message": _as_text(out) or _as_text(err),
         }
     elif action == "rename":
@@ -887,8 +1017,8 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         raise api_error("vms.orb_unavailable")
     _invalidate()
     return {
-        "ok": rc == 0, "action": action, "id": ident,
-        "message": _as_text(out) if rc == 0 else (_as_text(err) or _as_text(out)),
+        "ok": _rc_int(rc) == 0, "action": action, "id": ident,
+        "message": _as_text(out) if _rc_int(rc) == 0 else (_as_text(err) or _as_text(out)),
     }
 
 
@@ -918,9 +1048,9 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
         raise api_error("vms.orb_unavailable")
     _invalidate()
     return {
-        "ok": rc == 0,
+        "ok": _rc_int(rc) == 0,
         "action": "create",
         "distro": distro,
         "name": name,
-        "message": _as_text(out) if rc == 0 else (_as_text(err) or _as_text(out)),
+        "message": _as_text(out) if _rc_int(rc) == 0 else (_as_text(err) or _as_text(out)),
     }
